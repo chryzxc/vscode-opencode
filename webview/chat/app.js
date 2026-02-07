@@ -3,608 +3,462 @@
   /* @ts-expect-error - VS Code API provided by environment */
   const vscode = acquireVsCodeApi();
 
-  let currentMode = 'build';
-  const messagesContainer = document.getElementById('messages');
-  /** @type {HTMLTextAreaElement | null} */
-  const messageInput = /** @type {HTMLTextAreaElement | null} */ (document.getElementById('message-input'));
-  const sendButton = document.getElementById('send-button');
-  const modeToggle = document.getElementById('mode-toggle');
-  const newSessionButton = document.getElementById('new-session');
-
-  // File reference state
+  // State
+  let currentMode = "build";
   /** @type {string[]} */
   let selectedFiles = [];
   let isSearchingFiles = false;
   let selectedSuggestionIndex = -1;
   let suggestionResults = [];
-
-  // Model state
   /** @type {any[]} */
   let availableModels = [];
   /** @type {any} */
   let selectedModel = null;
+  let modelSearchQuery = "";
+  /** @type {HTMLElement | null} */
+  let currentStreamingMessage = null;
 
-  // Create suggestions container
-  const suggestionsContainer = document.createElement('div');
-  suggestionsContainer.className = 'suggestions-container';
-  const inputContainer = document.querySelector('.input-container');
-  inputContainer?.parentElement?.insertBefore(suggestionsContainer, inputContainer);
+  // DOM Elements
+  const messagesContainer = document.getElementById("messages");
+  /** @type {HTMLTextAreaElement | null} */
+  const messageInput = /** @type {HTMLTextAreaElement | null} */ (
+    document.getElementById("message-input")
+  );
+  const sendButton = document.getElementById("send-button");
+  const contextButton = document.getElementById("add-context-btn");
+  const modeToggle = document.getElementById("mode-toggle");
+  const modelSelector = document.getElementById("model-selector");
+  // const reviewChangesButton = document.getElementById("review-changes-btn"); // Future use
+  const filesPreviewContainer = document.getElementById("files-preview");
 
-  // Create file chips container
-  const fileChipsContainer = document.createElement('div');
-  fileChipsContainer.className = 'file-chips-container';
-  fileChipsContainer.style.display = 'none';
-  inputContainer?.parentElement?.insertBefore(fileChipsContainer, inputContainer);
+  // Create suggestions container (dynamic)
+  const suggestionsContainer = document.createElement("div");
+  suggestionsContainer.className = "suggestions-container";
+  const inputContainer = document.querySelector(".input-container");
+  // Insert suggestions before the input container but after files preview
+  inputContainer?.parentElement?.insertBefore(
+    suggestionsContainer,
+    inputContainer,
+  );
 
   // Configure marked if available
-  // @ts-ignore
+  // @ts-expect-error - marked defined in vendor.js
   if (window.marked && window.hljs) {
-    // @ts-ignore
+    // @ts-expect-error - marked defined in vendor.js
     window.marked.setOptions({
-      highlight: function(code, lang) {
-        // @ts-ignore
+      highlight: function (
+        /** @type {string} */ code,
+        /** @type {string} */ lang,
+      ) {
+        // @ts-expect-error - hljs defined in vendor.js
         if (lang && window.hljs.getLanguage(lang)) {
-          // @ts-ignore
+          // @ts-expect-error - hljs defined in vendor.js
           return window.hljs.highlight(code, { language: lang }).value;
         }
-        // @ts-ignore
+        // @ts-expect-error - hljs defined in vendor.js
         return window.hljs.highlightAuto(code).value;
       },
       breaks: true,
-      gfm: true
+      gfm: true,
     });
   }
 
   // Initialize
   function init() {
-    // Request initial state
-    vscode.postMessage({ type: 'ready' });
+    // Event Listeners
+    sendButton?.addEventListener("click", sendMessage);
+    messageInput?.addEventListener("keydown", handleKeyDown);
+    messageInput?.addEventListener("input", handleInput);
 
-    // Ensure DOM references are fresh
-    const attachButton = document.getElementById('attach-button');
-    const settingsButton = document.getElementById('settings-button');
-    const modelSelector = document.getElementById('model-selector');
-    const messageInputEl = /** @type {HTMLTextAreaElement} */ (document.getElementById('message-input'));
-
-    // Setup event listeners
-    sendButton?.addEventListener('click', sendMessage);
-    messageInputEl?.addEventListener('keydown', handleKeyDown);
-    modeToggle?.addEventListener('click', toggleMode);
-    newSessionButton?.addEventListener('click', createNewSession);
-    messageInputEl?.addEventListener('input', handleInput);
-    
-    // Attach button
-    attachButton?.addEventListener('click', () => {
-        vscode.postMessage({ type: 'attachFiles' });
+    contextButton?.addEventListener("click", () => {
+      vscode.postMessage({ type: "attachFiles" });
     });
 
-    // Settings button
-    settingsButton?.addEventListener('click', () => {
-        vscode.postMessage({ type: 'openSettings' });
+    modeToggle?.addEventListener("click", () => {
+      vscode.postMessage({ type: "toggleMode" });
     });
 
-    // Model selector
-    modelSelector?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleModelDropdown();
+    modelSelector?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleModelDropdown();
     });
 
-    // Close dropdown on click outside
-    document.addEventListener('click', (e) => {
-      const dropdown = document.getElementById('model-dropdown');
-      const selector = document.getElementById('model-selector');
-      if (dropdown && !dropdown.classList.contains('hidden') && 
-          !dropdown.contains(/** @type {Node} */ (e.target)) && 
-          !selector?.contains(/** @type {Node} */ (e.target))) {
-        dropdown.classList.add('hidden');
+    // Close dropdowns on click outside
+    document.addEventListener("click", (e) => {
+      const dropdown = document.getElementById("model-dropdown");
+      if (
+        dropdown &&
+        !dropdown.classList.contains("hidden") &&
+        !dropdown.contains(/** @type {Node} */ (e.target)) &&
+        !modelSelector?.contains(/** @type {Node} */ (e.target))
+      ) {
+        dropdown.classList.add("hidden");
       }
     });
+
+    // Request initial state
+    vscode.postMessage({ type: "ready" });
   }
 
-  let currentStreamingMessage = null;
-
   // Handle messages from extension
-  window.addEventListener('message', (event) => {
+  window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const message = event.data;
 
     switch (message.type) {
-      case 'initState':
-        currentMode = message.mode || 'build';
-        updateModeUI();
-        updateStatusUI(message.serverStatus);
+      case "initState":
+      case "init":
+        if (message.mode) {
+          currentMode = message.mode;
+          updateModeUI();
+        }
         if (message.selectedModel) {
-            selectedModel = message.selectedModel;
-            updateSelectedModelUI();
+          selectedModel = message.selectedModel;
+          updateSelectedModelUI();
+        }
+        if (message.serverStatus) {
+          updateStatusUI(message.serverStatus);
         }
         break;
 
-      case 'modelsList':
+      case "modelsList":
         availableModels = message.models;
         if (message.selectedModel) {
-            selectedModel = message.selectedModel;
+          selectedModel = message.selectedModel;
         }
-        renderModels();
+        renderModelsList();
         updateSelectedModelUI();
         break;
 
-      case 'modeChanged':
+      case "modeChanged":
         currentMode = message.mode;
         updateModeUI();
         break;
 
-      case 'statusUpdate':
+      case "statusUpdate":
         updateStatusUI(message.status);
         break;
 
-      case 'messageResponse':
+      case "messageResponse":
         addAssistantMessage(message.message);
         currentStreamingMessage = null;
         break;
 
-      case 'streamEvent':
+      case "streamEvent":
         handleStreamEvent(message.event);
         break;
 
-      case 'error':
+      case "error":
         showError(message.message);
+        removeThinkingBubble();
+        if (currentStreamingMessage) {
+          currentStreamingMessage.remove();
+          currentStreamingMessage = null;
+        }
         break;
 
-      case 'appendPrompt':
+      case "appendPrompt":
         if (messageInput) {
-          messageInput.value += (messageInput.value ? '\n' : '') + message.text;
+          messageInput.value += (messageInput.value ? "\n" : "") + message.text;
           messageInput.focus();
         }
         break;
-      
-      case 'viewPlan': // Should not happen in webview, but for completeness
-        break;
 
-      case 'fileSearchResults':
+      case "fileSearchResults":
         showFileSuggestions(message.results);
         break;
 
-      case 'filesAttached':
+      case "filesAttached":
         if (message.files) {
-            message.files.forEach(/** @param {string} file */ (file) => {
-                if (!selectedFiles.includes(file)) {
-                    selectedFiles.push(file);
-                }
-            });
-            updateFileChipsUI();
+          message.files.forEach(
+            /** @param {string} file */ (file) => {
+              if (!selectedFiles.includes(file)) {
+                selectedFiles.push(file);
+              }
+            },
+          );
+          updateFileChipsUI();
         }
         break;
     }
   });
 
-  /** @param {any} event */
-  function handleStreamEvent(event) {
-    if (!event || !event.type) return;
+  // --- Logic Functions ---
 
-    // Handle different event types
-    switch (event.type) {
-      case 'message.start':
-        // Start a new streaming message
-        currentStreamingMessage = createStreamingMessage();
-        break;
-
-      case 'message.delta':
-        // Update streaming message with new content
-        if (currentStreamingMessage && event.properties?.text) {
-          updateStreamingMessage(currentStreamingMessage, event.properties.text);
-        }
-        break;
-
-      case 'message.end':
-        // Finalize streaming message
-        if (currentStreamingMessage) {
-          finalizeStreamingMessage(currentStreamingMessage);
-          currentStreamingMessage = null;
-        }
-        break;
-    }
-  }
-
-  // Create a new streaming message element
-  function createStreamingMessage() {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message assistant streaming';
-    // Store raw text for streaming accumulation
-    messageDiv.dataset.rawText = '';
-
-    const contentDiv = document.createElement('div');
-    contentDiv.className = 'message-content';
-    contentDiv.innerHTML = '<span class="cursor"></span>';
-
-    messageDiv.appendChild(contentDiv);
-    messagesContainer?.appendChild(messageDiv);
-    scrollToBottom();
-
-    return messageDiv;
-  }
-
-  /** 
-   * @param {HTMLElement} messageDiv 
-   * @param {string} text 
-   */
-  function updateStreamingMessage(messageDiv, text) {
-    const contentDiv = messageDiv.querySelector('.message-content');
-    if (contentDiv) {
-      // Accumulate text
-      const currentRaw = messageDiv.dataset.rawText || '';
-      const newRaw = currentRaw + text;
-      messageDiv.dataset.rawText = newRaw;
-      
-      // Render markdown
-      if (window.marked) {
-        try {
-          contentDiv.innerHTML = window.marked.parse(newRaw);
-        } catch (e) {
-          contentDiv.textContent = newRaw;
-        }
-      } else {
-         contentDiv.textContent = newRaw;
-      }
-      scrollToBottom();
-    }
-  }
-
-  /** @param {HTMLElement} messageDiv */
-  function finalizeStreamingMessage(messageDiv) {
-    messageDiv.classList.remove('streaming');
-    const contentDiv = messageDiv.querySelector('.message-content');
-    const rawText = messageDiv.dataset.rawText || contentDiv.textContent || '';
-    
-    // Ensure final render is clean
-    if (window.marked) {
-      try {
-        contentDiv.innerHTML = window.marked.parse(rawText);
-      } catch (e) {
-        contentDiv.textContent = rawText;
-      }
-    }
-    
-    if (contentDiv && isPlan(rawText)) {
-      const planButton = document.createElement('button');
-      planButton.className = 'plan-button';
-      planButton.textContent = '📋 View Implementation Plan';
-      planButton.onclick = () => {
-        vscode.postMessage({
-          type: 'viewPlan',
-          content: rawText,
-        });
-      };
-      messageDiv.appendChild(planButton);
-    }
-  }
-
-  // Send message
   function sendMessage() {
     const text = messageInput?.value.trim();
     if (!text && selectedFiles.length === 0) return;
 
     // Add user message to UI
-    addUserMessage(text || '(Selected files)');
+    addUserMessage(text || "(Selected files)");
 
     // Send to extension
     vscode.postMessage({
-      type: 'sendMessage',
+      type: "sendMessage",
       text,
-      files: selectedFiles
+      files: selectedFiles,
     });
 
-    // Clear input and files
+    // Clear and Reset
     if (messageInput) {
-      messageInput.value = '';
-      messageInput.style.height = 'auto';
+      messageInput.value = "";
+      messageInput.style.height = "auto"; // Reset height
     }
     selectedFiles = [];
     updateFileChipsUI();
     hideSuggestions();
-  }
 
-  // Handle keyboard shortcuts
+    // Show Thinking Bubble
+    addThinkingBubble();
+  }
+  /** @param {KeyboardEvent} event */
   function handleKeyDown(event) {
-    if (isSearchingFiles && suggestionsContainer.style.display === 'block') {
-      if (event.key === 'ArrowDown') {
+    if (isSearchingFiles && suggestionsContainer.style.display === "block") {
+      if (event.key === "ArrowDown") {
         event.preventDefault();
         updateSelectedSuggestion(1);
         return;
       }
-      if (event.key === 'ArrowUp') {
+      if (event.key === "ArrowUp") {
         event.preventDefault();
         updateSelectedSuggestion(-1);
         return;
       }
-      if (event.key === 'Enter' || event.key === 'Tab') {
+      if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
         selectSuggestion(selectedSuggestionIndex);
         return;
       }
-      if (event.key === 'Escape') {
+      if (event.key === "Escape") {
         event.preventDefault();
         hideSuggestions();
         return;
       }
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       sendMessage();
     }
   }
 
-  // Toggle mode
-  function toggleMode() {
-    vscode.postMessage({ type: 'toggleMode' });
-  }
+  function handleInput() {
+    // Auto-resize
+    if (messageInput) {
+      messageInput.style.height = "auto";
+      messageInput.style.height = messageInput.scrollHeight + "px";
 
-  // Create new session
-  function createNewSession() {
-    if (messagesContainer) {
-      messagesContainer.innerHTML = `
-        <div id="empty-state" class="empty-state">
-          <div class="empty-state-logo">
-            <span>✴️</span> OpenCode
-          </div>
-          <div class="empty-state-icon">
-            👾
-          </div>
-          <p class="empty-state-hint">
-            Use OpenCode in the terminal to configure MCP servers.<br>
-            They'll work here, too!
-          </p>
-        </div>
-      `;
-    }
-    vscode.postMessage({ type: 'newSession' });
-  }
+      const value = messageInput.value;
+      const cursorPosition = messageInput.selectionStart;
 
-  // Update mode UI
-  function updateModeUI() {
-    const modeText = modeToggle?.querySelector('.mode-text');
-    const modeIcon = modeToggle?.querySelector('.mode-icon');
-
-    if (currentMode === 'plan') {
-      modeToggle?.classList.add('plan-mode');
-      if (modeText) modeText.textContent = 'PLAN';
-      if (modeIcon) modeIcon.textContent = '📋';
-    } else {
-      modeToggle?.classList.remove('plan-mode');
-      if (modeText) modeText.textContent = 'BUILD';
-      if (modeIcon) modeIcon.textContent = '🔨';
-    }
-  }
-
-  // Update server status UI
-  function updateStatusUI(status) {
-    const overlay = document.getElementById('loading-overlay');
-    const loadingText = document.getElementById('loading-text');
-
-    if (!overlay) return;
-
-    switch (status) {
-      case 'starting':
-        overlay.classList.add('visible');
-        if (loadingText) loadingText.textContent = 'Initializing OpenCode...';
-        break;
-      case 'running':
-        overlay.classList.remove('visible');
-        break;
-      case 'error':
-        overlay.classList.add('visible');
-        if (loadingText) loadingText.textContent = '❌ Failed to connect to OpenCode';
-        break;
-      case 'idle':
-        overlay.classList.add('visible');
-        if (loadingText) loadingText.textContent = 'OpenCode is idle';
-        break;
-    }
-  }
-
-  // Add user message to UI
-  function addUserMessage(text) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message user';
-
-    const contentDiv = document.createElement('div');
-    contentDiv.className = 'message-content';
-    // User message generally plain text, but could be markdown? 
-    // Let's keep plain text for simplicity or consistent? 
-    // Claude code treats user input as text usually. 
-    // But rendering markdown is nice.
-    if (window.marked) {
-        try {
-            contentDiv.innerHTML = window.marked.parse(text);
-        } catch(e) {
-            contentDiv.textContent = text;
-        }
-    } else {
-        contentDiv.textContent = text;
-    }
-
-    messageDiv.appendChild(contentDiv);
-    messagesContainer?.appendChild(messageDiv);
-    scrollToBottom();
-  }
-
-  // Add assistant message to UI
-  function addAssistantMessage(message) {
-    console.log('Adding assistant message:', JSON.stringify(message, null, 2));
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message assistant';
-
-    // 1. Header (Agent Info)
-    const headerDiv = document.createElement('div');
-    headerDiv.className = 'message-header';
-    
-    // Agent Name
-    const agentNameSpan = document.createElement('span');
-    agentNameSpan.className = 'agent-name';
-    agentNameSpan.textContent = message.info?.agent || 'Assistant';
-    headerDiv.appendChild(agentNameSpan);
-
-    // Model Name (optional, from info)
-    if (message.info?.modelID) {
-      const modelSpan = document.createElement('span');
-      modelSpan.className = 'model-name';
-      modelSpan.textContent = `(${message.info.modelID})`;
-      headerDiv.appendChild(modelSpan);
-    }
-    
-    messageDiv.appendChild(headerDiv);
-
-    // 2. Content (Parts)
-    if (message.parts && Array.isArray(message.parts)) {
-      const textParts = [];
-
-      message.parts.forEach(part => {
-        // Handle both SDK v2 and potentially v1 or flattened formats
-        const partType = part.type || (part.content ? 'text' : 'unknown');
-        const partText = part.text || part.content || '';
-
-        if (partType === 'reasoning') {
-          // Render reasoning block immediately
-          const reasoningDiv = document.createElement('div');
-          reasoningDiv.className = 'reasoning-part';
-          
-          const labelSpan = document.createElement('span');
-          labelSpan.className = 'reasoning-label';
-          labelSpan.textContent = 'Thinking Process';
-          reasoningDiv.appendChild(labelSpan);
-          
-          // Reasoning is specifically text-heavy/log-like, maybe keep as textContent or render minimal md?
-          // Usually better as text to preserve structure if it's raw thought.
-          const textNode = document.createTextNode(partText);
-          reasoningDiv.appendChild(textNode);
-          
-          messageDiv.appendChild(reasoningDiv);
-        } else if (partType === 'text') {
-          textParts.push(partText);
-        }
-      });
-
-      // Render accumulated text
-      if (textParts.length > 0) {
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'message-content';
-        const fullText = textParts.join('\n\n');
-        
-        if (window.marked) {
-             try {
-                contentDiv.innerHTML = window.marked.parse(fullText);
-            } catch(e) {
-                 contentDiv.textContent = fullText;
-            }
-        } else {
-            contentDiv.textContent = fullText;
-        }
-        
-        messageDiv.appendChild(contentDiv);
-
-        // Check for plan
-        if (isPlan(fullText)) {
-          const planButton = document.createElement('button');
-          planButton.className = 'plan-button';
-          planButton.textContent = '📋 View Implementation Plan';
-          planButton.onclick = () => {
-            vscode.postMessage({
-              type: 'viewPlan',
-              content: fullText,
-            });
-          };
-          messageDiv.appendChild(planButton);
+      // Check for @ mention
+      const lastAt = value.lastIndexOf("@", cursorPosition - 1);
+      if (lastAt !== -1 && (lastAt === 0 || /\s/.test(value[lastAt - 1]))) {
+        const query = value.substring(lastAt + 1, cursorPosition);
+        if (!query.includes(" ")) {
+          isSearchingFiles = true;
+          vscode.postMessage({ type: "searchFiles", query });
+          return;
         }
       }
-    } else {
-      // Fallback for simple message
-      const contentDiv = document.createElement('div');
-      contentDiv.className = 'message-content';
-      contentDiv.textContent = 'Received response';
-      messageDiv.appendChild(contentDiv);
     }
-
-    // 3. Footer (Token Usage)
-    if (message.info?.tokens) {
-      const footerDiv = document.createElement('div');
-      footerDiv.className = 'message-footer';
-      
-      const { input, output } = message.info.tokens;
-      const total = (input || 0) + (output || 0);
-      
-      const tokenInfo = document.createElement('span');
-      tokenInfo.className = 'token-info';
-      tokenInfo.textContent = `${total} tokens (${input} in / ${output} out)`;
-      
-      footerDiv.appendChild(tokenInfo);
-      messageDiv.appendChild(footerDiv);
-    }
-
-    messagesContainer?.appendChild(messageDiv);
-    scrollToBottom();
-  }
-
-  // Simple plan detection
-  function isPlan(text) {
-    const planIndicators = [
-      /implementation plan/i,
-      /proposed changes/i,
-      /phase \d+:/i,
-      /step \d+:/i,
-      /\d+\.\s+\[.*\]/,
-    ];
-
-    return planIndicators.some((pattern) => pattern.test(text));
-  }
-
-  // Show error message
-  function showError(errorMessage) {
-    const errorDiv = document.createElement('div');
-    errorDiv.className = 'message error';
-    errorDiv.style.background = 'var(--vscode-inputValidation-errorBackground)';
-    errorDiv.style.border = '1px solid var(--vscode-inputValidation-errorBorder)';
-    errorDiv.style.color = 'var(--vscode-errorForeground)';
-    
-    const contentDiv = document.createElement('div');
-    contentDiv.className = 'message-content';
-    contentDiv.textContent = `❌ Error: ${errorMessage}`;
-    
-    errorDiv.appendChild(contentDiv);
-    messagesContainer?.appendChild(errorDiv);
-    scrollToBottom();
-  }
-
-  // Scroll to bottom
-  function scrollToBottom() {
-    if (messagesContainer) {
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }
-  }
-
-  /** @param {any} _e */
-  function handleInput(_e) {
-    const value = messageInput?.value || '';
-    const cursorPosition = messageInput?.selectionStart || 0;
-    
-    // Find if we are typing after @
-    const lastAt = value.lastIndexOf('@', cursorPosition - 1);
-    
-    if (lastAt !== -1 && (lastAt === 0 || value[lastAt - 1] === ' ' || value[lastAt - 1] === '\n')) {
-      const query = value.substring(lastAt + 1, cursorPosition);
-      if (!query.includes(' ')) {
-        isSearchingFiles = true;
-        vscode.postMessage({ type: 'searchFiles', query });
-        return;
-      }
-    }
-    
     hideSuggestions();
   }
 
-  function hideSuggestions() {
-    isSearchingFiles = false;
-    suggestionsContainer.style.display = 'none';
-    selectedSuggestionIndex = -1;
+  function toggleModelDropdown() {
+    const dropdown = document.getElementById("model-dropdown");
+    if (!dropdown) return;
+
+    dropdown.classList.toggle("hidden");
+    if (!dropdown.classList.contains("hidden")) {
+      const searchInput = /** @type {HTMLInputElement | null} */ (
+        document.getElementById("model-search-input")
+      );
+      if (searchInput) {
+        searchInput.value = "";
+        modelSearchQuery = "";
+        searchInput.focus();
+      }
+
+      // Show loading state if no models are loaded yet
+      if (availableModels.length === 0) {
+        const listContainer = document.getElementById("model-list-container");
+        if (listContainer) {
+          listContainer.innerHTML =
+            '<div class="model-item loading">Loading models...</div>';
+        }
+        vscode.postMessage({ type: "getModels" });
+      } else {
+        renderModelsList();
+      }
+    }
   }
+
+  function renderModelsList() {
+    const dropdown = document.getElementById("model-dropdown");
+    const listContainer = document.getElementById("model-list-container");
+    const searchInput = document.getElementById("model-search-input");
+
+    if (!dropdown || !listContainer) return;
+
+    // Initialize search listener once
+    if (searchInput && !searchInput.dataset.initialized) {
+      searchInput.addEventListener("input", (e) => {
+        // @ts-expect-error - Event target value access
+        modelSearchQuery = e.target.value.toLowerCase();
+        renderModelsList();
+      });
+      searchInput.dataset.initialized = "true";
+    }
+
+    listContainer.innerHTML = "";
+
+    // Filter models
+    const filteredModels = availableModels.filter(
+      (/** @type {any} */ model) => {
+        const nameMatch = model.name.toLowerCase().includes(modelSearchQuery);
+        const providerMatch = (model.providerName || model.providerID)
+          .toLowerCase()
+          .includes(modelSearchQuery);
+        const idMatch = model.modelID.toLowerCase().includes(modelSearchQuery);
+        return nameMatch || providerMatch || idMatch;
+      },
+    );
+
+    if (filteredModels.length === 0) {
+      listContainer.innerHTML =
+        '<div class="model-item loading">No models found</div>';
+      return;
+    }
+
+    // Group models by provider
+    /** @type {Object.<string, any[]>} */
+    const groups = {};
+    filteredModels.forEach((/** @type {any} */ model) => {
+      const provider = model.providerName || model.providerID;
+      if (!groups[provider]) groups[provider] = [];
+      groups[provider].push(model);
+    });
+
+    // Render groups
+    Object.keys(groups)
+      .sort()
+      .forEach((providerName) => {
+        const header = document.createElement("div");
+        header.className = "provider-header";
+        header.textContent = providerName;
+        listContainer.appendChild(header);
+
+        groups[providerName].forEach((/** @type {any} */ model) => {
+          const isSelected =
+            selectedModel &&
+            selectedModel.providerID === model.providerID &&
+            selectedModel.modelID === model.modelID;
+
+          const item = document.createElement("div");
+          item.className = `model-item ${isSelected ? "selected" : ""}`;
+          item.innerHTML = `
+              <span class="model-name">${model.name}</span>
+              <span class="model-provider">${model.modelID}</span>
+          `;
+          item.onclick = (e) => {
+            e.stopPropagation();
+            selectModel(model);
+          };
+          listContainer.appendChild(item);
+        });
+      });
+  }
+
+  function selectModel(/** @type {any} */ model) {
+    selectedModel = { providerID: model.providerID, modelID: model.modelID };
+    updateSelectedModelUI();
+    renderModelsList();
+
+    // Explicitly hide dropdown
+    const dropdown = document.getElementById("model-dropdown");
+    if (dropdown) {
+      dropdown.classList.add("hidden");
+    }
+
+    vscode.postMessage({
+      type: "selectModel",
+      model: selectedModel,
+    });
+  }
+
+  function updateSelectedModelUI() {
+    const currentModelNameSpan = document.getElementById("current-model-name");
+    if (currentModelNameSpan && selectedModel) {
+      // Find friendly name
+      const modelInfo = availableModels.find(
+        (m) =>
+          m.providerID === selectedModel.providerID &&
+          m.modelID === selectedModel.modelID,
+      );
+      const name = modelInfo ? modelInfo.name : selectedModel.modelID;
+      currentModelNameSpan.textContent = name;
+    }
+  }
+
+  function updateModeUI() {
+    const modeText = modeToggle?.querySelector(".mode-text");
+    const modeIcon = modeToggle?.querySelector(".pill-icon"); // pill-icon in new UI
+
+    if (currentMode === "plan") {
+      if (modeText) modeText.textContent = "Planning";
+      if (modeIcon) modeIcon.textContent = "📋";
+    } else {
+      if (modeText) modeText.textContent = "Building";
+      if (modeIcon) modeIcon.textContent = "🔨";
+    }
+  }
+
+  function updateStatusUI(/** @type {string} */ status) {
+    const overlay = document.getElementById("loading-overlay");
+    const loadingText = document.getElementById("loading-text");
+    if (!overlay) return;
+
+    switch (status) {
+      case "starting":
+        overlay.classList.add("visible");
+        if (loadingText) loadingText.textContent = "Initializing OpenCode...";
+        break;
+      case "running":
+        overlay.classList.remove("visible");
+        break;
+      case "error":
+        overlay.classList.add("visible");
+        if (loadingText) loadingText.textContent = "❌ Failed to connect";
+        break;
+      case "idle":
+        overlay.classList.add("visible"); // Maybe just show loading still?
+        if (loadingText) loadingText.textContent = "OpenCode is idle";
+        break;
+    }
+  }
+
+  function updateFileChipsUI() {
+    if (!filesPreviewContainer) return;
+
+    filesPreviewContainer.innerHTML = "";
+
+    selectedFiles.forEach((path, index) => {
+      const chip = document.createElement("div");
+      chip.className = "file-chip";
+      const name = path.split(/[\\/]/).pop() || path;
+      chip.innerHTML = `
+        <span>${name}</span>
+        <span class="file-chip-remove" title="Remove">&times;</span>
+      `;
+      chip.querySelector(".file-chip-remove")?.addEventListener("click", () => {
+        selectedFiles.splice(index, 1);
+        updateFileChipsUI();
+      });
+      filesPreviewContainer.appendChild(chip);
+    });
+  }
+
+  // --- Suggestions Logic ---
 
   function showFileSuggestions(results) {
     if (!isSearchingFiles || results.length === 0) {
@@ -612,41 +466,59 @@
       return;
     }
 
+    /** @type {any[]} */
     suggestionResults = results;
-    suggestionsContainer.innerHTML = '';
-    suggestionsContainer.style.display = 'block';
+    suggestionsContainer.innerHTML = "";
+    suggestionsContainer.style.display = "block";
     selectedSuggestionIndex = 0;
 
-    results.forEach((result, index) => {
-      const item = document.createElement('div');
-      item.className = 'suggestion-item' + (index === 0 ? ' selected' : '');
-      item.innerHTML = `
+    results.forEach(
+      (/** @type {any} */ result, /** @type {number} */ index) => {
+        const item = document.createElement("div");
+        item.className = "suggestion-item" + (index === 0 ? " selected" : "");
+        item.innerHTML = `
         <span class="suggestion-name">${result.name}</span>
         <span class="suggestion-path">${result.path}</span>
       `;
-      item.onclick = () => selectSuggestion(index);
-      suggestionsContainer.appendChild(item);
-    });
+        item.onclick = () => selectSuggestion(index);
+        suggestionsContainer.appendChild(item);
+      },
+    );
   }
 
-  function selectSuggestion(index) {
+  function hideSuggestions() {
+    isSearchingFiles = false;
+    suggestionsContainer.style.display = "none";
+    selectedSuggestionIndex = -1;
+  }
+
+  function updateSelectedSuggestion(/** @type {number} */ delta) {
+    const items = suggestionsContainer.querySelectorAll(".suggestion-item");
+    if (items.length === 0) return;
+
+    items[selectedSuggestionIndex]?.classList.remove("selected");
+    selectedSuggestionIndex =
+      (selectedSuggestionIndex + delta + items.length) % items.length;
+    items[selectedSuggestionIndex]?.classList.add("selected");
+    items[selectedSuggestionIndex]?.scrollIntoView({ block: "nearest" });
+  }
+
+  function selectSuggestion(/** @type {number} */ index) {
     const result = suggestionResults[index];
     if (!result) return;
 
-    // Add to selected files
     if (!selectedFiles.includes(result.path)) {
       selectedFiles.push(result.path);
       updateFileChipsUI();
     }
 
-    // Replace @query in input
     if (messageInput) {
       const value = messageInput.value;
       const cursorPosition = messageInput.selectionStart;
-      const lastAt = value.lastIndexOf('@', cursorPosition - 1);
+      const lastAt = value.lastIndexOf("@", cursorPosition - 1);
       const beforeAt = value.substring(0, lastAt);
       const afterCursor = value.substring(cursorPosition);
-      
+
       messageInput.value = beforeAt + afterCursor;
       messageInput.focus();
     }
@@ -654,100 +526,253 @@
     hideSuggestions();
   }
 
-  function updateFileChipsUI() {
-    if (selectedFiles.length === 0) {
-      fileChipsContainer.style.display = 'none';
-      return;
-    }
+  // --- Message Rendering ---
 
-    fileChipsContainer.style.display = 'flex';
-    fileChipsContainer.innerHTML = '';
-    
-    selectedFiles.forEach((path, index) => {
-      const chip = document.createElement('div');
-      chip.className = 'file-chip';
-      const name = path.split(/[\\/]/).pop() || path;
-      chip.innerHTML = `
-        <span>${name}</span>
-        <span class="file-chip-remove" title="Remove">&times;</span>
-      `;
-      chip.querySelector('.file-chip-remove')?.addEventListener('click', () => {
-        selectedFiles.splice(index, 1);
-        updateFileChipsUI();
+  function addUserMessage(/** @type {string} */ text) {
+    const messageDiv = document.createElement("div");
+    messageDiv.className = "message user";
+    const contentDiv = document.createElement("div");
+    contentDiv.className = "message-content";
+
+    // User messages as plain text for now, or minimal markdown
+    contentDiv.textContent = text;
+
+    messageDiv.appendChild(contentDiv);
+    messagesContainer?.appendChild(messageDiv);
+    scrollToBottom();
+  }
+
+  function addAssistantMessage(message) {
+    // Remove thinking bubble
+    removeThinkingBubble();
+
+    // Logic for adding assistant message with markdown, plans, etc.
+    // Reuse existing structure but ensure clean markdown logic
+    const messageDiv = document.createElement("div");
+    messageDiv.className = "message assistant";
+
+    // Header
+    const headerDiv = document.createElement("div");
+    headerDiv.className = "message-header";
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "agent-name";
+    nameSpan.textContent = message.info?.agent || "Assistant";
+    headerDiv.appendChild(nameSpan);
+
+    if (message.info?.modelID) {
+      const modelSpan = document.createElement("span");
+      modelSpan.style.opacity = "0.7";
+      modelSpan.textContent = ` (${message.info.modelID})`;
+      headerDiv.appendChild(modelSpan);
+    }
+    messageDiv.appendChild(headerDiv);
+
+    // Content Parts
+    if (message.parts && Array.isArray(message.parts)) {
+      let textBuffer = "";
+
+      message.parts.forEach((/** @type {any} */ part) => {
+        const text = part.text || part.content || "";
+
+        // Implementation Plan Check (Simple regex)
+        if (/# Implementation Plan/i.test(text)) {
+          // Render plan card
+          renderPlanCard(messageDiv, text);
+          return;
+        }
+
+        if (part.type === "reasoning") {
+          const reasoningDiv = document.createElement("div");
+          reasoningDiv.className = "reasoning-part";
+          reasoningDiv.innerHTML = `<span class="reasoning-label">Thinking Process</span>${escapeHtml(text)}`;
+          messageDiv.appendChild(reasoningDiv);
+        } else {
+          textBuffer += text + "\n\n";
+        }
       });
-      fileChipsContainer.appendChild(chip);
-    });
+
+      if (textBuffer.trim()) {
+        const contentDiv = document.createElement("div");
+        contentDiv.className = "message-content";
+        renderMarkdown(contentDiv, textBuffer);
+        messageDiv.appendChild(contentDiv);
+      }
+    }
+
+    // Footer
+    if (message.info?.tokens || message.timing?.duration) {
+      const footerDiv = document.createElement("div");
+      footerDiv.className = "message-footer";
+
+      let footerText = "";
+      if (message.info?.tokens) {
+        const { input, output } = message.info.tokens;
+        footerText += `${input + output} tokens`;
+      }
+
+      if (message.timing?.duration) {
+        if (footerText) footerText += " • ";
+        footerText += `${message.timing.duration.toFixed(1)}s`;
+      }
+
+      footerDiv.textContent = footerText;
+      messageDiv.appendChild(footerDiv);
+    }
+
+    messagesContainer?.appendChild(messageDiv);
+    scrollToBottom();
   }
 
-  function updateSelectedSuggestion(delta) {
-    const items = suggestionsContainer.querySelectorAll('.suggestion-item');
-    if (items.length === 0) return;
-
-    items[selectedSuggestionIndex]?.classList.remove('selected');
-    selectedSuggestionIndex = (selectedSuggestionIndex + delta + items.length) % items.length;
-    items[selectedSuggestionIndex]?.classList.add('selected');
-    items[selectedSuggestionIndex]?.scrollIntoView({ block: 'nearest' });
-  }
-
-  function toggleModelDropdown() {
-    const dropdown = document.getElementById('model-dropdown');
-    dropdown?.classList.toggle('hidden');
-    if (dropdown && !dropdown.classList.contains('hidden')) {
-        vscode.postMessage({ type: 'getModels' });
+  function handleStreamEvent(/** @type {any} */ event) {
+    if (event.type === "message.start") {
+      currentStreamingMessage = createStreamingMessage();
+    } else if (event.type === "message.delta" && currentStreamingMessage) {
+      updateStreamingMessage(
+        currentStreamingMessage,
+        event.properties?.text || "",
+      );
+    } else if (event.type === "message.end" && currentStreamingMessage) {
+      finalizeStreamingMessage(
+        /** @type {HTMLElement} */ (currentStreamingMessage),
+      );
+      currentStreamingMessage = null;
     }
   }
 
-  function renderModels() {
-    const dropdown = document.getElementById('model-dropdown');
-    if (!dropdown) return;
+  function createStreamingMessage() {
+    const messageDiv = document.createElement("div");
+    messageDiv.className = "message assistant";
+    messageDiv.dataset.rawText = "";
 
-    dropdown.innerHTML = '';
-    availableModels.forEach(model => {
-        const isSelected = selectedModel && 
-            selectedModel.providerID === model.providerID && 
-            selectedModel.modelID === model.modelID;
+    const headerDiv = document.createElement("div");
+    headerDiv.className = "message-header";
+    headerDiv.innerHTML = '<span class="agent-name">Assistant</span>';
+    messageDiv.appendChild(headerDiv);
 
-        const item = document.createElement('div');
-        item.className = `model-item ${isSelected ? 'selected' : ''}`;
-        item.innerHTML = `
-            <span class="model-name">${model.name}</span>
-            <span class="model-provider">${model.providerName} / ${model.modelID}</span>
-        `;
-        item.onclick = () => selectModel(model);
-        dropdown.appendChild(item);
-    });
+    const contentDiv = document.createElement("div");
+    contentDiv.className = "message-content";
+    messageDiv.appendChild(contentDiv);
+
+    messagesContainer?.appendChild(messageDiv);
+    scrollToBottom();
+    return messageDiv;
   }
 
-  /** @param {any} model */
-  function selectModel(model) {
-    selectedModel = { providerID: model.providerID, modelID: model.modelID };
-    updateSelectedModelUI();
-    renderModels(); // Update checkmarks/selection
-    
-    // Hide dropdown
-    document.getElementById('model-dropdown')?.classList.add('hidden');
-
-    // Notify extension
-    vscode.postMessage({
-        type: 'selectModel',
-        model: selectedModel
-    });
-  }
-
-  function updateSelectedModelUI() {
-    const currentModelSpan = document.getElementById('current-model');
-    if (currentModelSpan && selectedModel) {
-        // Find the model name in available models if possible
-        const modelInfo = availableModels.find(m => 
-            m.providerID === selectedModel.providerID && 
-            m.modelID === selectedModel.modelID
-        );
-        const name = modelInfo ? modelInfo.name : selectedModel.modelID;
-        const provider = modelInfo ? modelInfo.providerName : selectedModel.providerID;
-        currentModelSpan.textContent = `${provider} / ${name}`;
+  function updateStreamingMessage(
+    /** @type {HTMLElement} */ messageDiv,
+    /** @type {string} */ text,
+  ) {
+    const contentDiv = messageDiv.querySelector(".message-content");
+    if (contentDiv) {
+      const newText = (messageDiv.dataset.rawText || "") + text;
+      messageDiv.dataset.rawText = newText;
+      renderMarkdown(contentDiv, newText);
+      scrollToBottom();
     }
   }
 
-  // Start
+  function finalizeStreamingMessage(/** @type {HTMLElement} */ messageDiv) {
+    const contentDiv = messageDiv.querySelector(".message-content");
+    if (contentDiv) {
+      const text = messageDiv.dataset.rawText || "";
+      renderMarkdown(contentDiv, text);
+
+      if (isPlan(text)) {
+        const btn = document.createElement("button");
+        btn.className = "plan-button"; // style this
+        btn.textContent = "View Plan";
+        btn.onclick = () =>
+          vscode.postMessage({ type: "viewPlan", content: text });
+        messageDiv.appendChild(btn);
+      }
+    }
+  }
+
+  function renderPlanCard(
+    /** @type {HTMLElement} */ container,
+    /** @type {string} */ content,
+  ) {
+    const card = document.createElement("div");
+    card.className = "plan-card";
+    card.innerHTML = `
+          <div class="plan-card-header">
+              <span class="plan-icon">📋</span>
+              <span class="plan-title">Implementation Plan</span>
+          </div>
+          <button class="view-plan-btn">View Details</button>
+      `;
+    card.querySelector("button")?.addEventListener("click", () => {
+      vscode.postMessage({ type: "viewPlan", content });
+    });
+    container.appendChild(card);
+  }
+
+  function renderMarkdown(
+    /** @type {HTMLElement} */ element,
+    /** @type {string} */ text,
+  ) {
+    // @ts-expect-error - marked defined in vendor.js
+    if (window.marked) {
+      try {
+        // @ts-expect-error - marked defined in vendor.js
+        element.innerHTML = window.marked.parse(text);
+      } catch (e) {
+        element.textContent = text;
+      }
+    } else {
+      element.textContent = text;
+    }
+  }
+
+  function isPlan(text) {
+    return /# Implementation Plan/i.test(text);
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function showError(/** @type {string} */ msg) {
+    const div = document.createElement("div");
+    div.className = "message error";
+    div.innerHTML = `<span>⚠️ ${escapeHtml(msg)}</span>`;
+    messagesContainer?.appendChild(div);
+    scrollToBottom();
+  }
+
+  function scrollToBottom() {
+    if (messagesContainer)
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
+
+  function addThinkingBubble() {
+    removeThinkingBubble(); // Ensure no duplicates
+    const messageDiv = document.createElement("div");
+    messageDiv.id = "thinking-bubble";
+    messageDiv.className = "message assistant thinking";
+    messageDiv.innerHTML = `
+      <div class="message-header">
+        <span class="agent-name">Assistant</span>
+      </div>
+      <div class="message-content">
+        <div class="thinking-dots">
+          <span></span><span></span><span></span>
+        </div>
+      </div>
+    `;
+    messagesContainer?.appendChild(messageDiv);
+    scrollToBottom();
+  }
+
+  function removeThinkingBubble() {
+    const bubble = document.getElementById("thinking-bubble");
+    if (bubble) {
+      bubble.remove();
+    }
+  }
+
+  // Start initialization
   init();
 })();

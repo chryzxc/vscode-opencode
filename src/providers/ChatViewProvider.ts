@@ -7,12 +7,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private streamService: MessageStreamService;
   private unsubscribe?: () => void;
-  private selectedModel: { providerID: string; modelID: string } = { providerID: 'opencode', modelID: 'big-pickle' };
+  private selectedModel: { providerID: string; modelID: string } = {
+    providerID: "opencode",
+    modelID: "big-pickle",
+  };
 
   constructor(
     private context: vscode.ExtensionContext,
     private serverManager: OpencodeServerManager,
-    private sessionService: SessionService
+    private sessionService: SessionService,
   ) {
     this.streamService = new MessageStreamService(serverManager);
   }
@@ -20,7 +23,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
-    _token: vscode.CancellationToken
+    _token: vscode.CancellationToken,
   ): void | Thenable<void> {
     this.view = webviewView;
 
@@ -35,7 +38,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.unsubscribe = this.streamService.subscribe((event) => {
       // Forward events to webview
       this.view?.webview.postMessage({
-        type: 'streamEvent',
+        type: "streamEvent",
         event,
       });
     });
@@ -43,37 +46,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(async (message) => {
       switch (message.type) {
-        case 'ready':
+        case "ready":
+          // Fetch models first to ensure we have correct provider IDs
+          const models = await this.handleGetModels();
+
+          // Try to resolve the current model's provider if it's generic
+          if (models.length > 0) {
+            const resolved = models.find(
+              (m) => m.modelID === this.selectedModel.modelID,
+            );
+            if (
+              resolved &&
+              resolved.providerID !== this.selectedModel.providerID
+            ) {
+              console.log(
+                `Resolved model ${this.selectedModel.modelID} to provider ${resolved.providerID}`,
+              );
+              this.selectedModel.providerID = resolved.providerID;
+            }
+          }
+
           // Send initial state
           this.view?.webview.postMessage({
-            type: 'initState',
+            type: "initState",
             mode: this.sessionService.getMode(),
             serverStatus: this.serverManager.getStatus(),
             selectedModel: this.selectedModel,
           });
           this.refreshView();
-          await this.handleGetModels();
           break;
-        case 'sendMessage':
+        case "sendMessage":
           await this.handleSendMessage(message.text, message.files);
           break;
-        case 'toggleMode':
+        case "toggleMode":
           await this.handleToggleMode();
           break;
-        case 'newSession':
+        case "newSession":
           await this.sessionService.createNewSession();
           this.refreshView();
           break;
-        case 'viewPlan': // Handle view implementation plan request
+        case "viewPlan": // Handle view implementation plan request
           await this.handleViewPlan(message.content);
           break;
-        case 'searchFiles':
+        case "searchFiles":
           await this.handleSearchFiles(message.query);
           break;
-        case 'selectModel':
+        case "selectModel":
           this.selectedModel = message.model;
           break;
-        case 'getModels':
+        case "getModels":
           await this.handleGetModels();
           break;
       }
@@ -82,7 +103,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Subscribe to status changes
     const statusSubscription = this.serverManager.onStatusChange((status) => {
       this.view?.webview.postMessage({
-        type: 'statusUpdate',
+        type: "statusUpdate",
         status: status,
       });
     });
@@ -101,7 +122,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Handles sending a message to OpenCode
    */
-  private async handleSendMessage(text: string, files?: string[]): Promise<void> {
+  private async handleSendMessage(
+    text: string,
+    files?: string[],
+  ): Promise<void> {
     try {
       const client = await this.serverManager.ensureRunning();
       const session = await this.sessionService.getCurrentSession();
@@ -109,9 +133,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       console.log(`Sending message to session ${session.id}:`, text, files);
 
       // Prepare message parts
-      const parts: Array<{ type: 'text' | 'file'; [key: string]: unknown }> = [
+      const parts: Array<{ type: "text" | "file"; [key: string]: unknown }> = [
         {
-          type: 'text',
+          type: "text",
           text: text,
         },
       ];
@@ -122,24 +146,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (workspaceFolder) {
           for (const filePath of files) {
             try {
-              const absoluteUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
+              const absoluteUri = vscode.Uri.joinPath(
+                workspaceFolder.uri,
+                filePath,
+              );
               const content = await vscode.workspace.fs.readFile(absoluteUri);
               const textContent = new TextDecoder().decode(content);
-              
+
               parts.push({
-                type: 'file',
-                mime: 'text/plain',
+                type: "file",
+                mime: "text/plain",
                 filename: filePath.split(/[\\/]/).pop(),
                 url: `file://${filePath}`,
                 source: {
-                  type: 'file',
+                  type: "file",
                   path: filePath,
                   text: {
                     value: textContent,
                     start: 0,
-                    end: textContent.length
-                  }
-                }
+                    end: textContent.length,
+                  },
+                },
               });
             } catch (e) {
               console.error(`Failed to read file ${filePath}:`, e);
@@ -149,6 +176,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       // Send the message using the SDK
+      const startTime = Date.now();
       const response = await client.session.prompt({
         path: { id: session.id },
         body: {
@@ -156,26 +184,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           parts: parts,
         },
       });
+      const duration = (Date.now() - startTime) / 1000;
 
-      console.log('Received response:', response);
+      console.log(`Received response in ${duration}s:`, response);
 
       // Check for errors in the response
       if (response.error) {
         const errorDetails = JSON.stringify(response.error, null, 2);
-        console.error('OpenCode API error:', errorDetails);
-        
-        let errorMessage = Array.isArray(response.error.error) && response.error.error.length > 0
-          ? response.error.error[0].message || 'Unknown error'
-          : 'Failed to send message';
-        
+        console.error("OpenCode API error:", errorDetails);
+
+        let errorMessage =
+          Array.isArray(response.error.error) && response.error.error.length > 0
+            ? response.error.error[0].message || "Unknown error"
+            : "Failed to send message";
+
         // Handle specific model not found error
-        if (errorMessage.includes('ProviderModelNotFoundError') || errorMessage.includes('ModelNotFoundError')) {
-          errorMessage += '\n\nTIP: Try starting a new session (click +) to use the default model.';
+        if (
+          errorMessage.includes("ProviderModelNotFoundError") ||
+          errorMessage.includes("ModelNotFoundError")
+        ) {
+          errorMessage +=
+            "\n\nTIP: Try starting a new session (click +) to use the default model.";
         }
-        
+
         vscode.window.showErrorMessage(`OpenCode error: ${errorMessage}`);
         this.view?.webview.postMessage({
-          type: 'error',
+          type: "error",
+          message: errorMessage,
+        });
+        return;
+      }
+
+      // Check for hidden errors in data (e.g. ModelNotFoundError returned as JSON)
+      if (
+        response.data &&
+        (response.data as any).suggestions &&
+        (response.data as any).modelID &&
+        !(response.data as any).content
+      ) {
+        const errData = response.data as any;
+        let errorMessage = `Model '${errData.modelID}' not found in provider '${errData.providerID}'.`;
+        if (errData.suggestions && errData.suggestions.length > 0) {
+          errorMessage += ` Did you mean: ${errData.suggestions.join(", ")}?`;
+        }
+        errorMessage +=
+          "\n\nTIP: Check your model selection or local OpenCode configuration.";
+
+        vscode.window.showErrorMessage(errorMessage);
+        this.view?.webview.postMessage({
+          type: "error",
           message: errorMessage,
         });
         return;
@@ -184,20 +241,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Send response back to webview
       if (response.data) {
         this.view?.webview.postMessage({
-          type: 'messageResponse',
-          message: response.data,
+          type: "messageResponse",
+          message: {
+            ...response.data,
+            timing: {
+              duration: duration,
+            },
+          },
         });
       } else {
-        console.warn('No response data received from OpenCode');
+        console.warn("No response data received from OpenCode");
       }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       vscode.window.showErrorMessage(`Failed to send message: ${errorMessage}`);
-      console.error('Send message error:', error);
-      
+      console.error("Send message error:", error);
+
       // Show error in webview too
       this.view?.webview.postMessage({
-        type: 'error',
+        type: "error",
         message: errorMessage,
       });
     }
@@ -208,13 +271,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async handleToggleMode(): Promise<void> {
     const newMode = this.sessionService.toggleMode();
-    
+
     this.view?.webview.postMessage({
-      type: 'modeChanged',
+      type: "modeChanged",
       mode: newMode,
     });
 
-    vscode.window.showInformationMessage(`Switched to ${newMode.toUpperCase()} mode`);
+    vscode.window.showInformationMessage(
+      `Switched to ${newMode.toUpperCase()} mode`,
+    );
   }
 
   /**
@@ -222,7 +287,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   async appendToPrompt(text: string): Promise<void> {
     this.view?.webview.postMessage({
-      type: 'appendPrompt',
+      type: "appendPrompt",
       text,
     });
   }
@@ -238,7 +303,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handles viewing the implementation plan
    */
   private async handleViewPlan(content: string): Promise<void> {
-    await vscode.commands.executeCommand('opencode.showPlan', content);
+    await vscode.commands.executeCommand("opencode.showPlan", content);
   }
 
   /**
@@ -247,21 +312,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handleAttachFiles(): Promise<void> {
     const uris = await vscode.window.showOpenDialog({
       canSelectMany: true,
-      openLabel: 'Attach to Chat',
+      openLabel: "Attach to Chat",
       filters: {
-        'All Files': ['*']
-      }
+        "All Files": ["*"],
+      },
     });
 
     if (uris && uris.length > 0) {
       // Convert URIs to relative paths or absolute paths for selection
       // For now, let's just send back the absolute paths as this is what the extension uses
-      const files = uris.map(u => u.fsPath);
-      
+      const files = uris.map((u) => u.fsPath);
+
       // We need a message type to receive these in the webview
       this.view?.webview.postMessage({
-        type: 'filesAttached',
-        files
+        type: "filesAttached",
+        files,
       });
     }
   }
@@ -270,7 +335,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handles opening settings
    */
   private async handleOpenSettings(): Promise<void> {
-    await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:OpenCode.opencode-vscode');
+    await vscode.commands.executeCommand(
+      "workbench.action.openSettings",
+      "@ext:OpenCode.opencode-vscode",
+    );
   }
 
   /**
@@ -278,9 +346,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private refreshView(): void {
     const mode = this.sessionService.getMode();
-    
+
     this.view?.webview.postMessage({
-      type: 'init',
+      type: "init",
       mode,
     });
   }
@@ -290,16 +358,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private getHtmlContent(webview: vscode.Webview): string {
     const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'chat', 'styles.css')
+      vscode.Uri.joinPath(
+        this.context.extensionUri,
+        "webview",
+        "chat",
+        "styles.css",
+      ),
     );
     const highlightCssUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'chat', 'lib', 'highlight.css')
+      vscode.Uri.joinPath(
+        this.context.extensionUri,
+        "webview",
+        "chat",
+        "lib",
+        "highlight.css",
+      ),
     );
     const vendorScriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'chat', 'lib', 'vendor.js')
+      vscode.Uri.joinPath(
+        this.context.extensionUri,
+        "webview",
+        "chat",
+        "lib",
+        "vendor.js",
+      ),
     );
     const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'chat', 'app.js')
+      vscode.Uri.joinPath(
+        this.context.extensionUri,
+        "webview",
+        "chat",
+        "app.js",
+      ),
     );
 
     return `<!DOCTYPE html>
@@ -321,62 +411,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 
   <div class="chat-container">
-    <div class="chat-header">
-      <div class="header-left">
-        <button id="model-selector" class="dropdown-button" title="Switch AI Model">
-          <span id="current-model">OpenCode / big-pickle</span> <span>▼</span>
-        </button>
-        <div id="model-dropdown" class="model-dropdown hidden">
-          <!-- Models will be populated here -->
-        </div>
-      </div>
-      <div class="header-right">
-        <button id="mode-toggle" class="mode-toggle" title="Toggle Plan/Build Mode">
-          <span class="mode-text">BUILD 🛠️</span>
-        </button>
-        <button id="new-session" class="icon-button" title="New Session">
-          <span>+</span>
-        </button>
-      </div>
-    </div>
-
     <div id="messages" class="messages">
-      <div id="empty-state" class="empty-state">
-        <div class="empty-state-logo">
-          <span>✴️</span> OpenCode
+        <!-- Messages will be injected here -->
+        <div id="empty-state" class="empty-state">
+            <div class="empty-icon">✴️</div>
+            <h2>OpenCode</h2>
+            <p>Ready to help you build.</p>
         </div>
-        <div class="empty-state-icon">
-          👾
-        </div>
-        <p class="empty-state-hint">
-          Use OpenCode in the terminal to configure MCP servers.<br>
-          They'll work here, too!
-        </p>
-      </div>
     </div>
 
     <div class="input-wrapper">
-      <div class="input-container">
-        <textarea 
-          id="message-input" 
-          placeholder="ctrl esc to focus or unfocus OpenCode"
-          rows="1"
-        ></textarea>
-        <div class="input-actions">
-          <div class="left-actions">
-            <!-- Placeholders for future features -->
-            <button class="action-icon" title="Attachments">📎</button>
-            <button class="action-icon" title="Settings">⚙️</button>
-          </div>
-          <div class="right-actions">
-            <button id="send-button" class="send-button" title="Send (Shift+Enter)">
-              ➤
-            </button>
-          </div>
+        <div class="files-preview" id="files-preview"></div>
+        <div class="input-container">
+            <textarea 
+                id="message-input" 
+                placeholder="Ask anything (Ctrl+L), @ to mention, / for workflows"
+                rows="1"
+            ></textarea>
+            
+            <div class="input-footer">
+                <div class="input-left">
+                    <button id="add-context-btn" class="icon-btn" title="Add Context">+</button>
+                    <div class="status-pills">
+                        <button id="mode-toggle" class="pill-btn" title="Current Mode">
+                            <span class="pill-icon">🛠️</span>
+                            <span class="mode-text">Planning</span>
+                        </button>
+                        <button id="model-selector" class="pill-btn secondary" title="Current Model">
+                            <span id="current-model-name">GLM 4.7 Coding Plan</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="input-right">
+                    <button id="send-button" class="send-btn" title="Send (Shift+Enter)">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <path d="M8.25 3L14 8.75M14 8.75L8.25 14.5M14 8.75H2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
         </div>
-      </div>
+        <div id="model-dropdown" class="dropdown-menu hidden">
+            <div class="model-search-container">
+                <input type="text" id="model-search-input" placeholder="Search models or providers..." />
+            </div>
+            <div id="model-list-container"></div>
+        </div>
+        <div class="footer-info">
+             <span id="files-changed-count">0 Files With Changes</span>
+             <button id="review-changes-btn" class="link-btn">Review Changes</button>
+        </div>
     </div>
   </div>
+
+  <div id="suggestions" class="suggestions-menu hidden"></div>
 
   <script src="${vendorScriptUri}"></script>
   <script src="${scriptUri}"></script>
@@ -389,64 +477,95 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async handleSearchFiles(query: string) {
     if (!query) {
-      this.view?.webview.postMessage({ type: 'fileSearchResults', results: [] });
+      this.view?.webview.postMessage({
+        type: "fileSearchResults",
+        results: [],
+      });
       return;
     }
 
     try {
       // Simple file search using VS Code API
       // Limit to 20 results for performance
-      const files = await vscode.workspace.findFiles(`**/*${query}*`, '**/node_modules/**', 20);
-      const results = files.map(f => {
+      const files = await vscode.workspace.findFiles(
+        `**/*${query}*`,
+        "**/node_modules/**",
+        20,
+      );
+      const results = files.map((f) => {
         const relativePath = vscode.workspace.asRelativePath(f);
         return {
           path: relativePath,
-          name: relativePath.split(/[\\/]/).pop() || relativePath
+          name: relativePath.split(/[\\/]/).pop() || relativePath,
         };
       });
 
       this.view?.webview.postMessage({
-        type: 'fileSearchResults',
-        results: results
+        type: "fileSearchResults",
+        results: results,
       });
     } catch (error) {
-      this.view?.webview.postMessage({ type: 'fileSearchResults', results: [] });
+      this.view?.webview.postMessage({
+        type: "fileSearchResults",
+        results: [],
+      });
     }
   }
 
   /**
    * Handles fetching available models from OpenCode
    */
-  private async handleGetModels() {
+  private async handleGetModels(): Promise<
+    Array<{
+      providerID: string;
+      modelID: string;
+      name: string;
+      providerName: string;
+    }>
+  > {
     try {
       const client = await this.serverManager.ensureRunning();
-      const response = await client.config.get();
-      
-      if (response.data && response.data.provider) {
-        const models: Array<{ providerID: string; modelID: string; name: string; providerName: string }> = [];
-        
-        const providerData = response.data.provider as Record<string, { name?: string, models?: Record<string, { name?: string }> }>;
-        for (const [providerID, providerConfig] of Object.entries(providerData)) {
-          if (providerConfig.models) {
-            for (const [modelID, modelConfig] of Object.entries(providerConfig.models)) {
+      // Use provider.list() instead of config.get() to see all available models, including free ones
+      const response = await client.provider.list();
+
+      if (response.data && response.data.all) {
+        const models: Array<{
+          providerID: string;
+          modelID: string;
+          name: string;
+          providerName: string;
+        }> = [];
+
+        for (const provider of response.data.all) {
+          if (provider.models) {
+            for (const [modelID, modelConfig] of Object.entries(
+              provider.models,
+            )) {
               models.push({
-                providerID,
-                modelID,
-                name: modelConfig.name || modelID,
-                providerName: providerConfig.name || providerID
+                providerID: provider.id,
+                modelID: modelID,
+                name: (modelConfig as any).name || modelID,
+                providerName: provider.name || provider.id,
               });
             }
           }
         }
-        
+
+        console.log(
+          `Discovered ${models.length} total models across all providers`,
+        );
+
         this.view?.webview.postMessage({
-          type: 'modelsList',
+          type: "modelsList",
           models,
-          selectedModel: this.selectedModel
+          selectedModel: this.selectedModel,
         });
+
+        return models;
       }
     } catch (error) {
-      console.error('Failed to fetch models:', error);
+      console.error("Failed to fetch models:", error);
     }
+    return [];
   }
 }

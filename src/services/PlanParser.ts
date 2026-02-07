@@ -14,14 +14,16 @@ export class PlanParser {
     };
 
     // Extract Goal
-    const goalMatch = markdown.match(/^# (.*)/);
+    // Extract Goal - Support finding the first H1 header anywhere
+    const goalMatch = markdown.match(/^# (.*)/m);
     if (goalMatch) {
       plan.goal = goalMatch[1].trim();
     }
 
     // Extract Files
     // Look for #### [MODIFY/NEW/DELETE] [filename](file:///path)
-    const fileRegex = /#### \[(MODIFY|NEW|DELETE)\] (.*?)\((file:\/\/\/.*?)\)/g;
+    // Relaxed regex to handle potential variations
+    const fileRegex = /#{3,4} \[(MODIFY|NEW|DELETE)\] (.*?)\((file:\/\/\/.*?)\)/g;
     let match;
     while ((match = fileRegex.exec(markdown)) !== null) {
       const path = match[3].replace('file:///', '');

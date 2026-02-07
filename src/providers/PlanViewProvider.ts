@@ -95,6 +95,7 @@ export class PlanViewProvider {
   private _update(content: string) {
     const webview = this._panel.webview;
     const plan = PlanParser.parse(content);
+    console.log("Parsed Plan:", JSON.stringify(plan, null, 2));
     this._panel.title = `Plan: ${plan.goal || 'OpenCode Implementation Plan'}`;
     this._panel.webview.html = this._getHtmlForWebview(webview, plan);
   }
@@ -127,50 +128,64 @@ export class PlanViewProvider {
 <body>
     <div id="app">
         <header>
-            <h1>${plan.goal}</h1>
-            <div class="status-badge">In Review</div>
+            <div class="header-top">
+                <h1>${plan.goal}</h1>
+                <div class="status-badge">In Review</div>
+            </div>
         </header>
 
         <section class="files-section">
             <h2>Proposed Changes</h2>
-            <div id="file-list">
-                ${plan.files.map((file) => `
-                    <div class="file-item ${file.type.toLowerCase()}">
-                        <span class="file-type">${file.type}</span>
+            <div class="card-list">
+                ${plan.files
+                  .map(
+                    (file) => `
+                    <div class="card-item file-item">
+                        <span class="file-tag ${file.type}">${file.type}</span>
                         <span class="file-path">${file.path}</span>
                     </div>
-                `).join('')}
+                `,
+                  )
+                  .join("")}
             </div>
         </section>
 
         <section class="steps-section">
             <h2>Task Checklist</h2>
-            <div id="step-list">
-                ${plan.steps.map((step, index) => `
-                    <div class="step-item ${step.completed ? 'completed' : ''}">
-                        <input type="checkbox" id="step-${index}" ${step.completed ? 'checked' : ''}>
-                        <label for="step-${index}">${step.title}</label>
+            <div class="card-list">
+                ${plan.steps
+                  .map(
+                    (step, index) => `
+                    <div class="card-item step-item ${step.completed ? "completed" : ""}">
+                        <input type="checkbox" id="step-${index}" ${step.completed ? "checked" : ""}>
+                        <label for="step-${index}" class="step-label">${step.title}</label>
                     </div>
-                `).join('')}
+                `,
+                  )
+                  .join("")}
             </div>
         </section>
 
         <section class="verification-section">
             <h2>Verification Plan</h2>
-            <div id="verification-list">
-                ${plan.verification.map((v) => `
-                    <div class="verification-item ${v.type.toLowerCase()}">
+            <div class="card-list">
+                ${plan.verification
+                  .map(
+                    (v) => `
+                    <div class="card-item verification-item">
                         <span class="v-type">${v.type}</span>
                         <span class="v-desc">${v.description}</span>
                     </div>
-                `).join('')}
+                `,
+                  )
+                  .join("")}
             </div>
         </section>
 
-        <footer>
-            <button id="approve-btn" class="primary-btn">Approve Plan</button>
-            <button id="execute-btn" class="secondary-btn">Start Execution</button>
-        </footer>
+        <div class="action-bar">
+            <button id="approve-btn" class="btn-primary">Approve Plan</button>
+            <button id="execute-btn" class="btn-secondary">Start Execution</button>
+        </div>
     </div>
 
     <script nonce="${nonce}">
