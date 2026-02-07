@@ -6,12 +6,12 @@ export type SessionMode = 'plan' | 'build';
 
 export class SessionService {
   private currentSession: Session | null = null;
-  private currentMode: SessionMode = 'build';
+  private currentMode: SessionMode = "build";
   private sessionHistory: Session[] = [];
 
   constructor(
     private context: vscode.ExtensionContext,
-    private serverManager: OpencodeServerManager
+    private serverManager: OpencodeServerManager,
   ) {
     this.loadPersistedState();
   }
@@ -21,7 +21,7 @@ export class SessionService {
    */
   async createNewSession(title?: string): Promise<Session> {
     const client = await this.serverManager.ensureRunning();
-    
+
     // Create the session
     const response = await client.session.create({
       body: {
@@ -30,7 +30,7 @@ export class SessionService {
     });
 
     if (!response.data) {
-      throw new Error('Failed to create session');
+      throw new Error("Failed to create session");
     }
 
     const session = response.data;
@@ -58,7 +58,7 @@ export class SessionService {
   async listSessions(): Promise<Session[]> {
     const client = await this.serverManager.ensureRunning();
     const response = await client.session.list();
-    
+
     if (response.data) {
       this.sessionHistory = response.data;
       this.persistState();
@@ -77,7 +77,7 @@ export class SessionService {
     });
 
     if (!response.data) {
-      throw new Error('Session not found');
+      throw new Error("Session not found");
     }
 
     this.currentSession = response.data;
@@ -104,6 +104,20 @@ export class SessionService {
   }
 
   /**
+   * Gets messages for a session
+   */
+  async getMessages(sessionId: string): Promise<any[]> {
+    const client = await this.serverManager.ensureRunning();
+    const response = await client.session.messages({
+      parameters: {
+        sessionID: sessionId,
+      },
+    });
+
+    return response.data || [];
+  }
+
+  /**
    * Gets the current mode (plan/build)
    */
   getMode(): SessionMode {
@@ -122,7 +136,7 @@ export class SessionService {
    * Toggles between plan and build mode
    */
   toggleMode(): SessionMode {
-    this.currentMode = this.currentMode === 'plan' ? 'build' : 'plan';
+    this.currentMode = this.currentMode === "plan" ? "build" : "plan";
     this.persistState();
     return this.currentMode;
   }
@@ -131,14 +145,18 @@ export class SessionService {
    * Loads persisted state from workspace storage
    */
   private loadPersistedState(): void {
-    const config = vscode.workspace.getConfiguration('opencode');
-    if (!config.get('persistSessions', true)) {
+    const config = vscode.workspace.getConfiguration("opencode");
+    if (!config.get("persistSessions", true)) {
       return;
     }
 
-    const sessionId = this.context.workspaceState.get<string>('currentSessionId');
-    const mode = this.context.workspaceState.get<SessionMode>('currentMode', 'build');
-    
+    const sessionId =
+      this.context.workspaceState.get<string>("currentSessionId");
+    const mode = this.context.workspaceState.get<SessionMode>(
+      "currentMode",
+      "build",
+    );
+
     this.currentMode = mode;
 
     // NOTE: We'll fetch the actual session object when needed
@@ -155,15 +173,18 @@ export class SessionService {
    * Persists state to workspace storage
    */
   private persistState(): void {
-    const config = vscode.workspace.getConfiguration('opencode');
-    if (!config.get('persistSessions', true)) {
+    const config = vscode.workspace.getConfiguration("opencode");
+    if (!config.get("persistSessions", true)) {
       return;
     }
 
     if (this.currentSession) {
-      this.context.workspaceState.update('currentSessionId', this.currentSession.id);
+      this.context.workspaceState.update(
+        "currentSessionId",
+        this.currentSession.id,
+      );
     }
-    
-    this.context.workspaceState.update('currentMode', this.currentMode);
+
+    this.context.workspaceState.update("currentMode", this.currentMode);
   }
 }

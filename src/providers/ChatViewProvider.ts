@@ -46,7 +46,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(async (message) => {
       switch (message.type) {
-        case "ready":
+        case "ready": {
           // Fetch models first to ensure we have correct provider IDs
           const models = await this.handleGetModels();
 
@@ -73,30 +73,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             serverStatus: this.serverManager.getStatus(),
             selectedModel: this.selectedModel,
           });
+
+          // Fetch and send chat history
+          const currentSession = await this.sessionService.getCurrentSession();
+          if (currentSession) {
+            const messages = await this.sessionService.getMessages(
+              currentSession.id,
+            );
+            this.view?.webview.postMessage({
+              type: "chatHistory",
+              messages: messages,
+            });
+          }
+
           this.refreshView();
           break;
-        case "sendMessage":
+        }
+        case "sendMessage": {
           await this.handleSendMessage(message.text, message.files);
           break;
-        case "toggleMode":
+        }
+        case "toggleMode": {
           await this.handleToggleMode();
           break;
-        case "newSession":
+        }
+        case "newSession": {
           await this.sessionService.createNewSession();
           this.refreshView();
           break;
-        case "viewPlan": // Handle view implementation plan request
+        }
+        case "viewPlan": {
+          // Handle view implementation plan request
           await this.handleViewPlan(message.content);
           break;
-        case "searchFiles":
+        }
+        case "searchFiles": {
           await this.handleSearchFiles(message.query);
           break;
-        case "selectModel":
+        }
+        case "selectModel": {
           this.selectedModel = message.model;
           break;
-        case "getModels":
+        }
+        case "getModels": {
           await this.handleGetModels();
           break;
+        }
       }
     });
 

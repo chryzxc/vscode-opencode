@@ -143,6 +143,10 @@
         currentStreamingMessage = null;
         break;
 
+      case "chatHistory":
+        renderChatHistory(message.messages);
+        break;
+
       case "streamEvent":
         handleStreamEvent(message.event);
         break;
@@ -528,6 +532,35 @@
 
   // --- Message Rendering ---
 
+  function renderChatHistory(/** @type {any[]} */ messages) {
+    if (!messagesContainer) return;
+
+    // Clear existing messages
+    messagesContainer.innerHTML = "";
+
+    messages.forEach((message) => {
+      if (message.role === "user") {
+        // Extract text from parts if it's an object, otherwise use as is
+        let text = "";
+        if (message.parts && Array.isArray(message.parts)) {
+          text = message.parts
+            .filter((p) => p.type === "text")
+            .map((p) => p.text)
+            .join("\n");
+        } else if (typeof message === "string") {
+          text = message;
+        } else if (message.text) {
+          text = message.text;
+        }
+        addUserMessage(text);
+      } else if (message.role === "assistant" || message.role === "model") {
+        addAssistantMessage(message);
+      }
+    });
+
+    scrollToBottom();
+  }
+
   function addUserMessage(/** @type {string} */ text) {
     const messageDiv = document.createElement("div");
     messageDiv.className = "message user";
@@ -572,7 +605,8 @@
       let textBuffer = "";
 
       message.parts.forEach((/** @type {any} */ part) => {
-        const text = part.text || part.content || "";
+        const text =
+          part.text || part.content || part.reasoning || part.thought || "";
 
         // Implementation Plan Check (Simple regex)
         if (/# Implementation Plan/i.test(text)) {
@@ -581,15 +615,46 @@
           return;
         }
 
-        if (part.type === "reasoning") {
-          const reasoningDiv = document.createElement("div");
-          reasoningDiv.className = "reasoning-part";
-          reasoningDiv.innerHTML = `<span class="reasoning-label">Thinking Process</span>${escapeHtml(text)}`;
-          messageDiv.appendChild(reasoningDiv);
+        // Logic for "reasoning" parts (Chain of Thought):
+        // Wraps the raw reasoning text in a collapsible accordion to keep the UI clean.
+        if (
+          part.type === "reasoning" ||
+          part.reasoning ||
+          part.thought ||
+          part.thinking
+        ) {
+          const reasoningContainer = document.createElement("div");
+          reasoningContainer.className = "reasoning-container collapsed";
+
+          const toggleDiv = document.createElement("div");
+          toggleDiv.className = "reasoning-toggle";
+          toggleDiv.innerHTML = `
+            <span class="chevron"></span>
+            <span class="reasoning-label">Thought</span>
+          `;
+
+          const reasoningContent = document.createElement("div");
+          reasoningContent.className = "reasoning-content";
+
+          if (text) {
+            renderMarkdown(reasoningContent, text);
+          } else {
+            reasoningContent.textContent = "Processing...";
+          }
+
+          toggleDiv.addEventListener("click", () => {
+            const isCollapsed =
+              reasoningContainer.classList.toggle("collapsed");
+            reasoningContainer.classList.toggle("expanded", !isCollapsed);
+            scrollToBottom();
+          });
+
+          reasoningContainer.appendChild(toggleDiv);
+          reasoningContainer.appendChild(reasoningContent);
+          messageDiv.appendChild(reasoningContainer);
         } else {
           textBuffer += text + "\n\n";
         }
-      });
 
       if (textBuffer.trim()) {
         const contentDiv = document.createElement("div");
@@ -627,10 +692,17 @@
     if (event.type === "message.start") {
       currentStreamingMessage = createStreamingMessage();
     } else if (event.type === "message.delta" && currentStreamingMessage) {
-      updateStreamingMessage(
-        currentStreamingMessage,
-        event.properties?.text || "",
-      );
+      const properties = event.properties || {};
+      const text =
+        properties.text ||
+        properties.content ||
+        properties.reasoning ||
+        properties.thought ||
+        "";
+
+      // If it's reasoning content, we might want to handle it differently during stream,
+      // but for now we append it to rawText to ensure it's at least visible.
+      updateStreamingMessage(currentStreamingMessage, text);
     } else if (event.type === "message.end" && currentStreamingMessage) {
       finalizeStreamingMessage(
         /** @type {HTMLElement} */ (currentStreamingMessage),
@@ -661,14 +733,61 @@
   function updateStreamingMessage(
     /** @type {HTMLElement} */ messageDiv,
     /** @type {string} */ text,
+    /** @type {string} */ type = "text",
   ) {
-    const contentDiv = messageDiv.querySelector(".message-content");
-    if (contentDiv) {
-      const newText = (messageDiv.dataset.rawText || "") + text;
-      messageDiv.dataset.rawText = newText;
-      renderMarkdown(contentDiv, newText);
-      scrollToBottom();
+    if (type === "reasoning") {
+      let reasoningContainer = messageDiv.querySelector(".reasoning-container");
+      if (!reasoningContainer) {
+        // Create the reasoning accordion if it doesn't exist yet
+        reasoningContainer = document.createElement("div");
+        reasoningContainer.className = "reasoning-container collapsed";
+        reasoningContainer.innerHTML = `
+          <div class="reasoning-toggle">
+            <span class="chevron"></span>
+            <span class="reasoning-label">Thought</span>
+          </div>
+          <div class="reasoning-content"></div>
+        `;
+        // Insert before or after main content? Usually reasoning comes first
+        const contentDiv = messageDiv.querySelector(".message-content");
+        if (contentDiv) {
+          messageDiv.insertBefore(reasoningContainer, contentDiv);
+        } else {
+          messageDiv.appendChild(reasoningContainer);
+        }
+
+        // Add toggle logic
+        reasoningContainer
+          .querySelector(".reasoning-toggle")
+          ?.addEventListener("click", () => {
+            const isCollapsed =
+              reasoningContainer.classList.toggle("collapsed");
+            reasoningContainer.classList.toggle("expanded", !isCollapsed);
+            scrollToBottom();
+          });
+      }
+
+      const reasoningContent =
+        reasoningContainer?.querySelector(".reasoning-content");
+      if (reasoningContent) {
+        // We might want to store raw reasoning text in dataset too if it's long,
+        // but for now we append and re-render.
+        const existingText = reasoningContainer?.dataset.rawReasoning || "";
+        const newReasoningText = existingText + text;
+        if (reasoningContainer) {
+          reasoningContainer.dataset.rawReasoning = newReasoningText;
+          renderMarkdown(reasoningContent, newReasoningText);
+        }
+      }
+    } else {
+      const contentDiv = messageDiv.querySelector(".message-content");
+      if (contentDiv) {
+        const newText = (messageDiv.dataset.rawText || "") + text;
+        messageDiv.dataset.rawText = newText;
+        renderMarkdown(contentDiv, newText);
+      }
     }
+    scrollToBottom();
   }
 
   function finalizeStreamingMessage(/** @type {HTMLElement} */ messageDiv) {
@@ -747,6 +866,10 @@
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
   }
 
+  /**
+   * Appends a "Thinking..." indicator to the message stream.
+   * This provides immediate visual feedback while the AI is processing.
+   */
   function addThinkingBubble() {
     removeThinkingBubble(); // Ensure no duplicates
     const messageDiv = document.createElement("div");
@@ -766,6 +889,10 @@
     scrollToBottom();
   }
 
+  /**
+   * Removes the "Thinking..." indicator.
+   * Called when a response begins streaming or an error occurs.
+   */
   function removeThinkingBubble() {
     const bubble = document.getElementById("thinking-bubble");
     if (bubble) {

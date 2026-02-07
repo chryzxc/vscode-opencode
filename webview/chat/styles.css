@@ -333,7 +333,15 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
   max-width: 300px;
   padding: 4px 0;
 }
-.dropdown-menu.hidden, .suggestions-menu.hidden, #model-dropdown.hidden { display: none !important; }
+
+/* 
+ * NOTE: We use #model-dropdown.hidden to solve a specificity conflict.
+ * The ID selector #model-dropdown { display: flex } would otherwise override
+ * the class selector .hidden { display: none }.
+ */
+.dropdown-menu.hidden, .suggestions-menu.hidden, #model-dropdown.hidden { 
+  display: none !important; 
+}
 
 /* Model Dropdown Specific Positioning */
 #model-dropdown {
@@ -463,7 +471,7 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 }
 .view-plan-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
 
-/* Loading State Thinking Bubble */
+/* Loading State Thinking Bubble: Subtle pulsing dots for processing feedback */
 .message.thinking {
   opacity: 0.8;
 }
@@ -500,6 +508,80 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
     transform: scale(1);
     opacity: 1;
   }
+}
+
+/* Reasoning / Thought Process Accordion */
+.reasoning-container {
+  margin: 12px 0;
+  border-radius: var(--radius);
+  background: var(--vscode-textBlockQuote-background);
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.reasoning-toggle {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.reasoning-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.reasoning-toggle .chevron {
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease-in-out;
+}
+
+.reasoning-toggle .chevron::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+.reasoning-container.expanded .chevron {
+  transform: rotate(45deg);
+}
+
+.reasoning-content {
+  padding: 12px;
+  white-space: pre-wrap;
+  color: var(--vscode-descriptionForeground);
+  border-top: 1px solid var(--border-color);
+  display: none;
+  min-height: 1.5em; /* Ensure it has some presence */
+}
+
+.reasoning-container.expanded .reasoning-content {
+  display: block;
+  visibility: visible;
+  opacity: 1;
+}
+
+.reasoning-content > *:first-child { margin-top: 0; }
+.reasoning-content > *:last-child { margin-bottom: 0; }
+.reasoning-content p { margin: 8px 0; }
+
+.reasoning-label {
+  font-size: 12px;
+  opacity: 0.8;
 }
 
 /* Scrollbar */
