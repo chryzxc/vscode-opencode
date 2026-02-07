@@ -17,6 +17,7 @@ export interface VerificationStep {
 
 export interface ImplementationPlan {
   goal: string;
+  description?: string;
   files: PlanFile[];
   steps: PlanStep[];
   verification: VerificationStep[];

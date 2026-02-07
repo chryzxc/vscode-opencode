@@ -8,7 +8,7 @@ export interface StreamEvent {
 export type StreamCallback = (event: StreamEvent) => void;
 
 export class MessageStreamService {
-  private eventSource: EventSource | null = null;
+  private abortController: AbortController | null = null;
   private callbacks: Set<StreamCallback> = new Set();
 
   constructor(private serverManager: OpencodeServerManager) {}
@@ -19,42 +19,99 @@ export class MessageStreamService {
   async startListening(): Promise<void> {
     const port = this.serverManager.getPort();
     if (!port) {
-      throw new Error('Server not running');
+      throw new Error("Server not running");
     }
 
     // Close existing connection if any
     this.stopListening();
 
+    this.abortController = new AbortController();
     const eventUrl = `http://localhost:${port}/event`;
-    this.eventSource = new EventSource(eventUrl);
+    const startTime = Date.now();
 
-    this.eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        this.notifyCallbacks(data);
-      } catch (error) {
-        console.error('Failed to parse event:', error);
+    console.log(
+      `[MessageStreamService] Starting fetch-based SSE listener: ${eventUrl}`,
+    );
+
+    try {
+      const response = await fetch(eventUrl, {
+        signal: this.abortController.signal,
+        headers: {
+          Accept: "text/event-stream",
+        },
+      });
+
+      console.log(
+        `[MessageStreamService] Response received in ${Date.now() - startTime}ms`,
+      );
+
+      if (!response.ok) {
+        throw new Error(`SSE fetch failed with status ${response.status}`);
       }
-    };
 
-    this.eventSource.onerror = (error) => {
-      console.error('EventSource error:', error);
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("Response body is null");
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let firstChunkLogged = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (!firstChunkLogged && value) {
+          console.log(
+            `[MessageStreamService] First chunk received in ${Date.now() - startTime}ms`,
+          );
+          firstChunkLogged = true;
+        }
+
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.substring(6));
+              this.notifyCallbacks(data);
+            } catch (error) {
+              console.error(
+                "[MessageStreamService] Failed to parse event:",
+                error,
+              );
+            }
+          }
+        }
+      }
+    } catch (error: any) {
+      if (error.name === "AbortError") {
+        console.log("[MessageStreamService] Listening aborted");
+        return;
+      }
+
+      console.error("[MessageStreamService] SSE stream error:", error);
       // Auto-reconnect after 5 seconds
       setTimeout(() => {
         if (this.callbacks.size > 0) {
           this.startListening().catch(console.error);
         }
       }, 5000);
-    };
+    }
   }
 
   /**
    * Stops listening to server events
    */
   stopListening(): void {
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
     }
   }
 
@@ -72,7 +129,7 @@ export class MessageStreamService {
     // Return unsubscribe function
     return () => {
       this.callbacks.delete(callback);
-      
+
       // Stop listening if no more subscribers
       if (this.callbacks.size === 0) {
         this.stopListening();
@@ -88,7 +145,7 @@ export class MessageStreamService {
       try {
         callback(event);
       } catch (error) {
-        console.error('Callback error:', error);
+        console.error("Callback error:", error);
       }
     });
   }

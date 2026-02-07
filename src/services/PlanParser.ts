@@ -13,50 +13,70 @@ export class PlanParser {
       rawContent: markdown,
     };
 
-    // Extract Goal
-    // Extract Goal - Support finding the first H1 header anywhere
-    const goalMatch = markdown.match(/^# (.*)/m);
+    // Extract Goal - Better handling for different header styles
+    const goalMatch = markdown.match(/^#+\s+(.*)/m);
     if (goalMatch) {
       plan.goal = goalMatch[1].trim();
+
+      // Extract Description: text after Goal but before first specific technical section
+      const goalEndIndex = markdown.indexOf(goalMatch[0]) + goalMatch[0].length;
+      // Look for any section starting with ## or ###
+      const sectionMatch = markdown
+        .slice(goalEndIndex)
+        .match(
+          /^#{2,4}\s+(Proposed Changes|Verification Plan|Tasks|Checklist|Proposed)/im,
+        );
+
+      if (sectionMatch && sectionMatch.index !== undefined) {
+        const description = markdown
+          .slice(goalEndIndex, goalEndIndex + sectionMatch.index)
+          .trim();
+        if (description) {
+          plan.description = description;
+        }
+      } else {
+        // Fallback: if no clear sections, take everything else as description
+        const remaining = markdown.slice(goalEndIndex).trim();
+        if (remaining) {
+          plan.description = remaining;
+        }
+      }
     }
 
-    // Extract Files
-    // Look for #### [MODIFY/NEW/DELETE] [filename](file:///path)
-    // Relaxed regex to handle potential variations
-    const fileRegex = /#{3,4} \[(MODIFY|NEW|DELETE)\] (.*?)\((file:\/\/\/.*?)\)/g;
+    // Extract Files - More lenient regex
+    // Matches #### [MODIFY] file.path, ### MODIFY: file.path, [MODIFY] file.path, etc.
+    const fileRegex = /(?:#{1,4}\s+)?\[(MODIFY|NEW|DELETE)\]\s+([^\s()]+)(?:\((file:\/\/\/.*?)\))?/gi;
     let match;
     while ((match = fileRegex.exec(markdown)) !== null) {
-      const path = match[3].replace('file:///', '');
-      // On Windows, the path might still have forward slashes, but we want to be consistent
-      // Let's keep it as provided but normalized
-      plan.files.push({
-        type: match[1] as 'MODIFY' | 'NEW' | 'DELETE',
-        path: path,
-      });
+      const type = match[1].toUpperCase() as "MODIFY" | "NEW" | "DELETE";
+      let filePath = match[2].trim();
+      if (match[3]) {
+        filePath = match[3].replace("file:///", "");
+      }
+
+      // Clean up brackets if they were captured
+      filePath = filePath.replace(/[[\]]/g, "");
+
+      plan.files.push({ type, path: filePath });
     }
 
-    // Extract Verification Steps
-    const autoTestsMatch = markdown.match(/### Automated Tests\s*([\s\S]*?)(?=###|$)/);
-    if (autoTestsMatch) {
-      const items = autoTestsMatch[1].trim().split('\n');
+    // Extract Verification Steps - Flexible headers
+    const verificationRegex = /^#+\s+Verification Plan\s*([\s\S]*?)(?=#+|$)/im;
+    const vMatch = markdown.match(verificationRegex);
+    if (vMatch) {
+      const content = vMatch[1];
+      const items = content.split('\n');
       items.forEach(item => {
-        const desc = item.replace(/^-\s*/, '').trim();
-        if (desc) plan.verification.push({ type: 'Automated', description: desc });
+        const desc = item.replace(/^[-*+]\s*/, "").trim();
+        if (desc) {
+          const type = /auto|script|test/i.test(desc) ? "Automated" : "Manual";
+          plan.verification.push({ type, description: desc });
+        }
       });
     }
 
-    const manualTestsMatch = markdown.match(/### Manual Verification\s*([\s\S]*?)(?=###|$)/);
-    if (manualTestsMatch) {
-      const items = manualTestsMatch[1].trim().split('\n');
-      items.forEach(item => {
-        const desc = item.replace(/^-\s*/, '').trim();
-        if (desc) plan.verification.push({ type: 'Manual', description: desc });
-      });
-    }
-
-    // Extract Steps (if any bullet points are found in a "Steps" or "Tasks" section)
-    // For now, we'll try to find any list items that look like task.md steps
-    const stepRegex = /-\s*\[([ x/])\]\s*(.*)/g;
+    // Extract Steps (Checklist)
+    const stepRegex = /^[-*+]\s*\[([ x/])\]\s*(.*)/gm;
     while ((match = stepRegex.exec(markdown)) !== null) {
       plan.steps.push({
         title: match[2].trim(),

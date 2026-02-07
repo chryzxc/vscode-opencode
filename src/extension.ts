@@ -11,7 +11,9 @@ let chatViewProvider: ChatViewProvider;
 let statusBarProvider: StatusBarProvider;
 
 export async function activate(context: vscode.ExtensionContext) {
-  console.log('OpenCode extension activating...');
+  console.log(
+    `OpenCode extension activating... [Version: ${context.extension.packageJSON.version}]`,
+  );
 
   try {
     // Initialize services
@@ -78,6 +80,26 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.commands.registerCommand('opencode.showPlan', async (content: string) => {
         PlanViewProvider.show(context.extensionUri, content);
       })
+    );
+
+    context.subscriptions.push(
+      vscode.commands.registerCommand(
+        "opencode.executePlan",
+        async (planContent: string) => {
+          // Find the active chat view and send a message
+          if (chatViewProvider) {
+            // Send a message to the chat view effectively asking the AI to implement the plan
+            const prompt = `Please implement the following plan:\n\n${planContent}`;
+            await chatViewProvider.appendToPrompt(prompt);
+            await vscode.commands.executeCommand("opencode.chatView.focus");
+
+            // Optionally auto-send? For now, let's just populate the input
+            // await chatViewProvider.handleMessage({ type: 'sendMessage', text: prompt });
+          } else {
+            vscode.window.showErrorMessage("Chat view is not available.");
+          }
+        },
+      ),
     );
 
     // Auto-start server if configured

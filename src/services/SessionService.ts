@@ -8,12 +8,13 @@ export class SessionService {
   private currentSession: Session | null = null;
   private currentMode: SessionMode = "build";
   private sessionHistory: Session[] = [];
+  private initializationPromise: Promise<void> | null = null;
 
   constructor(
     private context: vscode.ExtensionContext,
     private serverManager: OpencodeServerManager,
   ) {
-    this.loadPersistedState();
+    this.initializationPromise = this.loadPersistedState();
   }
 
   /**
@@ -45,6 +46,11 @@ export class SessionService {
    * Gets the current active session, creating one if needed
    */
   async getCurrentSession(): Promise<Session> {
+    // Wait for initialization to complete if it's running
+    if (this.initializationPromise) {
+      await this.initializationPromise;
+    }
+
     if (this.currentSession) {
       return this.currentSession;
     }
@@ -107,14 +113,22 @@ export class SessionService {
    * Gets messages for a session
    */
   async getMessages(sessionId: string): Promise<any[]> {
+    console.log(`[SessionService] Fetching messages for session ${sessionId}`);
     const client = await this.serverManager.ensureRunning();
-    const response = await client.session.messages({
-      parameters: {
-        sessionID: sessionId,
-      },
-    });
-
-    return response.data || [];
+    try {
+      const response = await client.session.messages({
+        parameters: {
+          sessionID: sessionId,
+        },
+      });
+      console.log(
+        `[SessionService] Fetched ${response.data?.length || 0} messages`,
+      );
+      return response.data || [];
+    } catch (error) {
+      console.error(`[SessionService] Error fetching messages:`, error);
+      return [];
+    }
   }
 
   /**
@@ -144,7 +158,7 @@ export class SessionService {
   /**
    * Loads persisted state from workspace storage
    */
-  private loadPersistedState(): void {
+  private async loadPersistedState(): Promise<void> {
     const config = vscode.workspace.getConfiguration("opencode");
     if (!config.get("persistSessions", true)) {
       return;
@@ -162,10 +176,13 @@ export class SessionService {
     // NOTE: We'll fetch the actual session object when needed
     // to avoid stale data
     if (sessionId) {
-      this.switchSession(sessionId).catch(() => {
+      try {
+        await this.switchSession(sessionId);
+      } catch (e) {
         // Session may no longer exist, that's okay
+        console.log("[SessionService] Failed to restore session:", e);
         this.currentSession = null;
-      });
+      }
     }
   }
 

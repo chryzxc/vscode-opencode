@@ -35,12 +35,22 @@ export class PlanViewProvider {
     this._panel.webview.onDidReceiveMessage(
       message => {
         switch (message.type) {
-          case 'alert':
+          case "alert":
             vscode.window.showErrorMessage(message.text);
             return;
-          case 'executeStep':
-            vscode.window.showInformationMessage(`Executing step: ${message.step}`);
+          case "executeStep":
+            vscode.window.showInformationMessage(
+              `Executing step: ${message.step}`,
+            );
             // Logic for execution will go here
+            return;
+          case "executePlan":
+            // Forward execution request to the ChatViewProvider
+            vscode.commands.executeCommand(
+              "opencode.executePlan",
+              message.plan,
+            );
+            this._panel.dispose(); // Close plan view after starting execution
             return;
         }
       },
@@ -134,6 +144,16 @@ export class PlanViewProvider {
             </div>
         </header>
 
+        ${
+          plan.description
+            ? `
+        <section class="description-section">
+            <div class="description-content">${plan.description}</div>
+        </section>
+        `
+            : ""
+        }
+
         <section class="files-section">
             <h2>Proposed Changes</h2>
             <div class="card-list">
@@ -182,9 +202,9 @@ export class PlanViewProvider {
             </div>
         </section>
 
+        <div id="plan-content" style="display:none" data-raw="${encodeURIComponent(plan.rawContent)}"></div>
         <div class="action-bar">
-            <button id="approve-btn" class="btn-primary">Approve Plan</button>
-            <button id="execute-btn" class="btn-secondary">Start Execution</button>
+            <button id="proceed-btn" class="btn-primary">▶ Proceed to Implementation</button>
         </div>
     </div>
 

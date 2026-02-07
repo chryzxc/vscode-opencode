@@ -31,6 +31,16 @@
   // const reviewChangesButton = document.getElementById("review-changes-btn"); // Future use
   const filesPreviewContainer = document.getElementById("files-preview");
 
+  // History Sidebar Elements - Injected dynamically or assumed present
+  const historyToggle = document.getElementById("history-toggle");
+  const historySidebar = document.getElementById("history-sidebar");
+  const closeHistoryBtn = document.getElementById("close-history-btn");
+  const sessionListContainer = document.getElementById("session-list");
+  const newChatSidebarBtn = document.getElementById("new-chat-sidebar-btn");
+
+  let currentSessions = [];
+  let currentSessionId = null;
+
   // Create suggestions container (dynamic)
   const suggestionsContainer = document.createElement("div");
   suggestionsContainer.className = "suggestions-container";
@@ -70,6 +80,34 @@
     messageInput?.addEventListener("keydown", handleKeyDown);
     messageInput?.addEventListener("input", handleInput);
 
+    // Bind History Events
+    historyToggle?.addEventListener("click", () => {
+      if (historySidebar) historySidebar.classList.add("visible");
+      vscode.postMessage({ type: "getSessions" });
+    });
+
+    closeHistoryBtn?.addEventListener("click", () => {
+      if (historySidebar) historySidebar.classList.remove("visible");
+    });
+
+    newChatSidebarBtn?.addEventListener("click", () => {
+      vscode.postMessage({ type: "newSession" });
+      if (historySidebar) historySidebar.classList.remove("visible");
+    });
+
+    // Close sidebar when clicking outside
+    document.addEventListener("click", (e) => {
+      if (
+        historySidebar &&
+        historySidebar.classList.contains("visible") &&
+        !historySidebar.contains(e.target) &&
+        historyToggle &&
+        !historyToggle.contains(e.target)
+      ) {
+        historySidebar.classList.remove("visible");
+      }
+    });
+
     contextButton?.addEventListener("click", () => {
       vscode.postMessage({ type: "attachFiles" });
     });
@@ -89,15 +127,30 @@
       if (
         dropdown &&
         !dropdown.classList.contains("hidden") &&
-        !dropdown.contains(/** @type {Node} */ (e.target)) &&
-        !modelSelector?.contains(/** @type {Node} */ (e.target))
+        !dropdown.contains(/** @type {Node} */(e.target)) &&
+        !modelSelector?.contains(/** @type {Node} */(e.target))
       ) {
         dropdown.classList.add("hidden");
       }
     });
 
-    // Request initial state
+    // Request initial state with retry
+    console.log("[app.js] Sending ready message...");
     vscode.postMessage({ type: "ready" });
+
+    // Retry every 1s until we get a response (mode or status)
+    const readyInterval = setInterval(() => {
+      if (
+        document
+          .getElementById("loading-overlay")
+          ?.classList.contains("visible")
+      ) {
+        console.log("[app.js] Retrying ready message...");
+        vscode.postMessage({ type: "ready" });
+      } else {
+        clearInterval(readyInterval);
+      }
+    }, 1000);
   }
 
   // Handle messages from extension
@@ -144,6 +197,11 @@
         break;
 
       case "chatHistory":
+        console.log(
+          "[app.js] Received chat history:",
+          message.messages.length,
+          "messages",
+        );
         renderChatHistory(message.messages);
         break;
 
@@ -171,22 +229,81 @@
         showFileSuggestions(message.results);
         break;
 
-      case "filesAttached":
-        if (message.files) {
-          message.files.forEach(
-            /** @param {string} file */ (file) => {
-              if (!selectedFiles.includes(file)) {
-                selectedFiles.push(file);
-              }
-            },
-          );
-          updateFileChipsUI();
+      case "sessionsList":
+        renderSessionsList(message.sessions, message.currentSessionId);
+        break;
+
+      case "executePlan":
+        // Auto-fill with a concise message and send automatically
+        if (messageInput) {
+          messageInput.value = "Proceed";
+          sendMessage();
         }
         break;
     }
   });
 
   // --- Logic Functions ---
+
+  function renderSessionsList(sessions, activeId) {
+    if (!sessionListContainer) return;
+
+    sessionListContainer.innerHTML = "";
+    currentSessions = sessions;
+    currentSessionId = activeId;
+
+    if (!sessions || sessions.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.padding = "16px";
+      empty.style.color = "var(--text-secondary)";
+      empty.style.fontSize = "13px";
+      empty.style.textAlign = "center";
+      empty.textContent = "No history";
+      sessionListContainer.appendChild(empty);
+      return;
+    }
+
+    sessions.forEach((session) => {
+      const item = document.createElement("div");
+      item.className = "session-item";
+      if (session.id === activeId) item.classList.add("active");
+
+      const title = document.createElement("div");
+      title.className = "session-title";
+      title.textContent = session.title || "Untitled Session";
+      item.appendChild(title);
+
+      const actions = document.createElement("div");
+      actions.className = "session-actions";
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "delete-session-btn";
+      deleteBtn.innerHTML = "×";
+      deleteBtn.title = "Delete Session";
+      deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (confirm("Delete this session?")) {
+          vscode.postMessage({ type: "deleteSession", sessionId: session.id });
+        }
+      };
+      actions.appendChild(deleteBtn);
+
+      item.appendChild(actions);
+
+      item.onclick = () => {
+        if (session.id !== activeId) {
+          vscode.postMessage({ type: "loadSession", sessionId: session.id });
+          // Optimistic update
+          document
+            .querySelectorAll(".session-item")
+            .forEach((el) => el.classList.remove("active"));
+          item.classList.add("active");
+        }
+      };
+
+      sessionListContainer.appendChild(item);
+    });
+  }
 
   function sendMessage() {
     const text = messageInput?.value.trim();
@@ -534,6 +651,7 @@
 
   function renderChatHistory(/** @type {any[]} */ messages) {
     if (!messagesContainer) return;
+    console.log("[app.js] Rendering chat history:", messages);
 
     // Clear existing messages
     messagesContainer.innerHTML = "";
@@ -580,7 +698,6 @@
     removeThinkingBubble();
 
     // Logic for adding assistant message with markdown, plans, etc.
-    // Reuse existing structure but ensure clean markdown logic
     const messageDiv = document.createElement("div");
     messageDiv.className = "message assistant";
 
@@ -603,26 +720,39 @@
     // Content Parts
     if (message.parts && Array.isArray(message.parts)) {
       let textBuffer = "";
+      let fullText = ""; // Collect ALL text content for plan parsing
+
+      const flushTextBuffer = () => {
+        if (textBuffer.trim()) {
+          const contentDiv = document.createElement("div");
+          contentDiv.className = "message-content";
+          renderMarkdown(contentDiv, textBuffer);
+          messageDiv.appendChild(contentDiv);
+          textBuffer = "";
+        }
+      };
 
       message.parts.forEach((/** @type {any} */ part) => {
         const text =
-          part.text || part.content || part.reasoning || part.thought || "";
+          part.text ||
+          part.content ||
+          part.reasoning ||
+          part.thought ||
+          part.thinking ||
+          "";
 
-        // Implementation Plan Check (Simple regex)
-        if (/# Implementation Plan/i.test(text)) {
-          // Render plan card
-          renderPlanCard(messageDiv, text);
-          return;
-        }
+        // Collect all text/thinking parts for the aggregate plan parsing
+        fullText += text + "\n";
 
-        // Logic for "reasoning" parts (Chain of Thought):
-        // Wraps the raw reasoning text in a collapsible accordion to keep the UI clean.
+        // Reasoning Check
         if (
           part.type === "reasoning" ||
           part.reasoning ||
           part.thought ||
           part.thinking
         ) {
+          flushTextBuffer();
+
           const reasoningContainer = document.createElement("div");
           reasoningContainer.className = "reasoning-container collapsed";
 
@@ -653,14 +783,17 @@
           reasoningContainer.appendChild(reasoningContent);
           messageDiv.appendChild(reasoningContainer);
         } else {
+          // Regular text
           textBuffer += text + "\n\n";
         }
+      });
 
-      if (textBuffer.trim()) {
-        const contentDiv = document.createElement("div");
-        contentDiv.className = "message-content";
-        renderMarkdown(contentDiv, textBuffer);
-        messageDiv.appendChild(contentDiv);
+      // Flush remaining text
+      flushTextBuffer();
+
+      // Check for Implementation Plan in the ENTIRE message content
+      if (isPlan(fullText)) {
+        renderPlanCard(messageDiv, fullText);
       }
     }
 
@@ -692,20 +825,27 @@
     if (event.type === "message.start") {
       currentStreamingMessage = createStreamingMessage();
     } else if (event.type === "message.delta" && currentStreamingMessage) {
+      removeThinkingBubble(); // Ensure indicator is gone when real data arrives
       const properties = event.properties || {};
-      const text =
-        properties.text ||
-        properties.content ||
-        properties.reasoning ||
-        properties.thought ||
-        "";
 
-      // If it's reasoning content, we might want to handle it differently during stream,
-      // but for now we append it to rawText to ensure it's at least visible.
-      updateStreamingMessage(currentStreamingMessage, text);
+      // Determine content type and text
+      let text = "";
+      let type = "text";
+
+      if (properties.reasoning || properties.thought) {
+        text = properties.reasoning || properties.thought;
+        type = "reasoning";
+      } else if (properties.content || properties.text) {
+        text = properties.content || properties.text;
+        type = "text";
+      }
+
+      if (text) {
+        updateStreamingMessage(currentStreamingMessage, text, type);
+      }
     } else if (event.type === "message.end" && currentStreamingMessage) {
       finalizeStreamingMessage(
-        /** @type {HTMLElement} */ (currentStreamingMessage),
+        /** @type {HTMLElement} */(currentStreamingMessage),
       );
       currentStreamingMessage = null;
     }
@@ -730,6 +870,27 @@
     return messageDiv;
   }
 
+  // Throttle state
+  let renderBuffer = {
+    text: "",
+    messageDiv: null,
+    contentDiv: null,
+    type: "text",
+  };
+  let renderTimeout = null;
+
+  function scheduleRender() {
+    if (renderTimeout) return;
+
+    renderTimeout = setTimeout(() => {
+      if (renderBuffer.messageDiv && renderBuffer.contentDiv) {
+        renderMarkdown(renderBuffer.contentDiv, renderBuffer.text);
+        scrollToBottom();
+      }
+      renderTimeout = null;
+    }, 50);
+  }
+
   function updateStreamingMessage(
     /** @type {HTMLElement} */ messageDiv,
     /** @type {string} */ text,
@@ -737,72 +898,76 @@
   ) {
     if (type === "reasoning") {
       let reasoningContainer = messageDiv.querySelector(".reasoning-container");
+      let reasoningContent = messageDiv.querySelector(".reasoning-content");
+
       if (!reasoningContainer) {
         // Create the reasoning accordion if it doesn't exist yet
         reasoningContainer = document.createElement("div");
-        reasoningContainer.className = "reasoning-container collapsed";
+        // Start expanded to show real-time thoughts immediately
+        reasoningContainer.className = "reasoning-container expanded";
         reasoningContainer.innerHTML = `
           <div class="reasoning-toggle">
             <span class="chevron"></span>
             <span class="reasoning-label">Thought</span>
           </div>
-          <div class="reasoning-content"></div>
         `;
-        // Insert before or after main content? Usually reasoning comes first
-        const contentDiv = messageDiv.querySelector(".message-content");
-        if (contentDiv) {
-          messageDiv.insertBefore(reasoningContainer, contentDiv);
-        } else {
-          messageDiv.appendChild(reasoningContainer);
-        }
 
-        // Add toggle logic
-        reasoningContainer
-          .querySelector(".reasoning-toggle")
-          ?.addEventListener("click", () => {
-            const isCollapsed =
-              reasoningContainer.classList.toggle("collapsed");
-            reasoningContainer.classList.toggle("expanded", !isCollapsed);
-            scrollToBottom();
-          });
+        reasoningContent = document.createElement("div");
+        reasoningContent.className = "reasoning-content";
+        reasoningContent.textContent = "";
+
+        reasoningContainer.appendChild(reasoningContent);
+
+        // Insert before the main content div
+        const contentDiv = messageDiv.querySelector(".message-content");
+        messageDiv.insertBefore(reasoningContainer, contentDiv);
+
+        // Bind toggle
+        const toggleBtn = reasoningContainer.querySelector(".reasoning-toggle");
+        toggleBtn?.addEventListener("click", () => {
+          const isCollapsed = reasoningContainer.classList.toggle("collapsed");
+          reasoningContainer.classList.toggle("expanded", !isCollapsed);
+        });
       }
 
-      const reasoningContent =
-        reasoningContainer?.querySelector(".reasoning-content");
       if (reasoningContent) {
-        // We might want to store raw reasoning text in dataset too if it's long,
-        // but for now we append and re-render.
-        const existingText = reasoningContainer?.dataset.rawReasoning || "";
-        const newReasoningText = existingText + text;
-        if (reasoningContainer) {
-          reasoningContainer.dataset.rawReasoning = newReasoningText;
-          renderMarkdown(reasoningContent, newReasoningText);
-        }
+        const currentText = reasoningContent.dataset.fullText || "";
+        const newText = currentText + text;
+        reasoningContent.dataset.fullText = newText;
+        renderMarkdown(reasoningContent, newText);
       }
     } else {
+      // Regular content
       const contentDiv = messageDiv.querySelector(".message-content");
       if (contentDiv) {
-        const newText = (messageDiv.dataset.rawText || "") + text;
+        const currentText = messageDiv.dataset.rawText || "";
+        const newText = currentText + text;
         messageDiv.dataset.rawText = newText;
-        renderMarkdown(contentDiv, newText);
+
+        renderBuffer = {
+          text: newText,
+          messageDiv,
+          contentDiv,
+          type,
+        };
+        scheduleRender();
       }
     }
-    scrollToBottom();
   }
 
   function finalizeStreamingMessage(/** @type {HTMLElement} */ messageDiv) {
+    // Force final render
+    if (renderTimeout) {
+      clearTimeout(renderTimeout);
+      renderTimeout = null;
+    }
     const contentDiv = messageDiv.querySelector(".message-content");
     if (contentDiv) {
       const text = messageDiv.dataset.rawText || "";
       renderMarkdown(contentDiv, text);
 
       if (isPlan(text)) {
-        const btn = document.createElement("button");
-        btn.className = "plan-button"; // style this
-        btn.textContent = "View Plan";
-        btn.onclick = () =>
-          vscode.postMessage({ type: "viewPlan", content: text });
-        messageDiv.appendChild(btn);
+        renderPlanCard(messageDiv, text);
       }
     }
   }
@@ -818,7 +983,7 @@
               <span class="plan-icon">📋</span>
               <span class="plan-title">Implementation Plan</span>
           </div>
-          <button class="view-plan-btn">View Details</button>
+          <button class="view-plan-btn">View Implementation Plan</button>
       `;
     card.querySelector("button")?.addEventListener("click", () => {
       vscode.postMessage({ type: "viewPlan", content });
@@ -844,7 +1009,8 @@
   }
 
   function isPlan(text) {
-    return /# Implementation Plan/i.test(text);
+    // Matches # Implementation Plan, ## Implementation Plan, etc. at start of lines
+    return /^#+\s*Implementation Plan/im.test(text);
   }
 
   function escapeHtml(text) {

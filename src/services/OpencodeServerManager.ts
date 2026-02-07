@@ -1,16 +1,17 @@
-import * as vscode from 'vscode';
-import * as cp from 'child_process';
-import { createOpencodeClient } from '@opencode-ai/sdk';
-import type { Client } from '@opencode-ai/sdk';
+// MARKER: VERSION 2
+import * as vscode from "vscode";
+import * as cp from "child_process";
+import { createOpencodeClient } from "@opencode-ai/sdk";
+import type { Client } from "@opencode-ai/sdk";
 
-export type ServerStatus = 'idle' | 'starting' | 'running' | 'error';
+export type ServerStatus = "idle" | "starting" | "running" | "error";
 
 export class OpencodeServerManager {
   private client: Client | null = null;
   private serverProcess: cp.ChildProcess | null = null;
   private port: number = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
-  private _status: ServerStatus = 'idle';
+  private _status: ServerStatus = "idle";
   private _onStatusChange = new vscode.EventEmitter<ServerStatus>();
   public readonly onStatusChange = this._onStatusChange.event;
 
@@ -25,21 +26,23 @@ export class OpencodeServerManager {
       return this.client;
     }
 
-    this.setStatus('starting');
+    this.setStatus("starting");
 
     // Try to connect to existing server first
-    const config = vscode.workspace.getConfiguration('opencode');
-    const configuredPort = config.get<number>('serverPort', 0);
+    const config = vscode.workspace.getConfiguration("opencode");
+    const configuredPort = config.get<number>("serverPort", 0);
 
     if (configuredPort > 0) {
       try {
         this.client = createOpencodeClient({
           baseUrl: `http://localhost:${configuredPort}`,
         });
-        
+
         this.port = configuredPort;
-        console.log(`Connected to existing OpenCode server on port ${configuredPort}`);
-        this.setStatus('running');
+        console.log(
+          `Connected to existing OpenCode server on port ${configuredPort}`,
+        );
+        this.setStatus("running");
         return this.client;
       } catch (error) {
         console.log(`Failed to connect to port ${configuredPort}:`, error);
@@ -61,52 +64,62 @@ export class OpencodeServerManager {
     return new Promise((resolve, reject) => {
       console.log(`Starting OpenCode server on port ${this.port}...`);
 
-      // Spawn opencode serve
-      this.serverProcess = cp.spawn('opencode', ['serve', '--port', this.port.toString()], {
-        stdio: ['ignore', 'pipe', 'pipe'],
+      // Spawn opencode serve in the workspace root if available
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      const spawnOptions: cp.SpawnOptions = {
+        stdio: ["ignore", "pipe", "pipe"],
         shell: true,
-      });
+      };
+
+      if (workspaceFolder && workspaceFolder.uri.scheme === "file") {
+        spawnOptions.cwd = workspaceFolder.uri.fsPath;
+        console.log(`OpenCode server CWD set to: ${spawnOptions.cwd}`);
+      }
+
+      this.serverProcess = cp.spawn(
+        "opencode",
+        ["serve", "--port", this.port.toString()],
+        spawnOptions,
+      );
 
       let serverReady = false;
 
-      this.serverProcess.stdout?.on('data', (data) => {
+      this.serverProcess.stdout?.on("data", (data) => {
         const output = data.toString();
         console.log(`[OpenCode Server] ${output}`);
 
         // Look for server ready indicator
-        if (output.includes('Server running') || output.includes('listening')) {
+        if (output.includes("Server running") || output.includes("listening")) {
           if (!serverReady) {
             serverReady = true;
-            this.connectToServer()
-              .then(resolve)
-              .catch(reject);
+            this.connectToServer().then(resolve).catch(reject);
           }
         }
       });
 
-      this.serverProcess.stderr?.on('data', (data) => {
+      this.serverProcess.stderr?.on("data", (data) => {
         console.error(`[OpenCode Server Error] ${data.toString()}`);
       });
 
-      this.serverProcess.on('error', (error) => {
-        console.error('Failed to start OpenCode server:', error);
-        this.setStatus('error');
-        
-        if (error.message.includes('ENOENT')) {
+      this.serverProcess.on("error", (error) => {
+        console.error("Failed to start OpenCode server:", error);
+        this.setStatus("error");
+
+        if (error.message.includes("ENOENT")) {
           vscode.window.showErrorMessage(
-            'OpenCode CLI not found. Please install it first: npm install -g opencode-ai'
+            "OpenCode CLI not found. Please install it first: npm install -g opencode-ai",
           );
         }
-        
+
         reject(error);
       });
 
-      this.serverProcess.on('exit', (code) => {
+      this.serverProcess.on("exit", (code) => {
         console.log(`OpenCode server exited with code ${code}`);
         this.serverProcess = null;
         this.client = null;
-        this.setStatus(code === 0 ? 'idle' : 'error');
-        
+        this.setStatus(code === 0 ? "idle" : "error");
+
         // Auto-reconnect after 5 seconds
         if (!this.reconnectTimer) {
           this.reconnectTimer = setTimeout(() => {
@@ -119,8 +132,8 @@ export class OpencodeServerManager {
       // Timeout after 10 seconds
       setTimeout(() => {
         if (!serverReady) {
-          this.setStatus('error');
-          reject(new Error('Server startup timeout'));
+          this.setStatus("error");
+          reject(new Error("Server startup timeout"));
         }
       }, 10000);
     });
@@ -135,7 +148,7 @@ export class OpencodeServerManager {
     });
 
     console.log(`Connected to OpenCode server on port ${this.port}`);
-    this.setStatus('running');
+    this.setStatus("running");
     return this.client;
   }
 
@@ -143,8 +156,8 @@ export class OpencodeServerManager {
    * Finds an available port starting from 4097
    */
   private async findAvailablePort(): Promise<number> {
-    const net = await import('net');
-    
+    const net = await import("net");
+
     return new Promise((resolve) => {
       const server = net.createServer();
       server.listen(0, () => {
@@ -178,13 +191,13 @@ export class OpencodeServerManager {
     }
 
     if (this.serverProcess) {
-      console.log('Stopping OpenCode server...');
+      console.log("Stopping OpenCode server...");
       this.serverProcess.kill();
       this.serverProcess = null;
     }
 
     this.client = null;
-    this.setStatus('idle');
+    this.setStatus("idle");
   }
 
   /**

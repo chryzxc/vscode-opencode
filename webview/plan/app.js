@@ -3,11 +3,28 @@
     // @ts-expect-error - acquireVsCodeApi is provided by VS Code webview environment
     const vscode = acquireVsCodeApi();
 
-    const approveBtn = document.getElementById('approve-btn');
-    const executeBtn = document.getElementById('execute-btn');
     const stepCheckboxes = document.querySelectorAll('.step-item input[type="checkbox"]');
 
     // Handle checkboxes
+    // Handle Proceed
+    const proceedBtn = document.getElementById('proceed-btn');
+    if (proceedBtn) {
+        proceedBtn.addEventListener('click', () => {
+            const planEl = document.getElementById('plan-content');
+            const planContent = planEl ? decodeURIComponent(planEl.getAttribute('data-raw') || '') : '';
+            
+            vscode.postMessage({
+                type: 'executePlan',
+                plan: planContent
+            });
+            
+            // Visual feedback
+            proceedBtn.textContent = '▶ Executing...';
+            proceedBtn.setAttribute('disabled', 'true');
+        });
+    }
+
+    // Handle checkboxes (keep existing logic)
     stepCheckboxes.forEach((checkbox, _index) => {
         checkbox.addEventListener('change', (e) => {
             const target = /** @type {HTMLInputElement} */ (e.target);
@@ -19,27 +36,6 @@
                     stepItem.classList.remove('completed');
                 }
             }
-
-            // Optional: send message to extension about progress
-        });
-    });
-
-    // Handle Approve
-    approveBtn?.addEventListener('click', () => {
-        vscode.postMessage({
-            type: 'alert',
-            text: 'Plan approved! You can now start execution.'
-        });
-        approveBtn.textContent = '✅ Approved';
-        approveBtn.style.opacity = '0.7';
-        approveBtn.setAttribute('disabled', 'true');
-    });
-
-    // Handle Execute
-    executeBtn?.addEventListener('click', () => {
-        vscode.postMessage({
-            type: 'executeStep',
-            step: 'all'
         });
     });
 }());

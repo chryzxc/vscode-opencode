@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from "path";
 import { OpencodeServerManager } from '../services/OpencodeServerManager';
 import { SessionService } from '../services/SessionService';
 import { MessageStreamService } from '../services/MessageStreamService';
@@ -25,23 +26,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void | Thenable<void> {
+    console.log("[ChatViewProvider] resolving webview view");
     this.view = webviewView;
 
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this.context.extensionUri],
     };
-
-    webviewView.webview.html = this.getHtmlContent(webviewView.webview);
-
-    // Subscribe to stream events
-    this.unsubscribe = this.streamService.subscribe((event) => {
-      // Forward events to webview
-      this.view?.webview.postMessage({
-        type: "streamEvent",
-        event,
-      });
-    });
 
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(async (message) => {
@@ -74,7 +65,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             selectedModel: this.selectedModel,
           });
 
-          // Fetch and send chat history
+          // Fetch and send chat history and sessions list
           const currentSession = await this.sessionService.getCurrentSession();
           if (currentSession) {
             const messages = await this.sessionService.getMessages(
@@ -86,6 +77,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
           }
 
+          await this.handleGetSessions();
           this.refreshView();
           break;
         }
@@ -99,11 +91,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "newSession": {
           await this.sessionService.createNewSession();
+          await this.handleGetSessions(); // Update list
           this.refreshView();
+
+          // Clear webview messages
+          this.view?.webview.postMessage({
+            type: "chatHistory",
+            messages: [],
+          });
           break;
         }
         case "viewPlan": {
-          // Handle view implementation plan request
           await this.handleViewPlan(message.content);
           break;
         }
@@ -119,8 +117,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await this.handleGetModels();
           break;
         }
+        case "getSessions": {
+          await this.handleGetSessions();
+          break;
+        }
+        case "loadSession": {
+          await this.handleLoadSession(message.sessionId);
+          break;
+        }
+        case "deleteSession": {
+          await this.handleDeleteSession(message.sessionId);
+          break;
+        }
       }
     });
+
+    // Subscribe to stream events
+    this.unsubscribe = this.streamService.subscribe((event) => {
+      // Forward events to webview
+      this.view?.webview.postMessage({
+        type: "streamEvent",
+        event,
+      });
+    });
+
+    webviewView.webview.html = this.getHtmlContent(webviewView.webview);
 
     // Subscribe to status changes
     const statusSubscription = this.serverManager.onStatusChange((status) => {
@@ -142,6 +163,91 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Handles getting the sessions list
+   */
+  private async handleGetSessions(): Promise<void> {
+    try {
+      const sessions = await this.sessionService.listSessions();
+      const currentSession = await this.sessionService.getCurrentSession();
+
+      this.view?.webview.postMessage({
+        type: "sessionsList",
+        sessions,
+        currentSessionId: currentSession?.id,
+      });
+    } catch (error) {
+      console.error("Failed to get sessions:", error);
+    }
+  }
+
+  /**
+   * Handles switching to a specific session
+   */
+  private async handleLoadSession(sessionId: string): Promise<void> {
+    try {
+      await this.sessionService.switchSession(sessionId);
+
+      // Reload history for the new session
+      const messages = await this.sessionService.getMessages(sessionId);
+      this.view?.webview.postMessage({
+        type: "chatHistory",
+        messages: messages,
+      });
+
+      // Update the list selection
+      await this.handleGetSessions();
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to load session: ${error}`);
+    }
+  }
+
+  /**
+   * Handles deleting a session
+   */
+  private async handleDeleteSession(sessionId: string): Promise<void> {
+    try {
+      await this.sessionService.deleteSession(sessionId);
+      await this.handleGetSessions();
+
+      // If we deleted the current session, create a new one
+      const currentSession = await this.sessionService.getCurrentSession();
+      if (!currentSession) {
+        await this.sessionService.createNewSession();
+        this.view?.webview.postMessage({
+          type: "chatHistory",
+          messages: [],
+        });
+        await this.handleGetSessions();
+      } else if (currentSession.id === sessionId) {
+        // Should have been handled by sessionService logic but safe guard
+        // If active was deleted, refresh history
+        const messages = await this.sessionService.getMessages(
+          currentSession.id,
+        );
+        this.view?.webview.postMessage({
+          type: "chatHistory",
+          messages: messages,
+        });
+      }
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to delete session: ${error}`);
+    }
+  }
+
+  /**
+   * Gets the system instruction based on the current mode
+   */
+  private getModeSystemInstruction(): string {
+    const mode = this.sessionService.getMode();
+
+    if (mode === "plan") {
+      return "[SYSTEM: Current Mode is PLANNING. Discuss architecture, answer questions, and create detailed plans. If you are presenting an implementation plan, you MUST start the plan section with the header '# Implementation Plan' to enable interactive features. Do NOT write full implementation code yet. If the user asks a question, answer it directly.]\n\n";
+    } else {
+      return "[SYSTEM: Current Mode is BUILDING. Focus on implementing the solution. Write code. IMPORTANT: If the user asks a question, ANSWER it first. Do not ignore user questions to blindly follow previous plans.]\n\n";
+    }
+  }
+
+  /**
    * Handles sending a message to OpenCode
    */
   private async handleSendMessage(
@@ -158,7 +264,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const parts: Array<{ type: "text" | "file"; [key: string]: unknown }> = [
         {
           type: "text",
-          text: text,
+          text: this.getModeSystemInstruction() + text,
         },
       ];
 
@@ -168,10 +274,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (workspaceFolder) {
           for (const filePath of files) {
             try {
-              const absoluteUri = vscode.Uri.joinPath(
-                workspaceFolder.uri,
-                filePath,
-              );
+              // Check if path is absolute
+              let absoluteUri: vscode.Uri;
+              if (path.isAbsolute(filePath)) {
+                absoluteUri = vscode.Uri.file(filePath);
+              } else {
+                absoluteUri = vscode.Uri.joinPath(
+                  workspaceFolder.uri,
+                  filePath,
+                );
+              }
+
               const content = await vscode.workspace.fs.readFile(absoluteUri);
               const textContent = new TextDecoder().decode(content);
 
@@ -535,6 +648,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Resolves the default model from the CLI config
+   */
+  private async resolveDefaultModel(
+    models: Array<{ providerID: string; modelID: string; name: string }>,
+  ): Promise<void> {
+    // Only attempt if we are still on the hardcoded default
+    if (
+      this.selectedModel.modelID !== "big-pickle" ||
+      this.selectedModel.providerID !== "opencode"
+    ) {
+      return;
+    }
+
+    try {
+      const cp = await import("child_process");
+      const util = await import("util");
+      const execAsync = util.promisify(cp.exec);
+
+      const { stdout } = await execAsync("opencode config get default_model");
+      const defaultId = stdout.trim();
+
+      if (defaultId) {
+        console.log(`[ChatViewProvider] Found CLI default model: ${defaultId}`);
+        // Find matching model in our list
+        const match = models.find(
+          (m) => m.modelID === defaultId || m.name === defaultId,
+        );
+
+        if (match) {
+          this.selectedModel = {
+            providerID: match.providerID,
+            modelID: match.modelID,
+          };
+          console.log(
+            `[ChatViewProvider] Synced default model to: ${match.modelID} (${match.providerID})`,
+          );
+        }
+      }
+    } catch (error) {
+      console.warn(
+        "[ChatViewProvider] Failed to resolve default model from CLI:",
+        error,
+      );
+    }
+  }
+
+  /**
    * Handles fetching available models from OpenCode
    */
   private async handleGetModels(): Promise<
@@ -547,8 +707,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   > {
     try {
       const client = await this.serverManager.ensureRunning();
-      // Use provider.list() instead of config.get() to see all available models, including free ones
-      const response = await client.provider.list();
+
+      // Add timeout to provider list call
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Provider list timeout")), 5000),
+      );
+
+      // Use provider.list() instead of config.get() to see all available models
+      const response = (await Promise.race([
+        client.provider.list(),
+        timeoutPromise,
+      ])) as any; // Type assertion since race result type is union
 
       if (response.data && response.data.all) {
         const models: Array<{
@@ -577,6 +746,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           `Discovered ${models.length} total models across all providers`,
         );
 
+        // Try to sync default model before sending to UI
+        await this.resolveDefaultModel(models);
+
         this.view?.webview.postMessage({
           type: "modelsList",
           models,
@@ -587,6 +759,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     } catch (error) {
       console.error("Failed to fetch models:", error);
+      // Send empty list to allow UI to proceed
+      this.view?.webview.postMessage({
+        type: "modelsList",
+        models: [],
+        selectedModel: this.selectedModel,
+      });
     }
     return [];
   }
