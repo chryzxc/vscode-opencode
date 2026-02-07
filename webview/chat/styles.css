@@ -1,0 +1,621 @@
+/* Main Layout */
+:root {
+  --bg-primary: #1e1e1e; /* Deep dark background */
+  --bg-secondary: #252526;
+  --bg-input: #2d2d2d;
+  --text-primary: #e0e0e0;
+  --text-secondary: #9e9e9e;
+  --accent-color: #d97757; /* Claude-like orange/brown */
+  --border-color: #3e3e3e;
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  
+  /* VS Code variables fallback */
+  --vscode-font-family: var(--font-family);
+  --vscode-editor-background: var(--bg-primary);
+  --vscode-foreground: var(--text-primary);
+}
+
+body {
+  padding: 0;
+  margin: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--vscode-font-family);
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* Header */
+.chat-header {
+  padding: 12px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid transparent; /* Minimal header */
+  background-color: var(--bg-primary);
+  z-index: 10;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+}
+
+.dropdown-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-family: inherit;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.dropdown-button:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.model-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 20px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  z-index: 1001;
+  min-width: 220px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+.model-dropdown.hidden {
+  display: none;
+}
+
+.model-item {
+  padding: 10px 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background-color 0.2s;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.model-item:last-child {
+  border-bottom: none;
+}
+
+.model-item:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.model-item.selected {
+  background-color: rgba(217, 119, 87, 0.1); /* accent color with alpha */
+}
+
+.model-item.selected .model-name {
+  color: var(--accent-color);
+}
+
+.model-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.model-provider {
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
+.header-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.icon-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s, background-color 0.2s;
+}
+
+.icon-button:hover {
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* Messages Area */
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 20px 0 20px; /* Bottom padding handled by input wrapper */
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  /* Custom scrollbar matching VS Code generally */
+}
+
+/* Empty State */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  text-align: center;
+  padding-bottom: 80px; /* Visual balance */
+  min-height: 300px;
+}
+
+.empty-state-logo {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  opacity: 0.9;
+}
+
+.empty-state-logo span {
+  color: var(--accent-color);
+}
+
+.empty-state-icon {
+  font-size: 48px;
+  margin-bottom: 24px;
+  opacity: 0.8;
+  color: var(--accent-color);
+}
+
+.empty-state-hint {
+  font-size: 14px;
+  max-width: 320px;
+  line-height: 1.6;
+  opacity: 0.7;
+}
+
+/* Input Area */
+.input-wrapper {
+  padding: 20px;
+  background: linear-gradient(transparent, var(--bg-primary) 10%);
+  position: relative;
+  z-index: 20;
+}
+
+.input-container {
+  background-color: var(--bg-input);
+  border-radius: 12px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.input-container:focus-within {
+  border-color: #555;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+textarea {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--vscode-font-family);
+  font-size: 14px;
+  resize: none;
+  outline: none;
+  min-height: 24px;
+  max-height: 200px;
+  padding: 0;
+  line-height: 1.5;
+  width: 100%;
+}
+
+textarea::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.input-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 4px;
+}
+
+.left-actions, .right-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.action-icon {
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 16px; /* slightly larger click target */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+  transition: opacity 0.2s, color 0.2s;
+  background: none;
+  border: none;
+  padding: 4px;
+}
+
+.action-icon:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+
+.send-button {
+  background-color: var(--accent-color);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s, transform 0.1s;
+}
+
+.send-button:hover {
+  background-color: #e08560;
+}
+
+.send-button:active {
+  transform: scale(0.95);
+}
+
+.send-button:disabled {
+  background-color: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Message Styles */
+.message {
+  padding: 0 12px;
+  max-width: 100%;
+  margin-bottom: 24px;
+}
+
+.message.user {
+  /* Minimal user messages aligned right (or stick to left like file explorer?) */
+  /* Claude Code usually keeps linear flow, but user messages are distinct. */
+  /* Let's align right for clear separation as per preview design */
+  align-self: flex-end;
+  background-color: var(--bg-secondary);
+  padding: 10px 16px;
+  border-radius: 12px;
+  border-bottom-right-radius: 2px;
+  max-width: 80%;
+  margin-left: auto;
+}
+
+.message.assistant {
+  /* Assistant uses full width, cleaner look */
+  padding-left: 0;
+}
+
+.message-header {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.8;
+}
+
+.agent-name {
+  font-weight: 600;
+  color: var(--accent-color);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.message-content {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+/* Reasoning Block */
+.reasoning-part {
+  margin: 12px 0;
+  padding: 12px 16px;
+  background-color: rgba(255, 255, 255, 0.03);
+  border-left: 3px solid var(--border-color);
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.reasoning-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  display: block;
+  opacity: 0.6;
+}
+
+.message-footer {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 10px;
+  color: var(--text-secondary);
+  opacity: 0.5;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Loading/Spinner */
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-primary);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+
+.loading-overlay.visible {
+  opacity: 1;
+  pointer-events: all;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--accent-color);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 10px;
+  background-color: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--bg-input);
+  border-radius: 5px;
+  border: 2px solid var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--border-color);
+}
+
+/* Markdown Content Styling */
+.message-content p {
+  margin: 0 0 12px 0;
+}
+.message-content p:last-child {
+  margin-bottom: 0;
+}
+
+.message-content h1, 
+.message-content h2, 
+.message-content h3, 
+.message-content h4, 
+.message-content h5, 
+.message-content h6 {
+  font-weight: 600;
+  margin: 24px 0 12px 0;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+.message-content h1:first-child, 
+.message-content h2:first-child, 
+.message-content h3:first-child {
+  margin-top: 0;
+}
+
+.message-content h1 { font-size: 1.4em; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; }
+.message-content h2 { font-size: 1.25em; }
+.message-content h3 { font-size: 1.1em; }
+.message-content h4 { font-size: 1em; }
+
+.message-content ul, 
+.message-content ol {
+  margin: 0 0 12px 0;
+  padding-left: 24px;
+}
+.message-content li {
+  margin-bottom: 4px;
+}
+.message-content li > ul,
+.message-content li > ol {
+  margin-top: 4px;
+  margin-bottom: 0;
+}
+
+.message-content code {
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 0.9em;
+  background-color: rgba(255, 255, 255, 0.1);
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: #ce9178;
+}
+
+.message-content pre {
+  margin: 12px 0;
+  padding: 0;
+  border-radius: 6px;
+  background-color: #0d1117; /* GitHub Dark code bg */
+  border: 1px solid var(--border-color);
+  overflow-x: auto;
+}
+
+.message-content pre code {
+  display: block;
+  padding: 12px;
+  background-color: transparent;
+  color: inherit;
+  font-size: 0.9em;
+  line-height: 1.5;
+  border-radius: 0;
+  overflow-x: auto; /* Ensure code blocks scroll */
+}
+
+/* Override Prism/Highlight tokens if needed or relying on github-dark theme */
+/* The highlight.css will handle colors inside pre code */
+
+.message-content blockquote {
+  margin: 12px 0;
+  padding: 8px 16px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-left: 3px solid var(--accent-color);
+  color: var(--text-secondary);
+}
+
+.message-content a {
+  color: var(--accent-color);
+  text-decoration: none;
+}
+.message-content a:hover {
+  text-decoration: underline;
+}
+
+.message-content hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 24px 0;
+}
+
+/* File Reference Suggestions */
+.suggestions-container {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: var(--vscode-sideBar-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-bottom: none;
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 1000;
+  display: none;
+  border-radius: 4px 4px 0 0;
+  box-shadow: 0 -4px 10px rgba(0, 0, 0, 0.3);
+}
+
+.suggestion-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.suggestion-item:hover, .suggestion-item.selected {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.suggestion-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--vscode-foreground);
+}
+
+.suggestion-path {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* File Chips in Input */
+.file-chips-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+}
+
+.file-chip {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.file-chip-remove {
+  cursor: pointer;
+  font-weight: bold;
+  opacity: 0.7;
+}
+
+.file-chip-remove:hover {
+  opacity: 1;
+}
+
+/* Responsive adjustment for input wrapper when chips are present */
+.input-container {
+  border-radius: 0 0 4px 4px !important;
+}

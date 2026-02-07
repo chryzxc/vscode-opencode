@@ -1,0 +1,128 @@
+{
+  "name": "opencode-vscode",
+  "displayName": "OpenCode with Planning",
+  "description": "OpenCode integration with Antigravity-style implementation planning",
+  "version": "0.1.0",
+  "publisher": "your-publisher-name",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "opencode-sidebar",
+          "title": "OpenCode",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencode-sidebar": [
+        {
+          "type": "webview",
+          "id": "opencode.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "opencode.focus",
+        "title": "OpenCode: Focus Chat"
+      },
+      {
+        "command": "opencode.newSession",
+        "title": "OpenCode: New Session"
+      },
+      {
+        "command": "opencode.sendSelection",
+        "title": "OpenCode: Send Selection to Chat"
+      },
+      {
+        "command": "opencode.insertFileReference",
+        "title": "OpenCode: Insert File Reference"
+      },
+      {
+        "command": "opencode.toggleMode",
+        "title": "OpenCode: Toggle Plan/Build Mode"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "opencode.focus",
+        "key": "ctrl+escape",
+        "mac": "cmd+escape"
+      },
+      {
+        "command": "opencode.newSession",
+        "key": "ctrl+shift+escape",
+        "mac": "cmd+shift+escape"
+      },
+      {
+        "command": "opencode.insertFileReference",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "opencode.sendSelection",
+          "when": "editorHasSelection",
+          "group": "opencode"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "OpenCode",
+      "properties": {
+        "opencode.serverPort": {
+          "type": "number",
+          "default": 0,
+          "description": "Port for OpenCode server (0 = auto-assign)"
+        },
+        "opencode.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start OpenCode server on activation"
+        },
+        "opencode.persistSessions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Persist chat sessions across VS Code restarts"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node esbuild.config.js",
+    "watch": "node esbuild.config.js --watch",
+    "test": "node ./out/test/runTest.js",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "esbuild": "^0.19.8",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "latest",
+    "highlight.js": "^11.11.1",
+    "marked": "^17.0.1"
+  }
+}
