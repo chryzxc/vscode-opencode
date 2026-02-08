@@ -49,16 +49,31 @@ export async function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        const selection = editor.document.getText(editor.selection);
+        let selection = editor.document.getText(editor.selection);
         if (!selection) {
-          vscode.window.showWarningMessage('No text selected');
+          // If no selection, get the current line
+          const position = editor.selection.active;
+          const line = editor.document.lineAt(position.line);
+          selection = line.text;
+        }
+
+        if (!selection || selection.trim().length === 0) {
+          vscode.window.showWarningMessage("No text to send");
           return;
         }
 
         const fileName = vscode.workspace.asRelativePath(editor.document.uri);
-        const message = `\`\`\`${editor.document.languageId}\n// ${fileName}\n${selection}\n\`\`\``;
+        const startLine = editor.selection.start.line + 1;
+        const endLine = editor.selection.end.line + 1;
+        const lineInfo =
+          startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
         
-        await chatViewProvider.appendToPrompt(message);
+        await chatViewProvider.addContext({
+          file: fileName,
+          lineInfo: lineInfo,
+          content: selection,
+          languageId: editor.document.languageId,
+        });
         await vscode.commands.executeCommand('opencode.chatView.focus');
       })
     );

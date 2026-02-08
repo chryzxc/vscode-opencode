@@ -3,23 +3,105 @@
   /* @ts-expect-error - VS Code API provided by environment */
   const vscode = acquireVsCodeApi();
 
+  // Override console to forward logs to VS Code Debug Console
+  const originalConsole = {
+      log: console.log,
+      warn: console.warn,
+      error: console.error
+  };
+
+  /** @param {string} level @param {any[]} args */
+  function postLog(level, args) {
+      const message = args.map(arg => {
+          if (typeof arg === 'object') {
+              try {
+                  return JSON.stringify(arg);
+              } catch (e) {
+                  return String(arg);
+              }
+          }
+          return String(arg);
+      }).join(' ');
+      
+      vscode.postMessage({ type: "log", level, message });
+  }
+
+  console.log = (...args) => {
+      originalConsole.log(...args);
+      postLog("info", args);
+  };
+
+  console.warn = (...args) => {
+      originalConsole.warn(...args);
+      postLog("warn", args);
+  };
+
+  console.error = (...args) => {
+      originalConsole.error(...args);
+      postLog("error", args);
+  };
+
   // State
   let currentMode = "build";
   /** @type {string[]} */
   let selectedFiles = [];
+  /** @type {any[]} */
+  let selectedContexts = [];
   let isSearchingFiles = false;
   let selectedSuggestionIndex = -1;
+  /** @type {any[]} */
   let suggestionResults = [];
   /** @type {any[]} */
   let availableModels = [];
   /** @type {any} */
   let selectedModel = null;
   let modelSearchQuery = "";
+  /** @type {any[]} */
+  let availableAgents = [];
+  /** @type {string | null} */
+  let selectedAgent = "general";
+  let agentSearchQuery = "";
+  /** @type {string | null} */
+  let currentSessionId = null;
+  /** @type {Set<string>} */
+  const sessionEdits = new Set();
+  let isProcessing = false;
+  let receivedInitState = false;
+
+  // FORBIDDEN TO REMOVE: Do not remove token accumulation or header update logic.
+  let sessionStats = {
+      input: 0,
+      output: 0,
+      read: 0,
+      write: 0,
+      duration: 0
+  };
+
   /** @type {HTMLElement | null} */
-  let currentStreamingMessage = null;
+  let currentStreamingCard = null;
+  /** @type {HTMLElement | null} */
+  let currentStreamingStep = null;
+  /** @type {string[]} */
+  let currentStreamingEdits = [];
+  /** @type {any[]} */
+  let currentStreamingSteps = [];
+  /** @type {string | null} */
+  let currentMessageId = null;
+  /** @type {HTMLElement | null} */
+  let lastStreamingCard = null;
 
   // DOM Elements
   const messagesContainer = document.getElementById("messages");
+  const chatHeader = document.getElementById("chat-header");
+  const sessionTokensSpan = document.getElementById("session-tokens");
+  const tokensInSpan = document.getElementById("tokens-in");
+  const tokensOutSpan = document.getElementById("tokens-out");
+  const tokensReadSpan = document.getElementById("tokens-read");
+  const tokensWriteSpan = document.getElementById("tokens-write");
+  const sessionTimeSpan = document.getElementById("session-time");
+  const headerSessionId = document.getElementById("header-session-id");
+  const filesChangedCount = document.getElementById("files-changed-count");
+  const reviewChangesBtn = document.getElementById("review-changes-btn");
   /** @type {HTMLTextAreaElement | null} */
   const messageInput = /** @type {HTMLTextAreaElement | null} */ (
     document.getElementById("message-input")
@@ -28,6 +110,7 @@
   const contextButton = document.getElementById("add-context-btn");
   const modeToggle = document.getElementById("mode-toggle");
   const modelSelector = document.getElementById("model-selector");
+  const agentSelector = document.getElementById("agent-selector");
   // const reviewChangesButton = document.getElementById("review-changes-btn"); // Future use
   const filesPreviewContainer = document.getElementById("files-preview");
 
@@ -38,8 +121,7 @@
   const sessionListContainer = document.getElementById("session-list");
   const newChatSidebarBtn = document.getElementById("new-chat-sidebar-btn");
 
-  let currentSessions = [];
-  let currentSessionId = null;
+  // let currentSessions = []; // Removed since unused
 
   // Create suggestions container (dynamic)
   const suggestionsContainer = document.createElement("div");
@@ -76,7 +158,13 @@
   // Initialize
   function init() {
     // Event Listeners
-    sendButton?.addEventListener("click", sendMessage);
+    sendButton?.addEventListener("click", () => {
+    if (isProcessing) {
+      stopRequest();
+    } else {
+      sendMessage();
+    }
+  });
     messageInput?.addEventListener("keydown", handleKeyDown);
     messageInput?.addEventListener("input", handleInput);
 
@@ -100,9 +188,9 @@
       if (
         historySidebar &&
         historySidebar.classList.contains("visible") &&
-        !historySidebar.contains(e.target) &&
+        !historySidebar.contains(/** @type {Node} */(e.target)) &&
         historyToggle &&
-        !historyToggle.contains(e.target)
+        !historyToggle.contains(/** @type {Node} */(e.target))
       ) {
         historySidebar.classList.remove("visible");
       }
@@ -120,32 +208,44 @@
       e.stopPropagation();
       toggleModelDropdown();
     });
+    
+    agentSelector?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleAgentDropdown();
+    });
 
     // Close dropdowns on click outside
     document.addEventListener("click", (e) => {
-      const dropdown = document.getElementById("model-dropdown");
+      const modelDropdown = document.getElementById("model-dropdown");
+      const agentDropdown = document.getElementById("agent-dropdown");
+      
       if (
-        dropdown &&
-        !dropdown.classList.contains("hidden") &&
-        !dropdown.contains(/** @type {Node} */(e.target)) &&
+        modelDropdown &&
+        !modelDropdown.classList.contains("hidden") &&
+        !modelDropdown.contains(/** @type {Node} */(e.target)) &&
         !modelSelector?.contains(/** @type {Node} */(e.target))
       ) {
-        dropdown.classList.add("hidden");
+        modelDropdown.classList.add("hidden");
+      }
+      
+      if (
+        agentDropdown &&
+        !agentDropdown.classList.contains("hidden") &&
+        !agentDropdown.contains(/** @type {Node} */(e.target)) &&
+        !agentSelector?.contains(/** @type {Node} */(e.target))
+      ) {
+        agentDropdown.classList.add("hidden");
       }
     });
 
     // Request initial state with retry
-    console.log("[app.js] Sending ready message...");
+    console.log("[OpenCode] [app.js] Sending ready message...");
     vscode.postMessage({ type: "ready" });
 
     // Retry every 1s until we get a response (mode or status)
     const readyInterval = setInterval(() => {
-      if (
-        document
-          .getElementById("loading-overlay")
-          ?.classList.contains("visible")
-      ) {
-        console.log("[app.js] Retrying ready message...");
+      if (!receivedInitState) {
+        console.log("[OpenCode] [app.js] Retrying ready message...");
         vscode.postMessage({ type: "ready" });
       } else {
         clearInterval(readyInterval);
@@ -160,13 +260,24 @@
     switch (message.type) {
       case "initState":
       case "init":
+        receivedInitState = true;
         if (message.mode) {
           currentMode = message.mode;
           updateModeUI();
         }
+        if (message.sessionId) {
+          currentSessionId = message.sessionId;
+          if (headerSessionId) {
+            headerSessionId.textContent = currentSessionId;
+          }
+        }
         if (message.selectedModel) {
           selectedModel = message.selectedModel;
           updateSelectedModelUI();
+        }
+        if (message.selectedAgent) {
+          selectedAgent = message.selectedAgent;
+          updateSelectedAgentUI();
         }
         if (message.serverStatus) {
           updateStatusUI(message.serverStatus);
@@ -187,22 +298,73 @@
         updateModeUI();
         break;
 
+      case "agentsList":
+        availableAgents = message.agents;
+        if (message.selectedAgent) {
+          selectedAgent = message.selectedAgent;
+        }
+        renderAgentsList();
+        updateSelectedAgentUI();
+        break;
+
       case "statusUpdate":
         updateStatusUI(message.status);
         break;
 
       case "messageResponse":
+        // FORBIDDEN TO REMOVE: Do not remove token accumulation or header update logic.
+        if (message.message.info?.tokens) {
+            sessionStats.input += (message.message.info.tokens.input || 0);
+            sessionStats.output += (message.message.info.tokens.output || 0);
+            if (message.message.info.tokens.cache) {
+                sessionStats.read += (message.message.info.tokens.cache.read || 0);
+                sessionStats.write += (message.message.info.tokens.cache.write || 0);
+            }
+        }
+        if (message.message.info?.duration) {
+            sessionStats.duration += message.message.info.duration;
+        }
+        updateHeaderStats();
+
+        if (message.message.edits) {
+            message.message.edits.forEach((/** @type {any} */ e) => sessionEdits.add(e.file));
+            updateFooterEdits();
+        } else if (currentStreamingEdits.length > 0) {
+            // merge them in for rendering.
+            message.message.edits = currentStreamingEdits.map((/** @type {string} */ f) => ({ file: f }));
+        }
+
+        // Merge streaming steps if not present in message
+        if (currentStreamingSteps.length > 0 && (!message.message.steps || message.message.steps.length === 0)) {
+            message.message.steps = currentStreamingSteps;
+        }
+
+        // Remove the streaming card before adding the final one to avoid duplicates
+        if (lastStreamingCard && lastStreamingCard.parentNode) {
+            lastStreamingCard.remove();
+            lastStreamingCard = null;
+        }
+
         addAssistantMessage(message.message);
-        currentStreamingMessage = null;
+        currentStreamingEdits = [];
+        currentStreamingSteps = [];
         break;
 
       case "chatHistory":
         console.log(
-          "[app.js] Received chat history:",
+          "[OpenCode] [app.js] Received chat history:",
           message.messages.length,
           "messages",
         );
+        sessionEdits.clear();
+        message.messages.forEach((/** @type {any} */ m) => {
+            if (m.edits) m.edits.forEach((/** @type {any} */ e) => sessionEdits.add(e.file));
+        });
+        updateFooterEdits();
         renderChatHistory(message.messages);
+        if (message.messages.length === 0) {
+            clearStickyHeader();
+        }
         break;
 
       case "streamEvent":
@@ -212,9 +374,9 @@
       case "error":
         showError(message.message);
         removeThinkingBubble();
-        if (currentStreamingMessage) {
-          currentStreamingMessage.remove();
-          currentStreamingMessage = null;
+        if (currentStreamingCard) {
+          currentStreamingCard.remove();
+          currentStreamingCard = null;
         }
         break;
 
@@ -225,11 +387,22 @@
         }
         break;
 
+      case "addContext":
+        if (message.context) {
+          selectedContexts.push(message.context);
+          updateFileChipsUI();
+        }
+        break;
+
       case "fileSearchResults":
         showFileSuggestions(message.results);
         break;
 
       case "sessionsList":
+        currentSessionId = message.currentSessionId;
+        if (currentSessionId && headerSessionId) {
+            headerSessionId.textContent = currentSessionId;
+        }
         renderSessionsList(message.sessions, message.currentSessionId);
         break;
 
@@ -245,11 +418,11 @@
 
   // --- Logic Functions ---
 
-  function renderSessionsList(sessions, activeId) {
+  function renderSessionsList(/** @type {any[]} */ sessions, /** @type {string} */ activeId) {
     if (!sessionListContainer) return;
 
     sessionListContainer.innerHTML = "";
-    currentSessions = sessions;
+    // currentSessions = sessions; // Removed since unused
     currentSessionId = activeId;
 
     if (!sessions || sessions.length === 0) {
@@ -263,7 +436,7 @@
       return;
     }
 
-    sessions.forEach((session) => {
+    sessions.forEach((/** @type {any} */ session) => {
       const item = document.createElement("div");
       item.className = "session-item";
       if (session.id === activeId) item.classList.add("active");
@@ -310,13 +483,15 @@
     if (!text && selectedFiles.length === 0) return;
 
     // Add user message to UI
-    addUserMessage(text || "(Selected files)");
+    addUserMessage(text || "", selectedFiles, selectedContexts);
 
     // Send to extension
     vscode.postMessage({
       type: "sendMessage",
       text,
       files: selectedFiles,
+      contexts: selectedContexts,
+      agent: selectedAgent,
     });
 
     // Clear and Reset
@@ -325,11 +500,65 @@
       messageInput.style.height = "auto"; // Reset height
     }
     selectedFiles = [];
+    selectedContexts = [];
     updateFileChipsUI();
     hideSuggestions();
 
     // Show Thinking Bubble
     addThinkingBubble();
+    
+    // Set processing state
+    setProcessing(true);
+  }
+
+  function setProcessing(/** @type {boolean} */ processing) {
+    isProcessing = processing;
+    const sendButton = document.getElementById("send-button");
+    if (!sendButton) return;
+
+    if (processing) {
+      sendButton.classList.add("stop-btn");
+      sendButton.title = "Stop Generation";
+      // Change to Stop Icon (Square)
+      sendButton.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor"/>
+        </svg>
+      `;
+    } else {
+      sendButton.classList.remove("stop-btn");
+      sendButton.title = "Send (Shift+Enter)";
+      // Back to Send Icon (Right Arrow)
+      sendButton.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M8.25 3L14 8.75M14 8.75L8.25 14.5M14 8.75H2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      `;
+    }
+  }
+
+  function stopRequest() {
+    if (!isProcessing) return;
+    
+    vscode.postMessage({
+      type: "stopRequest",
+      sessionId: currentSessionId
+    });
+
+    // Optimistically reset UI
+    setProcessing(false);
+    removeThinkingBubble();
+    
+    if (currentStreamingCard) {
+      const markdownBody = currentStreamingCard.querySelector(".markdown-body");
+      if (markdownBody instanceof HTMLElement) {
+        markdownBody.innerHTML += "\n\n*(Generation stopped by user)*";
+      }
+      currentStreamingCard = null;
+    }
+    
+    currentMessageId = null;
+    currentStreamingStep = null;
   }
   /** @param {KeyboardEvent} event */
   function handleKeyDown(event) {
@@ -516,8 +745,127 @@
           m.providerID === selectedModel.providerID &&
           m.modelID === selectedModel.modelID,
       );
-      const name = modelInfo ? modelInfo.name : selectedModel.modelID;
-      currentModelNameSpan.textContent = name;
+      
+      if (modelInfo) {
+        currentModelNameSpan.textContent = `${modelInfo.name} (${modelInfo.providerName || modelInfo.providerID})`;
+      } else if (availableModels.length > 0) {
+        currentModelNameSpan.textContent = selectedModel.modelID;
+      }
+      // If availableModels is empty (still loading), keep the existing text (placeholder)
+    }
+  }
+
+  function toggleAgentDropdown() {
+    const dropdown = document.getElementById("agent-dropdown");
+    if (!dropdown) return;
+
+    dropdown.classList.toggle("hidden");
+    if (!dropdown.classList.contains("hidden")) {
+      const searchInput = /** @type {HTMLInputElement | null} */ (
+        document.getElementById("agent-search-input")
+      );
+      if (searchInput) {
+        searchInput.value = "";
+        agentSearchQuery = "";
+        searchInput.focus();
+      }
+
+      // Show loading state if no agents are loaded yet
+      if (availableAgents.length === 0) {
+        const listContainer = document.getElementById("agent-list-container");
+        if (listContainer) {
+          listContainer.innerHTML =
+            '<div class="model-item loading">Loading agents...</div>';
+        }
+        vscode.postMessage({ type: "getAgents" });
+      } else {
+        renderAgentsList();
+      }
+    }
+  }
+
+  function renderAgentsList() {
+    const dropdown = document.getElementById("agent-dropdown");
+    const listContainer = document.getElementById("agent-list-container");
+    const searchInput = document.getElementById("agent-search-input");
+
+    if (!dropdown || !listContainer) return;
+
+    // Initialize search listener once
+    if (searchInput && !searchInput.dataset.initialized) {
+      searchInput.addEventListener("input", (e) => {
+        // @ts-expect-error - Event target value access
+        agentSearchQuery = e.target.value.toLowerCase();
+        renderAgentsList();
+      });
+      searchInput.dataset.initialized = "true";
+    }
+
+    listContainer.innerHTML = "";
+
+    // Filter agents
+    const filteredAgents = availableAgents.filter(
+      (/** @type {any} */ agent) => {
+        const nameMatch = agent.name.toLowerCase().includes(agentSearchQuery);
+        const descMatch = agent.description.toLowerCase().includes(agentSearchQuery);
+        const idMatch = agent.id.toLowerCase().includes(agentSearchQuery);
+        return nameMatch || descMatch || idMatch;
+      },
+    );
+
+    if (filteredAgents.length === 0) {
+      listContainer.innerHTML =
+        '<div class="model-item loading">No agents found</div>';
+      return;
+    }
+
+    // Render agents
+    filteredAgents.forEach((/** @type {any} */ agent) => {
+      const isSelected = selectedAgent === agent.id;
+
+      const item = document.createElement("div");
+      item.className = `model-item ${isSelected ? "selected" : ""}`;
+      item.innerHTML = `
+          <span class="model-name">${agent.name}</span>
+          <span class="model-provider">${agent.description}</span>
+      `;
+      item.onclick = (e) => {
+        e.stopPropagation();
+        selectAgent(agent.id);
+      };
+      listContainer.appendChild(item);
+    });
+  }
+
+  function selectAgent(/** @type {string} */ agentId) {
+    selectedAgent = agentId;
+    updateSelectedAgentUI();
+    renderAgentsList();
+
+    // Explicitly hide dropdown
+    const dropdown = document.getElementById("agent-dropdown");
+    if (dropdown) {
+      dropdown.classList.add("hidden");
+    }
+
+    vscode.postMessage({
+      type: "selectAgent",
+      agent: selectedAgent,
+    });
+  }
+
+  function updateSelectedAgentUI() {
+    const currentAgentNameSpan = document.getElementById("current-agent-name");
+    if (currentAgentNameSpan && selectedAgent) {
+      // Find friendly name
+      const agentInfo = availableAgents.find((a) => a.id === selectedAgent);
+      
+      if (agentInfo) {
+        currentAgentNameSpan.textContent = agentInfo.name;
+      } else {
+        // If not found (e.g. still loading or default), capitalize the ID
+        currentAgentNameSpan.textContent = selectedAgent.charAt(0).toUpperCase() + selectedAgent.slice(1);
+      }
     }
   }
 
@@ -527,12 +875,13 @@
 
     if (currentMode === "plan") {
       if (modeText) modeText.textContent = "Planning";
-      if (modeIcon) modeIcon.textContent = "📋";
+      if (modeIcon) modeIcon.textContent = "";
     } else {
       if (modeText) modeText.textContent = "Building";
-      if (modeIcon) modeIcon.textContent = "🔨";
+      if (modeIcon) modeIcon.textContent = "";
     }
   }
+
 
   function updateStatusUI(/** @type {string} */ status) {
     const overlay = document.getElementById("loading-overlay");
@@ -563,6 +912,23 @@
 
     filesPreviewContainer.innerHTML = "";
 
+    // Render Context Badges (removable code snippets)
+    selectedContexts.forEach((ctx, index) => {
+      const chip = document.createElement("div");
+      chip.className = "file-chip context-chip";
+      chip.innerHTML = `
+        <span class="chip-icon">📄</span>
+        <span>${ctx.file}:${ctx.lineInfo}</span>
+        <span class="file-chip-remove" title="Remove">&times;</span>
+      `;
+      chip.querySelector(".file-chip-remove")?.addEventListener("click", () => {
+        selectedContexts.splice(index, 1);
+        updateFileChipsUI();
+      });
+      filesPreviewContainer.appendChild(chip);
+    });
+
+    // Render File Chips
     selectedFiles.forEach((path, index) => {
       const chip = document.createElement("div");
       chip.className = "file-chip";
@@ -581,7 +947,7 @@
 
   // --- Suggestions Logic ---
 
-  function showFileSuggestions(results) {
+  function showFileSuggestions(/** @type {any[]} */ results) {
     if (!isSearchingFiles || results.length === 0) {
       hideSuggestions();
       return;
@@ -651,421 +1017,1007 @@
 
   function renderChatHistory(/** @type {any[]} */ messages) {
     if (!messagesContainer) return;
-    console.log("[app.js] Rendering chat history:", messages);
+    console.log("[OpenCode] [app.js] Raw messages from extension:", messages);
 
-    // Clear existing messages
+    // Clear existing messages (except empty state if we want to reuse it, but replacing is safer)
     messagesContainer.innerHTML = "";
 
+    if (!messages || messages.length === 0) {
+      messagesContainer.innerHTML = `
+        <div id="empty-state" class="empty-state">
+            <div class="empty-brand">OpenCode</div>
+            <p>Ready to help you build.</p>
+        </div>`;
+      return;
+    }
+
     messages.forEach((message) => {
-      if (message.role === "user") {
-        // Extract text from parts if it's an object, otherwise use as is
+      // Normalize role (handle casing and synonyms)
+      const role = (message.role || "").toLowerCase();
+      const isUser = role === "user" || role === "human";
+      const isAssistant = role === "assistant" || role === "model" || role === "ai" || role === "bot";
+
+      if (isUser) {
         let text = "";
+        /** @type {string[]} */
+        let files = [];
+        /** @type {any[]} */
+        let contexts = [];
+        
         if (message.parts && Array.isArray(message.parts)) {
-          text = message.parts
-            .filter((p) => p.type === "text")
-            .map((p) => p.text)
-            .join("\n");
-        } else if (typeof message === "string") {
-          text = message;
+          message.parts.forEach((/** @type {any} */ p) => {
+            if (p.type === "text") {
+              text += (p.text || p.content || "") + "\n";
+            } else if (p.type === "file") {
+              files.push(p.url || p.filename || p.source?.path || "File");
+            }
+          });
+          text = text.trim();
         } else if (message.text) {
           text = message.text;
+        } else if (typeof message.content === "string") {
+          text = message.content;
         }
-        addUserMessage(text);
-      } else if (message.role === "assistant" || message.role === "model") {
+
+        // Extract contexts from previous logic (if any) or look for text segments
+        // In our case, contexts are sent as text parts with a specific format
+        // For now, if we have just files/text, it's fine. 
+        // Real history might not have 'contexts' as separate types yet.
+
+        if (text || files.length > 0) {
+          addUserMessage(text, files, contexts);
+        } else {
+          console.warn("[OpenCode] [app.js] Skipped rendering user message with no content:", message);
+        }
+      } else if (isAssistant) {
         addAssistantMessage(message);
+      } else {
+        console.warn("[OpenCode] [app.js] Skipped rendering message with unknown role:", message);
       }
     });
+    
+    // Calculate total stats from scratch when rendering history
+    sessionStats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
+    messages.forEach(msg => {
+        if (msg.info?.tokens) {
+            sessionStats.input += (msg.info.tokens.input || 0);
+            sessionStats.output += (msg.info.tokens.output || 0);
+            if (msg.info.tokens.cache) {
+                sessionStats.read += (msg.info.tokens.cache.read || 0);
+                sessionStats.write += (msg.info.tokens.cache.write || 0);
+            }
+        }
+        if (msg.info?.duration) {
+            sessionStats.duration += msg.info.duration;
+        }
+    });
 
+    updateHeaderStats();
+
+    console.log(`[OpenCode] [app.js] Rendered ${messagesContainer.querySelectorAll('.message').length} messages from history. Total context tokens: ${sessionStats.input + sessionStats.output}`);
     scrollToBottom();
   }
 
-  function addUserMessage(/** @type {string} */ text) {
+  function addUserMessage(/** @type {string} */ text, /** @type {string[]} */ files = [], /** @type {any[]} */ contexts = []) {
+    // Remove empty state if present
+    document.getElementById("empty-state")?.remove();
+
     const messageDiv = document.createElement("div");
     messageDiv.className = "message user";
-    const contentDiv = document.createElement("div");
-    contentDiv.className = "message-content";
+    
+    // Add Attachments if any
+    if ((files && files.length > 0) || (contexts && contexts.length > 0)) {
+        const attachmentsDiv = document.createElement("div");
+        attachmentsDiv.className = "message-attachments";
+        
+        // Contexts
+        contexts.forEach(ctx => {
+            const chip = document.createElement("div");
+            chip.className = "attachment-chip context-chip";
+            chip.innerHTML = `<span class="chip-icon">📄</span> ${ctx.file}:${ctx.lineInfo}`;
+            attachmentsDiv.appendChild(chip);
+        });
+        
+        // Files
+        files.forEach(path => {
+            const chip = document.createElement("div");
+            chip.className = "attachment-chip";
+            const name = path.split(/[\\/]/).pop() || path;
+            attachmentsDiv.appendChild(chip);
+            chip.innerHTML = name;
+        });
+        
+        messageDiv.appendChild(attachmentsDiv);
+    }
 
-    // User messages as plain text for now, or minimal markdown
-    contentDiv.textContent = text;
+    if (text) {
+        const contentDiv = document.createElement("div");
+        contentDiv.className = "message-content";
+        contentDiv.textContent = text;
+        messageDiv.appendChild(contentDiv);
+    }
 
-    messageDiv.appendChild(contentDiv);
     messagesContainer?.appendChild(messageDiv);
     scrollToBottom();
   }
 
-  function addAssistantMessage(message) {
+  function addAssistantMessage(/** @type {any} */ message) {
+    // Remove empty state if present
+    document.getElementById("empty-state")?.remove();
+
     // Remove thinking bubble
     removeThinkingBubble();
 
-    // Logic for adding assistant message with markdown, plans, etc.
-    const messageDiv = document.createElement("div");
-    messageDiv.className = "message assistant";
+    // Use Task Card for assistant messages
+    const usage = message.info?.tokens ? {
+        total: (message.info.tokens.input || 0) + (message.info.tokens.output || 0),
+        duration: message.info.duration || message.timing?.duration
+    } : null;
 
-    // Header
-    const headerDiv = document.createElement("div");
-    headerDiv.className = "message-header";
-    const nameSpan = document.createElement("span");
-    nameSpan.className = "agent-name";
-    nameSpan.textContent = message.info?.agent || "Assistant";
-    headerDiv.appendChild(nameSpan);
-
-    if (message.info?.modelID) {
-      const modelSpan = document.createElement("span");
-      modelSpan.style.opacity = "0.7";
-      modelSpan.textContent = ` (${message.info.modelID})`;
-      headerDiv.appendChild(modelSpan);
+    const card = renderTaskCard(getFormattedAgentLabel(message.info), message.info?.id, usage);
+    
+    // Add Thoughts if present (from steps or parts)
+    let reasoningText = "";
+    if (message.steps) {
+         reasoningText = message.steps
+            .filter((/** @type {any} */ s) => s.type === "reasoning")
+            .map((/** @type {any} */ s) => s.content || s.title)
+            .join("\n\n");
     }
-    messageDiv.appendChild(headerDiv);
+    
+    if (!reasoningText && message.parts) {
+        reasoningText = message.parts
+            .filter((/** @type {any} */ p) => p.type === "reasoning" || p.reasoning || p.thought || p.thinking)
+            .map((/** @type {any} */ p) => p.text || p.content || p.reasoning || p.thought || p.thinking || "")
+            .join("\n\n");
+    }
 
-    // Content Parts
+    if (reasoningText) {
+         const thoughtsContainer = card.querySelector(".thought-section");
+         const thoughtsContent = card.querySelector(".thought-content");
+         if (thoughtsContainer && thoughtsContent) {
+             thoughtsContainer.classList.remove("hidden");
+             thoughtsContent.textContent = reasoningText;
+         }
+    }
+
+    const markdownBody = card.querySelector(".markdown-body");
+    const summarySection = card.querySelector(".task-summary");
+    const list = card.querySelector(".progress-steps-list");
+
+    // Content Parts with Fallbacks
+    let fullText = "";
     if (message.parts && Array.isArray(message.parts)) {
-      let textBuffer = "";
-      let fullText = ""; // Collect ALL text content for plan parsing
-
-      const flushTextBuffer = () => {
-        if (textBuffer.trim()) {
-          const contentDiv = document.createElement("div");
-          contentDiv.className = "message-content";
-          renderMarkdown(contentDiv, textBuffer);
-          messageDiv.appendChild(contentDiv);
-          textBuffer = "";
-        }
-      };
-
       message.parts.forEach((/** @type {any} */ part) => {
-        const text =
-          part.text ||
-          part.content ||
-          part.reasoning ||
-          part.thought ||
-          part.thinking ||
-          "";
-
-        // Collect all text/thinking parts for the aggregate plan parsing
-        fullText += text + "\n";
-
-        // Reasoning Check
-        if (
-          part.type === "reasoning" ||
-          part.reasoning ||
-          part.thought ||
-          part.thinking
-        ) {
-          flushTextBuffer();
-
-          const reasoningContainer = document.createElement("div");
-          reasoningContainer.className = "reasoning-container collapsed";
-
-          const toggleDiv = document.createElement("div");
-          toggleDiv.className = "reasoning-toggle";
-          toggleDiv.innerHTML = `
-            <span class="chevron"></span>
-            <span class="reasoning-label">Thought</span>
-          `;
-
-          const reasoningContent = document.createElement("div");
-          reasoningContent.className = "reasoning-content";
-
-          if (text) {
-            renderMarkdown(reasoningContent, text);
-          } else {
-            reasoningContent.textContent = "Processing...";
-          }
-
-          toggleDiv.addEventListener("click", () => {
-            const isCollapsed =
-              reasoningContainer.classList.toggle("collapsed");
-            reasoningContainer.classList.toggle("expanded", !isCollapsed);
-            scrollToBottom();
-          });
-
-          reasoningContainer.appendChild(toggleDiv);
-          reasoningContainer.appendChild(reasoningContent);
-          messageDiv.appendChild(reasoningContainer);
-        } else {
-          // Regular text
-          textBuffer += text + "\n\n";
+        const text = part.text || part.content || part.reasoning || part.thought || part.thinking || "";
+        
+        if (!(part.type === "reasoning" || part.reasoning || part.thought || part.thinking)) {
+            fullText += text + "\n";
         }
       });
-
-      // Flush remaining text
-      flushTextBuffer();
-
-      // Check for Implementation Plan in the ENTIRE message content
-      if (isPlan(fullText)) {
-        renderPlanCard(messageDiv, fullText);
-      }
+    } else {
+      fullText = message.content || message.text || "";
     }
 
-    // Footer
-    if (message.info?.tokens || message.timing?.duration) {
-      const footerDiv = document.createElement("div");
-      footerDiv.className = "message-footer";
-
-      let footerText = "";
-      if (message.info?.tokens) {
-        const { input, output } = message.info.tokens;
-        footerText += `${input + output} tokens`;
-      }
-
-      if (message.timing?.duration) {
-        if (footerText) footerText += " • ";
-        footerText += `${message.timing.duration.toFixed(1)}s`;
-      }
-
-      footerDiv.textContent = footerText;
-      messageDiv.appendChild(footerDiv);
+    if (fullText && markdownBody instanceof HTMLElement) {
+        renderMarkdown(markdownBody, fullText);
+    } else if (summarySection instanceof HTMLElement) {
+        summarySection.classList.add("hidden");
     }
 
-    messagesContainer?.appendChild(messageDiv);
+    // Render plan card if available
+    if (message.plan) {
+        addPlanButtonToHeader(card, message.plan);
+        renderPlanCard(message.plan, card);
+    }
+
+    // Edits History Section (Top Summary)
+    if (message.edits && Array.isArray(message.edits) && message.edits.length > 0) {
+        const editsSummary = document.createElement("div");
+        editsSummary.className = "task-edits-summary";
+        
+        message.edits.forEach((/** @type {any} */ edit) => {
+            const pill = document.createElement("div");
+            pill.className = "file-pill";
+            pill.innerHTML = `
+                <span>${edit.file.split(/[\\/]/).pop()}</span>
+                <span class="stats">
+                    ${edit.added ? `<span class="added">+${edit.added}</span>` : ""}
+                    ${edit.deleted ? `<span class="deleted">-${edit.deleted}</span>` : ""}
+                </span>
+            `;
+            editsSummary.appendChild(pill);
+            
+            // Also add as a step for detailed diff access
+            const step = addProgressStep(card, `Edited ${edit.file}`);
+            if (step) {
+                const btn = document.createElement("button");
+                btn.className = "step-action";
+                btn.textContent = "Open diff";
+                btn.onclick = () => vscode.postMessage({ type: "openDiff", file: edit.file });
+                step.appendChild(btn);
+            }
+        });
+        
+        // Insert edits summary before progress section
+        const progressSection = card.querySelector(".progress-section");
+        card.insertBefore(editsSummary, progressSection);
+    }
+
+    // Render Progress Steps
+    if (message.steps && Array.isArray(message.steps)) {
+        message.steps.forEach((/** @type {any} */ stepData) => {
+            if (stepData.type === "reasoning") return;
+            const step = addProgressStep(card, stepData.title);
+            if (step) {
+                if (stepData.status) updateProgressStep(step, stepData.meta || "", stepData.status);
+                if (stepData.type === "thought") step.classList.add("thought");
+            }
+        });
+    }
+
+    // Hide Sections if empty
+    if (!reasoningText) card.querySelector(".thought-section")?.classList.add("hidden");
+    
+    const hasProgress = message.steps && message.steps.some((/** @type {any} */ s) => s.type !== "reasoning");
+    if (!hasProgress) card.querySelector(".progress-section")?.classList.add("hidden");
+
+    // Collapse progress by default in history if it's long
+    const progressSectionElement = card.querySelector(".progress-section");
+    if (list && list.children.length > 5) {
+        progressSectionElement?.classList.add("collapsed");
+    }
+
     scrollToBottom();
   }
 
   function handleStreamEvent(/** @type {any} */ event) {
-    if (event.type === "message.start") {
-      currentStreamingMessage = createStreamingMessage();
-    } else if (event.type === "message.delta" && currentStreamingMessage) {
-      removeThinkingBubble(); // Ensure indicator is gone when real data arrives
-      const properties = event.properties || {};
-
-      // Determine content type and text
-      let text = "";
-      let type = "text";
-
-      if (properties.reasoning || properties.thought) {
-        text = properties.reasoning || properties.thought;
-        type = "reasoning";
-      } else if (properties.content || properties.text) {
-        text = properties.content || properties.text;
-        type = "text";
-      }
-
-      if (text) {
-        updateStreamingMessage(currentStreamingMessage, text, type);
-      }
-    } else if (event.type === "message.end" && currentStreamingMessage) {
-      finalizeStreamingMessage(
-        /** @type {HTMLElement} */(currentStreamingMessage),
-      );
-      currentStreamingMessage = null;
-    }
-  }
-
-  function createStreamingMessage() {
-    const messageDiv = document.createElement("div");
-    messageDiv.className = "message assistant";
-    messageDiv.dataset.rawText = "";
-
-    const headerDiv = document.createElement("div");
-    headerDiv.className = "message-header";
-    headerDiv.innerHTML = '<span class="agent-name">Assistant</span>';
-    messageDiv.appendChild(headerDiv);
-
-    const contentDiv = document.createElement("div");
-    contentDiv.className = "message-content";
-    messageDiv.appendChild(contentDiv);
-
-    messagesContainer?.appendChild(messageDiv);
-    scrollToBottom();
-    return messageDiv;
-  }
-
-  // Throttle state
-  let renderBuffer = {
-    text: "",
-    messageDiv: null,
-    contentDiv: null,
-    type: "text",
-  };
-  let renderTimeout = null;
-
-  function scheduleRender() {
-    if (renderTimeout) return;
-
-    renderTimeout = setTimeout(() => {
-      if (renderBuffer.messageDiv && renderBuffer.contentDiv) {
-        renderMarkdown(renderBuffer.contentDiv, renderBuffer.text);
-        scrollToBottom();
-      }
-      renderTimeout = null;
-    }, 50);
-  }
-
-  function updateStreamingMessage(
-    /** @type {HTMLElement} */ messageDiv,
-    /** @type {string} */ text,
-    /** @type {string} */ type = "text",
-  ) {
-    if (type === "reasoning") {
-      let reasoningContainer = messageDiv.querySelector(".reasoning-container");
-      let reasoningContent = messageDiv.querySelector(".reasoning-content");
-
-      if (!reasoningContainer) {
-        // Create the reasoning accordion if it doesn't exist yet
-        reasoningContainer = document.createElement("div");
-        // Start expanded to show real-time thoughts immediately
-        reasoningContainer.className = "reasoning-container expanded";
-        reasoningContainer.innerHTML = `
-          <div class="reasoning-toggle">
-            <span class="chevron"></span>
-            <span class="reasoning-label">Thought</span>
-          </div>
-        `;
-
-        reasoningContent = document.createElement("div");
-        reasoningContent.className = "reasoning-content";
-        reasoningContent.textContent = "";
-
-        reasoningContainer.appendChild(reasoningContent);
-
-        // Insert before the main content div
-        const contentDiv = messageDiv.querySelector(".message-content");
-        messageDiv.insertBefore(reasoningContainer, contentDiv);
-
-        // Bind toggle
-        const toggleBtn = reasoningContainer.querySelector(".reasoning-toggle");
-        toggleBtn?.addEventListener("click", () => {
-          const isCollapsed = reasoningContainer.classList.toggle("collapsed");
-          reasoningContainer.classList.toggle("expanded", !isCollapsed);
-        });
-      }
-
-      if (reasoningContent) {
-        const currentText = reasoningContent.dataset.fullText || "";
-        const newText = currentText + text;
-        reasoningContent.dataset.fullText = newText;
-        renderMarkdown(reasoningContent, newText);
-      }
+    if (event.type !== "message.part.updated") {
+         console.log("[OpenCode] [StreamEvent]", event.type, event);
     } else {
-      // Regular content
-      const contentDiv = messageDiv.querySelector(".message-content");
-      if (contentDiv) {
-        const currentText = messageDiv.dataset.rawText || "";
-        const newText = currentText + text;
-        messageDiv.dataset.rawText = newText;
+         // Reduce noise for part updates, maybe log only important parts?
+         // User asked to log events, so let's log them but maybe compactly
+         console.log("[OpenCode] [StreamEvent]", event.type, JSON.stringify(event.properties || {}));
+    }
 
-        renderBuffer = {
-          text: newText,
-          messageDiv,
-          contentDiv,
-          type,
-        };
-        scheduleRender();
-      }
+    // 1. Handle Message Lifecycle (Start/End)
+    if (event.type === "message.updated") {
+        const info = event.properties?.info;
+        if (info && info.role === "assistant") {
+            // Start of a new message
+                    // COALESCING FIX: Always try to reuse the LAST streaming card if it exists and is not finished.
+                    // This prevents multiple cards for the same turn.
+                    if (lastStreamingCard && document.body.contains(lastStreamingCard)) {
+                            currentStreamingCard = lastStreamingCard;
+                            // Update ID if needed, but keep the card
+                            if (currentMessageId !== info.id) {
+                                currentMessageId = info.id;
+                                currentStreamingCard.dataset.messageId = info.id;
+                            }
+                    } else {
+                        // Only create new if we absolutely don't have one
+                        const existing = document.querySelector(`.task-card[data-message-id="${info.id}"]`);
+                        if (existing) {
+                            currentMessageId = info.id;
+                            currentStreamingCard = /** @type {HTMLElement} */ (existing);
+                            lastStreamingCard = currentStreamingCard;
+                        } else {
+                            currentMessageId = info.id;
+                            currentStreamingCard = renderTaskCard(getFormattedAgentLabel(info), info.id);
+                            lastStreamingCard = currentStreamingCard;
+                            currentStreamingSteps = [];
+                            currentStreamingEdits = [];
+                        }
+                    }
+            
+            // End of a message
+            if (info.finish) {
+                if (currentStreamingCard) {
+                    const pendingSteps = Array.from(currentStreamingCard.querySelectorAll(".step-item")).filter(step => {
+                        // @ts-expect-error - Check custom state object
+                        return step._stateObj && step._stateObj.status === "pending";
+                    });
+
+                    pendingSteps.forEach(step => {
+                        step.remove();
+                    });
+
+                    const progressSection = currentStreamingCard.querySelector(".progress-section");
+                    if (progressSection) {
+                        const remainingSteps = progressSection.querySelectorAll(".step-item");
+                        if (remainingSteps.length === 0) {
+                            progressSection.remove();
+                        }
+                    }
+                }
+
+                if (currentStreamingCard && info.tokens) {
+                    const usage = {
+                        total: (info.tokens.input || 0) + (info.tokens.output || 0),
+                        duration: info.duration
+                    };
+                    updateCardUsage(currentStreamingCard, usage);
+                }
+
+                currentMessageId = null;
+                currentStreamingCard = null;
+                currentStreamingStep = null;
+                setProcessing(false);
+            }
+        }
+        return;
+    }
+
+    // 2. Handle Message Parts (Content, Steps, Tools)
+    if (event.type === "message.part.updated") {
+        const part = event.properties?.part;
+        const delta = event.properties?.delta;
+        
+        if (!part) return;
+
+        // Auto-start card if needed (and fallback to last credentials)
+        if (!currentStreamingCard || !document.body.contains(currentStreamingCard)) {
+             // Try one last time to find by ID
+             if (currentMessageId) {
+                 const existing = document.querySelector(`.task-card[data-message-id="${currentMessageId}"]`);
+                 if (existing) {
+                     currentStreamingCard = /** @type {HTMLElement} */ (existing);
+                     lastStreamingCard = currentStreamingCard;
+                 }
+             }
+             
+             if (!currentStreamingCard) {
+                 // Create new if generic part comes in without message.updated
+                 currentMessageId = part.messageID || `msg_${Date.now()}`;
+                 currentStreamingCard = renderTaskCard(getFormattedAgentLabel(), currentMessageId);
+                 lastStreamingCard = currentStreamingCard;
+                 currentStreamingSteps = [];
+                 currentStreamingEdits = [];
+             }
+        }
+
+        removeThinkingBubble();
+
+        switch (part.type) {
+            case "text":
+                if (delta && currentStreamingCard) {
+                    updateStreamingTask(currentStreamingCard, delta, "text");
+                }
+                break;
+
+            case "reasoning":
+                if (delta) {
+                    if (currentStreamingCard) {
+                        updateStreamingTask(currentStreamingCard, delta, "reasoning");
+                    }
+                }
+                break;
+
+            case "step-start": {
+                if (!currentStreamingCard) break;
+                // Fix: Improved title logic.
+                let title = part.title;
+                
+                // If no title, try to infer from snapshot or type
+                if (!title) {
+                    if (part.snapshot && !part.snapshot.startsWith("http") && part.snapshot.length < 50 && !/^[a-f0-9]{10,}$/i.test(part.snapshot)) {
+                        title = part.snapshot;
+                    } else {
+                        // Generic fallback that sounds better than "Processing..."
+                        title = "Thinking..."; 
+                    }
+                }
+                
+                const stepObj = { title, type: "step", status: "pending", id: part.id, startTime: Date.now() };
+                currentStreamingSteps.push(stepObj);
+                const step = addProgressStep(currentStreamingCard, title);
+                if (step) {
+                    // @ts-expect-error - Attach state
+                    step._stateObj = stepObj;
+                    currentStreamingStep = step;
+                }
+                break;
+            }
+
+            case "step-finish": {
+                if (!currentStreamingCard) break;
+                const step = /** @type {HTMLElement | null} */ (Array.from(currentStreamingCard.querySelectorAll(".step-item")).find(el => {
+                    // @ts-expect-error - Match step by ID
+                    return el._stateObj && el._stateObj.id === part.id;
+                })) || currentStreamingStep;
+                
+                if (step) {
+                    const usage = part.usage || null;
+                    const timing = part.timing || null;
+                    const details = { ...timing, tokens: usage }; // Pass usage as tokens to match updateProgressStep
+                    updateProgressStep(step, "Done", "done", details);
+                    // @ts-expect-error - Update status
+                    if (step._stateObj) step._stateObj.status = "done";
+                }
+                currentStreamingStep = null;
+                break;
+            }
+
+            case "tool": {
+                if (!currentStreamingCard) break;
+                const tool = part.tool || "Tool";
+                const state = part.state || {};
+                const input = state.input || {};
+                const file = input.file || input.path || input.filename || input.TargetFile; // Check uppercase too
+                // Find existing tool step or create new
+        let toolStep = /** @type {HTMLElement | null} */ (Array.from(currentStreamingCard.querySelectorAll(".step-item")).find(el => {
+            // @ts-expect-error - Match tool step by callID in custom state
+            return el._stateObj && el._stateObj.callID === part.callID;
+        }));
+
+                if (!toolStep) {
+                    let title = `Running ${tool}...`;
+                    
+                    if (tool.includes("write") || tool.includes("replace") || tool.includes("edit")) {
+                        title = `Editing ${file || 'file'}...`;
+                    } else if (tool.includes("command")) {
+                        title = `Running command: ${input.CommandLine || '...'}`;
+                    }
+
+                    const stepObj = { title, type: "tool", status: "pending", callID: part.callID };
+                    currentStreamingSteps.push(stepObj);
+            toolStep = addProgressStep(currentStreamingCard, title);
+            if (toolStep) {
+                // @ts-expect-error - Attach custom state object to tool step
+                toolStep._stateObj = stepObj;
+            }
+        }
+
+
+                if (toolStep) {
+                    if (state.status === "completed") {
+                        const result = state.title || "Completed";
+                        // Extract tool stats if available in state
+                        const details = { 
+                            duration: state.duration, 
+                            tokens: state.tokens 
+                        };
+                        updateProgressStep(toolStep, result, "done", details);
+                // @ts-expect-error - Update status on custom tool state object
+                if (toolStep._stateObj) {
+                    // @ts-expect-error - Set status to done
+                    toolStep._stateObj.status = "done";
+                    // @ts-expect-error - Set meta text from result
+                    toolStep._stateObj.meta = result;
+                }
+                    } else if (state.status === "error") {
+                        updateProgressStep(toolStep, state.error || "Failed", "error");
+                  // @ts-expect-error - Update error status on custom state object
+                if (toolStep._stateObj) {
+                    // @ts-expect-error - Set status to error
+                    toolStep._stateObj.status = "error";
+                    // @ts-expect-error - Set error message as meta
+                    toolStep._stateObj.meta = state.error;
+                }
+                    }
+                }
+                break;
+            }
+
+            case "patch":
+                if (part.files && Array.isArray(part.files)) {
+                    part.files.forEach((/** @type {string} */ f) => {
+                        if (!currentStreamingEdits.includes(f)) {
+                            currentStreamingEdits.push(f);
+                            sessionEdits.add(f);
+                            updateFooterEdits();
+                        }
+                    });
+                }
+                break;
+        }
+        return;
+    }
+
+    // 3. Handle Permission Requests
+    if (event.type === "permission.updated") {
+        const perm = event.properties;
+        if (perm) {
+            renderPermissionCard(perm);
+        }
+        return;
+    }
+
+    // 4. Handle Session Errors
+    if (event.type === "session.error") {
+        const error = event.properties?.error;
+        if (error) {
+            const errorMsg = error.data?.message || "An unknown error occurred.";
+            renderErrorBanner(errorMsg);
+        }
+        setProcessing(false);
+        removeThinkingBubble();
+        return;
+    }
+
+    // 5. Handle Session Status
+    if (event.type === "session.status") {
+        // e.g., Update a status indicator if we had one
+        const status = event.properties?.status;
+        console.log("[OpenCode] [SessionStatus]", status);
+        return;
     }
   }
 
-  function finalizeStreamingMessage(/** @type {HTMLElement} */ messageDiv) {
-    // Force final render
-    if (renderTimeout) {
-      clearTimeout(renderTimeout);
-      renderTimeout = null;
-    }
-    const contentDiv = messageDiv.querySelector(".message-content");
-    if (contentDiv) {
-      const text = messageDiv.dataset.rawText || "";
-      renderMarkdown(contentDiv, text);
+  function renderPermissionCard(/** @type {any} */ perm) {
+      const card = document.createElement("div");
+      card.className = "task-card permission-card";
+      card.innerHTML = `
+        <div class="task-header">
+            <span class="task-title">Permission Request</span>
+        </div>
+        <div class="task-summary">
+            <div class="markdown-body">
+                <p>${perm.title || "The assistant is requesting permission."}</p>
+                ${perm.metadata ? `<pre>${JSON.stringify(perm.metadata, null, 2)}</pre>` : ""}
+            </div>
+        </div>
+      `;
+      messagesContainer?.appendChild(card);
+      scrollToBottom();
+  }
 
-      if (isPlan(text)) {
-        renderPlanCard(messageDiv, text);
+  function renderErrorBanner(/** @type {string} */ message) {
+      const banner = document.createElement("div");
+      banner.className = "error-banner";
+      banner.textContent = `Error: ${message}`;
+      banner.style.padding = "10px";
+      banner.style.margin = "10px 0";
+      banner.style.backgroundColor = "var(--input-danger-bg, #5a1e1e)";
+      banner.style.color = "var(--input-danger-text, #ffcccc)";
+      banner.style.borderRadius = "4px";
+      banner.style.border = "1px solid var(--input-danger-border, #ff0000)";
+      
+      messagesContainer?.appendChild(banner);
+      scrollToBottom();
+  }
+
+  function updateFooterEdits() {
+      if (!filesChangedCount) return;
+      const count = sessionEdits.size;
+      filesChangedCount.textContent = `${count} File${count === 1 ? '' : 's'} With Changes`;
+      if (reviewChangesBtn) {
+          reviewChangesBtn.style.display = count > 0 ? "inline-block" : "none";
       }
+  }
+
+  function updateHeaderStats() {
+      if (!chatHeader) return;
+      
+      const total = sessionStats.input + sessionStats.output;
+      if (total > 0) {
+          chatHeader.classList.remove("hidden");
+      }
+
+      if (sessionTokensSpan) sessionTokensSpan.textContent = total.toLocaleString();
+      if (tokensInSpan) tokensInSpan.textContent = `${sessionStats.input}i`;
+      if (tokensOutSpan) tokensOutSpan.textContent = `${sessionStats.output}o`;
+      if (tokensReadSpan) tokensReadSpan.textContent = `${sessionStats.read}r`;
+      if (tokensWriteSpan) tokensWriteSpan.textContent = `${sessionStats.write}w`;
+      if (sessionTimeSpan) sessionTimeSpan.textContent = `${(sessionStats.duration / 1000).toFixed(1)}s`;
+  }
+
+  function updateStreamingTask(/** @type {HTMLElement} */ card, /** @type {string} */ text, /** @type {string} */ type = "text") {
+      if (type === "reasoning") {
+          const thoughtsContainer = card?.querySelector(".thought-section");
+          const thoughtsContent = card?.querySelector(".thought-content");
+          if (thoughtsContainer && thoughtsContent instanceof HTMLElement) {
+              thoughtsContainer.classList.remove("hidden");
+              // Append text to the content
+              const prevText = thoughtsContent.dataset.rawText || "";
+              const nextText = prevText + text;
+              thoughtsContent.dataset.rawText = nextText;
+              thoughtsContent.textContent = nextText;
+              
+              // Ensure it's expanded during streaming
+              // thoughtsContainer.classList.remove("collapsed");
+          }
+      } else {
+          const summaryDiv = /** @type {HTMLElement | null} */ (card?.querySelector(".task-summary .markdown-body"));
+          if (summaryDiv) {
+              const prevText = card.dataset.rawText || "";
+              const nextText = prevText + text;
+              card.dataset.rawText = nextText;
+              renderMarkdown(summaryDiv, nextText);
+              scrollToBottom();
+          }
+      }
+
+  }
+  
+  /**
+   * Formats the assistant label with agent, model, and provider names.
+   * @param {any} [info] Optional message info object.
+   * @returns {string} Formatted label.
+   */
+  function getFormattedAgentLabel(info) {
+    const agentId = info?.agent || selectedAgent || "assistant";
+    const agentInfo = availableAgents.find(a => a.id === agentId);
+    let agentName = agentInfo ? agentInfo.name : (agentId.charAt(0).toUpperCase() + agentId.slice(1));
+    
+    // Use agent name as is
+    // No mapping needed as per user request to show actual agent name
+
+
+    // Try to get model and provider from info or current state
+    const mId = info?.model?.modelID || info?.modelID || selectedModel?.modelID;
+    const pId = info?.model?.providerID || info?.providerID || selectedModel?.providerID;
+    
+    if (mId && pId) {
+        const modelInfo = availableModels.find(m => m.modelID === mId && m.providerID === pId);
+        const modelName = modelInfo ? modelInfo.name : mId;
+        let providerName = modelInfo ? (modelInfo.providerName || modelInfo.providerID) : pId;
+        
+        // Clean up provider name if it's "opencode" but we have a better name
+        if (providerName === "opencode" && modelInfo?.providerName) {
+            providerName = modelInfo.providerName;
+        }
+
+        return `${agentName} (${modelName} (${providerName}))`;
+    } else if (mId) {
+        return `${agentName} (${mId})`;
+    }
+    
+    return agentName;
+  }
+
+  /**
+   * Updates the usage stats displayed in a task card header.
+   * @param {HTMLElement} card The task card element.
+   * @param {any} usage Usage data { total, duration }.
+   */
+  function updateCardUsage(card, usage) {
+    const usageContainer = card.querySelector(".task-usage");
+    if (!usageContainer || !usage) return;
+
+    usageContainer.innerHTML = "";
+    if (usage.total > 0) {
+        const tokensSpan = document.createElement("span");
+        tokensSpan.className = "usage-stat";
+        tokensSpan.textContent = `${usage.total.toLocaleString()} tokens`;
+        usageContainer.appendChild(tokensSpan);
+    }
+
+    if (usage.duration) {
+        const timeSpan = document.createElement("span");
+        timeSpan.className = "usage-stat";
+        timeSpan.textContent = `${(usage.duration / 1000).toFixed(1)}s`;
+        usageContainer.appendChild(timeSpan);
     }
   }
 
-  function renderPlanCard(
-    /** @type {HTMLElement} */ container,
-    /** @type {string} */ content,
-  ) {
+  function renderTaskCard(/** @type {string} */ title, /** @type {string | null} */ messageId = null, /** @type {any} [usage] */ usage = null) {
+    const card = document.createElement("div");
+    card.className = "task-card";
+    if (messageId) {
+        card.dataset.messageId = messageId;
+    }
+    
+    const header = document.createElement("div");
+    header.className = "task-header";
+    
+    const displayTitle = title;
+    
+    const titleContainer = document.createElement("div");
+    titleContainer.className = "task-title";
+    titleContainer.innerHTML = `<span>${displayTitle}</span>`;
+    header.appendChild(titleContainer);
+
+    // Usage Container (Right side)
+    const usageContainer = document.createElement("div");
+    usageContainer.className = "task-usage";
+    header.appendChild(usageContainer);
+
+    if (usage) {
+        updateCardUsage(card, usage);
+    }
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "copy-msg-btn";
+    copyBtn.title = "Copy message";
+    copyBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+    `;
+    copyBtn.onclick = (e) => {
+        e.stopPropagation();
+        const content = card.querySelector(".task-summary .markdown-body")?.textContent || "";
+        copyToClipboard(content, copyBtn);
+    };
+    header.appendChild(copyBtn);
+    
+    card.appendChild(header);
+
+    // Thoughts Section (Hidden by default)
+    const thoughts = document.createElement("div");
+    thoughts.className = "thought-section hidden";
+    thoughts.innerHTML = `
+        <div class="thought-header">
+            <span>Thinking Process</span>
+            <span class="collapse-icon">▾</span>
+        </div>
+        <div class="thought-content"></div>
+    `;
+    thoughts.querySelector(".thought-header")?.addEventListener("click", () => {
+        thoughts.classList.toggle("collapsed");
+    });
+    card.appendChild(thoughts);
+
+    const summary = document.createElement("div");
+    summary.className = "task-summary";
+    const markdownContainer = document.createElement("div");
+    markdownContainer.className = "markdown-body";
+    summary.appendChild(markdownContainer);
+    card.appendChild(summary);
+
+    const progress = document.createElement("div");
+    progress.className = "progress-section collapsed"; // Collapsed by default
+    progress.innerHTML = `
+        <div class="progress-header">
+            <span>Progress Updates</span>
+            <span class="collapse-icon">▾</span>
+        </div>
+        <div class="progress-steps-list"></div>
+    `;
+    
+    progress.querySelector(".progress-header")?.addEventListener("click", () => {
+        progress.classList.toggle("collapsed");
+        scrollToBottom();
+    });
+
+    card.appendChild(progress);
+    messagesContainer?.appendChild(card);
+    scrollToBottom();
+    return card;
+  }
+
+  function addProgressStep(/** @type {HTMLElement} */ card, /** @type {string} */ title) {
+    const list = card.querySelector(".progress-steps-list");
+    if (!list) return null;
+
+    const item = document.createElement("div");
+    item.className = "step-item";
+    item.innerHTML = `
+        <div class="step-icon"></div>
+        <div class="step-content">
+            <div class="step-title">${title}</div>
+            <div class="step-meta"></div>
+            <div class="step-details"></div>
+        </div>
+    `;
+    list.appendChild(item);
+
+    
+    // Auto-expand progress section when a new step is added
+    const section = card.querySelector(".progress-section");
+    if (section) section.classList.remove("collapsed");
+    
+    // Store localized start time for duration calculation
+    // @ts-expect-error - Custom state
+    item._stateObj = { startTime: Date.now() };
+
+    scrollToBottom();
+    return item;
+  }
+
+  function updateProgressStep(/** @type {HTMLElement} */ step, /** @type {string} */ meta, /** @type {string} */ status = "done", /** @type {any} */ details = null) {
+      const metaDiv = step.querySelector(".step-meta");
+      if (metaDiv) {
+          metaDiv.textContent = meta;
+      }
+      if (status === "done") {
+          step.querySelector(".step-icon")?.classList.add("done");
+          
+          // Calculate duration if not provided
+          // @ts-expect-error - Custom state object check
+          if (!details?.duration && step._stateObj?.startTime) {
+              // @ts-expect-error - Custom state object access
+              const duration = Date.now() - step._stateObj.startTime;
+              if (!details) details = {};
+              details.duration = duration;
+          }
+      } else if (status === "error") {
+          step.querySelector(".step-icon")?.classList.add("error");
+      }
+
+      // Render details (timing, tokens)
+      if (details) {
+          const detailsDiv = step.querySelector(".step-details");
+          if (detailsDiv) {
+              const parts = [];
+              if (details.duration) {
+                  parts.push(`${(details.duration / 1000).toFixed(1)}s`);
+              }
+              if (details.tokens) {
+                  const t = details.tokens;
+                  const parts_tokens = [];
+                  if (t.input) parts_tokens.push(`In: ${t.input}`);
+                  if (t.output) parts_tokens.push(`Out: ${t.output}`);
+                  if (t.cache) {
+                      if (t.cache.read) parts_tokens.push(`Read: ${t.cache.read}`);
+                      if (t.cache.write) parts_tokens.push(`Write: ${t.cache.write}`);
+                  }
+                  if (parts_tokens.length > 0) {
+                      parts.push(parts_tokens.join(", "));
+                  } else {
+                      // Fallback
+                       const total = (t.input || 0) + (t.output || 0);
+                       if (total > 0) parts.push(`${total.toLocaleString()} tokens`);
+                  }
+              }
+              if (details.usage) { // Handle snake_case or specific usage object from SDK
+                  const total = (details.usage.input_tokens || 0) + (details.usage.output_tokens || 0);
+                   parts.push(`${total.toLocaleString()} tokens`);
+              }
+              detailsDiv.textContent = parts.join(" • ");
+          }
+
+          // Accumulate stats into session totals
+          if (details.tokens) {
+              sessionStats.input += (details.tokens.input || 0);
+              sessionStats.output += (details.tokens.output || 0);
+              if (details.tokens.cache) {
+                  sessionStats.read += (details.tokens.cache.read || 0);
+                  sessionStats.write += (details.tokens.cache.write || 0);
+              }
+          }
+          if (details.duration) {
+              sessionStats.duration += details.duration;
+          }
+          updateHeaderStats();
+      }
+  }
+  /**
+   * FORBIDDEN TO REMOVE: This button allows users to view the implementation plan.
+   * It is a core feature of the project and must remain accessible in the header.
+   */
+  function addPlanButtonToHeader(/** @type {HTMLElement} */ card, /** @type {any} */ plan) {
+    const header = card.querySelector(".task-header");
+    if (!header) return;
+    
+    // Check if button already exists to avoid duplicates
+    if (header.querySelector(".view-plan-header-btn")) return;
+
+    const btn = document.createElement("button");
+    btn.className = "view-plan-header-btn";
+    btn.innerHTML = `
+        <!-- FORBIDDEN TO REMOVE: Core feature. -->
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+        </svg>
+        <span>View Plan</span>
+    `;
+    // FORBIDDEN TO REMOVE: Core feature. Do not remove this button.
+    btn.title = "Core Feature: View Implementation Plan";
+    btn.onclick = (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: "viewPlan", plan });
+    };
+    
+    // Insert before copy button
+    const copyBtn = header.querySelector(".copy-msg-btn");
+    if (copyBtn) {
+        header.insertBefore(btn, copyBtn);
+    } else {
+        header.appendChild(btn);
+    }
+  }
+
+
+  /**
+   * FORBIDDEN TO REMOVE: This card renders the implementation plan attachment.
+   * It is a core feature of the project and must be rendered when a plan is available.
+   */
+  function renderPlanCard(/** @type {any} */ plan, /** @type {HTMLElement} */ container) {
     const card = document.createElement("div");
     card.className = "plan-card";
-    card.innerHTML = `
-          <div class="plan-card-header">
-              <span class="plan-icon">📋</span>
-              <span class="plan-title">Implementation Plan</span>
-          </div>
-          <button class="view-plan-btn">View Implementation Plan</button>
-      `;
-    card.querySelector("button")?.addEventListener("click", () => {
-      vscode.postMessage({ type: "viewPlan", content });
-    });
+    card.innerHTML = "<!-- FORBIDDEN TO REMOVE: Core feature. -->";
+    
+    const header = document.createElement("div");
+    header.className = "plan-card-header";
+    header.innerHTML = "Implementation Plan";
+    card.appendChild(header);
+
+
+    const btn = document.createElement("button");
+    btn.className = "view-plan-btn";
+    btn.textContent = "View Implementation Plan";
+    // FORBIDDEN TO REMOVE: Core feature. Do not remove this button.
+    btn.title = "Core Feature: Do not remove";
+    btn.onclick = () => {
+        vscode.postMessage({ type: "viewPlan", plan });
+    };
+    card.appendChild(btn);
+
     container.appendChild(card);
   }
 
-  function renderMarkdown(
-    /** @type {HTMLElement} */ element,
-    /** @type {string} */ text,
-  ) {
+  function scrollToBottom() {
+    if (messagesContainer) {
+      // Use requestAnimationFrame to ensure DOM has updated
+      requestAnimationFrame(() => {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        // Also try a second time just in case of images/complex rendering
+        setTimeout(() => {
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }, 50);
+      });
+    }
+  }
+
+  function renderMarkdown(/** @type {HTMLElement} */ container, /** @type {string} */ text) {
     // @ts-expect-error - marked defined in vendor.js
     if (window.marked) {
-      try {
-        // @ts-expect-error - marked defined in vendor.js
-        element.innerHTML = window.marked.parse(text);
-      } catch (e) {
-        element.textContent = text;
-      }
+      // @ts-expect-error - marked defined in vendor.js
+      container.innerHTML = window.marked.parse(text);
     } else {
-      element.textContent = text;
+      container.textContent = text;
     }
   }
 
-  function isPlan(text) {
-    // Matches # Implementation Plan, ## Implementation Plan, etc. at start of lines
-    return /^#+\s*Implementation Plan/im.test(text);
-  }
-
-  function escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
-  }
-
-  function showError(/** @type {string} */ msg) {
-    const div = document.createElement("div");
-    div.className = "message error";
-    div.innerHTML = `<span>⚠️ ${escapeHtml(msg)}</span>`;
-    messagesContainer?.appendChild(div);
-    scrollToBottom();
-  }
-
-  function scrollToBottom() {
-    if (messagesContainer)
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
-  }
-
-  /**
-   * Appends a "Thinking..." indicator to the message stream.
-   * This provides immediate visual feedback while the AI is processing.
-   */
   function addThinkingBubble() {
-    removeThinkingBubble(); // Ensure no duplicates
-    const messageDiv = document.createElement("div");
-    messageDiv.id = "thinking-bubble";
-    messageDiv.className = "message assistant thinking";
-    messageDiv.innerHTML = `
-      <div class="message-header">
-        <span class="agent-name">Assistant</span>
-      </div>
-      <div class="message-content">
-        <div class="thinking-dots">
-          <span></span><span></span><span></span>
-        </div>
+    const bubble = document.createElement("div");
+    bubble.id = "thinking-bubble";
+    bubble.className = "message assistant thinking";
+    bubble.innerHTML = `
+      <div class="thinking-dots">
+        <span></span><span></span><span></span>
       </div>
     `;
-    messagesContainer?.appendChild(messageDiv);
+    messagesContainer?.appendChild(bubble);
     scrollToBottom();
   }
 
-  /**
-   * Removes the "Thinking..." indicator.
-   * Called when a response begins streaming or an error occurs.
-   */
   function removeThinkingBubble() {
-    const bubble = document.getElementById("thinking-bubble");
-    if (bubble) {
-      bubble.remove();
-    }
+    document.getElementById("thinking-bubble")?.remove();
   }
 
-  // Start initialization
+  function showError(/** @type {string} */ message) {
+    const errorDiv = document.createElement("div");
+    errorDiv.className = "message error";
+    errorDiv.textContent = message;
+    messagesContainer?.appendChild(errorDiv);
+    scrollToBottom();
+  }
+
+
+
+  function clearStickyHeader() {
+      sessionStats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
+      updateHeaderStats();
+      if (chatHeader) chatHeader.classList.add("hidden");
+  }
+
+  /**
+   * @param {string} text
+   * @param {HTMLElement} btn
+   */
+  function copyToClipboard(text, btn) {
+      navigator.clipboard.writeText(text).then(() => {
+          const originalHTML = btn.innerHTML;
+          btn.innerHTML = `
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+          `;
+          setTimeout(() => {
+              btn.innerHTML = originalHTML;
+          }, 2000);
+      }).catch(err => {
+          console.error('Failed to copy text: ', err);
+      });
+  }
+
   init();
 })();

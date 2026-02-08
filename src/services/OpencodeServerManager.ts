@@ -1,13 +1,13 @@
-// MARKER: VERSION 2
+// MARKER: VERSION 3
 import * as vscode from "vscode";
 import * as cp from "child_process";
-import { createOpencodeClient } from "@opencode-ai/sdk";
-import type { Client } from "@opencode-ai/sdk";
+import * as net from "net";
+import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk";
 
 export type ServerStatus = "idle" | "starting" | "running" | "error";
 
 export class OpencodeServerManager {
-  private client: Client | null = null;
+  private client: OpencodeClient | null = null;
   private serverProcess: cp.ChildProcess | null = null;
   private port: number = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -20,7 +20,7 @@ export class OpencodeServerManager {
   /**
    * Ensures OpenCode server is running and returns a connected client
    */
-  async ensureRunning(): Promise<Client> {
+  async ensureRunning(): Promise<OpencodeClient> {
     if (this.client) {
       // Assume client is still valid if it exists
       return this.client;
@@ -57,7 +57,7 @@ export class OpencodeServerManager {
   /**
    * Starts a new OpenCode server process
    */
-  private async startServer(): Promise<Client> {
+  private async startServer(): Promise<OpencodeClient> {
     // Find available port
     this.port = await this.findAvailablePort();
 
@@ -142,7 +142,7 @@ export class OpencodeServerManager {
   /**
    * Connects to the running server
    */
-  private async connectToServer(): Promise<Client> {
+  private async connectToServer(): Promise<OpencodeClient> {
     this.client = createOpencodeClient({
       baseUrl: `http://localhost:${this.port}`,
     });
@@ -156,8 +156,6 @@ export class OpencodeServerManager {
    * Finds an available port starting from 4097
    */
   private async findAvailablePort(): Promise<number> {
-    const net = await import("net");
-
     return new Promise((resolve) => {
       const server = net.createServer();
       server.listen(0, () => {
@@ -170,7 +168,7 @@ export class OpencodeServerManager {
   /**
    * Gets the current client (may be null if not connected)
    */
-  getClient(): Client | null {
+  getClient(): OpencodeClient | null {
     return this.client;
   }
 
@@ -192,7 +190,18 @@ export class OpencodeServerManager {
 
     if (this.serverProcess) {
       console.log("Stopping OpenCode server...");
-      this.serverProcess.kill();
+
+      // On Windows, we need to kill the process tree to ensure the CLI and its children are killed
+      if (process.platform === "win32" && this.serverProcess.pid) {
+        try {
+          cp.execSync(`taskkill /pid ${this.serverProcess.pid} /T /F`);
+        } catch (e) {
+          // Ignore error if process is already dead
+        }
+      } else {
+        this.serverProcess.kill();
+      }
+
       this.serverProcess = null;
     }
 

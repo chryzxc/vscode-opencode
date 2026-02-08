@@ -72,6 +72,11 @@
         "command": "opencode.insertFileReference",
         "key": "ctrl+alt+k",
         "mac": "cmd+alt+k"
+      },
+      {
+        "command": "opencode.sendSelection",
+        "key": "ctrl+l",
+        "mac": "cmd+l"
       }
     ],
     "menus": {

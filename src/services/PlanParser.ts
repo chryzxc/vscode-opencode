@@ -24,7 +24,7 @@ export class PlanParser {
       const sectionMatch = markdown
         .slice(goalEndIndex)
         .match(
-          /^#{2,4}\s+(Proposed Changes|Verification Plan|Tasks|Checklist|Proposed)/im,
+          /^#{2,4}\s+(Proposed Changes|Verification Plan|Tasks|Checklist|Proposed|Files|Steps|Tests|Verification)/im,
         );
 
       if (sectionMatch && sectionMatch.index !== undefined) {
