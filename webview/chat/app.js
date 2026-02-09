@@ -42,7 +42,6 @@
   };
 
   // State
-  let currentMode = "build";
   /** @type {string[]} */
   let selectedFiles = [];
   /** @type {any[]} */
@@ -67,6 +66,9 @@
   const sessionEdits = new Set();
   let isProcessing = false;
   let receivedInitState = false;
+  /** @type {any[]} */
+  let promptQueue = [];
+  let isExecutingQueue = false;
 
   // FORBIDDEN TO REMOVE: Do not remove token accumulation or header update logic.
   let sessionStats = {
@@ -108,11 +110,17 @@
   );
   const sendButton = document.getElementById("send-button");
   const contextButton = document.getElementById("add-context-btn");
-  const modeToggle = document.getElementById("mode-toggle");
   const modelSelector = document.getElementById("model-selector");
   const agentSelector = document.getElementById("agent-selector");
   // const reviewChangesButton = document.getElementById("review-changes-btn"); // Future use
   const filesPreviewContainer = document.getElementById("files-preview");
+  const queueContainer = document.getElementById("queue-container");
+  const queueList = document.getElementById("queue-list");
+  const queueCount = document.getElementById("queue-count");
+  const executeQueueBtn = document.getElementById("execute-queue-btn");
+  const clearQueueBtn = document.getElementById("clear-queue-btn");
+  const toggleQueueBtn = document.getElementById("toggle-queue-btn");
+  const addToQueueBtn = document.getElementById("add-to-queue-btn");
 
   // History Sidebar Elements - Injected dynamically or assumed present
   const historyToggle = document.getElementById("history-toggle");
@@ -159,38 +167,48 @@
   function init() {
     // Event Listeners
     sendButton?.addEventListener("click", () => {
-    if (isProcessing) {
-      stopRequest();
-    } else {
-      sendMessage();
-    }
-  });
+      if (isProcessing) {
+        stopRequest();
+      } else {
+        sendMessage();
+      }
+    });
     messageInput?.addEventListener("keydown", handleKeyDown);
     messageInput?.addEventListener("input", handleInput);
 
     // Bind History Events
-    historyToggle?.addEventListener("click", () => {
-      if (historySidebar) historySidebar.classList.add("visible");
-      vscode.postMessage({ type: "getSessions" });
-    });
+    if (historyToggle) {
+      historyToggle.addEventListener("click", () => {
+        console.log("[OpenCode] Toggling history sidebar");
+        if (historySidebar) historySidebar.classList.add("visible");
+        vscode.postMessage({ type: "getSessions" });
+      });
+    } else {
+      console.error("[OpenCode] history-toggle element not found");
+    }
 
-    closeHistoryBtn?.addEventListener("click", () => {
-      if (historySidebar) historySidebar.classList.remove("visible");
-    });
+    if (closeHistoryBtn) {
+      closeHistoryBtn.addEventListener("click", () => {
+        if (historySidebar) historySidebar.classList.remove("visible");
+      });
+    }
 
-    newChatSidebarBtn?.addEventListener("click", () => {
-      vscode.postMessage({ type: "newSession" });
-      if (historySidebar) historySidebar.classList.remove("visible");
-    });
+    if (newChatSidebarBtn) {
+      newChatSidebarBtn.addEventListener("click", () => {
+        console.log("[OpenCode] Creating new session from sidebar");
+        vscode.postMessage({ type: "newSession" });
+        if (historySidebar) historySidebar.classList.remove("visible");
+      });
+    }
 
     // Close sidebar when clicking outside
     document.addEventListener("click", (e) => {
       if (
         historySidebar &&
         historySidebar.classList.contains("visible") &&
-        !historySidebar.contains(/** @type {Node} */(e.target)) &&
+        !historySidebar.contains(/** @type {Node} */ (e.target)) &&
         historyToggle &&
-        !historyToggle.contains(/** @type {Node} */(e.target))
+        !historyToggle.contains(/** @type {Node} */ (e.target))
       ) {
         historySidebar.classList.remove("visible");
       }
@@ -200,15 +218,12 @@
       vscode.postMessage({ type: "attachFiles" });
     });
 
-    modeToggle?.addEventListener("click", () => {
-      vscode.postMessage({ type: "toggleMode" });
-    });
 
     modelSelector?.addEventListener("click", (e) => {
       e.stopPropagation();
       toggleModelDropdown();
     });
-    
+
     agentSelector?.addEventListener("click", (e) => {
       e.stopPropagation();
       toggleAgentDropdown();
@@ -218,24 +233,43 @@
     document.addEventListener("click", (e) => {
       const modelDropdown = document.getElementById("model-dropdown");
       const agentDropdown = document.getElementById("agent-dropdown");
-      
+
       if (
         modelDropdown &&
         !modelDropdown.classList.contains("hidden") &&
-        !modelDropdown.contains(/** @type {Node} */(e.target)) &&
-        !modelSelector?.contains(/** @type {Node} */(e.target))
+        !modelDropdown.contains(/** @type {Node} */ (e.target)) &&
+        !modelSelector?.contains(/** @type {Node} */ (e.target))
       ) {
         modelDropdown.classList.add("hidden");
       }
-      
+
       if (
         agentDropdown &&
         !agentDropdown.classList.contains("hidden") &&
-        !agentDropdown.contains(/** @type {Node} */(e.target)) &&
-        !agentSelector?.contains(/** @type {Node} */(e.target))
+        !agentDropdown.contains(/** @type {Node} */ (e.target)) &&
+        !agentSelector?.contains(/** @type {Node} */ (e.target))
       ) {
         agentDropdown.classList.add("hidden");
       }
+    });
+
+    // Queue Events
+    addToQueueBtn?.addEventListener("click", () => {
+      addToQueue();
+    });
+
+    executeQueueBtn?.addEventListener("click", () => {
+      vscode.postMessage({ type: "executeQueue" });
+    });
+
+    clearQueueBtn?.addEventListener("click", () => {
+      if (confirm("Clear all items from the queue?")) {
+        vscode.postMessage({ type: "clearQueue" });
+      }
+    });
+
+    toggleQueueBtn?.addEventListener("click", () => {
+      queueContainer?.classList.add("hidden");
     });
 
     // Request initial state with retry
@@ -261,10 +295,6 @@
       case "initState":
       case "init":
         receivedInitState = true;
-        if (message.mode) {
-          currentMode = message.mode;
-          updateModeUI();
-        }
         if (message.sessionId) {
           currentSessionId = message.sessionId;
           if (headerSessionId) {
@@ -293,11 +323,6 @@
         updateSelectedModelUI();
         break;
 
-      case "modeChanged":
-        currentMode = message.mode;
-        updateModeUI();
-        break;
-
       case "agentsList":
         availableAgents = message.agents;
         if (message.selectedAgent) {
@@ -314,35 +339,42 @@
       case "messageResponse":
         // FORBIDDEN TO REMOVE: Do not remove token accumulation or header update logic.
         if (message.message.info?.tokens) {
-            sessionStats.input += (message.message.info.tokens.input || 0);
-            sessionStats.output += (message.message.info.tokens.output || 0);
-            if (message.message.info.tokens.cache) {
-                sessionStats.read += (message.message.info.tokens.cache.read || 0);
-                sessionStats.write += (message.message.info.tokens.cache.write || 0);
-            }
+          sessionStats.input += message.message.info.tokens.input || 0;
+          sessionStats.output += message.message.info.tokens.output || 0;
+          if (message.message.info.tokens.cache) {
+            sessionStats.read += message.message.info.tokens.cache.read || 0;
+            sessionStats.write += message.message.info.tokens.cache.write || 0;
+          }
         }
         if (message.message.info?.duration) {
-            sessionStats.duration += message.message.info.duration;
+          sessionStats.duration += message.message.info.duration;
         }
         updateHeaderStats();
 
         if (message.message.edits) {
-            message.message.edits.forEach((/** @type {any} */ e) => sessionEdits.add(e.file));
-            updateFooterEdits();
+          message.message.edits.forEach((/** @type {any} */ e) =>
+            sessionEdits.add(e.file),
+          );
+          updateFooterEdits();
         } else if (currentStreamingEdits.length > 0) {
-            // merge them in for rendering.
-            message.message.edits = currentStreamingEdits.map((/** @type {string} */ f) => ({ file: f }));
+          // merge them in for rendering.
+          message.message.edits = currentStreamingEdits.map(
+            (/** @type {string} */ f) => ({ file: f }),
+          );
         }
 
         // Merge streaming steps if not present in message
-        if (currentStreamingSteps.length > 0 && (!message.message.steps || message.message.steps.length === 0)) {
-            message.message.steps = currentStreamingSteps;
+        if (
+          currentStreamingSteps.length > 0 &&
+          (!message.message.steps || message.message.steps.length === 0)
+        ) {
+          message.message.steps = currentStreamingSteps;
         }
 
         // Remove the streaming card before adding the final one to avoid duplicates
         if (lastStreamingCard && lastStreamingCard.parentNode) {
-            lastStreamingCard.remove();
-            lastStreamingCard = null;
+          lastStreamingCard.remove();
+          lastStreamingCard = null;
         }
 
         addAssistantMessage(message.message);
@@ -358,12 +390,13 @@
         );
         sessionEdits.clear();
         message.messages.forEach((/** @type {any} */ m) => {
-            if (m.edits) m.edits.forEach((/** @type {any} */ e) => sessionEdits.add(e.file));
+          if (m.edits)
+            m.edits.forEach((/** @type {any} */ e) => sessionEdits.add(e.file));
         });
         updateFooterEdits();
         renderChatHistory(message.messages);
         if (message.messages.length === 0) {
-            clearStickyHeader();
+          clearStickyHeader();
         }
         break;
 
@@ -401,17 +434,24 @@
       case "sessionsList":
         currentSessionId = message.currentSessionId;
         if (currentSessionId && headerSessionId) {
-            headerSessionId.textContent = currentSessionId;
+          headerSessionId.textContent = currentSessionId;
         }
         renderSessionsList(message.sessions, message.currentSessionId);
         break;
 
-      case "executePlan":
-        // Auto-fill with a concise message and send automatically
-        if (messageInput) {
-          messageInput.value = "Proceed";
-          sendMessage();
-        }
+      case "queueUpdate":
+        promptQueue = message.queue;
+        renderQueue();
+        break;
+
+      case "queueExecutionStarted":
+        isExecutingQueue = true;
+        updateQueueUIState();
+        break;
+
+      case "queueExecutionFinished":
+        isExecutingQueue = false;
+        updateQueueUIState();
         break;
     }
   });
@@ -869,18 +909,6 @@
     }
   }
 
-  function updateModeUI() {
-    const modeText = modeToggle?.querySelector(".mode-text");
-    const modeIcon = modeToggle?.querySelector(".pill-icon"); // pill-icon in new UI
-
-    if (currentMode === "plan") {
-      if (modeText) modeText.textContent = "Planning";
-      if (modeIcon) modeIcon.textContent = "";
-    } else {
-      if (modeText) modeText.textContent = "Building";
-      if (modeIcon) modeIcon.textContent = "";
-    }
-  }
 
 
   function updateStatusUI(/** @type {string} */ status) {
@@ -1410,6 +1438,7 @@
                 
                 const stepObj = { title, type: "step", status: "pending", id: part.id, startTime: Date.now() };
                 currentStreamingSteps.push(stepObj);
+                currentStreamingSteps.push(stepObj);
                 const step = addProgressStep(currentStreamingCard, title);
                 if (step) {
                     // @ts-expect-error - Attach state
@@ -1459,9 +1488,17 @@
                         title = `Running command: ${input.CommandLine || '...'}`;
                     }
 
-                    const stepObj = { title, type: "tool", status: "pending", callID: part.callID };
+                    const stepObj = {
+                      title,
+                      type: "tool",
+                      status: "pending",
+                      callID: part.callID,
+                      filePath: file,
+                    };
                     currentStreamingSteps.push(stepObj);
-            toolStep = addProgressStep(currentStreamingCard, title);
+            toolStep = addProgressStep(currentStreamingCard, title, {
+              filePath: file,
+            });
             if (toolStep) {
                 // @ts-expect-error - Attach custom state object to tool step
                 toolStep._stateObj = stepObj;
@@ -1584,6 +1621,117 @@
       if (reviewChangesBtn) {
           reviewChangesBtn.style.display = count > 0 ? "inline-block" : "none";
       }
+  }
+
+  // --- Queue Functions ---
+
+  function addToQueue() {
+    const text = messageInput?.value.trim();
+    if (!text && selectedFiles.length === 0) return;
+
+    vscode.postMessage({
+      type: "addToQueue",
+      text,
+      files: selectedFiles,
+      contexts: selectedContexts
+    });
+
+    // Clear input after adding
+    if (messageInput) {
+      messageInput.value = "";
+      messageInput.style.height = "auto";
+    }
+    selectedFiles = [];
+    selectedContexts = [];
+    updateFileChipsUI();
+    
+    // Show queue container if hidden
+    queueContainer?.classList.remove("hidden");
+  }
+
+  function renderQueue() {
+    if (!queueList || !queueCount || !queueContainer) return;
+
+    queueCount.textContent = String(promptQueue.length);
+    queueList.innerHTML = "";
+
+    if (promptQueue.length === 0) {
+        queueContainer.classList.add("hidden");
+        return;
+    }
+
+    queueContainer.classList.remove("hidden");
+
+    promptQueue.forEach((item, index) => {
+        const queueItem = document.createElement("div");
+        queueItem.className = "queue-item new";
+        
+        const info = document.createElement("div");
+        info.className = "queue-item-info";
+        
+        const textArea = document.createElement("div");
+        textArea.className = "queue-item-text";
+        textArea.textContent = item.text || "(No text)";
+        info.appendChild(textArea);
+        
+        const meta = document.createElement("div");
+        meta.className = "queue-item-meta";
+        const filesCount = (item.files?.length || 0) + (item.contexts?.length || 0);
+        meta.textContent = filesCount > 0 ? `${filesCount} attachments` : "No attachments";
+        info.appendChild(meta);
+
+        // Add Pending Status
+        const status = document.createElement("div");
+        status.className = "queue-item-status";
+        status.textContent = "Pending";
+        info.appendChild(status);
+        
+        queueItem.appendChild(info);
+        
+        const actions = document.createElement("div");
+        actions.className = "queue-item-actions";
+        
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "queue-item-remove";
+        removeBtn.innerHTML = "×";
+        removeBtn.onclick = () => {
+            vscode.postMessage({ type: "removeFromQueue", index });
+        };
+        actions.appendChild(removeBtn);
+        
+        queueItem.appendChild(actions);
+        queueList.appendChild(queueItem);
+    });
+  }
+
+  function updateQueueUIState() {
+    if (!executeQueueBtn || !addToQueueBtn || !clearQueueBtn) return;
+    
+    if (isExecutingQueue) {
+        executeQueueBtn.innerHTML = `
+            <div class="spinner" style="width: 12px; height: 12px; border-width: 1.5px; border-top-color: white;"></div>
+            Running...
+        `;
+        executeQueueBtn.classList.add("disabled");
+        // @ts-expect-error - disabled property
+        executeQueueBtn.disabled = true;
+        clearQueueBtn.classList.add("disabled");
+        // @ts-expect-error - disabled property
+        clearQueueBtn.disabled = true;
+    } else {
+        executeQueueBtn.innerHTML = `
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M3 2V14L13 8L3 2Z"/>
+            </svg>
+            Run
+        `;
+        executeQueueBtn.classList.remove("disabled");
+        // @ts-expect-error - disabled property
+        executeQueueBtn.disabled = false;
+        clearQueueBtn.classList.remove("disabled");
+        // @ts-expect-error - disabled property
+        clearQueueBtn.disabled = false;
+    }
   }
 
   function updateHeaderStats() {
@@ -1778,33 +1926,115 @@
     return card;
   }
 
-  function addProgressStep(/** @type {HTMLElement} */ card, /** @type {string} */ title) {
+  function addProgressStep(
+    /** @type {HTMLElement} */ card,
+    /** @type {string} */ title,
+    /** @type {any} */ details = null,
+  ) {
     const list = card.querySelector(".progress-steps-list");
     if (!list) return null;
 
     const item = document.createElement("div");
     item.className = "step-item";
-    item.innerHTML = `
-        <div class="step-icon"></div>
-        <div class="step-content">
-            <div class="step-title">${title}</div>
-            <div class="step-meta"></div>
-            <div class="step-details"></div>
+
+    // Detect if title contains a file path
+    // Matches common path patterns: src\libs\Subscription.ts or src/libs/Subscription.ts
+    const fileMatch = title.match(
+      /([a-zA-Z0-9_\-.\/\\ +]+?\.[a-zA-Z0-9]+)(?::L\d+(?:-L\d+)?)?/,
+    );
+    let filePath = fileMatch ? fileMatch[1].trim() : null;
+
+    // Fallback: Check details for file path (passed from tool events)
+    if (!filePath && details && details.filePath) {
+      filePath = details.filePath;
+    }
+
+    if (filePath) {
+      item.classList.add("file-step");
+      const fileName = filePath.split(/[\\/]/).pop() || filePath;
+      const extension = fileName.split(".").pop()?.toLowerCase() || "";
+
+      item.innerHTML = `
+        <div class="step-icon">
+          ${getFileIconSvg(extension)}
         </div>
-    `;
+        <div class="step-content">
+          <div class="step-title">${title}</div>
+          <div class="step-meta"></div>
+          <div class="step-details"></div>
+        </div>
+      `;
+
+      item.onclick = (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: "openFile", file: filePath });
+      };
+      item.title = `Click to open ${filePath}`;
+    } else {
+      item.innerHTML = `
+        <div class="step-icon"><div class="step-icon-dot"></div></div>
+        <div class="step-content">
+          <div class="step-title">${title}</div>
+          <div class="step-meta"></div>
+          <div class="step-details"></div>
+        </div>
+      `;
+    }
+
     list.appendChild(item);
 
-    
     // Auto-expand progress section when a new step is added
     const section = card.querySelector(".progress-section");
     if (section) section.classList.remove("collapsed");
-    
+
     // Store localized start time for duration calculation
     // @ts-expect-error - Custom state
-    item._stateObj = { startTime: Date.now() };
+    item._stateObj = { startTime: Date.now(), filePath };
 
     scrollToBottom();
     return item;
+  }
+
+  /**
+   * Returns an SVG icon based on file extension
+   * @param {string} ext 
+   * @returns {string}
+   */
+  function getFileIconSvg(ext) {
+    // Simple mapping of extensions to VS Code-like icons (Lucide icons approximation)
+    const colorMap = {
+      ts: "#3178c6",
+      js: "#f1e05a",
+      tsx: "#3178c6",
+      jsx: "#f1e05a",
+      css: "#563d7c",
+      html: "#e34c26",
+      json: "#f1e05a",
+      md: "#083fa1",
+      vue: "#41b883",
+      py: "#3572A5",
+      go: "#00ADD8",
+      java: "#b07219",
+      rs: "#dea584",
+      php: "#4F5D95",
+      rb: "#701516",
+      swift: "#ffac45",
+      kt: "#F18E33",
+      c: "#555555",
+      cpp: "#f34b7d",
+      h: "#a8ff97",
+      hpp: "#a8ff97"
+    };
+    
+    const color = colorMap[ext] || "var(--text-secondary)";
+    
+    // Improved icon: Filled slightly, clearer stroke
+    return `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="file-icon-svg">
+        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="${color}" fill-opacity="0.1"></path>
+        <polyline points="14 2 14 8 20 8" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline>
+      </svg>
+    `;
   }
 
   function updateProgressStep(/** @type {HTMLElement} */ step, /** @type {string} */ meta, /** @type {string} */ status = "done", /** @type {any} */ details = null) {
@@ -1996,7 +2226,7 @@
   function clearStickyHeader() {
       sessionStats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
       updateHeaderStats();
-      if (chatHeader) chatHeader.classList.add("hidden");
+      if (chatHeader) chatHeader.classList.remove("hidden");
   }
 
   /**

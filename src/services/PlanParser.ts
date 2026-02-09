@@ -1,8 +1,179 @@
+/**
+ * Plan Parser - Implementation Plan Parsing Service
+ *
+ * Parses markdown implementation plans into structured data objects.
+ * This service handles the extraction of goals, file operations, steps,
+ * and verification plans from AI-generated implementation plans.
+ *
+ * **Supported Formats:**
+ *
+ * File Operations (all equivalent):
+ * - `#### [MODIFY] src/file.ts`
+ * - `### MODIFY: src/file.ts`
+ * - `[MODIFY] src/file.ts`
+ * - `[MODIFY] src/file.ts (file:///absolute/path)`
+ *
+ * Verification Steps:
+ * - `## Verification Plan`
+ * - `- Automated test`
+ * - `- Manual review`
+ *
+ * Checklist Items:
+ * - `- [ ] Step 1`
+ * - `- [x] Step 2` (completed)
+ *
+ * **Parsing Strategy:**
+ * 1. Extract goal from first header
+ * 2. Extract description (text between goal and first section)
+ * 3. Extract file operations via regex with flexible syntax
+ * 4. Extract verification steps
+ * 5. Extract checklist items
+ * 6. Return structured plan with rawContent preserved
+ *
+ * **Error Handling:**
+ * - Malformed file ops → Logged, skipped
+ * - Missing sections → Empty arrays (no error)
+ * - Invalid markdown → Returns partial plan
+ *
+ * **Design Philosophy:**
+ * The parser is lenient and forgiving. It tries to extract whatever
+ * information is available rather than failing on format errors.
+ * This allows it to work with various AI-generated plan formats.
+ *
+ * @module PlanParser
+ * @see ImplementationPlan for the output structure
+ * @see ChatViewProvider for usage (detects and parses plans)
+ */
+
 import { ImplementationPlan } from '../types/Plan';
 
+/**
+ * Utility class for parsing markdown implementation plans.
+ *
+ * This class provides static methods for extracting structured data
+ * from markdown-formatted implementation plans.
+ *
+ * **Usage:**
+ * ```typescript
+ * const markdown = `
+ *   ## Add Feature X
+ *   ### Files
+ *   [MODIFY] src/app.ts
+ *   ### Steps
+ *   - [ ] Implement feature
+ * `;
+ * const plan = PlanParser.parse(markdown);
+ * console.log(plan.files); // [{type: 'MODIFY', path: 'src/app.ts'}]
+ * ```
+ *
+ * All methods are static; no instantiation needed.
+ */
 export class PlanParser {
   /**
-   * Parses a markdown string into an ImplementationPlan object
+   * Parses markdown plan text into a structured ImplementationPlan.
+   *
+   * **Supported Markdown Format:**
+   *
+   * Goal (first header):
+   * ```markdown
+   * ## Add User Authentication
+   * ### Add User Authentication
+   * # Add User Authentication
+   * ```
+   *
+   * File Operations (flexible formats):
+   * ```markdown
+   * #### [MODIFY] src/app.ts
+   * ### MODIFY: src/components/User.tsx
+   * [NEW] src/services/AuthService.ts
+   * [DELETE] src/old/legacy.js (file:///absolute/path)
+   * ```
+   *
+   * Steps/Checklist:
+   * ```markdown
+   * - [ ] Create user model
+   * - [x] Set up database
+   * - [ ] Implement login UI
+   * ```
+   *
+   * Verification:
+   * ```markdown
+   * ## Verification Plan
+   * - Automated test for login flow
+   * - Manual review of security
+   * ```
+   *
+   * **Parsing Algorithm:**
+   * 1. Extract goal from first # header
+   * 2. Extract description (text between goal and first section)
+   * 3. Extract file ops via regex: `\[MODIFY|NEW|DELETE\] path`
+   * 4. Extract verification steps under "Verification Plan" header
+   * 5. Extract checkbox items: `- [x]` or `- [ ]`
+   * 6. Return structured plan
+   *
+   * **Extraction Details:**
+   *
+   * *Goal Extraction:*
+   * - Finds first `#` header in markdown
+   * - Uses header text as goal
+   *
+   * *Description Extraction:*
+   * - Text between goal header and first section header
+   * - Falls back to all remaining text if no sections found
+   *
+   * *File Operation Extraction:*
+   * - Regex: `(?:#{1,4}\s+)?\[(MODIFY|NEW|DELETE)\]\s+([^\s()]+)`
+   * - Strips `file:///` prefixes if present
+   * - Removes trailing brackets
+   *
+   * *Verification Step Extraction:*
+   * - Finds "Verification Plan" section
+   * - Parses list items (-, *, +)
+   * - Auto-detects type: "Automated" if contains "auto/test/script"
+   * - Otherwise: "Manual"
+   *
+   * *Step Extraction:*
+   * - Regex: `- [x] title` or `- [ ] title`
+   * - Sets `completed: true` if checkbox is `[x]`
+   * - Sets `completed: false` if checkbox is `[ ]` or `[/]`
+   *
+   * **Error Tolerance:**
+   * - Missing sections → Return empty arrays
+   * - Invalid file paths → Skip and continue
+   * - Malformed checkboxes → Skip
+   * - Always returns a valid ImplementationPlan object
+   *
+   * @param markdown - Raw markdown text to parse
+   * @returns Parsed ImplementationPlan with all extracted sections
+   *
+   * @example
+   * ```typescript
+   * const plan = PlanParser.parse(`
+   *   ## Add Feature X
+   *
+   *   This implementation adds feature X to improve user experience.
+   *
+   *   ### Files
+   *   [MODIFY] src/app.ts - Add feature logic
+   *   [NEW] src/components/FeatureX.tsx
+   *
+   *   ### Tasks
+   *   - [x] Design API
+   *   - [ ] Implement UI
+   *   - [ ] Add tests
+   *
+   *   ### Verification Plan
+   *   - Automated test for core functionality
+   *   - Manual review of UI/UX
+   * `);
+   *
+   * console.log(plan.goal); // "Add Feature X"
+   * console.log(plan.files.length); // 2
+   * console.log(plan.steps.length); // 3
+   * console.log(plan.verification.length); // 2
+   * ```
+   *
+   * @see ImplementationPlan for output structure
    */
   public static parse(markdown: string): ImplementationPlan {
     const plan: ImplementationPlan = {

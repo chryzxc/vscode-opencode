@@ -51,10 +51,6 @@
       {
         "command": "opencode.insertFileReference",
         "title": "OpenCode: Insert File Reference"
-      },
-      {
-        "command": "opencode.toggleMode",
-        "title": "OpenCode: Toggle Plan/Build Mode"
       }
     ],
     "keybindings": [

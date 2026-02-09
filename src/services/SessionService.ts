@@ -1,35 +1,195 @@
-import * as vscode from 'vscode';
-import { OpencodeServerManager } from './OpencodeServerManager';
+/**
+ * Session Service - Session Management and Persistence
+ *
+ * Manages chat sessions with persistence and server synchronization.
+ * This service implements a "best of both worlds" strategy by combining
+ * server-side session data with local caching for offline access.
+ *
+ * **Architecture Overview:**
+ * - Creates and deletes sessions via the OpenCode server
+ * - Maintains local cache of session history
+ * - Merges server and local data to prevent data loss
+ * - Persists messages to workspace storage for offline access
+ * - Manages current session state
+ *
+ * **Merge Strategy (Server + Local):**
+ * The service combines data from two sources:
+ * 1. **Server Sessions**: Sessions stored on the OpenCode server
+ * 2. **Local History**: Sessions cached in VSCode workspace state
+ *
+ * **Merge Algorithm:**
+ * ```
+ * 1. Fetch sessions from server via API
+ * 2. Load sessions from local workspace state
+ * 3. Create a map using session ID as key
+ * 4. Add all local sessions to map
+ * 5. Add all server sessions to map (overwrites local if same ID)
+ * 6. Convert map to array and sort by creation time (newest first)
+ * ```
+ *
+ * **Conflict Resolution:**
+ * - Same ID exists locally and server → Server version wins
+ * - Only local exists → Kept (offline/local-only session)
+ * - Only server exists → Added (new session from another device)
+ *
+ * **Persistence Layer:**
+ * Uses VSCode's `workspaceState` for storage:
+ * - `opencode.sessions`: Array of session metadata
+ * - `opencode.session.messages.{id}`: Messages per session
+ * - `opencode.currentSessionId`: Active session ID
+ *
+ * **State Initialization:**
+ * - Loads persisted state asynchronously in constructor
+ * - `getCurrentSession()` waits for initialization before returning
+ * - Falls back to local-only session if server unavailable
+ *
+ *
+ * @module SessionService
+ * @see OpencodeServerManager for server client access
+ * @see ChatViewProvider for session consumption
+ */
+
+import * as vscode from "vscode";
+import { OpencodeServerManager } from "./OpencodeServerManager";
 import type { Session } from "@opencode-ai/sdk";
 
-export type SessionMode = 'plan' | 'build';
-
+/**
+ * Manages chat sessions with persistence and server synchronization.
+ *
+ * This service provides:
+ * - Session CRUD operations (create, read, update, delete)
+ * - Message persistence with server fallback
+ * - Server-local merge strategy for data resilience
+ * - State restoration across VSCode restarts
+ *
+ * **Usage Pattern:**
+ * ```typescript
+ * const service = new SessionService(context, serverManager);
+ *
+ * // Get or create current session (auto-creates if needed)
+ * const session = await service.getCurrentSession();
+ *
+ * // List all sessions (merged from server + local)
+ * const sessions = await service.listSessions();
+ *
+ * // Switch to a different session
+ * await service.switchSession(otherSessionId);
+ *
+ * // Switch to a different session
+ * await service.switchSession(otherSessionId);
+ * ```
+ *
+ * **Persistence Configuration:**
+ * Session persistence can be disabled via settings:
+ * ```json
+ * {
+ *   "opencode.persistSessions": false
+ * }
+ * ```
+ *
+ * **Thread Safety:**
+ * This class is not thread-safe. All methods should be called from the
+ * main VSCode extension host thread.
+ *
+ * **Storage Keys:**
+ * All keys use the "opencode." prefix to avoid collisions with other extensions.
+ * Message keys use dynamic suffix based on session ID.
+ */
 export class SessionService {
+  /** Currently active session (null if none selected) */
   private currentSession: Session | null = null;
-  private currentMode: SessionMode = "build";
+
+  /** In-memory cache of session history (merged from server + local) */
   private sessionHistory: Session[] = [];
+
+  /** Promise that resolves when initialization completes */
   private initializationPromise: Promise<void> | null = null;
 
-  // Persistence keys
+  // ============================================================================
+  // PERSISTENCE KEYS
+  // ============================================================================
+  // These keys are used for VSCode workspaceState storage.
+  // All keys use "opencode." prefix to avoid collisions.
+
+  /** Key for storing session list array */
   private static readonly SESSIONS_KEY = "opencode.sessions";
+
+  /** Prefix for storing messages per session (appended with session ID) */
   private static readonly MESSAGES_PREFIX = "opencode.session.messages.";
-  private static readonly MODE_KEY = "opencode.currentMode";
+
+  /** Key for storing current session ID */
   private static readonly SESSION_ID_KEY = "opencode.currentSessionId";
 
   /**
-   * More flexible message type for local persistence and UI
+   * Fallback ID for messages without a session.
+   *
+   * Used when messages need to be stored but no session context exists.
+   * This is rare and typically indicates an edge case during initialization.
    */
   public static readonly MESSAGE_FALLBACK_ID = "opencode.fallback";
 
+  /**
+   * Creates a new session service instance.
+   *
+   * **Initialization Behavior:**
+   * - Constructor starts asynchronous state loading
+   * - `getCurrentSession()` waits for initialization before returning
+   * - This prevents race conditions during extension startup
+   *
+   * **State Loading:**
+   * - Loads session history from workspace state
+   * - Restores current session ID
+   * - Tries to reconnect to server for current session
+   *
+   * **Lazy Initialization:**
+   * Server connection is NOT established in constructor.
+   * It's established on-demand when methods call `ensureRunning()`.
+   *
+   * @param context - VSCode extension context for workspace storage access
+   * @param serverManager - Server manager for creating server client
+   */
   constructor(
     private context: vscode.ExtensionContext,
     private serverManager: OpencodeServerManager,
   ) {
+    // Start loading persisted state asynchronously
+    // This ensures state is ready before we need it
     this.initializationPromise = this.loadPersistedState();
   }
 
   /**
-   * Creates a new session
+   * Creates a new session on the server.
+   *
+   * **Creation Flow:**
+   * 1. Ensures server is running
+   * 2. Calls server API to create session with provided title
+   * 3. Updates current session reference
+   * 4. Adds to local history (if not duplicate)
+   * 5. Persists state to workspace storage
+   *
+   * **Title Generation:**
+   * - If title provided: Uses provided title
+   * - If no title: Generates timestamp-based title
+   * - Format: "Session HH:MM:SS" based on local time
+   *
+   * **Error Handling:**
+   * - Throws if server returns error response
+   * - Extracts error message from response (handles multiple formats)
+   * - Logs detailed error for debugging
+   *
+   * **Duplicate Handling:**
+   * If session with same ID already exists in history, doesn't add duplicate.
+   * This can happen if server returns session we already know about.
+   *
+   * @param title - Optional title for the session (auto-generated if omitted)
+   * @returns Promise resolving to the created session
+   * @throws {Error} If server fails to create session
+   *
+   * @example
+   * ```typescript
+   * const session = await service.createNewSession("My Planning Session");
+   * console.log('Created session:', session.id);
+   * ```
    */
   async createNewSession(title?: string): Promise<Session> {
     const client = await this.serverManager.ensureRunning();
@@ -72,7 +232,37 @@ export class SessionService {
   }
 
   /**
-   * Gets the current active session, creating one if needed
+   * Gets the current active session, creating one if needed.
+   *
+   * This is the primary method for accessing the current session.
+   * It implements the "ensure exists" pattern for convenience.
+   *
+   * **Behavior:**
+   * 1. Waits for initialization to complete (if still loading)
+   * 2. Returns current session if exists
+   * 3. Creates new session if none exists
+   *
+   * **Initialization Wait:**
+   * The constructor loads state asynchronously. This method waits
+   * for that to complete before checking for a current session.
+   * This prevents returning a stale session during startup.
+   *
+   * **Auto-Creation:**
+   * If no current session exists (first launch or all deleted),
+   * automatically creates a new session. This provides a better
+   * user experience than requiring manual session creation.
+   *
+   * @returns Promise resolving to the current (or newly created) session
+   *
+   * @example
+   * ```typescript
+   * // Always returns a valid session
+   * const session = await service.getCurrentSession();
+   * await service.sendMessage(session.id, "Hello!");
+   * ```
+   *
+   * @see createNewSession for session creation logic
+   * @see initializationPromise for async initialization
    */
   async getCurrentSession(): Promise<Session> {
     // Wait for initialization to complete if it's running
@@ -88,7 +278,51 @@ export class SessionService {
   }
 
   /**
-   * Lists all sessions
+   * Lists all sessions with server-local merge strategy.
+   *
+   * This is a key method that implements the merge algorithm for combining
+   * server and local session data. This ensures no data loss when working
+   * offline or across multiple devices.
+   *
+   * **Merge Algorithm:**
+   * ```
+   * Step 1: Fetch sessions from server via API
+   * Step 2: Load sessions from local workspace state
+   * Step 3: Create a map using session ID as key
+   * Step 4: Add all local sessions to map
+   * Step 5: Add all server sessions to map (overwrites local if same ID)
+   * Step 6: Convert map to array and sort by creation time (newest first)
+   * Step 7: Update in-memory cache and persist
+   * ```
+   *
+   * **Conflict Resolution:**
+   * - Same ID exists locally and server → Server version wins (most recent)
+   * - Only local exists → Kept (offline/local-only session)
+   * - Only server exists → Added (new session from another device)
+   *
+   * **Sorting:**
+   * Sessions are sorted by creation time (descending) so newest
+   * sessions appear first in the UI.
+   *
+   * **Error Handling:**
+   * - If server fetch fails: Falls back to local-only sessions
+   * - Errors are logged but don't throw (graceful degradation)
+   * - Returns whatever data is available
+   *
+   * **Data Flow:**
+   * Server → Merge with Local → Sort → Update Cache → Persist → Return
+   *
+   * @returns Promise resolving to sorted array of all sessions (server + local)
+   *
+   * @example
+   * ```typescript
+   * const sessions = await service.listSessions();
+   * // Returns merged list from server + local storage
+   * console.log(`Found ${sessions.length} sessions`);
+   * ```
+   *
+   * @see switchSession for loading a specific session
+   * @see persistState for how data is saved
    */
   async listSessions(): Promise<Session[]> {
     try {
@@ -126,7 +360,33 @@ export class SessionService {
   }
 
   /**
-   * Switches to a different session
+   * Switches to a different session by ID.
+   *
+   * Fetches the session from the server and sets it as the current session.
+   * This is used when the user selects a different session from the history.
+   *
+   * **Behavior:**
+   * 1. Fetches session from server by ID
+   * 2. Updates current session reference
+   * 3. Persists current session ID to workspace state
+   *
+   * **Error Handling:**
+   * - Throws if session not found on server
+   * - Use try-catch when calling this method
+   *
+   * @param sessionId - The ID of the session to switch to
+   * @returns Promise resolving to the loaded session
+   * @throws {Error} If session not found on server
+   *
+   * @example
+   * ```typescript
+   * try {
+   *   const session = await service.switchSession('session-123');
+   *   console.log('Switched to:', session.title);
+   * } catch (e) {
+   *   console.error('Session not found');
+   * }
+   * ```
    */
   async switchSession(sessionId: string): Promise<Session> {
     const client = await this.serverManager.ensureRunning();
@@ -145,7 +405,30 @@ export class SessionService {
   }
 
   /**
-   * Deletes a session
+   * Deletes a session from the server and local cache.
+   *
+   * **Behavior:**
+   * 1. Calls server API to delete session
+   * 2. Clears current session reference if deleting active session
+   * 3. Removes session from local history
+   * 4. Persists updated state
+   *
+   * **Note:**
+   * Messages are NOT automatically deleted from local storage.
+   * They remain until workspace state is cleared.
+   *
+   * **State Update:**
+   * If deleting the current session, `currentSession` becomes null.
+   * Next call to `getCurrentSession()` will create a new session.
+   *
+   * @param sessionId - The ID of the session to delete
+   * @returns Promise that resolves when deletion is complete
+   *
+   * @example
+   * ```typescript
+   * await service.deleteSession('session-123');
+   * // Session is now deleted from server and local cache
+   * ```
    */
   async deleteSession(sessionId: string): Promise<void> {
     const client = await this.serverManager.ensureRunning();
@@ -162,9 +445,40 @@ export class SessionService {
   }
 
   /**
-   * Gets messages for a session
+   * Gets messages for a session, with server fallback to local storage.
+   *
+   * **Retrieval Strategy:**
+   * 1. Try fetching from server first (most up-to-date)
+   * 2. If server succeeds: Map to flat format, persist locally, return
+   * 3. If server fails: Fall back to local storage
+   * 4. Return whatever data is available
+   *
+   * **Message Format Mapping:**
+   * Server returns nested format: `{ info: {...}, parts: [...] }`
+   * We flatten it: `{ ...info, parts: [...] }`
+   * This makes it easier to work with in the UI.
+   *
+   * **Offline Support:**
+   * If server is unreachable, returns cached local messages.
+   * This allows viewing chat history without network connection.
+   *
+   * **Local Storage:**
+   * Messages are cached to workspace state for offline access.
+   * Key format: `opencode.session.messages.{sessionId}`
+   *
+   * @param sessionId - The ID of the session to fetch messages for
+   * @returns Promise resolving to array of messages (server or cached)
+   *
+   * @example
+   * ```typescript
+   * const messages = await service.getMessages('session-123');
+   * console.log(`Found ${messages.length} messages`);
+   * ```
+   *
+   * @see saveSessionMessages for persistence
+   * @see loadSessionMessages for loading cached messages
    */
-  async getMessages(sessionId: string): Promise<any[]> {
+  async getMessages(sessionId: string): Promise<unknown[]> {
     console.log(`[SessionService] Fetching messages for session ${sessionId}`);
 
     try {
@@ -206,7 +520,29 @@ export class SessionService {
   }
 
   /**
-   * Saves messages for a specific session to local storage
+   * Saves messages for a specific session to local workspace storage.
+   *
+   * **Storage Key Format:**
+   * `opencode.session.messages.{sessionId}`
+   *
+   * **Usage:**
+   * Called automatically after fetching messages from server.
+   * Can also be called manually to cache new messages.
+   *
+   * **Persistence:**
+   * Stored in VSCode workspaceState, which persists across
+   * VSCode restarts but is specific to the workspace.
+   *
+   * @param sessionId - The ID of the session
+   * @param messages - Array of messages to persist
+   *
+   * @example
+   * ```typescript
+   * await service.saveSessionMessages('session-123', messages);
+   * // Messages are now cached locally
+   * ```
+   *
+   * @see loadSessionMessages for retrieval
    */
   async saveSessionMessages(
     sessionId: string,
@@ -219,7 +555,26 @@ export class SessionService {
   }
 
   /**
-   * Loads messages for a specific session from local storage
+   * Loads messages for a specific session from local storage.
+   *
+   * **Fallback Behavior:**
+   * Returns empty array if no messages are cached.
+   * This is used by `getMessages()` when server is unavailable.
+   *
+   * **Storage Key Format:**
+   * `opencode.session.messages.{sessionId}`
+   *
+   * @param sessionId - The ID of the session to load messages for
+   * @returns Promise resolving to array of cached messages (empty if none)
+   *
+   * @example
+   * ```typescript
+   * const messages = await service.loadSessionMessages('session-123');
+   * console.log(`Found ${messages.length} cached messages`);
+   * ```
+   *
+   * @see saveSessionMessages for persistence
+   * @see getMessages for server-fetching with fallback
    */
   async loadSessionMessages(sessionId: string): Promise<unknown[]> {
     return (
@@ -230,7 +585,30 @@ export class SessionService {
   }
 
   /**
-   * Adds a new message to the local history for a session
+   * Appends a new message to the local message history for a session.
+   *
+   * **Use Case:**
+   * Called when a new message is sent or received.
+   * Adds the message to the existing cached messages.
+   *
+   * **Performance:**
+   * Loads all messages, appends one, saves all back.
+   * Not optimal for large histories, but sufficient for typical usage.
+   *
+   * **Note:**
+   * This only updates local cache. Server has its own storage.
+   * The local cache is used for offline access and quick loading.
+   *
+   * @param sessionId - The ID of the session
+   * @param message - The message object to append
+   *
+   * @example
+   * ```typescript
+   * await service.appendMessage('session-123', {
+   *   role: 'user',
+   *   content: 'Hello!'
+   * });
+   * ```
    */
   async appendMessage(sessionId: string, message: unknown): Promise<void> {
     const messages = await this.loadSessionMessages(sessionId);
@@ -239,31 +617,32 @@ export class SessionService {
   }
 
   /**
-   * Gets the current mode (plan/build)
-   */
-  getMode(): SessionMode {
-    return this.currentMode;
-  }
-
-  /**
-   * Sets the mode (plan/build)
-   */
-  setMode(mode: SessionMode): void {
-    this.currentMode = mode;
-    this.persistState();
-  }
-
-  /**
-   * Toggles between plan and build mode
-   */
-  toggleMode(): SessionMode {
-    this.currentMode = this.currentMode === "plan" ? "build" : "plan";
-    this.persistState();
-    return this.currentMode;
-  }
-
-  /**
-   * Loads persisted state from workspace storage
+   * Loads persisted state from workspace storage.
+   *
+   * This method is called asynchronously in the constructor to restore
+   * the extension state from the previous VSCode session.
+   *
+   ** What Gets Restored:**
+   * - Session history list
+   * - Current session ID
+   * - Selected model
+   *
+   * **Configuration Check:**
+   * If `opencode.persistSessions` is false, returns immediately
+   * without loading anything (fresh start).
+   *
+   * **Session Restoration:**
+   * If a current session ID was saved, tries to reconnect to it
+   * on the server. If the session no longer exists on the server,
+   * falls back to the local stub from history.
+   *
+   * **Initialization Pattern:**
+   * This runs asynchronously in the constructor. Other methods
+   * wait for `initializationPromise` before accessing state.
+   *
+   * @private
+   *
+   * @see persistState for the corresponding save method
    */
   private async loadPersistedState(): Promise<void> {
     const config = vscode.workspace.getConfiguration("opencode");
@@ -280,12 +659,6 @@ export class SessionService {
     const sessionId = this.context.workspaceState.get<string>(
       SessionService.SESSION_ID_KEY,
     );
-    const mode = this.context.workspaceState.get<SessionMode>(
-      SessionService.MODE_KEY,
-      "build",
-    );
-
-    this.currentMode = mode;
 
     if (sessionId) {
       try {
@@ -305,7 +678,37 @@ export class SessionService {
   }
 
   /**
-   * Persists state to workspace storage
+   * Persists current state to workspace storage.
+   *
+   * This method is called automatically whenever state changes to ensure
+   * data survives VSCode restarts.
+   *
+   ** What Gets Persisted:**
+   * - Session history list (all sessions)
+   * - Current session ID (for restoration on restart)
+   * - Selected model
+   *
+   * **Configuration Check:**
+   * If `opencode.persistSessions` is false, returns immediately
+   * without saving (state is not persisted).
+   *
+   * **Storage Locations:**
+   * - `opencode.sessions`: Session history array
+   * - `opencode.currentSessionId`: Active session ID
+   *
+   * **When Called:**
+   * - After creating a new session
+   * - After switching sessions
+   * - After deleting a session
+   * - After listing sessions from server
+   *
+   * **Storage Scope:**
+   * Uses VSCode's `workspaceState` which is specific to each
+   * workspace. Different workspaces have separate session histories.
+   *
+   * @private
+   *
+   * @see loadPersistedState for the corresponding load method
    */
   private persistState(): void {
     const config = vscode.workspace.getConfiguration("opencode");
@@ -324,10 +727,5 @@ export class SessionService {
         this.currentSession.id,
       );
     }
-
-    this.context.workspaceState.update(
-      SessionService.MODE_KEY,
-      this.currentMode,
-    );
   }
 }

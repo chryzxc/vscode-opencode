@@ -1,27 +1,192 @@
-import * as vscode from 'vscode';
+/**
+ * Chat View Provider - Core UI Provider for Chat Interface
+ *
+ * This provider manages the webview-based chat interface that serves as the
+ * primary UI for the OpenCode extension. It handles all communication between
+ * the extension backend and the webview frontend.
+ *
+ * **Architecture Overview:**
+ * - Implements WebviewViewProvider for VSCode sidebar integration
+ * - Manages bidirectional message passing with webview
+ * - Handles AI message streaming via MessageStreamService
+ * - Detects and persists implementation plans
+ * - Manages prompt queue for batch execution
+ * - Coordinates with SessionService for session management
+ *
+ * ============================================================================
+ * WEBVIEW MESSAGE PROTOCOL
+ * ============================================================================
+ *
+ * This provider communicates with the webview via VSCode's postMessage API.
+ * All messages have a `type` property that determines how they're handled.
+ *
+ * EXTENSION → WEBVIEW messages (sent via view?.webview.postMessage):
+ * {
+ *   type: 'initState' | 'chatHistory' | 'sessionsList' | 'streamEvent' |
+ *         'statusUpdate' | 'modeChanged' | 'modelsList' | 'agentsList' |
+ *         'fileSearchResults',
+ *   ...payload
+ * }
+ *
+ * WEBVIEW → EXTENSION messages (received in onDidReceiveMessage):
+ * {
+ *   type: 'ready' | 'sendMessage' | 'createSession' | 'switchSession' |
+ *         'deleteSession' | 'getSessions' | 'toggleMode' | 'getModels' |
+ *         'selectModel' | 'getAgents' | 'selectAgent' | 'addToQueue' |
+ *         'executeQueue' | 'clearQueue' | 'viewPlan' | 'openDiff',
+ *   ...payload
+ * }
+ *
+ * MESSAGE FLOW EXAMPLES:
+ *
+ * 1. Initialization Flow:
+ *    webview: {type: 'ready'}
+ *    extension: {type: 'initState', mode, serverStatus, selectedModel}
+ *    extension: {type: 'chatHistory', messages: [...]}
+ *    extension: {type: 'sessionsList', sessions: [...]}
+ *
+ * 2. Send Message Flow:
+ *    webview: {type: 'sendMessage', text: '...', files: [...]}
+ *    extension: [streams response via streamEvent messages]
+ *    extension: {type: 'chatHistory', messages: [...]}
+ *
+ * 3. Streaming Response Flow:
+ *    extension: {type: 'streamEvent', event: {type: 'message.part.updated'}}
+ *    extension: {type: 'streamEvent', event: {type: 'message.updated'}}
+ *
+ * ============================================================================
+ * KEY RESPONSIBILITIES
+ * ============================================================================
+ *
+ * 1. WebView Lifecycle:
+ *    - Creates and initializes the webview
+ *    - Sets up message handlers
+ *    - Manages webview options (scripts, local resources)
+ *
+ * 2. Message Handling:
+ *    - Receives messages from webview
+ *    - Dispatches to appropriate handler methods
+ *    - Sends responses back to webview
+ *
+ * 3. Streaming Integration:
+ *    - Subscribes to MessageStreamService for real-time updates
+ *    - Forwards stream events to webview
+ *    - Handles stream completion and errors
+ *
+ * 4. Plan Detection:
+ *    - Analyzes AI responses for implementation plans
+ *    - Auto-saves detected plans to workspace
+ *    - Notifies user and provides plan viewing option
+ *
+ * 5. Queue Management:
+ *    - Maintains prompt queue for batch execution
+ *    - Executes prompts sequentially
+ *    - Manages execution state
+ *
+ * 6. State Synchronization:
+ *    - Tracks selected model/agent
+ *    - Persists selections to global state
+ *    - Syncs with webview on initialization
+ *
+ * @module ChatViewProvider
+ * @see MessageStreamService for streaming implementation
+ * @see SessionService for session management
+ * @see webview/chat/app.js for frontend implementation
+ */
+
+import * as vscode from "vscode";
 import * as path from "path";
 import * as cp from "child_process";
-import { OpencodeServerManager } from '../services/OpencodeServerManager';
-import { SessionService } from '../services/SessionService';
-import { MessageStreamService } from '../services/MessageStreamService';
+import { OpencodeServerManager } from "../services/OpencodeServerManager";
+import { SessionService } from "../services/SessionService";
+import { MessageStreamService } from "../services/MessageStreamService";
 import type { Session, SessionPromptData } from "@opencode-ai/sdk";
 
+/**
+ * Provides the chat interface webview for the OpenCode extension.
+ *
+ * This class is the core UI provider, managing all communication between
+ * the extension backend and the chat webview frontend.
+ *
+ * **Usage:**
+ * ```typescript
+ * const provider = new ChatViewProvider(context, serverManager, sessionService);
+ * context.subscriptions.push(
+ *   vscode.window.registerWebviewViewProvider('opencode.chatView', provider)
+ * );
+ * ```
+ *
+ * **Integration Points:**
+ * - OpencodeServerManager: For server status and client access
+ * - SessionService: For session and message management
+ * - MessageStreamService: For real-time AI response streaming
+ * - PlanViewProvider: For displaying detected implementation plans
+ *
+ * **Thread Safety:**
+ * This class is not thread-safe. All methods should be called from the
+ * main VSCode extension host thread.
+ *
+ * @see WebviewViewProvider for VSCode webview provider interface
+ */
 export class ChatViewProvider implements vscode.WebviewViewProvider {
+  /** The webview instance (undefined before initialization) */
   private view?: vscode.WebviewView;
+
+  /** Service for streaming events from the server */
   private streamService: MessageStreamService;
+
+  /** Unsubscribe function for stream service cleanup */
   private unsubscribe?: () => void;
+
+  /** Currently selected AI model (persisted to global state) */
   private selectedModel: { providerID: string; modelID: string } = {
     providerID: "opencode",
     modelID: "big-pickle",
   };
+
+  /** Currently selected CLI agent */
   private selectedAgent: string = "general";
 
+  /** Queue of prompts awaiting execution */
+  private queue: any[] = [];
+
+  /** Flag indicating if queue is currently being executed */
+  private isExecutingQueue: boolean = false;
+
+  /**
+   * Creates a new ChatViewProvider instance.
+   *
+   * **Initialization:**
+   * - Creates MessageStreamService for streaming
+   * - Loads persisted model selection from global state
+   * - Does NOT immediately create webview (happens on demand)
+   *
+   * **Model Persistence:**
+   * The selected model is persisted to VSCode's global state,
+   * which means it survives across VSCode restarts and workspace changes.
+   *
+   * @param context - VSCode extension context for global state access
+   * @param serverManager - Server manager for status checking
+   * @param sessionService - Session service for session management
+   */
   constructor(
     private context: vscode.ExtensionContext,
     private serverManager: OpencodeServerManager,
     private sessionService: SessionService,
   ) {
     this.streamService = new MessageStreamService(serverManager);
+
+    // Load persisted model selection
+    const savedModel = this.context.globalState.get<{
+      providerID: string;
+      modelID: string;
+    }>("selectedModel");
+    if (savedModel) {
+      console.log(
+        `[ChatViewProvider] Loaded persisted model: ${savedModel.modelID} (${savedModel.providerID})`,
+      );
+      this.selectedModel = savedModel;
+    }
   }
 
   resolveWebviewView(
@@ -66,7 +231,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Send initial state
           this.view?.webview.postMessage({
             type: "initState",
-            mode: this.sessionService.getMode(),
             serverStatus: this.serverManager.getStatus(),
             selectedModel: this.selectedModel,
             selectedAgent: this.selectedAgent,
@@ -96,10 +260,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           );
           break;
         }
-        case "toggleMode": {
-          await this.handleToggleMode();
-          break;
-        }
         case "newSession": {
           await this.sessionService.createNewSession();
           await this.handleGetSessions(); // Update list
@@ -123,6 +283,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.handleOpenDiff(message.file);
           break;
         }
+        case "openFile": {
+          await this.handleOpenFile(message.file);
+          break;
+        }
         case "reviewChanges": {
           this.handleReviewChanges();
           break;
@@ -133,6 +297,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "selectModel": {
           this.selectedModel = message.model;
+          // Persist selection
+          await this.context.globalState.update(
+            "selectedModel",
+            this.selectedModel,
+          );
+          console.log(
+            `[ChatViewProvider] Persisted model selection: ${this.selectedModel.modelID}`,
+          );
           break;
         }
         case "selectAgent": {
@@ -161,6 +333,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "stopRequest": {
           await this.handleStopRequest(message.sessionId);
+          break;
+        }
+        case "addToQueue": {
+          this.handleAddToQueue(message.text, message.files, message.contexts);
+          break;
+        }
+        case "removeFromQueue": {
+          this.handleRemoveFromQueue(message.index);
+          break;
+        }
+        case "clearQueue": {
+          this.handleClearQueue();
+          break;
+        }
+        case "executeQueue": {
+          this.handleExecuteQueue();
           break;
         }
         case "log": {
@@ -289,16 +477,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Gets the system instruction based on the current mode
+   * Gets the unified system instruction
    */
-  private getModeSystemInstruction(): string {
-    const mode = this.sessionService.getMode();
-
-    if (mode === "plan") {
-      return "[SYSTEM: Current Mode is PLANNING. Discuss architecture, answer questions, and create detailed plans. If you are presenting an implementation plan, you MUST start the plan section with the header '# Implementation Plan' to enable interactive features. Do NOT write full implementation code yet. If the user asks a question, answer it directly.]\n\n";
-    } else {
-      return "[SYSTEM: Current Mode is BUILDING. Focus on implementing the solution. Write code. IMPORTANT: If the user asks a question, ANSWER it first. Do not ignore user questions to blindly follow previous plans.]\n\n";
-    }
+  private getSystemInstruction(): string {
+    return "";
   }
 
   /**
@@ -340,7 +522,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const parts: NonNullable<SessionPromptData["body"]>["parts"] = [
         {
           type: "text",
-          text: (isNewSession ? this.getModeSystemInstruction() : "") + text,
+          text: (isNewSession ? this.getSystemInstruction() : "") + text,
         },
       ];
 
@@ -686,22 +868,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Handles mode toggle
-   */
-  private async handleToggleMode(): Promise<void> {
-    const newMode = this.sessionService.toggleMode();
-
-    this.view?.webview.postMessage({
-      type: "modeChanged",
-      mode: newMode,
-    });
-
-    vscode.window.showInformationMessage(
-      `Switched to ${newMode.toUpperCase()} mode`,
-    );
-  }
-
-  /**
    * Appends text to the prompt input
    */
   async appendToPrompt(text: string): Promise<void> {
@@ -719,13 +885,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: "addContext",
       context,
     });
-  }
-
-  /**
-   * Toggles the mode
-   */
-  async toggleMode(): Promise<void> {
-    await this.handleToggleMode();
   }
 
   /**
@@ -798,11 +957,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Refreshes the view with current state
    */
   private refreshView(): void {
-    const mode = this.sessionService.getMode();
-
     this.view?.webview.postMessage({
       type: "init",
-      mode,
     });
   }
 
@@ -863,9 +1019,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
+  <!-- History Sidebar -->
+  <div id="history-sidebar" class="history-sidebar">
+    <div class="history-header">
+        <span>Sessions</span>
+        <button id="close-history-btn" class="close-sidebar-btn" title="Close Sidebar">×</button>
+    </div>
+    <button id="new-chat-sidebar-btn" class="new-chat-btn-sidebar">+ New Chat</button>
+    <div id="session-list" class="session-list">
+        <!-- Sessions will be injected here -->
+    </div>
+    <div class="history-footer">
+        <!-- Optional footer content -->
+    </div>
+  </div>
+
   <div class="chat-container">
     <!-- FORBIDDEN TO REMOVE: Token counters and session info are required for user transparency. -->
-    <div id="chat-header" class="chat-header hidden" title="Important: Do not remove this header">
+    <div id="chat-header" class="chat-header" title="Important: Do not remove this header">
         <div class="header-info">
             <div class="stat-group">
                 <span class="stat-label">Tokens:</span>
@@ -884,6 +1055,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             <span class="stat-label">Session:</span>
             <span id="header-session-id" class="stat">New</span>
         </div>
+        <!-- History Toggle Button (Absolute Positioned relative to header/container, but we place it here for layout) -->
+        <button id="history-toggle" class="history-toggle" title="Chat History" style="position: static; margin-left: 8px; width: 20px; height: 20px; border: none;">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 2C4.68629 2 2 4.68629 2 8C2 11.3137 4.68629 14 8 14C11.3137 14 14 11.3137 14 8C14 4.68629 11.3137 2 8 2ZM8 12.8C5.34903 12.8 3.2 10.651 3.2 8C3.2 5.34903 5.34903 3.2 8 3.2C10.651 3.2 12.8 5.34903 12.8 8C12.8 10.651 10.651 12.8 8 12.8Z"/>
+                <path d="M9 5H7V8.5L9.5 11L10.5 10L8.5 8V5Z"/>
+            </svg>
+        </button>
     </div>
     <div id="messages" class="messages">
         <!-- Messages will be injected here -->
@@ -892,6 +1070,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             <h2>OpenCode</h2>
             <p>Ready to help you build.</p>
         </div>
+    </div>
+
+    <div id="queue-container" class="queue-container hidden">
+        <div class="queue-header">
+            <div class="queue-title-group">
+                <span class="queue-title">Prompt Queue</span>
+                <span id="queue-count" class="queue-badge">0</span>
+            </div>
+            <div class="queue-actions">
+                <button id="execute-queue-btn" class="queue-action-btn primary" title="Execute All">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M3 2V14L13 8L3 2Z"/>
+                    </svg>
+                    Run
+                </button>
+                <button id="clear-queue-btn" class="queue-action-btn" title="Clear All">Clear</button>
+                <button id="toggle-queue-btn" class="queue-action-btn icon-only" title="Hide Queue">×</button>
+            </div>
+        </div>
+        <div id="queue-list" class="queue-list"></div>
     </div>
 
     <div class="input-wrapper">
@@ -907,10 +1105,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 <div class="input-left">
                     <button id="add-context-btn" class="icon-btn" title="New Chat">+</button>
                     <div class="status-pills">
-                        <button id="mode-toggle" class="pill-btn" title="Current Mode">
-                            <span class="pill-icon">🛠️</span>
-                            <span class="mode-text">Planning</span>
-                        </button>
                         <button id="model-selector" class="pill-btn secondary" title="Current Model">
                             <span id="current-model-name">GLM-4.7 z.ai Coding Plan</span>
                         </button>
@@ -920,6 +1114,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     </div>
                 </div>
                 <div class="input-right">
+                    <button id="add-to-queue-btn" class="icon-btn" title="Add to Queue (Alt+Q)">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="8" y1="6" x2="21" y2="6"></line>
+                            <line x1="8" y1="12" x2="21" y2="12"></line>
+                            <line x1="8" y1="18" x2="21" y2="18"></line>
+                            <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                            <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                            <line x1="3" y1="18" x2="3.01" y2="18"></line>
+                        </svg>
+                    </button>
                     <button id="send-button" class="send-btn" title="Send (Shift+Enter)">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                             <path d="M8.25 3L14 8.75M14 8.75L8.25 14.5M14 8.75H2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -997,7 +1201,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async resolveDefaultModel(
     models: Array<{ providerID: string; modelID: string; name: string }>,
   ): Promise<void> {
-    // Only attempt if we are still on the hardcoded default
+    // Only attempt if we are still on the hardcoded default AND we haven't loaded a persisted model
+    // We check if the current model is exactly the hardcoded default to allow CLI sync.
+    // However, if we loaded from globalState, we want to keep that unless it's invalid.
+    // So, if we have a persisted model that is NOT the hardcoded default, we skip this.
+
+    const savedModel = this.context.globalState.get<{
+      providerID: string;
+      modelID: string;
+    }>("selectedModel");
+
+    // If we have a saved model and it matches what we currently have (meaning we loaded it in constructor),
+    // and it's NOT the hardcoded default, then we respect the user's choice and do NOT overwrite with CLI.
+    if (
+      savedModel &&
+      this.selectedModel.modelID === savedModel.modelID &&
+      this.selectedModel.providerID === savedModel.providerID &&
+      (this.selectedModel.modelID !== "big-pickle" ||
+        this.selectedModel.providerID !== "opencode")
+    ) {
+      return;
+    }
+
     if (
       this.selectedModel.modelID !== "big-pickle" ||
       this.selectedModel.providerID !== "opencode"
@@ -1285,5 +1510,94 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (error: any) {
       vscode.window.showErrorMessage(`Failed to open diff: ${error.message}`);
     }
+  }
+
+  /**
+   * Handles opening a file in the editor
+   */
+  private async handleOpenFile(filePath: string) {
+    try {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) return;
+
+      const fullPath = path.isAbsolute(filePath)
+        ? filePath
+        : path.join(workspaceFolder.uri.fsPath, filePath);
+      const fileUri = vscode.Uri.file(fullPath);
+
+      await vscode.commands.executeCommand("vscode.open", fileUri);
+    } catch (error: any) {
+      vscode.window.showErrorMessage(`Failed to open file: ${error.message}`);
+    }
+  }
+
+  /**
+   * Adds a message to the prompt queue
+   */
+  private handleAddToQueue(text: string, files?: string[], contexts?: any[]) {
+    this.queue.push({ text, files, contexts });
+    this.sendQueueUpdate();
+  }
+
+  /**
+   * Removes a message from the prompt queue
+   */
+  private handleRemoveFromQueue(index: number) {
+    if (index >= 0 && index < this.queue.length) {
+      this.queue.splice(index, 1);
+      this.sendQueueUpdate();
+    }
+  }
+
+  /**
+   * Clears the prompt queue
+   */
+  private handleClearQueue() {
+    this.queue = [];
+    this.sendQueueUpdate();
+  }
+
+  /**
+   * Executes the prompt queue sequentially
+   */
+  private async handleExecuteQueue() {
+    if (this.isExecutingQueue || this.queue.length === 0) {
+      return;
+    }
+
+    this.isExecutingQueue = true;
+    this.view?.webview.postMessage({ type: "queueExecutionStarted" });
+
+    try {
+      while (this.queue.length > 0) {
+        const item = this.queue[0];
+        // We await handleSendMessage to ensure sequential processing
+        // Note: For streaming, we might need more complex sync, but this is a solid start.
+        await this.handleSendMessage(item.text, item.files, item.contexts);
+
+        // Remove the processed item
+        this.queue.shift();
+        this.sendQueueUpdate();
+
+        // Small delay to allow UI/Server to settle
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } catch (error) {
+      console.error("[ChatViewProvider] Queue execution failed:", error);
+      vscode.window.showErrorMessage(`Queue execution error: ${error}`);
+    } finally {
+      this.isExecutingQueue = false;
+      this.view?.webview.postMessage({ type: "queueExecutionFinished" });
+    }
+  }
+
+  /**
+   * Sends the current queue state to the webview
+   */
+  private sendQueueUpdate() {
+    this.view?.webview.postMessage({
+      type: "queueUpdate",
+      queue: this.queue,
+    });
   }
 }

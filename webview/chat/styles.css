@@ -817,7 +817,10 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 }
 
 .progress-steps-list {
-  padding: 4px 0;
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 /* Hide progress section if list is empty */
@@ -831,65 +834,97 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 
 .step-item {
   display: flex;
-  align-items: flex-start;
-  padding: 8px 12px;
-  gap: 12px;
+  align-items: center;
+  padding: 4px 16px;
+  gap: 10px;
   position: relative;
-  transition: background 0.2s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: default;
+  min-height: 28px;
 }
 
 .step-item:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.04);
 }
 
-.step-item::before {
-  content: "";
-  position: absolute;
-  left: 20px;
-  top: 28px;
-  bottom: -8px;
-  width: 1px;
-  background: var(--border-color);
+.step-item.file-step {
+  cursor: pointer;
 }
 
-.step-item:last-child::before {
-  display: none;
+.step-item.file-step:hover .step-title {
+  color: var(--accent-color);
+  text-decoration: underline;
 }
 
 .step-icon {
-  width: 8px;
-  height: 8px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.step-icon-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--border-color);
-  margin-top: 4px;
-  z-index: 1;
-  transition: all 0.2s;
+  background: var(--text-secondary);
+  opacity: 0.5;
 }
 
-.step-icon.done {
+.step-icon.done .step-icon-dot {
   background: var(--vscode-charts-green);
-  box-shadow: 0 0 4px var(--vscode-charts-green);
+  opacity: 1;
+  box-shadow: 0 0 4px rgba(0, 255, 0, 0.4);
 }
 
-.step-icon.error {
+.step-icon.error .step-icon-dot {
   background: var(--vscode-charts-red);
+  opacity: 1;
+}
+
+.file-icon-img, .file-icon-svg {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: block; /* Ensure it takes space */
+}
+
+/* Ensure SVG strokes are crisp */
+.file-icon-svg {
+    shape-rendering: geometricPrecision;
 }
 
 .step-content {
   flex: 1;
+  display: flex; /* Flex layout for better alignment */
+  flex-direction: column; /* Stack title and details */
+  justify-content: center;
+  min-width: 0; /* Prevent overflow */
 }
 
 .step-title {
-  font-size: 12px;
-  color: var(--text-primary);
-  margin-bottom: 2px;
+  font-size: 13px; /* Slightly larger */
+  color: var(--text-primary); /* Use primary color for better readability */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+/* Make file name in title bolder if we can target it, otherwise just title is cleaner */
+.step-item.file-step .step-title {
+    font-weight: 500;
 }
 
 .step-meta {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--text-secondary); /* Meta/details pushing to secondary */
+  margin-top: 1px;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
 }
 
@@ -1307,3 +1342,183 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 }
 
 /* Fix main container when sidebar is open? No, it overlays. */
+/* --- Prompt Queue Styles --- */
+.queue-container {
+    background: var(--vscode-sideBar-background);
+    border-top: 1px solid var(--border-color);
+    max-height: 250px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.queue-container.hidden {
+    max-height: 0;
+    border-top: none;
+    display: none !important;
+}
+
+.queue-header {
+    padding: 8px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.queue-title-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.queue-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.queue-badge {
+    background: var(--accent-color);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 10px;
+}
+
+.queue-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.queue-action-btn {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 11px;
+    padding: 2px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.2s;
+}
+
+.queue-action-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+.queue-action-btn.primary {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+    color: white;
+}
+
+.queue-action-btn.primary:hover {
+    filter: brightness(1.1);
+}
+
+.queue-action-btn.icon-only {
+    padding: 2px 6px;
+    font-size: 16px;
+    border: none;
+}
+
+.queue-list {
+    overflow-y: auto;
+    flex: 1;
+    padding: 4px 0;
+}
+
+.queue-item {
+    padding: 8px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    transition: background 0.2s;
+}
+
+.queue-item:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.queue-item:last-child {
+    border-bottom: none;
+}
+
+.queue-item-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
+    flex: 1;
+}
+
+.queue-item-text {
+    font-size: 12px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.queue-item-meta {
+    font-size: 10px;
+    color: var(--text-secondary);
+    opacity: 0.6;
+    display: flex;
+    gap: 8px;
+}
+
+.queue-item-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.queue-item-remove {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    opacity: 0.5;
+}
+
+.queue-item-remove:hover {
+    background: var(--vscode-inputValidation-errorBackground);
+    color: var(--vscode-errorForeground);
+    opacity: 1;
+}
+
+/* Animations for Queue */
+@keyframes slideUp {
+    from { transform: translateY(100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.queue-item.new {
+    animation: slideUp 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.queue-item-status {
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-top: 4px;
+    display: inline-block;
+    border: 1px solid var(--border-color);
+    align-self: flex-start;
+}
