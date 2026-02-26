@@ -30,6 +30,7 @@ import { SessionService } from "./services/SessionService";
 import { ChatViewProvider } from "./providers/ChatViewProvider";
 import { StatusBarProvider } from "./providers/StatusBarProvider";
 import { PlanViewProvider } from "./providers/PlanViewProvider";
+import { DiffReviewProvider } from "./providers/DiffReviewProvider";
 
 /**
  * Global service instances.
@@ -271,6 +272,27 @@ export async function activate(context: vscode.ExtensionContext) {
         "opencode.showPlan",
         async (content: string) => {
           PlanViewProvider.show(context.extensionUri, content);
+        },
+      ),
+    );
+
+    // ============================================================================
+    // COMMAND: opencode.showDiffReview
+    // ============================================================================
+    // Purpose: Display a diff review panel for reviewing file changes
+    // Parameters:
+    //   - data: DiffData - The diff data containing changed files
+    // Side Effects:
+    //   - Opens new webview panel with diff content
+    //   - Provides per-file Approve/Reject buttons
+    // Usage: Called after AI generates code changes
+    // Integration: Uses DiffReviewProvider.show() for rendering
+    // ============================================================================
+    context.subscriptions.push(
+      vscode.commands.registerCommand(
+        "opencode.showDiffReview",
+        async (data) => {
+          DiffReviewProvider.show(context.extensionUri, data);
         },
       ),
     );

@@ -46,6 +46,7 @@
   let selectedFiles = [];
   /** @type {any[]} */
   let selectedContexts = [];
+  let selectedImages = [];
   let isSearchingFiles = false;
   let selectedSuggestionIndex = -1;
   /** @type {any[]} */
@@ -69,6 +70,9 @@
   /** @type {any[]} */
   let promptQueue = [];
   let isExecutingQueue = false;
+  /** @type {any | null} */
+  let quotaData = null;
+  let quotaIsRefreshing = false;
 
   // FORBIDDEN TO REMOVE: Do not remove token accumulation or header update logic.
   let sessionStats = {
@@ -102,6 +106,8 @@
   const tokensWriteSpan = document.getElementById("tokens-write");
   const sessionTimeSpan = document.getElementById("session-time");
   const headerSessionId = document.getElementById("header-session-id");
+  const taskNameSpan = document.getElementById("task-name");
+  const taskStatusSpan = document.getElementById("task-status");
   const filesChangedCount = document.getElementById("files-changed-count");
   const reviewChangesBtn = document.getElementById("review-changes-btn");
   /** @type {HTMLTextAreaElement | null} */
@@ -110,6 +116,7 @@
   );
   const sendButton = document.getElementById("send-button");
   const contextButton = document.getElementById("add-context-btn");
+  const attachImageButton = document.getElementById("attach-image-btn");
   const modelSelector = document.getElementById("model-selector");
   const agentSelector = document.getElementById("agent-selector");
   // const reviewChangesButton = document.getElementById("review-changes-btn"); // Future use
@@ -175,12 +182,13 @@
     });
     messageInput?.addEventListener("keydown", handleKeyDown);
     messageInput?.addEventListener("input", handleInput);
+    messageInput?.addEventListener("paste", handlePaste);
 
     // Bind History Events
     if (historyToggle) {
       historyToggle.addEventListener("click", () => {
         console.log("[OpenCode] Toggling history sidebar");
-        if (historySidebar) historySidebar.classList.add("visible");
+        if (historySidebar) historySidebar.classList.toggle("visible");
         vscode.postMessage({ type: "getSessions" });
       });
     } else {
@@ -216,6 +224,10 @@
 
     contextButton?.addEventListener("click", () => {
       vscode.postMessage({ type: "attachFiles" });
+    });
+
+    attachImageButton?.addEventListener("click", () => {
+      vscode.postMessage({ type: "attachImage" });
     });
 
 
@@ -298,7 +310,7 @@
         if (message.sessionId) {
           currentSessionId = message.sessionId;
           if (headerSessionId) {
-            headerSessionId.textContent = currentSessionId;
+            headerSessionId.textContent = formatSessionLabel(currentSessionId);
           }
         }
         if (message.selectedModel) {
@@ -352,9 +364,9 @@
         updateHeaderStats();
 
         if (message.message.edits) {
-          message.message.edits.forEach((/** @type {any} */ e) =>
-            sessionEdits.add(e.file),
-          );
+          message.message.edits.forEach((/** @type {any} */ e) => {
+            sessionEdits.add(e.file);
+          });
           updateFooterEdits();
         } else if (currentStreamingEdits.length > 0) {
           // merge them in for rendering.
@@ -390,8 +402,11 @@
         );
         sessionEdits.clear();
         message.messages.forEach((/** @type {any} */ m) => {
-          if (m.edits)
-            m.edits.forEach((/** @type {any} */ e) => sessionEdits.add(e.file));
+          if (m.edits) {
+            m.edits.forEach((/** @type {any} */ e) => {
+              sessionEdits.add(e.file);
+            });
+          }
         });
         updateFooterEdits();
         renderChatHistory(message.messages);
@@ -427,6 +442,20 @@
         }
         break;
 
+      case "filesAttached":
+        if (Array.isArray(message.files)) {
+          selectedFiles = [...selectedFiles, ...message.files.filter((f) => !selectedFiles.includes(f))];
+          updateFileChipsUI();
+        }
+        break;
+
+      case "imagesAttached":
+        if (Array.isArray(message.images)) {
+          selectedImages = [...selectedImages, ...message.images];
+          updateFileChipsUI();
+        }
+        break;
+
       case "fileSearchResults":
         showFileSuggestions(message.results);
         break;
@@ -434,7 +463,7 @@
       case "sessionsList":
         currentSessionId = message.currentSessionId;
         if (currentSessionId && headerSessionId) {
-          headerSessionId.textContent = currentSessionId;
+          headerSessionId.textContent = formatSessionLabel(currentSessionId);
         }
         renderSessionsList(message.sessions, message.currentSessionId);
         break;
@@ -453,10 +482,107 @@
         isExecutingQueue = false;
         updateQueueUIState();
         break;
+
+      case "quotaUpdate":
+        quotaData = message.data;
+        quotaIsRefreshing = false;
+        renderQuotaMonitor();
+        break;
     }
   });
 
   // --- Logic Functions ---
+
+  // ── Quota Monitor ────────────────────────────────────────────────────────────
+
+  function renderQuotaMonitor() {
+    const container = document.getElementById('quota-monitor-container');
+    if (!container) return;
+
+    if (!quotaData || !quotaData.platforms || quotaData.platforms.length === 0) {
+      container.innerHTML = '<div class="quota-empty">No quota data available.</div>';
+      return;
+    }
+
+    const lastUpdated = quotaData.lastUpdated
+      ? new Date(quotaData.lastUpdated).toLocaleTimeString()
+      : '';
+
+    let html = '';
+    for (const platform of quotaData.platforms) {
+      const statusClass = platform.status === 'error' ? 'quota-status-error'
+        : platform.status === 'warning' ? 'quota-status-warning'
+        : 'quota-status-ok';
+
+      html += `<div class="quota-platform ${statusClass}">`;
+      html += `<div class="quota-platform-header">`;
+      html += `<span class="quota-platform-title">${escapeHtml(platform.title || platform.account)}</span>`;
+      if (platform.accountLabel) {
+        html += `<span class="quota-account-label">${escapeHtml(platform.accountLabel)}</span>`;
+      }
+      html += `</div>`;
+
+      if (platform.status === 'error') {
+        html += `<div class="quota-error">${escapeHtml(platform.error || 'Error fetching quota')}</div>`;
+      } else {
+        for (const quota of platform.quotas) {
+          const pct = Math.max(0, Math.min(100, quota.remainPercent));
+          const barClass = pct < 15 ? 'quota-bar-critical' : pct < 30 ? 'quota-bar-low' : 'quota-bar-ok';
+          html += `<div class="quota-item">`;
+          html += `<div class="quota-item-header">`;
+          html += `<span class="quota-item-label">${escapeHtml(quota.label)}</span>`;
+          html += `<span class="quota-item-meta">${escapeHtml(quota.usedTotalDisplay || quota.percentLabel || '')}</span>`;
+          html += `</div>`;
+          html += `<div class="quota-bar-track">`;
+          html += `<div class="quota-bar-fill ${barClass}" style="width:${pct}%"></div>`;
+          html += `</div>`;
+          if (quota.resetLabel) {
+            html += `<div class="quota-reset-label">${escapeHtml(quota.resetLabel)}</div>`;
+          }
+          html += `</div>`;
+        }
+      }
+
+      html += `</div>`;
+    }
+
+    const refreshLabel = quotaIsRefreshing ? '↻ Refreshing…' : '↻ Refresh';
+    const lastUpdatedHtml = lastUpdated
+      ? `<span class="quota-last-updated">Updated ${lastUpdated}</span>`
+      : '';
+
+    container.innerHTML = `
+      <div class="quota-monitor-header">
+        <span class="quota-monitor-title">Quota Monitor</span>
+        <div class="quota-monitor-actions">
+          ${lastUpdatedHtml}
+          <button id="quota-refresh-btn" class="quota-refresh-btn${quotaIsRefreshing ? ' quota-refreshing' : ''}" title="Refresh quota data" ${quotaIsRefreshing ? 'disabled' : ''}>
+            ${refreshLabel}
+          </button>
+        </div>
+      </div>
+      <div class="quota-platforms">
+        ${html}
+      </div>
+    `;
+
+    document.getElementById('quota-refresh-btn')?.addEventListener('click', () => {
+      if (quotaIsRefreshing) return;
+      quotaIsRefreshing = true;
+      renderQuotaMonitor(); // re-render to show loading state
+      vscode.postMessage({ type: 'refreshQuota' });
+    });
+  }
+
+  /** @param {string} str */
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
   function renderSessionsList(/** @type {any[]} */ sessions, /** @type {string} */ activeId) {
     if (!sessionListContainer) return;
@@ -509,7 +635,9 @@
           // Optimistic update
           document
             .querySelectorAll(".session-item")
-            .forEach((el) => el.classList.remove("active"));
+            .forEach((el) => {
+              el.classList.remove("active");
+            });
           item.classList.add("active");
         }
       };
@@ -520,7 +648,7 @@
 
   function sendMessage() {
     const text = messageInput?.value.trim();
-    if (!text && selectedFiles.length === 0) return;
+    if (!text && selectedFiles.length === 0 && selectedImages.length === 0) return;
 
     // Add user message to UI
     addUserMessage(text || "", selectedFiles, selectedContexts);
@@ -531,6 +659,7 @@
       text,
       files: selectedFiles,
       contexts: selectedContexts,
+      images: selectedImages,
       agent: selectedAgent,
     });
 
@@ -541,6 +670,7 @@
     }
     selectedFiles = [];
     selectedContexts = [];
+    selectedImages = [];
     updateFileChipsUI();
     hideSuggestions();
 
@@ -559,22 +689,14 @@
     if (processing) {
       sendButton.classList.add("stop-btn");
       sendButton.title = "Stop Generation";
-      // Change to Stop Icon (Square)
-      sendButton.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor"/>
-        </svg>
-      `;
+      sendButton.textContent = "Stop";
     } else {
       sendButton.classList.remove("stop-btn");
-      sendButton.title = "Send (Shift+Enter)";
-      // Back to Send Icon (Right Arrow)
-      sendButton.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M8.25 3L14 8.75M14 8.75L8.25 14.5M14 8.75H2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      `;
+      sendButton.title = "Send (Enter)";
+      sendButton.textContent = "Send";
     }
+
+    updateTaskHeader();
   }
 
   function stopRequest() {
@@ -971,6 +1093,81 @@
       });
       filesPreviewContainer.appendChild(chip);
     });
+
+    selectedImages.forEach((image, index) => {
+      if (!image || !image.dataUrl) return;
+
+      const chip = document.createElement("div");
+      chip.className = "image-chip";
+
+      const preview = document.createElement("img");
+      preview.className = "image-chip-preview";
+      preview.src = image.dataUrl;
+      preview.alt = image.filename || "attached image";
+      preview.title = image.filename || "attached image";
+
+      const removeButton = document.createElement("button");
+      removeButton.className = "image-chip-remove";
+      removeButton.type = "button";
+      removeButton.title = "Remove image";
+      removeButton.setAttribute("aria-label", "Remove image");
+      removeButton.innerHTML = "&times;";
+      removeButton.addEventListener("click", () => {
+        selectedImages.splice(index, 1);
+        updateFileChipsUI();
+      });
+
+      chip.appendChild(preview);
+      chip.appendChild(removeButton);
+      filesPreviewContainer.appendChild(chip);
+    });
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error("Failed to read pasted image."));
+      };
+      reader.onerror = () => reject(reader.error || new Error("Failed to read pasted image."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handlePaste(event) {
+    if (!event.clipboardData || !event.clipboardData.items) return;
+
+    const imageFiles = [];
+    for (const item of Array.from(event.clipboardData.items)) {
+      if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (file) {
+        imageFiles.push(file);
+      }
+    }
+
+    if (imageFiles.length === 0) return;
+
+    event.preventDefault();
+
+    for (const file of imageFiles) {
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        selectedImages.push({
+          dataUrl,
+          filename: file.name || `pasted-image-${Date.now()}.png`,
+          size: file.size,
+        });
+      } catch (error) {
+        console.error("[OpenCode] Failed to process pasted image", error);
+      }
+    }
+
+    updateFileChipsUI();
   }
 
   // --- Suggestions Logic ---
@@ -1053,6 +1250,7 @@
     if (!messages || messages.length === 0) {
       messagesContainer.innerHTML = `
         <div id="empty-state" class="empty-state">
+            <div class="empty-icon-badge">✴</div>
             <div class="empty-brand">OpenCode</div>
             <p>Ready to help you build.</p>
         </div>`;
@@ -1132,12 +1330,16 @@
 
     const messageDiv = document.createElement("div");
     messageDiv.className = "message user";
-    
+
+    // Create bubble wrapper (holds attachments + text)
+    const bubbleDiv = document.createElement("div");
+    bubbleDiv.className = "user-bubble";
+
     // Add Attachments if any
     if ((files && files.length > 0) || (contexts && contexts.length > 0)) {
         const attachmentsDiv = document.createElement("div");
         attachmentsDiv.className = "message-attachments";
-        
+
         // Contexts
         contexts.forEach(ctx => {
             const chip = document.createElement("div");
@@ -1145,25 +1347,33 @@
             chip.innerHTML = `<span class="chip-icon">📄</span> ${ctx.file}:${ctx.lineInfo}`;
             attachmentsDiv.appendChild(chip);
         });
-        
+
         // Files
         files.forEach(path => {
             const chip = document.createElement("div");
             chip.className = "attachment-chip";
             const name = path.split(/[\\/]/).pop() || path;
-            attachmentsDiv.appendChild(chip);
             chip.innerHTML = name;
+            attachmentsDiv.appendChild(chip);
         });
-        
-        messageDiv.appendChild(attachmentsDiv);
+
+        bubbleDiv.appendChild(attachmentsDiv);
     }
 
     if (text) {
         const contentDiv = document.createElement("div");
         contentDiv.className = "message-content";
         contentDiv.textContent = text;
-        messageDiv.appendChild(contentDiv);
+        bubbleDiv.appendChild(contentDiv);
     }
+
+    messageDiv.appendChild(bubbleDiv);
+
+    // Avatar (initials circle, right side)
+    const avatarDiv = document.createElement("div");
+    avatarDiv.className = "user-avatar";
+    avatarDiv.textContent = "U";
+    messageDiv.appendChild(avatarDiv);
 
     messagesContainer?.appendChild(messageDiv);
     scrollToBottom();
@@ -1438,7 +1648,7 @@
                 
                 const stepObj = { title, type: "step", status: "pending", id: part.id, startTime: Date.now() };
                 currentStreamingSteps.push(stepObj);
-                currentStreamingSteps.push(stepObj);
+
                 const step = addProgressStep(currentStreamingCard, title);
                 if (step) {
                     // @ts-expect-error - Attach state
@@ -1627,13 +1837,14 @@
 
   function addToQueue() {
     const text = messageInput?.value.trim();
-    if (!text && selectedFiles.length === 0) return;
+    if (!text && selectedFiles.length === 0 && selectedImages.length === 0) return;
 
     vscode.postMessage({
       type: "addToQueue",
       text,
       files: selectedFiles,
-      contexts: selectedContexts
+      contexts: selectedContexts,
+      images: selectedImages,
     });
 
     // Clear input after adding
@@ -1643,6 +1854,7 @@
     }
     selectedFiles = [];
     selectedContexts = [];
+    selectedImages = [];
     updateFileChipsUI();
     
     // Show queue container if hidden
@@ -1736,18 +1948,42 @@
 
   function updateHeaderStats() {
       if (!chatHeader) return;
-      
+
       const total = sessionStats.input + sessionStats.output;
-      if (total > 0) {
-          chatHeader.classList.remove("hidden");
-      }
 
       if (sessionTokensSpan) sessionTokensSpan.textContent = total.toLocaleString();
-      if (tokensInSpan) tokensInSpan.textContent = `${sessionStats.input}i`;
-      if (tokensOutSpan) tokensOutSpan.textContent = `${sessionStats.output}o`;
-      if (tokensReadSpan) tokensReadSpan.textContent = `${sessionStats.read}r`;
-      if (tokensWriteSpan) tokensWriteSpan.textContent = `${sessionStats.write}w`;
-      if (sessionTimeSpan) sessionTimeSpan.textContent = `${(sessionStats.duration / 1000).toFixed(1)}s`;
+      if (tokensInSpan) tokensInSpan.textContent = `${sessionStats.input.toLocaleString()}`;
+      if (tokensOutSpan) tokensOutSpan.textContent = `${sessionStats.output.toLocaleString()}`;
+      if (tokensReadSpan) tokensReadSpan.textContent = `${sessionStats.read.toLocaleString()}`;
+      if (tokensWriteSpan) tokensWriteSpan.textContent = `${sessionStats.write.toLocaleString()}`;
+      if (sessionTimeSpan) sessionTimeSpan.textContent = formatDurationLabel(sessionStats.duration);
+      updateTaskHeader();
+  }
+
+  function formatDurationLabel(/** @type {number} */ duration) {
+    if (!duration || Number.isNaN(duration)) return "0ms";
+    if (duration < 1000) return `${Math.round(duration)}ms`;
+    return `${(duration / 1000).toFixed(1)}s`;
+  }
+
+  function formatSessionLabel(/** @type {string | null} */ sessionId) {
+    if (!sessionId) return "new";
+    const safe = String(sessionId).replace(/[^a-zA-Z0-9_-]/g, "");
+    return safe.slice(0, 8) || "new";
+  }
+
+  function updateTaskHeader() {
+    if (taskNameSpan) {
+      taskNameSpan.textContent = isProcessing
+        ? "Active request"
+        : "No active task";
+    }
+
+    if (taskStatusSpan) {
+      taskStatusSpan.textContent = isProcessing ? "RUNNING" : "IDLE";
+      taskStatusSpan.classList.toggle("idle", !isProcessing);
+      taskStatusSpan.classList.toggle("running", isProcessing);
+    }
   }
 
   function updateStreamingTask(/** @type {HTMLElement} */ card, /** @type {string} */ text, /** @type {string} */ type = "text") {
@@ -1827,11 +2063,15 @@
     if (usage.total > 0) {
         const tokensSpan = document.createElement("span");
         tokensSpan.className = "usage-stat";
-        tokensSpan.textContent = `${usage.total.toLocaleString()} tokens`;
+        tokensSpan.textContent = `${usage.total.toLocaleString()} tok`;
         usageContainer.appendChild(tokensSpan);
     }
 
     if (usage.duration) {
+        const sep = document.createElement("span");
+        sep.textContent = "·";
+        sep.style.opacity = "0.35";
+        usageContainer.appendChild(sep);
         const timeSpan = document.createElement("span");
         timeSpan.className = "usage-stat";
         timeSpan.textContent = `${(usage.duration / 1000).toFixed(1)}s`;
@@ -1853,7 +2093,7 @@
     
     const titleContainer = document.createElement("div");
     titleContainer.className = "task-title";
-    titleContainer.innerHTML = `<span>${displayTitle}</span>`;
+    titleContainer.innerHTML = `<span class="task-title-dot"></span><span>${displayTitle}</span>`;
     header.appendChild(titleContainer);
 
     // Usage Container (Right side)
@@ -1888,7 +2128,7 @@
     thoughts.className = "thought-section hidden";
     thoughts.innerHTML = `
         <div class="thought-header">
-            <span>Thinking Process</span>
+            <span>Thoughts</span>
             <span class="collapse-icon">▾</span>
         </div>
         <div class="thought-content"></div>

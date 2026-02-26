@@ -101,6 +101,15 @@ import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { SessionService } from "../services/SessionService";
 import { MessageStreamService } from "../services/MessageStreamService";
 import type { Session, SessionPromptData } from "@opencode-ai/sdk";
+import { QuotaService } from "../services/QuotaService";
+
+type QueuedPrompt = {
+  text: string;
+  files?: string[];
+  contexts?: any[];
+  images?: any[];
+  agent?: string;
+};
 
 /**
  * Provides the chat interface webview for the OpenCode extension.
@@ -138,20 +147,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Unsubscribe function for stream service cleanup */
   private unsubscribe?: () => void;
 
+  /** Service for monitoring AI platform quota usage */
+  private quotaService: QuotaService;
+
   /** Currently selected AI model (persisted to global state) */
-  private selectedModel: { providerID: string; modelID: string } = {
+  private selectedModel: { providerID: string; modelID: string; providerName?: string } = {
     providerID: "opencode",
     modelID: "big-pickle",
+    providerName: undefined,
   };
+
+  /** Cache of available models returned from the server (used to resolve providerName) */
+  // Cache of available models returned from the server (used to resolve providerName)
+  // This cached list allows the extension to enrich selections sent from the webview
+  // when the webview omits providerName.
+  private availableModels?: Array<{
+    providerID: string;
+    modelID: string;
+    name: string;
+    providerName: string;
+  }>;
 
   /** Currently selected CLI agent */
   private selectedAgent: string = "general";
 
   /** Queue of prompts awaiting execution */
-  private queue: any[] = [];
+  private queue: QueuedPrompt[] = [];
 
   /** Flag indicating if queue is currently being executed */
   private isExecutingQueue: boolean = false;
+
+  private isProcessingRequest: boolean = false;
 
   /**
    * Creates a new ChatViewProvider instance.
@@ -175,11 +201,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private sessionService: SessionService,
   ) {
     this.streamService = new MessageStreamService(serverManager);
+    this.quotaService = new QuotaService();
+    this.quotaService.on("quotaUpdate", (data) => {
+      this.view?.webview.postMessage({ type: "quotaUpdate", data });
+    });
 
     // Load persisted model selection
     const savedModel = this.context.globalState.get<{
       providerID: string;
       modelID: string;
+      providerName?: string;
     }>("selectedModel");
     if (savedModel) {
       console.log(
@@ -211,17 +242,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           // Try to resolve the current model's provider if it's generic
           if (models.length > 0) {
-            const resolved = models.find(
-              (m) => m.modelID === this.selectedModel.modelID,
-            );
-            if (
-              resolved &&
-              resolved.providerID !== this.selectedModel.providerID
-            ) {
+            const resolved = models.find((m) => m.modelID === this.selectedModel.modelID);
+            if (resolved && resolved.providerID !== this.selectedModel.providerID) {
               console.log(
                 `Resolved model ${this.selectedModel.modelID} to provider ${resolved.providerID}`,
               );
               this.selectedModel.providerID = resolved.providerID;
+              // Also store providerName when available
+              this.selectedModel.providerName = resolved.providerName || resolved.providerID;
             }
           }
 
@@ -250,13 +278,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           await this.handleGetSessions();
           this.refreshView();
+
+          // Send quota data or trigger initial fetch
+          const quotaData = this.quotaService.cachedData;
+          if (quotaData) {
+            this.view?.webview.postMessage({ type: "quotaUpdate", data: quotaData });
+          } else {
+            this.quotaService.refreshQuota().catch(() => {});
+          }
           break;
         }
-        case "sendMessage": {
+        case "sendMessage":
+        case "sendPrompt": {
           await this.handleSendMessage(
             message.text,
             message.files,
             message.contexts,
+            message.images,
+            message.agent,
           );
           break;
         }
@@ -295,19 +334,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await this.handleSearchFiles(message.query);
           break;
         }
-        case "selectModel": {
-          this.selectedModel = message.model;
+        case "selectModel":
+        case "setModel": {
+          // Normalize incoming model to always include providerName.
+          const incoming =
+            message.model ||
+            {
+              providerID: message.providerID,
+              modelID: message.modelID,
+            } ||
+            {};
+          let providerName: string | undefined = incoming.providerName;
+          if (!providerName) {
+            // Try to resolve from cached models if available
+            const found = this.availableModels?.find(
+              (m) => m.providerID === incoming.providerID && m.modelID === incoming.modelID,
+            );
+            providerName = found?.providerName || incoming.providerID;
+          }
+
+          this.selectedModel = {
+            providerID: incoming.providerID,
+            modelID: incoming.modelID,
+            providerName,
+          };
+
           // Persist selection
-          await this.context.globalState.update(
-            "selectedModel",
-            this.selectedModel,
-          );
+          await this.context.globalState.update("selectedModel", this.selectedModel);
           console.log(
-            `[ChatViewProvider] Persisted model selection: ${this.selectedModel.modelID}`,
+            `[ChatViewProvider] Persisted model selection: ${this.selectedModel.modelID} (${this.selectedModel.providerName})`,
           );
           break;
         }
-        case "selectAgent": {
+        case "selectAgent":
+        case "setAgent": {
           this.selectedAgent = message.agent;
           break;
         }
@@ -323,7 +383,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await this.handleGetSessions();
           break;
         }
-        case "loadSession": {
+        case "loadSession":
+        case "openSession": {
           await this.handleLoadSession(message.sessionId);
           break;
         }
@@ -336,7 +397,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "addToQueue": {
-          this.handleAddToQueue(message.text, message.files, message.contexts);
+          this.handleAddToQueue(
+            message.text,
+            message.files,
+            message.contexts,
+            message.images,
+            message.agent,
+          );
+          break;
+        }
+        case "attachFiles": {
+          await this.handleAttachFiles();
+          break;
+        }
+        case "attachImage": {
+          await this.handleAttachImage();
           break;
         }
         case "removeFromQueue": {
@@ -367,6 +442,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
+        case "refreshQuota": {
+          await this.quotaService.refreshQuota();
+          break;
+      }
       }
     });
 
@@ -396,6 +475,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.unsubscribe = undefined;
       }
       statusSubscription.dispose();
+      this.quotaService.dispose();
       this.view = undefined;
     });
   }
@@ -490,7 +570,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     text: string,
     files?: string[],
     contexts?: any[],
+    images?: any[],
+    agent?: string,
   ): Promise<void> {
+    this.isProcessingRequest = true;
     try {
       const client = await this.serverManager.ensureRunning();
       const session = await this.sessionService.getCurrentSession();
@@ -509,10 +592,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             text: text,
           },
         ],
+        images,
         time: {
           created: Date.now(),
         },
       });
+      await this.handleGetSessions();
 
       console.log(
         `[ChatViewProvider] Session ${session.id}: ${existingMessages.length} existing messages. isNew: ${isNewSession}`,
@@ -581,13 +666,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
+      if (images && images.length > 0) {
+        for (const img of images) {
+          if (!img?.dataUrl) {
+            continue;
+          }
+          const imageMarkdown = `![${img.filename || "image"}](${img.dataUrl})`;
+          parts.push({
+            type: "text",
+            text: imageMarkdown,
+          });
+        }
+      }
+
       // Send the message using the SDK
       const startTime = Date.now();
       const response = await client.session.prompt({
         path: { id: session.id },
         body: {
           model: this.selectedModel,
-          agent: this.selectedAgent,
+          agent: agent || this.selectedAgent,
           parts: parts,
         },
       });
@@ -646,7 +744,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.handleGetSessions();
 
             // Retry sending (recursive call)
-            return this.handleSendMessage(text, files, contexts);
+            return this.handleSendMessage(text, files, contexts, images, agent);
           } catch (recreateError) {
             console.error(
               "[ChatViewProvider] Failed to re-create session:",
@@ -730,6 +828,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: "error",
         message: errorMessage,
       });
+    } finally {
+      this.isProcessingRequest = false;
+      if (!this.isExecutingQueue && this.queue.length > 0) {
+        void this.handleExecuteQueue();
+      }
     }
   }
 
@@ -943,6 +1046,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async handleAttachImage(): Promise<void> {
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      openLabel: "Attach Images to Chat",
+      filters: {
+        Images: ["png", "jpg", "jpeg", "gif", "webp"],
+      },
+    });
+
+    if (!uris || uris.length === 0) {
+      return;
+    }
+
+    const images = [];
+    for (const uri of uris) {
+      try {
+        const data = await vscode.workspace.fs.readFile(uri);
+        const base64 = Buffer.from(data).toString("base64");
+        const mimeType = this.getMimeType(uri.fsPath);
+        images.push({
+          dataUrl: `data:${mimeType};base64,${base64}`,
+          filename: uri.fsPath.split(/[\\/]/).pop() || uri.fsPath,
+          size: data.byteLength,
+        });
+      } catch (error) {
+        console.error(`Failed to read image ${uri.fsPath}:`, error);
+      }
+    }
+
+    if (images.length > 0) {
+      this.view?.webview.postMessage({
+        type: "imagesAttached",
+        images,
+      });
+    }
+  }
+
+  private getMimeType(filePath: string): string {
+    const ext = filePath.split(".").pop()?.toLowerCase();
+    const mimeMap: Record<string, string> = {
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      webp: "image/webp",
+    };
+    return mimeMap[ext || ""] || "image/png";
+  }
+
   /**
    * Handles opening settings
    */
@@ -970,34 +1122,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.Uri.joinPath(
         this.context.extensionUri,
         "webview",
-        "chat",
-        "styles.css",
-      ),
-    );
-    const highlightCssUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(
-        this.context.extensionUri,
-        "webview",
-        "chat",
-        "lib",
-        "highlight.css",
-      ),
-    );
-    const vendorScriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(
-        this.context.extensionUri,
-        "webview",
-        "chat",
-        "lib",
-        "vendor.js",
+        "shared",
+        "dist",
+        "chat.css",
       ),
     );
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(
         this.context.extensionUri,
         "webview",
-        "chat",
-        "app.js",
+        "shared",
+        "dist",
+        "chat.js",
       ),
     );
 
@@ -1006,151 +1142,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: blob:; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource};">
   <link href="${styleUri}" rel="stylesheet">
-  <link href="${highlightCssUri}" rel="stylesheet">
   <title>OpenCode Chat</title>
 </head>
 <body>
-  <div id="loading-overlay" class="loading-overlay">
-    <div class="loading-content">
-      <div class="spinner"></div>
-      <div id="loading-text" class="loading-text">Starting OpenCode...</div>
-    </div>
-  </div>
-
-  <!-- History Sidebar -->
-  <div id="history-sidebar" class="history-sidebar">
-    <div class="history-header">
-        <span>Sessions</span>
-        <button id="close-history-btn" class="close-sidebar-btn" title="Close Sidebar">×</button>
-    </div>
-    <button id="new-chat-sidebar-btn" class="new-chat-btn-sidebar">+ New Chat</button>
-    <div id="session-list" class="session-list">
-        <!-- Sessions will be injected here -->
-    </div>
-    <div class="history-footer">
-        <!-- Optional footer content -->
-    </div>
-  </div>
-
-  <div class="chat-container">
-    <!-- FORBIDDEN TO REMOVE: Token counters and session info are required for user transparency. -->
-    <div id="chat-header" class="chat-header" title="Important: Do not remove this header">
-        <div class="header-info">
-            <div class="stat-group">
-                <span class="stat-label">Tokens:</span>
-                <span id="session-tokens" class="stat" title="Total Tokens">0</span>
-                <div class="stat-details">
-                    <span id="tokens-in" title="Input Tokens">0i</span>
-                    <span id="tokens-out" title="Output Tokens">0o</span>
-                    <span id="tokens-read" title="Cache Read">0r</span>
-                    <span id="tokens-write" title="Cache Write">0w</span>
-                </div>
-            </div>
-            <span class="separator">|</span>
-            <span id="session-time" class="stat">0s</span>
-        </div>
-        <div class="header-session-info">
-            <span class="stat-label">Session:</span>
-            <span id="header-session-id" class="stat">New</span>
-        </div>
-        <!-- History Toggle Button (Absolute Positioned relative to header/container, but we place it here for layout) -->
-        <button id="history-toggle" class="history-toggle" title="Chat History" style="position: static; margin-left: 8px; width: 20px; height: 20px; border: none;">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8 2C4.68629 2 2 4.68629 2 8C2 11.3137 4.68629 14 8 14C11.3137 14 14 11.3137 14 8C14 4.68629 11.3137 2 8 2ZM8 12.8C5.34903 12.8 3.2 10.651 3.2 8C3.2 5.34903 5.34903 3.2 8 3.2C10.651 3.2 12.8 5.34903 12.8 8C12.8 10.651 10.651 12.8 8 12.8Z"/>
-                <path d="M9 5H7V8.5L9.5 11L10.5 10L8.5 8V5Z"/>
-            </svg>
-        </button>
-    </div>
-    <div id="messages" class="messages">
-        <!-- Messages will be injected here -->
-        <div id="empty-state" class="empty-state">
-            <div class="empty-icon">✴️</div>
-            <h2>OpenCode</h2>
-            <p>Ready to help you build.</p>
-        </div>
-    </div>
-
-    <div id="queue-container" class="queue-container hidden">
-        <div class="queue-header">
-            <div class="queue-title-group">
-                <span class="queue-title">Prompt Queue</span>
-                <span id="queue-count" class="queue-badge">0</span>
-            </div>
-            <div class="queue-actions">
-                <button id="execute-queue-btn" class="queue-action-btn primary" title="Execute All">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M3 2V14L13 8L3 2Z"/>
-                    </svg>
-                    Run
-                </button>
-                <button id="clear-queue-btn" class="queue-action-btn" title="Clear All">Clear</button>
-                <button id="toggle-queue-btn" class="queue-action-btn icon-only" title="Hide Queue">×</button>
-            </div>
-        </div>
-        <div id="queue-list" class="queue-list"></div>
-    </div>
-
-    <div class="input-wrapper">
-        <div class="files-preview" id="files-preview"></div>
-        <div class="input-container">
-            <textarea 
-                id="message-input" 
-                placeholder="Ask anything (Ctrl+L), @ to mention, / for workflows"
-                rows="1"
-            ></textarea>
-            
-            <div class="input-footer">
-                <div class="input-left">
-                    <button id="add-context-btn" class="icon-btn" title="New Chat">+</button>
-                    <div class="status-pills">
-                        <button id="model-selector" class="pill-btn secondary" title="Current Model">
-                            <span id="current-model-name">GLM-4.7 z.ai Coding Plan</span>
-                        </button>
-                        <button id="agent-selector" class="pill-btn secondary" title="Current Agent">
-                            <span id="current-agent-name">General</span>
-                        </button>
-                    </div>
-                </div>
-                <div class="input-right">
-                    <button id="add-to-queue-btn" class="icon-btn" title="Add to Queue (Alt+Q)">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="8" y1="6" x2="21" y2="6"></line>
-                            <line x1="8" y1="12" x2="21" y2="12"></line>
-                            <line x1="8" y1="18" x2="21" y2="18"></line>
-                            <line x1="3" y1="6" x2="3.01" y2="6"></line>
-                            <line x1="3" y1="12" x2="3.01" y2="12"></line>
-                            <line x1="3" y1="18" x2="3.01" y2="18"></line>
-                        </svg>
-                    </button>
-                    <button id="send-button" class="send-btn" title="Send (Shift+Enter)">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                            <path d="M8.25 3L14 8.75M14 8.75L8.25 14.5M14 8.75H2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-        </div>
-        <div id="model-dropdown" class="dropdown-menu hidden">
-            <div class="model-search-container">
-                <input type="text" id="model-search-input" placeholder="Search models or providers..." />
-            </div>
-            <div id="model-list-container"></div>
-        </div>
-        <div id="agent-dropdown" class="dropdown-menu hidden">
-            <div class="model-search-container">
-                <input type="text" id="agent-search-input" placeholder="Search agents..." />
-            </div>
-            <div id="agent-list-container"></div>
-        </div>
-    </div>
-  </div>
-
-  <div id="suggestions" class="suggestions-menu hidden"></div>
-
-  <script src="${vendorScriptUri}"></script>
-  <script src="${scriptUri}"></script>
+  <div id="root"></div>
+  <script type="module" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
@@ -1199,7 +1197,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Resolves the default model from the CLI config
    */
   private async resolveDefaultModel(
-    models: Array<{ providerID: string; modelID: string; name: string }>,
+    models: Array<{ providerID: string; modelID: string; name: string; providerName?: string }>,
   ): Promise<void> {
     // Only attempt if we are still on the hardcoded default AND we haven't loaded a persisted model
     // We check if the current model is exactly the hardcoded default to allow CLI sync.
@@ -1249,6 +1247,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.selectedModel = {
             providerID: match.providerID,
             modelID: match.modelID,
+            providerName: match.providerName || match.providerID,
           };
           console.log(
             `[ChatViewProvider] Synced default model to: ${match.modelID} (${match.providerID})`,
@@ -1315,7 +1314,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           `Discovered ${models.length} total models across all providers`,
         );
 
-        // Try to sync default model before sending to UI
+        // Cache models for later resolution and try to sync default model before sending to UI
+        this.availableModels = models;
         await this.resolveDefaultModel(models);
 
         this.view?.webview.postMessage({
@@ -1329,6 +1329,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (error) {
       console.error("Failed to get models:", error);
       // Send empty list to allow UI to proceed
+      this.availableModels = [];
       this.view?.webview.postMessage({
         type: "modelsList",
         models: [],
@@ -1534,8 +1535,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Adds a message to the prompt queue
    */
-  private handleAddToQueue(text: string, files?: string[], contexts?: any[]) {
-    this.queue.push({ text, files, contexts });
+  private handleAddToQueue(
+    text: string,
+    files?: string[],
+    contexts?: any[],
+    images?: any[],
+    agent?: string,
+  ) {
+    this.queue.push({ text, files, contexts, images, agent });
     this.sendQueueUpdate();
   }
 
@@ -1573,7 +1580,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const item = this.queue[0];
         // We await handleSendMessage to ensure sequential processing
         // Note: For streaming, we might need more complex sync, but this is a solid start.
-        await this.handleSendMessage(item.text, item.files, item.contexts);
+        await this.handleSendMessage(
+          item.text,
+          item.files,
+          item.contexts,
+          item.images,
+          item.agent,
+        );
 
         // Remove the processed item
         this.queue.shift();

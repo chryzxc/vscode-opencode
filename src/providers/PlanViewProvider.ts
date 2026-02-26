@@ -80,6 +80,7 @@ export class PlanViewProvider {
         enableScripts: true,
         localResourceRoots: [
           vscode.Uri.file(path.join(extensionUri.fsPath, 'webview', 'plan')),
+          vscode.Uri.file(path.join(extensionUri.fsPath, 'webview', 'shared', 'dist')),
           vscode.Uri.file(path.join(extensionUri.fsPath, 'node_modules'))
         ]
       }
@@ -111,106 +112,37 @@ export class PlanViewProvider {
   }
 
   private _getHtmlForWebview(webview: vscode.Webview, plan: import('../types/Plan').ImplementationPlan) {
-    // Local path to main script run in the webview
-    const scriptPathOnDisk = vscode.Uri.file(
-      path.join(this._extensionUri.fsPath, 'webview', 'plan', 'app.js')
-    );
-    const scriptUri = webview.asWebviewUri(scriptPathOnDisk);
 
-    // Local path to styles
-    const stylesPathOnDisk = vscode.Uri.file(
-      path.join(this._extensionUri.fsPath, 'webview', 'plan', 'styles.css')
-    );
-    const stylesUri = webview.asWebviewUri(stylesPathOnDisk);
+    const scriptUri = webview.asWebviewUri(vscode.Uri.file(
+      path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'plan.js')
+    ));
+    const stylesUri = webview.asWebviewUri(vscode.Uri.file(
+      path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'chat.css')
+    ));
 
-    // Use a nonce to only allow specific scripts to be run
     const nonce = getNonce();
+    const planDataJson = JSON.stringify(plan);
+
+    // Badge chunk is extracted by Vite — load it if present
+    const badgeChunkUri = webview.asWebviewUri(vscode.Uri.file(
+      path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'badge.js')
+    ));
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
     <link href="${stylesUri}" rel="stylesheet">
     <title>Implementation Plan</title>
 </head>
 <body>
-    <div id="app">
-        <header>
-            <div class="header-top">
-                <h1>${plan.goal}</h1>
-                <div class="status-badge">In Review</div>
-            </div>
-        </header>
-
-        ${
-          plan.description
-            ? `
-        <section class="description-section">
-            <div class="description-content">${plan.description}</div>
-        </section>
-        `
-            : ""
-        }
-
-        <section class="files-section">
-            <h2>Proposed Changes</h2>
-            <div class="card-list">
-                ${plan.files
-                  .map(
-                    (file) => `
-                    <div class="card-item file-item">
-                        <span class="file-tag ${file.type}">${file.type}</span>
-                        <span class="file-path">${file.path}</span>
-                    </div>
-                `,
-                  )
-                  .join("")}
-            </div>
-        </section>
-
-        <section class="steps-section">
-            <h2>Task Checklist</h2>
-            <div class="card-list">
-                ${plan.steps
-                  .map(
-                    (step, index) => `
-                    <div class="card-item step-item ${step.completed ? "completed" : ""}">
-                        <input type="checkbox" id="step-${index}" ${step.completed ? "checked" : ""}>
-                        <label for="step-${index}" class="step-label">${step.title}</label>
-                    </div>
-                `,
-                  )
-                  .join("")}
-            </div>
-        </section>
-
-        <section class="verification-section">
-            <h2>Verification Plan</h2>
-            <div class="card-list">
-                ${plan.verification
-                  .map(
-                    (v) => `
-                    <div class="card-item verification-item">
-                        <span class="v-type">${v.type}</span>
-                        <span class="v-desc">${v.description}</span>
-                    </div>
-                `,
-                  )
-                  .join("")}
-            </div>
-        </section>
-
-        <div id="plan-content" style="display:none" data-raw="${encodeURIComponent(plan.rawContent)}"></div>
-        <div class="action-bar">
-            <button id="proceed-btn" class="btn-primary">▶ Proceed to Implementation</button>
-        </div>
-    </div>
-
+    <div id="root"></div>
     <script nonce="${nonce}">
-        const planData = ${JSON.stringify(plan)};
+        window.__PLAN_DATA__ = ${planDataJson};
     </script>
+    <script nonce="${nonce}" src="${badgeChunkUri}"></script>
     <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
