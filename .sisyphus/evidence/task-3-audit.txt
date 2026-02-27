@@ -1,0 +1,26 @@
+HistorySidebar update audit - Task 3
+
+Files changed:
+- webview/shared/src/chat/PanelComponents.tsx (HistorySidebar)
+
+What I changed
+- Show session title (fallback: truncated ses_<id>)
+- Show formatted createdAt timestamp when available (local date + hh:mm)
+- Create button now posts { type: 'createSession' }
+- Session row click posts { type: 'switchSession', sessionId }
+- Delete button posts { type: 'deleteSession', sessionId }
+- Active session visually highlighted with background and ring
+- Preserved sidebar open/close behavior and absolute overlay
+
+Compile check
+- Ran: (in webview/shared) npx tsc --noEmit
+- Result: command executed (no compile errors reported by tool)
+
+Notes
+- Kept message type names identical to existing contracts; replaced "newSession" and "loadSession" usages with createSession/switchSession per task requirements.
+- Timestamp formatting uses toLocaleDateString + toLocaleTimeString (HH:MM)
+
+Todo
+- Append learnings to .sisyphus/notepads/chat-extension-antigravity-rebuild/learnings.md (done)
+
+End of audit

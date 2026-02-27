@@ -57,7 +57,9 @@ import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as net from "net";
 import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk";
+import { createLogger } from "../utils/Logger";
 
+const log = createLogger("ServerManager");
 /**
  * Server status states for state machine.
  *
@@ -69,6 +71,9 @@ import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk";
  * @property {string} error - Server failed or crashed
  */
 export type ServerStatus = "idle" | "starting" | "running" | "error";
+
+const SERVER_OUTPUT_LOG_BUDGET_CHARS = 16_384;
+const SERVER_OUTPUT_RECENT_BUFFER_CHARS = 8_192;
 
 /**
  * Manages the OpenCode CLI server lifecycle and connection.
@@ -124,6 +129,9 @@ export class OpencodeServerManager {
 
   /** Timer for auto-reconnect delay (null when not reconnecting) */
   private reconnectTimer: NodeJS.Timeout | null = null;
+
+  /** Prevents reconnect scheduling during intentional shutdown */
+  private isDisposed = false;
 
   /** Current server status (for state machine) */
   private _status: ServerStatus = "idle";
@@ -182,11 +190,23 @@ export class OpencodeServerManager {
    * @see createOpencodeClient for SDK client creation
    */
   async ensureRunning(): Promise<OpencodeClient> {
+    this.isDisposed = false;
+
     // Fast path: Return existing client if already connected
     // Note: We assume the client is still valid. In the future, we might
     // want to ping the server to verify the connection is actually alive.
-    if (this.client) {
-      return this.client;
+    if (this.client && this.port > 0) {
+      const reachable = await this.isPortReachable(this.port);
+      if (reachable) {
+        return this.client;
+      }
+
+      log.warn("Detected stale client connection; restarting server client", {
+        port: this.port,
+      });
+      this.client = null;
+      this.port = 0;
+      this.setStatus("idle");
     }
 
     this.setStatus("starting");
@@ -197,22 +217,22 @@ export class OpencodeServerManager {
 
     if (configuredPort > 0) {
       try {
+        const reachable = await this.isPortReachable(configuredPort);
+        if (!reachable) {
+          throw new Error(`Configured port ${configuredPort} is not reachable`);
+        }
+
         // Try to create client with configured port
         this.client = createOpencodeClient({
           baseUrl: `http://localhost:${configuredPort}`,
         });
 
         this.port = configuredPort;
-        console.log(
-          `Connected to existing OpenCode server on port ${configuredPort}`,
-        );
+        log.serverEvent("connect", { port: configuredPort });
         this.setStatus("running");
         return this.client;
       } catch (error) {
-        // Connection failed - maybe server isn't running on that port
-        // We'll try starting a new server instead
-        console.log(`Failed to connect to port ${configuredPort}:`, error);
-        // Don't set error status yet; we might succeed in starting a new server
+        log.warn("Failed to connect to configured port", { port: configuredPort, error });
       }
     }
 
@@ -275,7 +295,75 @@ export class OpencodeServerManager {
     this.port = await this.findAvailablePort();
 
     return new Promise((resolve, reject) => {
-      console.log(`Starting OpenCode server on port ${this.port}...`);
+      log.serverEvent("start", { port: this.port });
+      let recentServerOutput = "";
+      const stdoutLogState = { loggedChars: 0, suppressed: false };
+      const stderrLogState = { loggedChars: 0, suppressed: false };
+      let settled = false;
+      let startupTimeout: NodeJS.Timeout | null = null;
+
+      const appendRecentOutput = (chunk: string) => {
+        if (!chunk) return;
+        recentServerOutput += chunk;
+        if (recentServerOutput.length > SERVER_OUTPUT_RECENT_BUFFER_CHARS) {
+          recentServerOutput = recentServerOutput.slice(
+            -SERVER_OUTPUT_RECENT_BUFFER_CHARS,
+          );
+        }
+      };
+
+      const logServerChunk = (
+        channel: "stdout" | "stderr",
+        chunk: string,
+        state: { loggedChars: number; suppressed: boolean },
+      ) => {
+        if (!chunk) return;
+        const normalized = chunk.replace(/\r/g, "").trim();
+        if (!normalized) return;
+
+        if (state.loggedChars >= SERVER_OUTPUT_LOG_BUDGET_CHARS) {
+          if (!state.suppressed) {
+            state.suppressed = true;
+            console.warn(
+              `[OpenCode Server ${channel}] output suppressed after ${SERVER_OUTPUT_LOG_BUDGET_CHARS} chars (to prevent log/disk bloat)`,
+            );
+          }
+          return;
+        }
+
+        const remaining = SERVER_OUTPUT_LOG_BUDGET_CHARS - state.loggedChars;
+        const snippet =
+          normalized.length > remaining
+            ? `${normalized.slice(0, remaining)}...[truncated]`
+            : normalized;
+        state.loggedChars += snippet.length;
+
+        if (channel === "stderr") {
+          console.error(`[OpenCode Server Error] ${snippet}`);
+        } else {
+          console.log(`[OpenCode Server] ${snippet}`);
+        }
+      };
+
+      const settleResolve = (client: OpencodeClient) => {
+        if (settled) return;
+        settled = true;
+        if (startupTimeout) {
+          clearTimeout(startupTimeout);
+          startupTimeout = null;
+        }
+        resolve(client);
+      };
+
+      const settleReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        if (startupTimeout) {
+          clearTimeout(startupTimeout);
+          startupTimeout = null;
+        }
+        reject(error);
+      };
 
       // Step 2: Configure spawn options
       // Set working directory to workspace root if available
@@ -305,49 +393,65 @@ export class OpencodeServerManager {
       // The server prints "Server running" or "listening" when ready
       this.serverProcess.stdout?.on("data", (data) => {
         const output = data.toString();
-        console.log(`[OpenCode Server] ${output}`);
+        appendRecentOutput(output);
+        logServerChunk("stdout", output, stdoutLogState);
 
         // Look for server ready indicator
         if (output.includes("Server running") || output.includes("listening")) {
           if (!serverReady) {
             serverReady = true;
             // Server is ready - connect and resolve promise
-            this.connectToServer().then(resolve).catch(reject);
+            this.connectToServer().then(settleResolve).catch((error) => {
+              settleReject(
+                error instanceof Error ? error : new Error(String(error)),
+              );
+            });
           }
         }
       });
 
       // Log stderr for debugging (server errors/warnings)
       this.serverProcess.stderr?.on("data", (data) => {
-        console.error(`[OpenCode Server Error] ${data.toString()}`);
+        const output = data.toString();
+        appendRecentOutput(output);
+        logServerChunk("stderr", output, stderrLogState);
       });
 
       // Handle spawn errors (e.g., opencode CLI not found)
       this.serverProcess.on("error", (error) => {
-        console.error("Failed to start OpenCode server:", error);
+        log.error("Failed to start server", { port: this.port, error });
         this.setStatus("error");
 
-        // ENOENT means the opencode command wasn't found
-        // Show user-friendly message with installation instructions
         if (error.message.includes("ENOENT")) {
           vscode.window.showErrorMessage(
             "OpenCode CLI not found. Please install it first: npm install -g opencode-ai",
           );
         }
 
-        reject(error);
+        settleReject(error instanceof Error ? error : new Error(String(error)));
       });
 
       // Handle server process exit (normal or abnormal)
       this.serverProcess.on("exit", (code) => {
-        console.log(`OpenCode server exited with code ${code}`);
+        log.info("Server process exited", { exitCode: code, port: this.port });
         this.serverProcess = null;
         this.client = null;
+        this.port = 0;
         this.setStatus(code === 0 ? "idle" : "error");
+
+        if (!serverReady) {
+          const recentTail = recentServerOutput.trim().slice(-800);
+          const details = recentTail
+            ? ` Recent output: ${recentTail}`
+            : "";
+          settleReject(
+            new Error(`OpenCode server exited before ready (code ${code}).${details}`),
+          );
+        }
 
         // Auto-reconnect after 5 seconds if exit was unexpected
         // This handles server crashes or external restarts
-        if (!this.reconnectTimer) {
+        if (!this.isDisposed && code !== 0 && !this.reconnectTimer) {
           this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
             this.ensureRunning().catch(console.error);
@@ -357,10 +461,14 @@ export class OpencodeServerManager {
 
       // Step 5: Timeout after 10 seconds
       // If server doesn't become ready within 10 seconds, fail fast
-      setTimeout(() => {
+      startupTimeout = setTimeout(() => {
         if (!serverReady) {
           this.setStatus("error");
-          reject(new Error("Server startup timeout"));
+          const recentTail = recentServerOutput.trim().slice(-800);
+          const details = recentTail
+            ? ` Recent output: ${recentTail}`
+            : "";
+          settleReject(new Error(`Server startup timeout.${details}`));
         }
       }, 10000);
     });
@@ -396,6 +504,7 @@ export class OpencodeServerManager {
     });
 
     console.log(`Connected to OpenCode server on port ${this.port}`);
+    log.serverEvent("connect", { port: this.port });
     this.setStatus("running");
     return this.client;
   }
@@ -513,6 +622,8 @@ export class OpencodeServerManager {
    * @see deactivate in extension.ts for cleanup call site
    */
   dispose() {
+    this.isDisposed = true;
+
     // Cancel any pending reconnect timer
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -523,16 +634,14 @@ export class OpencodeServerManager {
     if (this.serverProcess) {
       console.log("Stopping OpenCode server...");
 
-      // Platform-specific process termination
-      // On Windows, we need to kill the process tree to ensure the CLI and its children are killed
       if (process.platform === "win32" && this.serverProcess.pid) {
         try {
-          // taskkill is the Windows command for process termination
-          // /T kills the process tree (children)
-          // /F forces termination (doesn't wait for graceful shutdown)
           cp.execSync(`taskkill /pid ${this.serverProcess.pid} /T /F`);
         } catch (e) {
-          // Ignore error if process is already dead or access denied
+          log.debug("Failed to kill Windows process tree", {
+            pid: this.serverProcess.pid,
+            error: e,
+          });
         }
       } else {
         // On Unix systems, process.kill() sends SIGTERM
@@ -545,6 +654,7 @@ export class OpencodeServerManager {
 
     // Clear client reference and reset status
     this.client = null;
+    this.port = 0;
     this.setStatus("idle");
   }
 
@@ -606,8 +716,37 @@ export class OpencodeServerManager {
     // Only fire event if status actually changed
     // This prevents redundant notifications and UI updates
     if (this._status !== status) {
+      const oldStatus = this._status;
       this._status = status;
+      log.debug("Server status changed", { oldStatus, newStatus: status });
       this._onStatusChange.fire(status);
     }
+  }
+
+  private async isPortReachable(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      let settled = false;
+
+      const finish = (ok: boolean) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        socket.destroy();
+        resolve(ok);
+      };
+
+      socket.setTimeout(800);
+      socket.once("connect", () => finish(true));
+      socket.once("error", () => finish(false));
+      socket.once("timeout", () => finish(false));
+
+      try {
+        socket.connect(port, "127.0.0.1");
+      } catch {
+        finish(false);
+      }
+    });
   }
 }

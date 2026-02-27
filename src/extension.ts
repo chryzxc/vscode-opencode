@@ -31,16 +31,17 @@ import { ChatViewProvider } from "./providers/ChatViewProvider";
 import { StatusBarProvider } from "./providers/StatusBarProvider";
 import { PlanViewProvider } from "./providers/PlanViewProvider";
 import { DiffReviewProvider } from "./providers/DiffReviewProvider";
+import { createLogger } from "./utils/Logger";
 
-/**
- * Global service instances.
- *
- * These are module-level variables to allow command handlers to access services.
- * Services are initialized during activation and disposed during deactivation.
- *
- * @see activate for initialization logic
- * @see deactivate for cleanup logic
- */
+const log = createLogger("Extension");
+//  * Global service instances.
+//  *
+//  * These are module-level variables to allow command handlers to access services.
+//  * Services are initialized during activation and disposed during deactivation.
+//  *
+//  * @see activate for initialization logic
+//  * @see deactivate for cleanup logic
+//  */
 let serverManager: OpencodeServerManager;
 let sessionService: SessionService;
 let chatViewProvider: ChatViewProvider;
@@ -337,6 +338,15 @@ export async function activate(context: vscode.ExtensionContext) {
       ),
     );
 
+    context.subscriptions.push(
+      vscode.commands.registerCommand(
+        "opencode.planProceed",
+        async (payload: { rawPlan: string; comments: Array<{ id: string; anchor: { startLine: number; endLine: number; selectedText: string }; text: string; createdAt: number; }> }) => {
+          await chatViewProvider.handlePlanProceed(payload);
+        },
+      ),
+    );
+
     // ============================================================================
     // PHASE 4: Auto-Start Server (Optional)
     // ============================================================================
@@ -350,10 +360,9 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     console.log("OpenCode extension activated successfully");
+    log.info("Extension activated successfully");
   } catch (error) {
-    // Activation failed - log and notify user but don't crash
-    console.error("Failed to activate OpenCode extension:", error);
-    vscode.window.showErrorMessage(`OpenCode activation failed: ${error}`);
+    log.error("Extension activation failed", { error }, error);
   }
 }
 
@@ -390,20 +399,8 @@ export async function activate(context: vscode.ExtensionContext) {
  * @see OpencodeServerManager.dispose for server cleanup details
  */
 export function deactivate() {
-  console.log("OpenCode extension deactivating...");
-
-  // Clean up server manager - stops server process and closes connections
-  if (serverManager) {
-    serverManager.dispose();
-  }
-
-  // Clean up status bar provider - removes status bar items
-  if (statusBarProvider) {
-    statusBarProvider.dispose();
-  }
-
-  // Note: WebView providers and commands are automatically cleaned up by VSCode
-  // through context.subscriptions, so we don't need to dispose them manually.
+  log.info("Extension deactivating");
 
   console.log("OpenCode extension deactivated");
+  log.info("Extension deactivated successfully");
 }

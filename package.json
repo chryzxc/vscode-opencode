@@ -101,15 +101,44 @@
           "type": "boolean",
           "default": true,
           "description": "Persist chat sessions across VS Code restarts"
+        },
+        "opencode.logging.level": {
+          "type": "string",
+          "enum": ["error", "warn", "info", "debug"],
+          "default": "info",
+          "description": "Minimum log level to output"
+        },
+        "opencode.logging.enableConsole": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable console output for logs"
+        },
+        "opencode.logging.enableFile": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable file output for logs"
+        },
+        "opencode.logging.maxFileSize": {
+          "type": "number",
+          "default": 5242880,
+          "description": "Maximum log file size in bytes before rotation (default: 5MB)"
+        },
+        "opencode.logging.maxFiles": {
+          "type": "number",
+          "default": 3,
+          "description": "Maximum number of backup log files to keep"
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run webview:build && npm run compile",
     "compile": "node esbuild.config.js",
     "watch": "node esbuild.config.js --watch",
-    "test": "node ./out/test/runTest.js",
+    "webview:build": "npm --prefix webview/shared run build",
+    "webview:watch": "npm --prefix webview/shared run build -- --watch",
+    "test": "node --test tests/*.test.mjs tests/webview/*.test.mjs",
+    "test:webview-regression": "node --test tests/*.test.mjs tests/webview/*.test.mjs",
     "lint": "eslint src --ext ts"
   },
   "devDependencies": {

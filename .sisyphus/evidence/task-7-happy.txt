@@ -1,0 +1,14 @@
+Webview TypeScript check (cd webview/shared && npx tsc --noEmit):
+OK - npx tsc --noEmit completed without errors (noEmit)
+
+Root compile (npm run compile):
+OK - npm run compile completed: "Build complete!"
+
+Summary of changes:
+- Injected window.__PLAN_DATA__ envelope from PlanViewProvider with shape: { raw, parsed, comments, revision }
+- Added message handlers in PlanViewProvider for addComment, updateComment, deleteComment, proceedWithPlan
+- Stored comments in-memory keyed by planId (fallback 'default') and post commentsUpdated after mutations
+- Extended PlanShell.tsx to read comments/revision, maintain local comments state, listen for commentsUpdated, and expose postAddComment/postUpdateComment/postDeleteComment helpers on window
+
+Next steps:
+- Run tsc in webview/shared and root compile; capture outputs and replace placeholders above.

@@ -1,0 +1,10 @@
+npm run compile (root)
+
+> opencode-vscode@0.1.0 compile
+> node esbuild.config.js
+
+Build complete!
+
+npx tsc --noEmit (webview/shared)
+
+(no output)

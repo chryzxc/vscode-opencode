@@ -1,0 +1,5 @@
+Task 12 completed: enrichMessageWithPlan hardened
+- Added 200-char minimum guard
+- Tightened soft keyword detection to require structural markers
+- npm run compile: success
+- npx tsc --noEmit (webview/shared): success

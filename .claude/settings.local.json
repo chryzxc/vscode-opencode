@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_serena_serena__find_file",
+      "mcp__plugin_serena_serena__read_file",
+      "mcp__plugin_serena_serena__activate_project",
+      "mcp__plugin_serena_serena__list_dir",
+      "Bash(npm test)",
+      "Bash(npm test tests/plan-parser.test.mjs)",
+      "Bash(git status tests/*.test.mjs)",
+      "mcp__plugin_serena_serena__find_symbol",
+      "mcp__plugin_serena_serena__replace_content",
+      "mcp__plugin_serena_serena__search_for_pattern",
+      "mcp__plugin_serena_serena__execute_shell_command",
+      "Bash(npm run webview:build)",
+      "mcp__plugin_serena_serena__create_text_file",
+      "Bash(npm test -- mcp-lsp-panels)",
+      "Bash(npm test -- panel-layout)"
+    ]
+  }
+}

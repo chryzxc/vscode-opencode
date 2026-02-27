@@ -1,0 +1,46 @@
+Task 19 - Integrated E2E workflow verification
+Date: 2026-02-26
+
+Scope audited (code-level end-to-end):
+- src/providers/ChatViewProvider.ts
+- src/providers/PlanViewProvider.ts
+- src/extension.ts
+- webview/shared/src/chat/ChatShell.tsx
+- webview/shared/src/chat/PanelComponents.tsx
+- webview/shared/src/chat/MessageComponents.tsx
+- webview/shared/src/chat/lib/store.ts
+- webview/shared/src/chat/lib/messageHandler.ts
+- webview/shared/src/chat/lib/types.ts
+- webview/shared/src/plan/PlanShell.tsx
+
+Defects fixed:
+1) Session CRUD handler mismatch
+   - Fix: ChatViewProvider now handles `createSession` alias with `newSession`, and `switchSession` alias with `loadSession`/`openSession`.
+
+2) Quota message contract mismatch
+   - Fix: ChatViewProvider now posts `{ type: "quotaData", data }` for quota updates and ready-state cached quota push.
+   - Fix: webview messageHandler now accepts both `quotaData` and `quotaUpdate` and dispatches `SET_QUOTA_DATA`.
+
+3) Image attachment payload normalization gap
+   - Fix: PanelComponents send flow now posts structured `attachments` as `images` (including queue path) instead of raw dataUrl strings.
+   - Fix: ChatViewProvider normalizes incoming image payloads, persists session user message images as data URL strings, and emits markdown image parts for SDK prompt body.
+
+Flow verification results:
+1. Chat send flow (typed->sent->thread->cleared): PASS
+2. Plan detection (response->enrichMessageWithPlan->button): PASS
+3. Plan viewer (__PLAN_DATA__ path): PASS
+4. Comments flow (selection->popover->submit->right panel): PASS
+5. Proceed flow (button->proceedWithPlan->handlePlanProceed->write->"Proceed"->close): PASS
+6. Image attachment flow (paste->chip->send->thumbnail): PASS
+7. Quota monitor flow (QuotaService emit->provider push->webview dispatch/render): PASS
+8. Session CRUD flow (create/switch/delete->list updates): PASS
+
+Verification commands:
+- webview/shared: `npx tsc --noEmit` => PASS
+- project root: `npx tsc --noEmit` => FAIL (TS5110 in repo tsconfig: module/commonjs vs moduleResolution/node16)
+- project root: `npm run compile` => PASS (Build complete!)
+
+LSP diagnostics (changed files, severity=error):
+- src/providers/ChatViewProvider.ts => clean
+- webview/shared/src/chat/PanelComponents.tsx => clean
+- webview/shared/src/chat/lib/messageHandler.ts => clean
