@@ -648,7 +648,6 @@ export function ModelDropdown() {
         <div className="oc-popover absolute bottom-full left-0 z-30 mb-1.5 w-72 rounded-xl border border-oc-border bg-oc-panel shadow-xl overflow-hidden">
           <div className="px-3 pt-3 pb-2">
             <input
-              autoFocus
               value={modelSearchQuery}
               onChange={(e) => dispatch({ type: 'SET_MODEL_SEARCH', payload: e.target.value })}
               placeholder="Search models..."
@@ -731,7 +730,6 @@ export function AgentDropdown() {
         <div className="oc-popover absolute bottom-full left-0 z-30 mb-1.5 w-64 rounded-xl border border-oc-border bg-oc-panel shadow-xl overflow-hidden">
           <div className="px-3 pt-3 pb-2">
             <input
-              autoFocus
               value={agentSearchQuery}
               onChange={(e) => dispatch({ type: 'SET_AGENT_SEARCH', payload: e.target.value })}
               placeholder="Search agents..."
