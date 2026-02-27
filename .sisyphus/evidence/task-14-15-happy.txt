@@ -1,0 +1,17 @@
+T14+T15 implemented: composer image paste/preview/remove and thread rendering
+
+Files changed:
+- webview/shared/src/chat/PanelComponents.tsx: added paste handler, attachment chips, include images in send payload, clear attachments after send
+- webview/shared/src/chat/MessageComponents.tsx: render message.images as thumbnails
+- webview/shared/src/chat/lib/types.ts: added optional images/attachments fields on Message
+
+Verification:
+- npx tsc --noEmit (webview/shared) completed successfully
+- npm run compile completed successfully
+
+Notes:
+- Attachments are stored in AppState.attachments as AttachmentItem objects.
+- Pasted images are converted to base64 data URLs and included in send payload as `images`.
+- After send, CLEAR_ATTACHMENTS is dispatched to reset composer state.
+
+Date: 2026-02-26

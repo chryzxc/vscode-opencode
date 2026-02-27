@@ -4,7 +4,7 @@ import { AppProvider, useAppDispatch, useAppState } from './lib/store';
 import { createMessageHandler } from './lib/messageHandler';
 import vscode from './lib/vscode';
 
-import { StickyHeader, HistorySidebar, InputWrapper, QueueContainer, ActiveTaskPanel, QuotaMonitor } from './PanelComponents';
+import { StickyHeader, HistorySidebar, InputWrapper, QueueContainer, ActiveTaskPanel, SubagentsPanel, QuotaMonitor, TodoPanel, McpPanel, LspPanel, MobileRightSummary } from './PanelComponents';
 import { StreamingCard } from './StreamingComponents';
 import { AssistantMessage, EmptyState, ErrorBanner, PermissionCard, ThinkingBubble, UserMessage } from './MessageComponents';
 import type { Message } from './lib/types';
@@ -40,24 +40,35 @@ function ChatContent() {
     return () => clearInterval(interval);
   }, []);
 
-  // Auto-scroll to bottom on new messages / streaming updates
+  // Auto-scroll only when conversation content changes (not on every render).
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  });
+  }, [
+    state.messages.length,
+    state.streaming?.messageId,
+    state.streaming?.content,
+    state.streaming?.reasoning,
+    state.streaming?.steps.length,
+    state.streaming?.edits.length,
+    state.streaming?.isActive
+  ]);
 
   const showThinking = state.isProcessing && !state.streaming;
 
   return (
-    <div className="oc-shell relative flex h-screen overflow-hidden bg-[var(--oc-bg)] text-[var(--oc-text)]">
-      {/* History sidebar (absolute overlay) */}
+    <div className="oc-shell relative flex h-screen overflow-hidden bg-oc-bg text-oc-text">
+      {/* === LEFT: History sidebar overlay (hamburger-toggled, absolute positioned) === */}
       <HistorySidebar />
 
-      {/* Main column */}
+      {/* === MIDDLE: Main conversation column (flex-1, scrollable message list + input) === */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* Sticky header — session id + history button */}
+        {/* FORBIDDEN TO REMOVE: StickyHeader (token/session stats) - core UX for token visibility */}
         <StickyHeader />
 
         {/* Message list */}
+        <div className="block [@media(min-width:1100px)]:hidden">
+          <MobileRightSummary />
+        </div>
         <div className="flex-1 min-h-0 overflow-y-auto py-4">
           {state.messages.length === 0 && !state.streaming && !state.isProcessing ? (
             <EmptyState />
@@ -68,7 +79,7 @@ function ChatContent() {
           ))}
 
           {state.messages.map((msg: Message) => {
-            const role = msg.role ?? (msg.parts ? 'assistant' : 'user');
+            const role = msg.role ?? msg.info?.role ?? 'user';
             const key =
               msg.info?.id ??
               `${role}-${(msg.content ?? msg.text ?? '').slice(0, 32)}-${msg.parts?.length ?? 0}-${msg.steps?.length ?? 0}`;
@@ -97,10 +108,14 @@ function ChatContent() {
         <InputWrapper />
       </div>
 
-      {/* Right panel — token stats */}
-      <aside className="oc-right-panel hidden w-[320px] shrink-0 overflow-y-auto self-stretch border-l border-[var(--oc-border)] bg-[var(--oc-panel)] [@media(min-width:1100px)]:block">
+      {/* === RIGHT: Extended panel — desktop only (>= 1100px), contains stats/quota/tasks === */}
+      <aside className="oc-right-panel hidden w-[368px] shrink-0 overflow-y-auto self-stretch border-l border-oc-border bg-oc-panel [@media(min-width:1100px)]:block">
         <ActiveTaskPanel />
+        <SubagentsPanel />
         <QuotaMonitor />
+        <TodoPanel />
+        <McpPanel />
+        <LspPanel />
       </aside>
     </div>
   );

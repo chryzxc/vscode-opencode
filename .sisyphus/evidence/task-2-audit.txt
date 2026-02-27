@@ -1,0 +1,41 @@
+Task 2 — 3-Panel Shell Scaffolding Audit
+==========================================
+Date: 2026-02-26
+
+LAYOUT STRUCTURE VERIFIED:
+--------------------------
+File: webview/shared/src/chat/ChatShell.tsx
+
+The 3-panel layout is confirmed and documented:
+
+1. ROOT: <div className="oc-shell relative flex h-screen overflow-hidden bg-[var(--oc-bg)] text-[var(--oc-text)]">
+   - Full viewport, flex row, no overflow
+
+2. LEFT PANEL: <HistorySidebar />
+   - Absolute positioned overlay (hamburger-toggled)
+   - Does NOT consume flex space from middle column
+   - Toggled via isSidebarOpen state
+
+3. MIDDLE PANEL: <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+   - Takes all remaining horizontal space (flex-1)
+   - Vertical flex column
+   - Contains:
+     a. StickyHeader (FORBIDDEN TO REMOVE guard present)
+     b. Scrollable message list (flex-1, overflow-y-auto)
+     c. QueueContainer (conditional)
+     d. InputWrapper (always shown)
+
+4. RIGHT PANEL: <aside className="oc-right-panel hidden w-[320px] ...[@media(min-width:1100px)]:block">
+   - 320px wide, hidden by default
+   - Becomes block at >= 1100px via Tailwind responsive prefix
+   - Contains: ActiveTaskPanel + QuotaMonitor
+   - Has border-l separator, uses --oc-panel background
+
+RESPONSIVE BEHAVIOR:
+- Mobile (< 1100px): Right panel hidden. Left sidebar toggles as overlay.
+- Desktop (>= 1100px): Right panel visible alongside middle column.
+
+TYPESCRIPT: npx tsc --noEmit → PASS (no errors)
+EXTENSION BUILD: npm run compile → "Build complete!"
+
+VERDICT: PASS — 3-panel structure properly scaffolded with section comments.

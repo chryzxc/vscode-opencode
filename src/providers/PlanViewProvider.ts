@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { PlanParser } from '../services/PlanParser';
 
 export class PlanViewProvider {
@@ -8,6 +9,9 @@ export class PlanViewProvider {
   private readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
   private _disposables: vscode.Disposable[] = [];
+  // Simple in-memory store for comments keyed by planId (fallback key 'default')
+  // Keep comments as a simple local structure to avoid cross-package import issues
+  private _commentsByPlan: Map<string, { id: string; anchor: { startLine: number; endLine: number; selectedText: string }; text: string; createdAt: number; }[]> = new Map();
 
   private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, content: string) {
     this._panel = panel;
@@ -52,6 +56,41 @@ export class PlanViewProvider {
             );
             this._panel.dispose(); // Close plan view after starting execution
             return;
+          case 'addComment': {
+            const planId = message.planId ?? 'default';
+            const existing = this._commentsByPlan.get(planId) ?? [];
+            existing.push(message.comment);
+            this._commentsByPlan.set(planId, existing);
+            this._panel.webview.postMessage({ type: 'commentsUpdated', comments: existing });
+            return;
+          }
+          case 'updateComment': {
+            const planId = message.planId ?? 'default';
+            const existing = this._commentsByPlan.get(planId) ?? [];
+            const idx = existing.findIndex(c => c.id === message.comment.id);
+            if (idx >= 0) {
+              existing[idx] = message.comment;
+              this._commentsByPlan.set(planId, existing);
+            }
+            this._panel.webview.postMessage({ type: 'commentsUpdated', comments: existing });
+            return;
+          }
+          case 'deleteComment': {
+            const planId = message.planId ?? 'default';
+            const existing = this._commentsByPlan.get(planId) ?? [];
+            const next = existing.filter(c => c.id !== message.id);
+            this._commentsByPlan.set(planId, next);
+            this._panel.webview.postMessage({ type: 'commentsUpdated', comments: next });
+            return;
+          }
+          case 'proceedWithPlan': {
+            const payload = {
+              rawPlan: message.rawPlan ?? '',
+              comments: message.comments ?? [],
+            };
+            vscode.commands.executeCommand('opencode.planProceed', payload);
+            return;
+          }
         }
       },
       null,
@@ -89,6 +128,10 @@ export class PlanViewProvider {
     PlanViewProvider.currentPanel = new PlanViewProvider(panel, extensionUri, content);
   }
 
+  public static closeCurrentPanel() {
+    PlanViewProvider.currentPanel?._panel.dispose();
+  }
+
   public dispose() {
     PlanViewProvider.currentPanel = undefined;
 
@@ -121,12 +164,20 @@ export class PlanViewProvider {
     ));
 
     const nonce = getNonce();
-    const planDataJson = JSON.stringify(plan);
+    // Inject wrapper payload: raw + parsed + comments + revision
+    const planData = {
+      raw: plan.rawContent ?? '',
+      parsed: plan,
+      comments: [],
+      revision: 0,
+    };
+    const planDataJson = JSON.stringify(planData);
 
-    // Badge chunk is extracted by Vite — load it if present
-    const badgeChunkUri = webview.asWebviewUri(vscode.Uri.file(
-      path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'badge.js')
-    ));
+    // Badge chunk is extracted by Vite — only include it if the file actually exists on disk
+    const badgeChunkPath = path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'badge.js');
+    const badgeChunkTag = fs.existsSync(badgeChunkPath)
+      ? `<script nonce="${nonce}" src="${webview.asWebviewUri(vscode.Uri.file(badgeChunkPath))}"></script>`
+      : '<!-- badge.js not found, skipped -->';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -142,7 +193,7 @@ export class PlanViewProvider {
     <script nonce="${nonce}">
         window.__PLAN_DATA__ = ${planDataJson};
     </script>
-    <script nonce="${nonce}" src="${badgeChunkUri}"></script>
+    ${badgeChunkTag}
     <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

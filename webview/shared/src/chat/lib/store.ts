@@ -3,6 +3,9 @@ import React, { createContext, useContext, useMemo, useReducer } from 'react';
 import type {
   Agent,
   AppState,
+  AttachmentItem,
+  ThinkingLevel,
+  TodoItem,
   ContextItem,
   FileResult,
   Message,
@@ -11,6 +14,8 @@ import type {
   QuotaData,
   Session,
   SessionStats,
+  SubagentDetail,
+  SubagentSummary,
   StreamingState,
   StreamingStep
 } from './types';
@@ -49,9 +54,17 @@ export const initialState: AppState = {
   serverStatus: 'connecting',
   modelDropdownOpen: false,
   agentDropdownOpen: false,
+  thinkingDropdownOpen: false,
   errorMessages: [],
   quotaData: null,
-  quotaIsRefreshing: false
+  quotaIsRefreshing: false,
+  attachments: [],
+  thinkingLevel: 'medium',
+  todoItems: [],
+  subagentsByParentMessageId: {},
+  subagentDetailsById: {},
+  selectedSubagentId: null,
+  subagentsPanelOpen: true
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
@@ -99,11 +112,25 @@ export type AppAction =
   | { type: 'SET_SIDEBAR_OPEN'; payload: boolean }
   | { type: 'SET_MODEL_DROPDOWN_OPEN'; payload: boolean }
   | { type: 'SET_AGENT_DROPDOWN_OPEN'; payload: boolean }
+  | { type: 'SET_THINKING_DROPDOWN_OPEN'; payload: boolean }
   | { type: 'SET_MODEL_SEARCH'; payload: string }
   | { type: 'SET_AGENT_SEARCH'; payload: string }
   | { type: 'ADD_ERROR_MESSAGE'; payload: string }
   | { type: 'SET_QUOTA_DATA'; payload: QuotaData | null }
-  | { type: 'SET_QUOTA_REFRESHING'; payload: boolean };
+  | { type: 'SET_QUOTA_REFRESHING'; payload: boolean }
+
+  | { type: 'ADD_ATTACHMENT'; payload: AttachmentItem }
+  | { type: 'REMOVE_ATTACHMENT'; payload: string }
+  | { type: 'CLEAR_ATTACHMENTS' }
+  | { type: 'SET_THINKING_LEVEL'; payload: ThinkingLevel }
+  | { type: 'SET_TODO_ITEMS'; payload: TodoItem[] }
+  | { type: 'UPDATE_TODO_ITEM'; payload: { id: string; patch: Partial<TodoItem> } }
+  | { type: 'ADD_TODO_ITEM'; payload: TodoItem }
+  | { type: 'UPSERT_SUBAGENT_SUMMARIES'; payload: Record<string, SubagentSummary[]> }
+  | { type: 'UPSERT_SUBAGENT_DETAIL'; payload: Record<string, SubagentDetail> }
+  | { type: 'SELECT_SUBAGENT'; payload: string | null }
+  | { type: 'SET_SUBAGENTS_PANEL_OPEN'; payload: boolean }
+  | { type: 'CLEAR_SUBAGENTS_FOR_SESSION' };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   return {
@@ -156,7 +183,16 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case 'ACCUMULATE_SESSION_STATS':
       return { ...state, sessionStats: mergeStats(state.sessionStats, action.payload) };
     case 'SET_STREAMING':
-      return { ...state, streaming: action.payload };
+      return action.payload
+        ? {
+            ...state,
+            streaming: {
+              ...action.payload,
+              reasoningEvents: action.payload.reasoningEvents ?? [],
+              progressEvents: action.payload.progressEvents ?? []
+            }
+          }
+        : { ...state, streaming: null };
     case 'UPDATE_STREAMING_CONTENT': {
       if (!state.streaming) {
         return state;
@@ -173,7 +209,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const reasoning = action.payload.append
         ? `${state.streaming.reasoning}${action.payload.reasoning}`
         : action.payload.reasoning;
-      return { ...state, streaming: { ...state.streaming, reasoning } };
+      const chunk = action.payload.reasoning.trim();
+      const reasoningEvents =
+        chunk.length > 0
+          ? [...state.streaming.reasoningEvents, { text: chunk, createdAt: Date.now() }]
+          : state.streaming.reasoningEvents;
+      return { ...state, streaming: { ...state.streaming, reasoning, reasoningEvents } };
     }
     case 'ADD_STREAMING_STEP': {
       if (!state.streaming) {
@@ -183,7 +224,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         streaming: {
           ...state.streaming,
-          steps: [...state.streaming.steps, action.payload]
+          steps: [...state.streaming.steps, action.payload],
+          progressEvents: [...state.streaming.progressEvents, { ...action.payload }]
         }
       };
     }
@@ -208,7 +250,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         streaming: {
           ...state.streaming,
-          steps
+          steps,
+          progressEvents: [...state.streaming.progressEvents, { ...steps[idx] }]
         }
       };
     }
@@ -261,6 +304,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, modelDropdownOpen: action.payload };
     case 'SET_AGENT_DROPDOWN_OPEN':
       return { ...state, agentDropdownOpen: action.payload };
+    case 'SET_THINKING_DROPDOWN_OPEN':
+      return { ...state, thinkingDropdownOpen: action.payload };
     case 'SET_MODEL_SEARCH':
       return { ...state, modelSearchQuery: action.payload };
     case 'SET_AGENT_SEARCH':
@@ -271,6 +316,60 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, quotaData: action.payload, quotaIsRefreshing: false };
     case 'SET_QUOTA_REFRESHING':
       return { ...state, quotaIsRefreshing: action.payload };
+    case 'ADD_ATTACHMENT': {
+      return { ...state, attachments: [...(state.attachments || []), action.payload] };
+    }
+    case 'REMOVE_ATTACHMENT': {
+      return { ...state, attachments: (state.attachments || []).filter((a) => a.id !== action.payload) };
+    }
+    case 'CLEAR_ATTACHMENTS': {
+      return { ...state, attachments: [] };
+    }
+    case 'SET_THINKING_LEVEL': {
+      return { ...state, thinkingLevel: action.payload };
+    }
+    case 'SET_TODO_ITEMS': {
+      return { ...state, todoItems: action.payload };
+    }
+    case 'UPDATE_TODO_ITEM': {
+      const items = (state.todoItems || []).map((it) => (it.id === action.payload.id ? { ...it, ...action.payload.patch } : it));
+      return { ...state, todoItems: items };
+    }
+    case 'ADD_TODO_ITEM': {
+      return { ...state, todoItems: [...(state.todoItems || []), action.payload] };
+    }
+    case 'UPSERT_SUBAGENT_SUMMARIES': {
+      return {
+        ...state,
+        subagentsByParentMessageId: {
+          ...state.subagentsByParentMessageId,
+          ...action.payload
+        }
+      };
+    }
+    case 'UPSERT_SUBAGENT_DETAIL': {
+      return {
+        ...state,
+        subagentDetailsById: {
+          ...state.subagentDetailsById,
+          ...action.payload
+        }
+      };
+    }
+    case 'SELECT_SUBAGENT': {
+      return { ...state, selectedSubagentId: action.payload };
+    }
+    case 'SET_SUBAGENTS_PANEL_OPEN': {
+      return { ...state, subagentsPanelOpen: action.payload };
+    }
+    case 'CLEAR_SUBAGENTS_FOR_SESSION': {
+      return {
+        ...state,
+        subagentsByParentMessageId: {},
+        subagentDetailsById: {},
+        selectedSubagentId: null
+      };
+    }
     default:
       return state;
   }

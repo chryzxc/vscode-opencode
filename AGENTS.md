@@ -33,6 +33,28 @@ The following features are considered "Core" to the OpenCode experience. They mu
 3.  **UI revamps must be additive:** If revamping a UI section, ensure all existing core metrics and buttons are ported to the new design.
 4.  **No Silent Removal:** Do not silently remove features to "clean up" the UI. OpenCode values information density for power users.
 
+## React Chat Asset Contract (Critical)
+
+The active chat webview is React-based and must keep provider HTML wiring aligned with built assets.
+
+- Source: `webview/shared/src/chat/*`
+- Build output: `webview/shared/dist/chat.js` and `webview/shared/dist/chat.css`
+- Host HTML: `src/providers/ChatViewProvider.ts#getHtmlContent`
+
+Required invariants:
+
+1. `getHtmlContent` includes `<div id="root"></div>`
+2. `getHtmlContent` includes `<script src=".../webview/shared/dist/chat.js"></script>`
+3. `getHtmlContent` includes `<link href=".../webview/shared/dist/chat.css" rel="stylesheet">`
+4. Do not mix legacy `webview/chat/app.js` shell with React mount unless explicitly rolling back
+
+If chat appears unstyled or non-interactive, validate in order:
+
+1. Confirm the three invariants above in `getHtmlContent`
+2. Run `npm run webview:build`
+3. Run `npm run compile`
+4. Reload VS Code window / extension host
+
 ---
 
 *Note: If you are unsure why a feature exists, check its protection notes or this file before modifying it.*

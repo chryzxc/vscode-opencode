@@ -141,6 +141,9 @@ export class MessageStreamService {
   /** Set of active subscriber callbacks (auto-starts/stops connection) */
   private callbacks: Set<StreamCallback> = new Set();
 
+  /** Reconnect timer (prevents stacked retries after repeated failures) */
+  private reconnectTimer: NodeJS.Timeout | null = null;
+
   /**
    * Creates a new message stream service instance.
    *
@@ -202,6 +205,8 @@ export class MessageStreamService {
    * @see subscribe for automatic start/stop management
    */
   async startListening(): Promise<void> {
+    this.clearReconnectTimer();
+
     const port = this.serverManager.getPort();
     if (!port) {
       throw new Error("Server not running");
@@ -242,6 +247,7 @@ export class MessageStreamService {
       const decoder = new TextDecoder();
       let buffer = "";
       let firstChunkLogged = false;
+      let oversizedBufferWarned = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -256,6 +262,16 @@ export class MessageStreamService {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > 1_000_000) {
+          // If the server sends malformed SSE without newlines, avoid unbounded memory growth.
+          buffer = buffer.slice(-500_000);
+          if (!oversizedBufferWarned) {
+            oversizedBufferWarned = true;
+            console.warn(
+              "[MessageStreamService] SSE buffer exceeded 1MB; trimming buffered data to prevent memory growth",
+            );
+          }
+        }
 
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
@@ -282,7 +298,11 @@ export class MessageStreamService {
 
       console.error("[MessageStreamService] SSE stream error:", error);
       // Auto-reconnect after 5 seconds
-      setTimeout(() => {
+      if (this.reconnectTimer) {
+        return;
+      }
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
         if (this.callbacks.size > 0) {
           this.startListening().catch(console.error);
         }
@@ -322,6 +342,7 @@ export class MessageStreamService {
    * @see dispose for complete cleanup
    */
   stopListening(): void {
+    this.clearReconnectTimer();
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -484,5 +505,12 @@ export class MessageStreamService {
   dispose(): void {
     this.stopListening();
     this.callbacks.clear();
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 }

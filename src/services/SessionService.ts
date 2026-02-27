@@ -52,6 +52,150 @@
 import * as vscode from "vscode";
 import { OpencodeServerManager } from "./OpencodeServerManager";
 import type { Session } from "@opencode-ai/sdk";
+import { createLogger } from "../utils/Logger";
+
+const log = createLogger("SessionService");
+const MAX_CACHED_MESSAGES_PER_SESSION = 200;
+const MAX_CACHED_SESSION_BYTES = 4 * 1024 * 1024;
+const MAX_PERSISTED_STRING_LENGTH = 120_000;
+const MAX_PERSISTED_ARRAY_LENGTH = 256;
+const MAX_PERSISTED_OBJECT_KEYS = 200;
+const MAX_PERSISTED_DEPTH = 8;
+
+function isDataUrl(value: string): boolean {
+  return /^data:[^;]+;base64,/i.test(value);
+}
+
+function formatApproxBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)}KB`;
+  return `${n}B`;
+}
+
+function redactDataUrl(value: string): string {
+  const commaIndex = value.indexOf(",");
+  const header = commaIndex >= 0 ? value.slice(0, commaIndex) : "data:;base64";
+  const base64 = commaIndex >= 0 ? value.slice(commaIndex + 1) : "";
+  const approxBytes = Math.floor((base64.length * 3) / 4);
+  return `[omitted data URL ${header}; ~${formatApproxBytes(approxBytes)}]`;
+}
+
+function truncateString(value: string): string {
+  if (isDataUrl(value)) {
+    return redactDataUrl(value);
+  }
+
+  if (value.length <= MAX_PERSISTED_STRING_LENGTH) {
+    return value;
+  }
+
+  return `${value.slice(0, MAX_PERSISTED_STRING_LENGTH)}...[truncated ${value.length - MAX_PERSISTED_STRING_LENGTH} chars]`;
+}
+
+function sanitizeForPersistence(
+  value: unknown,
+  depth = 0,
+  seen = new WeakSet<object>(),
+): unknown {
+  if (value == null) return value;
+
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return typeof value === "string" ? truncateString(value) : value;
+  }
+
+  if (depth >= MAX_PERSISTED_DEPTH) {
+    return "[omitted: max depth reached]";
+  }
+
+  if (Array.isArray(value)) {
+    const limited = value.slice(0, MAX_PERSISTED_ARRAY_LENGTH);
+    const sanitized = limited.map((item) =>
+      sanitizeForPersistence(item, depth + 1, seen),
+    );
+    if (value.length > limited.length) {
+      sanitized.push(`[omitted ${value.length - limited.length} items]`);
+    }
+    return sanitized;
+  }
+
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    if (seen.has(obj)) {
+      return "[omitted: circular reference]";
+    }
+    seen.add(obj);
+
+    const result: Record<string, unknown> = {};
+    const entries = Object.entries(obj).slice(0, MAX_PERSISTED_OBJECT_KEYS);
+    for (const [key, nested] of entries) {
+      result[key] = sanitizeForPersistence(nested, depth + 1, seen);
+    }
+    if (Object.keys(obj).length > entries.length) {
+      result.__truncatedKeys = Object.keys(obj).length - entries.length;
+    }
+    return result;
+  }
+
+  return String(value);
+}
+
+function estimateSerializedBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+function compactMessageForPersistence(message: unknown): unknown {
+  if (!message || typeof message !== "object") {
+    return sanitizeForPersistence(message);
+  }
+
+  const rec = message as Record<string, unknown>;
+  const compact: Record<string, unknown> = {};
+
+  if (typeof rec.role === "string") compact.role = rec.role;
+  if (typeof rec.content === "string") compact.content = truncateString(rec.content);
+  if (typeof rec.text === "string") compact.text = truncateString(rec.text);
+  if (rec.time) compact.time = sanitizeForPersistence(rec.time);
+  if (rec.info) compact.info = sanitizeForPersistence(rec.info);
+
+  if (Array.isArray(rec.parts)) {
+    compact.parts = (rec.parts as unknown[])
+      .slice(0, 16)
+      .map((part) => sanitizeForPersistence(part));
+  }
+
+  if (Array.isArray(rec.edits)) {
+    compact.edits = (rec.edits as unknown[]).slice(0, 32).map((edit) => {
+      const editRec =
+        edit && typeof edit === "object"
+          ? (edit as Record<string, unknown>)
+          : null;
+      if (editRec?.file && typeof editRec.file === "string") {
+        return { file: editRec.file };
+      }
+      return sanitizeForPersistence(edit);
+    });
+  }
+
+  if (Array.isArray(rec.images)) {
+    compact.images = (rec.images as unknown[]).map((img) =>
+      typeof img === "string" ? redactDataUrl(img) : sanitizeForPersistence(img),
+    );
+  }
+
+  if (Object.keys(compact).length === 0) {
+    return sanitizeForPersistence(message);
+  }
+
+  return compact;
+}
 
 /**
  * Manages chat sessions with persistence and server synchronization.
@@ -203,9 +347,10 @@ export class SessionService {
 
     if (!response.data) {
       const errorDetails = JSON.stringify(response.error || {}, null, 2);
-      console.error(
-        `[SessionService] Failed to create session. Status: ${response.response.status}. Error: ${errorDetails}`,
-      );
+      log.error("Failed to create session", {
+        status: response.response.status,
+        error: response.error,
+      });
       const em = (response.error || {}) as {
         message?: string;
         errors?: Array<{ message?: string }>;
@@ -221,13 +366,17 @@ export class SessionService {
     this.currentSession = session;
 
     // Check if session already exists in history
-    const exists = this.sessionHistory.find((s) => s.id === session.id);
+    const exists = this.sessionHistory.some((s) => s.id === session.id);
     if (!exists) {
       this.sessionHistory.unshift(session);
     }
 
-    this.persistState();
+    log.sessionEvent("create", session.id, {
+      title: session.title,
+      isNewSession: !exists,
+    });
 
+    this.persistState();
     return session;
   }
 
@@ -336,8 +485,12 @@ export class SessionService {
 
         // Use a map to merge by ID, prioritizing server data but keeping local-only ones
         const mergedMap = new Map<string, Session>();
-        localSessions.forEach((s) => mergedMap.set(s.id, s));
-        serverSessions.forEach((s) => mergedMap.set(s.id, s));
+        localSessions.forEach((s) => {
+          mergedMap.set(s.id, s);
+        });
+        serverSessions.forEach((s) => {
+          mergedMap.set(s.id, s);
+        });
 
         this.sessionHistory = Array.from(mergedMap.values()).sort((a, b) => {
           // Sort by creation time (descending)
@@ -389,19 +542,30 @@ export class SessionService {
    * ```
    */
   async switchSession(sessionId: string): Promise<Session> {
-    const client = await this.serverManager.ensureRunning();
-    const response = await client.session.get({
-      path: { id: sessionId },
-    });
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const response = await client.session.get({
+        path: { id: sessionId },
+      });
 
-    if (!response.data) {
-      throw new Error("Session not found");
+      if (!response.data) {
+        throw new Error("Session not found");
+      }
+
+      this.currentSession = response.data;
+      this.persistState();
+
+      return response.data;
+    } catch (error) {
+      const localSession = this.sessionHistory.find((s) => s.id === sessionId);
+      if (!localSession) {
+        throw error;
+      }
+
+      this.currentSession = localSession;
+      this.persistState();
+      return localSession;
     }
-
-    this.currentSession = response.data;
-    this.persistState();
-
-    return response.data;
   }
 
   /**
@@ -414,8 +578,8 @@ export class SessionService {
    * 4. Persists updated state
    *
    * **Note:**
-   * Messages are NOT automatically deleted from local storage.
-   * They remain until workspace state is cleared.
+   * Cached local messages are also removed from workspace storage
+   * to prevent orphaned data from consuming disk space.
    *
    * **State Update:**
    * If deleting the current session, `currentSession` becomes null.
@@ -431,16 +595,29 @@ export class SessionService {
    * ```
    */
   async deleteSession(sessionId: string): Promise<void> {
-    const client = await this.serverManager.ensureRunning();
-    await client.session.delete({
-      path: { id: sessionId },
-    });
+    try {
+      const client = await this.serverManager.ensureRunning();
+      await client.session.delete({
+        path: { id: sessionId },
+      });
+    } catch (error) {
+      // Log but continue with local cleanup even if server deletion fails
+      // This can happen if the session was already deleted on the server
+      console.warn(
+        `[SessionService] Server delete failed for session ${sessionId}, continuing with local cleanup:`,
+        error,
+      );
+    }
 
     if (this.currentSession?.id === sessionId) {
       this.currentSession = null;
     }
 
     this.sessionHistory = this.sessionHistory.filter((s) => s.id !== sessionId);
+    await this.context.workspaceState.update(
+      `${SessionService.MESSAGES_PREFIX}${sessionId}`,
+      undefined,
+    );
     this.persistState();
   }
 
@@ -548,9 +725,54 @@ export class SessionService {
     sessionId: string,
     messages: unknown[],
   ): Promise<void> {
+    let wasCompacted = false;
+    let persisted = messages.map((message) => sanitizeForPersistence(message));
+
+    if (persisted.length > MAX_CACHED_MESSAGES_PER_SESSION) {
+      wasCompacted = true;
+      persisted = persisted.slice(-MAX_CACHED_MESSAGES_PER_SESSION);
+    }
+
+    let estimatedSize = estimateSerializedBytes(persisted);
+    if (estimatedSize > MAX_CACHED_SESSION_BYTES) {
+      // Keep recent messages first when trimming for storage pressure.
+      while (
+        persisted.length > 1 &&
+        estimatedSize > MAX_CACHED_SESSION_BYTES
+      ) {
+        wasCompacted = true;
+        const trimCount = Math.max(1, Math.ceil(persisted.length * 0.1));
+        persisted = persisted.slice(trimCount);
+        estimatedSize = estimateSerializedBytes(persisted);
+      }
+    }
+
+    if (estimatedSize > MAX_CACHED_SESSION_BYTES) {
+      wasCompacted = true;
+      persisted = persisted.map((message) => compactMessageForPersistence(message));
+      estimatedSize = estimateSerializedBytes(persisted);
+    }
+
+    if (estimatedSize > MAX_CACHED_SESSION_BYTES) {
+      while (
+        persisted.length > 1 &&
+        estimatedSize > MAX_CACHED_SESSION_BYTES
+      ) {
+        wasCompacted = true;
+        persisted = persisted.slice(1);
+        estimatedSize = estimateSerializedBytes(persisted);
+      }
+    }
+
+    if (wasCompacted) {
+      console.warn(
+        `[SessionService] Cached messages for ${sessionId} were compacted to ${persisted.length} items (${Math.round(estimatedSize / 1024)}KB)`,
+      );
+    }
+
     await this.context.workspaceState.update(
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
-      messages,
+      persisted,
     );
   }
 
@@ -577,11 +799,10 @@ export class SessionService {
    * @see getMessages for server-fetching with fallback
    */
   async loadSessionMessages(sessionId: string): Promise<unknown[]> {
-    return (
-      this.context.workspaceState.get<unknown[]>(
-        `${SessionService.MESSAGES_PREFIX}${sessionId}`,
-      ) || []
+    const value = this.context.workspaceState.get<unknown[]>(
+      `${SessionService.MESSAGES_PREFIX}${sessionId}`,
     );
+    return Array.isArray(value) ? value : [];
   }
 
   /**

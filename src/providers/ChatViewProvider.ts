@@ -96,19 +96,61 @@
 
 import * as vscode from "vscode";
 import * as path from "path";
+import * as os from "os";
 import * as cp from "child_process";
 import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { SessionService } from "../services/SessionService";
 import { MessageStreamService } from "../services/MessageStreamService";
 import type { Session, SessionPromptData } from "@opencode-ai/sdk";
 import { QuotaService } from "../services/QuotaService";
+import { SubagentTracker } from "../services/SubagentTracker";
+import { PlanViewProvider } from "./PlanViewProvider";
+import { createLogger } from "../utils/Logger";
 
+const log = createLogger("ChatViewProvider");
 type QueuedPrompt = {
   text: string;
   files?: string[];
   contexts?: any[];
   images?: any[];
   agent?: string;
+};
+
+type PlanProceedComment = {
+  id: string;
+  anchor: {
+    startLine: number;
+    endLine: number;
+    selectedText: string;
+  };
+  text: string;
+  createdAt: number;
+};
+
+type StructuredResponseType =
+  | "message"
+  | "implementation_plan"
+  | "progress_update"
+  | "error";
+
+type StructuredProgressUpdate = {
+  title: string;
+  status?: "pending" | "done" | "error";
+  meta?: string;
+  filePath?: string;
+};
+
+type StructuredAssistantOutput = {
+  responseType?: StructuredResponseType | string;
+  message?: string;
+  reasoning?: string[];
+  progressUpdates?: StructuredProgressUpdate[];
+  plan?: {
+    file?: string;
+    content?: string;
+    title?: string;
+    summary?: string;
+  };
 };
 
 /**
@@ -149,6 +191,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Service for monitoring AI platform quota usage */
   private quotaService: QuotaService;
+  private subagentTracker: SubagentTracker;
 
   /** Currently selected AI model (persisted to global state) */
   private selectedModel: { providerID: string; modelID: string; providerName?: string } = {
@@ -178,6 +221,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private isExecutingQueue: boolean = false;
 
   private isProcessingRequest: boolean = false;
+  private isBootstrappingWebview: boolean = false;
+  private hasInitializedWebview: boolean = false;
+  private structuredOutputMode: "outputFormat" | "format" | "disabled" =
+    "outputFormat";
+  private modelsFetchPromise: Promise<
+    Array<{
+      providerID: string;
+      modelID: string;
+      name: string;
+      providerName: string;
+    }>
+  > | null = null;
 
   /**
    * Creates a new ChatViewProvider instance.
@@ -202,21 +257,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ) {
     this.streamService = new MessageStreamService(serverManager);
     this.quotaService = new QuotaService();
+    this.subagentTracker = new SubagentTracker();
     this.quotaService.on("quotaUpdate", (data) => {
-      this.view?.webview.postMessage({ type: "quotaUpdate", data });
+      this.view?.webview.postMessage({ type: "quotaData", data });
     });
 
     // Load persisted model selection
-    const savedModel = this.context.globalState.get<{
-      providerID: string;
-      modelID: string;
-      providerName?: string;
-    }>("selectedModel");
-    if (savedModel) {
+    const savedModel = this.context.globalState.get<any>("selectedModel");
+    if (
+      savedModel &&
+      typeof savedModel.providerID === "string" &&
+      typeof savedModel.modelID === "string" &&
+      savedModel.providerID &&
+      savedModel.modelID
+    ) {
       console.log(
         `[ChatViewProvider] Loaded persisted model: ${savedModel.modelID} (${savedModel.providerID})`,
       );
       this.selectedModel = savedModel;
+    } else if (savedModel) {
+      console.warn(
+        "[ChatViewProvider] Ignoring invalid persisted model selection. Expected {providerID, modelID}.",
+      );
     }
   }
 
@@ -227,6 +289,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ): void | Thenable<void> {
     console.log("[ChatViewProvider] resolving webview view");
     this.view = webviewView;
+    this.isBootstrappingWebview = false;
+    this.hasInitializedWebview = false;
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -237,26 +301,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage(async (message) => {
       switch (message.type) {
         case "ready": {
+          if (this.isBootstrappingWebview) {
+            break;
+          }
+
+          this.isBootstrappingWebview = true;
+          if (!this.hasInitializedWebview) {
+            // Reply immediately so the webview stops retrying `ready` while
+            // slower bootstrap tasks (models/sessions) are still loading.
+            this.view?.webview.postMessage({
+              type: "initState",
+              serverStatus: this.serverManager.getStatus(),
+              selectedModel: this.selectedModel,
+              selectedAgent: this.selectedAgent,
+            });
+            this.hasInitializedWebview = true;
+          }
+
+          try {
           // Fetch models first to ensure we have correct provider IDs
           const models = await this.handleGetModels();
 
-          // Try to resolve the current model's provider if it's generic
-          if (models.length > 0) {
-            const resolved = models.find((m) => m.modelID === this.selectedModel.modelID);
-            if (resolved && resolved.providerID !== this.selectedModel.providerID) {
-              console.log(
-                `Resolved model ${this.selectedModel.modelID} to provider ${resolved.providerID}`,
-              );
-              this.selectedModel.providerID = resolved.providerID;
-              // Also store providerName when available
-              this.selectedModel.providerName = resolved.providerName || resolved.providerID;
-            }
-          }
+          // Reconcile selected model by full identity (provider + model), not model ID alone.
+          await this.reconcileSelectedModelSelection(models);
 
           // Fetch agents and default agent from CLI
           await this.syncCLIAgents();
 
-          // Send initial state
+          // Send refreshed init state after model/agent resolution
           this.view?.webview.postMessage({
             type: "initState",
             serverStatus: this.serverManager.getStatus(),
@@ -267,12 +339,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Fetch and send chat history and sessions list
           const currentSession = await this.sessionService.getCurrentSession();
           if (currentSession) {
-            const messages = await this.sessionService.getMessages(
+            this.subagentTracker.setActiveSession(currentSession.id);
+            const rawMessages = await this.sessionService.getMessages(
               currentSession.id,
+            );
+            const messages = rawMessages.map((m: any) =>
+              this.enrichMessageWithPlan(this.applyStructuredOutputToMessage(m)),
             );
             this.view?.webview.postMessage({
               type: "chatHistory",
               messages: messages,
+            });
+            this.syncSubagentSnapshotForSession(currentSession.id, messages as any[]);
+          } else {
+            this.subagentTracker.resetForSession(null);
+            this.view?.webview.postMessage({
+              type: "subagentSnapshot",
+              ...this.subagentTracker.getSnapshotPayload(),
             });
           }
 
@@ -282,9 +365,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Send quota data or trigger initial fetch
           const quotaData = this.quotaService.cachedData;
           if (quotaData) {
-            this.view?.webview.postMessage({ type: "quotaUpdate", data: quotaData });
+            this.view?.webview.postMessage({ type: "quotaData", data: quotaData });
           } else {
             this.quotaService.refreshQuota().catch(() => {});
+          }
+          } finally {
+            this.isBootstrappingWebview = false;
           }
           break;
         }
@@ -299,8 +385,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           );
           break;
         }
-        case "newSession": {
-          await this.sessionService.createNewSession();
+        case "newSession":
+        case "createSession": {
+          const createdSession = await this.sessionService.createNewSession();
+          this.subagentTracker.resetForSession(createdSession.id);
           await this.handleGetSessions(); // Update list
           this.refreshView();
 
@@ -309,12 +397,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: "chatHistory",
             messages: [],
           });
+          this.view?.webview.postMessage({
+            type: "subagentSnapshot",
+            ...this.subagentTracker.getSnapshotPayload(),
+          });
           break;
         }
         case "viewPlan": {
-          const file = message.plan?.file || message.content;
-          if (file) {
-            await this.handleViewPlan(file);
+          if (message.plan) {
+            await this.handleViewPlan(message.plan);
           }
           break;
         }
@@ -344,6 +435,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               modelID: message.modelID,
             } ||
             {};
+          if (!incoming.providerID || !incoming.modelID) {
+            console.warn(
+              "[ChatViewProvider] Ignoring invalid model selection payload; providerID and modelID are required.",
+              incoming,
+            );
+            break;
+          }
           let providerName: string | undefined = incoming.providerName;
           if (!providerName) {
             // Try to resolve from cached models if available
@@ -384,7 +482,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "loadSession":
-        case "openSession": {
+        case "openSession":
+        case "switchSession": {
           await this.handleLoadSession(message.sessionId);
           break;
         }
@@ -428,16 +527,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "log": {
           const { level, message: logMsg } = message;
+          const cappedLog =
+            typeof logMsg === "string" && logMsg.length > 2000
+              ? `${logMsg.slice(0, 2000)}...[truncated ${logMsg.length - 2000} chars]`
+              : logMsg;
           const prefix = "[WebView]";
           switch (level) {
             case "error":
-              console.error(prefix, logMsg);
+              console.error(prefix, cappedLog);
               break;
             case "warn":
-              console.warn(prefix, logMsg);
+              console.warn(prefix, cappedLog);
               break;
             default:
-              console.log(prefix, logMsg);
+              console.log(prefix, cappedLog);
               break;
           }
           break;
@@ -445,16 +548,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "refreshQuota": {
           await this.quotaService.refreshQuota();
           break;
-      }
+        }
+        case "setThinkingLevel": {
+          const level = message.level as string | undefined;
+          if (level) {
+            await this.context.globalState.update("thinkingLevel", level);
+            console.log(`[ChatViewProvider] Thinking level set to ${level}`);
+            this.view?.webview.postMessage({ type: "thinkingLevelSet", level });
+          }
+          break;
+        }
+        case "addAttachment": {
+          const attachment = message.attachment;
+          if (!attachment) break;
+          const existing = (this.context.globalState.get<any[]>("pendingAttachments") || []) as any[];
+          existing.push(attachment);
+          await this.context.globalState.update("pendingAttachments", existing);
+          this.view?.webview.postMessage({ type: "attachmentAdded", attachmentId: attachment.id });
+          break;
+        }
+        case "clearAttachments": {
+          await this.context.globalState.update("pendingAttachments", []);
+          this.view?.webview.postMessage({ type: "attachmentsCleared" });
+          break;
+        }
+        case "planProceed": {
+          const payload = message.payload;
+          await this.context.globalState.update("lastPlanProceed", payload || null);
+          console.log("[ChatViewProvider] planProceed received");
+          this.view?.webview.postMessage({ type: "planProceedAck", payload: { received: true } });
+          break;
+        }
       }
     });
 
     // Subscribe to stream events
     this.unsubscribe = this.streamService.subscribe((event) => {
+      const subagentUpdate = this.subagentTracker.consumeStreamEvent(event);
+      if (subagentUpdate) {
+        this.view?.webview.postMessage({
+          type: "subagentUpdate",
+          ...subagentUpdate,
+        });
+      }
+
       // Forward events to webview
+      const enrichedEvent = this.enrichStreamEvent(event);
       this.view?.webview.postMessage({
         type: "streamEvent",
-        event,
+        event: enrichedEvent,
       });
     });
 
@@ -474,6 +616,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.unsubscribe();
         this.unsubscribe = undefined;
       }
+      this.isBootstrappingWebview = false;
+      this.hasInitializedWebview = false;
       statusSubscription.dispose();
       this.quotaService.dispose();
       this.view = undefined;
@@ -488,9 +632,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const sessions = await this.sessionService.listSessions();
       const currentSession = await this.sessionService.getCurrentSession();
 
+      // Transform Session objects to match webview expectations
+      // SDK Session has nested `time.created`, webview expects `createdAt`
+      const transformedSessions = sessions.map((s) => ({
+        id: s.id,
+        title: s.title,
+        createdAt: s.time?.created,
+      }));
+
       this.view?.webview.postMessage({
         type: "sessionsList",
-        sessions,
+        sessions: transformedSessions,
         currentSessionId: currentSession?.id,
       });
     } catch (error) {
@@ -504,17 +656,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handleLoadSession(sessionId: string): Promise<void> {
     try {
       await this.sessionService.switchSession(sessionId);
+      this.subagentTracker.setActiveSession(sessionId);
 
       // Reload history for the new session
       const rawMessages = await this.sessionService.getMessages(sessionId);
       const messages = rawMessages.map((m: any) =>
-        this.enrichMessageWithPlan(m),
+        this.enrichMessageWithPlan(this.applyStructuredOutputToMessage(m)),
       );
 
       this.view?.webview.postMessage({
         type: "chatHistory",
         messages: messages,
       });
+      this.syncSubagentSnapshotForSession(sessionId, messages as any[]);
 
       // Update the list selection
       await this.handleGetSessions();
@@ -528,28 +682,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async handleDeleteSession(sessionId: string): Promise<void> {
     try {
+      // Get current session before deletion to check if we're deleting the active one
+      const wasCurrentSession = (await this.sessionService.getCurrentSession())?.id === sessionId;
+
       await this.sessionService.deleteSession(sessionId);
       await this.handleGetSessions();
 
-      // If we deleted the current session, create a new one
-      const currentSession = await this.sessionService.getCurrentSession();
-      if (!currentSession) {
-        await this.sessionService.createNewSession();
+      // If we deleted the current session, create a new one and clear messages
+      if (wasCurrentSession) {
+        const currentSession = await this.sessionService.getCurrentSession();
+        if (!currentSession) {
+          await this.sessionService.createNewSession();
+        }
+        this.subagentTracker.resetForSession(currentSession?.id || null);
         this.view?.webview.postMessage({
           type: "chatHistory",
           messages: [],
         });
-        await this.handleGetSessions();
-      } else if (currentSession.id === sessionId) {
-        // Should have been handled by sessionService logic but safe guard
-        // If active was deleted, refresh history
-        const messages = await this.sessionService.getMessages(
-          currentSession.id,
-        );
         this.view?.webview.postMessage({
-          type: "chatHistory",
-          messages: messages,
+          type: "subagentSnapshot",
+          ...this.subagentTracker.getSnapshotPayload(),
         });
+        await this.handleGetSessions();
       }
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to delete session: ${error}`);
@@ -561,6 +715,444 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private getSystemInstruction(): string {
     return "";
+  }
+
+  private getStructuredOutputFormat(): Record<string, unknown> {
+    return {
+      type: "json_schema",
+      name: "opencode_assistant_response",
+      strict: false,
+      schema: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          responseType: {
+            type: "string",
+            enum: ["message", "implementation_plan", "progress_update", "error"],
+          },
+          message: { type: "string" },
+          reasoning: {
+            type: "array",
+            items: { type: "string" },
+          },
+          progressUpdates: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: true,
+              properties: {
+                title: { type: "string" },
+                status: { type: "string", enum: ["pending", "done", "error"] },
+                meta: { type: "string" },
+                filePath: { type: "string" },
+              },
+            },
+          },
+          plan: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              file: { type: "string" },
+              content: { type: "string" },
+              title: { type: "string" },
+              summary: { type: "string" },
+            },
+          },
+        },
+      },
+    };
+  }
+
+  private isStructuredFormatUnsupportedError(error: unknown): boolean {
+    const text = JSON.stringify(error || "").toLowerCase();
+    const mentionsFormat =
+      text.includes("outputformat") ||
+      text.includes("output_format") ||
+      text.includes("\"format\"") ||
+      text.includes("format:");
+    const mentionsUnsupported =
+      text.includes("unknown") ||
+      text.includes("unsupported") ||
+      text.includes("unexpected") ||
+      text.includes("invalid");
+    return mentionsFormat && mentionsUnsupported;
+  }
+
+  private async promptWithStructuredOutput(
+    client: any,
+    sessionID: string,
+    body: NonNullable<SessionPromptData["body"]>,
+  ) {
+    const callPrompt = (requestBody: Record<string, unknown>) =>
+      client.session.prompt({
+        path: { id: sessionID },
+        body: requestBody as SessionPromptData["body"],
+      });
+
+    const schema = this.getStructuredOutputFormat();
+
+    if (this.structuredOutputMode === "disabled") {
+      return callPrompt(body as Record<string, unknown>);
+    }
+
+    const requestWithFormat: Record<string, unknown> =
+      this.structuredOutputMode === "format"
+        ? { ...(body as Record<string, unknown>), format: schema }
+        : { ...(body as Record<string, unknown>), outputFormat: schema };
+    const firstAttempt = await callPrompt(requestWithFormat);
+    if (!firstAttempt.error) {
+      return firstAttempt;
+    }
+
+    if (!this.isStructuredFormatUnsupportedError(firstAttempt.error)) {
+      return firstAttempt;
+    }
+
+    if (this.structuredOutputMode === "outputFormat") {
+      this.structuredOutputMode = "format";
+      const secondAttempt = await callPrompt({
+        ...(body as Record<string, unknown>),
+        format: schema,
+      });
+      if (!secondAttempt.error) {
+        return secondAttempt;
+      }
+      if (!this.isStructuredFormatUnsupportedError(secondAttempt.error)) {
+        return secondAttempt;
+      }
+    }
+
+    this.structuredOutputMode = "disabled";
+    log.warn(
+      "Structured output format is not supported by this OpenCode server version. Falling back to plain prompts.",
+    );
+    return callPrompt(body as Record<string, unknown>);
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return typeof value === "object" && value !== null
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private firstNonEmptyString(...values: unknown[]): string | undefined {
+    for (const value of values) {
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    return undefined;
+  }
+
+  private extractMessageId(message: any): string | undefined {
+    if (!message || typeof message !== "object") {
+      return undefined;
+    }
+    return this.firstNonEmptyString(
+      message?.info?.id,
+      message?.id,
+      message?.messageID,
+    );
+  }
+
+  private syncSubagentSnapshotForSession(
+    sessionId: string,
+    messages: any[],
+  ): void {
+    this.subagentTracker.resetForSession(sessionId);
+    this.subagentTracker.seedFromMessages(messages);
+    this.view?.webview.postMessage({
+      type: "subagentSnapshot",
+      ...this.subagentTracker.getSnapshotPayload(),
+    });
+  }
+
+  private normalizeStructuredOutput(raw: unknown): StructuredAssistantOutput | undefined {
+    let value: unknown = raw;
+    if (typeof value === "string") {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        return undefined;
+      }
+    }
+
+    const rec = this.asRecord(value);
+    if (!rec) {
+      return undefined;
+    }
+
+    const responseType = this.firstNonEmptyString(
+      rec.responseType,
+      rec.type,
+      rec.kind,
+      rec.category,
+    );
+    const message = this.firstNonEmptyString(
+      rec.message,
+      rec.output,
+      rec.answer,
+      rec.content,
+      rec.text,
+    );
+
+    const reasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
+    const reasoning = Array.isArray(reasoningRaw)
+      ? reasoningRaw
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : typeof reasoningRaw === "string" && reasoningRaw.trim()
+        ? [reasoningRaw.trim()]
+        : [];
+
+    const progressRaw = rec.progressUpdates ?? rec.progress_updates;
+    const progressUpdates = Array.isArray(progressRaw)
+      ? progressRaw
+          .map((item) => {
+            const update = this.asRecord(item);
+            if (!update) return null;
+            const title = this.firstNonEmptyString(update.title, update.message);
+            if (!title) return null;
+            const status = this.firstNonEmptyString(update.status);
+            const normalizedStatus =
+              status === "done" || status === "error" || status === "pending"
+                ? status
+                : undefined;
+            return {
+              title,
+              status: normalizedStatus,
+              meta: this.firstNonEmptyString(update.meta, update.detail),
+              filePath: this.firstNonEmptyString(
+                update.filePath,
+                update.file,
+                update.path,
+              ),
+            } as StructuredProgressUpdate;
+          })
+          .filter((item): item is StructuredProgressUpdate => !!item)
+      : [];
+
+    const planRec = this.asRecord(rec.plan);
+    const plan =
+      planRec || responseType === "implementation_plan"
+        ? {
+            file: this.firstNonEmptyString(planRec?.file) || "implementation_plan.md",
+            content: this.firstNonEmptyString(
+              planRec?.content,
+              planRec?.markdown,
+              message,
+            ),
+            title: this.firstNonEmptyString(planRec?.title),
+            summary: this.firstNonEmptyString(planRec?.summary),
+          }
+        : undefined;
+
+    if (!responseType && !message && reasoning.length === 0 && progressUpdates.length === 0 && !plan?.content) {
+      return undefined;
+    }
+
+    return {
+      responseType,
+      message,
+      reasoning: reasoning.length > 0 ? reasoning : undefined,
+      progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
+      plan: plan?.content ? plan : undefined,
+    };
+  }
+
+  private extractMessageBodyText(message: any): string {
+    if (!message) return "";
+    if (typeof message.content === "string" && message.content.trim()) {
+      return message.content.trim();
+    }
+    if (typeof message.text === "string" && message.text.trim()) {
+      return message.text.trim();
+    }
+    if (Array.isArray(message.parts)) {
+      return message.parts
+        .map((part: any) => {
+          if (!part || typeof part !== "object") return "";
+          if (
+            part.type === "reasoning" ||
+            typeof part.reasoning !== "undefined" ||
+            typeof part.thought !== "undefined" ||
+            typeof part.thinking !== "undefined"
+          ) {
+            return "";
+          }
+          return (part.text || part.content || "").toString();
+        })
+        .join("")
+        .trim();
+    }
+    return "";
+  }
+
+  private extractStructuredOutput(messageLike: any): StructuredAssistantOutput | undefined {
+    if (!messageLike) return undefined;
+    const candidates: unknown[] = [
+      messageLike.structuredOutput,
+      messageLike.structured_output,
+      messageLike.output,
+      messageLike.info?.structuredOutput,
+      messageLike.info?.structured_output,
+      messageLike.info?.output,
+      messageLike.properties?.structuredOutput,
+      messageLike.properties?.structured_output,
+      messageLike.properties?.output,
+    ];
+    for (const candidate of candidates) {
+      const parsed = this.normalizeStructuredOutput(candidate);
+      if (parsed) {
+        return parsed;
+      }
+    }
+
+    const bodyText = this.extractMessageBodyText(messageLike);
+    if (bodyText.startsWith("{") && bodyText.endsWith("}")) {
+      return this.normalizeStructuredOutput(bodyText);
+    }
+    return undefined;
+  }
+
+  private applyStructuredOutputToMessage(message: any): any {
+    const structured = this.extractStructuredOutput(message);
+    if (!structured) {
+      return message;
+    }
+
+    const next = {
+      ...message,
+      structuredOutput: structured,
+    };
+
+    if (structured.message) {
+      next.content = structured.message;
+      const parts = Array.isArray(next.parts) ? [...next.parts] : [];
+      const textIndex = parts.findIndex(
+        (part: any) =>
+          part &&
+          typeof part === "object" &&
+          (part.type === "text" ||
+            typeof part.text === "string" ||
+            typeof part.content === "string"),
+      );
+      if (textIndex >= 0) {
+        parts[textIndex] = {
+          ...parts[textIndex],
+          type: "text",
+          text: structured.message,
+        };
+      } else {
+        parts.push({ type: "text", text: structured.message });
+      }
+      next.parts = parts;
+    }
+
+    if (structured.reasoning && structured.reasoning.length > 0) {
+      const parts = Array.isArray(next.parts) ? [...next.parts] : [];
+      const hasReasoningPart = parts.some((part: any) => part?.type === "reasoning");
+      if (!hasReasoningPart) {
+        structured.reasoning.forEach((chunk) => {
+          parts.push({ type: "reasoning", reasoning: chunk });
+        });
+        next.parts = parts;
+      }
+    }
+
+    if (structured.progressUpdates && structured.progressUpdates.length > 0) {
+      const existingSteps = Array.isArray(next.steps) ? next.steps : [];
+      const mapped = structured.progressUpdates.map((update) => ({
+        type: "step",
+        title: update.title,
+        content: update.filePath,
+        status: update.status ?? "pending",
+        meta: update.meta,
+      }));
+      next.steps = [...existingSteps, ...mapped];
+    }
+
+    if (
+      structured.responseType === "implementation_plan" ||
+      structured.plan?.content
+    ) {
+      const planContent =
+        structured.plan?.content || structured.message || next.content || "";
+      if (typeof planContent === "string" && planContent.trim().length >= 200) {
+        next.plan = {
+          file: structured.plan?.file || "implementation_plan.md",
+          content: planContent,
+        };
+      }
+    }
+
+    return next;
+  }
+
+  private enrichStreamEvent(event: any): any {
+    if (!event || typeof event !== "object") {
+      return event;
+    }
+
+    const properties = this.asRecord(event.properties) || {};
+    const part = this.asRecord(properties.part);
+    const next: Record<string, unknown> = { ...event };
+    let kind: "thinking" | "progress" | "message" | "lifecycle" | "error" | "other" = "other";
+    let text: string | undefined;
+
+    if (event.type === "message.part.updated" && part) {
+      const partType = this.firstNonEmptyString(part.type)?.toLowerCase() || "";
+      if (
+        partType === "reasoning" ||
+        typeof part.reasoning !== "undefined" ||
+        typeof part.thought !== "undefined" ||
+        typeof part.thinking !== "undefined"
+      ) {
+        kind = "thinking";
+        text = this.firstNonEmptyString(
+          properties.delta,
+          part.reasoning,
+          part.thought,
+          part.thinking,
+          part.text,
+        );
+      } else if (
+        partType === "tool" ||
+        partType === "step-start" ||
+        partType === "step-finish" ||
+        partType === "patch"
+      ) {
+        kind = "progress";
+      } else if (partType === "text" || !partType) {
+        kind = "message";
+        text = this.firstNonEmptyString(properties.delta, part.text, part.content);
+      }
+    } else if (event.type === "message.updated") {
+      kind = "lifecycle";
+    } else if (event.type === "session.error" || event.type === "error") {
+      kind = "error";
+    }
+
+    const structuredOutput = this.extractStructuredOutput({
+      ...properties,
+      info: properties.info,
+    });
+    if (structuredOutput) {
+      next.structuredOutput = structuredOutput;
+      if (kind === "other") {
+        kind = "message";
+      }
+    }
+
+    next.structured = {
+      kind,
+      text,
+      eventType: event.type,
+      responseType: structuredOutput?.responseType,
+    };
+
+    return next;
   }
 
   /**
@@ -575,8 +1167,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ): Promise<void> {
     this.isProcessingRequest = true;
     try {
+      const normalizedImages = (images || [])
+        .map((img) => {
+          if (typeof img === "string") {
+            return { dataUrl: img, filename: "image" };
+          }
+          if (img?.dataUrl && typeof img.dataUrl === "string") {
+            return {
+              dataUrl: img.dataUrl,
+              filename: typeof img.filename === "string" ? img.filename : "image",
+            };
+          }
+          return null;
+        })
+        .filter((img): img is { dataUrl: string; filename: string } => !!img);
+      const imageUrls = normalizedImages.map((img) => img.dataUrl);
+
       const client = await this.serverManager.ensureRunning();
       const session = await this.sessionService.getCurrentSession();
+      this.subagentTracker.setActiveSession(session.id);
 
       const existingMessages = await this.sessionService.getMessages(
         session.id,
@@ -592,7 +1201,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             text: text,
           },
         ],
-        images,
+        images: imageUrls,
         time: {
           created: Date.now(),
         },
@@ -666,11 +1275,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
-      if (images && images.length > 0) {
-        for (const img of images) {
-          if (!img?.dataUrl) {
-            continue;
-          }
+      if (normalizedImages.length > 0) {
+        for (const img of normalizedImages) {
           const imageMarkdown = `![${img.filename || "image"}](${img.dataUrl})`;
           parts.push({
             type: "text",
@@ -681,22 +1287,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       // Send the message using the SDK
       const startTime = Date.now();
-      const response = await client.session.prompt({
-        path: { id: session.id },
-        body: {
-          model: this.selectedModel,
-          agent: agent || this.selectedAgent,
-          parts: parts,
-        },
+      const response = await this.promptWithStructuredOutput(client, session.id, {
+        model: this.selectedModel,
+        agent: agent || this.selectedAgent,
+        parts: parts,
       });
       const duration = (Date.now() - startTime) / 1000;
 
-      console.log(`Received response in ${duration}s:`, response);
+      console.log(`[ChatViewProvider] Response received in ${duration}s`, {
+        hasData: Boolean(response.data),
+        hasError: Boolean(response.error),
+        status: response.response?.status,
+        messageId: (response.data as any)?.info?.id,
+      });
 
-      // Check for errors in the response
       if (response.error) {
-        const errorDetails = JSON.stringify(response.error, null, 2);
-        console.error("OpenCode API error:", errorDetails);
+        log.error("API error returned", {
+          sessionId: session.id,
+          error: response.error,
+          status: response.response?.status,
+        });
 
         // Safely extract error message
         let errorMessage = "Failed to send message";
@@ -739,6 +1349,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             // Set as current session and retry
             await this.sessionService.switchSession(newSession.id);
+            this.subagentTracker.resetForSession(newSession.id);
 
             // Notify UI of the ID change if possible, or just refresh sessions
             await this.handleGetSessions();
@@ -795,7 +1406,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       // Send response back to webview
       if (response.data) {
-        const enrichedMessage = this.enrichMessageWithPlan(response.data);
+        const structuredMessage = this.applyStructuredOutputToMessage(response.data);
+        const enrichedMessage = this.enrichMessageWithPlan(structuredMessage);
+        const assistantMessageId = this.extractMessageId(enrichedMessage);
+        if (assistantMessageId) {
+          const hydratedSubagents = await this.subagentTracker.finalizeParentMessage({
+            client,
+            parentSessionId: session.id,
+            parentMessageId: assistantMessageId,
+          });
+          if (hydratedSubagents.length > 0) {
+            enrichedMessage.subagents = hydratedSubagents;
+            this.view?.webview.postMessage({
+              type: "subagentUpdate",
+              ...this.subagentTracker.getPayloadForParentMessage(assistantMessageId),
+            });
+          }
+        }
 
         // Save assistant message to local history
         await this.sessionService.appendMessage(session.id, {
@@ -844,6 +1471,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private enrichMessageWithPlan(message: any): any {
     if (!message) return message;
 
+    const structured = this.extractStructuredOutput(message);
+    if (structured) {
+      const structuredPlanContent =
+        structured.plan?.content ||
+        (structured.responseType === "implementation_plan"
+          ? structured.message
+          : undefined);
+      if (
+        structuredPlanContent &&
+        typeof structuredPlanContent === "string" &&
+        structuredPlanContent.length >= 200
+      ) {
+        this.persistPlan(structuredPlanContent).catch((err) => {
+          console.error(
+            "[ChatViewProvider] Failed to auto-persist structured plan:",
+            err,
+          );
+        });
+        return {
+          ...message,
+          structuredOutput: structured,
+          plan: {
+            file: structured.plan?.file || "implementation_plan.md",
+            content: structuredPlanContent,
+          },
+        };
+      }
+    }
+
     // Check for implementation plan in edits, parts, or message content
     const edits = message.edits || [];
     const parts = message.parts || [];
@@ -883,7 +1539,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Broadened regex to catch more variations of "Implementation Plan"
     // Also check if the title itself strongly indicates a plan
-    const hasPlanKeywords =
+    const basicPlanKeywordMatch =
       /implementation\s*plan/i.test(fullContent) ||
       /goal\s*description/i.test(fullContent) ||
       /proposed\s*changes/i.test(fullContent) ||
@@ -891,14 +1547,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       (/(plan|roadmap)/i.test(info.summary?.title || "") &&
         /(implementation|feature)/i.test(info.summary?.title || ""));
 
+    // Require structural markers to avoid false positives from short mentions
+    const hasStructuralMarkers = /##\s|###\s|\- \[ \]|Files:|Steps:|Goal:/i.test(fullContent) ||
+      // Long content is likely a real plan even if markers are missing
+      fullContent.length > 500;
+
+    const hasPlanKeywords = basicPlanKeywordMatch && hasStructuralMarkers;
+
     if (hasPlanFile || hasPlanKeywords) {
       // Extract the content that looks like a plan to pass it directly
       // in case the file isn't written yet.
       const planContent = message.content || partsContent;
+      // Minimum-length guard: avoid false positives on short "I'll help" replies
+      if (!planContent || planContent.length < 200) {
+        return message;
+      }
 
       // PERSISTENCE FIX: Automatically save the detected plan to disk
       // This ensures handleViewPlan can read it even if the SDK didn't write it.
-      if (planContent && planContent.length > 100) {
+      if (planContent.length > 100) {
         this.persistPlan(planContent).catch((err) => {
           console.error("[ChatViewProvider] Failed to auto-persist plan:", err);
         });
@@ -951,6 +1618,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Handles stopping a request
    */
+  // FORBIDDEN TO REMOVE: Stop Request Button - backend handler required by webview to abort streaming requests
   private async handleStopRequest(sessionId: string): Promise<void> {
     try {
       const client = this.serverManager.getClient();
@@ -990,35 +1658,87 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  async handlePlanProceed(payload: {
+    rawPlan: string;
+    comments: PlanProceedComment[];
+  }): Promise<void> {
+    const rawPlan = typeof payload?.rawPlan === "string" ? payload.rawPlan : "";
+    const comments = Array.isArray(payload?.comments) ? payload.comments : [];
+
+    const commentLines = comments.map((comment) => {
+      const lineNumber = (comment.anchor?.startLine ?? 0) + 1;
+      return `- Line ${lineNumber}: ${comment.text}`;
+    });
+
+    const updatedPlanMd =
+      commentLines.length > 0
+        ? `${rawPlan}\n\n## Comments\n\n${commentLines.join("\n")}`
+        : rawPlan;
+
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const planFilePath = workspaceFolder
+      ? path.join(workspaceFolder.uri.fsPath, "implementation_plan.md")
+      : path.join(os.tmpdir(), `opencode-plan-${Date.now()}.md`);
+
+    await vscode.workspace.fs.writeFile(
+      vscode.Uri.file(planFilePath),
+      new TextEncoder().encode(updatedPlanMd),
+    );
+
+    await this.handleSendMessage("Proceed", [planFilePath]);
+
+    // Post addPlanAttachment message to chat webview for the visual chip
+    const planGoal = rawPlan.match(/^#\s+(.+)/m)?.[1]?.trim() ?? 'Implementation Plan';
+    const planBase64 = Buffer.from(updatedPlanMd, 'utf-8').toString('base64');
+    const dataUrl = `data:text/markdown;base64,${planBase64}`;
+    this.view?.webview.postMessage({
+      type: 'addPlanAttachment',
+      payload: {
+        id: `plan-${Date.now()}`,
+        filename: `\uD83D\uDCCB Implementation Plan: ${planGoal}`,
+        mimeType: 'text/markdown',
+        dataUrl,
+      }
+    });
+    PlanViewProvider.closeCurrentPanel();
+  }
+
   /**
    * Handles viewing the implementation plan
    */
-  private async handleViewPlan(content: string): Promise<void> {
-    let planData = content;
+  private async handleViewPlan(plan: { file?: string; content?: string }): Promise<void> {
+    let planData: string | undefined;
 
-    // If it looks like a filename, try to read the actual file
-    if (content.endsWith(".md") && !content.includes("\n")) {
+    // First, try to use the plan content directly if available
+    if (plan.content && typeof plan.content === "string") {
+      planData = plan.content;
+      console.log("[ChatViewProvider] Using plan content from message");
+    }
+    // Otherwise, if it looks like a filename, try to read the actual file
+    else if (plan.file && plan.file.endsWith(".md") && !plan.file.includes("\n")) {
       try {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (workspaceFolders) {
-          const filePath = path.join(workspaceFolders[0].uri.fsPath, content);
+          const filePath = path.join(workspaceFolders[0].uri.fsPath, plan.file);
           const fileUri = vscode.Uri.file(filePath);
           const uint8Array = await vscode.workspace.fs.readFile(fileUri);
           planData = new TextDecoder().decode(uint8Array);
-          console.log(`[ChatViewProvider] Read plan from ${filePath}`);
+          console.log(`[ChatViewProvider] Read plan from file ${filePath}`);
         }
       } catch (err) {
         console.error(
-          `[ChatViewProvider] Failed to read plan file ${content}:`,
+          `[ChatViewProvider] Failed to read plan file ${plan.file}:`,
           err,
         );
-        // Fallback to original content or show error
-        vscode.window.showErrorMessage(`Could not read plan file: ${content}`);
-        return;
       }
     }
 
-    await vscode.commands.executeCommand("opencode.showPlan", planData);
+    // If we have plan data, show it
+    if (planData) {
+      await vscode.commands.executeCommand("opencode.showPlan", planData);
+    } else {
+      vscode.window.showErrorMessage("Could not read plan file: No plan content available");
+    }
   }
 
   /**
@@ -1110,13 +1830,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private refreshView(): void {
     this.view?.webview.postMessage({
-      type: "init",
+      type: "initState",
+      serverStatus: this.serverManager.getStatus(),
+      selectedModel: this.selectedModel,
+      selectedAgent: this.selectedAgent,
     });
   }
 
   /**
    * Generates the HTML content for the webview
    */
+  // FORBIDDEN TO REMOVE: React Chat Asset Contract - ensure <div id="root"> and chat.js/chat.css wiring remain intact
   private getHtmlContent(webview: vscode.Webview): string {
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(
@@ -1194,6 +1918,72 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Reconciles the selected model against the fetched model catalog.
+   *
+   * Matching priority:
+   * 1) exact providerID + modelID
+   * 2) legacy fallback by modelID only when provider is missing/generic and match is unique
+   *
+   * We intentionally do NOT remap by modelID alone when multiple providers expose the same model.
+   */
+  private async reconcileSelectedModelSelection(
+    models: Array<{ providerID: string; modelID: string; name: string; providerName?: string }>,
+  ): Promise<void> {
+    if (!models.length) {
+      return;
+    }
+
+    const exact = models.find(
+      (m) =>
+        m.providerID === this.selectedModel.providerID &&
+        m.modelID === this.selectedModel.modelID,
+    );
+    if (exact) {
+      const nextProviderName = exact.providerName || exact.providerID;
+      if (this.selectedModel.providerName !== nextProviderName) {
+        this.selectedModel = {
+          ...this.selectedModel,
+          providerName: nextProviderName,
+        };
+        await this.context.globalState.update("selectedModel", this.selectedModel);
+      }
+      return;
+    }
+
+    const isLegacyGenericProvider =
+      !this.selectedModel.providerID || this.selectedModel.providerID === "opencode";
+    if (!isLegacyGenericProvider) {
+      console.warn(
+        `[ChatViewProvider] Persisted model ${this.selectedModel.providerID}/${this.selectedModel.modelID} not found in provider catalog; keeping persisted selection unchanged.`,
+      );
+      return;
+    }
+
+    const candidates = models.filter(
+      (m) => m.modelID === this.selectedModel.modelID,
+    );
+    if (candidates.length === 1) {
+      const match = candidates[0];
+      this.selectedModel = {
+        providerID: match.providerID,
+        modelID: match.modelID,
+        providerName: match.providerName || match.providerID,
+      };
+      await this.context.globalState.update("selectedModel", this.selectedModel);
+      console.log(
+        `[ChatViewProvider] Reconciled legacy model selection to ${this.selectedModel.providerID}/${this.selectedModel.modelID}.`,
+      );
+      return;
+    }
+
+    if (candidates.length > 1) {
+      console.warn(
+        `[ChatViewProvider] Ambiguous modelID '${this.selectedModel.modelID}' across multiple providers; refusing to auto-remap. Please select provider/model explicitly.`,
+      );
+    }
+  }
+
+  /**
    * Resolves the default model from the CLI config
    */
   private async resolveDefaultModel(
@@ -1238,10 +2028,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       if (defaultId) {
         console.log(`[ChatViewProvider] Found CLI default model: ${defaultId}`);
-        // Find matching model in our list
-        const match = models.find(
-          (m) => m.modelID === defaultId || m.name === defaultId,
-        );
+        const providerModelMatch = defaultId.match(/^([^\/:\s]+)[\/:](.+)$/);
+        let match:
+          | { providerID: string; modelID: string; name: string; providerName?: string }
+          | undefined;
+
+        // Preferred: explicit provider/model pair
+        if (providerModelMatch) {
+          const providerRef = providerModelMatch[1].trim();
+          const modelRef = providerModelMatch[2].trim();
+          match = models.find(
+            (m) =>
+              m.providerID === providerRef &&
+              (m.modelID === modelRef || m.name === modelRef),
+          );
+          if (!match) {
+            match = models.find(
+              (m) =>
+                (m.providerName || "").toLowerCase() === providerRef.toLowerCase() &&
+                (m.modelID === modelRef || m.name === modelRef),
+            );
+          }
+        } else {
+          // Backward-compatible fallback: allow model-only identifiers only when unique
+          const byModelId = models.filter((m) => m.modelID === defaultId);
+          if (byModelId.length === 1) {
+            match = byModelId[0];
+          } else {
+            const byName = models.filter((m) => m.name === defaultId);
+            if (byName.length === 1) {
+              match = byName[0];
+            }
+          }
+        }
 
         if (match) {
           this.selectedModel = {
@@ -1251,6 +2070,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           };
           console.log(
             `[ChatViewProvider] Synced default model to: ${match.modelID} (${match.providerID})`,
+          );
+        } else {
+          console.warn(
+            `[ChatViewProvider] Could not uniquely resolve CLI default model '${defaultId}'. Keeping current selection ${this.selectedModel.providerID}/${this.selectedModel.modelID}.`,
           );
         }
       }
@@ -1273,7 +2096,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       providerName: string;
     }>
   > {
-    try {
+    if (this.modelsFetchPromise) {
+      return this.modelsFetchPromise;
+    }
+
+    this.modelsFetchPromise = (async () => {
+      try {
       const client = await this.serverManager.ensureRunning();
 
       // Add timeout to provider list call
@@ -1337,6 +2165,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
     return [];
+    })();
+
+    try {
+      return await this.modelsFetchPromise;
+    } finally {
+      this.modelsFetchPromise = null;
+    }
   }
 
   /**

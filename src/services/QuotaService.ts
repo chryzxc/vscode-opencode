@@ -153,6 +153,46 @@ function formatNumber(n: number): string {
   return String(n);
 }
 
+function formatDuration(seconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(safeSeconds / 86_400);
+  const hours = Math.floor((safeSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((safeSeconds % 3_600) / 60);
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m`;
+}
+
+function formatResetFromTimestampMs(resetAtMs?: number): string | undefined {
+  if (!resetAtMs || Number.isNaN(resetAtMs)) {
+    return undefined;
+  }
+  const diffSec = Math.floor((resetAtMs - Date.now()) / 1000);
+  if (diffSec <= 0) {
+    return "soon";
+  }
+  return formatDuration(diffSec);
+}
+
+function maskAccount(value: string, start = 4, end = 4): string {
+  if (!value) {
+    return "unknown";
+  }
+  if (value.length <= start + end) {
+    return value;
+  }
+  return `${value.slice(0, start)}****${value.slice(-end)}`;
+}
+
+function normalizePlatformId(platformName: string): string {
+  return platformName.toLowerCase().replace(/\s+/g, "-").replace(/\.+/g, "");
+}
+
 function percentBar(pct: number): number {
   return Math.max(0, Math.min(100, Math.round(pct)));
 }
@@ -193,58 +233,103 @@ export class QuotaService extends EventEmitter {
     const tasks: Promise<void>[] = [];
 
     // OpenAI
-    if (auth?.openai) {
+    if (auth?.openai?.access) {
       tasks.push(
         this.fetchOpenAI(auth.openai)
-          .then((p) => { if (p) platforms.push(p); })
+          .then((p) => {
+            if (p) platforms.push(p);
+          })
           .catch(() => {}),
       );
     }
 
     // Zhipu
-    const zhipuAuth = auth?.["zhipuai-coding-plan"];
-    if (zhipuAuth) {
+    if (auth?.["zhipuai-coding-plan"]?.key) {
       tasks.push(
-        this.fetchZhipu(zhipuAuth, "Zhipu AI", ZHIPU_USAGE_URL)
-          .then((p) => { if (p) platforms.push(p); })
+        this.fetchZhipu(
+          auth["zhipuai-coding-plan"],
+          "Zhipu AI",
+          ZHIPU_USAGE_URL,
+        )
+          .then((p) => {
+            if (p) platforms.push(p);
+          })
           .catch(() => {}),
       );
     }
 
     // ZAI
-    const zaiAuth = auth?.["zai-coding-plan"];
-    if (zaiAuth) {
+    if (auth?.["zai-coding-plan"]?.key) {
       tasks.push(
-        this.fetchZhipu(zaiAuth, "Z.AI", ZAI_USAGE_URL)
-          .then((p) => { if (p) platforms.push(p); })
+        this.fetchZhipu(auth["zai-coding-plan"], "Z.AI", ZAI_USAGE_URL)
+          .then((p) => {
+            if (p) platforms.push(p);
+          })
           .catch(() => {}),
       );
     }
 
     // GitHub Copilot
-    const copilotAuth = auth?.["github-copilot"];
     const copilotConfig = readJsonFile<CopilotQuotaConfig>(copilotConfigPath);
-    if (copilotAuth && copilotConfig) {
+    if (auth?.["github-copilot"]?.access || auth?.["github-copilot"]?.refresh) {
       tasks.push(
-        this.fetchCopilot(copilotAuth, copilotConfig)
-          .then((p) => { if (p) platforms.push(p); })
+        this.fetchCopilot(
+          auth["github-copilot"],
+          copilotConfig as CopilotQuotaConfig,
+        )
+          .then((p) => {
+            if (p) platforms.push(p);
+          })
           .catch(() => {}),
       );
     }
 
     // Google / Antigravity
-    const antigravityFile = readJsonFile<AntigravityAccountsFile>(antigravityPath);
+    const antigravityFile =
+      readJsonFile<AntigravityAccountsFile>(antigravityPath);
     if (antigravityFile?.accounts?.length) {
       for (const account of antigravityFile.accounts) {
         tasks.push(
           this.fetchGoogle(account)
-            .then((ps) => platforms.push(...ps))
+            .then((ps) => {
+              if (ps) platforms.push(...ps);
+            })
             .catch(() => {}),
         );
       }
     }
 
     await Promise.allSettled(tasks);
+
+    // If no auth file, surface an OpenCode card in error state so UI still shows a provider
+    const hasRecognizedProviders = Boolean(
+      auth?.openai ||
+      auth?.["zhipuai-coding-plan"] ||
+      auth?.["zai-coding-plan"] ||
+      auth?.["github-copilot"] ||
+      (antigravityFile &&
+        antigravityFile.accounts &&
+        antigravityFile.accounts.length > 0),
+    );
+
+    if (!auth) {
+      platforms.push({
+        platform: "opencode",
+        account: "OpenCode",
+        title: "OpenCode AI",
+        status: "error",
+        error: "No auth.json found",
+        quotas: [],
+      });
+    } else if (!hasRecognizedProviders) {
+      platforms.push({
+        platform: "opencode",
+        account: "OpenCode",
+        title: "OpenCode AI",
+        status: "ok",
+        quotas: [{ label: "Connected", remainPercent: 100 }],
+      });
+    }
 
     const data: QuotaData = {
       platforms,
@@ -259,7 +344,9 @@ export class QuotaService extends EventEmitter {
   // ── Platform fetchers ────────────────────────────────────────────────────────
 
   private async fetchOpenAI(auth: OpenAIAuthData): Promise<PlatformQuota | null> {
-    if (!auth.access) return null;
+    if (!auth?.access) {
+      return null;
+    }
     try {
       const raw = await httpsGet(OPENAI_USAGE_URL, {
         Authorization: `Bearer ${auth.access}`,
@@ -270,22 +357,67 @@ export class QuotaService extends EventEmitter {
 
       const quotas: QuotaItem[] = [];
 
-      // Parse o-series / GPT usage segments
+      const primaryWindow = json?.rate_limit?.primary_window;
+      if (primaryWindow && typeof primaryWindow === "object") {
+        const usedPercent = Number(primaryWindow.used_percent ?? 0);
+        const remain = percentBar(100 - usedPercent);
+        const windowSeconds = Number(primaryWindow.limit_window_seconds ?? 0);
+        const windowHours = Math.max(1, Math.round(windowSeconds / 3600));
+        const resetAfterSeconds = Number(primaryWindow.reset_after_seconds ?? 0);
+
+        quotas.push({
+          label: `${windowHours}-hour limit`,
+          remainPercent: remain,
+          percentLabel: `${remain}% remaining`,
+          resetLabel: resetAfterSeconds > 0 ? formatDuration(resetAfterSeconds) : undefined,
+        });
+      }
+
+      const weeklyWindow = json?.rate_limit?.weekly_window ?? json?.rate_limit?.secondary_window;
+      if (weeklyWindow && typeof weeklyWindow === "object") {
+        const usedPercent = Number(weeklyWindow.used_percent ?? 0);
+        const remainRaw = 100 - usedPercent;
+        const remain = percentBar(remainRaw);
+        const resetAfterSeconds = Number(weeklyWindow.reset_after_seconds ?? 0);
+
+        quotas.push({
+          label: `Weekly limit`,
+          remainPercent: remain,
+          percentLabel: `${remainRaw.toFixed(1)}% remaining`,
+          resetLabel: resetAfterSeconds > 0 ? formatDuration(resetAfterSeconds) : undefined,
+        });
+      }
+
+      const additionalDetails = json?.rate_limit?.additional_details;
+      if (additionalDetails && typeof additionalDetails === "object") {
+        for (const [key, value] of Object.entries(additionalDetails)) {
+          quotas.push({
+            label: key,
+            remainPercent: 100,
+            percentLabel: String(value),
+            note: "Additional Detail"
+          });
+        }
+      }
+
       const allotments: any[] = json?.allotments ?? [];
-      for (const a of allotments) {
-        const label = a.model_group_display ?? a.model_group ?? "Unknown";
-        const used = a.usage ?? 0;
-        const total = a.limit ?? 0;
-        const remain = total > 0 ? ((total - used) / total) * 100 : 0;
-        const resetAt = a.reset_at
-          ? new Date(a.reset_at * 1000).toLocaleDateString()
+      for (const allotment of allotments) {
+        const label = allotment.model_group_display ?? allotment.model_group ?? "Model";
+        const used = Number(allotment.usage ?? 0);
+        const total = Number(allotment.limit ?? 0);
+        if (total <= 0) {
+          continue;
+        }
+        const remain = percentBar(((total - used) / total) * 100);
+        const resetAt = typeof allotment.reset_at === "number"
+          ? formatResetFromTimestampMs(allotment.reset_at * 1000)
           : undefined;
         quotas.push({
           label,
-          remainPercent: percentBar(remain),
+          remainPercent: remain,
           usedTotalDisplay: `${formatNumber(used)} / ${formatNumber(total)}`,
-          percentLabel: `${percentBar(remain)}% remaining`,
-          resetLabel: resetAt ? `Resets ${resetAt}` : undefined,
+          percentLabel: `${remain}% remaining`,
+          resetLabel: resetAt,
         });
       }
 
@@ -293,10 +425,13 @@ export class QuotaService extends EventEmitter {
         quotas.push({ label: "No quota data", remainPercent: 0 });
       }
 
+      const planType = typeof json?.plan_type === "string" ? json.plan_type : "unknown";
+
       return {
         platform: "openai",
         account: "ChatGPT",
-        title: "OpenAI / ChatGPT",
+        accountLabel: `(${planType})`,
+        title: "OpenAI Account Quota",
         status: "ok",
         quotas,
       };
@@ -317,7 +452,9 @@ export class QuotaService extends EventEmitter {
     platformName: string,
     url: string,
   ): Promise<PlatformQuota | null> {
-    if (!auth.key) return null;
+    if (!auth?.key) {
+      return null;
+    }
     try {
       const raw = await httpsGet(url, {
         Authorization: `Bearer ${auth.key}`,
@@ -325,22 +462,40 @@ export class QuotaService extends EventEmitter {
         "Content-Type": "application/json",
       });
       const json = JSON.parse(raw);
-      const data = json?.data ?? json;
-
       const quotas: QuotaItem[] = [];
-      const items: any[] = Array.isArray(data) ? data : data?.items ?? [];
 
-      for (const item of items) {
-        const label = item.model ?? item.name ?? "Unknown";
-        const total = item.total ?? item.quota ?? 0;
-        const used = item.used ?? 0;
-        const remaining = item.remaining ?? total - used;
-        const remainPct = total > 0 ? (remaining / total) * 100 : 0;
+      const limits: any[] = Array.isArray(json?.data?.limits)
+        ? json.data.limits
+        : Array.isArray(json?.limits)
+          ? json.limits
+          : [];
+
+      for (const limit of limits) {
+        const type =
+          typeof limit?.type === "string" ? limit.type : "TOKENS_LIMIT";
+        const total = Number(limit?.usage ?? 0);
+        const used = Number(limit?.currentValue ?? 0);
+        const usedPercent = Number(limit?.percentage ?? 0);
+        const remainPercent = percentBar(100 - usedPercent);
+        const resetLabel = formatResetFromTimestampMs(
+          typeof limit?.nextResetTime === "number"
+            ? limit.nextResetTime
+            : undefined,
+        );
+        const isTokenLimit = type === "TOKENS_LIMIT";
+        
+        // Token limits are 5-hour limits, other limits are monthly limits
+        const label = isTokenLimit ? "5 hrs token limit" : "Monthly limit";
+
         quotas.push({
           label,
-          remainPercent: percentBar(remainPct),
-          usedTotalDisplay: `${formatNumber(used)} / ${formatNumber(total)}`,
-          percentLabel: `${percentBar(remainPct)}% remaining`,
+          remainPercent,
+          usedTotalDisplay:
+            total > 0
+              ? `${formatNumber(used)} / ${formatNumber(total)}`
+              : undefined,
+          percentLabel: `${remainPercent}% remaining`,
+          resetLabel,
         });
       }
 
@@ -348,18 +503,23 @@ export class QuotaService extends EventEmitter {
         quotas.push({ label: "No quota data", remainPercent: 0 });
       }
 
+      const isZai = platformName.toLowerCase().includes("z.ai");
+      const account = auth.key ? maskAccount(auth.key) : platformName;
+      const accountLabel = isZai ? "(Z.ai)" : "(Coding Plan)";
+
       return {
-        platform: platformName.toLowerCase().replace(/\s/g, "-"),
-        account: platformName,
-        title: platformName,
+        platform: normalizePlatformId(platformName),
+        account,
+        accountLabel,
+        title: `${platformName} Account Quota`,
         status: "ok",
         quotas,
       };
     } catch (e) {
       return {
-        platform: platformName.toLowerCase().replace(/\s/g, "-"),
+        platform: normalizePlatformId(platformName),
         account: platformName,
-        title: platformName,
+        title: `${platformName} Account Quota`,
         status: "error",
         error: String(e),
         quotas: [],
@@ -368,14 +528,14 @@ export class QuotaService extends EventEmitter {
   }
 
   private async fetchCopilot(
-    auth: CopilotAuthData,
-    config: CopilotQuotaConfig,
+    auth: CopilotAuthData | undefined,
+    config: CopilotQuotaConfig | undefined,
   ): Promise<PlatformQuota | null> {
     // Refresh token if expired
-    let token = auth.access;
-    const expired = auth.expires ? auth.expires < Date.now() / 1000 - 60 : true;
+    let token = auth?.access;
+    const expired = auth?.expires ? auth.expires < Date.now() / 1000 - 60 : true;
 
-    if (expired && auth.refresh) {
+    if (expired && auth?.refresh) {
       try {
         const refreshRaw = await httpsPost(
           "https://github.com/login/oauth/access_token",
@@ -399,7 +559,16 @@ export class QuotaService extends EventEmitter {
       }
     }
 
-    if (!token) return null;
+    if (!token) {
+      return {
+        platform: "github-copilot",
+        account: config?.username ?? "GitHub Copilot",
+        title: "GitHub Copilot Account Quota",
+        status: "error",
+        error: "No access token available",
+        quotas: [],
+      };
+    }
 
     try {
       // Get Copilot API token
@@ -416,9 +585,8 @@ export class QuotaService extends EventEmitter {
       const copilotToken = JSON.parse(copilotTokenRaw);
       const apiToken: string = copilotToken.token ?? token;
 
-      // Fetch usage
-      const usageRaw = await httpsGet(
-        `https://api.githubcopilot.com/usage`,
+      const userRaw = await httpsGet(
+        `${GITHUB_API_BASE_URL}/copilot_internal/user`,
         {
           Authorization: `Bearer ${apiToken}`,
           "User-Agent": COPILOT_USER_AGENT,
@@ -426,34 +594,76 @@ export class QuotaService extends EventEmitter {
           "Editor-Plugin-Version": COPILOT_EDITOR_PLUGIN_VERSION,
         },
       );
-      const usageJson = JSON.parse(usageRaw);
+      const userJson = JSON.parse(userRaw);
 
-      const tier: CopilotTier = config.tier ?? "free";
-      const limit = COPILOT_PLAN_LIMITS[tier] ?? 50;
-      const used: number = usageJson?.premium_requests_used ?? 0;
-      const remaining = Math.max(0, limit - used);
-      const remainPct = limit > 0 ? (remaining / limit) * 100 : 0;
+      const premiumSnapshot = userJson?.quota_snapshots?.premium_interactions;
+
+      const snapshotEntitlement = Number(premiumSnapshot?.entitlement ?? 0);
+      const snapshotRemain = Number(premiumSnapshot?.remaining ?? 0);
+      const snapshotPct = Number(premiumSnapshot?.percent_remaining ?? 0);
+
+      // Priority: use API provided entitlement as limit, fallback to hardcoded if not found
+      const tier: CopilotTier = config?.tier ?? "free";
+      const limitFallback = COPILOT_PLAN_LIMITS[tier] ?? 50;
+      const effectiveLimit =
+        snapshotEntitlement > 0 ? snapshotEntitlement : limitFallback;
+
+      let used = snapshotEntitlement - snapshotRemain;
+      let remaining = snapshotRemain;
+      let rawRemainPct =
+        Number.isFinite(snapshotPct) && snapshotPct > 0
+          ? snapshotPct
+          : effectiveLimit > 0
+            ? (remaining / effectiveLimit) * 100
+            : 0;
+
+      if (!premiumSnapshot) {
+        const usageRaw = await httpsGet(`https://api.githubcopilot.com/usage`, {
+          Authorization: `Bearer ${apiToken}`,
+          "User-Agent": COPILOT_USER_AGENT,
+          "Editor-Version": COPILOT_EDITOR_VERSION,
+          "Editor-Plugin-Version": COPILOT_EDITOR_PLUGIN_VERSION,
+        });
+        const usageJson = JSON.parse(usageRaw);
+        used = Number(usageJson?.premium_requests_used ?? 0);
+        remaining = Math.max(0, effectiveLimit - used);
+        rawRemainPct =
+          effectiveLimit > 0 ? (remaining / effectiveLimit) * 100 : 0;
+      }
+
+      const remainPct = percentBar(rawRemainPct);
+      const quotaResetDate =
+        typeof userJson?.quota_reset_date === "string"
+          ? userJson.quota_reset_date
+          : undefined;
+      const planType =
+        typeof userJson?.copilot_plan === "string"
+          ? userJson.copilot_plan
+          : "individual";
 
       return {
         platform: "github-copilot",
-        account: config.username,
-        accountLabel: `@${config.username}`,
-        title: "GitHub Copilot",
+        account: "GitHub Copilot",
+        accountLabel: `(${planType})`,
+        title: "GitHub Copilot Account Quota",
         status: remainPct < 10 ? "warning" : "ok",
         quotas: [
           {
-            label: `Premium Requests (${tier})`,
-            remainPercent: percentBar(remainPct),
-            usedTotalDisplay: `${used} / ${limit}`,
-            percentLabel: `${percentBar(remainPct)}% remaining`,
+            label: "Premium",
+            remainPercent: remainPct,
+            usedTotalDisplay: `${used} / ${effectiveLimit}`,
+            percentLabel: `${rawRemainPct.toFixed(1)}%`,
+            resetLabel: quotaResetDate
+              ? `${Math.max(0, Math.ceil((new Date(quotaResetDate).getTime() - Date.now()) / 86_400_000))}d (${new Date(quotaResetDate).toISOString().slice(0, 10)})`
+              : undefined,
           },
         ],
       };
     } catch (e) {
       return {
         platform: "github-copilot",
-        account: config.username,
-        title: "GitHub Copilot",
+        account: config?.username ?? "GitHub Copilot",
+        title: "GitHub Copilot Account Quota",
         status: "error",
         error: String(e),
         quotas: [],

@@ -1,0 +1,1280 @@
+type UnknownRecord = Record<string, unknown>;
+
+export type SubagentStatus =
+  | "pending"
+  | "running"
+  | "done"
+  | "error"
+  | "orphaned";
+
+export type SubagentReference = {
+  messageID?: string;
+  partID?: string;
+  callID?: string;
+};
+
+export type SubagentTimelineEvent = {
+  key: string;
+  type: string;
+  label: string;
+  createdAt: number;
+  messageID?: string;
+  partID?: string;
+  callID?: string;
+};
+
+export type SubagentThinkingEvent = {
+  id: string;
+  text: string;
+  createdAt: number;
+  messageID?: string;
+  partID?: string;
+};
+
+export type SubagentProgressEvent = {
+  id: string;
+  title: string;
+  status: "pending" | "done" | "error";
+  meta?: string;
+  filePath?: string;
+  createdAt: number;
+  messageID?: string;
+  partID?: string;
+  callID?: string;
+};
+
+export type SubagentSummary = {
+  id: string;
+  parentSessionId: string;
+  parentMessageId: string;
+  childSessionId?: string;
+  agentId?: string;
+  providerID?: string;
+  modelID?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  status: SubagentStatus;
+  latestActivity: string;
+  references: SubagentReference[];
+};
+
+export type SubagentDetail = SubagentSummary & {
+  thinkingEvents: SubagentThinkingEvent[];
+  progressEvents: SubagentProgressEvent[];
+  timelineEvents: SubagentTimelineEvent[];
+  tokenUsage?: {
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: { read?: number; write?: number };
+  };
+  errorText?: string;
+  hydrationUnavailable?: boolean;
+};
+
+export type SubagentUpdatePayload = {
+  summariesByParentMessageId: Record<string, SubagentSummary[]>;
+  detailsById: Record<string, SubagentDetail>;
+};
+
+type FinalizeParentMessageOptions = {
+  client: {
+    session?: {
+      children?: (params: { path: { id: string } }) => Promise<{
+        data?: unknown[];
+        error?: unknown;
+      }>;
+      messages?: (params: { path: { id: string } }) => Promise<{
+        data?: unknown[];
+        error?: unknown;
+      }>;
+    };
+  };
+  parentSessionId: string;
+  parentMessageId: string;
+};
+
+const MAX_TIMELINE_EVENTS = 200;
+const MAX_PROGRESS_EVENTS = 200;
+const MAX_THINKING_EVENTS = 200;
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return typeof value === "object" && value !== null
+    ? (value as UnknownRecord)
+    : null;
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+function asBoolean(value: unknown): boolean {
+  return typeof value === "boolean" ? value : false;
+}
+
+function toTimestamp(value: unknown, fallback = Date.now()): number {
+  const n = asNumber(value);
+  if (typeof n === "number" && Number.isFinite(n)) {
+    return n;
+  }
+  return fallback;
+}
+
+function isReasoningPart(part: UnknownRecord): boolean {
+  const partType = asString(part.type).toLowerCase();
+  return (
+    partType === "reasoning" ||
+    typeof part.reasoning !== "undefined" ||
+    typeof part.thought !== "undefined" ||
+    typeof part.thinking !== "undefined"
+  );
+}
+
+function isOpaqueIdLike(value: string): boolean {
+  const text = value.trim();
+  if (text.length < 8) {
+    return false;
+  }
+  return (
+    /^[a-f0-9-]{8,}$/i.test(text) ||
+    /^msg[_-][a-z0-9-]+$/i.test(text) ||
+    /^call[_-][a-z0-9-]+$/i.test(text)
+  );
+}
+
+function sanitizeReasoningText(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || isOpaqueIdLike(trimmed)) {
+    return "";
+  }
+  return value;
+}
+
+function normalizeProgressStatus(value: unknown): "pending" | "done" | "error" {
+  const status = asString(value).toLowerCase();
+  if (status === "done") {
+    return "done";
+  }
+  if (status === "error") {
+    return "error";
+  }
+  return "pending";
+}
+
+function clampEvents<T>(events: T[], max: number): T[] {
+  if (events.length <= max) {
+    return events;
+  }
+  return events.slice(events.length - max);
+}
+
+function cloneReference(ref: SubagentReference): SubagentReference {
+  return {
+    messageID: ref.messageID,
+    partID: ref.partID,
+    callID: ref.callID,
+  };
+}
+
+function cloneSummary(summary: SubagentSummary): SubagentSummary {
+  return {
+    ...summary,
+    references: summary.references.map(cloneReference),
+  };
+}
+
+function cloneDetail(detail: SubagentDetail): SubagentDetail {
+  return {
+    ...cloneSummary(detail),
+    thinkingEvents: detail.thinkingEvents.map((event) => ({ ...event })),
+    progressEvents: detail.progressEvents.map((event) => ({ ...event })),
+    timelineEvents: detail.timelineEvents.map((event) => ({ ...event })),
+    tokenUsage: detail.tokenUsage
+      ? {
+          input: detail.tokenUsage.input,
+          output: detail.tokenUsage.output,
+          reasoning: detail.tokenUsage.reasoning,
+          cache: detail.tokenUsage.cache
+            ? {
+                read: detail.tokenUsage.cache.read,
+                write: detail.tokenUsage.cache.write,
+              }
+            : undefined,
+        }
+      : undefined,
+  };
+}
+
+function compareByStartedAtDesc(a: SubagentSummary, b: SubagentSummary): number {
+  const aTime = a.startedAt ?? 0;
+  const bTime = b.startedAt ?? 0;
+  return bTime - aTime;
+}
+
+export class SubagentTracker {
+  private activeSessionId: string | null = null;
+  private detailsById = new Map<string, SubagentDetail>();
+  private idsByParentMessageId = new Map<string, string[]>();
+  private pendingSubtasksByParentSessionId = new Map<string, string[]>();
+  private latestParentMessageBySessionId = new Map<string, string>();
+  private childSessionToSubagentId = new Map<string, string>();
+  private childSessionToParentSessionId = new Map<string, string>();
+
+  resetForSession(sessionId: string | null): void {
+    this.activeSessionId = sessionId;
+    this.detailsById.clear();
+    this.idsByParentMessageId.clear();
+    this.pendingSubtasksByParentSessionId.clear();
+    this.latestParentMessageBySessionId.clear();
+    this.childSessionToSubagentId.clear();
+    this.childSessionToParentSessionId.clear();
+  }
+
+  setActiveSession(sessionId: string | null): void {
+    this.activeSessionId = sessionId;
+  }
+
+  seedFromMessages(messages: unknown[]): void {
+    this.detailsById.clear();
+    this.idsByParentMessageId.clear();
+    this.pendingSubtasksByParentSessionId.clear();
+    this.latestParentMessageBySessionId.clear();
+    this.childSessionToSubagentId.clear();
+    this.childSessionToParentSessionId.clear();
+
+    for (const rawMessage of messages) {
+      const message = asRecord(rawMessage);
+      if (!message) {
+        continue;
+      }
+      const info = asRecord(message.info);
+      const role = asString(message.role) || asString(info?.role);
+      if (role !== "assistant") {
+        continue;
+      }
+
+      const parentMessageId =
+        asString(info?.id) || asString(message.id) || asString(message.messageID);
+      if (!parentMessageId) {
+        continue;
+      }
+      const parentSessionId =
+        asString(info?.sessionID) || asString(message.sessionID) || this.activeSessionId || "";
+      if (!parentSessionId) {
+        continue;
+      }
+
+      const subagents = Array.isArray(message.subagents)
+        ? message.subagents
+        : [];
+      for (const rawSubagent of subagents) {
+        const detail = this.normalizePersistedDetail(
+          rawSubagent,
+          parentSessionId,
+          parentMessageId,
+        );
+        if (!detail) {
+          continue;
+        }
+        this.upsertDetail(detail);
+      }
+    }
+  }
+
+  consumeStreamEvent(event: unknown): SubagentUpdatePayload | null {
+    const evt = asRecord(event);
+    if (!evt) {
+      return null;
+    }
+    const eventType = asString(evt.type);
+    const properties = asRecord(evt.properties) || {};
+
+    const changedParents = new Set<string>();
+    const changedDetails = new Set<string>();
+
+    if (eventType === "message.part.updated") {
+      this.handleMessagePartUpdated(properties, changedParents, changedDetails);
+    } else if (eventType === "message.updated") {
+      this.handleMessageUpdated(properties, changedParents, changedDetails);
+    } else if (eventType === "session.created") {
+      this.handleSessionCreated(properties, changedParents, changedDetails);
+    } else if (eventType === "session.error") {
+      this.handleSessionError(properties, changedParents, changedDetails);
+    }
+
+    if (changedParents.size === 0 && changedDetails.size === 0) {
+      return null;
+    }
+
+    return this.buildUpdatePayload(changedParents, changedDetails);
+  }
+
+  getSnapshotPayload(): SubagentUpdatePayload {
+    const parentKeys = new Set(this.idsByParentMessageId.keys());
+    const detailKeys = new Set(this.detailsById.keys());
+    return this.buildUpdatePayload(parentKeys, detailKeys);
+  }
+
+  getPayloadForParentMessage(parentMessageId: string): SubagentUpdatePayload {
+    const ids = this.idsByParentMessageId.get(parentMessageId) || [];
+    return this.buildUpdatePayload(new Set([parentMessageId]), new Set(ids));
+  }
+
+  async finalizeParentMessage(
+    options: FinalizeParentMessageOptions,
+  ): Promise<SubagentDetail[]> {
+    const { client, parentSessionId, parentMessageId } = options;
+    this.activeSessionId = parentSessionId;
+
+    const runIds = [...(this.idsByParentMessageId.get(parentMessageId) || [])];
+    if (runIds.length === 0) {
+      return [];
+    }
+
+    const childrenFn = client.session?.children;
+    if (!childrenFn) {
+      for (const runId of runIds) {
+        const detail = this.detailsById.get(runId);
+        if (!detail) {
+          continue;
+        }
+        detail.hydrationUnavailable = true;
+      }
+      return runIds
+        .map((id) => this.detailsById.get(id))
+        .filter((item): item is SubagentDetail => !!item)
+        .map(cloneDetail);
+    }
+
+    try {
+      const response = await childrenFn({ path: { id: parentSessionId } });
+      if (response.error) {
+        for (const runId of runIds) {
+          const detail = this.detailsById.get(runId);
+          if (!detail) {
+            continue;
+          }
+          detail.hydrationUnavailable = true;
+        }
+      } else {
+        const childSessions = Array.isArray(response.data) ? response.data : [];
+        for (const childRaw of childSessions) {
+          const child = asRecord(childRaw);
+          if (!child) {
+            continue;
+          }
+          const childSessionId = asString(child.id);
+          const parentId = asString(child.parentID);
+          if (!childSessionId || parentId !== parentSessionId) {
+            continue;
+          }
+
+          const subagentId =
+            this.childSessionToSubagentId.get(childSessionId) ||
+            this.bindChildSessionToKnownSubtask(parentSessionId, childSessionId);
+          if (!subagentId) {
+            continue;
+          }
+
+          const detail = this.detailsById.get(subagentId);
+          if (!detail) {
+            continue;
+          }
+          const time = asRecord(child.time);
+          detail.childSessionId = childSessionId;
+          detail.startedAt = detail.startedAt ?? asNumber(time?.created);
+          detail.endedAt = detail.endedAt ?? asNumber(time?.updated);
+          if (
+            typeof detail.startedAt === "number" &&
+            typeof detail.endedAt === "number"
+          ) {
+            detail.durationMs = Math.max(0, detail.endedAt - detail.startedAt);
+          }
+
+          await this.hydrateChildSessionMessages(client, detail);
+          if (detail.status === "pending" || detail.status === "orphaned") {
+            detail.status = "running";
+          }
+        }
+      }
+    } catch {
+      for (const runId of runIds) {
+        const detail = this.detailsById.get(runId);
+        if (!detail) {
+          continue;
+        }
+        detail.hydrationUnavailable = true;
+      }
+    }
+
+    return runIds
+      .map((id) => this.detailsById.get(id))
+      .filter((item): item is SubagentDetail => !!item)
+      .map((detail) => {
+        this.recomputeDuration(detail);
+        return cloneDetail(detail);
+      });
+  }
+
+  private normalizePersistedDetail(
+    raw: unknown,
+    parentSessionId: string,
+    parentMessageId: string,
+  ): SubagentDetail | null {
+    const rec = asRecord(raw);
+    if (!rec) {
+      return null;
+    }
+
+    const id = asString(rec.id);
+    if (!id) {
+      return null;
+    }
+
+    const statusValue = asString(rec.status) as SubagentStatus;
+    const status: SubagentStatus =
+      statusValue === "pending" ||
+      statusValue === "running" ||
+      statusValue === "done" ||
+      statusValue === "error" ||
+      statusValue === "orphaned"
+        ? statusValue
+        : "pending";
+
+    const references = Array.isArray(rec.references)
+      ? rec.references
+          .map((item) => {
+            const ref = asRecord(item);
+            if (!ref) {
+              return null;
+            }
+            const messageID = asString(ref.messageID);
+            const partID = asString(ref.partID);
+            const callID = asString(ref.callID);
+            if (!messageID && !partID && !callID) {
+              return null;
+            }
+            return { messageID, partID, callID };
+          })
+          .filter((item): item is SubagentReference => !!item)
+      : [];
+
+    const thinkingEvents = Array.isArray(rec.thinkingEvents)
+      ? rec.thinkingEvents
+          .map((item) => {
+            const event = asRecord(item);
+            if (!event) {
+              return null;
+            }
+            const text = asString(event.text);
+            if (!text) {
+              return null;
+            }
+            return {
+              id: asString(event.id) || `thought-${Date.now()}`,
+              text,
+              createdAt: toTimestamp(event.createdAt),
+              messageID: asString(event.messageID) || undefined,
+              partID: asString(event.partID) || undefined,
+            } as SubagentThinkingEvent;
+          })
+          .filter((item): item is SubagentThinkingEvent => !!item)
+      : [];
+
+    const progressEvents = Array.isArray(rec.progressEvents)
+      ? rec.progressEvents
+          .map((item) => {
+            const event = asRecord(item);
+            if (!event) {
+              return null;
+            }
+            const title = asString(event.title);
+            if (!title) {
+              return null;
+            }
+            return {
+              id: asString(event.id) || `progress-${Date.now()}`,
+              title,
+              status: normalizeProgressStatus(event.status),
+              meta: asString(event.meta) || undefined,
+              filePath: asString(event.filePath) || undefined,
+              createdAt: toTimestamp(event.createdAt),
+              messageID: asString(event.messageID) || undefined,
+              partID: asString(event.partID) || undefined,
+              callID: asString(event.callID) || undefined,
+            } as SubagentProgressEvent;
+          })
+          .filter((item): item is SubagentProgressEvent => !!item)
+      : [];
+
+    const timelineEvents = Array.isArray(rec.timelineEvents)
+      ? rec.timelineEvents
+          .map((item) => {
+            const event = asRecord(item);
+            if (!event) {
+              return null;
+            }
+            const key = asString(event.key);
+            const type = asString(event.type);
+            const label = asString(event.label);
+            if (!key || !type || !label) {
+              return null;
+            }
+            return {
+              key,
+              type,
+              label,
+              createdAt: toTimestamp(event.createdAt),
+              messageID: asString(event.messageID) || undefined,
+              partID: asString(event.partID) || undefined,
+              callID: asString(event.callID) || undefined,
+            } as SubagentTimelineEvent;
+          })
+          .filter((item): item is SubagentTimelineEvent => !!item)
+      : [];
+
+    const tokenUsage = asRecord(rec.tokenUsage);
+    const tokenCache = asRecord(tokenUsage?.cache);
+
+    const detail: SubagentDetail = {
+      id,
+      parentSessionId: asString(rec.parentSessionId) || parentSessionId,
+      parentMessageId: asString(rec.parentMessageId) || parentMessageId,
+      childSessionId: asString(rec.childSessionId) || undefined,
+      agentId: asString(rec.agentId) || undefined,
+      providerID: asString(rec.providerID) || undefined,
+      modelID: asString(rec.modelID) || undefined,
+      startedAt: asNumber(rec.startedAt),
+      endedAt: asNumber(rec.endedAt),
+      durationMs: asNumber(rec.durationMs),
+      status,
+      latestActivity: asString(rec.latestActivity) || "Loaded from history",
+      references,
+      thinkingEvents,
+      progressEvents,
+      timelineEvents,
+      tokenUsage: tokenUsage
+        ? {
+            input: asNumber(tokenUsage.input),
+            output: asNumber(tokenUsage.output),
+            reasoning: asNumber(tokenUsage.reasoning),
+            cache: tokenCache
+              ? {
+                  read: asNumber(tokenCache.read),
+                  write: asNumber(tokenCache.write),
+                }
+              : undefined,
+          }
+        : undefined,
+      errorText: asString(rec.errorText) || undefined,
+      hydrationUnavailable: asBoolean(rec.hydrationUnavailable),
+    };
+
+    this.recomputeDuration(detail);
+    return detail;
+  }
+
+  private buildUpdatePayload(
+    parentMessageIds: Set<string>,
+    detailIds: Set<string>,
+  ): SubagentUpdatePayload {
+    const summariesByParentMessageId: Record<string, SubagentSummary[]> = {};
+    for (const parentMessageId of parentMessageIds) {
+      const ids = this.idsByParentMessageId.get(parentMessageId) || [];
+      const summaries = ids
+        .map((id) => this.detailsById.get(id))
+        .filter((item): item is SubagentDetail => !!item)
+        .map((detail) => {
+          this.recomputeDuration(detail);
+          return cloneSummary(detail);
+        })
+        .sort(compareByStartedAtDesc);
+      summariesByParentMessageId[parentMessageId] = summaries;
+    }
+
+    const detailsById: Record<string, SubagentDetail> = {};
+    for (const detailId of detailIds) {
+      const detail = this.detailsById.get(detailId);
+      if (!detail) {
+        continue;
+      }
+      this.recomputeDuration(detail);
+      detailsById[detailId] = cloneDetail(detail);
+    }
+
+    return { summariesByParentMessageId, detailsById };
+  }
+
+  private upsertDetail(detail: SubagentDetail): void {
+    this.detailsById.set(detail.id, detail);
+    this.attachToParentMessage(detail.parentMessageId, detail.id);
+    if (detail.childSessionId) {
+      this.childSessionToSubagentId.set(detail.childSessionId, detail.id);
+      this.childSessionToParentSessionId.set(
+        detail.childSessionId,
+        detail.parentSessionId,
+      );
+    }
+    this.latestParentMessageBySessionId.set(
+      detail.parentSessionId,
+      detail.parentMessageId,
+    );
+  }
+
+  private attachToParentMessage(parentMessageId: string, subagentId: string): void {
+    const ids = this.idsByParentMessageId.get(parentMessageId) || [];
+    if (!ids.includes(subagentId)) {
+      ids.push(subagentId);
+      this.idsByParentMessageId.set(parentMessageId, ids);
+    }
+  }
+
+  private makeSubtaskSubagentId(
+    sessionId: string,
+    messageId: string,
+    partId: string,
+  ): string {
+    return `subtask:${sessionId}:${messageId}:${partId}`;
+  }
+
+  private makeTimelineKey(
+    eventType: string,
+    messageID: string | undefined,
+    partID: string | undefined,
+    createdAt: number,
+  ): string {
+    return `${eventType}:${messageID || "-"}:${partID || "-"}:${createdAt}`;
+  }
+
+  private addReference(detail: SubagentDetail, ref: SubagentReference): void {
+    if (!ref.messageID && !ref.partID && !ref.callID) {
+      return;
+    }
+    const exists = detail.references.some(
+      (entry) =>
+        entry.messageID === ref.messageID &&
+        entry.partID === ref.partID &&
+        entry.callID === ref.callID,
+    );
+    if (!exists) {
+      detail.references.push(ref);
+    }
+  }
+
+  private pushTimeline(detail: SubagentDetail, event: SubagentTimelineEvent): void {
+    detail.timelineEvents = clampEvents(
+      [...detail.timelineEvents, event],
+      MAX_TIMELINE_EVENTS,
+    );
+  }
+
+  private pushThinking(detail: SubagentDetail, event: SubagentThinkingEvent): void {
+    detail.thinkingEvents = clampEvents(
+      [...detail.thinkingEvents, event],
+      MAX_THINKING_EVENTS,
+    );
+  }
+
+  private pushProgress(detail: SubagentDetail, event: SubagentProgressEvent): void {
+    detail.progressEvents = clampEvents(
+      [...detail.progressEvents, event],
+      MAX_PROGRESS_EVENTS,
+    );
+  }
+
+  private recomputeDuration(detail: SubagentDetail): void {
+    if (typeof detail.startedAt !== "number") {
+      return;
+    }
+    if (typeof detail.endedAt === "number") {
+      detail.durationMs = Math.max(0, detail.endedAt - detail.startedAt);
+      return;
+    }
+    if (
+      detail.status === "running" ||
+      detail.status === "pending" ||
+      detail.status === "orphaned"
+    ) {
+      detail.durationMs = Math.max(0, Date.now() - detail.startedAt);
+    }
+  }
+
+  private handleMessagePartUpdated(
+    properties: UnknownRecord,
+    changedParents: Set<string>,
+    changedDetails: Set<string>,
+  ): void {
+    const part = asRecord(properties.part);
+    if (!part) {
+      return;
+    }
+    const partType = asString(part.type).toLowerCase();
+    const sessionId = asString(part.sessionID) || asString(properties.sessionID);
+    const messageId = asString(part.messageID) || asString(properties.messageID);
+    const partId = asString(part.id) || "part";
+    const createdAt = Date.now();
+
+    if (!sessionId || !messageId) {
+      return;
+    }
+
+    if (
+      this.activeSessionId &&
+      sessionId !== this.activeSessionId &&
+      !this.childSessionToSubagentId.has(sessionId)
+    ) {
+      return;
+    }
+
+    if (partType === "subtask" && sessionId === this.activeSessionId) {
+      const detailId = this.makeSubtaskSubagentId(sessionId, messageId, partId);
+      const existing = this.detailsById.get(detailId);
+      const detail: SubagentDetail =
+        existing ||
+        {
+          id: detailId,
+          parentSessionId: sessionId,
+          parentMessageId: messageId,
+          status: "pending",
+          latestActivity: "Subagent requested",
+          references: [],
+          thinkingEvents: [],
+          progressEvents: [],
+          timelineEvents: [],
+        };
+
+      detail.agentId = asString(part.agent) || detail.agentId;
+      detail.latestActivity =
+        asString(part.description) ||
+        asString(part.prompt) ||
+        detail.latestActivity ||
+        "Subagent requested";
+      detail.startedAt = detail.startedAt ?? createdAt;
+      detail.status = detail.childSessionId ? "running" : "pending";
+
+      this.addReference(detail, {
+        messageID: messageId,
+        partID: partId,
+      });
+      this.pushTimeline(detail, {
+        key: this.makeTimelineKey("subtask", messageId, partId, createdAt),
+        type: "subtask",
+        label: detail.latestActivity,
+        createdAt,
+        messageID: messageId,
+        partID: partId,
+      });
+
+      const pending = this.pendingSubtasksByParentSessionId.get(sessionId) || [];
+      if (!detail.childSessionId && !pending.includes(detailId)) {
+        pending.push(detailId);
+        this.pendingSubtasksByParentSessionId.set(sessionId, pending);
+      }
+      this.latestParentMessageBySessionId.set(sessionId, messageId);
+      this.upsertDetail(detail);
+
+      changedParents.add(messageId);
+      changedDetails.add(detailId);
+      return;
+    }
+
+    const detail = this.resolveDetailForPartEvent(sessionId, messageId);
+    if (!detail) {
+      return;
+    }
+
+    const delta = asString(properties.delta) || asString(part.delta);
+    const thinkingText = sanitizeReasoningText(
+      asString(part.reasoning) ||
+        asString(part.thought) ||
+        asString(part.thinking) ||
+        (isReasoningPart(part) ? delta : ""),
+    );
+    if (thinkingText) {
+      this.pushThinking(detail, {
+        id: `${detail.id}:thought:${createdAt}:${detail.thinkingEvents.length}`,
+        text: thinkingText.trim(),
+        createdAt,
+        messageID: messageId,
+        partID: partId,
+      });
+      detail.latestActivity = thinkingText.trim().slice(0, 120);
+    }
+
+    const progress = this.extractProgressFromPart(part, properties, createdAt);
+    if (progress) {
+      this.pushProgress(detail, {
+        ...progress,
+        messageID: messageId,
+        partID: partId,
+      });
+      detail.latestActivity = progress.title;
+    }
+
+    const eventLabel =
+      progress?.title || thinkingText.trim() || `${partType || "part"} updated`;
+    this.pushTimeline(detail, {
+      key: this.makeTimelineKey(partType || "part", messageId, partId, createdAt),
+      type: partType || "part",
+      label: eventLabel,
+      createdAt,
+      messageID: messageId,
+      partID: partId,
+      callID: asString(part.callID) || undefined,
+    });
+    this.addReference(detail, {
+      messageID: messageId,
+      partID: partId,
+      callID: asString(part.callID) || undefined,
+    });
+
+    if (detail.status === "pending" || detail.status === "orphaned") {
+      detail.status = "running";
+    }
+
+    this.upsertDetail(detail);
+    changedParents.add(detail.parentMessageId);
+    changedDetails.add(detail.id);
+  }
+
+  private handleMessageUpdated(
+    properties: UnknownRecord,
+    changedParents: Set<string>,
+    changedDetails: Set<string>,
+  ): void {
+    const info = asRecord(properties.info);
+    if (!info) {
+      return;
+    }
+    const sessionId = asString(info.sessionID);
+    const messageId = asString(info.id);
+    if (!sessionId) {
+      return;
+    }
+
+    const detailId = this.childSessionToSubagentId.get(sessionId);
+    if (!detailId) {
+      return;
+    }
+    const detail = this.detailsById.get(detailId);
+    if (!detail) {
+      return;
+    }
+
+    const createdAt = Date.now();
+    detail.providerID = asString(info.providerID) || detail.providerID;
+    detail.modelID = asString(info.modelID) || detail.modelID;
+
+    const tokens = asRecord(info.tokens);
+    if (tokens) {
+      const cache = asRecord(tokens.cache);
+      detail.tokenUsage = {
+        input: asNumber(tokens.input),
+        output: asNumber(tokens.output),
+        reasoning: asNumber(tokens.reasoning),
+        cache: cache
+          ? {
+              read: asNumber(cache.read),
+              write: asNumber(cache.write),
+            }
+          : undefined,
+      };
+    }
+
+    const time = asRecord(info.time);
+    detail.startedAt = detail.startedAt ?? asNumber(time?.created);
+    const completed = asNumber(time?.completed);
+
+    const hasFinishFlag =
+      typeof info.finish === "string"
+        ? Boolean(asString(info.finish))
+        : asBoolean(info.finish);
+    if (hasFinishFlag || typeof completed === "number") {
+      detail.endedAt = completed ?? createdAt;
+      if (detail.status !== "error") {
+        detail.status = "done";
+      }
+      detail.latestActivity = "Completed";
+    } else if (detail.status === "pending" || detail.status === "orphaned") {
+      detail.status = "running";
+      detail.latestActivity = "Running";
+    }
+
+    const err = asRecord(info.error);
+    const errorText = asString(err?.message) || asString(info.error);
+    if (errorText) {
+      detail.status = "error";
+      detail.errorText = errorText;
+      detail.latestActivity = errorText;
+      detail.endedAt = detail.endedAt ?? createdAt;
+    }
+
+    this.recomputeDuration(detail);
+
+    const label = detail.latestActivity || "Message updated";
+    this.pushTimeline(detail, {
+      key: this.makeTimelineKey("message.updated", messageId, undefined, createdAt),
+      type: "message.updated",
+      label,
+      createdAt,
+      messageID: messageId || undefined,
+    });
+    this.addReference(detail, {
+      messageID: messageId || undefined,
+    });
+
+    this.upsertDetail(detail);
+    changedParents.add(detail.parentMessageId);
+    changedDetails.add(detail.id);
+  }
+
+  private handleSessionCreated(
+    properties: UnknownRecord,
+    changedParents: Set<string>,
+    changedDetails: Set<string>,
+  ): void {
+    const info = asRecord(properties.info);
+    if (!info) {
+      return;
+    }
+
+    const parentSessionId = asString(info.parentID);
+    const childSessionId = asString(info.id);
+    if (!parentSessionId || !childSessionId) {
+      return;
+    }
+
+    if (this.activeSessionId && parentSessionId !== this.activeSessionId) {
+      return;
+    }
+
+    const createdAt = Date.now();
+    const pending = this.pendingSubtasksByParentSessionId.get(parentSessionId) || [];
+    let detailId: string | undefined;
+    while (pending.length > 0) {
+      const candidate = pending.shift();
+      if (!candidate) {
+        continue;
+      }
+      const existing = this.detailsById.get(candidate);
+      if (!existing || existing.childSessionId) {
+        continue;
+      }
+      detailId = candidate;
+      break;
+    }
+    this.pendingSubtasksByParentSessionId.set(parentSessionId, pending);
+
+    if (!detailId) {
+      const parentMessageId =
+        this.latestParentMessageBySessionId.get(parentSessionId) ||
+        `orphan-${childSessionId}`;
+      detailId = `orphan:${parentSessionId}:${childSessionId}`;
+      const orphanDetail: SubagentDetail = {
+        id: detailId,
+        parentSessionId,
+        parentMessageId,
+        childSessionId,
+        status: "orphaned",
+        latestActivity: "Child session created",
+        startedAt: asNumber(asRecord(info.time)?.created) ?? createdAt,
+        references: [],
+        thinkingEvents: [],
+        progressEvents: [],
+        timelineEvents: [],
+      };
+      this.pushTimeline(orphanDetail, {
+        key: this.makeTimelineKey(
+          "session.created",
+          undefined,
+          undefined,
+          createdAt,
+        ),
+        type: "session.created",
+        label: "Child session created",
+        createdAt,
+      });
+      this.upsertDetail(orphanDetail);
+      changedParents.add(orphanDetail.parentMessageId);
+      changedDetails.add(orphanDetail.id);
+      return;
+    }
+
+    const detail = this.detailsById.get(detailId);
+    if (!detail) {
+      return;
+    }
+    detail.childSessionId = childSessionId;
+    detail.status = "running";
+    detail.startedAt = detail.startedAt ?? asNumber(asRecord(info.time)?.created) ?? createdAt;
+    detail.latestActivity = "Child session started";
+    this.pushTimeline(detail, {
+      key: this.makeTimelineKey("session.created", undefined, undefined, createdAt),
+      type: "session.created",
+      label: "Child session started",
+      createdAt,
+    });
+    this.upsertDetail(detail);
+    changedParents.add(detail.parentMessageId);
+    changedDetails.add(detail.id);
+  }
+
+  private handleSessionError(
+    properties: UnknownRecord,
+    changedParents: Set<string>,
+    changedDetails: Set<string>,
+  ): void {
+    const sessionId = asString(properties.sessionID);
+    if (!sessionId) {
+      return;
+    }
+    const detailId = this.childSessionToSubagentId.get(sessionId);
+    if (!detailId) {
+      return;
+    }
+    const detail = this.detailsById.get(detailId);
+    if (!detail) {
+      return;
+    }
+
+    const createdAt = Date.now();
+    const err = asRecord(properties.error);
+    const errorText =
+      asString(err?.message) ||
+      asString(err?.name) ||
+      asString(properties.error) ||
+      "Session error";
+
+    detail.status = "error";
+    detail.errorText = errorText;
+    detail.latestActivity = errorText;
+    detail.endedAt = detail.endedAt ?? createdAt;
+    this.recomputeDuration(detail);
+    this.pushTimeline(detail, {
+      key: this.makeTimelineKey("session.error", undefined, undefined, createdAt),
+      type: "session.error",
+      label: errorText,
+      createdAt,
+    });
+    this.upsertDetail(detail);
+
+    changedParents.add(detail.parentMessageId);
+    changedDetails.add(detail.id);
+  }
+
+  private resolveDetailForPartEvent(
+    sessionId: string,
+    messageId: string,
+  ): SubagentDetail | null {
+    const detailId = this.childSessionToSubagentId.get(sessionId);
+    if (detailId) {
+      return this.detailsById.get(detailId) || null;
+    }
+
+    const candidateIds = this.idsByParentMessageId.get(messageId) || [];
+    for (const candidateId of candidateIds) {
+      const detail = this.detailsById.get(candidateId);
+      if (!detail) {
+        continue;
+      }
+      if (detail.parentSessionId === sessionId || detail.childSessionId === sessionId) {
+        return detail;
+      }
+    }
+    return null;
+  }
+
+  private extractProgressFromPart(
+    part: UnknownRecord,
+    properties: UnknownRecord,
+    createdAt: number,
+  ): Omit<SubagentProgressEvent, "messageID" | "partID"> | null {
+    const partType = asString(part.type).toLowerCase();
+    const callID = asString(part.callID) || undefined;
+    if (partType === "tool") {
+      const tool = asString(part.tool) || "tool";
+      const state = asRecord(part.state);
+      const input = asRecord(state?.input);
+      const filePath =
+        asString(input?.file) ||
+        asString(input?.path) ||
+        asString(input?.filename) ||
+        asString(part.filePath) ||
+        undefined;
+      return {
+        id: `${asString(part.id) || "tool"}:${createdAt}`,
+        title: `Tool: ${tool}`,
+        status: normalizeProgressStatus(state?.status || part.status),
+        meta: asString(part.meta) || undefined,
+        filePath,
+        createdAt,
+        callID,
+      };
+    }
+
+    if (partType === "step-start") {
+      return {
+        id: `${asString(part.id) || "step-start"}:${createdAt}`,
+        title: asString(part.snapshot) || "Step started",
+        status: "pending",
+        createdAt,
+        callID,
+      };
+    }
+    if (partType === "step-finish") {
+      return {
+        id: `${asString(part.id) || "step-finish"}:${createdAt}`,
+        title: asString(part.reason) || asString(part.snapshot) || "Step completed",
+        status: "done",
+        createdAt,
+        callID,
+      };
+    }
+    if (partType === "patch") {
+      const files = Array.isArray(part.files) ? part.files : [];
+      return {
+        id: `${asString(part.id) || "patch"}:${createdAt}`,
+        title:
+          files.length > 0
+            ? `Patched ${files.length} file${files.length === 1 ? "" : "s"}`
+            : "Patch applied",
+        status: "done",
+        createdAt,
+        callID,
+      };
+    }
+    if (partType === "subtask") {
+      return {
+        id: `${asString(part.id) || "subtask"}:${createdAt}`,
+        title: asString(part.description) || "Subtask requested",
+        status: "pending",
+        createdAt,
+        callID,
+      };
+    }
+    if (partType === "agent") {
+      const name = asString(part.name);
+      return {
+        id: `${asString(part.id) || "agent"}:${createdAt}`,
+        title: name ? `Agent selected: ${name}` : "Agent selected",
+        status: "pending",
+        createdAt,
+        callID,
+      };
+    }
+
+    const delta = asString(properties.delta);
+    if (partType && delta) {
+      return {
+        id: `${asString(part.id) || partType}:${createdAt}`,
+        title: `${partType}: ${delta}`,
+        status: "pending",
+        createdAt,
+        callID,
+      };
+    }
+    return null;
+  }
+
+  private bindChildSessionToKnownSubtask(
+    parentSessionId: string,
+    childSessionId: string,
+  ): string | undefined {
+    if (this.childSessionToSubagentId.has(childSessionId)) {
+      return this.childSessionToSubagentId.get(childSessionId);
+    }
+    const pending = this.pendingSubtasksByParentSessionId.get(parentSessionId) || [];
+    while (pending.length > 0) {
+      const candidate = pending.shift();
+      if (!candidate) {
+        continue;
+      }
+      const detail = this.detailsById.get(candidate);
+      if (!detail || detail.childSessionId) {
+        continue;
+      }
+      detail.childSessionId = childSessionId;
+      detail.status = "running";
+      this.childSessionToSubagentId.set(childSessionId, candidate);
+      this.childSessionToParentSessionId.set(childSessionId, parentSessionId);
+      this.pendingSubtasksByParentSessionId.set(parentSessionId, pending);
+      return candidate;
+    }
+    this.pendingSubtasksByParentSessionId.set(parentSessionId, pending);
+    return undefined;
+  }
+
+  private async hydrateChildSessionMessages(
+    client: FinalizeParentMessageOptions["client"],
+    detail: SubagentDetail,
+  ): Promise<void> {
+    const childSessionId = detail.childSessionId;
+    if (!childSessionId) {
+      return;
+    }
+    const messagesFn = client.session?.messages;
+    if (!messagesFn) {
+      detail.hydrationUnavailable = true;
+      return;
+    }
+
+    try {
+      const response = await messagesFn({ path: { id: childSessionId } });
+      if (response.error || !Array.isArray(response.data)) {
+        detail.hydrationUnavailable = true;
+        return;
+      }
+
+      const assistantInfos = response.data
+        .map((msg) => asRecord(asRecord(msg)?.info))
+        .filter((info): info is UnknownRecord => !!info)
+        .filter((info) => asString(info.role) === "assistant");
+
+      if (assistantInfos.length === 0) {
+        return;
+      }
+
+      const latest = assistantInfos[assistantInfos.length - 1];
+      detail.providerID = asString(latest.providerID) || detail.providerID;
+      detail.modelID = asString(latest.modelID) || detail.modelID;
+      const time = asRecord(latest.time);
+      detail.startedAt = detail.startedAt ?? asNumber(time?.created);
+      detail.endedAt = detail.endedAt ?? asNumber(time?.completed);
+      const latestTokens = asRecord(latest.tokens);
+      const latestCache = asRecord(latestTokens?.cache);
+      detail.tokenUsage = latestTokens
+        ? {
+            input: asNumber(latestTokens.input),
+            output: asNumber(latestTokens.output),
+            reasoning: asNumber(latestTokens.reasoning),
+            cache: latestCache
+              ? {
+                  read: asNumber(latestCache.read),
+                  write: asNumber(latestCache.write),
+                }
+              : undefined,
+          }
+        : detail.tokenUsage;
+
+      const hasFinishFlag =
+        typeof latest.finish === "string"
+          ? Boolean(asString(latest.finish))
+          : asBoolean(latest.finish);
+      if (hasFinishFlag || typeof detail.endedAt === "number") {
+        if (detail.status !== "error") {
+          detail.status = "done";
+        }
+        detail.latestActivity =
+          detail.status === "done" ? "Completed" : detail.latestActivity;
+      }
+      this.recomputeDuration(detail);
+    } catch {
+      detail.hydrationUnavailable = true;
+    }
+  }
+}

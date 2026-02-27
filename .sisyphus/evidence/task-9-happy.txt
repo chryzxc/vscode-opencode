@@ -1,0 +1,12 @@
+Task 9 implemented: Comment popover added to PlanShell.tsx
+- Popover appears when pendingAnchor !== null
+- Uses shadcn Textarea and Button components
+- Submits via window.postAddComment with crypto.randomUUID()
+- Accessibility: label associated with textarea (htmlFor/id)
+
+TypeScript check: ran `cd webview/shared && npx tsc --noEmit` — no errors reported by LSP on changed file
+
+Files changed:
+- webview/shared/src/plan/PlanShell.tsx
+
+Evidence created on: 2026-02-26

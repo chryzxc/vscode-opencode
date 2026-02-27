@@ -2,49 +2,613 @@
 @tailwind components;
 @tailwind utilities;
 
-/* shadcn semantic tokens mapped to live VS Code webview theme variables.
-   VS Code updates the --vscode-* variables automatically when the user changes theme. */
+/* ── shadcn semantic tokens → VS Code theme variables ───────────────────── */
 :root {
-  --background: var(--vscode-editor-background, #1e1e1e);
-  --foreground: var(--vscode-editor-foreground, #d4d4d4);
-  --card: var(--vscode-editorWidget-background, var(--vscode-editor-background, #1e1e1e));
-  --card-foreground: var(--vscode-editorWidget-foreground, var(--vscode-editor-foreground, #d4d4d4));
-  --popover: var(--vscode-editorWidget-background, var(--vscode-editor-background, #1e1e1e));
-  --popover-foreground: var(--vscode-editorWidget-foreground, var(--vscode-editor-foreground, #d4d4d4));
-  --primary: var(--vscode-button-background, #0e6398);
-  --primary-foreground: var(--vscode-button-foreground, #ffffff);
-  --secondary: var(--vscode-button-secondaryBackground, var(--vscode-input-background, #3c3c3c));
-  --secondary-foreground: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground, #d4d4d4));
-  --muted: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
-  --muted-foreground: var(--vscode-descriptionForeground, #858585);
-  --accent: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.14));
-  --accent-foreground: var(--vscode-editor-foreground, #d4d4d4);
-  --destructive: var(--vscode-errorForeground, #f85149);
-  --destructive-foreground: var(--vscode-editor-background, #ffffff);
-  --border: var(--vscode-panel-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.25)));
-  --input: var(--vscode-input-background, #3c3c3c);
-  --ring: var(--vscode-focusBorder, #007fd4);
-  --radius: 0.5rem;
+  --background:            var(--vscode-editor-background, #1e1e2e);
+  --foreground:            var(--vscode-editor-foreground, #cdd6f4);
+  --card:                  var(--vscode-editorWidget-background, var(--vscode-editor-background, #181825));
+  --card-foreground:       var(--vscode-editorWidget-foreground, var(--vscode-editor-foreground, #cdd6f4));
+  --popover:               var(--vscode-editorWidget-background, var(--vscode-editor-background, #181825));
+  --popover-foreground:    var(--vscode-editorWidget-foreground, var(--vscode-editor-foreground, #cdd6f4));
+  --primary:               var(--vscode-button-background, #89b4fa);
+  --primary-foreground:    var(--vscode-button-foreground, #1e1e2e);
+  --secondary:             var(--vscode-button-secondaryBackground, var(--vscode-input-background, #313244));
+  --secondary-foreground:  var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground, #cdd6f4));
+  --muted:                 var(--vscode-editorWidget-background, rgba(205, 214, 244, 0.05));
+  --muted-foreground:      var(--vscode-descriptionForeground, #a6adc8);
+  --accent:                var(--vscode-list-hoverBackground, rgba(205, 214, 244, 0.05));
+  --accent-foreground:     var(--vscode-editor-foreground, #cdd6f4);
+  --destructive:           var(--vscode-errorForeground, #f38ba8);
+  --destructive-foreground: var(--vscode-editor-background, #1e1e2e);
+  --border:                var(--vscode-panel-border, var(--vscode-widget-border, rgba(205, 214, 244, 0.08)));
+  --input:                 var(--vscode-input-background, rgba(205, 214, 244, 0.05));
+  --ring:                  var(--vscode-focusBorder, #89b4fa);
+  --radius:                0.75rem;
 }
 
 body.vscode-high-contrast,
 body.vscode-high-contrast-light {
   --border: var(--vscode-contrastBorder, var(--border));
-  --ring: var(--vscode-focusBorder, var(--ring));
+  --ring:   var(--vscode-focusBorder, var(--ring));
 }
 
-/* Thinking pulse animation */
-@keyframes thinking-pulse {
-  0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
-  40% { opacity: 1; transform: scale(1); }
+/* ── OpenCode Design Tokens ──────────────────────────────────────────────── */
+:root {
+  /* Surfaces */
+  --oc-bg:         var(--vscode-editor-background);
+  --oc-bg-soft:    var(--vscode-editorWidget-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
+  --oc-bg-overlay: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --oc-panel:      var(--vscode-editorWidget-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
+  --oc-panel-soft: var(--vscode-inputBackground, var(--vscode-editorWidget-background, var(--vscode-editor-background)));
+
+  /* Borders */
+  --oc-border:      var(--vscode-widget-border, var(--vscode-panel-border, rgba(205, 214, 244, 0.08)));
+  --oc-border-soft: var(--vscode-panel-border, var(--vscode-widget-border, rgba(205, 214, 244, 0.05)));
+
+  /* Text */
+  --oc-text:       var(--vscode-editor-foreground);
+  --oc-text-soft:  var(--vscode-editor-foreground);
+  --oc-text-muted: color-mix(in srgb, var(--vscode-editor-foreground) 75%, var(--vscode-descriptionForeground, #a6adc8));
+
+  /* Accent */
+  --oc-accent:      var(--vscode-textLink-foreground, var(--vscode-button-background, #89b4fa));
+  --oc-accent-soft: rgba(137,180,250,0.10);
+  --oc-accent-glow: rgba(137,180,250,0.20);
+
+  /* Status */
+  --oc-green:  var(--vscode-terminal-ansiGreen, #a6e3a1);
+  --oc-yellow: var(--vscode-terminal-ansiYellow, #f9e2af);
+  --oc-red:    var(--vscode-errorForeground, #f38ba8);
+  --oc-orange: var(--vscode-terminal-ansiBrightRed, #fab387);
 }
 
-/* Markdown body styles */
-.markdown-body {
-  color: var(--vscode-editor-foreground);
-  font-family: var(--vscode-font-family, inherit);
+/* ── Reset ───────────────────────────────────────────────────────────────── */
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--oc-bg);
+  color: var(--oc-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Inter', sans-serif;
   font-size: var(--vscode-font-size, 13px);
-  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Shell ───────────────────────────────────────────────────────────────── */
+.oc-shell {
+  background: var(--oc-bg);
+  position: relative;
+}
+
+/* Removed heavy ambient gradient overlay — Antigravity is clean and flat */
+.oc-shell::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Sticky Header ───────────────────────────────────────────────────────── */
+.oc-header {
+  min-height: 40px;
+  background: var(--oc-bg);
+  border-bottom: 1px solid var(--oc-border);
+  color: var(--oc-text-muted);
+  position: relative;
+  z-index: 10;
+}
+
+.oc-header-center {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .oc-header-center {
+    display: flex;
+  }
+}
+
+.oc-title {
+  color: var(--oc-text);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  font-size: 13px;
+}
+
+.oc-session-chip {
+  border: 1px solid var(--oc-border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  color: var(--oc-text-muted);
+  background: color-mix(in srgb, var(--oc-accent) 6%, transparent);
+}
+
+.oc-history-btn {
+  border-radius: 6px;
+  color: var(--oc-text-muted);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.oc-history-btn:hover {
+  background: var(--oc-accent-soft);
+  color: var(--oc-accent);
+}
+
+/* ── Status Chips ────────────────────────────────────────────────────────── */
+.oc-task-pill {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  border: 1px solid var(--oc-border);
+  color: var(--oc-text-soft);
+  background: transparent;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.oc-task-name {
+  color: var(--oc-text-soft);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.oc-status-pill {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  border-radius: 3px;
+  padding: 1px 5px;
+  border: 1px solid var(--oc-border);
+  font-weight: 500;
+}
+
+.oc-status-pill.idle {
+  color: var(--oc-text-soft);
+  background: transparent;
+  opacity: 0.75;
+}
+
+.oc-status-pill.pending {
+  color: var(--oc-yellow);
+  border-color: color-mix(in srgb, var(--oc-yellow) 25%, transparent);
+  background: color-mix(in srgb, var(--oc-yellow) 6%, transparent);
+}
+
+.oc-status-pill.running {
+  color: var(--oc-accent);
+  border-color: color-mix(in srgb, var(--oc-accent) 30%, transparent);
+  background: var(--oc-accent-soft);
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
+}
+
+.oc-duration {
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 10px;
+}
+
+/* ── Right Panel ─────────────────────────────────────────────────────────── */
+.oc-right-panel {
+  border-color: var(--oc-border);
+  background: var(--oc-bg-soft);
+}
+
+.oc-active-task-panel {
+  background: var(--oc-bg-soft);
+}
+
+.oc-panel-title {
+  letter-spacing: 0.08em;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--oc-text-soft);
+  opacity: 0.85;
+}
+
+/* ── History Sidebar ─────────────────────────────────────────────────────── */
+.oc-history-sidebar {
+  background: var(--oc-bg-soft);
+  border-color: var(--oc-border);
+  box-shadow: 4px 0 20px color-mix(in srgb, black 18%, transparent);
+}
+
+.oc-session-item {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+
+.oc-session-item:hover {
+  border-color: var(--oc-border);
+  background: var(--oc-accent-soft);
+}
+
+.oc-session-delete:hover {
+  color: var(--oc-red);
+}
+
+/* ── Input Wrapper ───────────────────────────────────────────────────────── */
+.oc-input-wrap {
+  background: var(--oc-bg);
+  border-top: 1px solid var(--oc-border);
+  position: relative;
+  z-index: 5;
+  padding: 10px 12px 12px;
+}
+
+/* Floating card — clean Antigravity style */
+.oc-input-card {
+  background: var(--oc-bg-soft);
+  border: 1px solid var(--oc-border);
+  border-radius: 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  padding: 8px 10px;
+}
+
+.oc-input-card:focus-within {
+  border-color: color-mix(in srgb, var(--oc-accent) 45%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--oc-accent) 7%, transparent);
+}
+
+/* Legacy alias for any existing references */
+.oc-input-container {
+  background: var(--oc-bg-soft);
+  border: 1px solid var(--oc-border);
+  border-radius: 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.oc-input-container:focus-within {
+  border-color: color-mix(in srgb, var(--oc-accent) 45%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--oc-accent) 7%, transparent);
+}
+
+.oc-textarea {
+  background: transparent;
+  border: none;
+  color: var(--oc-text);
+  font-family: inherit;
+  font-size: 13px;
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+}
+
+.oc-textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.oc-textarea::placeholder {
+  color: var(--oc-text-soft);
+  opacity: 0.6;
+}
+
+/* ── Control Buttons (Model/Agent dropdowns) ─────────────────────────────── */
+.oc-control-btn {
+  border: 1px solid var(--oc-border);
+  background: transparent;
+  color: var(--oc-text-muted);
+  font-size: 11px;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
+  border-radius: 6px;
+}
+
+/* ── Send Button ─────────────────────────────────────────────────────────── */
+.oc-send-btn {
+  background: var(--oc-accent);
+  color: var(--vscode-button-foreground, #1e1e2e);
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: opacity 0.1s ease;
+}
+
+.oc-send-btn:hover {
+  opacity: 0.88;
+}
+
+.oc-control-btn:hover {
+  background: var(--oc-accent-soft);
+  border-color: color-mix(in srgb, var(--oc-accent) 25%, transparent);
+  color: var(--oc-text);
+}
+
+/* ── Dropdowns ───────────────────────────────────────────────────────────── */
+.oc-dropdown {
+  border: 1px solid var(--oc-border);
+  background: var(--oc-panel);
+  box-shadow: 0 6px 24px color-mix(in srgb, black 22%, transparent), 0 1px 4px color-mix(in srgb, black 10%, transparent);
+  border-radius: 10px;
+}
+
+.oc-dropdown-search {
+  border: 1px solid var(--oc-border);
+  background: color-mix(in srgb, var(--oc-bg) 80%, transparent);
+  color: var(--oc-text);
+  font-family: inherit;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.oc-dropdown-search::placeholder {
+  color: var(--oc-text-soft);
+  opacity: 0.6;
+}
+
+.oc-dropdown-search:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--oc-accent) 40%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--oc-accent) 8%, transparent);
+}
+
+.oc-group-label {
+  letter-spacing: 0.07em;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  color: var(--oc-text-soft);
+  opacity: 0.75;
+}
+
+.oc-dropdown-option {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 11px;
+  transition: background 0.08s ease, border-color 0.08s ease;
+}
+
+.oc-dropdown-option:hover {
+  border-color: var(--oc-border);
+  background: var(--oc-accent-soft);
+}
+
+.oc-current-label {
+  color: var(--oc-accent);
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+}
+
+/* ── Queue ───────────────────────────────────────────────────────────────── */
+.oc-queue {
+  background: var(--oc-bg-soft);
+  border-color: var(--oc-border);
+}
+
+.oc-queue-btn {
+  border-color: var(--oc-border);
+  transition: background 0.1s ease;
+}
+
+/* ── Progress Steps ──────────────────────────────────────────────────────── */
+.oc-steps-wrap {
+  border: 1px solid var(--oc-border);
+  background: transparent;
+  border-radius: 8px;
+}
+
+.oc-steps-header {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  color: var(--oc-text-soft);
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.oc-step-item {
+  border: 1px solid var(--oc-border);
+  background: transparent;
+  border-radius: 6px;
+  transition: background 0.1s ease;
+}
+
+.oc-step-item.file-step:hover {
+  background: var(--oc-accent-soft);
+  border-color: color-mix(in srgb, var(--oc-accent) 18%, transparent);
+}
+
+/* ── Quota Monitor ───────────────────────────────────────────────────────── */
+.oc-quota-monitor {
+  border-color: var(--oc-border);
+}
+
+/* ── Thinking pulse animation ────────────────────────────────────────────── */
+@keyframes thinking-pulse {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.75); }
+  40%           { opacity: 1; transform: scale(1.1); }
+}
+
+/* ── Message entrance animation ─────────────────────────────────────────── */
+@keyframes message-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.oc-message-enter {
+  animation: message-in 0.18s ease-out both;
+}
+
+@keyframes oc-message-focus-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--oc-accent) 35%, transparent); }
+  100% { box-shadow: 0 0 0 6px transparent; }
+}
+
+.oc-message-focus {
+  border-radius: 10px;
+  animation: oc-message-focus-pulse 1.2s ease-out;
+}
+
+/* ── User Message ─────────────────────────────────────────────────────────── */
+.oc-msg-user {
+  background: color-mix(in srgb, var(--oc-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 14%, transparent);
+  border-radius: 16px 16px 3px 16px;
+  padding: 8px 13px;
+  color: var(--oc-text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* ── Assistant Message ────────────────────────────────────────────────────── */
+.oc-msg-assistant {
+  /* Clean left-accent approach — no heavy card */
+  padding-left: 14px;
+  border-left: 2px solid color-mix(in srgb, var(--oc-accent) 30%, transparent);
+}
+
+/* ── Avatar ──────────────────────────────────────────────────────────────── */
+.oc-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--oc-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 15%, transparent);
+  color: var(--oc-accent);
+  flex-shrink: 0;
+}
+
+/* ── Agent icon ──────────────────────────────────────────────────────────── */
+.oc-agent-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--oc-accent) 15%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--oc-accent);
+}
+
+/* ── Message header labels ───────────────────────────────────────────────── */
+.oc-msg-agent-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--oc-text-soft);
+  opacity: 0.85;
+}
+
+.oc-msg-model-label {
+  font-size: 10px;
+  color: var(--oc-text-soft);
+  opacity: 0.75;
+}
+
+.oc-msg-token-chips {
+  font-size: 10px;
+  color: var(--oc-text-soft);
+  opacity: 0.65;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  white-space: nowrap;
+}
+
+.oc-msg-copy-btn {
+  color: var(--oc-text-muted);
+  border-radius: 4px;
+  padding: 2px 4px;
+  transition: background 0.1s ease, color 0.1s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+}
+
+/* Show copy on hover of the message */
+.oc-msg-assistant:hover .oc-msg-copy-btn,
+.oc-msg-copy-btn:focus {
+  opacity: 1;
+}
+
+.oc-msg-copy-btn:hover {
+  background: var(--oc-accent-soft);
+  color: var(--oc-text);
+  opacity: 1;
+}
+
+/* ── Plan Card ───────────────────────────────────────────────────────────── */
+.plan-card {
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 18%, transparent) !important;
+  background: color-mix(in srgb, var(--oc-accent) 4%, transparent) !important;
+  border-radius: 10px !important;
+}
+
+/* ── Plan button ─────────────────────────────────────────────────────────── */
+.oc-plan-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 22%, transparent);
+  background: var(--oc-accent-soft);
+  color: var(--oc-accent);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background 0.1s ease;
+  cursor: pointer;
+}
+
+.oc-plan-btn:hover {
+  background: color-mix(in srgb, var(--oc-accent) 15%, transparent);
+}
+
+/* ── Thinking Level ──────────────────────────────────────────────────────── */
+.oc-thinking-level {
+  gap: 4px;
+}
+
+/* ── Empty State ─────────────────────────────────────────────────────────── */
+.oc-empty-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--oc-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 18%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--oc-accent);
+  font-size: 22px;
+}
+
+/* ── Markdown Body ───────────────────────────────────────────────────────── */
+.markdown-body {
+  color: var(--oc-text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .markdown-body h1,
@@ -53,13 +617,15 @@ body.vscode-high-contrast-light {
 .markdown-body h4,
 .markdown-body h5,
 .markdown-body h6 {
-  margin: 0.8em 0 0.4em;
+  margin: 1em 0 0.4em;
   font-weight: 600;
   line-height: 1.3;
+  color: var(--oc-text);
+  letter-spacing: -0.01em;
 }
 
-.markdown-body h1 { font-size: 1.4em; }
-.markdown-body h2 { font-size: 1.2em; }
+.markdown-body h1 { font-size: 1.35em; }
+.markdown-body h2 { font-size: 1.15em; }
 .markdown-body h3 { font-size: 1.05em; }
 
 .markdown-body p {
@@ -77,346 +643,469 @@ body.vscode-high-contrast-light {
 }
 
 .markdown-body code {
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.9em;
-  padding: 0.1em 0.3em;
-  border-radius: 3px;
-  background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15));
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.85em;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
+  border: 1px solid var(--oc-border);
+  color: var(--vscode-editor-foreground);
 }
 
 .markdown-body pre {
-  margin: 0.6em 0;
-  padding: 0.8em 1em;
-  border-radius: 6px;
+  margin: 0.75em 0;
+  padding: 0.9em 1em;
+  border-radius: 8px;
   overflow-x: auto;
-  background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.12));
-  border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25));
+  background: var(--oc-bg-soft);
+  border: 1px solid var(--oc-border);
+  position: relative;
+}
+
+.markdown-body pre::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--oc-accent) 20%, transparent), transparent);
 }
 
 .markdown-body pre code {
   padding: 0;
   background: transparent;
-  font-size: inherit;
+  border: none;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .markdown-body blockquote {
   margin: 0.5em 0;
-  padding: 0.3em 0.8em;
-  border-left: 3px solid var(--vscode-textBlockQuote-border, #444);
-  background: var(--vscode-textBlockQuote-background, rgba(128,128,128,0.1));
-  opacity: 0.9;
+  padding: 0.35em 0.9em;
+  border-left: 2px solid color-mix(in srgb, var(--oc-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--oc-accent) 5%, transparent);
+  border-radius: 0 6px 6px 0;
+  color: var(--oc-text-muted);
 }
 
 .markdown-body a {
-  color: var(--vscode-textLink-foreground, #4ea1f3);
+  color: var(--oc-accent);
   text-decoration: none;
+  transition: opacity 0.1s;
 }
 
 .markdown-body a:hover {
   text-decoration: underline;
+  opacity: 0.85;
 }
 
 .markdown-body table {
   width: 100%;
   border-collapse: collapse;
-  margin: 0.6em 0;
+  margin: 0.75em 0;
   font-size: 0.9em;
 }
 
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+  border: 1px solid var(--oc-border);
   padding: 0.35em 0.7em;
   text-align: left;
 }
 
 .markdown-body th {
   font-weight: 600;
-  background: rgba(128,128,128,0.1);
+  background: color-mix(in srgb, var(--oc-accent) 6%, transparent);
+  color: var(--oc-text);
 }
 
 .markdown-body hr {
   border: none;
-  border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+  border-top: 1px solid var(--oc-border);
   margin: 1em 0;
 }
 
-/* Scrollbar */
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
-  border-radius: 3px;
-  background: var(--vscode-scrollbarSlider-background, rgba(128,128,128,0.4));
+  border-radius: 2px;
+  background: var(--vscode-scrollbarSlider-background, rgba(205, 214, 244, 0.15));
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--vscode-scrollbarSlider-hoverBackground, rgba(128,128,128,0.6));
+  background: var(--vscode-scrollbarSlider-hoverBackground, rgba(205, 214, 244, 0.3));
 }
 
-/* Reset body */
-body {
-  margin: 0;
-  padding: 0;
-  overflow: hidden;
-  background: var(--vscode-editor-background);
-  color: var(--vscode-editor-foreground);
-  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
-  font-size: var(--vscode-font-size, 13px);
+/* ── Utility Classes ─────────────────────────────────────────────────────── */
+.oc-accent-border-light  { border-color: rgba(137,180,250,0.28); }
+.oc-accent-border-medium { border-color: rgba(137,180,250,0.22); }
+.oc-accent-border-thin   { border-color: rgba(137,180,250,0.16); }
+.oc-accent-border-faint  { border-color: rgba(137,180,250,0.11); }
+.oc-accent-bg-subtle     { background: rgba(137,180,250,0.07); }
+.oc-accent-bg-faint      { background: rgba(137,180,250,0.04); }
+.oc-accent-bg-light      { background: rgba(137,180,250,0.10); }
+.oc-accent-bg-avatar     { background: rgba(137,180,250,0.10); }
+.oc-accent-bg-hover      { background: rgba(137,180,250,0.14); }
+.oc-accent-border-hover  { border-color: rgba(137,180,250,0.22); }
+.oc-accent-border-thought{ border-color: rgba(137,180,250,0.18); }
+
+.oc-warning-border { border-color: rgba(249,226,175,0.28); }
+.oc-warning-bg     { background: rgba(249,226,175,0.06); }
+
+/* ── Component utilities (converted from Tailwind @layer for static parsing) */
+.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  border: 1px solid transparent;
+  background: var(--primary);
+  padding: 0.375rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--primary-foreground);
+}
+.primary:hover { opacity: 0.9; }
+.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  background: var(--secondary);
+  padding: 0.375rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--secondary-foreground);
+}
+.secondary:hover { opacity: 0.9; }
+.icon-only {
+  display: inline-flex;
+  height: 2rem;
+  width: 2rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+.icon-only:hover { opacity: 0.9; }
+
+/* Monospace for data */
+.font-mono {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
 }
 
-@layer components {
-  /* Legacy utility aliases used in a few migrated components. */
-  .primary {
-    @apply inline-flex items-center justify-center rounded-md border border-transparent bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90;
-  }
+/* ─── OpenCode Input Area Redesign ─────────────────────────────────────────── */
 
-  .secondary {
-    @apply inline-flex items-center justify-center rounded-md border border-input bg-secondary px-3 py-2 text-sm font-medium text-secondary-foreground hover:opacity-90;
-  }
-
-  .icon-only {
-    @apply inline-flex h-9 w-9 items-center justify-center rounded-md border border-input bg-secondary text-secondary-foreground hover:opacity-90;
-  }
-}
-
-#root {
-  height: 100vh;
-  overflow: hidden;
-}
-
-:root {
-  --oc-bg: #1a1d2e;
-  --oc-bg-soft: #1f2338;
-  --oc-panel: #1c2133;
-  --oc-border: #2b3148;
-  --oc-text: #d7dcec;
-  --oc-muted: #97a0bc;
-  --oc-accent: #00c4b4;
-  --oc-accent-soft: rgba(0, 196, 180, 0.14);
-}
-
-body {
+/* Outer wrapper */
+.oc-input-area {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.5rem 0.625rem 0.625rem;
+  border-top: 1px solid var(--oc-border);
   background: var(--oc-bg);
-  color: var(--oc-text);
-  font-family: "Cascadia Code", "JetBrains Mono", "Fira Code", var(--vscode-editor-font-family), monospace;
 }
 
-.oc-shell {
-  background: radial-gradient(1200px 500px at 50% -160px, rgba(0, 196, 180, 0.08), transparent 60%), var(--oc-bg);
+/* Context/attachment chip rows */
+.oc-context-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0 0.125rem;
 }
 
-.oc-header {
-  min-height: 42px;
-  background: var(--oc-bg-soft);
-  border-color: var(--oc-border);
-  color: var(--oc-muted);
-}
-
-
-.oc-title {
-  color: #f4f8ff;
-}
-
-.oc-session-chip {
+.oc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
   border: 1px solid var(--oc-border);
-  border-radius: 6px;
-  padding: 2px 6px;
+  background: var(--oc-panel-soft);
+  color: var(--oc-text-muted);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
   font-size: 10px;
-  color: var(--oc-muted);
-}
-
-.oc-history-btn {
-  border: 1px solid var(--oc-border);
-  border-radius: 7px;
-  color: var(--oc-muted);
-}
-
-.oc-history-btn:hover {
-  background: rgba(151, 160, 188, 0.12);
-  color: var(--oc-text);
-}
-
-.oc-task-pill {
-  font-size: 9px;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
-  border: 1px solid rgba(0, 196, 180, 0.45);
-  color: var(--oc-accent);
-  background: var(--oc-accent-soft);
-  border-radius: 999px;
-  padding: 2px 7px;
-}
-
-.oc-task-name {
-  color: var(--oc-muted);
-  max-width: 160px;
+  white-space: nowrap;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.oc-chip-removable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.35rem 0.15rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid var(--oc-border);
+  background: var(--oc-panel-soft);
+  color: var(--oc-text-muted);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 10px;
   white-space: nowrap;
 }
 
-.oc-status-pill {
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  border-radius: 999px;
-  padding: 2px 7px;
+.oc-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  border: none;
+  background: transparent;
+  color: var(--oc-text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.oc-chip-remove:hover {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--oc-red);
+}
+
+/* Main input box — unified card containing textarea + toolbar */
+.oc-input-box {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: 0.625rem;
   border: 1px solid var(--oc-border);
+  background: var(--oc-panel-soft);
+  transition: border-color 0.15s;
+  overflow: visible;
+}
+.oc-input-box:focus-within {
+  border-color: var(--oc-accent);
 }
 
-.oc-status-pill.idle {
-  color: var(--oc-muted);
-  background: rgba(151, 160, 188, 0.08);
+/* Textarea inside the box */
+.oc-textarea {
+  border: none !important;
+  border-radius: 0.625rem 0.625rem 0 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+  resize: none !important;
+  min-height: 60px;
+  max-height: 220px;
+  padding: 0.625rem 0.75rem 0.25rem;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--oc-text);
+}
+.oc-textarea::placeholder {
+  color: var(--oc-text-muted);
+  opacity: 0.6;
 }
 
-.oc-status-pill.pending {
-  color: #c9d2ec;
-  background: rgba(151, 160, 188, 0.14);
-}
-
-.oc-status-pill.running {
-  color: #ffc56d;
-  border-color: rgba(255, 197, 109, 0.4);
-  background: rgba(255, 197, 109, 0.1);
-}
-
-.oc-right-panel {
-  border-color: var(--oc-border);
+/* File suggestions dropdown (appears above textarea) */
+.oc-suggestions {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  border-radius: 0.5rem;
+  border: 1px solid var(--oc-border);
   background: var(--oc-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  max-height: 180px;
+  overflow-y: auto;
 }
 
-.oc-control-btn {
-  border-color: var(--oc-border);
-  background: rgba(151, 160, 188, 0.12);
-  color: #c8d0e8;
+.oc-suggestion-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.375rem 0.75rem;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  color: var(--oc-text-soft);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.1s;
 }
-
-.oc-control-btn:hover {
-  background: rgba(151, 160, 188, 0.18);
-}
-
-.oc-dropdown {
-  border-color: var(--oc-border);
-  background: var(--oc-panel);
-}
-
-.oc-dropdown-search {
-  border-color: var(--oc-border);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.oc-dropdown-search:focus {
-  outline: none;
-  border-color: rgba(0, 196, 180, 0.55);
-}
-
-.oc-group-label {
-  letter-spacing: 0.08em;
-}
-
-.oc-dropdown-option {
-  border: 1px solid transparent;
-}
-
-.oc-dropdown-option:hover {
-  border-color: rgba(0, 196, 180, 0.25);
-}
-
-.oc-current-label {
+.oc-suggestion-item:hover,
+.oc-suggestion-item.active {
+  background: var(--oc-accent-soft);
   color: var(--oc-accent);
 }
 
-.oc-queue-btn {
-  border-color: var(--oc-border);
-}
-
-.oc-steps-wrap {
-  border-color: var(--oc-border);
-  background: rgba(255, 255, 255, 0.015);
-}
-
-.oc-steps-header {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  opacity: 0.82;
-}
-
-.oc-step-item {
-  border-color: var(--oc-border);
-  background: rgba(0, 0, 0, 0.16);
-}
-
-.oc-session-item {
-  border: 1px solid transparent;
-}
-
-.oc-session-item:hover {
-  border-color: rgba(0, 196, 180, 0.24);
-}
-
-.oc-session-delete:hover {
-  color: #fff;
-}
-
-.oc-history-sidebar {
-  background: var(--oc-panel);
-  border-color: var(--oc-border);
-}
-
-.oc-input-wrap {
-  background: var(--oc-bg);
-  border-color: var(--oc-border);
-}
-
-.oc-queue {
-  background: var(--oc-bg-soft);
-  border-color: var(--oc-border);
-}
-
-.oc-side-panel {
-  border-bottom: 1px solid var(--oc-border);
-}
-
-.oc-panel-title {
-  letter-spacing: 0.1em;
-}
-
-.oc-textarea {
-  border-radius: 10px;
-  border-color: var(--oc-border);
-  background: var(--oc-panel);
-}
-
-.oc-textarea:focus-visible {
-  border-color: rgba(0, 196, 180, 0.5);
-  box-shadow: 0 0 0 2px rgba(0, 196, 180, 0.12);
-}
-
-.oc-empty-icon {
-  width: 64px;
-  height: 64px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+/* Bottom toolbar */
+.oc-toolbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  padding: 0.25rem 0.5rem 0.375rem;
+  gap: 0.375rem;
+  border-top: 1px solid var(--oc-border-soft, var(--oc-border));
+}
+
+.oc-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.oc-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+/* Chip-style selector buttons (Model / Agent / Think) */
+.oc-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid var(--oc-border);
+  background: transparent;
+  color: var(--oc-text-muted);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  line-height: 1;
+}
+.oc-chip-btn:hover {
+  background: var(--oc-panel-soft);
+  border-color: var(--oc-accent);
+  color: var(--oc-text-soft);
+}
+
+/* Shared popover panel */
+.oc-popover {
+  animation: oc-popover-in 0.1s ease;
+}
+@keyframes oc-popover-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Search input inside popovers */
+.oc-popover-search {
+  color: var(--oc-text);
+  caret-color: var(--oc-accent);
+}
+.oc-popover-search::placeholder {
+  color: var(--oc-text-muted);
+  opacity: 0.7;
+}
+
+/* Popover list items */
+.oc-popover-item {
+  display: block;
+  font-size: 12px;
+  color: var(--oc-text-soft);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.oc-popover-item:hover {
+  background: var(--oc-panel-soft);
+}
+
+/* Queue chip button */
+.oc-queue-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid var(--oc-border);
+  background: transparent;
+  color: var(--oc-text-muted);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+  position: relative;
+}
+.oc-queue-chip:hover {
+  background: var(--oc-panel-soft);
+  color: var(--oc-text-soft);
+}
+
+.oc-queue-badge {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: var(--oc-accent);
   color: #fff;
-  font-size: 28px;
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 0 3px;
+  line-height: 1;
 }
 
-.plan-card,
-.markdown-body pre,
-.markdown-body code,
-[class*="border-[var(--vscode-panel-border)]"] {
-  border-color: var(--oc-border);
+/* Stop button */
+.oc-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  background: rgba(248, 81, 73, 0.1);
+  color: var(--oc-red, #f85149);
+  font-size: 11px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  line-height: 1;
+}
+.oc-stop-btn:hover {
+  background: rgba(248, 81, 73, 0.2);
+  border-color: rgba(248, 81, 73, 0.7);
 }
 
-[class*="bg-[var(--vscode-editorWidget-background)]"] {
-  background: var(--oc-panel);
+/* Send button */
+.oc-send-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background: var(--oc-accent);
+  color: #fff;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+  line-height: 1;
+}
+.oc-send-btn:hover {
+  opacity: 0.88;
+}
+.oc-send-btn:active {
+  opacity: 0.75;
 }

@@ -1,0 +1,3 @@
+Thinking level control and TODO panel added to PanelComponents.tsx
+npx tsc --noEmit (webview/shared) passed
+npm run compile passed

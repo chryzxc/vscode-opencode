@@ -1,0 +1,2 @@
+178:    const badgeChunkTag = fs.existsSync(badgeChunkPath)
+196:    ${badgeChunkTag}
