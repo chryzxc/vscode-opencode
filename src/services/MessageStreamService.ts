@@ -156,7 +156,7 @@ export class MessageStreamService {
    *
    * @param serverManager - Server manager for port access
    */
-  constructor(private serverManager: OpencodeServerManager) {}
+  constructor(private serverManager: OpencodeServerManager) { }
 
   /**
    * Starts listening to server events via SSE.
@@ -458,6 +458,50 @@ export class MessageStreamService {
    * @see startListening for where events come from
    */
   private notifyCallbacks(event: StreamEvent): void {
+    // Log stream event details for debugging response types
+    const logContext: Record<string, unknown> = {
+      eventType: event.type,
+    };
+
+    const properties = event.properties as Record<string, unknown> || {};
+    const part = properties.part as Record<string, unknown> || {};
+    const delta = properties.delta as string | undefined;
+
+    // Log relevant content based on event type
+    if (event.type === "message.part.updated") {
+      if (delta) {
+        logContext.textLength = delta.length;
+        logContext.textPreview = delta.substring(0, 100);
+      }
+      const partType = (part.type as string || "").toLowerCase();
+      if (partType) {
+        logContext.partType = partType;
+      }
+      if (part.reasoning || part.thought || part.thinking) {
+        logContext.isThinking = true;
+      }
+    } else if (event.type === "message.updated") {
+      logContext.messageComplete = true;
+      const info = properties.info as Record<string, unknown>;
+      if (info?.agent) {
+        logContext.agent = info.agent;
+      }
+      if (info?.duration) {
+        logContext.duration = info.duration;
+      }
+    } else if (event.type === "session.error" || event.type === "error") {
+      logContext.hasError = true;
+      if (properties.error) {
+        logContext.errorMessage = properties.error;
+      }
+    }
+
+    // Log the event
+    console.log(
+      `[MessageStreamService] Stream Event: ${event.type}`,
+      logContext
+    );
+
     this.callbacks.forEach((callback) => {
       try {
         callback(event);

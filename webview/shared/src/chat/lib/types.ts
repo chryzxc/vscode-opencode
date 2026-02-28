@@ -123,6 +123,44 @@ export interface MessageStep {
   meta?: string;
 }
 
+export interface InteractiveChoice {
+  id?: string;
+  label: string;
+  value?: string;
+  description?: string;
+}
+
+export interface InteractiveQuestionEvent {
+  type: 'question';
+  id: string;
+  title?: string;
+  question: string;
+  options: InteractiveChoice[];
+  multiSelect?: boolean;
+  allowCustomInput?: boolean;
+}
+
+export interface InteractiveConfirmEvent {
+  type: 'confirm';
+  id: string;
+  title?: string;
+  question: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+}
+
+export interface InteractiveQuickActionsEvent {
+  type: 'quick_actions';
+  id: string;
+  title?: string;
+  actions: InteractiveChoice[];
+}
+
+export type InteractiveEvent =
+  | InteractiveQuestionEvent
+  | InteractiveConfirmEvent
+  | InteractiveQuickActionsEvent;
+
 export type SubagentStatus = 'pending' | 'running' | 'done' | 'error' | 'orphaned';
 
 export interface SubagentReference {
@@ -209,6 +247,8 @@ export interface Message {
   attachments?: AttachmentItem[];
   // Optional subagent summaries/details
   subagents?: SubagentDetail[];
+  // Optional interactive UI event payloads
+  interactiveEvents?: InteractiveEvent[];
 }
 
 export interface QuotaItem {
@@ -254,6 +294,7 @@ export interface AppState {
   sessionsList: Session[];
   sessionEdits: Set<string>;
   sessionStats: SessionStats;
+  sessionsStatsById?: Record<string, SessionStats>;
   streaming: StreamingState | null;
   inputValue: string;
   fileSuggestions: FileResult[];
@@ -274,6 +315,7 @@ export interface AppState {
   subagentDetailsById: Record<string, SubagentDetail>;
   selectedSubagentId: string | null;
   subagentsPanelOpen: boolean;
+  interactiveEvents: InteractiveEvent[];
 }
 
 export interface AttachmentItem {

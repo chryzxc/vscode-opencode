@@ -316,24 +316,6 @@ body {
   border-radius: 6px;
 }
 
-/* ── Send Button ─────────────────────────────────────────────────────────── */
-.oc-send-btn {
-  background: var(--oc-accent);
-  color: var(--vscode-button-foreground, #1e1e2e);
-  border: none;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  transition: opacity 0.1s ease;
-}
-
-.oc-send-btn:hover {
-  opacity: 0.88;
-}
-
 .oc-control-btn:hover {
   background: var(--oc-accent-soft);
   border-color: color-mix(in srgb, var(--oc-accent) 25%, transparent);
@@ -974,28 +956,6 @@ body {
   flex-shrink: 0;
 }
 
-/* Chip-style selector buttons (Model / Agent / Think) */
-.oc-chip-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.2rem 0.5rem;
-  border-radius: 9999px;
-  border: 1px solid var(--oc-border);
-  background: transparent;
-  color: var(--oc-text-muted);
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 11px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
-  line-height: 1;
-}
-.oc-chip-btn:hover {
-  background: var(--oc-panel-soft);
-  border-color: var(--oc-accent);
-  color: var(--oc-text-soft);
-}
 
 /* Shared popover panel */
 .oc-popover {
@@ -1028,84 +988,4 @@ body {
   background: var(--oc-panel-soft);
 }
 
-/* Queue chip button */
-.oc-queue-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.2rem 0.5rem;
-  border-radius: 9999px;
-  border: 1px solid var(--oc-border);
-  background: transparent;
-  color: var(--oc-text-muted);
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 11px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-  line-height: 1;
-  position: relative;
-}
-.oc-queue-chip:hover {
-  background: var(--oc-panel-soft);
-  color: var(--oc-text-soft);
-}
 
-.oc-queue-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 14px;
-  height: 14px;
-  border-radius: 9999px;
-  background: var(--oc-accent);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 700;
-  padding: 0 3px;
-  line-height: 1;
-}
-
-/* Stop button */
-.oc-stop-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.25rem 0.625rem;
-  border-radius: 9999px;
-  border: 1px solid rgba(248, 81, 73, 0.4);
-  background: rgba(248, 81, 73, 0.1);
-  color: var(--oc-red, #f85149);
-  font-size: 11px;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-  line-height: 1;
-}
-.oc-stop-btn:hover {
-  background: rgba(248, 81, 73, 0.2);
-  border-color: rgba(248, 81, 73, 0.7);
-}
-
-/* Send button */
-.oc-send-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.25rem 0.75rem;
-  border-radius: 9999px;
-  border: 1px solid transparent;
-  background: var(--oc-accent);
-  color: #fff;
-  font-size: 11px;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  font-weight: 600;
-  cursor: pointer;
-  transition: opacity 0.15s, background 0.15s;
-  line-height: 1;
-}
-.oc-send-btn:hover {
-  opacity: 0.88;
-}
-.oc-send-btn:active {
-  opacity: 0.75;
-}

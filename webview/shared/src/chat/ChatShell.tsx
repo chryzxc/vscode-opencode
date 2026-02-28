@@ -1,13 +1,31 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef } from "react";
 
-import { AppProvider, useAppDispatch, useAppState } from './lib/store';
-import { createMessageHandler } from './lib/messageHandler';
-import vscode from './lib/vscode';
+import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
+import { createMessageHandler } from "./lib/messageHandler";
+import vscode from "./lib/vscode";
 
-import { StickyHeader, HistorySidebar, InputWrapper, QueueContainer, ActiveTaskPanel, SubagentsPanel, QuotaMonitor, TodoPanel, McpPanel, LspPanel, MobileRightSummary } from './PanelComponents';
-import { StreamingCard } from './StreamingComponents';
-import { AssistantMessage, EmptyState, ErrorBanner, PermissionCard, ThinkingBubble, UserMessage } from './MessageComponents';
-import type { Message } from './lib/types';
+import {
+  StickyHeader,
+  HistorySidebar,
+  InputWrapper,
+  ActiveTaskPanel,
+  SubagentsPanel,
+  QuotaMonitor,
+  TodoPanel,
+  McpPanel,
+  LspPanel,
+  MobileRightSummary,
+} from "./PanelComponents";
+import { StreamingCard } from "./StreamingComponents";
+import {
+  AssistantMessage,
+  EmptyState,
+  ErrorBanner,
+  PermissionCard,
+  ThinkingBubble,
+  UserMessage,
+} from "./MessageComponents";
+import type { Message } from "./lib/types";
 
 function ChatContent() {
   const state = useAppState();
@@ -23,16 +41,16 @@ function ChatContent() {
   // Register message listener
   useEffect(() => {
     const handler = createMessageHandler(dispatch, () => stateRef.current);
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
   }, [dispatch]);
 
   // Send ready + retry until initState received
   useEffect(() => {
-    vscode.postMessage({ type: 'ready' });
+    vscode.postMessage({ type: "ready" });
     const interval = setInterval(() => {
       if (!stateRef.current.receivedInitState) {
-        vscode.postMessage({ type: 'ready' });
+        vscode.postMessage({ type: "ready" });
       } else {
         clearInterval(interval);
       }
@@ -42,7 +60,7 @@ function ChatContent() {
 
   // Auto-scroll only when conversation content changes (not on every render).
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [
     state.messages.length,
     state.streaming?.messageId,
@@ -50,7 +68,7 @@ function ChatContent() {
     state.streaming?.reasoning,
     state.streaming?.steps.length,
     state.streaming?.edits.length,
-    state.streaming?.isActive
+    state.streaming?.isActive,
   ]);
 
   const showThinking = state.isProcessing && !state.streaming;
@@ -70,7 +88,9 @@ function ChatContent() {
           <MobileRightSummary />
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto py-4">
-          {state.messages.length === 0 && !state.streaming && !state.isProcessing ? (
+          {state.messages.length === 0 &&
+          !state.streaming &&
+          !state.isProcessing ? (
             <EmptyState />
           ) : null}
 
@@ -79,14 +99,14 @@ function ChatContent() {
           ))}
 
           {state.messages.map((msg: Message) => {
-            const role = msg.role ?? msg.info?.role ?? 'user';
+            const role = msg.role ?? msg.info?.role ?? "user";
             const key =
               msg.info?.id ??
-              `${role}-${(msg.content ?? msg.text ?? '').slice(0, 32)}-${msg.parts?.length ?? 0}-${msg.steps?.length ?? 0}`;
-            if (role === 'user') {
+              `${role}-${(msg.content ?? msg.text ?? "").slice(0, 32)}-${msg.parts?.length ?? 0}-${msg.steps?.length ?? 0}`;
+            if (role === "user") {
               return <UserMessage key={key} message={msg} />;
             }
-            if ((msg as Record<string, unknown>).type === 'permission') {
+            if ((msg as Record<string, unknown>).type === "permission") {
               return <PermissionCard key={key} perm={msg} />;
             }
             return <AssistantMessage key={key} message={msg} />;
@@ -101,10 +121,7 @@ function ChatContent() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Queue panel (shows when open) */}
-        <QueueContainer />
-
-        {/* Input area */}
+        {/* Input area (queue panel is embedded inside InputWrapper) */}
         <InputWrapper />
       </div>
 

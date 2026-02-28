@@ -5,6 +5,8 @@ import type {
   AppState,
   ContextItem,
   FileResult,
+  InteractiveChoice,
+  InteractiveEvent,
   Message,
   QueueItem,
   QuotaData,
@@ -94,11 +96,25 @@ type StructuredProgressUpdate = {
   filePath?: string;
 };
 
+type StructuredInteractiveEvent = {
+  type: 'question' | 'confirm' | 'quick_actions';
+  id?: string;
+  title?: string;
+  question?: string;
+  options?: InteractiveChoice[];
+  actions?: InteractiveChoice[];
+  confirmLabel?: string;
+  cancelLabel?: string;
+  multiSelect?: boolean;
+  allowCustomInput?: boolean;
+};
+
 type StructuredOutput = {
   responseType?: string;
   message?: string;
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
+  interactiveEvents?: StructuredInteractiveEvent[];
 };
 
 function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined {
@@ -128,9 +144,9 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   const reasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
   const reasoning = Array.isArray(reasoningRaw)
     ? reasoningRaw
-        .filter((item): item is string => typeof item === 'string')
-        .map((item) => item.trim())
-        .filter(Boolean)
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean)
     : typeof reasoningRaw === 'string' && reasoningRaw.trim()
       ? [reasoningRaw.trim()]
       : [];
@@ -138,35 +154,157 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   const progressRaw = rec.progressUpdates ?? rec.progress_updates;
   const progressUpdates = Array.isArray(progressRaw)
     ? progressRaw
-        .map((item) => {
-          const step = asRecord(item);
-          if (!step) {
-            return undefined;
-          }
-          const title = asString(step.title) || asString(step.message);
-          if (!title) {
-            return undefined;
-          }
-          const statusValue = asString(step.status);
-          const status =
-            statusValue === 'pending' || statusValue === 'done' || statusValue === 'error'
-              ? statusValue
-              : undefined;
-          return {
-            title,
-            status,
-            meta: asString(step.meta) || asString(step.detail) || undefined,
-            filePath:
-              asString(step.filePath) ||
-              asString(step.file) ||
-              asString(step.path) ||
-              undefined
-          } as StructuredProgressUpdate;
-        })
-        .filter((step): step is StructuredProgressUpdate => !!step)
+      .map((item) => {
+        const step = asRecord(item);
+        if (!step) {
+          return undefined;
+        }
+        const title = asString(step.title) || asString(step.message);
+        if (!title) {
+          return undefined;
+        }
+        const statusValue = asString(step.status);
+        const status =
+          statusValue === 'pending' || statusValue === 'done' || statusValue === 'error'
+            ? statusValue
+            : undefined;
+        return {
+          title,
+          status,
+          meta: asString(step.meta) || asString(step.detail) || undefined,
+          filePath:
+            asString(step.filePath) ||
+            asString(step.file) ||
+            asString(step.path) ||
+            undefined
+        } as StructuredProgressUpdate;
+      })
+      .filter((step): step is StructuredProgressUpdate => !!step)
     : [];
 
-  if (!responseType && !message && reasoning.length === 0 && progressUpdates.length === 0) {
+  const normalizeChoices = (raw: unknown): InteractiveChoice[] => {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw
+      .map((item) => {
+        const option = asRecord(item);
+        if (!option) {
+          return null;
+        }
+        const label = asString(option.label) || asString(option.value);
+        if (!label) {
+          return null;
+        }
+        return {
+          id: asString(option.id) || undefined,
+          label,
+          value: asString(option.value) || label,
+          description: asString(option.description) || asString(option.detail) || undefined
+        } as InteractiveChoice;
+      })
+      .filter((item): item is InteractiveChoice => !!item);
+  };
+
+  const normalizeInteractiveEvent = (
+    raw: unknown,
+    index: number
+  ): StructuredInteractiveEvent | undefined => {
+    const event = asRecord(raw);
+    if (!event) {
+      return undefined;
+    }
+    const typeRaw = (asString(event.type) || asString(event.kind)).toLowerCase();
+    const id = asString(event.id) || `interactive-${Date.now()}-${index}`;
+
+    if (typeRaw === 'confirm') {
+      const question = asString(event.question) || asString(event.prompt) || asString(event.message);
+      if (!question) {
+        return undefined;
+      }
+      return {
+        type: 'confirm',
+        id,
+        title: asString(event.title) || undefined,
+        question,
+        confirmLabel: asString(event.confirmLabel) || asString(event.confirm_text) || undefined,
+        cancelLabel: asString(event.cancelLabel) || asString(event.cancel_text) || undefined
+      };
+    }
+
+    if (typeRaw === 'quick_actions' || typeRaw === 'quick-actions') {
+      const actions = normalizeChoices(event.actions ?? event.options);
+      if (actions.length === 0) {
+        return undefined;
+      }
+      return {
+        type: 'quick_actions',
+        id,
+        title: asString(event.title) || asString(event.question) || undefined,
+        actions
+      };
+    }
+
+    if (typeRaw === 'question' || typeRaw === 'interactive') {
+      const question = asString(event.question) || asString(event.prompt) || asString(event.title);
+      const options = normalizeChoices(event.options ?? event.choices);
+      if (!question || options.length === 0) {
+        return undefined;
+      }
+      return {
+        type: 'question',
+        id,
+        title: asString(event.title) || undefined,
+        question,
+        options,
+        multiSelect: event.multiSelect === true,
+        allowCustomInput: event.allowCustomInput === true
+      };
+    }
+
+    return undefined;
+  };
+
+  const interactiveRaw =
+    rec.interactiveEvents ??
+    rec.interactions ??
+    rec.uiEvents ??
+    rec.question ??
+    rec.questions;
+  const singleInteractive = normalizeInteractiveEvent(interactiveRaw, 0);
+  let interactiveEvents = Array.isArray(interactiveRaw)
+    ? interactiveRaw
+      .map((event, index) => normalizeInteractiveEvent(event, index))
+      .filter((event): event is StructuredInteractiveEvent => !!event)
+    : singleInteractive
+      ? [singleInteractive]
+      : [];
+
+  if (interactiveEvents.length === 0) {
+    const rootQuestion = asString(rec.question) || asString(rec.prompt);
+    const rootOptions = normalizeChoices(rec.options ?? rec.choices);
+    if (rootQuestion && rootOptions.length > 0) {
+      interactiveEvents = [
+        {
+          type: 'question',
+          id: `interactive-${Date.now()}-0`,
+          title: asString(rec.title) || undefined,
+          question: rootQuestion,
+          options: rootOptions,
+          multiSelect: rec.multiSelect === true,
+          allowCustomInput: rec.allowCustomInput === true
+        }
+      ];
+    }
+  }
+
+  if (
+    !responseType &&
+    !message &&
+    reasoning.length === 0 &&
+    progressUpdates.length === 0 &&
+    interactiveEvents.length === 0
+  ) {
     return undefined;
   }
 
@@ -174,8 +312,59 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     responseType,
     message,
     reasoning: reasoning.length > 0 ? reasoning : undefined,
-    progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined
+    progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
+    interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined
   };
+}
+
+function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] {
+  const events = structured?.interactiveEvents ?? [];
+  return events
+    .map((event, index) => {
+      const id = event.id || `interactive-${Date.now()}-${index}`;
+      if (event.type === 'confirm') {
+        if (!event.question) {
+          return undefined;
+        }
+        return {
+          type: 'confirm',
+          id,
+          title: event.title,
+          question: event.question,
+          confirmLabel: event.confirmLabel,
+          cancelLabel: event.cancelLabel
+        } as InteractiveEvent;
+      }
+      if (event.type === 'quick_actions') {
+        const actions = Array.isArray(event.actions) ? event.actions : [];
+        if (actions.length === 0) {
+          return undefined;
+        }
+        return {
+          type: 'quick_actions',
+          id,
+          title: event.title,
+          actions
+        } as InteractiveEvent;
+      }
+      if (event.type === 'question') {
+        const options = Array.isArray(event.options) ? event.options : [];
+        if (!event.question || options.length === 0) {
+          return undefined;
+        }
+        return {
+          type: 'question',
+          id,
+          title: event.title,
+          question: event.question,
+          options,
+          multiSelect: event.multiSelect,
+          allowCustomInput: event.allowCustomInput
+        } as InteractiveEvent;
+      }
+      return undefined;
+    })
+    .filter((event): event is InteractiveEvent => !!event);
 }
 
 function inferredStepTitle(part: UnknownRecord): string {
@@ -405,6 +594,60 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   ];
   if (mergedProgressEvents.length > 0) {
     normalized.progressEvents = mergedProgressEvents;
+  } else if (!Array.isArray(normalized.steps) || normalized.steps.length === 0) {
+    // When neither progressEvents nor steps are available (e.g. history loaded from server),
+    // extract tool-call steps directly from message parts for persistent display.
+    const seenCallIds = new Set<string>();
+    const fromParts: Array<{ type: string; title: string; content?: string; status?: string; meta?: string }> = [];
+    for (const part of mergedParts) {
+      const rec = asRecord(part);
+      if (!rec || asString(rec.type).toLowerCase() !== 'tool') continue;
+      const callID = asString(rec.callID);
+      if (callID) {
+        if (seenCallIds.has(callID)) continue;
+        seenCallIds.add(callID);
+      }
+      const tool = asString(rec.tool);
+      const stateRec = asRecord(rec.state);
+      const inputRec = asRecord(stateRec?.['input']);
+      const filePath =
+        asString(inputRec?.['file']) ||
+        asString(inputRec?.['path']) ||
+        asString(inputRec?.['filename']) ||
+        asString(inputRec?.['TargetFile']) ||
+        asString(rec.filePath) ||
+        undefined;
+      const title = asString(rec.title) || (tool ? `${tool}` : 'Tool call');
+      const statusStr = asString(stateRec?.['status'] ?? rec.status);
+      fromParts.push({
+        type: 'tool',
+        title,
+        content: filePath || undefined,
+        status: statusStr || 'done',
+        meta: asString(rec.meta) || undefined
+      });
+    }
+    if (fromParts.length > 0) {
+      normalized.progressEvents = fromParts;
+    }
+  }
+
+  // Extract file edits from patch-type parts when edits are not already populated.
+  if (!Array.isArray(normalized.edits) || normalized.edits.length === 0) {
+    const fromParts: Array<{ file: string }> = [];
+    for (const part of mergedParts) {
+      const rec = asRecord(part);
+      if (!rec || asString(rec.type).toLowerCase() !== 'patch') continue;
+      const files = Array.isArray(rec.files) ? rec.files : [];
+      for (const f of files) {
+        if (typeof f === 'string' && f) {
+          fromParts.push({ file: f });
+        }
+      }
+    }
+    if (fromParts.length > 0) {
+      normalized.edits = fromParts;
+    }
   }
 
   return normalized;
@@ -455,20 +698,20 @@ function normalizeSubagentSummary(value: unknown): SubagentSummary | null {
 
   const references = Array.isArray(rec.references)
     ? rec.references
-        .map((entry) => {
-          const ref = asRecord(entry);
-          if (!ref) {
-            return null;
-          }
-          const messageID = asString(ref.messageID) || undefined;
-          const partID = asString(ref.partID) || undefined;
-          const callID = asString(ref.callID) || undefined;
-          if (!messageID && !partID && !callID) {
-            return null;
-          }
-          return { messageID, partID, callID };
-        })
-        .filter((entry): entry is NonNullable<SubagentSummary['references'][number]> => !!entry)
+      .map((entry) => {
+        const ref = asRecord(entry);
+        if (!ref) {
+          return null;
+        }
+        const messageID = asString(ref.messageID) || undefined;
+        const partID = asString(ref.partID) || undefined;
+        const callID = asString(ref.callID) || undefined;
+        if (!messageID && !partID && !callID) {
+          return null;
+        }
+        return { messageID, partID, callID };
+      })
+      .filter((entry): entry is NonNullable<SubagentSummary['references'][number]> => !!entry)
     : [];
 
   return {
@@ -500,76 +743,76 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
 
   const thinkingEvents = Array.isArray(rec.thinkingEvents)
     ? rec.thinkingEvents
-        .map((entry, index) => {
-          const evt = asRecord(entry);
-          if (!evt) {
-            return null;
-          }
-          const text = asString(evt.text);
-          if (!text) {
-            return null;
-          }
-          return {
-            id: asString(evt.id) || `${summary.id}:thinking:${index}`,
-            text,
-            createdAt: asNumber(evt.createdAt, Date.now()),
-            messageID: asString(evt.messageID) || undefined,
-            partID: asString(evt.partID) || undefined
-          };
-        })
-        .filter((entry): entry is SubagentDetail['thinkingEvents'][number] => !!entry)
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const text = asString(evt.text);
+        if (!text) {
+          return null;
+        }
+        return {
+          id: asString(evt.id) || `${summary.id}:thinking:${index}`,
+          text,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined
+        };
+      })
+      .filter((entry): entry is SubagentDetail['thinkingEvents'][number] => !!entry)
     : [];
 
   const progressEvents = Array.isArray(rec.progressEvents)
     ? rec.progressEvents
-        .map((entry, index) => {
-          const evt = asRecord(entry);
-          if (!evt) {
-            return null;
-          }
-          const title = asString(evt.title);
-          if (!title) {
-            return null;
-          }
-          return {
-            id: asString(evt.id) || `${summary.id}:progress:${index}`,
-            title,
-            status: asString(evt.status) === 'done' || asString(evt.status) === 'error' ? (asString(evt.status) as 'done' | 'error') : 'pending',
-            meta: asString(evt.meta) || undefined,
-            filePath: asString(evt.filePath) || undefined,
-            createdAt: asNumber(evt.createdAt, Date.now()),
-            messageID: asString(evt.messageID) || undefined,
-            partID: asString(evt.partID) || undefined,
-            callID: asString(evt.callID) || undefined
-          };
-        })
-        .filter((entry): entry is SubagentDetail['progressEvents'][number] => !!entry)
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const title = asString(evt.title);
+        if (!title) {
+          return null;
+        }
+        return {
+          id: asString(evt.id) || `${summary.id}:progress:${index}`,
+          title,
+          status: asString(evt.status) === 'done' || asString(evt.status) === 'error' ? (asString(evt.status) as 'done' | 'error') : 'pending',
+          meta: asString(evt.meta) || undefined,
+          filePath: asString(evt.filePath) || undefined,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+          callID: asString(evt.callID) || undefined
+        };
+      })
+      .filter((entry): entry is SubagentDetail['progressEvents'][number] => !!entry)
     : [];
 
   const timelineEvents = Array.isArray(rec.timelineEvents)
     ? rec.timelineEvents
-        .map((entry, index) => {
-          const evt = asRecord(entry);
-          if (!evt) {
-            return null;
-          }
-          const key = asString(evt.key);
-          const type = asString(evt.type);
-          const label = asString(evt.label);
-          if (!key || !type || !label) {
-            return null;
-          }
-          return {
-            key: key || `${summary.id}:timeline:${index}`,
-            type,
-            label,
-            createdAt: asNumber(evt.createdAt, Date.now()),
-            messageID: asString(evt.messageID) || undefined,
-            partID: asString(evt.partID) || undefined,
-            callID: asString(evt.callID) || undefined
-          };
-        })
-        .filter((entry): entry is SubagentDetail['timelineEvents'][number] => !!entry)
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const key = asString(evt.key);
+        const type = asString(evt.type);
+        const label = asString(evt.label);
+        if (!key || !type || !label) {
+          return null;
+        }
+        return {
+          key: key || `${summary.id}:timeline:${index}`,
+          type,
+          label,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+          callID: asString(evt.callID) || undefined
+        };
+      })
+      .filter((entry): entry is SubagentDetail['timelineEvents'][number] => !!entry)
     : [];
 
   const tokenUsageRec = asRecord(rec.tokenUsage);
@@ -582,16 +825,16 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
     timelineEvents,
     tokenUsage: tokenUsageRec
       ? {
-          input: asOptionalNumber(tokenUsageRec.input),
-          output: asOptionalNumber(tokenUsageRec.output),
-          reasoning: asOptionalNumber(tokenUsageRec.reasoning),
-          cache: tokenCacheRec
-            ? {
-                read: asOptionalNumber(tokenCacheRec.read),
-                write: asOptionalNumber(tokenCacheRec.write)
-              }
-            : undefined
-        }
+        input: asOptionalNumber(tokenUsageRec.input),
+        output: asOptionalNumber(tokenUsageRec.output),
+        reasoning: asOptionalNumber(tokenUsageRec.reasoning),
+        cache: tokenCacheRec
+          ? {
+            read: asOptionalNumber(tokenCacheRec.read),
+            write: asOptionalNumber(tokenCacheRec.write)
+          }
+          : undefined
+      }
       : undefined,
     errorText: asString(rec.errorText) || undefined,
     hydrationUnavailable: asBoolean(rec.hydrationUnavailable, false)
@@ -686,6 +929,249 @@ function extractMessageText(message: Message): string {
   return reasoningFromParts(parts);
 }
 
+function slugifyChoiceValue(input: string): string {
+  const value = input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return value || 'option';
+}
+
+function stripChoicePrefix(input: string): string {
+  return input
+    .replace(/^(?:[-*]|\u2022)\s+/, '')
+    .replace(/^\d{1,2}[.)]\s+/, '')
+    .replace(/^[a-zA-Z][.)]\s+/, '')
+    .replace(/^>\s*/, '')
+    .trim();
+}
+
+function normalizeChoiceFromLine(line: string, index: number): InteractiveChoice | undefined {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  let candidate = stripChoicePrefix(trimmed);
+
+  if (!candidate || candidate.length > 140 || candidate.includes('?')) {
+    return undefined;
+  }
+
+  let label = candidate;
+  let description: string | undefined;
+  const colonIndex = candidate.indexOf(':');
+  if (colonIndex > 0 && colonIndex < 44) {
+    label = candidate.slice(0, colonIndex).trim();
+    const rest = candidate.slice(colonIndex + 1).trim();
+    description = rest || undefined;
+  }
+
+  label = label.replace(/[.,;:]$/, '').trim();
+  if (!label || label.length < 2) {
+    return undefined;
+  }
+
+  return {
+    id: `auto-opt-${index}`,
+    label,
+    value: slugifyChoiceValue(label),
+    description
+  };
+}
+
+function dedupeChoices(choices: InteractiveChoice[]): InteractiveChoice[] {
+  const out: InteractiveChoice[] = [];
+  const seen = new Set<string>();
+  choices.forEach((choice) => {
+    const key = `${choice.label}::${choice.value || choice.label}`.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    out.push(choice);
+  });
+  return out;
+}
+
+function collectOptionsInDirection(
+  lines: string[],
+  startIndex: number,
+  step: 1 | -1,
+  maxScanDistance = 8
+): InteractiveChoice[] {
+  const collected: InteractiveChoice[] = [];
+  let scanned = 0;
+  for (let index = startIndex; index >= 0 && index < lines.length && scanned < maxScanDistance; index += step) {
+    scanned += 1;
+    const line = lines[index].trim();
+    if (!line) {
+      if (collected.length > 0) {
+        break;
+      }
+      continue;
+    }
+    if (line.includes('?')) {
+      if (collected.length > 0) {
+        break;
+      }
+      continue;
+    }
+
+    const option = normalizeChoiceFromLine(line, collected.length);
+    if (!option) {
+      if (collected.length > 0) {
+        break;
+      }
+      continue;
+    }
+    collected.push(option);
+    if (collected.length >= 6) {
+      break;
+    }
+  }
+
+  if (step === -1) {
+    collected.reverse();
+  }
+  return collected;
+}
+
+function extractInlineOrChoices(question: string): InteractiveChoice[] {
+  const cleanQuestion = question.replace(/[?!.\s]+$/, '').trim();
+  if (!/\bor\b/i.test(cleanQuestion)) {
+    return [];
+  }
+
+  const useMatch = cleanQuestion.match(
+    /\b(?:use|choose|pick|select|prefer|want)\s+([A-Za-z][A-Za-z0-9+._/-]{1,30})\s+or\s+([A-Za-z][A-Za-z0-9+._/-]{1,30})\b/i
+  );
+  if (useMatch) {
+    const first = useMatch[1];
+    const second = useMatch[2];
+    return [
+      { id: 'auto-opt-0', label: first, value: slugifyChoiceValue(first) },
+      { id: 'auto-opt-1', label: second, value: slugifyChoiceValue(second) }
+    ];
+  }
+
+  const genericMatch = cleanQuestion.match(
+    /\b([A-Za-z][A-Za-z0-9+._/-]{1,30})\b\s+or\s+\b([A-Za-z][A-Za-z0-9+._/-]{1,30})\b/i
+  );
+  if (!genericMatch) {
+    return [];
+  }
+  const first = genericMatch[1];
+  const second = genericMatch[2];
+  if (first.length < 2 || second.length < 2) {
+    return [];
+  }
+  return [
+    { id: 'auto-opt-0', label: first, value: slugifyChoiceValue(first) },
+    { id: 'auto-opt-1', label: second, value: slugifyChoiceValue(second) }
+  ];
+}
+
+function detectInteractiveEventsFromText(text: string, message: Message): InteractiveEvent[] {
+  const trimmed = text.trim();
+  if (!trimmed || !trimmed.includes('?')) {
+    return [];
+  }
+
+  const sanitized = trimmed.replace(/```[\s\S]*?```/g, ' ');
+  const lines = sanitized.split(/\r?\n/);
+  const questionRows: Array<{ index: number; question: string }> = [];
+
+  lines.forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line || line.length > 220 || !line.includes('?')) {
+      return;
+    }
+    const question = stripChoicePrefix(line);
+    if (question.length < 6) {
+      return;
+    }
+    questionRows.push({ index, question });
+  });
+
+  if (questionRows.length === 0) {
+    return [];
+  }
+
+  const messageRec = asRecord(message);
+  const info = asRecord(messageRec?.info);
+  const idBase = asString(info?.id) || asString(messageRec?.id) || `${Date.now()}`;
+
+  for (const row of questionRows) {
+    const optionsAfter = collectOptionsInDirection(lines, row.index + 1, 1);
+    const optionsBefore = collectOptionsInDirection(lines, row.index - 1, -1);
+    const inlineOptions = extractInlineOrChoices(row.question);
+    const options = dedupeChoices(
+      optionsAfter.length >= 2
+        ? optionsAfter
+        : optionsBefore.length >= 2
+          ? optionsBefore
+          : inlineOptions
+    );
+
+    if (options.length >= 2) {
+      return [
+        {
+          type: 'question',
+          id: `auto-question-${idBase}-${row.index}`,
+          title: 'Question',
+          question: row.question,
+          options
+        }
+      ];
+    }
+  }
+
+  const finalQuestion = questionRows[questionRows.length - 1].question;
+  const isLikelyYesNoQuestion = /^(do|does|did|is|are|was|were|can|could|should|would|will|have|has|had|may|might|am)\b/i.test(
+    finalQuestion
+  );
+  if (!isLikelyYesNoQuestion) {
+    return [];
+  }
+
+  return [
+    {
+      type: 'confirm',
+      id: `auto-confirm-${idBase}`,
+      title: 'Question',
+      question: finalQuestion,
+      confirmLabel: 'Yes',
+      cancelLabel: 'No'
+    }
+  ];
+}
+
+function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
+  const role = asString(message.role) || asString(asRecord(message.info)?.role);
+  if (role && role !== 'assistant') {
+    return [];
+  }
+
+  if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
+    return message.interactiveEvents;
+  }
+  const rec = asRecord(message);
+  if (!rec) {
+    return [];
+  }
+  const structured =
+    normalizeStructuredOutput(rec.structuredOutput) ??
+    normalizeStructuredOutput((rec as UnknownRecord).structured_output) ??
+    normalizeStructuredOutput(asRecord(rec.info)?.structuredOutput) ??
+    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured_output);
+  const fromStructured = toInteractiveEvents(structured);
+  if (fromStructured.length > 0) {
+    return fromStructured;
+  }
+  return detectInteractiveEventsFromText(extractMessageText(message), message);
+}
+
 function buildStreamingMessage(streaming: StreamingState): Message {
   const parts = [
     {
@@ -778,19 +1264,16 @@ function handleStreamEvent(
     !asBoolean(infoRecord?.finish, false);
   const canBootstrapFromPart = eventType === 'message.part.updated' && shouldBootstrapStreamingFromPart(eventPart);
 
-  // Ignore stray global stream events when the user has not started a request.
-  // This prevents phantom "Thinking..." / streaming UI on extension open.
+  // Ignore stray global stream events when neither a request is in progress nor the
+  // event carries an explicit lifecycle signal. This prevents phantom "Thinking..." /
+  // streaming UI on extension open while still allowing any event type to bootstrap the
+  // streaming card once the user has sent a message (state.isProcessing = true).
+  // Echo stripping inside the per-event switch cases handles residual false positives.
   if (!current && !state.isProcessing && !isExplicitStart && !isAssistantUpdateStart && !canBootstrapFromPart) {
     return;
   }
 
-  // Only bootstrap a streaming card from explicit assistant lifecycle events.
-  // This prevents user-side echo events from becoming assistant output.
-  if (!current && !isExplicitStart && !isAssistantUpdateStart && !canBootstrapFromPart) {
-    return;
-  }
-
-  if (!current && (isExplicitStart || isAssistantUpdateStart || canBootstrapFromPart)) {
+  if (!current && (isExplicitStart || isAssistantUpdateStart || canBootstrapFromPart || state.isProcessing)) {
     dispatch({
       type: 'SET_STREAMING',
       payload: {
@@ -988,6 +1471,29 @@ function handleStreamEvent(
             payload: { content: structuredOutput.message, append: false }
           });
         }
+
+        const interactiveEvents = toInteractiveEvents(structuredOutput);
+        if (interactiveEvents.length > 0) {
+          dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents });
+        }
+      }
+
+      if (finish && !structuredOutput) {
+        const streamingState = getState().streaming;
+        const content = streamingState?.content || '';
+        if (content.trim()) {
+          const interactiveEvents = detectInteractiveEventsFromText(content, {
+            role: 'assistant',
+            content,
+            info: {
+              id: messageId || undefined,
+              role: 'assistant'
+            }
+          });
+          if (interactiveEvents.length > 0) {
+            dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents });
+          }
+        }
       }
 
       if (finish) {
@@ -1155,9 +1661,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const selectedModelRecord = asRecord(state.selectedModel);
         const selectedModel = selectedModelRecord
           ? {
-              providerID: asString(selectedModelRecord.providerID),
-              modelID: asString(selectedModelRecord.modelID)
-            }
+            providerID: asString(selectedModelRecord.providerID),
+            modelID: asString(selectedModelRecord.modelID)
+          }
           : null;
 
         dispatch({ type: 'SET_SESSION_ID', payload: sessionId });
@@ -1222,6 +1728,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           if (Object.keys(detailsById).length > 0) {
             dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: detailsById });
           }
+          const interactiveEvents = interactiveEventsFromMessage(sanitized);
+          if (interactiveEvents.length > 0) {
+            dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents });
+          }
         }
         dispatch({ type: 'SET_PROCESSING', payload: false });
         dispatch({ type: 'SET_STREAMING', payload: null });
@@ -1231,8 +1741,23 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const messages = asArray(data.messages, isMessage)
           .map((msg) => normalizeMessage(msg, null))
           .filter((msg): msg is Message => !!msg);
+
+        // Clear any stale streaming state and in-progress flag when history is
+        // loaded (extension open or session switch) so the UI starts clean.
+        dispatch({ type: 'SET_STREAMING', payload: null });
+        dispatch({ type: 'SET_PROCESSING', payload: false });
+
         dispatch({ type: 'CLEAR_MESSAGES' });
         dispatch({ type: 'SET_MESSAGES', payload: messages });
+
+        // If the backend included a sessionId (e.g. on session switch), update it BEFORE
+        // storing stats so RESET_SESSION_STATS writes under the correct key.
+        const chatHistorySessionId = asString(data.sessionId);
+        if (chatHistorySessionId) {
+          dispatch({ type: 'SET_SESSION_ID', payload: chatHistorySessionId });
+          // Clear todo items from the previous session so stale tasks are not shown.
+          dispatch({ type: 'SET_TODO_ITEMS', payload: [] });
+        }
 
         // FORBIDDEN TO REMOVE - recalculate session stats from full history
         const stats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
@@ -1252,6 +1777,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         if (Object.keys(detailsById).length > 0) {
           dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: detailsById });
         }
+        let latestInteractive: InteractiveEvent[] = [];
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          const msg = messages[index];
+          const role = msg.role ?? msg.info?.role;
+          const items = interactiveEventsFromMessage(msg);
+          if (items.length > 0) {
+            latestInteractive = items;
+            break;
+          }
+          if (role === 'user') {
+            break;
+          }
+        }
+        dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: latestInteractive });
         break;
       }
       case 'subagentSnapshot': {
@@ -1340,48 +1879,48 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         dispatch({ type: 'SET_EXECUTING_QUEUE', payload: false });
         break;
       }
-    case 'quotaData':
-    case 'quotaUpdate': {
-      dispatch({ type: 'SET_QUOTA_DATA', payload: data.data as QuotaData });
-      break;
-    }
-    case 'todoUpdate': {
-      const action = asString(data.action);
-      const item = asRecord(data.item);
-      if (!item) break;
-      const todoId = asString(item.id);
-      const patch: any = {};
-      if (typeof item.text === 'string') patch.text = item.text;
-      if (typeof item.status === 'string') patch.status = item.status;
-      if (typeof item.sessionId === 'string') patch.sessionId = item.sessionId;
-      if (action === 'add') {
-        dispatch({ type: 'ADD_TODO_ITEM', payload: { id: todoId, text: asString(item.text), status: asString(item.status) as any, sessionId: asString(item.sessionId) } });
-      } else if (action === 'update') {
-        dispatch({ type: 'UPDATE_TODO_ITEM', payload: { id: todoId, patch } });
+      case 'quotaData':
+      case 'quotaUpdate': {
+        dispatch({ type: 'SET_QUOTA_DATA', payload: data.data as QuotaData });
+        break;
       }
-      break;
-    }
-    case 'thinkingLevelUpdate': {
-      const level = asString(data.level) as any;
-      if (level) {
-        dispatch({ type: 'SET_THINKING_LEVEL', payload: level });
-      }
-      break;
-    }
-    case 'addPlanAttachment': {
-      const p = asRecord(data.payload);
-      if (!p) break;
-      dispatch({
-        type: 'ADD_ATTACHMENT',
-        payload: {
-          id: asString(p.id) || `plan-${Date.now()}`,
-          filename: asString(p.filename, 'Implementation Plan'),
-          mimeType: asString(p.mimeType, 'text/markdown'),
-          dataUrl: asString(p.dataUrl),
+      case 'todoUpdate': {
+        const action = asString(data.action);
+        const item = asRecord(data.item);
+        if (!item) break;
+        const todoId = asString(item.id);
+        const patch: any = {};
+        if (typeof item.text === 'string') patch.text = item.text;
+        if (typeof item.status === 'string') patch.status = item.status;
+        if (typeof item.sessionId === 'string') patch.sessionId = item.sessionId;
+        if (action === 'add') {
+          dispatch({ type: 'ADD_TODO_ITEM', payload: { id: todoId, text: asString(item.text), status: asString(item.status) as any, sessionId: asString(item.sessionId) } });
+        } else if (action === 'update') {
+          dispatch({ type: 'UPDATE_TODO_ITEM', payload: { id: todoId, patch } });
         }
-      });
-      break;
-    }
+        break;
+      }
+      case 'thinkingLevelUpdate': {
+        const level = asString(data.level) as any;
+        if (level) {
+          dispatch({ type: 'SET_THINKING_LEVEL', payload: level });
+        }
+        break;
+      }
+      case 'addPlanAttachment': {
+        const p = asRecord(data.payload);
+        if (!p) break;
+        dispatch({
+          type: 'ADD_ATTACHMENT',
+          payload: {
+            id: asString(p.id) || `plan-${Date.now()}`,
+            filename: asString(p.filename, 'Implementation Plan'),
+            mimeType: asString(p.mimeType, 'text/markdown'),
+            dataUrl: asString(p.dataUrl),
+          }
+        });
+        break;
+      }
       default:
         break;
     }

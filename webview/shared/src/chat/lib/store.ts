@@ -4,6 +4,7 @@ import type {
   Agent,
   AppState,
   AttachmentItem,
+  InteractiveEvent,
   ThinkingLevel,
   TodoItem,
   ContextItem,
@@ -45,6 +46,7 @@ export const initialState: AppState = {
     write: 0,
     duration: 0
   },
+  sessionsStatsById: {},
   streaming: null,
   inputValue: '',
   fileSuggestions: [],
@@ -64,7 +66,8 @@ export const initialState: AppState = {
   subagentsByParentMessageId: {},
   subagentDetailsById: {},
   selectedSubagentId: null,
-  subagentsPanelOpen: true
+  subagentsPanelOpen: true,
+  interactiveEvents: []
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
@@ -130,7 +133,9 @@ export type AppAction =
   | { type: 'UPSERT_SUBAGENT_DETAIL'; payload: Record<string, SubagentDetail> }
   | { type: 'SELECT_SUBAGENT'; payload: string | null }
   | { type: 'SET_SUBAGENTS_PANEL_OPEN'; payload: boolean }
-  | { type: 'CLEAR_SUBAGENTS_FOR_SESSION' };
+  | { type: 'CLEAR_SUBAGENTS_FOR_SESSION' }
+  | { type: 'SET_INTERACTIVE_EVENTS'; payload: InteractiveEvent[] }
+  | { type: 'DISMISS_INTERACTIVE_EVENT'; payload: string };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   return {
@@ -146,8 +151,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'SET_RECEIVED_INIT_STATE':
       return { ...state, receivedInitState: action.payload };
-    case 'SET_SESSION_ID':
-      return { ...state, currentSessionId: action.payload };
+    case 'SET_SESSION_ID': {
+      const newId = action.payload;
+      const zeroStats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
+      const statsForNew = newId ? (state.sessionsStatsById?.[newId] ?? zeroStats) : zeroStats;
+      return { ...state, currentSessionId: action.payload, sessionStats: statsForNew };
+    }
     case 'SET_SERVER_STATUS':
       return { ...state, serverStatus: action.payload };
     case 'SET_SELECTED_MODEL':
@@ -175,23 +184,36 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, sessionEdits: new Set<string>() };
     case 'UPDATE_SESSION_STATS':
       return { ...state, sessionStats: { ...state.sessionStats, ...action.payload } };
-    case 'RESET_SESSION_STATS':
+    case 'RESET_SESSION_STATS': {
+      const next = action.payload ?? { input: 0, output: 0, read: 0, write: 0, duration: 0 };
+      const sessionsStatsById = { ...state.sessionsStatsById };
+      if (state.currentSessionId) {
+        sessionsStatsById[state.currentSessionId] = next;
+      }
       return {
         ...state,
-        sessionStats: action.payload ?? { input: 0, output: 0, read: 0, write: 0, duration: 0 }
+        sessionStats: next,
+        sessionsStatsById
       };
-    case 'ACCUMULATE_SESSION_STATS':
-      return { ...state, sessionStats: mergeStats(state.sessionStats, action.payload) };
+    }
+    case 'ACCUMULATE_SESSION_STATS': {
+      const merged = mergeStats(state.sessionStats, action.payload);
+      const sessionsStatsById = { ...state.sessionsStatsById };
+      if (state.currentSessionId) {
+        sessionsStatsById[state.currentSessionId] = merged;
+      }
+      return { ...state, sessionStats: merged, sessionsStatsById };
+    }
     case 'SET_STREAMING':
       return action.payload
         ? {
-            ...state,
-            streaming: {
-              ...action.payload,
-              reasoningEvents: action.payload.reasoningEvents ?? [],
-              progressEvents: action.payload.progressEvents ?? []
-            }
+          ...state,
+          streaming: {
+            ...action.payload,
+            reasoningEvents: action.payload.reasoningEvents ?? [],
+            progressEvents: action.payload.progressEvents ?? []
           }
+        }
         : { ...state, streaming: null };
     case 'UPDATE_STREAMING_CONTENT': {
       if (!state.streaming) {
@@ -237,10 +259,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         typeof action.payload.index === 'number'
           ? action.payload.index
           : state.streaming.steps.findIndex(
-              (step) =>
-                (action.payload.id && step.id === action.payload.id) ||
-                (action.payload.callID && step.callID === action.payload.callID)
-            );
+            (step) =>
+              (action.payload.id && step.id === action.payload.id) ||
+              (action.payload.callID && step.callID === action.payload.callID)
+          );
       if (idx < 0) {
         return state;
       }
@@ -368,6 +390,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         subagentsByParentMessageId: {},
         subagentDetailsById: {},
         selectedSubagentId: null
+      };
+    }
+    case 'SET_INTERACTIVE_EVENTS': {
+      return { ...state, interactiveEvents: action.payload };
+    }
+    case 'DISMISS_INTERACTIVE_EVENT': {
+      return {
+        ...state,
+        interactiveEvents: state.interactiveEvents.filter((event) => event.id !== action.payload)
       };
     }
     default:
