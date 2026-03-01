@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
   ChevronRight,
   FileCode,
   GitMerge,
+  MessageSquare,
   Minus,
   Plus,
   X
@@ -12,9 +13,22 @@ import {
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/utils';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+interface PlanComment {
+  id: string;
+  anchor: {
+    startLine: number;
+    endLine: number;
+    selectedText: string;
+    surroundingText?: string;
+  };
+  text: string;
+  createdAt: number;
+}
 
 interface DiffHunk {
   header: string;
@@ -31,6 +45,7 @@ interface DiffFile {
 
 interface DiffData {
   files: DiffFile[];
+  comments?: PlanComment[];
 }
 
 // Extend window
@@ -191,6 +206,141 @@ function DiffItem({
 export default function DiffReviewShell() {
   const data = window.__DIFF_DATA__;
   const [filter, setFilter] = useState<FilterType>('all');
+  const [comments, setComments] = useState<PlanComment[]>(data?.comments ?? []);
+  const [commentsPanelOpen, setCommentsPanelOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const [pendingAnchor, setPendingAnchor] = useState<PlanComment['anchor'] | null>(null);
+  const [popoverPos, setPopoverPos] = useState<{ x: number; y: number } | null>(null);
+  const [commentText, setCommentText] = useState('');
+
+  // Listen for commentsUpdated messages
+  useEffect(() => {
+    function handler(e: MessageEvent) {
+      if (e.data?.type === 'commentsUpdated') setComments(e.data.comments ?? []);
+    }
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  // Text selection → floating popover
+  useEffect(() => {
+    function computeAnchorFromSelection() {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) {
+        setPendingAnchor(null);
+        setPopoverPos(null);
+        return;
+      }
+
+      const container = shellRef.current;
+      if (!container || !sel.anchorNode || !sel.focusNode || !container.contains(sel.anchorNode)) {
+        setPendingAnchor(null);
+        setPopoverPos(null);
+        return;
+      }
+
+      const selectedText = sel.toString().trim();
+      if (!selectedText) {
+        setPendingAnchor(null);
+        setPopoverPos(null);
+        return;
+      }
+
+      const surroundingText = sel.getRangeAt(0).commonAncestorContainer.textContent || '';
+
+      // Best-effort line calculation is less relevant for diff viewer than planar, 
+      // but we keep the structure for compatibility.
+      setPendingAnchor({ startLine: 0, endLine: 0, selectedText, surroundingText });
+
+      try {
+        const range = sel.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        setPopoverPos({ x: rect.left, y: rect.top });
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function handleSelectionChange() {
+      const activeEl = document.activeElement;
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.closest('.comment-popover'))) return;
+
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) {
+        setPendingAnchor(null);
+        setPopoverPos(null);
+      }
+    }
+
+    const container = shellRef.current;
+    if (container) {
+      container.addEventListener('mouseup', computeAnchorFromSelection);
+      container.addEventListener('keyup', computeAnchorFromSelection);
+    }
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => {
+      if (container) {
+        container.removeEventListener('mouseup', computeAnchorFromSelection);
+        container.removeEventListener('keyup', computeAnchorFromSelection);
+      }
+      document.removeEventListener('selectionchange', handleSelectionChange);
+    };
+  }, []);
+
+  // Highlights walk
+  useEffect(() => {
+    const container = shellRef.current;
+    if (!container || !comments.length) return;
+
+    const walk = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.nodeValue || '';
+        const parent = node.parentNode as HTMLElement;
+        if (!parent || parent.nodeName === 'MARK' || parent.nodeName === 'SCRIPT' || parent.nodeName === 'STYLE' || parent.closest('.comment-popover')) return;
+
+        for (const comment of comments) {
+          const needle = comment.anchor.selectedText;
+          if (!needle) continue;
+
+          const idx = text.indexOf(needle);
+          if (idx !== -1) {
+            if (comment.anchor.surroundingText) {
+              const context = parent.innerText || parent.textContent || '';
+              if (!context.includes(comment.anchor.surroundingText)) continue;
+            }
+
+            const before = text.slice(0, idx);
+            const match = text.slice(idx, idx + needle.length);
+            const after = text.slice(idx + needle.length);
+
+            const fragment = document.createDocumentFragment();
+            if (before) fragment.appendChild(document.createTextNode(before));
+
+            const mark = document.createElement('mark');
+            mark.textContent = match;
+            mark.className = 'bg-amber-500/30 text-inherit cursor-pointer rounded-sm hover:bg-amber-500/50 transition-colors px-0.5 -mx-0.5';
+            mark.onclick = (e) => {
+              e.stopPropagation();
+              setCommentsPanelOpen(true);
+            };
+            fragment.appendChild(mark);
+
+            if (after) fragment.appendChild(document.createTextNode(after));
+            parent.replaceChild(fragment, node);
+            break;
+          }
+        }
+      } else {
+        Array.from(node.childNodes).forEach(walk);
+      }
+    };
+
+    const timer = setTimeout(() => walk(container), 50);
+    return () => clearTimeout(timer);
+  }, [comments, filter]); // Re-run when filters change because nodes are re-rendered
 
   if (!data || data.files.length === 0) {
     return (
@@ -222,8 +372,18 @@ export default function DiffReviewShell() {
     vscode?.postMessage({ type: 'rejectDiff', file: path });
   }
 
+  function handleAddComment() {
+    const trimmed = commentText.trim();
+    if (!trimmed || !pendingAnchor) return;
+    const newComment: PlanComment = { id: crypto.randomUUID(), anchor: pendingAnchor, text: trimmed, createdAt: Date.now() };
+    vscode?.postMessage({ type: 'addComment', comment: newComment });
+    setCommentText('');
+    setPendingAnchor(null);
+    setPopoverPos(null);
+  }
+
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
+    <div ref={shellRef} className="flex h-screen flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
       {/* Header */}
       <header className="flex-shrink-0 border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background,var(--vscode-editor-background))] px-4 py-3">
         <div className="flex items-center justify-between gap-3">
@@ -234,13 +394,27 @@ export default function DiffReviewShell() {
               {data.files.length} file{data.files.length !== 1 ? 's' : ''}
             </Badge>
           </div>
-          <div className="flex items-center gap-2 text-xs font-mono">
-            {totalAdded > 0 && (
-              <span className="text-emerald-400">+{totalAdded}</span>
-            )}
-            {totalDeleted > 0 && (
-              <span className="text-red-400">-{totalDeleted}</span>
-            )}
+
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 text-xs font-mono mr-2">
+              {totalAdded > 0 && <span className="text-emerald-400">+{totalAdded}</span>}
+              {totalDeleted > 0 && <span className="text-red-400">-{totalDeleted}</span>}
+            </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCommentsPanelOpen(true)}
+              className="h-7 text-[10px] flex items-center gap-1.5"
+            >
+              <MessageSquare className="h-3 w-3" />
+              <span>Comments</span>
+              {comments.length > 0 && (
+                <Badge variant="secondary" className="ml-1 text-[9px] px-1 py-0 leading-none h-4">
+                  {comments.length}
+                </Badge>
+              )}
+            </Button>
           </div>
         </div>
 
@@ -287,6 +461,129 @@ export default function DiffReviewShell() {
             />
           ))
         )}
+      </div>
+
+      {/* Floating comment popover */}
+      {popoverPos && pendingAnchor && (
+        <div
+          style={{
+            position: 'fixed',
+            top: Math.max(8, popoverPos.y - 10),
+            left: Math.min(popoverPos.x, window.innerWidth - 320),
+            zIndex: 50,
+            width: 300,
+          }}
+          className="comment-popover rounded-md border border-[var(--vscode-panel-border)] bg-[var(--vscode-editorWidget-background,var(--vscode-editor-background))] p-3 shadow-lg"
+        >
+          <p className="mb-2 text-[10px] text-[var(--vscode-descriptionForeground)] italic line-clamp-2">
+            &ldquo;{pendingAnchor.selectedText.length > 60 ? `${pendingAnchor.selectedText.slice(0, 60)}…` : pendingAnchor.selectedText}&rdquo;
+          </p>
+          <Textarea
+            value={commentText}
+            onChange={(e) => setCommentText(e.target.value)}
+            placeholder="Add a comment…"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setPendingAnchor(null);
+                setPopoverPos(null);
+                setCommentText('');
+              }
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                handleAddComment();
+              }
+            }}
+            className="mb-2 text-xs min-h-[60px]"
+            rows={2}
+          />
+          <div className="flex gap-2">
+            <Button size="sm" className="h-7 text-[10px]" onClick={handleAddComment} disabled={!commentText.trim()}>
+              Add Comment
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => { setPendingAnchor(null); setPopoverPos(null); setCommentText(''); }}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Comments panel (slide-in overlay) */}
+      <div
+        style={{
+          position: 'fixed',
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: 320,
+          transform: commentsPanelOpen ? 'translateX(0)' : 'translateX(100%)',
+          transition: 'transform 0.2s ease',
+          zIndex: 40,
+        }}
+        className="flex flex-col border-l border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background,var(--vscode-editor-background))] shadow-xl"
+      >
+        <div className="flex items-center justify-between border-b border-[var(--vscode-panel-border)] px-3 py-2.5">
+          <h2 className="text-xs font-semibold uppercase tracking-wider">
+            Comments
+            {comments.length > 0 && (
+              <span className="ml-2 rounded-full bg-white/10 px-1.5 py-0.5 text-[9px] font-mono">{comments.length}</span>
+            )}
+          </h2>
+          <button
+            type="button"
+            onClick={() => setCommentsPanelOpen(false)}
+            className="rounded p-1 hover:bg-white/10 text-[var(--vscode-descriptionForeground)]"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          {comments.length === 0 ? (
+            <p className="text-[11px] text-[var(--vscode-descriptionForeground)]">No comments yet. Highlight text to add one.</p>
+          ) : (
+            comments.map((comment) => (
+              <div key={comment.id} className="rounded border border-[var(--vscode-panel-border)] bg-white/5 p-2.5 text-[11px]">
+                <p className="italic text-[var(--vscode-descriptionForeground)] truncate mb-1">
+                  &ldquo;{comment.anchor.selectedText}&rdquo;
+                </p>
+
+                {editingId === comment.id ? (
+                  <div className="space-y-2">
+                    <Textarea
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      className="text-[11px] min-h-[60px]"
+                      rows={2}
+                    />
+                    <div className="flex gap-2">
+                      <Button size="sm" className="h-6 text-[9px]" onClick={() => {
+                        const updated = { ...comment, text: editText.trim() };
+                        vscode?.postMessage({ type: 'updateComment', comment: updated });
+                        setEditingId(null);
+                      }}>Save</Button>
+                      <Button size="sm" variant="outline" className="h-6 text-[9px]" onClick={() => setEditingId(null)}>Cancel</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-[var(--vscode-editor-foreground)] mb-2 leading-relaxed">{comment.text}</p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="text-[10px] text-[var(--vscode-descriptionForeground)] hover:text-oc-accent"
+                        onClick={() => { setEditingId(comment.id); setEditText(comment.text); }}
+                      >Edit</button>
+                      <button
+                        type="button"
+                        className="text-[10px] text-[var(--vscode-descriptionForeground)] hover:text-red-400"
+                        onClick={() => vscode?.postMessage({ type: 'deleteComment', id: comment.id })}
+                      >Delete</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   );

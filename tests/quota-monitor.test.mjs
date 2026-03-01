@@ -79,10 +79,10 @@ test('quota monitor omits OK badge for healthy providers to reduce visual clutte
   // Verify only error and warning badges are rendered for unhealthy providers.
   const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
 
-  assert.match(quotaPanelBody, /platform\.status\s*===\s*["["']]error["["']]/, 'quota panel should check for error status');
-  assert.match(quotaPanelBody, /variant=["["']]destructive["["']][^>]*>\s*error\s*</, 'quota panel should render error badge for error status');
-  assert.match(quotaPanelBody, /platform\.status\s*===\s*["["']]warning["["']]/, 'quota panel should check for warning status');
-  assert.match(quotaPanelBody, /variant=["["']]warning["["']][^>]*>\s*warning\s*</, 'quota panel should render warning badge for warning status');
+  assert.match(quotaPanelBody, /platform\.status\s*===\s*["']error["']/, 'quota panel should check for error status');
+  assert.match(quotaPanelBody, /variant=["']destructive["'][^>]*>\s*error\s*</, 'quota panel should render error badge for error status');
+  assert.match(quotaPanelBody, /platform\.status\s*===\s*["']warning["']/, 'quota panel should check for warning status');
+  assert.match(quotaPanelBody, /variant=["']warning["'][^>]*>\s*warning\s*</, 'quota panel should render warning badge for warning status');
   assert.match(quotaPanelBody, /\)\s*:\s*null\}/, 'quota panel should render null for healthy status instead of badge');
   
   // Verify the status check structure has null for the else branch (OK status)

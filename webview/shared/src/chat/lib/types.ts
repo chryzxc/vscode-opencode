@@ -23,6 +23,7 @@ export interface Session {
   id: string;
   title?: string;
   createdAt?: number;
+  parentSessionId?: string;
 }
 
 export interface ContextItem {
@@ -63,6 +64,7 @@ export interface StreamingStep {
     output?: number;
     cache?: { read?: number; write?: number };
   };
+  diffStats?: { added: number; deleted: number };
 }
 
 export interface ReasoningEvent {
@@ -133,6 +135,7 @@ export interface MessageStep {
   content?: string;
   status?: string;
   meta?: string;
+  diffStats?: { added: number; deleted: number };
 }
 
 export interface InteractiveChoice {

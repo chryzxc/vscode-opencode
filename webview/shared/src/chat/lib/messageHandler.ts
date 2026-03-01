@@ -1175,6 +1175,8 @@ function detectInteractiveEventsFromText(text: string, message: Message): Intera
   const info = asRecord(messageRec?.info);
   const idBase = asString(info?.id) || asString(messageRec?.id) || `${Date.now()}`;
 
+  const detectedEvents: InteractiveEvent[] = [];
+
   for (const row of questionRows) {
     const yesNoQuestion = isLikelyYesNoQuestion(row.question);
     const optionsAfter = collectOptionsInDirection(lines, row.index + 1, 1);
@@ -1185,7 +1187,7 @@ function detectInteractiveEventsFromText(text: string, message: Message): Intera
         ? optionsAfter
         : optionsBefore.length >= 2
           ? optionsBefore
-          : inlineOptions
+          : inlineOptions,
     );
 
     if (yesNoQuestion && inlineOptions.length === 0) {
@@ -1193,16 +1195,18 @@ function detectInteractiveEventsFromText(text: string, message: Message): Intera
     }
 
     if (options.length >= 2) {
-      return [
-        {
-          type: 'question',
-          id: `auto-question-${idBase}-${row.index}`,
-          title: 'Question',
-          question: row.question,
-          options
-        }
-      ];
+      detectedEvents.push({
+        type: "question",
+        id: `auto-question-${idBase}-${row.index}`,
+        title: "Question",
+        question: row.question,
+        options,
+      });
     }
+  }
+
+  if (detectedEvents.length > 0) {
+    return detectedEvents;
   }
 
   const finalQuestion = questionRows[questionRows.length - 1].question;
@@ -1248,11 +1252,11 @@ function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
 }
 
 function buildStreamingMessage(streaming: StreamingState): Message {
-  const parts = [
+  const parts: any[] = [
     {
-      type: 'text',
-      text: streaming.content
-    }
+      type: "text",
+      text: streaming.content,
+    },
   ];
   if (streaming.reasoning) {
     parts.push({
@@ -2133,6 +2137,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       case "budgetInfo": {
+        console.log('[messageHandler] Received budgetInfo message:', data);
         dispatch({ type: "SET_BUDGET_INFO", payload: data.data as BudgetInfo });
         break;
       }
@@ -2213,5 +2218,5 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         });
       }
     }
-  };;
+  };
 }

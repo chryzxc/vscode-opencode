@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Copy,
@@ -6,11 +6,13 @@ import {
   Loader2,
   X,
   Sparkles,
-} from 'lucide-react';
+} from "lucide-react";
+import * as Popover from "@radix-ui/react-popover";
 
-import { MarkdownRenderer } from '../components/MarkdownRenderer';
+import { MarkdownRenderer } from "../components/MarkdownRenderer";
 
-import { cn } from '@/utils';
+import { cn } from "@/utils";
+import { Badge } from "@/components/ui/badge";
 
 import type {
   Message,
@@ -19,46 +21,65 @@ import type {
   StreamingState,
   StreamingStep,
   SubagentSummary,
+  SubagentDetail,
   ReasoningEvent,
-} from './lib/types';
-import { useAppDispatch, useAppState } from './lib/store';
-import { jumpToMessage } from './lib/messageJump';
-import vscode from './lib/vscode';
+} from "./lib/types";
+import { useAppState } from "./lib/store";
+import { jumpToMessage } from "./lib/messageJump";
+import vscode from "./lib/vscode";
 
 // File extension color mapping for icons
 const FILE_COLOR_MAP: Record<string, string> = {
-  ts: '#3178c6',
-  js: '#f1e05a',
-  tsx: '#3178c6',
-  jsx: '#f1e05a',
-  css: '#563d7c',
-  html: '#e34c26',
-  json: '#f1e05a',
-  md: '#083fa1',
-  vue: '#41b883',
-  py: '#3572A5',
-  go: '#00ADD8',
-  java: '#b07219',
-  rs: '#dea584',
-  php: '#4F5D95',
-  rb: '#701516',
-  swift: '#ffac45',
-  kt: '#F18E33',
-  c: '#555555',
-  cpp: '#f34b7d',
-  h: '#a8ff97',
-  hpp: '#a8ff97',
+  ts: "#3178c6",
+  js: "#f1e05a",
+  tsx: "#3178c6",
+  jsx: "#f1e05a",
+  css: "#563d7c",
+  html: "#e34c26",
+  json: "#f1e05a",
+  md: "#083fa1",
+  vue: "#41b883",
+  py: "#3572A5",
+  go: "#00ADD8",
+  java: "#b07219",
+  rs: "#dea584",
+  php: "#4F5D95",
+  rb: "#701516",
+  swift: "#ffac45",
+  kt: "#F18E33",
+  c: "#555555",
+  cpp: "#f34b7d",
+  h: "#a8ff97",
+  hpp: "#a8ff97",
 };
 
 // Extract file extension from path
 function getFileExtension(path: string): string {
   const match = path.match(/\.([a-zA-Z0-9]+)(?::|:|$)/);
-  return match ? match[1].toLowerCase() : '';
+  return match ? match[1].toLowerCase() : "";
 }
 
 // Get color for file extension
 function getFileColor(ext: string): string {
-  return FILE_COLOR_MAP[ext] || 'var(--oc-text-muted)';
+  return FILE_COLOR_MAP[ext] || "var(--oc-text-muted)";
+}
+
+// Deterministic colors for subagents
+const SUBAGENT_COLORS = [
+  "text-oc-orange",
+  "text-oc-green",
+  "text-oc-yellow",
+  "text-oc-red",
+  "text-oc-accent",
+];
+
+function getSubagentColor(id: string): string {
+  if (!id) return "text-oc-accent";
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = id.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return SUBAGENT_COLORS[Math.abs(hash) % SUBAGENT_COLORS.length];
 }
 
 // SVG file icon
@@ -69,17 +90,17 @@ export function FileIcon({
   filePath?: string;
   className?: string;
 }) {
-  const ext = filePath ? getFileExtension(filePath) : '';
+  const ext = filePath ? getFileExtension(filePath) : "";
 
   if (filePath) {
-    const fileName = (filePath.split(/[\\/]/).pop() || '').toLowerCase();
+    const fileName = (filePath.split(/[\\/]/).pop() || "").toLowerCase();
     const cleanKey = (key: string) =>
       key
-        .replace(/\./g, '_')
-        .replace(/\//g, '-')
-        .replace(/\+/g, 'p')
-        .replace(/#/g, 'h')
-        .replace(/[^a-z0-9_-]/g, '_');
+        .replace(/\./g, "_")
+        .replace(/\//g, "-")
+        .replace(/\+/g, "p")
+        .replace(/#/g, "h")
+        .replace(/[^a-z0-9_-]/g, "_");
 
     // The library uses .file-icon and .file-icon-type-[ext]
     // We add both filename and extension classes to maximize match chances
@@ -87,20 +108,20 @@ export function FileIcon({
     return (
       <div
         className={cn(
-          'file-icon',
+          "file-icon",
           `file-icon-type-${cleanKey(fileName)}`,
           `file-icon-type-${cleanKey(ext)}`,
           className,
         )}
         style={{
-          width: '16px',
-          height: '16px',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          width: "16px",
+          height: "16px",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
           flexShrink: 0,
-          marginRight: '4px',
-          verticalAlign: 'text-bottom',
+          marginRight: "4px",
+          verticalAlign: "text-bottom",
         }}
       />
     );
@@ -110,14 +131,14 @@ export function FileIcon({
   return (
     <svg
       role="img"
-      aria-label={filePath ?? 'file'}
+      aria-label={filePath ?? "file"}
       width="14"
       height="14"
       viewBox="0 0 24 24"
       fill="none"
-      className={cn('file-icon-svg', className)}
+      className={cn("file-icon-svg", className)}
     >
-      <title>{filePath ?? 'file'}</title>
+      <title>{filePath ?? "file"}</title>
       <path
         d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"
         stroke={color}
@@ -140,27 +161,27 @@ export function FileIcon({
 
 function messageBodyFromParts(parts?: MessagePart[]): string {
   if (!parts) {
-    return '';
+    return "";
   }
   return parts
     .map((part) => {
       const isReasoning =
-        part.type === 'reasoning' ||
+        part.type === "reasoning" ||
         !!part.reasoning ||
         !!part.thought ||
         !!part.thinking;
       if (isReasoning) {
-        return '';
+        return "";
       }
-      return part.text ?? part.content ?? '';
+      return part.text ?? part.content ?? "";
     })
-    .join('')
+    .join("")
     .trim();
 }
 
 function reasoningFromParts(parts?: MessagePart[]): string {
   if (!parts) {
-    return '';
+    return "";
   }
   const fromParts = (parts: MessagePart[]) =>
     parts
@@ -169,21 +190,21 @@ function reasoningFromParts(parts?: MessagePart[]): string {
         if (explicit) {
           return explicit;
         }
-        if (part.type === 'reasoning') {
-          return part.text ?? part.content ?? '';
+        if (part.type === "reasoning") {
+          return part.text ?? part.content ?? "";
         }
-        if (part.type === 'text' || part.text) {
-          const value = part.text || part.content || '';
+        if (part.type === "text" || part.text) {
+          const value = part.text || part.content || "";
           // If it's a text part, but it's empty, it might be a placeholder for reasoning
           // that was not explicitly typed as "reasoning".
           if (value.trim().length === 0) {
-            return '';
+            return "";
           }
         }
-        return '';
+        return "";
       })
       .filter(Boolean)
-      .join('\n\n')
+      .join("\n\n")
       .trim();
 
   return fromParts(parts);
@@ -196,8 +217,8 @@ function summaryText(message?: Message): string {
     ((message as Record<string, unknown>).summary as
       | { title?: string; body?: string }
       | undefined);
-  const title = summary?.title?.trim() ?? '';
-  const body = summary?.body?.trim() ?? '';
+  const title = summary?.title?.trim() ?? "";
+  const body = summary?.body?.trim() ?? "";
   if (title && body) {
     return `${title}\n\n${body}`;
   }
@@ -207,22 +228,22 @@ function summaryText(message?: Message): string {
 function modelLabel(message: Message): string {
   // Check nested info structure first (from streaming)
   const modelObj = message.info?.model;
-  if (modelObj && typeof modelObj === 'object') {
+  if (modelObj && typeof modelObj === "object") {
     const name = (modelObj as Record<string, unknown>).name;
     const modelID = (modelObj as Record<string, unknown>).modelID;
-    if (typeof name === 'string' && name) return name;
-    if (typeof modelID === 'string' && modelID) return modelID;
+    if (typeof name === "string" && name) return name;
+    if (typeof modelID === "string" && modelID) return modelID;
   }
   // Check top-level model object (from persisted messages)
   if (
     !modelObj &&
-    typeof message.model === 'object' &&
+    typeof message.model === "object" &&
     message.model !== null
   ) {
     const name = (message.model as Record<string, unknown>).name;
     const modelID = (message.model as Record<string, unknown>).modelID;
-    if (typeof name === 'string' && name) return name;
-    if (typeof modelID === 'string' && modelID) return modelID;
+    if (typeof name === "string" && name) return name;
+    if (typeof modelID === "string" && modelID) return modelID;
   }
   // Check nested info structure
   let model = message.info?.modelID;
@@ -234,7 +255,7 @@ function modelLabel(message: Message): string {
     | string
     | undefined;
   if (model && provider) return `${provider}/${model}`;
-  return model ?? provider ?? 'assistant';
+  return model ?? provider ?? "assistant";
 }
 
 function getMessageContent(
@@ -245,7 +266,7 @@ function getMessageContent(
     return streaming.content || streaming.reasoning;
   }
   if (!message) {
-    return '';
+    return "";
   }
   const candidates = [
     message.content,
@@ -257,8 +278,8 @@ function getMessageContent(
   return (
     candidates.find(
       (candidate) =>
-        typeof candidate === 'string' && candidate.trim().length > 0,
-    ) ?? ''
+        typeof candidate === "string" && candidate.trim().length > 0,
+    ) ?? ""
   );
 }
 
@@ -266,14 +287,15 @@ type ThoughtItem = { key: string; text: string };
 type ProgressItem = {
   key: string;
   title: string;
-  status: 'pending' | 'done' | 'error';
+  status: "pending" | "done" | "error";
   meta?: string;
   filePath?: string;
+  diffStats?: { added: number; deleted: number };
 };
 
-type ThinkingBlock = { kind: 'thinking'; items: ThoughtItem[] };
-type StepsBlock = { kind: 'steps'; items: ProgressItem[] };
-type ContentBlock = { kind: 'content'; html: string };
+type ThinkingBlock = { kind: "thinking"; items: ThoughtItem[] };
+type StepsBlock = { kind: "steps"; items: ProgressItem[] };
+type ContentBlock = { kind: "content"; html: string };
 type TimelineBlock = ThinkingBlock | StepsBlock | ContentBlock;
 
 /**
@@ -290,7 +312,7 @@ function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
     return message.reasoningEvents
       .filter((event: ReasoningEvent) => {
         const text = event.text;
-        return typeof text === 'string' && text.length > 0;
+        return typeof text === "string" && text.length > 0;
       })
       .map((event: ReasoningEvent) => ({
         key: `evt-${event.createdAt}`,
@@ -304,7 +326,7 @@ function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
         part.reasoning ??
         part.thought ??
         part.thinking ??
-        (part.type === 'reasoning' ? part.text ?? part.content ?? '' : '');
+        (part.type === "reasoning" ? (part.text ?? part.content ?? "") : "");
       return { key: `part-${index}`, text: text.trim() };
     })
     .filter((item: ThoughtItem) => item.text.length > 0);
@@ -325,25 +347,25 @@ function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
       }));
   }
 
-  const fallback = (streaming?.reasoning || '').trim();
-  return fallback ? [{ key: 'stream-reasoning-fallback', text: fallback }] : [];
+  const fallback = (streaming?.reasoning || "").trim();
+  return fallback ? [{ key: "stream-reasoning-fallback", text: fallback }] : [];
 }
 
-function normalizeProgressStatus(value?: string): 'pending' | 'done' | 'error' {
-  if (value === 'done' || value === 'error') {
+function normalizeProgressStatus(value?: string): "pending" | "done" | "error" {
+  if (value === "done" || value === "error") {
     return value;
   }
-  return 'pending';
+  return "pending";
 }
 
 function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
-  const type = (step.type ?? '').toLowerCase();
-  if (type === 'reasoning') {
+  const type = (step.type ?? "").toLowerCase();
+  if (type === "reasoning") {
     return false;
   }
 
   const title = step.title.trim().toLowerCase();
-  if (title === 'thinking...' || title === 'thinking') {
+  if (title === "thinking..." || title === "thinking") {
     return false;
   }
 
@@ -354,45 +376,65 @@ function progressItemsFromSteps(
   steps: Array<MessageStep | StreamingStep>,
   prefix: string,
 ): ProgressItem[] {
-  const seen = new Set<string>();
-  return steps
+  const stepMap = new Map<string, ProgressItem>();
+
+  steps
     .filter((step) => isActionProgressStep(step))
-    .reduce<ProgressItem[]>((acc, step, index) => {
-      const itemKey = `${step.title}-${normalizeProgressStatus(step.status)}`;
-      if (!seen.has(itemKey)) {
-        seen.add(itemKey);
-        acc.push({
-          key: `${prefix}-${index}-${step.title}`,
-          title: step.title,
-          status: normalizeProgressStatus(step.status),
-          meta: step.meta,
-          filePath:
-            'filePath' in step
-              ? (step as StreamingStep).filePath
-              : (step as MessageStep).content ?? undefined,
+    .forEach((step, index) => {
+      const title = step.title;
+      const status = normalizeProgressStatus(step.status);
+      const meta = step.meta;
+      const filePath =
+        "filePath" in step
+          ? (step as StreamingStep).filePath
+          : ((step as MessageStep).content ?? undefined);
+
+      if (stepMap.has(title)) {
+        const existing = stepMap.get(title)!;
+        existing.status = status;
+        if (meta) existing.meta = meta;
+        if (filePath) existing.filePath = filePath;
+        if ("diffStats" in step) existing.diffStats = step.diffStats as { added: number; deleted: number };
+      } else {
+        stepMap.set(title, {
+          key: `${prefix}-${index}-${title}`,
+          title,
+          status,
+          meta,
+          filePath,
+          diffStats: "diffStats" in step ? (step.diffStats as { added: number; deleted: number }) : undefined,
         });
       }
-      return acc;
-    }, []);
+    });
+
+  return Array.from(stepMap.values());
 }
 
 function progressItemsFromMessage(message?: Message): ProgressItem[] {
   if (!message) {
     return [];
   }
+  let items: ProgressItem[] = [];
   if (
     Array.isArray(message.progressEvents) &&
     message.progressEvents.length > 0
   ) {
-    return progressItemsFromSteps(
+    items = progressItemsFromSteps(
       message.progressEvents,
-      'msg-progress-events',
+      "msg-progress-events",
     );
+  } else if (Array.isArray(message.steps) && message.steps.length > 0) {
+    items = progressItemsFromSteps(message.steps, "msg-steps");
   }
-  if (Array.isArray(message.steps) && message.steps.length > 0) {
-    return progressItemsFromSteps(message.steps, 'msg-steps');
+
+  // For completed messages, any hanging pending steps should be marked as done
+  for (const item of items) {
+    if (item.status === "pending") {
+      item.status = "done";
+    }
   }
-  return [];
+
+  return items;
 }
 
 function progressItemsFromStreaming(
@@ -407,18 +449,18 @@ function progressItemsFromStreaming(
   ) {
     return progressItemsFromSteps(
       streaming.progressEvents,
-      'stream-progress-events',
+      "stream-progress-events",
     );
   }
   if (Array.isArray(streaming.steps) && streaming.steps.length > 0) {
-    return progressItemsFromSteps(streaming.steps, 'stream-steps');
+    return progressItemsFromSteps(streaming.steps, "stream-steps");
   }
   return [];
 }
 
 function formatDurationMs(ms?: number): string {
-  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
-    return 'n/a';
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+    return "n/a";
   }
   if (ms >= 1000) {
     return `${(ms / 1000).toFixed(1)}s`;
@@ -427,17 +469,17 @@ function formatDurationMs(ms?: number): string {
 }
 
 function statusBadgeClass(status: string): string {
-  if (status === 'done') return 'text-oc-green border-oc-border';
-  if (status === 'error') return 'text-oc-red border-oc-border';
-  if (status === 'running') return 'text-oc-accent border-oc-border';
-  if (status === 'orphaned') return 'text-oc-yellow border-oc-border';
-  return 'text-oc-text-muted border-oc-border';
+  if (status === "done") return "text-oc-green border-oc-border";
+  if (status === "error") return "text-oc-red border-oc-border";
+  if (status === "running") return "text-oc-accent border-oc-border";
+  if (status === "orphaned") return "text-oc-yellow border-oc-border";
+  return "text-oc-text-muted border-oc-border";
 }
 
 function sanitizeUserContent(raw: string): string {
   return raw
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
     .trim();
 }
 
@@ -453,21 +495,21 @@ function buildStreamingTimeline(
   html: string,
 ): TimelineBlock[] {
   type RawEntry =
-    | { seq: number; kind: 'thinking'; item: ThoughtItem }
-    | { seq: number; kind: 'step'; item: ProgressItem }
-    | { seq: number; kind: 'content' };
+    | { seq: number; kind: "thinking"; item: ThoughtItem }
+    | { seq: number; kind: "step"; item: ProgressItem }
+    | { seq: number; kind: "content" };
 
   const entries: RawEntry[] = [];
 
   for (const item of thoughtItems) {
-    entries.push({ kind: 'thinking', item, seq: seqFromThoughtKey(item.key) });
+    entries.push({ kind: "thinking", item, seq: seqFromThoughtKey(item.key) });
   }
 
   for (const item of progressItems) {
     // Match back to the original step to read its streamSeq timestamp
     const step = streaming.steps.find((s) => s.title === item.title);
     entries.push({
-      kind: 'step',
+      kind: "step",
       item,
       seq: step?.streamSeq ?? step?.startTime ?? 0,
     });
@@ -476,7 +518,7 @@ function buildStreamingTimeline(
   if (html) {
     // If contentStartSeq is missing the content starts last
     entries.push({
-      kind: 'content',
+      kind: "content",
       seq: streaming.contentStartSeq ?? Number.MAX_SAFE_INTEGER,
     });
   }
@@ -486,20 +528,20 @@ function buildStreamingTimeline(
   const blocks: TimelineBlock[] = [];
   for (const entry of entries) {
     const last = blocks[blocks.length - 1];
-    if (entry.kind === 'thinking') {
-      if (last?.kind === 'thinking') {
+    if (entry.kind === "thinking") {
+      if (last?.kind === "thinking") {
         (last as ThinkingBlock).items.push(entry.item);
       } else {
-        blocks.push({ kind: 'thinking', items: [entry.item] });
+        blocks.push({ kind: "thinking", items: [entry.item] });
       }
-    } else if (entry.kind === 'step') {
-      if (last?.kind === 'steps') {
+    } else if (entry.kind === "step") {
+      if (last?.kind === "steps") {
         (last as StepsBlock).items.push(entry.item);
       } else {
-        blocks.push({ kind: 'steps', items: [entry.item] });
+        blocks.push({ kind: "steps", items: [entry.item] });
       }
     } else {
-      blocks.push({ kind: 'content', html });
+      blocks.push({ kind: "content", html });
     }
   }
 
@@ -524,7 +566,7 @@ function buildMessageTimeline(
 
     for (const part of parts) {
       const isReasoning =
-        part.type === 'reasoning' ||
+        part.type === "reasoning" ||
         !!part.reasoning ||
         !!part.thought ||
         !!part.thinking;
@@ -534,37 +576,37 @@ function buildMessageTimeline(
           part.reasoning ??
           part.thought ??
           part.thinking ??
-          (part.type === 'reasoning' ? part.text ?? part.content ?? '' : '')
+          (part.type === "reasoning" ? (part.text ?? part.content ?? "") : "")
         ).trim();
         if (!text) continue;
         const last = blocks[blocks.length - 1];
-        if (last?.kind === 'thinking') {
+        if (last?.kind === "thinking") {
           (last as ThinkingBlock).items.push({
             key: `msg-think-${blocks.length}`,
             text,
           });
         } else {
           blocks.push({
-            kind: 'thinking',
+            kind: "thinking",
             items: [{ key: `msg-think-${blocks.length}`, text }],
           });
         }
       } else {
-        const partText = (part.text ?? part.content ?? '').trim();
+        const partText = (part.text ?? part.content ?? "").trim();
         if (!partText) continue;
         const last = blocks[blocks.length - 1];
-        if (last?.kind === 'content') {
+        if (last?.kind === "content") {
           (last as ContentBlock).html += partText;
         } else {
-          blocks.push({ kind: 'content', html: partText });
+          blocks.push({ kind: "content", html: partText });
         }
       }
     }
 
     // Steps don't appear in parts; insert them before the first content block
     if (progressItems.length > 0) {
-      const firstContentIdx = blocks.findIndex((b) => b.kind === 'content');
-      const stepsBlock: TimelineBlock = { kind: 'steps', items: progressItems };
+      const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
+      const stepsBlock: TimelineBlock = { kind: "steps", items: progressItems };
       if (firstContentIdx >= 0) {
         blocks.splice(firstContentIdx, 0, stepsBlock);
       } else {
@@ -574,11 +616,11 @@ function buildMessageTimeline(
 
     // If parts had no reasoning entries but the message has reasoningEvents,
     // they won't have been added above — insert them before the first content block.
-    const hasThinkingBlock = blocks.some((b) => b.kind === 'thinking');
+    const hasThinkingBlock = blocks.some((b) => b.kind === "thinking");
     if (!hasThinkingBlock && thoughtItems.length > 0) {
-      const firstContentIdx = blocks.findIndex((b) => b.kind === 'content');
+      const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
       const thinkingBlock: TimelineBlock = {
-        kind: 'thinking',
+        kind: "thinking",
         items: thoughtItems,
       };
       if (firstContentIdx >= 0) {
@@ -589,7 +631,7 @@ function buildMessageTimeline(
     }
 
     return blocks.filter((b) => {
-      if (b.kind === 'content') return !!(b as ContentBlock).html;
+      if (b.kind === "content") return !!(b as ContentBlock).html;
       return (b as ThinkingBlock | StepsBlock).items.length > 0;
     });
   }
@@ -597,10 +639,10 @@ function buildMessageTimeline(
   // Fallback for messages that have no parts array — thinking always precedes content
   const blocks: TimelineBlock[] = [];
   if (thoughtItems.length > 0)
-    blocks.push({ kind: 'thinking', items: thoughtItems });
+    blocks.push({ kind: "thinking", items: thoughtItems });
   if (progressItems.length > 0)
-    blocks.push({ kind: 'steps', items: progressItems });
-  if (html) blocks.push({ kind: 'content', html });
+    blocks.push({ kind: "steps", items: progressItems });
+  if (html) blocks.push({ kind: "content", html });
   return blocks;
 }
 
@@ -658,25 +700,22 @@ function getAgentName(
   message: Message | undefined,
   streaming: StreamingState | undefined,
 ): string {
-  // Check message.info first (from persisted messages with nested structure)
-  if (message?.info?.agent && typeof message.info.agent === 'string') {
+  if (message?.info?.agent && typeof message.info.agent === "string") {
     return message.info.agent;
   }
 
-  // Check message top-level (backwards compatibility with flattened persisted messages)
   if (message && 'agent' in message) {
     const agent = (message as Record<string, unknown>).agent;
-    if (typeof agent === 'string' && agent) {
+    if (typeof agent === "string" && agent) {
       return agent;
     }
   }
 
-  // Check streaming state (for real-time streaming)
-  if (streaming?.agent && typeof streaming.agent === 'string') {
+  if (streaming?.agent && typeof streaming.agent === "string") {
     return streaming.agent;
   }
 
-  return 'assistant';
+  return "assistant";
 }
 
 /**
@@ -685,26 +724,18 @@ function getAgentName(
  */
 function getTokenInfo(
   message: Message | undefined,
-):
-  | {
-      input?: number;
-      output?: number;
-      cache?: { read?: number; write?: number };
-    }
-  | undefined {
+): { input?: number; output?: number; cache?: { read?: number; write?: number } } | undefined {
   if (!message) {
     return undefined;
   }
 
-  // Check nested info structure first
   if (message.info?.tokens) {
     return message.info.tokens;
   }
 
-  // Check top-level tokens (backwards compatibility)
   if ('tokens' in message) {
     const tokens = (message as Record<string, unknown>).tokens;
-    if (tokens && typeof tokens === 'object') {
+    if (tokens && typeof tokens === "object") {
       return tokens as {
         input?: number;
         output?: number;
@@ -723,44 +754,122 @@ function getDuration(
   message: Message | undefined,
   streaming: StreamingState | undefined,
 ): number | undefined {
-  // Check streaming state first (most common during streaming)
   if (
     streaming?.usage?.duration !== undefined &&
-    typeof streaming.usage.duration === 'number'
+    typeof streaming.usage.duration === "number"
   ) {
     return streaming.usage.duration;
   }
 
-  // Guard against undefined message
   if (!message) {
     return undefined;
   }
 
-  // Check nested info structure
   if (
     message.info?.duration !== undefined &&
-    typeof message.info.duration === 'number'
+    typeof message.info.duration === "number"
   ) {
     return message.info.duration;
   }
 
-  // Check top-level duration (backwards compatibility)
   if ('duration' in message) {
     const duration = (message as Record<string, unknown>).duration;
-    if (typeof duration === 'number') {
+    if (typeof duration === "number") {
       return duration;
     }
   }
 
-  // Check timing.duration only if timing exists
-  if (message.timing && 'duration' in message.timing) {
+  if (message.timing && "duration" in message.timing) {
     const timingDuration = message.timing.duration;
-    if (typeof timingDuration === 'number') {
+    if (typeof timingDuration === "number") {
       return timingDuration;
     }
   }
 
   return undefined;
+}
+
+export function SubagentProgressPopover({
+  subagent,
+  subagentDetail,
+  colorClass,
+  children,
+}: {
+  subagent: SubagentSummary;
+  subagentDetail?: SubagentDetail;
+  colorClass: string;
+  children: React.ReactNode;
+}) {
+  const agentName = subagent.agentId || `Agent ${subagent.id.slice(0, 4)}`;
+
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>{children}</Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          className="z-50 w-72 rounded-md border border-oc-border bg-oc-panel p-4 shadow-md outline-none animate-in fade-in zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out data-[state=closed]:zoom-out-95"
+          sideOffset={5}
+        >
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className={cn("oc-agent-icon shrink-0", colorClass)}>
+                  <Sparkles className="h-3 w-3" />
+                </div>
+                <span className={cn("text-xs font-semibold truncate", colorClass)}>
+                  {agentName}
+                </span>
+              </div>
+              <Badge
+                variant="outline"
+                className={cn(
+                  "h-5 text-[10px] font-mono",
+                  subagent.status === "done"
+                    ? "border-oc-green/30 text-oc-green bg-oc-green/5"
+                    : subagent.status === "error"
+                      ? "border-oc-red/30 text-oc-red bg-oc-red/5"
+                      : "border-oc-accent/30 text-oc-accent bg-oc-accent/5",
+                )}
+              >
+                {subagent.status.toUpperCase()}
+              </Badge>
+            </div>
+
+            {subagentDetail && (
+              <div className="space-y-2.5">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-medium text-oc-text-muted uppercase tracking-wider">
+                    Latest activity
+                  </span>
+                  <div className="text-xs text-oc-text-soft line-clamp-2 italic">
+                    {subagent.latestActivity || "Initializing..."}
+                  </div>
+                </div>
+
+                {subagentDetail.progressEvents && subagentDetail.progressEvents.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] font-medium text-oc-text-muted uppercase tracking-wider">
+                      Recent Steps
+                    </span>
+                    <div className="max-h-32 overflow-y-auto pr-1 space-y-2">
+                      {subagentDetail.progressEvents.slice(-3).reverse().map((event, idx) => (
+                        <div key={idx} className="flex flex-col gap-1 border-l-2 border-oc-border pl-2 py-0.5">
+                          <span className="text-[10px] text-oc-text-soft leading-tight">
+                            {event.title}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <Popover.Arrow className="fill-oc-border" />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
 }
 
 export function AssistantMessage({
@@ -770,10 +879,10 @@ export function AssistantMessage({
   message?: Message;
   streaming?: StreamingState;
 }) {
-  const dispatch = useAppDispatch();
-  const { subagentsByParentMessageId } = useAppState();
+  const { subagentsByParentMessageId, subagentDetailsById } = useAppState();
   const [showSubagents, setShowSubagents] = useState(false);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
+  const [expandedSubagentId, setExpandedSubagentId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const content = getMessageContent(message, streaming);
   const thoughtItems = useMemo(
@@ -813,7 +922,7 @@ export function AssistantMessage({
       ? message.subagents
       : [];
     const fromStore = messageId
-      ? subagentsByParentMessageId[messageId] ?? []
+      ? (subagentsByParentMessageId[messageId] ?? [])
       : [];
     if (fromStore.length === 0) return fromMessage;
     if (fromMessage.length === 0) return fromStore;
@@ -834,7 +943,18 @@ export function AssistantMessage({
   const visibleSubagents = showAllSubagents
     ? subagents
     : subagents.slice(0, 10);
-  const showStreamingLoading = !message && !!streaming?.isActive;
+  const hasStreamingActivity = !!(
+    streaming &&
+    ((streaming.content && String(streaming.content).trim().length > 0) ||
+      (streaming.reasoning && String(streaming.reasoning).trim().length > 0) ||
+      (Array.isArray(streaming.reasoningEvents) &&
+        streaming.reasoningEvents.length > 0) ||
+      (Array.isArray(streaming.progressEvents) &&
+        streaming.progressEvents.length > 0) ||
+      (Array.isArray(streaming.steps) && streaming.steps.length > 0))
+  );
+
+  const showStreamingLoading = !message && !!streaming?.isActive && !hasStreamingActivity;
 
   // Use type-safe helpers instead of type assertions
   const agentName = getAgentName(message, streaming);
@@ -852,9 +972,26 @@ export function AssistantMessage({
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
-  const openSubagentDetails = (subagentId: string) => {
-    dispatch({ type: 'SELECT_SUBAGENT', payload: subagentId });
-    dispatch({ type: 'SET_SUBAGENTS_PANEL_OPEN', payload: true });
+  const toggleSubagentDetails = (subagentId: string) => {
+    setExpandedSubagentId(prev => prev === subagentId ? null : subagentId);
+  };
+  const copyRefs = async (detail: SubagentDetail) => {
+    const refs = [
+      `parentSessionID=${detail.parentSessionId}`,
+      `parentMessageID=${detail.parentMessageId}`,
+      detail.childSessionId ? `childSessionID=${detail.childSessionId}` : null,
+      ...detail.references.map((ref, index) => {
+        const parts = [
+          ref.messageID ? `messageID=${ref.messageID}` : null,
+          ref.partID ? `partID=${ref.partID}` : null,
+          ref.callID ? `callID=${ref.callID}` : null,
+        ].filter(Boolean);
+        return parts.length > 0 ? `ref${index + 1}: ${parts.join(' ')}` : null;
+      }),
+    ]
+      .filter((item): item is string => !!item)
+      .join('\n');
+    await navigator.clipboard.writeText(refs);
   };
   return (
     <div
@@ -869,15 +1006,15 @@ export function AssistantMessage({
               <div className="inline-flex items-center gap-1.5 oc-msg-agent-label font-mono">
                 <span
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: '0ms' }}
+                  style={{ animationDelay: "0ms" }}
                 />
                 <span
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: '150ms' }}
+                  style={{ animationDelay: "150ms" }}
                 />
                 <span
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: '300ms' }}
+                  style={{ animationDelay: "300ms" }}
                 />
                 <span className="ml-1 oc-msg-model-label">Thinking...</span>
               </div>
@@ -889,29 +1026,29 @@ export function AssistantMessage({
                   </div>
                   <span className="oc-msg-agent-label font-mono">
                     {agentName}
-                    {modelName && modelName !== 'assistant' ? (
+                      {modelName && modelName !== "assistant" ? (
                       <span className="oc-msg-model-label"> - {modelName}</span>
                     ) : (
-                      ''
+                          ""
                     )}
                   </span>
                 </div>
                 {hasTokens && (
                   <div className="oc-msg-token-chips flex shrink-0 items-center gap-1">
-                    <span>in</span>
-                    <span className="tabular-nums">
+                      <span title="Tokens in system prompt + conversation history + your message" className="cursor-help decoration-dotted underline underline-offset-2">prompt</span>
+                      <span className="tabular-nums cursor-help" title="Tokens in system prompt + conversation history + your message">
                       {inputTok.toLocaleString()}
                     </span>
                     <span className="opacity-30">-</span>
-                    <span>out</span>
-                    <span className="tabular-nums">
+                      <span title="Tokens generated in this reply" className="cursor-help decoration-dotted underline underline-offset-2">response</span>
+                      <span className="tabular-nums cursor-help" title="Tokens generated in this reply">
                       {outputTok.toLocaleString()}
                     </span>
                     {cacheRead > 0 && (
                       <>
                         <span className="opacity-30">-</span>
-                        <span>cr</span>
-                        <span className="tabular-nums">
+                          <span title="Tokens retrieved from prompt cache" className="cursor-help decoration-dotted underline underline-offset-2">cache read</span>
+                          <span className="tabular-nums cursor-help" title="Tokens retrieved from prompt cache">
                           {cacheRead.toLocaleString()}
                         </span>
                       </>
@@ -919,13 +1056,13 @@ export function AssistantMessage({
                     {cacheWrite > 0 && (
                       <>
                         <span className="opacity-30">-</span>
-                        <span>cw</span>
-                        <span className="tabular-nums">
+                          <span title="New tokens written to prompt cache" className="cursor-help decoration-dotted underline underline-offset-2">cache write</span>
+                          <span className="tabular-nums cursor-help" title="New tokens written to prompt cache">
                           {cacheWrite.toLocaleString()}
                         </span>
                       </>
                     )}
-                    {typeof duration === 'number' && (
+                      {typeof duration === "number" && (
                       <>
                         <span className="opacity-30">-</span>
                         <span className="tabular-nums">
@@ -943,7 +1080,7 @@ export function AssistantMessage({
               <button
                 type="button"
                 title="Core Feature: View Implementation Plan"
-                onClick={() => vscode.postMessage({ type: 'viewPlan', plan })}
+                onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
                 className="oc-plan-btn"
               >
                 <FileTextIcon className="h-3 w-3" /> View Plan
@@ -966,7 +1103,7 @@ export function AssistantMessage({
 
         {/* Unified timeline: blocks rendered in arrival order (thinking → steps → content → ...) */}
         {timelineBlocks.map((block, blockIdx) => {
-          if (block.kind === 'thinking') {
+          if (block.kind === "thinking") {
             const isStreaming = !!streaming;
             return (
               <details
@@ -1000,7 +1137,7 @@ export function AssistantMessage({
             );
           }
 
-          if (block.kind === 'steps') {
+          if (block.kind === "steps") {
             return (
               <div
                 // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
@@ -1013,9 +1150,9 @@ export function AssistantMessage({
                     className="flex items-start gap-1.5 py-0.5 text-xs"
                   >
                     <span className="mt-px shrink-0">
-                      {event.status === 'pending' ? (
+                      {event.status === "pending" ? (
                         <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
-                      ) : event.status === 'error' ? (
+                      ) : event.status === "error" ? (
                         <X className="h-3 w-3 text-oc-red" />
                       ) : (
                         <Check className="h-3 w-3 text-oc-green opacity-70" />
@@ -1023,9 +1160,9 @@ export function AssistantMessage({
                     </span>
                     <span
                       className={`min-w-0 flex-1 leading-relaxed ${
-                        event.status === 'pending'
-                          ? 'text-oc-text'
-                          : 'text-oc-text-soft opacity-80'
+                        event.status === "pending"
+                          ? "text-oc-text"
+                          : "text-oc-text-soft opacity-80"
                       }`}
                     >
                       {event.title}
@@ -1040,7 +1177,7 @@ export function AssistantMessage({
                           className="ml-1.5 inline-flex items-center gap-1 font-mono text-oc-text-muted opacity-60 hover:text-oc-accent hover:opacity-100 transition-colors"
                           onClick={() =>
                             vscode.postMessage({
-                              type: 'openFile',
+                              type: "openFile",
                               file: event.filePath,
                             })
                           }
@@ -1048,6 +1185,16 @@ export function AssistantMessage({
                           <FileIcon filePath={event.filePath} />
                           {event.filePath.split(/[/\\]/).pop()}
                         </button>
+                      ) : null}
+                      {event.diffStats && (event.diffStats.added > 0 || event.diffStats.deleted > 0) ? (
+                        <span className="ml-1.5 inline-flex items-center gap-1 font-mono text-[10px]">
+                          {event.diffStats.added > 0 && (
+                            <span className="text-oc-green">+{event.diffStats.added}</span>
+                          )}
+                          {event.diffStats.deleted > 0 && (
+                            <span className="text-oc-red">-{event.diffStats.deleted}</span>
+                          )}
+                        </span>
                       ) : null}
                     </span>
                   </div>
@@ -1076,73 +1223,176 @@ export function AssistantMessage({
               setShowSubagents((e.target as HTMLDetailsElement).open)
             }
           >
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-accent hover:text-oc-text-soft transition-colors tracking-wide font-semibold">
               <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
                 ›
               </span>
-              <span className="opacity-70">
+              <span>
                 Spawned Agents ({subagents.length})
               </span>
-              <span className="truncate opacity-50 text-oc-2xs">
+              <span className="truncate opacity-50 text-oc-2xs font-normal text-oc-text-muted">
                 {subagents[subagents.length - 1]?.latestActivity}
               </span>
             </summary>
             <div className="mt-2 space-y-1.5">
-              {visibleSubagents.map((subagent: SubagentSummary) => (
-                <div
-                  key={subagent.id}
-                  className="rounded-md border border-oc-border bg-oc-panel-soft px-2.5 py-2 text-xs"
-                >
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <span
-                      className={`rounded border px-1.5 py-0.5 font-mono text-oc-2xs uppercase tracking-wider ${statusBadgeClass(
-                        subagent.status,
-                      )}`}
-                    >
-                      {subagent.status}
-                    </span>
-                    <span className="font-mono text-oc-2xs text-oc-text-muted">
-                      {formatDurationMs(subagent.durationMs)}
-                    </span>
+              {visibleSubagents.map((subagent: SubagentSummary) => {
+                const isExpanded = expandedSubagentId === subagent.id;
+                // Merge data from the subagent store
+                const detailData = subagentDetailsById[subagent.id] || subagent;
+                return (
+                  <div
+                    key={subagent.id}
+                    className="rounded-md border border-oc-border bg-oc-panel-soft overflow-hidden text-xs"
+                  >
+                    <div className="p-2.5">
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <SubagentProgressPopover
+                          subagent={subagent}
+                          subagentDetail={subagentDetailsById?.[subagent.id]}
+                          colorClass={getSubagentColor(subagent.id)}
+                        >
+                          <button
+                            type="button"
+                            className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 hover:bg-oc-panel-hover text-left"
+                          >
+                            <div className={cn("oc-agent-icon shrink-0", getSubagentColor(subagent.id))}>
+                              <Sparkles className="h-2.5 w-2.5" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className={cn("truncate text-oc-xs font-semibold", getSubagentColor(subagent.id))}>
+                                  {subagent.agentId || `Agent ${subagent.id.slice(0, 4)}`}
+                                </span>
+                                {subagent.status === "running" && (
+                                  <Loader2 className="h-2.5 w-2.5 animate-spin text-oc-accent" />
+                                )}
+                              </div>
+                              <div className="truncate text-[10px] text-oc-text-muted font-mono leading-tight">
+                                {subagent.latestActivity || "Initializing..."}
+                              </div>
+                            </div>
+                          </button>
+                        </SubagentProgressPopover>
+                        <span className="font-mono text-oc-2xs text-oc-text-muted">
+                          {formatDurationMs(subagent.durationMs)}
+                        </span>
+                      </div>
+                      <div className="truncate text-oc-text-soft">
+                        {subagent.agentId || "subagent"}{" "}
+                        {subagent.providerID && subagent.modelID
+                          ? `- ${subagent.providerID}/${subagent.modelID}`
+                          : ""}
+                      </div>
+                      <div className="mt-0.5 truncate text-oc-text-muted">
+                        {subagent.latestActivity || "No activity yet"}
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          className="text-oc-2xs font-mono text-oc-accent hover:underline"
+                          onClick={() => toggleSubagentDetails(subagent.id)}
+                        >
+                          {isExpanded ? "Hide details" : "Open details"}
+                        </button>
+                        <button
+                          type="button"
+                          className="text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
+                          onClick={() =>
+                            jumpToMessage(
+                              subagent.parentMessageId || messageId || "",
+                            )
+                          }
+                        >
+                          Jump to parent
+                        </button>
+                      </div>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="border-t border-oc-border bg-oc-panel p-2.5">
+                        <div className="space-y-1 text-oc-2xs text-oc-text-muted">
+                          <div>
+                            model:{" "}
+                            {subagent.providerID && subagent.modelID
+                              ? `${subagent.providerID}/${subagent.modelID}`
+                              : "n/a"}
+                          </div>
+                          <div>
+                            child session: {(detailData as SubagentDetail).childSessionId || "n/a"}
+                          </div>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
+                            onClick={() => copyRefs(detailData as SubagentDetail)}
+                          >
+                            <Copy className="h-3 w-3" />
+                            Copy refs
+                          </button>
+                        </div>
+                        {(detailData as SubagentDetail).thinkingEvents?.length > 0 ? (
+                          <details className="mt-2" open={false}>
+                            <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
+                              Thinking ({(detailData as SubagentDetail).thinkingEvents.length})
+                            </summary>
+                            <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
+                              {(detailData as SubagentDetail).thinkingEvents.map((ev) => (
+                                <div
+                                  key={ev.id}
+                                  className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs text-oc-text-muted whitespace-pre-wrap"
+                                >
+                                  {ev.text}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        ) : null}
+                        {(detailData as SubagentDetail).progressEvents?.length > 0 ? (
+                          <details className="mt-2" open={false}>
+                            <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
+                              Progress ({(detailData as SubagentDetail).progressEvents.length})
+                            </summary>
+                            <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
+                              {(detailData as SubagentDetail).progressEvents.map((ev) => (
+                                <div
+                                  key={ev.id}
+                                  className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs"
+                                >
+                                  <div className="text-oc-text-soft">{ev.title}</div>
+                                  {ev.meta ? (
+                                    <div className="text-oc-text-muted mt-0.5">{ev.meta}</div>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        ) : null}
+                        {(detailData as SubagentDetail).timelineEvents?.length > 0 ? (
+                          <details className="mt-2" open={true}>
+                            <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
+                              Timeline ({(detailData as SubagentDetail).timelineEvents.length})
+                            </summary>
+                            <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
+                              {(detailData as SubagentDetail).timelineEvents.map((ev) => (
+                                <div
+                                  key={ev.key}
+                                  className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs"
+                                >
+                                  <div className="text-oc-text-soft">{ev.label}</div>
+                                  <div className="font-mono text-oc-text-muted mt-0.5">
+                                    {new Date(ev.createdAt).toLocaleTimeString()}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
-                  <div className="truncate text-oc-text-soft">
-                    {subagent.agentId || 'subagent'}{' '}
-                    {subagent.providerID && subagent.modelID
-                      ? `- ${subagent.providerID}/${subagent.modelID}`
-                      : ''}
-                  </div>
-                  <div className="mt-0.5 truncate text-oc-text-muted">
-                    {subagent.latestActivity || 'No activity yet'}
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      className="text-oc-2xs font-mono text-oc-accent hover:underline"
-                      onClick={() => openSubagentDetails(subagent.id)}
-                    >
-                      Open details
-                    </button>
-                    <button
-                      type="button"
-                      className="text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
-                      onClick={() =>
-                        jumpToMessage(
-                          subagent.parentMessageId || messageId || '',
-                        )
-                      }
-                    >
-                      Jump to message
-                    </button>
-                    <button
-                      type="button"
-                      className="text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
-                      onClick={() => openSubagentDetails(subagent.id)}
-                    >
-                      View timeline
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               {subagents.length > 10 ? (
                 <button
                   type="button"
@@ -1150,7 +1400,7 @@ export function AssistantMessage({
                   onClick={() => setShowAllSubagents((value) => !value)}
                 >
                   {showAllSubagents
-                    ? 'Show less'
+                    ? "Show less"
                     : `Show all (${subagents.length})`}
                 </button>
               ) : null}
@@ -1189,9 +1439,9 @@ export function AssistantMessage({
                           hasProgressEvents: !!message.progressEvents?.length,
                           hasSubagents: !!message.subagents?.length,
                           hasPlan: !!message.plan,
-                          edits: message.edits?.map((file: any) => file.file),
-                          createdAt: message.created,
-                          duration: message.info?.duration ?? message.duration,
+                        edits: message.edits?.map((file: { file: string }) => file.file),
+                        createdAt: message.created,
+                        duration: message.info?.duration ?? message.duration,
                         }
                       : null,
                     streaming: streaming
@@ -1220,7 +1470,7 @@ export function AssistantMessage({
             <button
               type="button"
               title="Core Feature: Do not remove"
-              onClick={() => vscode.postMessage({ type: 'viewPlan', plan })}
+              onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
               className="oc-plan-btn"
             >
               <FileTextIcon className="h-3 w-3" />
@@ -1233,7 +1483,7 @@ export function AssistantMessage({
   );
 }
 export function PermissionCard({ perm }: { perm: unknown }) {
-  const label = typeof perm === 'string' ? perm : JSON.stringify(perm);
+  const label = typeof perm === "string" ? perm : JSON.stringify(perm);
   return (
     <div className="oc-message-enter mb-5 px-4">
       <div className="rounded-xl border oc-warning-border oc-warning-bg p-3.5">
@@ -1271,8 +1521,8 @@ export function ThinkingBubble() {
           <span
             key={index}
             className={cn(
-              'h-1.5 w-1.5 rounded-full bg-oc-accent',
-              index > 0 ? 'ml-0.5' : '',
+              "h-1.5 w-1.5 rounded-full bg-oc-accent",
+              index > 0 ? "ml-0.5" : "",
             )}
             style={{
               animation: `thinking-pulse 1.3s ${index * 0.16}s infinite`,
@@ -1341,7 +1591,7 @@ export function MessageStatus({
         ) : (
           <Check className="h-3 w-3 text-oc-green" />
         )}
-        {active ? 'Working...' : failed ? 'Failed' : 'Done'}
+        {active ? "Working..." : failed ? "Failed" : "Done"}
       </span>
     </div>
   );

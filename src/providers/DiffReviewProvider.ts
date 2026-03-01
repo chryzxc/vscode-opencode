@@ -16,6 +16,7 @@ export interface DiffFile {
 
 export interface DiffData {
   files: DiffFile[];
+  comments?: any[];
 }
 
 export class DiffReviewProvider {
@@ -51,6 +52,15 @@ export class DiffReviewProvider {
             return;
           case 'rejectDiff':
             vscode.window.showInformationMessage(`Rejected: ${message.file}`);
+            return;
+          case 'addComment':
+            this._addComment(message.comment, data);
+            return;
+          case 'updateComment':
+            this._updateComment(message.comment, data);
+            return;
+          case 'deleteComment':
+            this._deleteComment(message.id, data);
             return;
         }
       },
@@ -98,6 +108,27 @@ export class DiffReviewProvider {
         x.dispose();
       }
     }
+  }
+
+  private _addComment(comment: any, data: DiffData) {
+    if (!data.comments) data.comments = [];
+    data.comments.push(comment);
+    this._panel.webview.postMessage({ type: 'commentsUpdated', comments: data.comments });
+  }
+
+  private _updateComment(comment: any, data: DiffData) {
+    if (!data.comments) return;
+    const idx = data.comments.findIndex((c: any) => c.id === comment.id);
+    if (idx !== -1) {
+      data.comments[idx] = comment;
+      this._panel.webview.postMessage({ type: 'commentsUpdated', comments: data.comments });
+    }
+  }
+
+  private _deleteComment(id: string, data: DiffData) {
+    if (!data.comments) return;
+    data.comments = data.comments.filter((c: any) => c.id !== id);
+    this._panel.webview.postMessage({ type: 'commentsUpdated', comments: data.comments });
   }
 
   private _getHtmlForWebview(webview: vscode.Webview, data: DiffData) {

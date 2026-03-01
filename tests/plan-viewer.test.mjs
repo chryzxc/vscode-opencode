@@ -54,7 +54,7 @@ test('proceed flow forwards plan payload, persists comments, and sends Proceed w
   assert.match(planShellSource, /vscode\?\.postMessage\(\{\s*type:\s*["']proceedWithPlan["'],\s*rawPlan,\s*comments\s*\}\)/, 'plan shell should post proceedWithPlan including rawPlan and comments');
   assert.match(ctorBody, /case\s+["']proceedWithPlan["']:\s*\{[\s\S]*opencode\.planProceed/, 'plan provider should route proceedWithPlan to opencode.planProceed command');
   assert.match(chatProviderSource, /async\s+handlePlanProceed\([\s\S]*## Comments/, 'plan proceed handler should append comments section into persisted markdown');
-  assert.match(chatProviderSource, /await\s+this\.handleSendMessage\(\s*["["']]The implementation plan has been reviewed and approved/, 'plan proceed handler should send human-friendly approval message');
+  assert.match(chatProviderSource, /await\s+this\.handleSendMessage\(\s*["']The implementation plan has been reviewed and approved/, 'plan proceed handler should send human-friendly approval message');
   assert.match(chatProviderSource, /PlanViewProvider\.closeCurrentPanel\(\)/, 'plan proceed handler should close plan viewer after triggering proceed');
 });
 
@@ -70,5 +70,5 @@ test('plan viewer read-path has error fallback for unreadable plan files', () =>
 });
 
 test('chat provider routes viewPlan to handleViewPlan', () => {
-  assert.match(chatProviderSource, /case\s+[["']"]viewPlan[["']"]:\s*\{[\s\S]*await\s+this\.handleViewPlan\(message\.plan\)/, 'chat provider should route viewPlan to handleViewPlan');
+  assert.match(chatProviderSource, /case\s+["']viewPlan["']:\s*\{[\s\S]*await\s+this\.handleViewPlan\(message\.plan\)/, 'chat provider should route viewPlan to handleViewPlan');
 });

@@ -1,7 +1,21 @@
 // @ts-check
 (function () {
-    // @ts-expect-error - acquireVsCodeApi is provided by VS Code webview environment
-    const vscode = acquireVsCodeApi();
+    // Safe acquire: VS Code only allows acquireVsCodeApi() once per webview.
+    // Reuse stored instance on window to avoid "already acquired" errors.
+    function getVsCodeApi() {
+        // @ts-expect-error - global on webview
+        if (window.__vscode_api) return window.__vscode_api;
+        try {
+            // @ts-expect-error - acquireVsCodeApi provided by VS Code
+            window.__vscode_api = acquireVsCodeApi();
+        }
+        catch (e) {
+            // If a previous script acquired it, it should be on window.__vscode_api
+        }
+        return window.__vscode_api;
+    }
+
+    const vscode = getVsCodeApi();
 
     const stepCheckboxes = document.querySelectorAll('.step-item input[type="checkbox"]');
 
@@ -12,12 +26,12 @@
         proceedBtn.addEventListener('click', () => {
             const planEl = document.getElementById('plan-content');
             const planContent = planEl ? decodeURIComponent(planEl.getAttribute('data-raw') || '') : '';
-            
+
             vscode.postMessage({
                 type: 'executePlan',
                 plan: planContent
             });
-            
+
             // Visual feedback
             proceedBtn.textContent = '▶ Executing...';
             proceedBtn.setAttribute('disabled', 'true');

@@ -43,11 +43,11 @@ test('message handler injects theme CSS into webview DOM', () => {
     'export function createMessageHandler(dispatch',
   );
 
-  assert.match(handlerBody, /case\s*[["']"]injectThemeCss[["']"]\s*:/, 'message handler should handle injectThemeCss');
+  assert.match(handlerBody, /case\s*["']injectThemeCss["']\s*:/, 'message handler should handle injectThemeCss');
   assert.match(handlerBody, /asString\(data\.css\)/, 'should extract CSS from message data.css');
-  assert.match(handlerBody, /getElementById\(["["']]vscode-theme-icons["["']]\)/, 'should look for existing theme style tag');
-  assert.match(handlerBody, /createElement\(["["']]style["["']]\)/, 'should create style element');
-  assert.match(handlerBody, /styleTag\.id\s*=\s*["["']]vscode-theme-icons["["']]/, 'style element should have specific ID vscode-theme-icons');
+  assert.match(handlerBody, /getElementById\(["']vscode-theme-icons["']\)/, 'should look for existing theme style tag');
+  assert.match(handlerBody, /createElement\(["']style["']\)/, 'should create style element');
+  assert.match(handlerBody, /styleTag\.id\s*=\s*["']vscode-theme-icons["']/, 'style element should have specific ID vscode-theme-icons');
 });
 
 test('FileIcon component applies correct theme CSS classes', () => {

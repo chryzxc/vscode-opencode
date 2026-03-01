@@ -1,17 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
-  Copy,
+  Check,
   ChevronDown,
   ChevronUp,
   History,
+  Loader2,
   Play,
   RefreshCw,
   Send,
   Square,
   X,
   Zap,
-} from 'lucide-react';
+  ArrowLeft,
+  ArrowRight,
+} from "lucide-react";
+
+import { MarkdownRenderer } from "../components/MarkdownRenderer";
 
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -19,43 +24,18 @@ import { Badge } from '@/components/ui/badge';
 
 import { useAppDispatch, useAppState } from './lib/store';
 import vscode from './lib/vscode';
-import { jumpToMessage } from './lib/messageJump';
 import type {
   Message,
-  InteractiveEvent,
-  SubagentDetail,
-  SubagentSummary,
   ThinkingLevel,
+  TodoItem,
 } from './lib/types';
 
 import { FileIcon } from './MessageComponents';
 
-function totalTokens(
-  input: number,
-  output: number,
-  read: number,
-  write: number,
-): number {
-  return input + output + read + write;
+function totalTokens(i: number, o: number, r: number, w: number): number {
+  return (i || 0) + (o || 0) + (r || 0) + (w || 0);
 }
 
-function formatDurationMs(ms?: number): string {
-  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
-    return 'n/a';
-  }
-  if (ms >= 1000) {
-    return `${(ms / 1000).toFixed(1)}s`;
-  }
-  return `${Math.round(ms)}ms`;
-}
-
-function subagentStatusClass(status: SubagentSummary['status']): string {
-  if (status === 'done') return 'text-oc-green';
-  if (status === 'error') return 'text-oc-red';
-  if (status === 'running') return 'text-oc-accent';
-  if (status === 'orphaned') return 'text-oc-yellow';
-  return 'text-oc-text-muted';
-}
 
 export function StickyHeader() {
   const {
@@ -112,24 +92,24 @@ export function StickyHeader() {
           <span className="opacity-70 text-oc-2xs uppercase tracking-wider">
             Tokens
           </span>
-          <span className="font-semibold tabular-nums text-oc-text-soft">
+          <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
             {(sessionStats.input + sessionStats.output || 0).toLocaleString()}
           </span>
         </div>
         <div className="flex items-center gap-1 text-oc-2xs opacity-80">
-          <span className="text-oc-text-soft">{sessionStats.input}i</span>
+          <span className="text-[var(--oc-text-soft)]">{sessionStats.input}i</span>
           <span className="opacity-30">·</span>
-          <span className="text-oc-text-soft">{sessionStats.output}o</span>
+          <span className="text-[var(--oc-text-soft)]">{sessionStats.output}o</span>
           {sessionStats.read > 0 && (
             <>
               <span className="opacity-30">·</span>
-              <span className="text-oc-text-soft">{sessionStats.read}r</span>
+              <span className="text-[var(--oc-text-soft)]">{sessionStats.read}r</span>
             </>
           )}
           {sessionStats.write > 0 && (
             <>
               <span className="opacity-30">·</span>
-              <span className="text-oc-text-soft">{sessionStats.write}w</span>
+              <span className="text-[var(--oc-text-soft)]">{sessionStats.write}w</span>
             </>
           )}
         </div>
@@ -137,7 +117,7 @@ export function StickyHeader() {
 
       <div className="oc-header-right ml-auto flex items-center gap-1.5">
         <span className="oc-task-pill">TASK</span>
-        <span className="oc-task-name text-oc-xs text-oc-text-soft opacity-80">
+        <span className="oc-task-name text-oc-xs text-[var(--oc-text-soft)] opacity-80">
           {taskName}
         </span>
         <span
@@ -151,7 +131,7 @@ export function StickyHeader() {
         >
           {taskStatus}
         </span>
-        <span className="oc-duration text-oc-text-soft opacity-70">
+        <span className="oc-duration text-[var(--oc-text-soft)] opacity-70">
           {durationLabel}
         </span>
       </div>
@@ -222,14 +202,16 @@ export function HistorySidebar() {
         </Button>
       </div>
       <div className="h-[calc(100%-88px)] overflow-y-auto p-2">
-        {sessionsList.length === 0 ? (
+        {sessionsList.filter(s => !s.parentSessionId).length === 0 ? (
           <div className="p-4 text-center text-xs text-oc-text-muted opacity-70">
             No sessions yet.
             <br />
             Start a new chat to get going.
           </div>
         ) : (
-          sessionsList.map((session) => {
+            sessionsList
+              .filter(s => !s.parentSessionId)
+              .map((session) => {
             const isActive = session.id === currentSessionId;
             return (
               <div
@@ -259,7 +241,7 @@ export function HistorySidebar() {
                     )}
                     <div
                       className={`truncate font-medium ${
-                        isActive ? 'text-oc-text' : 'text-oc-text-soft'
+                        isActive ? 'text-oc-text' : 'text-[var(--oc-text-soft)]'
                       }`}
                     >
                       {session.title || 'Untitled chat'}
@@ -323,7 +305,7 @@ function MiniSection({
         />
         <span
           className={`font-mono text-oc-2xs uppercase tracking-widest font-semibold ${
-            open ? 'text-oc-text-soft' : 'text-oc-text-soft opacity-70'
+            open ? 'text-[var(--oc-text-soft)]' : 'text-[var(--oc-text-soft)] opacity-70'
           }`}
         >
           {title}
@@ -333,7 +315,7 @@ function MiniSection({
             open ? 'rotate-0' : '-rotate-90'
           }`}
         >
-          <ChevronDown className="h-3 w-3 text-oc-text-soft opacity-70" />
+          <ChevronDown className="h-3 w-3 text-[var(--oc-text-soft)] opacity-70" />
         </span>
       </Button>
       {open && (
@@ -350,8 +332,9 @@ function useMiniSectionState(def: boolean) {
 
 // ─── ActiveTaskPanel ──────────────────────────────────────────────────────────
 export function ActiveTaskPanel() {
-  const { sessionStats, streaming, messages, currentSessionId, sessionsList } =
+  const { sessionStats, streaming, messages, currentSessionId, sessionsList, todoItems } =
     useAppState();
+  const progressListRef = useRef<HTMLDivElement>(null);
 
   const total = totalTokens(
     sessionStats.input,
@@ -374,6 +357,60 @@ export function ActiveTaskPanel() {
     ? new Date(currentSession.createdAt).toLocaleString()
     : '—';
 
+  // Derive live progress steps from streaming state.
+  // Exclude reasoning-type steps and "thinking" title rows (same logic as MessageComponents).
+  const liveProgressSteps = useMemo(() => {
+    const source =
+      Array.isArray(streaming?.progressEvents) && streaming.progressEvents.length > 0
+        ? streaming.progressEvents
+        : Array.isArray(streaming?.steps)
+          ? streaming.steps
+          : [];
+    const seen = new Set<string>();
+    return source.filter((step) => {
+      const type = (step.type ?? '').toLowerCase();
+      if (type === 'reasoning') return false;
+      const title = step.title.trim().toLowerCase();
+      if (title === 'thinking...' || title === 'thinking') return false;
+      const key = `${step.title}-${step.status ?? 'pending'}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [streaming?.progressEvents, streaming?.steps]);
+
+  // Latest reasoning snippet shown when the AI is thinking but no steps have arrived yet.
+  const latestReasoningSnippet = useMemo(() => {
+    if (!streaming?.isActive) return '';
+    const events = streaming.reasoningEvents;
+    if (!Array.isArray(events) || events.length === 0) return '';
+    const last = events[events.length - 1]?.text ?? '';
+    return last.slice(0, 80);
+  }, [streaming?.isActive, streaming?.reasoningEvents]);
+
+  // Auto-scroll the progress list to the bottom when new steps arrive.
+  useEffect(() => {
+    if (progressListRef.current) {
+      progressListRef.current.scrollTop = progressListRef.current.scrollHeight;
+    }
+  }, [liveProgressSteps.length]);
+
+  // Session-scoped todos (only items belonging to the active session).
+  const sessionTodos = useMemo(() => {
+    if (!currentSessionId || !Array.isArray(todoItems)) return [] as TodoItem[];
+    return todoItems.filter((t) => t.sessionId === currentSessionId);
+  }, [todoItems, currentSessionId]);
+
+  const todoStatusIcon = (status?: string) => {
+    switch (status) {
+      case 'pending': return '⏳';
+      case 'in_progress': return '🔄';
+      case 'completed': return '✅';
+      case 'cancelled': return '❌';
+      default: return '•';
+    }
+  };
+
   return (
     <div className="oc-active-task-panel flex flex-col w-full bg-oc-bg-soft">
       {/* Panel title */}
@@ -389,12 +426,86 @@ export function ActiveTaskPanel() {
       </div>
 
       <div className="p-2">
+        {/* ── Progress Updates: shown only while streaming is active ── */}
+        {isActive && (
+          <MiniSection title="Progress Updates">
+            {liveProgressSteps.length === 0 ? (
+              <div className="flex items-center gap-1.5 py-0.5 text-oc-xs text-oc-text-muted opacity-70">
+                <span
+                  className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
+                  style={{ animationDelay: '0ms' }}
+                />
+                <span className="truncate">
+                  {latestReasoningSnippet ? latestReasoningSnippet : 'Thinking…'}
+                </span>
+              </div>
+            ) : (
+              <div
+                ref={progressListRef}
+                className="space-y-0.5 max-h-[200px] overflow-y-auto pr-1"
+              >
+                {liveProgressSteps.map((step, idx) => (
+                  <div
+                    // biome-ignore lint/suspicious/noArrayIndexKey: steps are append-only during a stream
+                    key={`progress-${idx}-${step.title}`}
+                    className="flex items-start gap-1.5 py-0.5 text-oc-xs"
+                  >
+                    <span className="mt-px shrink-0">
+                      {step.status === 'pending' ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
+                      ) : step.status === 'error' ? (
+                        <X className="h-3 w-3 text-oc-red" />
+                      ) : (
+                        <Check className="h-3 w-3 text-oc-green opacity-70" />
+                      )}
+                    </span>
+                    <span
+                      className={`min-w-0 flex-1 leading-relaxed truncate ${step.status === 'pending'
+                        ? 'text-oc-text'
+                        : 'text-[var(--oc-text-soft)] opacity-80'
+                        }`}
+                    >
+                      {step.title}
+                      {step.meta ? (
+                        <span className="ml-1 text-oc-text-muted opacity-60">
+                          {step.meta}
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </MiniSection>
+        )}
+
+        {/* ── Current Tasks: session-scoped todos from AI response ── */}
+        {sessionTodos.length > 0 && (
+          <MiniSection title="Current Tasks">
+            <div className="space-y-1.5">
+              {sessionTodos.map((t) => (
+                <div
+                  key={t.id}
+                  className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-panel-soft p-2"
+                >
+                  <div className="text-[14px] leading-none mt-0.5 shrink-0">
+                    {todoStatusIcon(t.status)}
+                  </div>
+                  <div className="text-oc-xs text-[var(--oc-text-soft)] leading-relaxed">
+                    {(t as any).description ?? t.text ?? 'Untitled'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </MiniSection>
+        )}
+
         <MiniSection title="Context">
           {/* Token usage bar */}
           <div className="mb-3">
             <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-oc-xs text-oc-text-soft">Tokens used</span>
-              <span className="font-mono tabular-nums text-oc-xs text-oc-text-soft">
+              <span className="text-oc-xs text-[var(--oc-text-soft)]">Tokens used</span>
+              <span className="font-mono tabular-nums text-oc-xs text-[var(--oc-text-soft)]">
                 {total.toLocaleString()} / {maxContext.toLocaleString()}
               </span>
             </div>
@@ -416,26 +527,26 @@ export function ActiveTaskPanel() {
           {/* 2-col token grid */}
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-oc-xs">
             <div className="flex items-center justify-between">
-              <span className="text-oc-text-soft opacity-80">In</span>
-              <span className="font-mono tabular-nums text-oc-text-soft">
+              <span className="text-[var(--oc-text-soft)] opacity-80">In</span>
+              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {sessionStats.input.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-oc-text-soft opacity-80">Out</span>
-              <span className="font-mono tabular-nums text-oc-text-soft">
+              <span className="text-[var(--oc-text-soft)] opacity-80">Out</span>
+              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {sessionStats.output.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-oc-text-soft opacity-80">Cache R</span>
-              <span className="font-mono tabular-nums text-oc-text-soft">
+              <span className="text-[var(--oc-text-soft)] opacity-80">Cache R</span>
+              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {sessionStats.read.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-oc-text-soft opacity-80">Cache W</span>
-              <span className="font-mono tabular-nums text-oc-text-soft">
+              <span className="text-[var(--oc-text-soft)] opacity-80">Cache W</span>
+              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {sessionStats.write.toLocaleString()}
               </span>
             </div>
@@ -445,32 +556,32 @@ export function ActiveTaskPanel() {
         <MiniSection title="Session">
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-oc-xs">
             <div className="flex items-center justify-between col-span-2">
-              <span className="text-oc-text-soft opacity-80">ID</span>
-              <span className="font-mono text-oc-2xs text-oc-text-soft opacity-70">
+              <span className="text-[var(--oc-text-soft)] opacity-80">ID</span>
+              <span className="font-mono text-oc-2xs text-[var(--oc-text-soft)] opacity-70">
                 {currentSessionId ? currentSessionId.slice(0, 16) : '—'}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-oc-text-soft opacity-80">Messages</span>
-              <span className="font-mono tabular-nums text-oc-text-soft">
+              <span className="text-[var(--oc-text-soft)] opacity-80">Messages</span>
+              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {messageCount}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-oc-text-soft opacity-80">Date started</span>
+              <span className="text-[var(--oc-text-soft)] opacity-80">Date started</span>
               <span
                 className={`font-mono tabular-nums ${
-                  isActive ? 'text-oc-accent' : 'text-oc-text-soft'
+                  isActive ? 'text-oc-accent' : 'text-[var(--oc-text-soft)]'
                 }`}
               >
                 {startedLabel}
               </span>
             </div>
             <div className="flex items-center justify-between col-span-2">
-              <span className="text-oc-text-soft opacity-80">Status</span>
+              <span className="text-[var(--oc-text-soft)] opacity-80">Status</span>
               <span
                 className={`font-mono text-oc-2xs uppercase tracking-wider font-semibold ${
-                  isActive ? 'text-oc-accent' : 'text-oc-text-soft opacity-70'
+                  isActive ? 'text-oc-accent' : 'text-[var(--oc-text-soft)] opacity-70'
                 }`}
               >
                 {isActive ? 'ACTIVE' : 'IDLE'}
@@ -483,260 +594,7 @@ export function ActiveTaskPanel() {
   );
 }
 
-export function SubagentsPanel() {
-  const {
-    subagentsByParentMessageId,
-    subagentDetailsById,
-    selectedSubagentId,
-    subagentsPanelOpen,
-  } = useAppState();
-  const dispatch = useAppDispatch();
 
-  const grouped = useMemo(() => {
-    const entries = Object.entries(subagentsByParentMessageId)
-      .filter(([, items]) => Array.isArray(items) && items.length > 0)
-      .map(([parentMessageId, items]) => {
-        const sorted = [...items].sort(
-          (a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0),
-        );
-        const latest = sorted[0];
-        return {
-          parentMessageId,
-          latestAt: latest?.startedAt ?? latest?.endedAt ?? 0,
-          items: sorted,
-        };
-      })
-      .sort((a, b) => b.latestAt - a.latestAt);
-    return entries;
-  }, [subagentsByParentMessageId]);
-
-  const selectedDetail = selectedSubagentId
-    ? subagentDetailsById[selectedSubagentId]
-    : null;
-
-  if (grouped.length === 0 && !selectedDetail) {
-    return null;
-  }
-
-  const selectSubagent = (subagentId: string) => {
-    dispatch({ type: 'SELECT_SUBAGENT', payload: subagentId });
-    dispatch({ type: 'SET_SUBAGENTS_PANEL_OPEN', payload: true });
-  };
-
-  const copyRefs = async (detail: SubagentDetail) => {
-    const refs = [
-      `parentSessionID=${detail.parentSessionId}`,
-      `parentMessageID=${detail.parentMessageId}`,
-      detail.childSessionId ? `childSessionID=${detail.childSessionId}` : null,
-      ...detail.references.map((ref, index) => {
-        const parts = [
-          ref.messageID ? `messageID=${ref.messageID}` : null,
-          ref.partID ? `partID=${ref.partID}` : null,
-          ref.callID ? `callID=${ref.callID}` : null,
-        ].filter(Boolean);
-        return parts.length > 0 ? `ref${index + 1}: ${parts.join(' ')}` : null;
-      }),
-    ]
-      .filter((item): item is string => !!item)
-      .join('\n');
-
-    await navigator.clipboard.writeText(refs);
-  };
-
-  return (
-    <div className="oc-subagents-panel border-t border-oc-border p-3 text-xs">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="oc-panel-title">Subagents</div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label={
-            subagentsPanelOpen
-              ? 'Collapse subagents panel'
-              : 'Expand subagents panel'
-          }
-          onClick={() =>
-            dispatch({
-              type: 'SET_SUBAGENTS_PANEL_OPEN',
-              payload: !subagentsPanelOpen,
-            })
-          }
-          className="flex items-center gap-1 text-oc-2xs text-oc-text-muted hover:text-oc-accent transition-colors"
-        >
-          {subagentsPanelOpen ? (
-            <ChevronDown className="h-3 w-3" />
-          ) : (
-            <ChevronUp className="h-3 w-3" />
-          )}
-        </Button>
-      </div>
-
-      {subagentsPanelOpen ? (
-        <div className="space-y-2">
-          {grouped.map((group) => (
-            <div
-              key={group.parentMessageId}
-              className="rounded-md border border-oc-border bg-oc-panel-soft p-2"
-            >
-              <button
-                type="button"
-                className="mb-2 text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
-                onClick={() => jumpToMessage(group.parentMessageId)}
-              >
-                parent: {group.parentMessageId}
-              </button>
-              <div className="space-y-1.5">
-                {group.items.map((subagent) => (
-                  <button
-                    key={subagent.id}
-                    type="button"
-                    className={`w-full rounded-md border px-2 py-1.5 text-left text-oc-xs transition-colors ${
-                      selectedSubagentId === subagent.id
-                        ? 'border-oc-accent bg-oc-accent-soft'
-                        : 'border-oc-border hover:bg-oc-accent-soft'
-                    }`}
-                    onClick={() => selectSubagent(subagent.id)}
-                  >
-                    <div className="mb-0.5 flex items-center justify-between gap-2">
-                      <span
-                        className={`font-mono uppercase tracking-wider ${subagentStatusClass(
-                          subagent.status,
-                        )}`}
-                      >
-                        {subagent.status}
-                      </span>
-                      <span className="font-mono text-oc-2xs text-oc-text-muted">
-                        {formatDurationMs(subagent.durationMs)}
-                      </span>
-                    </div>
-                    <div className="truncate text-oc-text-soft">
-                      {subagent.agentId || 'subagent'}{' '}
-                      {subagent.providerID && subagent.modelID
-                        ? `- ${subagent.providerID}/${subagent.modelID}`
-                        : ''}
-                    </div>
-                    <div className="truncate text-oc-2xs text-oc-text-muted">
-                      {subagent.latestActivity}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-
-          {selectedDetail ? (
-            <div className="rounded-md border border-oc-border bg-oc-panel p-2.5">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="text-oc-xs font-semibold text-oc-text-soft">
-                  {selectedDetail.agentId || 'subagent'}
-                </div>
-                <span
-                  className={`font-mono text-oc-2xs uppercase ${subagentStatusClass(
-                    selectedDetail.status,
-                  )}`}
-                >
-                  {selectedDetail.status}
-                </span>
-              </div>
-              <div className="space-y-1 text-oc-2xs text-oc-text-muted">
-                <div>
-                  model:{' '}
-                  {selectedDetail.providerID && selectedDetail.modelID
-                    ? `${selectedDetail.providerID}/${selectedDetail.modelID}`
-                    : 'n/a'}
-                </div>
-                <div>
-                  duration: {formatDurationMs(selectedDetail.durationMs)}
-                </div>
-                <div>
-                  child session: {selectedDetail.childSessionId || 'n/a'}
-                </div>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className="text-oc-2xs font-mono text-oc-accent hover:underline"
-                  onClick={() => jumpToMessage(selectedDetail.parentMessageId)}
-                >
-                  Jump to parent message
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
-                  onClick={() => copyRefs(selectedDetail)}
-                >
-                  <Copy className="h-3 w-3" />
-                  Copy refs
-                </button>
-              </div>
-
-              {selectedDetail.thinkingEvents.length > 0 ? (
-                <details className="mt-2" open={false}>
-                  <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted">
-                    Thinking ({selectedDetail.thinkingEvents.length})
-                  </summary>
-                  <div className="mt-1 max-h-44 space-y-1 overflow-y-auto pr-1">
-                    {selectedDetail.thinkingEvents.map((event) => (
-                      <div
-                        key={event.id}
-                        className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1 text-oc-2xs text-oc-text-muted"
-                      >
-                        {event.text}
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              ) : null}
-
-              {selectedDetail.progressEvents.length > 0 ? (
-                <details className="mt-2" open={false}>
-                  <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted">
-                    Progress ({selectedDetail.progressEvents.length})
-                  </summary>
-                  <div className="mt-1 max-h-44 space-y-1 overflow-y-auto pr-1">
-                    {selectedDetail.progressEvents.map((event) => (
-                      <div
-                        key={event.id}
-                        className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1 text-oc-2xs"
-                      >
-                        <div className="text-oc-text-soft">{event.title}</div>
-                        {event.meta ? (
-                          <div className="text-oc-text-muted">{event.meta}</div>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              ) : null}
-
-              {selectedDetail.timelineEvents.length > 0 ? (
-                <details className="mt-2" open={true}>
-                  <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted">
-                    Timeline ({selectedDetail.timelineEvents.length})
-                  </summary>
-                  <div className="mt-1 max-h-44 space-y-1 overflow-y-auto pr-1">
-                    {selectedDetail.timelineEvents.map((event) => (
-                      <div
-                        key={event.key}
-                        className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1 text-oc-2xs"
-                      >
-                        <div className="text-oc-text-soft">{event.label}</div>
-                        <div className="font-mono text-oc-text-muted">
-                          {new Date(event.createdAt).toLocaleTimeString()}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 export function MobileRightSummary() {
   const { sessionStats, isProcessing } = useAppState();
@@ -746,12 +604,12 @@ export function MobileRightSummary() {
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 font-mono text-oc-xs">
           <span className="text-oc-text-muted">In</span>
-          <span className="tabular-nums text-oc-text-soft">
+          <span className="tabular-nums text-[var(--oc-text-soft)]">
             {sessionStats.input.toLocaleString()}
           </span>
           <span className="opacity-30">/</span>
           <span className="text-oc-text-muted">Out</span>
-          <span className="tabular-nums text-oc-text-soft">
+          <span className="tabular-nums text-[var(--oc-text-soft)]">
             {sessionStats.output.toLocaleString()}
           </span>
         </div>
@@ -778,7 +636,7 @@ export function ModelDropdown() {
   } = useAppState();
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
-  const [selectedTab, setSelectedTab] = useState('All');
+  const [selectedTab, setSelectedTab] = useState("All");
 
   // Close on outside click
   useEffect(() => {
@@ -798,7 +656,7 @@ export function ModelDropdown() {
   // Reset tab when dropdown closes
   useEffect(() => {
     if (!modelDropdownOpen) {
-      setSelectedTab('All');
+      setSelectedTab("All");
     }
   }, [modelDropdownOpen]);
 
@@ -813,7 +671,7 @@ export function ModelDropdown() {
         if (key === 'copilot') return 'GitHub Copilot';
 
         // Skip opencode platform in mapped providers since we have a dedicated persistent tab
-        if (key.includes('opencode')) return null;
+        if (key.includes("opencode")) return null;
 
         // Fallback to title or platform name for other subscriptions (e.g. "Z.ai Coding Plan")
         return p.title?.replace(' Account Quota', '') ?? p.platform;
@@ -839,7 +697,7 @@ export function ModelDropdown() {
 
         if (!matchesQuery) return false;
 
-        if (selectedTab !== 'All') {
+        if (selectedTab !== "All") {
           if (selectedTab === 'OpenCode Free') {
             return model.providerID === 'opencode';
           }
@@ -1166,7 +1024,7 @@ export function QueueContainer() {
                   {index + 1}.
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="line-clamp-2 font-mono text-[11px] text-oc-text-soft">
+                  <div className="line-clamp-2 font-mono text-[11px] text-[var(--oc-text-soft)]">
                     {item.text || '(empty)'}
                   </div>
                 </div>
@@ -1224,213 +1082,11 @@ export function QueueContainer() {
   );
 }
 
-function renderInlineCodeText(text: string, keyPrefix: string) {
-  if (!text.includes('`')) {
-    return <span className="whitespace-pre-wrap">{text}</span>;
-  }
 
-  const nodes: JSX.Element[] = [];
-  let cursor = 0;
-  let segmentIndex = 0;
-  while (cursor < text.length) {
-    const open = text.indexOf('`', cursor);
-    if (open === -1) {
-      const plain = text.slice(cursor);
-      if (plain) {
-        nodes.push(
-          <span
-            key={`${keyPrefix}-t-${segmentIndex++}`}
-            className="whitespace-pre-wrap"
-          >
-            {plain}
-          </span>,
-        );
-      }
-      break;
-    }
 
-    const close = text.indexOf('`', open + 1);
-    if (close === -1) {
-      const plain = text.slice(cursor);
-      if (plain) {
-        nodes.push(
-          <span
-            key={`${keyPrefix}-t-${segmentIndex++}`}
-            className="whitespace-pre-wrap"
-          >
-            {plain}
-          </span>,
-        );
-      }
-      break;
-    }
 
-    if (open > cursor) {
-      nodes.push(
-        <span
-          key={`${keyPrefix}-t-${segmentIndex++}`}
-          className="whitespace-pre-wrap"
-        >
-          {text.slice(cursor, open)}
-        </span>,
-      );
-    }
-    const code = text.slice(open + 1, close);
-    nodes.push(
-      <code
-        key={`${keyPrefix}-c-${segmentIndex++}`}
-        className="rounded bg-[var(--oc-bg)] px-1 py-[1px] font-mono text-[10px] text-[var(--oc-text-soft)]"
-      >
-        {code}
-      </code>,
-    );
-    cursor = close + 1;
-  }
 
-  return <>{nodes}</>;
-}
 
-function renderCodeAwareText(text: string, keyPrefix: string) {
-  if (!text.includes('```')) {
-    return renderInlineCodeText(text, keyPrefix);
-  }
-
-  const nodes: JSX.Element[] = [];
-  const blockPattern = /```([a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g;
-  let lastIndex = 0;
-  let blockIndex = 0;
-  let match: RegExpExecArray | null = null;
-
-  while ((match = blockPattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      const plain = text.slice(lastIndex, match.index);
-      nodes.push(
-        <span
-          key={`${keyPrefix}-plain-${blockIndex}`}
-          className="whitespace-pre-wrap"
-        >
-          {renderInlineCodeText(
-            plain,
-            `${keyPrefix}-plain-inline-${blockIndex}`,
-          )}
-        </span>,
-      );
-    }
-
-    const language = (match[1] || '').trim();
-    const code = (match[2] || '').replace(/\n$/, '');
-    nodes.push(
-      <div key={`${keyPrefix}-block-${blockIndex}`} className="my-1">
-        {language ? (
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-[var(--oc-text-muted)]">
-            {language}
-          </div>
-        ) : null}
-        <pre className="overflow-x-auto rounded-md border border-[var(--oc-border)] bg-[var(--oc-bg)] px-2 py-1.5 font-mono text-[11px] leading-snug text-[var(--oc-text-soft)]">
-          <code>{code}</code>
-        </pre>
-      </div>,
-    );
-
-    lastIndex = match.index + match[0].length;
-    blockIndex += 1;
-  }
-
-  if (lastIndex < text.length) {
-    const tail = text.slice(lastIndex);
-    nodes.push(
-      <span key={`${keyPrefix}-tail`} className="whitespace-pre-wrap">
-        {renderInlineCodeText(tail, `${keyPrefix}-tail-inline`)}
-      </span>,
-    );
-  }
-
-  return <>{nodes}</>;
-}
-
-function extractLatestAssistantMessageText(messages: Message[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const msg = messages[index];
-    const role = msg.role || msg.info?.role;
-    if (role !== 'assistant') {
-      continue;
-    }
-    if (typeof msg.content === 'string' && msg.content.trim()) {
-      return msg.content;
-    }
-    if (typeof msg.text === 'string' && msg.text.trim()) {
-      return msg.text;
-    }
-    if (Array.isArray(msg.parts)) {
-      const textPart = msg.parts.find(
-        (part) =>
-          part &&
-          typeof part === 'object' &&
-          (part.type === 'text' || typeof part.text === 'string'),
-      );
-      const partText = (textPart?.text || textPart?.content || '').toString();
-      if (partText.trim()) {
-        return partText;
-      }
-    }
-  }
-  return '';
-}
-
-function normalizeCompareText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/[`*_~]/g, '')
-    .trim();
-}
-
-function isAutoDetectedInteractiveEvent(event: InteractiveEvent): boolean {
-  return (
-    event.id.startsWith('auto-question-') ||
-    event.id.startsWith('auto-confirm-') ||
-    event.id.startsWith('auto-quick-')
-  );
-}
-
-function isRedundantInteractiveEvent(
-  event: InteractiveEvent,
-  messages: Message[],
-): boolean {
-  if (!isAutoDetectedInteractiveEvent(event)) {
-    return false;
-  }
-
-  const assistantText = normalizeCompareText(
-    extractLatestAssistantMessageText(messages),
-  );
-  if (!assistantText) {
-    return false;
-  }
-
-  if (event.type === 'question' || event.type === 'confirm') {
-    const question = normalizeCompareText(event.question);
-    if (!question || !assistantText.includes(question)) {
-      return false;
-    }
-    if (event.type === 'confirm') {
-      return true;
-    }
-    const matchingOptions = event.options.filter((option) =>
-      assistantText.includes(normalizeCompareText(option.label)),
-    ).length;
-    return matchingOptions >= Math.min(2, event.options.length);
-  }
-
-  if (event.type === 'quick_actions') {
-    const matchingActions = event.actions.filter((action) =>
-      assistantText.includes(normalizeCompareText(action.label)),
-    ).length;
-    return matchingActions >= Math.min(2, event.actions.length);
-  }
-
-  return false;
-}
 
 export function InputWrapper() {
   const {
@@ -1450,10 +1106,34 @@ export function InputWrapper() {
   } = useAppState();
   const dispatch = useAppDispatch();
 
-  const displayInteractiveEvent =
-    interactiveEvents.find(
-      (event) => !isRedundantInteractiveEvent(event, messages),
-    ) || null;
+  const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
+  const [isCustomMode, setIsCustomMode] = useState(false);
+  const [customValue, setCustomValue] = useState('');
+
+  // Centralized Interactive Event Handler
+  // By design, ALL interactive choices (whether explicitly sent by the server or
+  // auto-detected via regex from the AI's markdown response) are rendered here
+  // as a popup above the chatbox. This provides a consistent, clear place for
+  // user required actions (questions, confirmations, quick actions).
+  //
+  // Even if the AI types the question in the chat bubble, we show the popup
+  // here to make the call-to-action obvious and clickable.
+  const displayInteractiveEvents = interactiveEvents;
+
+  // Reset index and custom mode when interactive events change
+  useEffect(() => {
+    setCurrentInteractiveIndex(0);
+    setIsCustomMode(false);
+    setCustomValue('');
+  }, [displayInteractiveEvents.length]);
+
+  const activeInteractiveEvent = displayInteractiveEvents[currentInteractiveIndex];
+  const event = activeInteractiveEvent;
+
+  const capitalizeFirst = (str: string) => {
+    if (!str) return str;
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  };
 
   const sendPrompt = () => {
     const text = inputValue.trim();
@@ -1523,12 +1203,8 @@ export function InputWrapper() {
           /* ignore */
         }
       };
-      reader.readAsDataURL(blob);
     }
   };
-
-  const stopRequest = () =>
-    vscode.postMessage({ type: 'stopRequest', sessionId: currentSessionId });
 
   const submitInteractiveResponse = (
     text: string,
@@ -1540,7 +1216,7 @@ export function InputWrapper() {
       return;
     }
     vscode.postMessage({
-      type: 'interactiveResponse',
+      type: "interactiveResponse",
       eventId,
       eventType,
       selection: {
@@ -1553,6 +1229,9 @@ export function InputWrapper() {
     dispatch({ type: 'DISMISS_INTERACTIVE_EVENT', payload: eventId });
   };
 
+  const stopRequest = () =>
+    vscode.postMessage({ type: 'stopRequest', sessionId: currentSessionId });
+
   return (
     <>
       <QueueContainer />
@@ -1560,127 +1239,202 @@ export function InputWrapper() {
         className="oc-input-area"
         style={promptQueue.length > 0 ? { borderTop: 'none' } : undefined}
       >
-        {displayInteractiveEvent ? (
+        {event && (
           <div className="mb-2 rounded-lg border border-[var(--oc-border)] bg-[var(--oc-panel-soft)] px-3 py-2">
-            <div className="mb-1.5 flex items-center justify-between gap-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-muted)]">
-                {displayInteractiveEvent.title || 'Quick Input'}
+            <div className="mb-2 flex items-center justify-between gap-2 border-b border-[var(--oc-border)] pb-1.5">
+              <div className="flex items-center gap-2">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-muted)]">
+                  {event.title || 'Quick Input'}
+                </div>
+                {displayInteractiveEvents.length > 1 && (
+                  <div className="flex items-center gap-1.5 ml-2 border-l border-[var(--oc-border)] pl-3">
+                    <button
+                      type="button"
+                      disabled={currentInteractiveIndex === 0}
+                      onClick={() => {
+                        setCurrentInteractiveIndex(i => i - 1);
+                        setIsCustomMode(false);
+                        setCustomValue('');
+                      }}
+                      className="text-[var(--oc-text-muted)] hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-[var(--oc-text-muted)] transition-colors"
+                      title="Previous"
+                    >
+                      <ArrowLeft className="h-3 w-3" />
+                    </button>
+                    <span className="text-[10px] font-mono text-[var(--oc-text-muted)] tabular-nums">
+                      {currentInteractiveIndex + 1} / {displayInteractiveEvents.length}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={currentInteractiveIndex === displayInteractiveEvents.length - 1}
+                      onClick={() => {
+                        setCurrentInteractiveIndex(i => i + 1);
+                        setIsCustomMode(false);
+                        setCustomValue('');
+                      }}
+                      className="text-[var(--oc-text-muted)] hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-[var(--oc-text-muted)] transition-colors"
+                      title="Next"
+                    >
+                      <ArrowRight className="h-3 w-3" />
+                    </button>
+                  </div>
+                )}
               </div>
-              <button
-                type="button"
-                className="rounded p-1 text-[var(--oc-text-muted)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
-                title="Dismiss"
-                onClick={() =>
-                  dispatch({
-                    type: 'DISMISS_INTERACTIVE_EVENT',
-                    payload: displayInteractiveEvent.id,
-                  })
-                }
-              >
-                <X className="h-3 w-3" />
-              </button>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  className="rounded p-1 text-[var(--oc-text-muted)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-colors"
+                  title="Dismiss This"
+                  onClick={() => {
+                    dispatch({
+                      type: 'DISMISS_INTERACTIVE_EVENT',
+                      payload: event.id,
+                    });
+                  }}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
-            <div className="mb-2 text-[12px] text-[var(--oc-text-soft)]">
-              {renderCodeAwareText(
-                displayInteractiveEvent.type === 'quick_actions'
-                  ? displayInteractiveEvent.title || 'Select an action'
-                  : displayInteractiveEvent.question,
-                `interactive-question-${displayInteractiveEvent.id}`,
+
+            <div className="relative">
+              <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
+                <MarkdownRenderer
+                  content={
+                    event.type === 'quick_actions'
+                      ? event.title || 'Select an action'
+                      : event.question
+                  }
+                />
+              </div>
+
+              {isCustomMode ? (
+                <div className="flex flex-col gap-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                  <input
+                    type="text"
+                    autoFocus
+                    className="w-full bg-oc-panel border border-oc-border rounded px-2 py-1.5 text-xs text-oc-text outline-none focus:border-oc-accent transition-colors"
+                    placeholder="Type your answer..."
+                    value={customValue}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        submitInteractiveResponse(customValue, event.id, event.type);
+                      } else if (e.key === 'Escape') {
+                        setIsCustomMode(false);
+                        setCustomValue('');
+                      }
+                    }}
+                    onChange={(e) => setCustomValue(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      className="flex-1 rounded-md bg-oc-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-oc-accent/90 transition-colors"
+                      onClick={() => submitInteractiveResponse(customValue, event.id, event.type)}
+                    >
+                      Submit
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md border border-oc-border bg-oc-panel px-3 py-1.5 text-xs font-medium text-[var(--oc-text-soft)] hover:bg-oc-panel-hover transition-colors"
+                      onClick={() => {
+                        setIsCustomMode(false);
+                        setCustomValue('');
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {event.type === 'question' ? (
+                    <div className="flex flex-wrap gap-2">
+                      {event.options.map((option, index) => (
+                        <button
+                          key={`${event.id}-q-${option.id || option.value || index}`}
+                          type="button"
+                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                          title={option.description || option.label}
+                          onClick={() =>
+                            submitInteractiveResponse(
+                              option.value || option.label,
+                              event.id,
+                              event.type,
+                            )
+                          }
+                        >
+                          {capitalizeFirst(option.label)}
+                        </button>
+                      ))}
+                        <button
+                          type="button"
+                          className="rounded-md border border-dashed border-[var(--oc-border)] bg-transparent px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-muted)] hover:border-[var(--oc-accent)] hover:text-[var(--oc-accent)] transition-all"
+                          onClick={() => setIsCustomMode(true)}
+                        >
+                          Custom Answer...
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {event.type === 'confirm' ? (
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                          onClick={() =>
+                            submitInteractiveResponse(
+                              event.confirmLabel || 'Yes',
+                              event.id,
+                              event.type,
+                            )
+                          }
+                        >
+                          {capitalizeFirst(event.confirmLabel || 'Yes')}
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-muted)] hover:border-[var(--oc-border-strong)] hover:text-[var(--oc-text-soft)] transition-all"
+                          onClick={() =>
+                            submitInteractiveResponse(
+                              event.cancelLabel || 'No',
+                              event.id,
+                              event.type,
+                            )
+                          }
+                        >
+                          {capitalizeFirst(event.cancelLabel || 'No')}
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {event.type === 'quick_actions' ? (
+                      <div className="flex flex-wrap gap-2">
+                        {event.actions.map((action, index) => (
+                          <button
+                            key={`${event.id}-a-${action.id || action.value || index}`}
+                            type="button"
+                            className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                            title={action.description || action.label}
+                            onClick={() =>
+                              submitInteractiveResponse(
+                                action.value || action.label,
+                                event.id,
+                                event.type,
+                              )
+                            }
+                          >
+                            {capitalizeFirst(action.label)}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                </>
               )}
             </div>
-
-            {displayInteractiveEvent.type === 'question' ? (
-              <div className="flex flex-wrap gap-1.5">
-                {displayInteractiveEvent.options.map((option, index) => (
-                  <button
-                    key={`${displayInteractiveEvent.id}-q-${
-                      option.id || option.value || index
-                    }`}
-                    type="button"
-                    className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-soft)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
-                    title={option.description || option.label}
-                    onClick={() =>
-                      submitInteractiveResponse(
-                        option.value || option.label,
-                        displayInteractiveEvent.id,
-                        displayInteractiveEvent.type,
-                      )
-                    }
-                  >
-                    {renderInlineCodeText(
-                      option.label,
-                      `interactive-option-${displayInteractiveEvent.id}-${index}`,
-                    )}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-
-            {displayInteractiveEvent.type === 'confirm' ? (
-              <div className="flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-soft)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
-                  onClick={() =>
-                    submitInteractiveResponse(
-                      displayInteractiveEvent.confirmLabel || 'Yes',
-                      displayInteractiveEvent.id,
-                      displayInteractiveEvent.type,
-                    )
-                  }
-                >
-                  {renderInlineCodeText(
-                    displayInteractiveEvent.confirmLabel || 'Yes',
-                    `interactive-confirm-yes-${displayInteractiveEvent.id}`,
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-muted)] hover:text-[var(--oc-text-soft)]"
-                  onClick={() =>
-                    submitInteractiveResponse(
-                      displayInteractiveEvent.cancelLabel || 'No',
-                      displayInteractiveEvent.id,
-                      displayInteractiveEvent.type,
-                    )
-                  }
-                >
-                  {renderInlineCodeText(
-                    displayInteractiveEvent.cancelLabel || 'No',
-                    `interactive-confirm-no-${displayInteractiveEvent.id}`,
-                  )}
-                </button>
-              </div>
-            ) : null}
-
-            {displayInteractiveEvent.type === 'quick_actions' ? (
-              <div className="flex flex-wrap gap-1.5">
-                {displayInteractiveEvent.actions.map((action, index) => (
-                  <button
-                    key={`${displayInteractiveEvent.id}-a-${
-                      action.id || action.value || index
-                    }`}
-                    type="button"
-                    className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-soft)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
-                    title={action.description || action.label}
-                    onClick={() =>
-                      submitInteractiveResponse(
-                        action.value || action.label,
-                        displayInteractiveEvent.id,
-                        displayInteractiveEvent.type,
-                      )
-                    }
-                  >
-                    {renderInlineCodeText(
-                      action.label,
-                      `interactive-action-${displayInteractiveEvent.id}-${index}`,
-                    )}
-                  </button>
-                ))}
-              </div>
-            ) : null}
           </div>
-        ) : null}
+        )}
 
         {/* Context chips */}
         {(selectedFiles.length > 0 || selectedContexts.length > 0) && (
@@ -1689,7 +1443,7 @@ export function InputWrapper() {
               <Badge
                 key={file}
                 variant="secondary"
-                className="flex items-center gap-1 font-mono text-[10px] bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-oc-text-soft"
+                className="flex items-center gap-1 font-mono text-[10px] bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
               >
                 <FileIcon filePath={file} />
                 {file}
@@ -1699,7 +1453,7 @@ export function InputWrapper() {
               <Badge
                 key={`${context.file}:${context.lineInfo}`}
                 variant="secondary"
-                className="flex items-center gap-1 font-mono text-[10px] pr-1.5 bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-oc-text-soft"
+                className="flex items-center gap-1 font-mono text-[10px] pr-1.5 bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
               >
                 <FileIcon filePath={context.file} />
                 <span>
@@ -1998,13 +1752,9 @@ export function QuotaMonitor() {
             onClick={() => setOpen((v) => !v)}
             variant="ghost"
             size="icon"
-            className="flex items-center gap-1 text-oc-xs text-oc-text-soft opacity-80 hover:text-oc-accent transition-colors p-1"
+            className="flex items-center gap-1 text-oc-xs text-[var(--oc-text-soft)] opacity-80 hover:text-oc-accent transition-colors p-1"
           >
-            {open ? (
-              <ChevronDown className="h-3 w-3" />
-            ) : (
-              <ChevronUp className="h-3 w-3" />
-            )}
+            {open ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
           </Button>
         </div>
       </div>
@@ -2012,7 +1762,7 @@ export function QuotaMonitor() {
       {open ? (
         <div className="p-3">
           {!quotaData && !quotaIsRefreshing ? (
-            <div className="py-4 text-center text-oc-text-soft opacity-60 text-oc-xs">
+            <div className="py-4 text-center text-[var(--oc-text-soft)] opacity-60 text-oc-xs">
               No quota data
             </div>
           ) : null}
@@ -2044,30 +1794,20 @@ export function QuotaMonitor() {
                   >
                     <div className="border-b border-oc-border px-3 py-2.5">
                       <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <span className="text-oc-sm font-semibold tracking-tight text-oc-text-soft">
+                        <span className="text-oc-sm font-semibold tracking-tight text-[var(--oc-text-soft)]">
                           {toProviderName(platform.platform, platform.title)}
                         </span>
-                        {platform.status === 'error' ? (
-                          <Badge
-                            variant="destructive"
-                            className="text-oc-2xs uppercase"
-                          >
-                            error
-                          </Badge>
-                        ) : platform.status === 'warning' ? (
-                          <Badge
-                            variant="warning"
-                            className="text-oc-2xs uppercase"
-                          >
-                            warning
-                          </Badge>
+                        {(platform.status === 'error') ? (
+                          <Badge variant="destructive" className="text-oc-2xs uppercase">error</Badge>
+                        ) : (platform.status === 'warning') ? (
+                          <Badge variant="warning" className="text-[#d29922] text-oc-2xs uppercase">warning</Badge>
                         ) : null}
                       </div>
                       <div className="grid grid-cols-[auto_1fr] gap-x-2 text-oc-2xs">
-                        <span className="font-mono uppercase tracking-wider text-oc-text-soft opacity-80">
+                        <span className="font-mono uppercase tracking-wider text-[var(--oc-text-soft)] opacity-80">
                           Account:
                         </span>
-                        <span className="truncate font-mono text-oc-text-soft">
+                        <span className="truncate font-mono text-[var(--oc-text-soft)]">
                           {platform.account} {platform.accountLabel ?? ''}
                         </span>
                       </div>
@@ -2094,10 +1834,10 @@ export function QuotaMonitor() {
                             className="rounded-lg border border-oc-border bg-[rgba(0,0,0,0.16)] p-2"
                           >
                             <div className="mb-1 flex items-center justify-between gap-2">
-                              <span className="text-oc-xs font-medium text-oc-text-soft">
+                              <span className="text-oc-xs font-medium text-[var(--oc-text-soft)]">
                                 {quota.label}
                               </span>
-                              <span className="font-mono text-oc-2xs text-oc-text-soft">
+                              <span className="font-mono text-oc-2xs text-[var(--oc-text-soft)]">
                                 {quota.percentLabel ??
                                   `${Math.round(pct)}% remaining`}
                               </span>
@@ -2112,11 +1852,11 @@ export function QuotaMonitor() {
                               />
                             </div>
 
-                            <div className="mt-1.5 space-y-0.5 text-oc-2xs text-oc-text-soft opacity-70">
+                            <div className="mt-1.5 space-y-0.5 text-oc-2xs text-[var(--oc-text-soft)] opacity-70">
                               {quota.usedTotalDisplay ? (
                                 <div className="flex items-center justify-between gap-2">
                                   <span>Used</span>
-                                  <span className="font-mono text-oc-text-soft">
+                                  <span className="font-mono text-[var(--oc-text-soft)]">
                                     {quota.usedTotalDisplay}
                                   </span>
                                 </div>
@@ -2124,14 +1864,14 @@ export function QuotaMonitor() {
                               {quota.resetLabel ? (
                                 <div className="flex items-center justify-between gap-2">
                                   <span>Resets in</span>
-                                  <span className="font-mono text-oc-text-soft">
+                                  <span className="font-mono text-[var(--oc-text-soft)]">
                                     {quota.resetLabel}
                                   </span>
                                 </div>
                               ) : null}
                               {quota.note ? (
                                 <div className="flex gap-2 mt-1.5 pt-1.5 border-t border-oc-border opacity-80">
-                                  <span className="text-oc-text-soft italic">
+                                  <span className="text-[var(--oc-text-soft)] italic">
                                     {quota.note}
                                   </span>
                                 </div>
@@ -2149,17 +1889,16 @@ export function QuotaMonitor() {
                 <div className="mt-3 overflow-hidden rounded-xl border border-oc-border bg-[linear-gradient(180deg,var(--oc-panel)_0%,var(--oc-panel-soft)_100%)] shadow-[0_6px_20px_rgba(0,0,0,0.2)]">
                   <div className="border-b border-oc-border px-3 py-2.5">
                     <div className="mb-1.5 flex items-center justify-between gap-2">
-                      <span className="text-oc-sm font-semibold tracking-tight text-oc-text-soft">
+                      <span className="text-oc-sm font-semibold tracking-tight text-[var(--oc-text-soft)]">
                         📊 Request Budget (GitHub Copilot)
                       </span>
                     </div>
                     <div className="grid grid-cols-[auto_1fr] gap-x-2 text-oc-2xs">
-                      <span className="font-mono uppercase tracking-wider text-oc-text-soft opacity-80">
+                      <span className="font-mono uppercase tracking-wider text-[var(--oc-text-soft)] opacity-80">
                         Plan:
                       </span>
-                      <span className="font-mono text-oc-text-soft">
-                        {budgetInfo.planName} ({budgetInfo.monthlyQuota}{' '}
-                        requests/month)
+                      <span className="font-mono text-[var(--oc-text-soft)]">
+                        {budgetInfo.planName} ({budgetInfo.monthlyQuota} requests/month)
                       </span>
                     </div>
                   </div>
@@ -2167,46 +1906,36 @@ export function QuotaMonitor() {
                   <div className="space-y-2.5 px-3 py-2.5">
                     <div className="rounded-lg border border-oc-border bg-[rgba(0,0,0,0.16)] p-2">
                       <div className="mb-1 flex items-center justify-between text-oc-xs">
-                        <span className="font-medium text-oc-text-soft">
+                        <span className="font-medium text-[var(--oc-text-soft)]">
                           Today's Usage
                         </span>
-                        <span className="text-oc-text-soft">
-                          {budgetInfo.usedToday} / {budgetInfo.dailyAllowance}{' '}
-                          requests
+                        <span className="text-[var(--oc-text-soft)]">
+                          {budgetInfo.usedToday} / {budgetInfo.dailyAllowance} requests
                         </span>
                       </div>
                       <div className="h-2 w-full overflow-hidden rounded-full bg-oc-border">
                         <div
                           className="h-full rounded-full transition-all duration-300"
                           style={{
-                            width: `${Math.min(
-                              100,
-                              (budgetInfo.usedToday /
-                                budgetInfo.dailyAllowance) *
-                                100,
-                            )}%`,
-                            background: barColor(
-                              (budgetInfo.remainingToday /
-                                budgetInfo.dailyAllowance) *
-                                100,
-                            ),
+                            width: `${Math.min(100, (budgetInfo.usedToday / budgetInfo.dailyAllowance) * 100)}%`,
+                            background: barColor((budgetInfo.remainingToday / budgetInfo.dailyAllowance) * 100),
                           }}
                         />
                       </div>
                       <div className="mt-1.5 grid grid-cols-2 gap-2 text-center text-oc-2xs">
                         <div>
-                          <div className="text-oc-text-soft opacity-70">
+                          <div className="text-[var(--oc-text-soft)] opacity-70">
                             Remaining
                           </div>
-                          <div className="font-medium text-oc-text-soft">
+                          <div className="font-medium text-[var(--oc-text-soft)]">
                             {budgetInfo.remainingToday}
                           </div>
                         </div>
                         <div>
-                          <div className="text-oc-text-soft opacity-70">
+                          <div className="text-[var(--oc-text-soft)] opacity-70">
                             Projected
                           </div>
-                          <div className="font-medium text-oc-text-soft">
+                          <div className="font-medium text-[var(--oc-text-soft)]">
                             ~{Math.round(budgetInfo.projectedMonthlyUsage)}
                           </div>
                         </div>
@@ -2225,7 +1954,7 @@ export function QuotaMonitor() {
               ) : null}
 
               {lastUpdatedLabel ? (
-                <div className="text-center text-oc-2xs text-oc-text-soft opacity-50 font-mono">
+                <div className="text-center text-oc-2xs text-[var(--oc-text-soft)] opacity-50 font-mono">
                   Updated: {lastUpdatedLabel}
                 </div>
               ) : null}
@@ -2268,7 +1997,7 @@ export function TodoPanel() {
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
-          className="flex items-center gap-1 text-oc-xs text-oc-text-soft hover:text-oc-accent transition-colors"
+          className="flex items-center gap-1 text-oc-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
         >
           {open ? (
             <ChevronDown className="h-3 w-3" />
@@ -2281,7 +2010,7 @@ export function TodoPanel() {
       {open ? (
         <div>
           {!todoItems || todoItems.length === 0 ? (
-            <div className="py-3 text-center text-oc-text-soft opacity-60 text-oc-xs">
+            <div className="py-3 text-center text-[var(--oc-text-soft)] opacity-60 text-oc-xs">
               No tasks yet
             </div>
           ) : (
@@ -2294,7 +2023,7 @@ export function TodoPanel() {
                   <div className="text-[14px] leading-none mt-0.5">
                     {statusIcon(t.status)}
                   </div>
-                  <div className="text-oc-xs text-oc-text-soft leading-relaxed">
+                  <div className="text-oc-xs text-[var(--oc-text-soft)] leading-relaxed">
                     {(t as any).description ?? t.text ?? 'Untitled'}
                   </div>
                 </div>
@@ -2328,7 +2057,7 @@ export function McpPanel() {
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
-          className="oc-collapse-btn flex items-center gap-1 text-oc-xs text-oc-text-soft hover:text-oc-accent transition-colors"
+          className="oc-collapse-btn flex items-center gap-1 text-oc-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
         >
           {open ? (
             <ChevronDown className="h-3 w-3" />
@@ -2350,21 +2079,21 @@ export function McpPanel() {
                   <span
                     className={`inline-block h-1.5 w-1.5 rounded-full ${
                       server.status === 'connected'
-                        ? 'bg-oc-green'
-                        : 'bg-oc-red'
+                      ? 'bg-[var(--oc-green)]'
+                      : 'bg-[var(--oc-red)]'
                     }`}
                   />
-                  <span className="font-mono text-oc-xs font-medium text-oc-text-soft">
+                  <span className="font-mono text-oc-xs font-medium text-[var(--oc-text-soft)]">
                     {server.name}
                   </span>
                 </div>
-                <span className="text-oc-2xs text-oc-text-soft opacity-80">
+                <span className="text-oc-2xs text-[var(--oc-text-soft)] opacity-80">
                   {server.tools} tools
                 </span>
               </div>
             </div>
           ))}
-          <div className="mt-2 text-center text-oc-2xs text-oc-text-soft opacity-60">
+          <div className="mt-2 text-center text-oc-2xs text-[var(--oc-text-soft)] opacity-60">
             {mcpServers.length} servers connected
           </div>
         </div>
@@ -2394,7 +2123,7 @@ export function LspPanel() {
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
-          className="flex items-center gap-1 text-oc-xs text-oc-text-soft hover:text-oc-accent transition-colors"
+          className="flex items-center gap-1 text-oc-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
         >
           {open ? (
             <ChevronDown className="h-3 w-3" />
@@ -2415,20 +2144,20 @@ export function LspPanel() {
                 <div className="flex items-center gap-2">
                   <span
                     className={`inline-block h-1.5 w-1.5 rounded-full ${
-                      server.status === 'running' ? 'bg-oc-green' : 'bg-oc-red'
+                      server.status === 'running' ? 'bg-[var(--oc-green)]' : 'bg-[var(--oc-red)]'
                     }`}
                   />
-                  <span className="font-mono text-oc-xs font-medium text-oc-text-soft">
+                  <span className="font-mono text-oc-xs font-medium text-[var(--oc-text-soft)]">
                     {server.name}
                   </span>
                 </div>
-                <span className="text-oc-2xs font-mono text-oc-text-soft opacity-80">
+                <span className="text-oc-2xs font-mono text-[var(--oc-text-soft)] opacity-80">
                   {server.version}
                 </span>
               </div>
             </div>
           ))}
-          <div className="mt-2 text-center text-oc-2xs text-oc-text-soft opacity-60">
+          <div className="mt-2 text-center text-oc-2xs text-[var(--oc-text-soft)] opacity-60">
             {lspServers.length} language servers active
           </div>
         </div>

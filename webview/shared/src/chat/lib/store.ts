@@ -457,6 +457,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case 'SET_BUDGET_INFO':
+      console.log('[store] SET_BUDGET_INFO action:', action.payload);
       return { ...state, budgetInfo: action.payload };
     default:
       return state;

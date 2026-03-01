@@ -9,7 +9,6 @@ import {
   HistorySidebar,
   InputWrapper,
   ActiveTaskPanel,
-  SubagentsPanel,
   QuotaMonitor,
   TodoPanel,
   McpPanel,
@@ -130,7 +129,6 @@ function ChatContent() {
       {/* === RIGHT: Extended panel — desktop only (>= 1100px), contains stats/quota/tasks === */}
       <aside className="oc-right-panel hidden w-[368px] shrink-0 overflow-y-auto self-stretch border-l border-oc-border bg-oc-panel [@media(min-width:1100px)]:block">
         <ActiveTaskPanel />
-        <SubagentsPanel />
         <QuotaMonitor />
         <TodoPanel />
         <McpPanel />

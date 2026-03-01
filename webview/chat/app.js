@@ -1,44 +1,58 @@
 // @ts-check
 (function () {
-  /* @ts-expect-error - VS Code API provided by environment */
-  const vscode = acquireVsCodeApi();
+  // Safe acquire: VS Code only allows acquireVsCodeApi() once per webview.
+  // Reuse stored instance on window to avoid "already acquired" errors.
+  function getVsCodeApi() {
+    // @ts-expect-error - global on webview
+    if (window.__vscode_api) return window.__vscode_api;
+    try {
+      // @ts-expect-error - acquireVsCodeApi provided by VS Code
+      window.__vscode_api = acquireVsCodeApi();
+    }
+    catch (e) {
+      // If a previous script acquired it, it should be on window.__vscode_api
+    }
+    return window.__vscode_api;
+  }
+
+  const vscode = getVsCodeApi();
 
   // Override console to forward logs to VS Code Debug Console
   const originalConsole = {
-      log: console.log,
-      warn: console.warn,
-      error: console.error
+    log: console.log,
+    warn: console.warn,
+    error: console.error
   };
 
   /** @param {string} level @param {any[]} args */
   function postLog(level, args) {
-      const message = args.map(arg => {
-          if (typeof arg === 'object') {
-              try {
-                  return JSON.stringify(arg);
-              } catch (e) {
-                  return String(arg);
-              }
-          }
+    const message = args.map(arg => {
+      if (typeof arg === 'object') {
+        try {
+          return JSON.stringify(arg);
+        } catch (e) {
           return String(arg);
-      }).join(' ');
-      
-      vscode.postMessage({ type: "log", level, message });
+        }
+      }
+      return String(arg);
+    }).join(' ');
+
+    vscode.postMessage({ type: "log", level, message });
   }
 
   console.log = (...args) => {
-      originalConsole.log(...args);
-      postLog("info", args);
+    originalConsole.log(...args);
+    postLog("info", args);
   };
 
   console.warn = (...args) => {
-      originalConsole.warn(...args);
-      postLog("warn", args);
+    originalConsole.warn(...args);
+    postLog("warn", args);
   };
 
   console.error = (...args) => {
-      originalConsole.error(...args);
-      postLog("error", args);
+    originalConsole.error(...args);
+    postLog("error", args);
   };
 
   // State
@@ -76,11 +90,11 @@
 
   // FORBIDDEN TO REMOVE: Do not remove token accumulation or header update logic.
   let sessionStats = {
-      input: 0,
-      output: 0,
-      read: 0,
-      write: 0,
-      duration: 0
+    input: 0,
+    output: 0,
+    read: 0,
+    write: 0,
+    duration: 0
   };
 
   /** @type {HTMLElement | null} */
@@ -214,9 +228,9 @@
       if (
         historySidebar &&
         historySidebar.classList.contains("visible") &&
-        !historySidebar.contains(/** @type {Node} */ (e.target)) &&
+        !historySidebar.contains(/** @type {Node} */(e.target)) &&
         historyToggle &&
-        !historyToggle.contains(/** @type {Node} */ (e.target))
+        !historyToggle.contains(/** @type {Node} */(e.target))
       ) {
         historySidebar.classList.remove("visible");
       }
@@ -249,8 +263,8 @@
       if (
         modelDropdown &&
         !modelDropdown.classList.contains("hidden") &&
-        !modelDropdown.contains(/** @type {Node} */ (e.target)) &&
-        !modelSelector?.contains(/** @type {Node} */ (e.target))
+        !modelDropdown.contains(/** @type {Node} */(e.target)) &&
+        !modelSelector?.contains(/** @type {Node} */(e.target))
       ) {
         modelDropdown.classList.add("hidden");
       }
@@ -258,8 +272,8 @@
       if (
         agentDropdown &&
         !agentDropdown.classList.contains("hidden") &&
-        !agentDropdown.contains(/** @type {Node} */ (e.target)) &&
-        !agentSelector?.contains(/** @type {Node} */ (e.target))
+        !agentDropdown.contains(/** @type {Node} */(e.target)) &&
+        !agentSelector?.contains(/** @type {Node} */(e.target))
       ) {
         agentDropdown.classList.add("hidden");
       }
@@ -512,7 +526,7 @@
     for (const platform of quotaData.platforms) {
       const statusClass = platform.status === 'error' ? 'quota-status-error'
         : platform.status === 'warning' ? 'quota-status-warning'
-        : 'quota-status-ok';
+          : 'quota-status-ok';
 
       html += `<div class="quota-platform ${statusClass}">`;
       html += `<div class="quota-platform-header">`;
@@ -676,7 +690,7 @@
 
     // Show Thinking Bubble
     addThinkingBubble();
-    
+
     // Set processing state
     setProcessing(true);
   }
@@ -701,7 +715,7 @@
 
   function stopRequest() {
     if (!isProcessing) return;
-    
+
     vscode.postMessage({
       type: "stopRequest",
       sessionId: currentSessionId
@@ -710,7 +724,7 @@
     // Optimistically reset UI
     setProcessing(false);
     removeThinkingBubble();
-    
+
     if (currentStreamingCard) {
       const markdownBody = currentStreamingCard.querySelector(".markdown-body");
       if (markdownBody instanceof HTMLElement) {
@@ -718,7 +732,7 @@
       }
       currentStreamingCard = null;
     }
-    
+
     currentMessageId = null;
     currentStreamingStep = null;
   }
@@ -907,7 +921,7 @@
           m.providerID === selectedModel.providerID &&
           m.modelID === selectedModel.modelID,
       );
-      
+
       if (modelInfo) {
         currentModelNameSpan.textContent = `${modelInfo.name} (${modelInfo.providerName || modelInfo.providerID})`;
       } else if (availableModels.length > 0) {
@@ -1021,7 +1035,7 @@
     if (currentAgentNameSpan && selectedAgent) {
       // Find friendly name
       const agentInfo = availableAgents.find((a) => a.id === selectedAgent);
-      
+
       if (agentInfo) {
         currentAgentNameSpan.textContent = agentInfo.name;
       } else {
@@ -1269,7 +1283,7 @@
         let files = [];
         /** @type {any[]} */
         let contexts = [];
-        
+
         if (message.parts && Array.isArray(message.parts)) {
           message.parts.forEach((/** @type {any} */ p) => {
             if (p.type === "text") {
@@ -1301,21 +1315,21 @@
         console.warn("[OpenCode] [app.js] Skipped rendering message with unknown role:", message);
       }
     });
-    
+
     // Calculate total stats from scratch when rendering history
     sessionStats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
     messages.forEach(msg => {
-        if (msg.info?.tokens) {
-            sessionStats.input += (msg.info.tokens.input || 0);
-            sessionStats.output += (msg.info.tokens.output || 0);
-            if (msg.info.tokens.cache) {
-                sessionStats.read += (msg.info.tokens.cache.read || 0);
-                sessionStats.write += (msg.info.tokens.cache.write || 0);
-            }
+      if (msg.info?.tokens) {
+        sessionStats.input += (msg.info.tokens.input || 0);
+        sessionStats.output += (msg.info.tokens.output || 0);
+        if (msg.info.tokens.cache) {
+          sessionStats.read += (msg.info.tokens.cache.read || 0);
+          sessionStats.write += (msg.info.tokens.cache.write || 0);
         }
-        if (msg.info?.duration) {
-            sessionStats.duration += msg.info.duration;
-        }
+      }
+      if (msg.info?.duration) {
+        sessionStats.duration += msg.info.duration;
+      }
     });
 
     updateHeaderStats();
@@ -1337,34 +1351,34 @@
 
     // Add Attachments if any
     if ((files && files.length > 0) || (contexts && contexts.length > 0)) {
-        const attachmentsDiv = document.createElement("div");
-        attachmentsDiv.className = "message-attachments";
+      const attachmentsDiv = document.createElement("div");
+      attachmentsDiv.className = "message-attachments";
 
-        // Contexts
-        contexts.forEach(ctx => {
-            const chip = document.createElement("div");
-            chip.className = "attachment-chip context-chip";
-            chip.innerHTML = `<span class="chip-icon">📄</span> ${ctx.file}:${ctx.lineInfo}`;
-            attachmentsDiv.appendChild(chip);
-        });
+      // Contexts
+      contexts.forEach(ctx => {
+        const chip = document.createElement("div");
+        chip.className = "attachment-chip context-chip";
+        chip.innerHTML = `<span class="chip-icon">📄</span> ${ctx.file}:${ctx.lineInfo}`;
+        attachmentsDiv.appendChild(chip);
+      });
 
-        // Files
-        files.forEach(path => {
-            const chip = document.createElement("div");
-            chip.className = "attachment-chip";
-            const name = path.split(/[\\/]/).pop() || path;
-            chip.innerHTML = name;
-            attachmentsDiv.appendChild(chip);
-        });
+      // Files
+      files.forEach(path => {
+        const chip = document.createElement("div");
+        chip.className = "attachment-chip";
+        const name = path.split(/[\\/]/).pop() || path;
+        chip.innerHTML = name;
+        attachmentsDiv.appendChild(chip);
+      });
 
-        bubbleDiv.appendChild(attachmentsDiv);
+      bubbleDiv.appendChild(attachmentsDiv);
     }
 
     if (text) {
-        const contentDiv = document.createElement("div");
-        contentDiv.className = "message-content";
-        contentDiv.textContent = text;
-        bubbleDiv.appendChild(contentDiv);
+      const contentDiv = document.createElement("div");
+      contentDiv.className = "message-content";
+      contentDiv.textContent = text;
+      bubbleDiv.appendChild(contentDiv);
     }
 
     messageDiv.appendChild(bubbleDiv);
@@ -1388,35 +1402,35 @@
 
     // Use Task Card for assistant messages
     const usage = message.info?.tokens ? {
-        total: (message.info.tokens.input || 0) + (message.info.tokens.output || 0),
-        duration: message.info.duration || message.timing?.duration
+      total: (message.info.tokens.input || 0) + (message.info.tokens.output || 0),
+      duration: message.info.duration || message.timing?.duration
     } : null;
 
     const card = renderTaskCard(getFormattedAgentLabel(message.info), message.info?.id, usage);
-    
+
     // Add Thoughts if present (from steps or parts)
     let reasoningText = "";
     if (message.steps) {
-         reasoningText = message.steps
-            .filter((/** @type {any} */ s) => s.type === "reasoning")
-            .map((/** @type {any} */ s) => s.content || s.title)
-            .join("\n\n");
+      reasoningText = message.steps
+        .filter((/** @type {any} */ s) => s.type === "reasoning")
+        .map((/** @type {any} */ s) => s.content || s.title)
+        .join("\n\n");
     }
-    
+
     if (!reasoningText && message.parts) {
-        reasoningText = message.parts
-            .filter((/** @type {any} */ p) => p.type === "reasoning" || p.reasoning || p.thought || p.thinking)
-            .map((/** @type {any} */ p) => p.text || p.content || p.reasoning || p.thought || p.thinking || "")
-            .join("\n\n");
+      reasoningText = message.parts
+        .filter((/** @type {any} */ p) => p.type === "reasoning" || p.reasoning || p.thought || p.thinking)
+        .map((/** @type {any} */ p) => p.text || p.content || p.reasoning || p.thought || p.thinking || "")
+        .join("\n\n");
     }
 
     if (reasoningText) {
-         const thoughtsContainer = card.querySelector(".thought-section");
-         const thoughtsContent = card.querySelector(".thought-content");
-         if (thoughtsContainer && thoughtsContent) {
-             thoughtsContainer.classList.remove("hidden");
-             thoughtsContent.textContent = reasoningText;
-         }
+      const thoughtsContainer = card.querySelector(".thought-section");
+      const thoughtsContent = card.querySelector(".thought-content");
+      if (thoughtsContainer && thoughtsContent) {
+        thoughtsContainer.classList.remove("hidden");
+        thoughtsContent.textContent = reasoningText;
+      }
     }
 
     const markdownBody = card.querySelector(".markdown-body");
@@ -1428,9 +1442,9 @@
     if (message.parts && Array.isArray(message.parts)) {
       message.parts.forEach((/** @type {any} */ part) => {
         const text = part.text || part.content || part.reasoning || part.thought || part.thinking || "";
-        
+
         if (!(part.type === "reasoning" || part.reasoning || part.thought || part.thinking)) {
-            fullText += text + "\n";
+          fullText += text + "\n";
         }
       });
     } else {
@@ -1438,72 +1452,72 @@
     }
 
     if (fullText && markdownBody instanceof HTMLElement) {
-        renderMarkdown(markdownBody, fullText);
+      renderMarkdown(markdownBody, fullText);
     } else if (summarySection instanceof HTMLElement) {
-        summarySection.classList.add("hidden");
+      summarySection.classList.add("hidden");
     }
 
     // Render plan card if available
     if (message.plan) {
-        addPlanButtonToHeader(card, message.plan);
-        renderPlanCard(message.plan, card);
+      addPlanButtonToHeader(card, message.plan);
+      renderPlanCard(message.plan, card);
     }
 
     // Edits History Section (Top Summary)
     if (message.edits && Array.isArray(message.edits) && message.edits.length > 0) {
-        const editsSummary = document.createElement("div");
-        editsSummary.className = "task-edits-summary";
-        
-        message.edits.forEach((/** @type {any} */ edit) => {
-            const pill = document.createElement("div");
-            pill.className = "file-pill";
-            pill.innerHTML = `
+      const editsSummary = document.createElement("div");
+      editsSummary.className = "task-edits-summary";
+
+      message.edits.forEach((/** @type {any} */ edit) => {
+        const pill = document.createElement("div");
+        pill.className = "file-pill";
+        pill.innerHTML = `
                 <span>${edit.file.split(/[\\/]/).pop()}</span>
                 <span class="stats">
                     ${edit.added ? `<span class="added">+${edit.added}</span>` : ""}
                     ${edit.deleted ? `<span class="deleted">-${edit.deleted}</span>` : ""}
                 </span>
             `;
-            editsSummary.appendChild(pill);
-            
-            // Also add as a step for detailed diff access
-            const step = addProgressStep(card, `Edited ${edit.file}`);
-            if (step) {
-                const btn = document.createElement("button");
-                btn.className = "step-action";
-                btn.textContent = "Open diff";
-                btn.onclick = () => vscode.postMessage({ type: "openDiff", file: edit.file });
-                step.appendChild(btn);
-            }
-        });
-        
-        // Insert edits summary before progress section
-        const progressSection = card.querySelector(".progress-section");
-        card.insertBefore(editsSummary, progressSection);
+        editsSummary.appendChild(pill);
+
+        // Also add as a step for detailed diff access
+        const step = addProgressStep(card, `Edited ${edit.file}`);
+        if (step) {
+          const btn = document.createElement("button");
+          btn.className = "step-action";
+          btn.textContent = "Open diff";
+          btn.onclick = () => vscode.postMessage({ type: "openDiff", file: edit.file });
+          step.appendChild(btn);
+        }
+      });
+
+      // Insert edits summary before progress section
+      const progressSection = card.querySelector(".progress-section");
+      card.insertBefore(editsSummary, progressSection);
     }
 
     // Render Progress Steps
     if (message.steps && Array.isArray(message.steps)) {
-        message.steps.forEach((/** @type {any} */ stepData) => {
-            if (stepData.type === "reasoning") return;
-            const step = addProgressStep(card, stepData.title);
-            if (step) {
-                if (stepData.status) updateProgressStep(step, stepData.meta || "", stepData.status);
-                if (stepData.type === "thought") step.classList.add("thought");
-            }
-        });
+      message.steps.forEach((/** @type {any} */ stepData) => {
+        if (stepData.type === "reasoning") return;
+        const step = addProgressStep(card, stepData.title);
+        if (step) {
+          if (stepData.status) updateProgressStep(step, stepData.meta || "", stepData.status);
+          if (stepData.type === "thought") step.classList.add("thought");
+        }
+      });
     }
 
     // Hide Sections if empty
     if (!reasoningText) card.querySelector(".thought-section")?.classList.add("hidden");
-    
+
     const hasProgress = message.steps && message.steps.some((/** @type {any} */ s) => s.type !== "reasoning");
     if (!hasProgress) card.querySelector(".progress-section")?.classList.add("hidden");
 
     // Collapse progress by default in history if it's long
     const progressSectionElement = card.querySelector(".progress-section");
     if (list && list.children.length > 5) {
-        progressSectionElement?.classList.add("collapsed");
+      progressSectionElement?.classList.add("collapsed");
     }
 
     scrollToBottom();
@@ -1511,290 +1525,290 @@
 
   function handleStreamEvent(/** @type {any} */ event) {
     if (event.type !== "message.part.updated") {
-         console.log("[OpenCode] [StreamEvent]", event.type, event);
+      console.log("[OpenCode] [StreamEvent]", event.type, event);
     } else {
-         // Reduce noise for part updates, maybe log only important parts?
-         // User asked to log events, so let's log them but maybe compactly
-         console.log("[OpenCode] [StreamEvent]", event.type, JSON.stringify(event.properties || {}));
+      // Reduce noise for part updates, maybe log only important parts?
+      // User asked to log events, so let's log them but maybe compactly
+      console.log("[OpenCode] [StreamEvent]", event.type, JSON.stringify(event.properties || {}));
     }
 
     // 1. Handle Message Lifecycle (Start/End)
     if (event.type === "message.updated") {
-        const info = event.properties?.info;
-        if (info && info.role === "assistant") {
-            // Start of a new message
-                    // COALESCING FIX: Always try to reuse the LAST streaming card if it exists and is not finished.
-                    // This prevents multiple cards for the same turn.
-                    if (lastStreamingCard && document.body.contains(lastStreamingCard)) {
-                            currentStreamingCard = lastStreamingCard;
-                            // Update ID if needed, but keep the card
-                            if (currentMessageId !== info.id) {
-                                currentMessageId = info.id;
-                                currentStreamingCard.dataset.messageId = info.id;
-                            }
-                    } else {
-                        // Only create new if we absolutely don't have one
-                        const existing = document.querySelector(`.task-card[data-message-id="${info.id}"]`);
-                        if (existing) {
-                            currentMessageId = info.id;
-                            currentStreamingCard = /** @type {HTMLElement} */ (existing);
-                            lastStreamingCard = currentStreamingCard;
-                        } else {
-                            currentMessageId = info.id;
-                            currentStreamingCard = renderTaskCard(getFormattedAgentLabel(info), info.id);
-                            lastStreamingCard = currentStreamingCard;
-                            currentStreamingSteps = [];
-                            currentStreamingEdits = [];
-                        }
-                    }
-            
-            // End of a message
-            if (info.finish) {
-                if (currentStreamingCard) {
-                    const pendingSteps = Array.from(currentStreamingCard.querySelectorAll(".step-item")).filter(step => {
-                        // @ts-expect-error - Check custom state object
-                        return step._stateObj && step._stateObj.status === "pending";
-                    });
-
-                    pendingSteps.forEach(step => {
-                        step.remove();
-                    });
-
-                    const progressSection = currentStreamingCard.querySelector(".progress-section");
-                    if (progressSection) {
-                        const remainingSteps = progressSection.querySelectorAll(".step-item");
-                        if (remainingSteps.length === 0) {
-                            progressSection.remove();
-                        }
-                    }
-                }
-
-                if (currentStreamingCard && info.tokens) {
-                    const usage = {
-                        total: (info.tokens.input || 0) + (info.tokens.output || 0),
-                        duration: info.duration
-                    };
-                    updateCardUsage(currentStreamingCard, usage);
-                }
-
-                currentMessageId = null;
-                currentStreamingCard = null;
-                currentStreamingStep = null;
-                setProcessing(false);
-            }
+      const info = event.properties?.info;
+      if (info && info.role === "assistant") {
+        // Start of a new message
+        // COALESCING FIX: Always try to reuse the LAST streaming card if it exists and is not finished.
+        // This prevents multiple cards for the same turn.
+        if (lastStreamingCard && document.body.contains(lastStreamingCard)) {
+          currentStreamingCard = lastStreamingCard;
+          // Update ID if needed, but keep the card
+          if (currentMessageId !== info.id) {
+            currentMessageId = info.id;
+            currentStreamingCard.dataset.messageId = info.id;
+          }
+        } else {
+          // Only create new if we absolutely don't have one
+          const existing = document.querySelector(`.task-card[data-message-id="${info.id}"]`);
+          if (existing) {
+            currentMessageId = info.id;
+            currentStreamingCard = /** @type {HTMLElement} */ (existing);
+            lastStreamingCard = currentStreamingCard;
+          } else {
+            currentMessageId = info.id;
+            currentStreamingCard = renderTaskCard(getFormattedAgentLabel(info), info.id);
+            lastStreamingCard = currentStreamingCard;
+            currentStreamingSteps = [];
+            currentStreamingEdits = [];
+          }
         }
-        return;
+
+        // End of a message
+        if (info.finish) {
+          if (currentStreamingCard) {
+            const pendingSteps = Array.from(currentStreamingCard.querySelectorAll(".step-item")).filter(step => {
+              // @ts-expect-error - Check custom state object
+              return step._stateObj && step._stateObj.status === "pending";
+            });
+
+            pendingSteps.forEach(step => {
+              step.remove();
+            });
+
+            const progressSection = currentStreamingCard.querySelector(".progress-section");
+            if (progressSection) {
+              const remainingSteps = progressSection.querySelectorAll(".step-item");
+              if (remainingSteps.length === 0) {
+                progressSection.remove();
+              }
+            }
+          }
+
+          if (currentStreamingCard && info.tokens) {
+            const usage = {
+              total: (info.tokens.input || 0) + (info.tokens.output || 0),
+              duration: info.duration
+            };
+            updateCardUsage(currentStreamingCard, usage);
+          }
+
+          currentMessageId = null;
+          currentStreamingCard = null;
+          currentStreamingStep = null;
+          setProcessing(false);
+        }
+      }
+      return;
     }
 
     // 2. Handle Message Parts (Content, Steps, Tools)
     if (event.type === "message.part.updated") {
-        const part = event.properties?.part;
-        const delta = event.properties?.delta;
-        
-        if (!part) return;
+      const part = event.properties?.part;
+      const delta = event.properties?.delta;
 
-        // Auto-start card if needed (and fallback to last credentials)
-        if (!currentStreamingCard || !document.body.contains(currentStreamingCard)) {
-             // Try one last time to find by ID
-             if (currentMessageId) {
-                 const existing = document.querySelector(`.task-card[data-message-id="${currentMessageId}"]`);
-                 if (existing) {
-                     currentStreamingCard = /** @type {HTMLElement} */ (existing);
-                     lastStreamingCard = currentStreamingCard;
-                 }
-             }
-             
-             if (!currentStreamingCard) {
-                 // Create new if generic part comes in without message.updated
-                 currentMessageId = part.messageID || `msg_${Date.now()}`;
-                 currentStreamingCard = renderTaskCard(getFormattedAgentLabel(), currentMessageId);
-                 lastStreamingCard = currentStreamingCard;
-                 currentStreamingSteps = [];
-                 currentStreamingEdits = [];
-             }
+      if (!part) return;
+
+      // Auto-start card if needed (and fallback to last credentials)
+      if (!currentStreamingCard || !document.body.contains(currentStreamingCard)) {
+        // Try one last time to find by ID
+        if (currentMessageId) {
+          const existing = document.querySelector(`.task-card[data-message-id="${currentMessageId}"]`);
+          if (existing) {
+            currentStreamingCard = /** @type {HTMLElement} */ (existing);
+            lastStreamingCard = currentStreamingCard;
+          }
         }
 
-        removeThinkingBubble();
+        if (!currentStreamingCard) {
+          // Create new if generic part comes in without message.updated
+          currentMessageId = part.messageID || `msg_${Date.now()}`;
+          currentStreamingCard = renderTaskCard(getFormattedAgentLabel(), currentMessageId);
+          lastStreamingCard = currentStreamingCard;
+          currentStreamingSteps = [];
+          currentStreamingEdits = [];
+        }
+      }
 
-        switch (part.type) {
-            case "text":
-                if (delta && currentStreamingCard) {
-                    updateStreamingTask(currentStreamingCard, delta, "text");
-                }
-                break;
+      removeThinkingBubble();
 
-            case "reasoning":
-                if (delta) {
-                    if (currentStreamingCard) {
-                        updateStreamingTask(currentStreamingCard, delta, "reasoning");
-                    }
-                }
-                break;
+      switch (part.type) {
+        case "text":
+          if (delta && currentStreamingCard) {
+            updateStreamingTask(currentStreamingCard, delta, "text");
+          }
+          break;
 
-            case "step-start": {
-                if (!currentStreamingCard) break;
-                // Fix: Improved title logic.
-                let title = part.title;
-                
-                // If no title, try to infer from snapshot or type
-                if (!title) {
-                    if (part.snapshot && !part.snapshot.startsWith("http") && part.snapshot.length < 50 && !/^[a-f0-9]{10,}$/i.test(part.snapshot)) {
-                        title = part.snapshot;
-                    } else {
-                        // Generic fallback that sounds better than "Processing..."
-                        title = "Thinking..."; 
-                    }
-                }
-                
-                const stepObj = { title, type: "step", status: "pending", id: part.id, startTime: Date.now() };
-                currentStreamingSteps.push(stepObj);
-
-                const step = addProgressStep(currentStreamingCard, title);
-                if (step) {
-                    // @ts-expect-error - Attach state
-                    step._stateObj = stepObj;
-                    currentStreamingStep = step;
-                }
-                break;
+        case "reasoning":
+          if (delta) {
+            if (currentStreamingCard) {
+              updateStreamingTask(currentStreamingCard, delta, "reasoning");
             }
+          }
+          break;
 
-            case "step-finish": {
-                if (!currentStreamingCard) break;
-                const step = /** @type {HTMLElement | null} */ (Array.from(currentStreamingCard.querySelectorAll(".step-item")).find(el => {
-                    // @ts-expect-error - Match step by ID
-                    return el._stateObj && el._stateObj.id === part.id;
-                })) || currentStreamingStep;
-                
-                if (step) {
-                    const usage = part.usage || null;
-                    const timing = part.timing || null;
-                    const details = { ...timing, tokens: usage }; // Pass usage as tokens to match updateProgressStep
-                    updateProgressStep(step, "Done", "done", details);
-                    // @ts-expect-error - Update status
-                    if (step._stateObj) step._stateObj.status = "done";
-                }
-                currentStreamingStep = null;
-                break;
+        case "step-start": {
+          if (!currentStreamingCard) break;
+          // Fix: Improved title logic.
+          let title = part.title;
+
+          // If no title, try to infer from snapshot or type
+          if (!title) {
+            if (part.snapshot && !part.snapshot.startsWith("http") && part.snapshot.length < 50 && !/^[a-f0-9]{10,}$/i.test(part.snapshot)) {
+              title = part.snapshot;
+            } else {
+              // Generic fallback that sounds better than "Processing..."
+              title = "Thinking...";
             }
+          }
 
-            case "tool": {
-                if (!currentStreamingCard) break;
-                const tool = part.tool || "Tool";
-                const state = part.state || {};
-                const input = state.input || {};
-                const file = input.file || input.path || input.filename || input.TargetFile; // Check uppercase too
-                // Find existing tool step or create new
-        let toolStep = /** @type {HTMLElement | null} */ (Array.from(currentStreamingCard.querySelectorAll(".step-item")).find(el => {
+          const stepObj = { title, type: "step", status: "pending", id: part.id, startTime: Date.now() };
+          currentStreamingSteps.push(stepObj);
+
+          const step = addProgressStep(currentStreamingCard, title);
+          if (step) {
+            // @ts-expect-error - Attach state
+            step._stateObj = stepObj;
+            currentStreamingStep = step;
+          }
+          break;
+        }
+
+        case "step-finish": {
+          if (!currentStreamingCard) break;
+          const step = /** @type {HTMLElement | null} */ (Array.from(currentStreamingCard.querySelectorAll(".step-item")).find(el => {
+            // @ts-expect-error - Match step by ID
+            return el._stateObj && el._stateObj.id === part.id;
+          })) || currentStreamingStep;
+
+          if (step) {
+            const usage = part.usage || null;
+            const timing = part.timing || null;
+            const details = { ...timing, tokens: usage }; // Pass usage as tokens to match updateProgressStep
+            updateProgressStep(step, "Done", "done", details);
+            // @ts-expect-error - Update status
+            if (step._stateObj) step._stateObj.status = "done";
+          }
+          currentStreamingStep = null;
+          break;
+        }
+
+        case "tool": {
+          if (!currentStreamingCard) break;
+          const tool = part.tool || "Tool";
+          const state = part.state || {};
+          const input = state.input || {};
+          const file = input.file || input.path || input.filename || input.TargetFile; // Check uppercase too
+          // Find existing tool step or create new
+          let toolStep = /** @type {HTMLElement | null} */ (Array.from(currentStreamingCard.querySelectorAll(".step-item")).find(el => {
             // @ts-expect-error - Match tool step by callID in custom state
             return el._stateObj && el._stateObj.callID === part.callID;
-        }));
+          }));
 
-                if (!toolStep) {
-                    let title = `Running ${tool}...`;
-                    
-                    if (tool.includes("write") || tool.includes("replace") || tool.includes("edit")) {
-                        title = `Editing ${file || 'file'}...`;
-                    } else if (tool.includes("command")) {
-                        title = `Running command: ${input.CommandLine || '...'}`;
-                    }
+          if (!toolStep) {
+            let title = `Running ${tool}...`;
 
-                    const stepObj = {
-                      title,
-                      type: "tool",
-                      status: "pending",
-                      callID: part.callID,
-                      filePath: file,
-                    };
-                    currentStreamingSteps.push(stepObj);
+            if (tool.includes("write") || tool.includes("replace") || tool.includes("edit")) {
+              title = `Editing ${file || 'file'}...`;
+            } else if (tool.includes("command")) {
+              title = `Running command: ${input.CommandLine || '...'}`;
+            }
+
+            const stepObj = {
+              title,
+              type: "tool",
+              status: "pending",
+              callID: part.callID,
+              filePath: file,
+            };
+            currentStreamingSteps.push(stepObj);
             toolStep = addProgressStep(currentStreamingCard, title, {
               filePath: file,
             });
             if (toolStep) {
-                // @ts-expect-error - Attach custom state object to tool step
-                toolStep._stateObj = stepObj;
+              // @ts-expect-error - Attach custom state object to tool step
+              toolStep._stateObj = stepObj;
             }
+          }
+
+
+          if (toolStep) {
+            if (state.status === "completed") {
+              const result = state.title || "Completed";
+              // Extract tool stats if available in state
+              const details = {
+                duration: state.duration,
+                tokens: state.tokens
+              };
+              updateProgressStep(toolStep, result, "done", details);
+              // @ts-expect-error - Update status on custom tool state object
+              if (toolStep._stateObj) {
+                // @ts-expect-error - Set status to done
+                toolStep._stateObj.status = "done";
+                // @ts-expect-error - Set meta text from result
+                toolStep._stateObj.meta = result;
+              }
+            } else if (state.status === "error") {
+              updateProgressStep(toolStep, state.error || "Failed", "error");
+              // @ts-expect-error - Update error status on custom state object
+              if (toolStep._stateObj) {
+                // @ts-expect-error - Set status to error
+                toolStep._stateObj.status = "error";
+                // @ts-expect-error - Set error message as meta
+                toolStep._stateObj.meta = state.error;
+              }
+            }
+          }
+          break;
         }
 
-
-                if (toolStep) {
-                    if (state.status === "completed") {
-                        const result = state.title || "Completed";
-                        // Extract tool stats if available in state
-                        const details = { 
-                            duration: state.duration, 
-                            tokens: state.tokens 
-                        };
-                        updateProgressStep(toolStep, result, "done", details);
-                // @ts-expect-error - Update status on custom tool state object
-                if (toolStep._stateObj) {
-                    // @ts-expect-error - Set status to done
-                    toolStep._stateObj.status = "done";
-                    // @ts-expect-error - Set meta text from result
-                    toolStep._stateObj.meta = result;
-                }
-                    } else if (state.status === "error") {
-                        updateProgressStep(toolStep, state.error || "Failed", "error");
-                  // @ts-expect-error - Update error status on custom state object
-                if (toolStep._stateObj) {
-                    // @ts-expect-error - Set status to error
-                    toolStep._stateObj.status = "error";
-                    // @ts-expect-error - Set error message as meta
-                    toolStep._stateObj.meta = state.error;
-                }
-                    }
-                }
-                break;
-            }
-
-            case "patch":
-                if (part.files && Array.isArray(part.files)) {
-                    part.files.forEach((/** @type {string} */ f) => {
-                        if (!currentStreamingEdits.includes(f)) {
-                            currentStreamingEdits.push(f);
-                            sessionEdits.add(f);
-                            updateFooterEdits();
-                        }
-                    });
-                }
-                break;
-        }
-        return;
+        case "patch":
+          if (part.files && Array.isArray(part.files)) {
+            part.files.forEach((/** @type {string} */ f) => {
+              if (!currentStreamingEdits.includes(f)) {
+                currentStreamingEdits.push(f);
+                sessionEdits.add(f);
+                updateFooterEdits();
+              }
+            });
+          }
+          break;
+      }
+      return;
     }
 
     // 3. Handle Permission Requests
     if (event.type === "permission.updated") {
-        const perm = event.properties;
-        if (perm) {
-            renderPermissionCard(perm);
-        }
-        return;
+      const perm = event.properties;
+      if (perm) {
+        renderPermissionCard(perm);
+      }
+      return;
     }
 
     // 4. Handle Session Errors
     if (event.type === "session.error") {
-        const error = event.properties?.error;
-        if (error) {
-            const errorMsg = error.data?.message || "An unknown error occurred.";
-            renderErrorBanner(errorMsg);
-        }
-        setProcessing(false);
-        removeThinkingBubble();
-        return;
+      const error = event.properties?.error;
+      if (error) {
+        const errorMsg = error.data?.message || "An unknown error occurred.";
+        renderErrorBanner(errorMsg);
+      }
+      setProcessing(false);
+      removeThinkingBubble();
+      return;
     }
 
     // 5. Handle Session Status
     if (event.type === "session.status") {
-        // e.g., Update a status indicator if we had one
-        const status = event.properties?.status;
-        console.log("[OpenCode] [SessionStatus]", status);
-        return;
+      // e.g., Update a status indicator if we had one
+      const status = event.properties?.status;
+      console.log("[OpenCode] [SessionStatus]", status);
+      return;
     }
   }
 
   function renderPermissionCard(/** @type {any} */ perm) {
-      const card = document.createElement("div");
-      card.className = "task-card permission-card";
-      card.innerHTML = `
+    const card = document.createElement("div");
+    card.className = "task-card permission-card";
+    card.innerHTML = `
         <div class="task-header">
             <span class="task-title">Permission Request</span>
         </div>
@@ -1805,32 +1819,32 @@
             </div>
         </div>
       `;
-      messagesContainer?.appendChild(card);
-      scrollToBottom();
+    messagesContainer?.appendChild(card);
+    scrollToBottom();
   }
 
   function renderErrorBanner(/** @type {string} */ message) {
-      const banner = document.createElement("div");
-      banner.className = "error-banner";
-      banner.textContent = `Error: ${message}`;
-      banner.style.padding = "10px";
-      banner.style.margin = "10px 0";
-      banner.style.backgroundColor = "var(--input-danger-bg, #5a1e1e)";
-      banner.style.color = "var(--input-danger-text, #ffcccc)";
-      banner.style.borderRadius = "4px";
-      banner.style.border = "1px solid var(--input-danger-border, #ff0000)";
-      
-      messagesContainer?.appendChild(banner);
-      scrollToBottom();
+    const banner = document.createElement("div");
+    banner.className = "error-banner";
+    banner.textContent = `Error: ${message}`;
+    banner.style.padding = "10px";
+    banner.style.margin = "10px 0";
+    banner.style.backgroundColor = "var(--input-danger-bg, #5a1e1e)";
+    banner.style.color = "var(--input-danger-text, #ffcccc)";
+    banner.style.borderRadius = "4px";
+    banner.style.border = "1px solid var(--input-danger-border, #ff0000)";
+
+    messagesContainer?.appendChild(banner);
+    scrollToBottom();
   }
 
   function updateFooterEdits() {
-      if (!filesChangedCount) return;
-      const count = sessionEdits.size;
-      filesChangedCount.textContent = `${count} File${count === 1 ? '' : 's'} With Changes`;
-      if (reviewChangesBtn) {
-          reviewChangesBtn.style.display = count > 0 ? "inline-block" : "none";
-      }
+    if (!filesChangedCount) return;
+    const count = sessionEdits.size;
+    filesChangedCount.textContent = `${count} File${count === 1 ? '' : 's'} With Changes`;
+    if (reviewChangesBtn) {
+      reviewChangesBtn.style.display = count > 0 ? "inline-block" : "none";
+    }
   }
 
   // --- Queue Functions ---
@@ -1856,7 +1870,7 @@
     selectedContexts = [];
     selectedImages = [];
     updateFileChipsUI();
-    
+
     // Show queue container if hidden
     queueContainer?.classList.remove("hidden");
   }
@@ -1868,96 +1882,96 @@
     queueList.innerHTML = "";
 
     if (promptQueue.length === 0) {
-        queueContainer.classList.add("hidden");
-        return;
+      queueContainer.classList.add("hidden");
+      return;
     }
 
     queueContainer.classList.remove("hidden");
 
     promptQueue.forEach((item, index) => {
-        const queueItem = document.createElement("div");
-        queueItem.className = "queue-item new";
-        
-        const info = document.createElement("div");
-        info.className = "queue-item-info";
-        
-        const textArea = document.createElement("div");
-        textArea.className = "queue-item-text";
-        textArea.textContent = item.text || "(No text)";
-        info.appendChild(textArea);
-        
-        const meta = document.createElement("div");
-        meta.className = "queue-item-meta";
-        const filesCount = (item.files?.length || 0) + (item.contexts?.length || 0);
-        meta.textContent = filesCount > 0 ? `${filesCount} attachments` : "No attachments";
-        info.appendChild(meta);
+      const queueItem = document.createElement("div");
+      queueItem.className = "queue-item new";
 
-        // Add Pending Status
-        const status = document.createElement("div");
-        status.className = "queue-item-status";
-        status.textContent = "Pending";
-        info.appendChild(status);
-        
-        queueItem.appendChild(info);
-        
-        const actions = document.createElement("div");
-        actions.className = "queue-item-actions";
-        
-        const removeBtn = document.createElement("button");
-        removeBtn.className = "queue-item-remove";
-        removeBtn.innerHTML = "×";
-        removeBtn.onclick = () => {
-            vscode.postMessage({ type: "removeFromQueue", index });
-        };
-        actions.appendChild(removeBtn);
-        
-        queueItem.appendChild(actions);
-        queueList.appendChild(queueItem);
+      const info = document.createElement("div");
+      info.className = "queue-item-info";
+
+      const textArea = document.createElement("div");
+      textArea.className = "queue-item-text";
+      textArea.textContent = item.text || "(No text)";
+      info.appendChild(textArea);
+
+      const meta = document.createElement("div");
+      meta.className = "queue-item-meta";
+      const filesCount = (item.files?.length || 0) + (item.contexts?.length || 0);
+      meta.textContent = filesCount > 0 ? `${filesCount} attachments` : "No attachments";
+      info.appendChild(meta);
+
+      // Add Pending Status
+      const status = document.createElement("div");
+      status.className = "queue-item-status";
+      status.textContent = "Pending";
+      info.appendChild(status);
+
+      queueItem.appendChild(info);
+
+      const actions = document.createElement("div");
+      actions.className = "queue-item-actions";
+
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "queue-item-remove";
+      removeBtn.innerHTML = "×";
+      removeBtn.onclick = () => {
+        vscode.postMessage({ type: "removeFromQueue", index });
+      };
+      actions.appendChild(removeBtn);
+
+      queueItem.appendChild(actions);
+      queueList.appendChild(queueItem);
     });
   }
 
   function updateQueueUIState() {
     if (!executeQueueBtn || !addToQueueBtn || !clearQueueBtn) return;
-    
+
     if (isExecutingQueue) {
-        executeQueueBtn.innerHTML = `
+      executeQueueBtn.innerHTML = `
             <div class="spinner" style="width: 12px; height: 12px; border-width: 1.5px; border-top-color: white;"></div>
             Running...
         `;
-        executeQueueBtn.classList.add("disabled");
-        // @ts-expect-error - disabled property
-        executeQueueBtn.disabled = true;
-        clearQueueBtn.classList.add("disabled");
-        // @ts-expect-error - disabled property
-        clearQueueBtn.disabled = true;
+      executeQueueBtn.classList.add("disabled");
+      // @ts-expect-error - disabled property
+      executeQueueBtn.disabled = true;
+      clearQueueBtn.classList.add("disabled");
+      // @ts-expect-error - disabled property
+      clearQueueBtn.disabled = true;
     } else {
-        executeQueueBtn.innerHTML = `
+      executeQueueBtn.innerHTML = `
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M3 2V14L13 8L3 2Z"/>
             </svg>
             Run
         `;
-        executeQueueBtn.classList.remove("disabled");
-        // @ts-expect-error - disabled property
-        executeQueueBtn.disabled = false;
-        clearQueueBtn.classList.remove("disabled");
-        // @ts-expect-error - disabled property
-        clearQueueBtn.disabled = false;
+      executeQueueBtn.classList.remove("disabled");
+      // @ts-expect-error - disabled property
+      executeQueueBtn.disabled = false;
+      clearQueueBtn.classList.remove("disabled");
+      // @ts-expect-error - disabled property
+      clearQueueBtn.disabled = false;
     }
   }
 
   function updateHeaderStats() {
-      if (!chatHeader) return;
+    if (!chatHeader) return;
 
-      const total = sessionStats.input + sessionStats.output;
+    const total = sessionStats.input + sessionStats.output;
 
-      if (sessionTokensSpan) sessionTokensSpan.textContent = total.toLocaleString();
-      if (tokensInSpan) tokensInSpan.textContent = `${sessionStats.input.toLocaleString()}`;
-      if (tokensOutSpan) tokensOutSpan.textContent = `${sessionStats.output.toLocaleString()}`;
-      if (tokensReadSpan) tokensReadSpan.textContent = `${sessionStats.read.toLocaleString()}`;
-      if (tokensWriteSpan) tokensWriteSpan.textContent = `${sessionStats.write.toLocaleString()}`;
-      if (sessionTimeSpan) sessionTimeSpan.textContent = formatDurationLabel(sessionStats.duration);
-      updateTaskHeader();
+    if (sessionTokensSpan) sessionTokensSpan.textContent = total.toLocaleString();
+    if (tokensInSpan) tokensInSpan.textContent = `${sessionStats.input.toLocaleString()}`;
+    if (tokensOutSpan) tokensOutSpan.textContent = `${sessionStats.output.toLocaleString()}`;
+    if (tokensReadSpan) tokensReadSpan.textContent = `${sessionStats.read.toLocaleString()}`;
+    if (tokensWriteSpan) tokensWriteSpan.textContent = `${sessionStats.write.toLocaleString()}`;
+    if (sessionTimeSpan) sessionTimeSpan.textContent = formatDurationLabel(sessionStats.duration);
+    updateTaskHeader();
   }
 
   function formatDurationLabel(/** @type {number} */ duration) {
@@ -1987,33 +2001,33 @@
   }
 
   function updateStreamingTask(/** @type {HTMLElement} */ card, /** @type {string} */ text, /** @type {string} */ type = "text") {
-      if (type === "reasoning") {
-          const thoughtsContainer = card?.querySelector(".thought-section");
-          const thoughtsContent = card?.querySelector(".thought-content");
-          if (thoughtsContainer && thoughtsContent instanceof HTMLElement) {
-              thoughtsContainer.classList.remove("hidden");
-              // Append text to the content
-              const prevText = thoughtsContent.dataset.rawText || "";
-              const nextText = prevText + text;
-              thoughtsContent.dataset.rawText = nextText;
-              thoughtsContent.textContent = nextText;
-              
-              // Ensure it's expanded during streaming
-              // thoughtsContainer.classList.remove("collapsed");
-          }
-      } else {
-          const summaryDiv = /** @type {HTMLElement | null} */ (card?.querySelector(".task-summary .markdown-body"));
-          if (summaryDiv) {
-              const prevText = card.dataset.rawText || "";
-              const nextText = prevText + text;
-              card.dataset.rawText = nextText;
-              renderMarkdown(summaryDiv, nextText);
-              scrollToBottom();
-          }
+    if (type === "reasoning") {
+      const thoughtsContainer = card?.querySelector(".thought-section");
+      const thoughtsContent = card?.querySelector(".thought-content");
+      if (thoughtsContainer && thoughtsContent instanceof HTMLElement) {
+        thoughtsContainer.classList.remove("hidden");
+        // Append text to the content
+        const prevText = thoughtsContent.dataset.rawText || "";
+        const nextText = prevText + text;
+        thoughtsContent.dataset.rawText = nextText;
+        thoughtsContent.textContent = nextText;
+
+        // Ensure it's expanded during streaming
+        // thoughtsContainer.classList.remove("collapsed");
       }
+    } else {
+      const summaryDiv = /** @type {HTMLElement | null} */ (card?.querySelector(".task-summary .markdown-body"));
+      if (summaryDiv) {
+        const prevText = card.dataset.rawText || "";
+        const nextText = prevText + text;
+        card.dataset.rawText = nextText;
+        renderMarkdown(summaryDiv, nextText);
+        scrollToBottom();
+      }
+    }
 
   }
-  
+
   /**
    * Formats the assistant label with agent, model, and provider names.
    * @param {any} [info] Optional message info object.
@@ -2023,7 +2037,7 @@
     const agentId = info?.agent || selectedAgent || "assistant";
     const agentInfo = availableAgents.find(a => a.id === agentId);
     let agentName = agentInfo ? agentInfo.name : (agentId.charAt(0).toUpperCase() + agentId.slice(1));
-    
+
     // Use agent name as is
     // No mapping needed as per user request to show actual agent name
 
@@ -2031,22 +2045,22 @@
     // Try to get model and provider from info or current state
     const mId = info?.model?.modelID || info?.modelID || selectedModel?.modelID;
     const pId = info?.model?.providerID || info?.providerID || selectedModel?.providerID;
-    
-    if (mId && pId) {
-        const modelInfo = availableModels.find(m => m.modelID === mId && m.providerID === pId);
-        const modelName = modelInfo ? modelInfo.name : mId;
-        let providerName = modelInfo ? (modelInfo.providerName || modelInfo.providerID) : pId;
-        
-        // Clean up provider name if it's "opencode" but we have a better name
-        if (providerName === "opencode" && modelInfo?.providerName) {
-            providerName = modelInfo.providerName;
-        }
 
-        return `${agentName} (${modelName} (${providerName}))`;
+    if (mId && pId) {
+      const modelInfo = availableModels.find(m => m.modelID === mId && m.providerID === pId);
+      const modelName = modelInfo ? modelInfo.name : mId;
+      let providerName = modelInfo ? (modelInfo.providerName || modelInfo.providerID) : pId;
+
+      // Clean up provider name if it's "opencode" but we have a better name
+      if (providerName === "opencode" && modelInfo?.providerName) {
+        providerName = modelInfo.providerName;
+      }
+
+      return `${agentName} (${modelName} (${providerName}))`;
     } else if (mId) {
-        return `${agentName} (${mId})`;
+      return `${agentName} (${mId})`;
     }
-    
+
     return agentName;
   }
 
@@ -2061,21 +2075,21 @@
 
     usageContainer.innerHTML = "";
     if (usage.total > 0) {
-        const tokensSpan = document.createElement("span");
-        tokensSpan.className = "usage-stat";
-        tokensSpan.textContent = `${usage.total.toLocaleString()} tok`;
-        usageContainer.appendChild(tokensSpan);
+      const tokensSpan = document.createElement("span");
+      tokensSpan.className = "usage-stat";
+      tokensSpan.textContent = `${usage.total.toLocaleString()} tok`;
+      usageContainer.appendChild(tokensSpan);
     }
 
     if (usage.duration) {
-        const sep = document.createElement("span");
-        sep.textContent = "·";
-        sep.style.opacity = "0.35";
-        usageContainer.appendChild(sep);
-        const timeSpan = document.createElement("span");
-        timeSpan.className = "usage-stat";
-        timeSpan.textContent = `${(usage.duration / 1000).toFixed(1)}s`;
-        usageContainer.appendChild(timeSpan);
+      const sep = document.createElement("span");
+      sep.textContent = "·";
+      sep.style.opacity = "0.35";
+      usageContainer.appendChild(sep);
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "usage-stat";
+      timeSpan.textContent = `${(usage.duration / 1000).toFixed(1)}s`;
+      usageContainer.appendChild(timeSpan);
     }
   }
 
@@ -2083,14 +2097,14 @@
     const card = document.createElement("div");
     card.className = "task-card";
     if (messageId) {
-        card.dataset.messageId = messageId;
+      card.dataset.messageId = messageId;
     }
-    
+
     const header = document.createElement("div");
     header.className = "task-header";
-    
+
     const displayTitle = title;
-    
+
     const titleContainer = document.createElement("div");
     titleContainer.className = "task-title";
     titleContainer.innerHTML = `<span class="task-title-dot"></span><span>${displayTitle}</span>`;
@@ -2102,7 +2116,7 @@
     header.appendChild(usageContainer);
 
     if (usage) {
-        updateCardUsage(card, usage);
+      updateCardUsage(card, usage);
     }
 
     const copyBtn = document.createElement("button");
@@ -2115,12 +2129,12 @@
         </svg>
     `;
     copyBtn.onclick = (e) => {
-        e.stopPropagation();
-        const content = card.querySelector(".task-summary .markdown-body")?.textContent || "";
-        copyToClipboard(content, copyBtn);
+      e.stopPropagation();
+      const content = card.querySelector(".task-summary .markdown-body")?.textContent || "";
+      copyToClipboard(content, copyBtn);
     };
     header.appendChild(copyBtn);
-    
+
     card.appendChild(header);
 
     // Thoughts Section (Hidden by default)
@@ -2134,7 +2148,7 @@
         <div class="thought-content"></div>
     `;
     thoughts.querySelector(".thought-header")?.addEventListener("click", () => {
-        thoughts.classList.toggle("collapsed");
+      thoughts.classList.toggle("collapsed");
     });
     card.appendChild(thoughts);
 
@@ -2154,10 +2168,10 @@
         </div>
         <div class="progress-steps-list"></div>
     `;
-    
+
     progress.querySelector(".progress-header")?.addEventListener("click", () => {
-        progress.classList.toggle("collapsed");
-        scrollToBottom();
+      progress.classList.toggle("collapsed");
+      scrollToBottom();
     });
 
     card.appendChild(progress);
@@ -2265,9 +2279,9 @@
       h: "#a8ff97",
       hpp: "#a8ff97"
     };
-    
+
     const color = colorMap[ext] || "var(--text-secondary)";
-    
+
     // Improved icon: Filled slightly, clearer stroke
     return `
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="file-icon-svg">
@@ -2278,71 +2292,71 @@
   }
 
   function updateProgressStep(/** @type {HTMLElement} */ step, /** @type {string} */ meta, /** @type {string} */ status = "done", /** @type {any} */ details = null) {
-      const metaDiv = step.querySelector(".step-meta");
-      if (metaDiv) {
-          metaDiv.textContent = meta;
+    const metaDiv = step.querySelector(".step-meta");
+    if (metaDiv) {
+      metaDiv.textContent = meta;
+    }
+    if (status === "done") {
+      step.querySelector(".step-icon")?.classList.add("done");
+
+      // Calculate duration if not provided
+      // @ts-expect-error - Custom state object check
+      if (!details?.duration && step._stateObj?.startTime) {
+        // @ts-expect-error - Custom state object access
+        const duration = Date.now() - step._stateObj.startTime;
+        if (!details) details = {};
+        details.duration = duration;
       }
-      if (status === "done") {
-          step.querySelector(".step-icon")?.classList.add("done");
-          
-          // Calculate duration if not provided
-          // @ts-expect-error - Custom state object check
-          if (!details?.duration && step._stateObj?.startTime) {
-              // @ts-expect-error - Custom state object access
-              const duration = Date.now() - step._stateObj.startTime;
-              if (!details) details = {};
-              details.duration = duration;
+    } else if (status === "error") {
+      step.querySelector(".step-icon")?.classList.add("error");
+    }
+
+    // Render details (timing, tokens)
+    if (details) {
+      const detailsDiv = step.querySelector(".step-details");
+      if (detailsDiv) {
+        const parts = [];
+        if (details.duration) {
+          parts.push(`${(details.duration / 1000).toFixed(1)}s`);
+        }
+        if (details.tokens) {
+          const t = details.tokens;
+          const parts_tokens = [];
+          if (t.input) parts_tokens.push(`In: ${t.input}`);
+          if (t.output) parts_tokens.push(`Out: ${t.output}`);
+          if (t.cache) {
+            if (t.cache.read) parts_tokens.push(`Read: ${t.cache.read}`);
+            if (t.cache.write) parts_tokens.push(`Write: ${t.cache.write}`);
           }
-      } else if (status === "error") {
-          step.querySelector(".step-icon")?.classList.add("error");
+          if (parts_tokens.length > 0) {
+            parts.push(parts_tokens.join(", "));
+          } else {
+            // Fallback
+            const total = (t.input || 0) + (t.output || 0);
+            if (total > 0) parts.push(`${total.toLocaleString()} tokens`);
+          }
+        }
+        if (details.usage) { // Handle snake_case or specific usage object from SDK
+          const total = (details.usage.input_tokens || 0) + (details.usage.output_tokens || 0);
+          parts.push(`${total.toLocaleString()} tokens`);
+        }
+        detailsDiv.textContent = parts.join(" • ");
       }
 
-      // Render details (timing, tokens)
-      if (details) {
-          const detailsDiv = step.querySelector(".step-details");
-          if (detailsDiv) {
-              const parts = [];
-              if (details.duration) {
-                  parts.push(`${(details.duration / 1000).toFixed(1)}s`);
-              }
-              if (details.tokens) {
-                  const t = details.tokens;
-                  const parts_tokens = [];
-                  if (t.input) parts_tokens.push(`In: ${t.input}`);
-                  if (t.output) parts_tokens.push(`Out: ${t.output}`);
-                  if (t.cache) {
-                      if (t.cache.read) parts_tokens.push(`Read: ${t.cache.read}`);
-                      if (t.cache.write) parts_tokens.push(`Write: ${t.cache.write}`);
-                  }
-                  if (parts_tokens.length > 0) {
-                      parts.push(parts_tokens.join(", "));
-                  } else {
-                      // Fallback
-                       const total = (t.input || 0) + (t.output || 0);
-                       if (total > 0) parts.push(`${total.toLocaleString()} tokens`);
-                  }
-              }
-              if (details.usage) { // Handle snake_case or specific usage object from SDK
-                  const total = (details.usage.input_tokens || 0) + (details.usage.output_tokens || 0);
-                   parts.push(`${total.toLocaleString()} tokens`);
-              }
-              detailsDiv.textContent = parts.join(" • ");
-          }
-
-          // Accumulate stats into session totals
-          if (details.tokens) {
-              sessionStats.input += (details.tokens.input || 0);
-              sessionStats.output += (details.tokens.output || 0);
-              if (details.tokens.cache) {
-                  sessionStats.read += (details.tokens.cache.read || 0);
-                  sessionStats.write += (details.tokens.cache.write || 0);
-              }
-          }
-          if (details.duration) {
-              sessionStats.duration += details.duration;
-          }
-          updateHeaderStats();
+      // Accumulate stats into session totals
+      if (details.tokens) {
+        sessionStats.input += (details.tokens.input || 0);
+        sessionStats.output += (details.tokens.output || 0);
+        if (details.tokens.cache) {
+          sessionStats.read += (details.tokens.cache.read || 0);
+          sessionStats.write += (details.tokens.cache.write || 0);
+        }
       }
+      if (details.duration) {
+        sessionStats.duration += details.duration;
+      }
+      updateHeaderStats();
+    }
   }
   /**
    * FORBIDDEN TO REMOVE: This button allows users to view the implementation plan.
@@ -2351,7 +2365,7 @@
   function addPlanButtonToHeader(/** @type {HTMLElement} */ card, /** @type {any} */ plan) {
     const header = card.querySelector(".task-header");
     if (!header) return;
-    
+
     // Check if button already exists to avoid duplicates
     if (header.querySelector(".view-plan-header-btn")) return;
 
@@ -2371,16 +2385,16 @@
     // FORBIDDEN TO REMOVE: Core feature. Do not remove this button.
     btn.title = "Core Feature: View Implementation Plan";
     btn.onclick = (e) => {
-        e.stopPropagation();
-        vscode.postMessage({ type: "viewPlan", plan });
+      e.stopPropagation();
+      vscode.postMessage({ type: "viewPlan", plan });
     };
-    
+
     // Insert before copy button
     const copyBtn = header.querySelector(".copy-msg-btn");
     if (copyBtn) {
-        header.insertBefore(btn, copyBtn);
+      header.insertBefore(btn, copyBtn);
     } else {
-        header.appendChild(btn);
+      header.appendChild(btn);
     }
   }
 
@@ -2393,7 +2407,7 @@
     const card = document.createElement("div");
     card.className = "plan-card";
     card.innerHTML = "<!-- FORBIDDEN TO REMOVE: Core feature. -->";
-    
+
     const header = document.createElement("div");
     header.className = "plan-card-header";
     header.innerHTML = "Implementation Plan";
@@ -2406,7 +2420,7 @@
     // FORBIDDEN TO REMOVE: Core feature. Do not remove this button.
     btn.title = "Core Feature: Do not remove";
     btn.onclick = () => {
-        vscode.postMessage({ type: "viewPlan", plan });
+      vscode.postMessage({ type: "viewPlan", plan });
     };
     card.appendChild(btn);
 
@@ -2464,9 +2478,9 @@
 
 
   function clearStickyHeader() {
-      sessionStats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
-      updateHeaderStats();
-      if (chatHeader) chatHeader.classList.remove("hidden");
+    sessionStats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
+    updateHeaderStats();
+    if (chatHeader) chatHeader.classList.remove("hidden");
   }
 
   /**
@@ -2474,19 +2488,19 @@
    * @param {HTMLElement} btn
    */
   function copyToClipboard(text, btn) {
-      navigator.clipboard.writeText(text).then(() => {
-          const originalHTML = btn.innerHTML;
-          btn.innerHTML = `
+    navigator.clipboard.writeText(text).then(() => {
+      const originalHTML = btn.innerHTML;
+      btn.innerHTML = `
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="20 6 9 17 4 12"></polyline>
               </svg>
           `;
-          setTimeout(() => {
-              btn.innerHTML = originalHTML;
-          }, 2000);
-      }).catch(err => {
-          console.error('Failed to copy text: ', err);
-      });
+      setTimeout(() => {
+        btn.innerHTML = originalHTML;
+      }, 2000);
+    }).catch(err => {
+      console.error('Failed to copy text: ', err);
+    });
   }
 
   init();

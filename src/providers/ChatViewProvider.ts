@@ -1765,10 +1765,15 @@ export class ChatViewProvider
 
       if (normalizedImages.length > 0) {
         for (const img of normalizedImages) {
-          const imageMarkdown = `![${img.filename || "image"}](${img.dataUrl})`;
+          // Extract mime type from data URL, default to image/jpeg
+          const mimeMatch = img.dataUrl.match(/^data:([^;]+);/);
+          const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+
           parts.push({
-            type: "text",
-            text: imageMarkdown,
+            type: "file",
+            mime: mimeType,
+            filename: img.filename || "image",
+            url: img.dataUrl,
           });
         }
       }
@@ -3049,18 +3054,31 @@ export class ChatViewProvider
    */
   private sendBudgetInfo() {
     console.log('[ChatViewProvider] sendBudgetInfo() called');
+    console.log('[ChatViewProvider] Webview ready:', !!this.view?.webview);
+
     try {
+      // Check if budgeter is initialized
+      if (!this.budgeter) {
+        console.error('[ChatViewProvider] Budgeter not initialized!');
+        return;
+      }
+
       const config = this.budgeter.getConfig();
-      console.log('[ChatViewProvider] Budgeter config:', config);
+      console.log('[ChatViewProvider] Budgeter config:', JSON.stringify(config));
+
+      if (!config.enabled) {
+        console.warn('[ChatViewProvider] Budgeter is disabled, enabling it automatically');
+        this.budgeter.updateConfig({ enabled: true });
+      }
 
       const plan = this.budgeter.getPlan();
-      console.log('[ChatViewProvider] Budgeter plan:', plan);
+      console.log('[ChatViewProvider] Budgeter plan:', JSON.stringify(plan));
 
       const status = this.budgeter.getBudgetStatus();
-      console.log('[ChatViewProvider] Budgeter status:', status);
+      console.log('[ChatViewProvider] Budgeter status:', JSON.stringify(status));
 
       const advice = this.budgeter.getAdvice();
-      console.log('[ChatViewProvider] Budgeter advice:', advice);
+      console.log('[ChatViewProvider] Budgeter advice:', JSON.stringify(advice));
 
       const budgetInfo = {
         planName: plan.name,
@@ -3074,13 +3092,16 @@ export class ChatViewProvider
         advice: advice,
       };
 
-      console.log('[ChatViewProvider] Sending budget info:', budgetInfo);
-      this.view?.webview.postMessage({
+      console.log('[ChatViewProvider] Sending budget info:', JSON.stringify(budgetInfo));
+      const postResult = this.view?.webview.postMessage({
         type: "budgetInfo",
         data: budgetInfo,
       });
+      console.log('[ChatViewProvider] PostMessage result:', postResult);
     } catch (error) {
       console.error('[ChatViewProvider] Failed to send budget info:', error);
+      console.error('[ChatViewProvider] Error name:', (error as Error).name);
+      console.error('[ChatViewProvider] Error message:', (error as Error).message);
       console.error('[ChatViewProvider] Error stack:', (error as Error).stack);
     }
   }
