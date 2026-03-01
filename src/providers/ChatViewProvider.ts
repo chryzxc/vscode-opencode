@@ -97,12 +97,19 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
-import * as cp from "child_process";
+// import * as cp from "child_process";
+import {
+  FileThemeProcessor,
+  CssGenerator,
+  FileThemeProcessorObserver,
+  FileThemeProcessorState,
+} from "vscode-file-theme-processor";
 import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { SessionService } from "../services/SessionService";
 import { MessageStreamService } from "../services/MessageStreamService";
-import type { Session, SessionPromptData } from "@opencode-ai/sdk";
+import type { SessionPromptData } from "@opencode-ai/sdk";
 import { QuotaService } from "../services/QuotaService";
+import { RequestBudgeter } from "../services/RequestBudgeter";
 import { SubagentTracker } from "../services/SubagentTracker";
 import { PlanViewProvider } from "./PlanViewProvider";
 import { createLogger } from "../utils/Logger";
@@ -122,6 +129,7 @@ type PlanProceedComment = {
     startLine: number;
     endLine: number;
     selectedText: string;
+    surroundingText?: string;
   };
   text: string;
   createdAt: number;
@@ -157,28 +165,28 @@ type StructuredInteractiveChoice = {
 
 type StructuredInteractiveEvent =
   | {
-    type: "question";
-    id?: string;
-    title?: string;
-    question: string;
-    options: StructuredInteractiveChoice[];
-    multiSelect?: boolean;
-    allowCustomInput?: boolean;
-  }
+      type: "question";
+      id?: string;
+      title?: string;
+      question: string;
+      options: StructuredInteractiveChoice[];
+      multiSelect?: boolean;
+      allowCustomInput?: boolean;
+    }
   | {
-    type: "confirm";
-    id?: string;
-    title?: string;
-    question: string;
-    confirmLabel?: string;
-    cancelLabel?: string;
-  }
+      type: "confirm";
+      id?: string;
+      title?: string;
+      question: string;
+      confirmLabel?: string;
+      cancelLabel?: string;
+    }
   | {
-    type: "quick_actions";
-    id?: string;
-    title?: string;
-    actions: StructuredInteractiveChoice[];
-  };
+      type: "quick_actions";
+      id?: string;
+      title?: string;
+      actions: StructuredInteractiveChoice[];
+    };
 
 type StructuredAssistantOutput = {
   responseType?: StructuredResponseType | string;
@@ -220,7 +228,9 @@ type StructuredAssistantOutput = {
  *
  * @see WebviewViewProvider for VSCode webview provider interface
  */
-export class ChatViewProvider implements vscode.WebviewViewProvider {
+export class ChatViewProvider
+  implements vscode.WebviewViewProvider, FileThemeProcessorObserver
+{
   /** The webview instance (undefined before initialization) */
   private view?: vscode.WebviewView;
 
@@ -233,9 +243,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Service for monitoring AI platform quota usage */
   private quotaService: QuotaService;
   private subagentTracker: SubagentTracker;
+  /** Service for managing daily request budgets */
+  private budgeter: RequestBudgeter;
+
+  private fileThemeProcessor: FileThemeProcessor;
+  private cssGenerator: CssGenerator;
+  private currentThemeCss: string | undefined;
+
+  /** Logger for tracking events and metrics */
+  private readonly logger: ReturnType<typeof createLogger>;
 
   /** Currently selected AI model (persisted to global state) */
-  private selectedModel: { providerID: string; modelID: string; providerName?: string } = {
+  private selectedModel: {
+    providerID: string;
+    modelID: string;
+    providerName?: string;
+  } = {
     providerID: "opencode",
     modelID: "big-pickle",
     providerName: undefined,
@@ -299,12 +322,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private serverManager: OpencodeServerManager,
     private sessionService: SessionService,
   ) {
+    this.logger = createLogger("ChatViewProvider");
     this.streamService = new MessageStreamService(serverManager);
     this.quotaService = new QuotaService();
     this.subagentTracker = new SubagentTracker();
+    this.budgeter = new RequestBudgeter();
     this.quotaService.on("quotaUpdate", (data) => {
       this.view?.webview.postMessage({ type: "quotaData", data });
     });
+
+    // Initialize file theme processor
+    this.fileThemeProcessor = new FileThemeProcessor(context);
+    this.cssGenerator = new CssGenerator();
+    this.fileThemeProcessor.subscribe(this);
 
     // Load persisted model selection
     const savedModel = this.context.globalState.get<any>("selectedModel");
@@ -377,7 +407,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             // Resolve the active session before sending initState so that
             // per-session settings (agent / model / thinking) are applied first.
-            const currentSession = await this.sessionService.getCurrentSession();
+            const currentSession =
+              await this.sessionService.getCurrentSession();
             if (currentSession) {
               this.currentSessionId = currentSession.id;
               await this.applySessionSettings(currentSession.id);
@@ -393,11 +424,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             // Restore the session-specific thinking level (separate message type)
             const bootstrapThinkingLevel =
-              (currentSession ? this.getSessionSettings(currentSession.id).thinkingLevel : undefined)
-              ?? this.context.globalState.get<string>("thinkingLevel");
+              (currentSession
+                ? this.getSessionSettings(currentSession.id).thinkingLevel
+                : undefined) ??
+              this.context.globalState.get<string>("thinkingLevel");
             if (bootstrapThinkingLevel) {
-              this.view?.webview.postMessage({ type: "thinkingLevelUpdate", level: bootstrapThinkingLevel });
+              this.view?.webview.postMessage({
+                type: "thinkingLevelUpdate",
+                level: bootstrapThinkingLevel,
+              });
             }
+
+            // Send initial budget status
+            this.sendBudgetInfo();
 
             // Fetch and send chat history and sessions list
             if (currentSession) {
@@ -406,13 +445,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 currentSession.id,
               );
               const messages = rawMessages.map((m: any) =>
-                this.enrichMessageWithPlan(this.applyStructuredOutputToMessage(m)),
+                this.enrichMessageWithPlan(
+                  this.applyStructuredOutputToMessage(m),
+                ),
               );
               this.view?.webview.postMessage({
                 type: "chatHistory",
                 messages: messages,
               });
-              this.syncSubagentSnapshotForSession(currentSession.id, messages as any[]);
+              this.syncSubagentSnapshotForSession(
+                currentSession.id,
+                messages as any[],
+              );
             } else {
               this.subagentTracker.resetForSession(null);
               this.view?.webview.postMessage({
@@ -427,10 +471,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Send quota data or trigger initial fetch
             const quotaData = this.quotaService.cachedData;
             if (quotaData) {
-              this.view?.webview.postMessage({ type: "quotaData", data: quotaData });
+              this.view?.webview.postMessage({
+                type: "quotaData",
+                data: quotaData,
+              });
             } else {
-              this.quotaService.refreshQuota().catch(() => { });
+              this.quotaService.refreshQuota().catch(() => {});
             }
+            // Send initial theme data
+            await this.sendThemeDataToWebview();
           } finally {
             this.isBootstrappingWebview = false;
           }
@@ -458,13 +507,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
 
-          const contextPrefix =
-            this.firstNonEmptyString(message?.eventType, message?.eventId)
-              ? `[interactive:${this.firstNonEmptyString(
+          const contextPrefix = this.firstNonEmptyString(
+            message?.eventType,
+            message?.eventId,
+          )
+            ? `[interactive:${this.firstNonEmptyString(
                 message?.eventType,
                 "event",
               )}:${this.firstNonEmptyString(message?.eventId, "unknown")}] `
-              : "";
+            : "";
           const composedPrompt = `${contextPrefix}${choiceText}`;
 
           if (this.isProcessingRequest) {
@@ -533,8 +584,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "setModel": {
           // Normalize incoming model to always include providerName.
           const incoming =
-            message.model ||
-            {
+            message.model || {
               providerID: message.providerID,
               modelID: message.modelID,
             } ||
@@ -550,7 +600,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (!providerName) {
             // Try to resolve from cached models if available
             const found = this.availableModels?.find(
-              (m) => m.providerID === incoming.providerID && m.modelID === incoming.modelID,
+              (m) =>
+                m.providerID === incoming.providerID &&
+                m.modelID === incoming.modelID,
             );
             providerName = found?.providerName || incoming.providerID;
           }
@@ -562,9 +614,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           };
 
           // Persist selection
-          await this.context.globalState.update("selectedModel", this.selectedModel);
+          await this.context.globalState.update(
+            "selectedModel",
+            this.selectedModel,
+          );
           if (this.currentSessionId) {
-            await this.persistSessionSettings(this.currentSessionId, { model: this.selectedModel });
+            await this.persistSessionSettings(this.currentSessionId, {
+              model: this.selectedModel,
+            });
           }
           console.log(
             `[ChatViewProvider] Persisted model selection: ${this.selectedModel.modelID} (${this.selectedModel.providerName})`,
@@ -575,7 +632,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "setAgent": {
           this.selectedAgent = message.agent;
           if (this.currentSessionId) {
-            await this.persistSessionSettings(this.currentSessionId, { agent: message.agent });
+            await this.persistSessionSettings(this.currentSessionId, {
+              agent: message.agent,
+            });
           }
           break;
         }
@@ -664,21 +723,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (level) {
             await this.context.globalState.update("thinkingLevel", level);
             if (this.currentSessionId) {
-              await this.persistSessionSettings(this.currentSessionId, { thinkingLevel: level });
+              await this.persistSessionSettings(this.currentSessionId, {
+                thinkingLevel: level,
+              });
             }
             console.log(`[ChatViewProvider] Thinking level set to ${level}`);
             // NOTE: The webview handler only listens for 'thinkingLevelUpdate' (not 'thinkingLevelSet')
-            this.view?.webview.postMessage({ type: "thinkingLevelUpdate", level });
+            this.view?.webview.postMessage({
+              type: "thinkingLevelUpdate",
+              level,
+            });
           }
           break;
         }
         case "addAttachment": {
           const attachment = message.attachment;
           if (!attachment) break;
-          const existing = (this.context.globalState.get<any[]>("pendingAttachments") || []) as any[];
+          const existing = (this.context.globalState.get<any[]>(
+            "pendingAttachments",
+          ) || []) as any[];
           existing.push(attachment);
           await this.context.globalState.update("pendingAttachments", existing);
-          this.view?.webview.postMessage({ type: "attachmentAdded", attachmentId: attachment.id });
+          this.view?.webview.postMessage({
+            type: "attachmentAdded",
+            attachmentId: attachment.id,
+          });
           break;
         }
         case "clearAttachments": {
@@ -688,9 +757,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "planProceed": {
           const payload = message.payload;
-          await this.context.globalState.update("lastPlanProceed", payload || null);
+          await this.context.globalState.update(
+            "lastPlanProceed",
+            payload || null,
+          );
           console.log("[ChatViewProvider] planProceed received");
-          this.view?.webview.postMessage({ type: "planProceedAck", payload: { received: true } });
+          this.view?.webview.postMessage({
+            type: "planProceedAck",
+            payload: { received: true },
+          });
           break;
         }
       }
@@ -709,33 +784,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
 
-      // Log stream event for debugging response types
-      const structured = enrichedEvent?.structured || {};
-      const responseContext: Record<string, unknown> = {
-        eventType: event.type,
-        kind: structured.kind || "unknown",
-      };
+      // Log stream event for debugging response types (with error handling)
+      try {
+        const structured = enrichedEvent?.structured || {};
+        const responseContext: Record<string, unknown> = {
+          eventType: event.type || "unknown",
+          kind: structured?.kind || "unknown",
+        };
 
-      if (structured.text) {
-        responseContext.textLength = structured.text.length;
-        responseContext.textPreview = structured.text.substring(0, 100);
+        if (structured?.text) {
+          responseContext.textLength = structured.text.length;
+          responseContext.textPreview = structured.text.substring(0, 100);
+        }
+
+        if (structured?.responseType) {
+          responseContext.responseType = structured.responseType;
+        }
+
+        if (enrichedEvent?.structuredOutput) {
+          responseContext.hasStructuredOutput = true;
+          responseContext.outputType =
+            enrichedEvent.structuredOutput.responseType;
+        }
+
+        this.logger.aiStreamEvent(
+          "stream", // sessionId - using placeholder since stream events don't have a sessionId
+          structured?.kind || "unknown", // eventType
+          responseContext, // context
+        );
+      } catch (error) {
+        // Silently ignore logging errors to prevent stream interruption
+        console.error("[ChatViewProvider] Failed to log stream event:", error);
       }
-
-      if (structured.responseType) {
-        responseContext.responseType = structured.responseType;
-      }
-
-      if (enrichedEvent?.structuredOutput) {
-        responseContext.hasStructuredOutput = true;
-        responseContext.outputType = enrichedEvent.structuredOutput.responseType;
-      }
-
-      this.logger.aiStreamEvent(
-        'ChatViewProvider',
-        event.type,
-        structured.kind || 'unknown',
-        responseContext
-      );
 
       this.view?.webview.postMessage({
         type: "streamEvent",
@@ -813,10 +893,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         selectedAgent: this.selectedAgent,
       });
       const sessionThinkingLevel =
-        this.getSessionSettings(sessionId).thinkingLevel
-        ?? this.context.globalState.get<string>("thinkingLevel");
+        this.getSessionSettings(sessionId).thinkingLevel ??
+        this.context.globalState.get<string>("thinkingLevel");
       if (sessionThinkingLevel) {
-        this.view?.webview.postMessage({ type: "thinkingLevelUpdate", level: sessionThinkingLevel });
+        this.view?.webview.postMessage({
+          type: "thinkingLevelUpdate",
+          level: sessionThinkingLevel,
+        });
       }
 
       // Reload history for the new session
@@ -845,7 +928,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handleDeleteSession(sessionId: string): Promise<void> {
     try {
       // Get current session before deletion to check if we're deleting the active one
-      const wasCurrentSession = (await this.sessionService.getCurrentSession())?.id === sessionId;
+      const wasCurrentSession =
+        (await this.sessionService.getCurrentSession())?.id === sessionId;
 
       await this.sessionService.deleteSession(sessionId);
       await this.handleGetSessions();
@@ -983,7 +1067,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const mentionsFormat =
       text.includes("outputformat") ||
       text.includes("output_format") ||
-      text.includes("\"format\"") ||
+      text.includes('"format"') ||
       text.includes("format:");
     const mentionsUnsupported =
       text.includes("unknown") ||
@@ -1063,11 +1147,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!message || typeof message !== "object") {
       return undefined;
     }
-    return this.firstNonEmptyString(
-      message?.info?.id,
-      message?.id,
-      message?.messageID,
-    );
+    return this.firstNonEmptyString(message?.info?.id, message?.id);
   }
 
   private syncSubagentSnapshotForSession(
@@ -1082,7 +1162,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private normalizeStructuredOutput(raw: unknown): StructuredAssistantOutput | undefined {
+  private normalizeStructuredOutput(
+    raw: unknown,
+  ): StructuredAssistantOutput | undefined {
     let value: unknown = raw;
     if (typeof value === "string") {
       try {
@@ -1114,9 +1196,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const reasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
     const reasoning = Array.isArray(reasoningRaw)
       ? reasoningRaw
-        .filter((item): item is string => typeof item === "string")
-        .map((item) => item.trim())
-        .filter(Boolean)
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean)
       : typeof reasoningRaw === "string" && reasoningRaw.trim()
         ? [reasoningRaw.trim()]
         : [];
@@ -1124,31 +1206,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const progressRaw = rec.progressUpdates ?? rec.progress_updates;
     const progressUpdates = Array.isArray(progressRaw)
       ? progressRaw
-        .map((item) => {
-          const update = this.asRecord(item);
-          if (!update) return null;
-          const title = this.firstNonEmptyString(update.title, update.message);
-          if (!title) return null;
-          const status = this.firstNonEmptyString(update.status);
-          const normalizedStatus =
-            status === "done" || status === "error" || status === "pending"
-              ? status
-              : undefined;
-          return {
-            title,
-            status: normalizedStatus,
-            meta: this.firstNonEmptyString(update.meta, update.detail),
-            filePath: this.firstNonEmptyString(
-              update.filePath,
-              update.file,
-              update.path,
-            ),
-          } as StructuredProgressUpdate;
-        })
-        .filter((item): item is StructuredProgressUpdate => !!item)
+          .map((item) => {
+            const update = this.asRecord(item);
+            if (!update) return null;
+            const title = this.firstNonEmptyString(
+              update.title,
+              update.message,
+            );
+            if (!title) return null;
+            const status = this.firstNonEmptyString(update.status);
+            const normalizedStatus =
+              status === "done" || status === "error" || status === "pending"
+                ? status
+                : undefined;
+            return {
+              title,
+              status: normalizedStatus,
+              meta: this.firstNonEmptyString(update.meta, update.detail),
+              filePath: this.firstNonEmptyString(
+                update.filePath,
+                update.file,
+                update.path,
+              ),
+            } as StructuredProgressUpdate;
+          })
+          .filter((item): item is StructuredProgressUpdate => !!item)
       : [];
 
-    const normalizeChoices = (value: unknown): StructuredInteractiveChoice[] => {
+    const normalizeChoices = (
+      value: unknown,
+    ): StructuredInteractiveChoice[] => {
       if (!Array.isArray(value)) return [];
       return value
         .map((item) => {
@@ -1160,7 +1247,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             id: this.firstNonEmptyString(choice.id),
             label,
             value: this.firstNonEmptyString(choice.value) || label,
-            description: this.firstNonEmptyString(choice.description, choice.detail),
+            description: this.firstNonEmptyString(
+              choice.description,
+              choice.detail,
+            ),
           } as StructuredInteractiveChoice;
         })
         .filter((item): item is StructuredInteractiveChoice => !!item);
@@ -1172,19 +1262,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     ): StructuredInteractiveEvent | null => {
       const event = this.asRecord(value);
       if (!event) return null;
-      const eventType = this.firstNonEmptyString(event.type, event.kind)?.toLowerCase();
-      const id = this.firstNonEmptyString(event.id) || `interactive-${Date.now()}-${index}`;
+      const eventType = this.firstNonEmptyString(
+        event.type,
+        event.kind,
+      )?.toLowerCase();
+      const id =
+        this.firstNonEmptyString(event.id) ||
+        `interactive-${Date.now()}-${index}`;
 
       if (eventType === "confirm") {
-        const question = this.firstNonEmptyString(event.question, event.prompt, event.message);
+        const question = this.firstNonEmptyString(
+          event.question,
+          event.prompt,
+          event.message,
+        );
         if (!question) return null;
         return {
           type: "confirm",
           id,
           title: this.firstNonEmptyString(event.title),
           question,
-          confirmLabel: this.firstNonEmptyString(event.confirmLabel, event.confirm_text),
-          cancelLabel: this.firstNonEmptyString(event.cancelLabel, event.cancel_text),
+          confirmLabel: this.firstNonEmptyString(
+            event.confirmLabel,
+            event.confirm_text,
+          ),
+          cancelLabel: this.firstNonEmptyString(
+            event.cancelLabel,
+            event.cancel_text,
+          ),
         };
       }
 
@@ -1200,7 +1305,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (eventType === "question" || eventType === "interactive") {
-        const question = this.firstNonEmptyString(event.question, event.prompt, event.title);
+        const question = this.firstNonEmptyString(
+          event.question,
+          event.prompt,
+          event.title,
+        );
         const options = normalizeChoices(event.options ?? event.choices);
         if (!question || options.length === 0) return null;
         return {
@@ -1226,8 +1335,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const singleInteractive = normalizeInteractiveEvent(interactiveRaw, 0);
     let interactiveEvents = Array.isArray(interactiveRaw)
       ? interactiveRaw
-        .map((item, index) => normalizeInteractiveEvent(item, index))
-        .filter((item): item is StructuredInteractiveEvent => !!item)
+          .map((item, index) => normalizeInteractiveEvent(item, index))
+          .filter((item): item is StructuredInteractiveEvent => !!item)
       : singleInteractive
         ? [singleInteractive]
         : [];
@@ -1254,15 +1363,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const plan =
       planRec || responseType === "implementation_plan"
         ? {
-          file: this.firstNonEmptyString(planRec?.file) || "implementation_plan.md",
-          content: this.firstNonEmptyString(
-            planRec?.content,
-            planRec?.markdown,
-            message,
-          ),
-          title: this.firstNonEmptyString(planRec?.title),
-          summary: this.firstNonEmptyString(planRec?.summary),
-        }
+            file:
+              this.firstNonEmptyString(planRec?.file) ||
+              "implementation_plan.md",
+            content: this.firstNonEmptyString(
+              planRec?.content,
+              planRec?.markdown,
+              message,
+            ),
+            title: this.firstNonEmptyString(planRec?.title),
+            summary: this.firstNonEmptyString(planRec?.summary),
+          }
         : undefined;
 
     if (
@@ -1281,7 +1392,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       message,
       reasoning: reasoning.length > 0 ? reasoning : undefined,
       progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
-      interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined,
+      interactiveEvents:
+        interactiveEvents.length > 0 ? interactiveEvents : undefined,
       plan: plan?.content ? plan : undefined,
     };
   }
@@ -1314,7 +1426,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return "";
   }
 
-  private extractStructuredOutput(messageLike: any): StructuredAssistantOutput | undefined {
+  private extractStructuredOutput(
+    messageLike: any,
+  ): StructuredAssistantOutput | undefined {
     if (!messageLike) return undefined;
     const candidates: unknown[] = [
       messageLike.structuredOutput,
@@ -1377,7 +1491,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     if (structured.reasoning && structured.reasoning.length > 0) {
       const parts = Array.isArray(next.parts) ? [...next.parts] : [];
-      const hasReasoningPart = parts.some((part: any) => part?.type === "reasoning");
+      const hasReasoningPart = parts.some(
+        (part: any) => part?.type === "reasoning",
+      );
       if (!hasReasoningPart) {
         structured.reasoning.forEach((chunk) => {
           parts.push({ type: "reasoning", reasoning: chunk });
@@ -1398,12 +1514,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       next.steps = [...existingSteps, ...mapped];
     }
 
-    if (structured.interactiveEvents && structured.interactiveEvents.length > 0) {
+    if (
+      structured.interactiveEvents &&
+      structured.interactiveEvents.length > 0
+    ) {
       next.interactiveEvents = structured.interactiveEvents;
       const hasMessageBody =
         (typeof next.content === "string" && next.content.trim().length > 0) ||
         (Array.isArray(next.parts) &&
-          next.parts.some((part: any) => part?.type === "text" && typeof part?.text === "string" && part.text.trim().length > 0));
+          next.parts.some(
+            (part: any) =>
+              part?.type === "text" &&
+              typeof part?.text === "string" &&
+              part.text.trim().length > 0,
+          ));
       if (!hasMessageBody) {
         const firstEvent = structured.interactiveEvents[0];
         if (firstEvent.type === "question" || firstEvent.type === "confirm") {
@@ -1440,7 +1564,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const properties = this.asRecord(event.properties) || {};
     const part = this.asRecord(properties.part);
     const next: Record<string, unknown> = { ...event };
-    let kind: "thinking" | "progress" | "message" | "lifecycle" | "error" | "other" = "other";
+    let kind:
+      | "thinking"
+      | "progress"
+      | "message"
+      | "lifecycle"
+      | "error"
+      | "other" = "other";
     let text: string | undefined;
 
     if (event.type === "message.part.updated" && part) {
@@ -1468,7 +1598,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         kind = "progress";
       } else if (partType === "text" || !partType) {
         kind = "message";
-        text = this.firstNonEmptyString(properties.delta, part.text, part.content);
+        text = this.firstNonEmptyString(
+          properties.delta,
+          part.text,
+          part.content,
+        );
       }
     } else if (event.type === "message.updated") {
       kind = "lifecycle";
@@ -1517,7 +1651,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (img?.dataUrl && typeof img.dataUrl === "string") {
             return {
               dataUrl: img.dataUrl,
-              filename: typeof img.filename === "string" ? img.filename : "image",
+              filename:
+                typeof img.filename === "string" ? img.filename : "image",
             };
           }
           return null;
@@ -1528,6 +1663,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const client = await this.serverManager.ensureRunning();
       const session = await this.sessionService.getCurrentSession();
       this.subagentTracker.setActiveSession(session.id);
+
+      // Check budget before sending
+      const budgetCheck = this.budgeter.canMakeRequest();
+      if (!budgetCheck.allowed) {
+        this.sendBudgetInfo();
+        // Show warning to user
+        vscode.window.showWarningMessage(
+          `Request limit reached: ${budgetCheck.reason}`,
+        );
+        return;
+      }
 
       const existingMessages = await this.sessionService.getMessages(
         session.id,
@@ -1629,11 +1775,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       // Send the message using the SDK
       const startTime = Date.now();
-      const response = await this.promptWithStructuredOutput(client, session.id, {
-        model: this.selectedModel,
-        agent: agent || this.selectedAgent,
-        parts: parts,
-      });
+      const response = await this.promptWithStructuredOutput(
+        client,
+        session.id,
+        {
+          model: this.selectedModel,
+          agent: agent || this.selectedAgent,
+          parts: parts,
+        },
+      );
       const duration = (Date.now() - startTime) / 1000;
 
       console.log(`[ChatViewProvider] Response received in ${duration}s`, {
@@ -1642,6 +1792,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         status: response.response?.status,
         messageId: (response.data as any)?.info?.id,
       });
+
+      // Record the request in the budgeter after successful send
+      if (!response.error) {
+        this.budgeter.recordRequest();
+        this.sendBudgetInfo();
+      }
 
       if (response.error) {
         log.error("API error returned", {
@@ -1748,20 +1904,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       // Send response back to webview
       if (response.data) {
-        const structuredMessage = this.applyStructuredOutputToMessage(response.data);
+        const structuredMessage = this.applyStructuredOutputToMessage(
+          response.data,
+        );
         const enrichedMessage = this.enrichMessageWithPlan(structuredMessage);
         const assistantMessageId = this.extractMessageId(enrichedMessage);
         if (assistantMessageId) {
-          const hydratedSubagents = await this.subagentTracker.finalizeParentMessage({
-            client,
-            parentSessionId: session.id,
-            parentMessageId: assistantMessageId,
-          });
+          const hydratedSubagents =
+            await this.subagentTracker.finalizeParentMessage({
+              client,
+              parentSessionId: session.id,
+              parentMessageId: assistantMessageId,
+            });
           if (hydratedSubagents.length > 0) {
             enrichedMessage.subagents = hydratedSubagents;
             this.view?.webview.postMessage({
               type: "subagentUpdate",
-              ...this.subagentTracker.getPayloadForParentMessage(assistantMessageId),
+              ...this.subagentTracker.getPayloadForParentMessage(
+                assistantMessageId,
+              ),
             });
           }
         }
@@ -1890,7 +2051,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         /(implementation|feature)/i.test(info.summary?.title || ""));
 
     // Require structural markers to avoid false positives from short mentions
-    const hasStructuralMarkers = /##\s|###\s|\- \[ \]|Files:|Steps:|Goal:/i.test(fullContent) ||
+    const hasStructuralMarkers =
+      /##\s|###\s|\- \[ \]|Files:|Steps:|Goal:/i.test(fullContent) ||
       // Long content is likely a real plan even if markers are missing
       fullContent.length > 500;
 
@@ -2000,6 +2162,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  /**
+   * Automatically adds a context badge without overwriting manual ones
+   */
+  async autoAddContext(context: any): Promise<void> {
+    this.view?.webview.postMessage({
+      type: "addContext",
+      context: { ...context, isAuto: true },
+    });
+  }
+
+  /**
+   * Clears any automatically added context
+   */
+  async clearAutoContext(): Promise<void> {
+    this.view?.webview.postMessage({
+      type: "clearAutoContext",
+    });
+  }
+
   async handlePlanProceed(payload: {
     rawPlan: string;
     comments: PlanProceedComment[];
@@ -2008,8 +2189,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const comments = Array.isArray(payload?.comments) ? payload.comments : [];
 
     const commentLines = comments.map((comment) => {
-      const lineNumber = (comment.anchor?.startLine ?? 0) + 1;
-      return `- Line ${lineNumber}: ${comment.text}`;
+      const textRef = comment.anchor?.selectedText ? `On text "${comment.anchor.selectedText}": ` : "";
+      return `- ${textRef}${comment.text}`;
     });
 
     const updatedPlanMd =
@@ -2027,20 +2208,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       new TextEncoder().encode(updatedPlanMd),
     );
 
-    await this.handleSendMessage("Proceed", [planFilePath]);
+    await this.handleSendMessage(
+      "The implementation plan has been reviewed and approved. Please proceed with the implementation according to the plan.",
+      [planFilePath],
+    );
 
     // Post addPlanAttachment message to chat webview for the visual chip
-    const planGoal = rawPlan.match(/^#\s+(.+)/m)?.[1]?.trim() ?? 'Implementation Plan';
-    const planBase64 = Buffer.from(updatedPlanMd, 'utf-8').toString('base64');
+    const planGoal =
+      rawPlan.match(/^#\s+(.+)/m)?.[1]?.trim() ?? "Implementation Plan";
+    const planBase64 = Buffer.from(updatedPlanMd, "utf-8").toString("base64");
     const dataUrl = `data:text/markdown;base64,${planBase64}`;
     this.view?.webview.postMessage({
-      type: 'addPlanAttachment',
+      type: "addPlanAttachment",
       payload: {
         id: `plan-${Date.now()}`,
         filename: `\uD83D\uDCCB Implementation Plan: ${planGoal}`,
-        mimeType: 'text/markdown',
+        mimeType: "text/markdown",
         dataUrl,
-      }
+      },
     });
     PlanViewProvider.closeCurrentPanel();
   }
@@ -2048,7 +2233,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Handles viewing the implementation plan
    */
-  private async handleViewPlan(plan: { file?: string; content?: string }): Promise<void> {
+  private async handleViewPlan(plan: {
+    file?: string;
+    content?: string;
+  }): Promise<void> {
     let planData: string | undefined;
 
     // First, try to use the plan content directly if available
@@ -2057,7 +2245,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       console.log("[ChatViewProvider] Using plan content from message");
     }
     // Otherwise, if it looks like a filename, try to read the actual file
-    else if (plan.file && plan.file.endsWith(".md") && !plan.file.includes("\n")) {
+    else if (
+      plan.file &&
+      plan.file.endsWith(".md") &&
+      !plan.file.includes("\n")
+    ) {
       try {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (workspaceFolders) {
@@ -2079,7 +2271,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (planData) {
       await vscode.commands.executeCommand("opencode.showPlan", planData);
     } else {
-      vscode.window.showErrorMessage("Could not read plan file: No plan content available");
+      vscode.window.showErrorMessage(
+        "Could not read plan file: No plan content available",
+      );
     }
   }
 
@@ -2269,7 +2463,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * We intentionally do NOT remap by modelID alone when multiple providers expose the same model.
    */
   private async reconcileSelectedModelSelection(
-    models: Array<{ providerID: string; modelID: string; name: string; providerName?: string }>,
+    models: Array<{
+      providerID: string;
+      modelID: string;
+      name: string;
+      providerName?: string;
+    }>,
   ): Promise<void> {
     if (!models.length) {
       return;
@@ -2287,13 +2486,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           ...this.selectedModel,
           providerName: nextProviderName,
         };
-        await this.context.globalState.update("selectedModel", this.selectedModel);
+        await this.context.globalState.update(
+          "selectedModel",
+          this.selectedModel,
+        );
       }
       return;
     }
 
     const isLegacyGenericProvider =
-      !this.selectedModel.providerID || this.selectedModel.providerID === "opencode";
+      !this.selectedModel.providerID ||
+      this.selectedModel.providerID === "opencode";
     if (!isLegacyGenericProvider) {
       console.warn(
         `[ChatViewProvider] Persisted model ${this.selectedModel.providerID}/${this.selectedModel.modelID} not found in provider catalog; keeping persisted selection unchanged.`,
@@ -2311,7 +2514,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         modelID: match.modelID,
         providerName: match.providerName || match.providerID,
       };
-      await this.context.globalState.update("selectedModel", this.selectedModel);
+      await this.context.globalState.update(
+        "selectedModel",
+        this.selectedModel,
+      );
       console.log(
         `[ChatViewProvider] Reconciled legacy model selection to ${this.selectedModel.providerID}/${this.selectedModel.modelID}.`,
       );
@@ -2329,7 +2535,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Resolves the default model from the CLI config
    */
   private async resolveDefaultModel(
-    models: Array<{ providerID: string; modelID: string; name: string; providerName?: string }>,
+    models: Array<{
+      providerID: string;
+      modelID: string;
+      name: string;
+      providerName?: string;
+    }>,
   ): Promise<void> {
     // Only attempt if we are still on the hardcoded default AND we haven't loaded a persisted model
     // We check if the current model is exactly the hardcoded default to allow CLI sync.
@@ -2372,7 +2583,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         console.log(`[ChatViewProvider] Found CLI default model: ${defaultId}`);
         const providerModelMatch = defaultId.match(/^([^\/:\s]+)[\/:](.+)$/);
         let match:
-          | { providerID: string; modelID: string; name: string; providerName?: string }
+          | {
+              providerID: string;
+              modelID: string;
+              name: string;
+              providerName?: string;
+            }
           | undefined;
 
         // Preferred: explicit provider/model pair
@@ -2387,7 +2603,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (!match) {
             match = models.find(
               (m) =>
-                (m.providerName || "").toLowerCase() === providerRef.toLowerCase() &&
+                (m.providerName || "").toLowerCase() ===
+                  providerRef.toLowerCase() &&
                 (m.modelID === modelRef || m.name === modelRef),
             );
           }
@@ -2582,16 +2799,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // The SDK's app.agents() endpoint only returns plugin-registered agents
     // (e.g. oh-my-opencode) and does not enumerate the built-in ones, so we
     // ensure they are always present by merging them in manually.
-    const BUILTIN_AGENTS: Array<{ id: string; name: string; description: string }> = [
+    const BUILTIN_AGENTS: Array<{
+      id: string;
+      name: string;
+      description: string;
+    }> = [
       {
         id: "build",
         name: "Build",
-        description: "Default agent for development work with all tools enabled",
+        description:
+          "Default agent for development work with all tools enabled",
       },
       {
         id: "plan",
         name: "Plan",
-        description: "Restricted agent for planning and analysis without making changes",
+        description:
+          "Restricted agent for planning and analysis without making changes",
       },
     ];
 
@@ -2600,27 +2823,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const response = await client.app.agents();
 
       if (response.data && Array.isArray(response.data)) {
-        const sdkAgents: Array<{ id: string; name: string; description: string }> =
-          response.data
-            .filter((agent: any) => {
-              const mode = agent.mode as string;
-              // Only expose agents that can be selected as a primary agent.
-              return (
-                (mode === "primary" || mode === "all") &&
-                !HIDDEN_SYSTEM_AGENTS.has(agent.name as string)
-              );
-            })
-            .map((agent: any) => {
-              const id = agent.name as string;
-              const displayName = id.charAt(0).toUpperCase() + id.slice(1);
-              return {
-                id,
-                name: displayName,
-                description:
-                  (agent.description as string | undefined) ??
-                  `OpenCode ${displayName} agent`,
-              };
-            });
+        const sdkAgents: Array<{
+          id: string;
+          name: string;
+          description: string;
+        }> = response.data
+          .filter((agent: any) => {
+            const mode = agent.mode as string;
+            // Only expose agents that can be selected as a primary agent.
+            return (
+              (mode === "primary" || mode === "all") &&
+              !HIDDEN_SYSTEM_AGENTS.has(agent.name as string)
+            );
+          })
+          .map((agent: any) => {
+            const id = agent.name as string;
+            const displayName = id.charAt(0).toUpperCase() + id.slice(1);
+            return {
+              id,
+              name: displayName,
+              description:
+                (agent.description as string | undefined) ??
+                `OpenCode ${displayName} agent`,
+            };
+          });
 
         // Prepend any built-in agents that the SDK did not return, so the
         // user always sees build + plan even when only plugin agents come back.
@@ -2670,9 +2896,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async syncCLIAgents(): Promise<void> {
     if (!this.selectedAgent) {
       this.selectedAgent = "build";
-      console.log(
-        "[ChatViewProvider] No agent set, defaulting to 'build'",
-      );
+      console.log("[ChatViewProvider] No agent set, defaulting to 'build'");
     }
   }
 
@@ -2821,6 +3045,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Sends the current budget status to the webview
+   */
+  private sendBudgetInfo() {
+    console.log('[ChatViewProvider] sendBudgetInfo() called');
+    try {
+      const config = this.budgeter.getConfig();
+      console.log('[ChatViewProvider] Budgeter config:', config);
+
+      const plan = this.budgeter.getPlan();
+      console.log('[ChatViewProvider] Budgeter plan:', plan);
+
+      const status = this.budgeter.getBudgetStatus();
+      console.log('[ChatViewProvider] Budgeter status:', status);
+
+      const advice = this.budgeter.getAdvice();
+      console.log('[ChatViewProvider] Budgeter advice:', advice);
+
+      const budgetInfo = {
+        planName: plan.name,
+        monthlyQuota: plan.monthlyQuota,
+        usedToday: status.currentDailyBudget?.used ?? 0,
+        dailyAllowance: status.currentDailyBudget?.dailyAllowance ?? 0,
+        remainingToday: status.currentDailyBudget?.remaining ?? 0,
+        daysRemaining: status.daysRemaining,
+        projectedMonthlyUsage: status.projectedMonthlyUsage,
+        warningLevel: status.warningLevel,
+        advice: advice,
+      };
+
+      console.log('[ChatViewProvider] Sending budget info:', budgetInfo);
+      this.view?.webview.postMessage({
+        type: "budgetInfo",
+        data: budgetInfo,
+      });
+    } catch (error) {
+      console.error('[ChatViewProvider] Failed to send budget info:', error);
+      console.error('[ChatViewProvider] Error stack:', (error as Error).stack);
+    }
+  }
+
+  /**
    * Sends the current queue state to the webview
    */
   private sendQueueUpdate() {
@@ -2828,5 +3093,63 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: "queueUpdate",
       queue: this.queue,
     });
+  }
+
+  // --- File Icon Theme Sync Methods ---
+
+  /**
+   * Called when the file theme processor state changes.
+   */
+  public notify(state: FileThemeProcessorState): void {
+    if (state === "ready") {
+      this.sendThemeDataToWebview();
+    }
+  }
+
+  /**
+   * Generates and sends the file theme CSS to the webview.
+   */
+  private async sendThemeDataToWebview(): Promise<void> {
+    if (!this.view) {
+      return;
+    }
+
+    try {
+      const themeData = this.fileThemeProcessor.getThemeData();
+      if (!themeData.data || !themeData.themeId) {
+        return;
+      }
+
+      const cssData = this.cssGenerator.getCss(
+        themeData.data,
+        themeData.themeId,
+        this.view.webview,
+      );
+      const combinedCss = `${cssData.fontFaceCss}\n${cssData.iconCss}`;
+      this.currentThemeCss = combinedCss;
+
+      // Update localResourceRoots to include theme extension paths
+      if (themeData.localResourceRoots.length > 0) {
+        const roots = [
+          this.context.extensionUri,
+          ...themeData.localResourceRoots.map((root) => vscode.Uri.file(root)),
+        ];
+        this.view.webview.options = {
+          ...this.view.webview.options,
+          localResourceRoots: roots,
+        };
+      }
+
+      await this.view.webview.postMessage({
+        type: "injectThemeCss",
+        css: combinedCss,
+      });
+      console.log("[ChatViewProvider] Injected theme CSS into webview");
+    } catch (error) {
+      console.error(
+        "[ChatViewProvider] Failed to send theme data to webview:",
+        error,
+      );
+    }
   }
 }

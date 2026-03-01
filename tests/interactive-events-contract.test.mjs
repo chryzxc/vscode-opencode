@@ -43,6 +43,8 @@ test('frontend normalizes and stores interactive events', () => {
   assert.match(handlerSource, /detectInteractiveEventsFromText\(/, 'message handler should detect interactive events from plain assistant text');
   assert.match(handlerSource, /collectOptionsInDirection\(/, 'question detection should scan option lists around the question');
   assert.match(handlerSource, /extractInlineOrChoices\(/, 'question detection should parse inline A-or-B options');
+  assert.match(handlerSource, /isLikelyYesNoQuestion\(/, 'question detection should classify yes-no prompts');
+  assert.match(handlerSource, /stripMarkdownFormatting\(/, 'question detection should sanitize markdown noise in choices');
   assert.match(handlerSource, /auto-question-/, 'auto-detected questions should be assigned deterministic ids');
 });
 

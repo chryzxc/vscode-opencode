@@ -19,7 +19,24 @@ export function extractFunctionBody(source, signature) {
   const fnStart = source.indexOf(signature);
   assert.notEqual(fnStart, -1, `${signature} definition not found`);
 
-  const braceStart = source.indexOf('{', fnStart);
+  // Find the end of the signature (the closing parenthesis of the parameter list)
+  let signatureEnd = fnStart + signature.length;
+  // If the signature passed in is just a prefix, find the actual end
+  if (signature.includes('(') && !signature.includes(')')) {
+    let parenDepth = 0;
+    for (let i = source.indexOf('(', fnStart); i < source.length; i++) {
+      if (source[i] === '(') parenDepth++;
+      if (source[i] === ')') {
+        parenDepth--;
+        if (parenDepth === 0) {
+          signatureEnd = i + 1;
+          break;
+        }
+      }
+    }
+  }
+
+  const braceStart = source.indexOf('{', signatureEnd);
   assert.notEqual(braceStart, -1, `${signature} body start not found`);
 
   let depth = 0;

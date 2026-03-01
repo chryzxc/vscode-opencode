@@ -132,6 +132,41 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     // ============================================================================
+    // Auto-Attach Highlighted Text Feature
+    // ============================================================================
+    context.subscriptions.push(
+      vscode.window.onDidChangeTextEditorSelection(async (event) => {
+        const editor = event.textEditor;
+        const selection = event.selections[0]; // Take primary selection
+
+        if (!selection || selection.isEmpty) {
+          // Tell webview to clear auto context
+          await chatViewProvider.clearAutoContext();
+          return;
+        }
+
+        const selectedText = editor.document.getText(selection).trim();
+        if (!selectedText) {
+          await chatViewProvider.clearAutoContext();
+          return;
+        }
+
+        const fileName = vscode.workspace.asRelativePath(editor.document.uri);
+        const startLine = selection.start.line + 1;
+        const endLine = selection.end.line + 1;
+        const lineInfo =
+          startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
+
+        await chatViewProvider.autoAddContext({
+          file: fileName,
+          lineInfo: lineInfo,
+          content: selectedText,
+          languageId: editor.document.languageId,
+        });
+      }),
+    );
+
+    // ============================================================================
     // PHASE 3: Register Commands
     // ============================================================================
     // Commands are registered with context.subscriptions for automatic cleanup.
@@ -341,7 +376,19 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.commands.registerCommand(
         "opencode.planProceed",
-        async (payload: { rawPlan: string; comments: Array<{ id: string; anchor: { startLine: number; endLine: number; selectedText: string }; text: string; createdAt: number; }> }) => {
+        async (payload: {
+          rawPlan: string;
+          comments: Array<{
+            id: string;
+            anchor: {
+              startLine: number;
+              endLine: number;
+              selectedText: string;
+            };
+            text: string;
+            createdAt: number;
+          }>;
+        }) => {
           await chatViewProvider.handlePlanProceed(payload);
         },
       ),

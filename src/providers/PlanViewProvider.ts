@@ -165,10 +165,11 @@ export class PlanViewProvider {
 
     const nonce = getNonce();
     // Inject wrapper payload: raw + parsed + comments + revision
+    const planId = plan.goal || "default";
     const planData = {
-      raw: plan.rawContent ?? '',
+      raw: plan.rawContent ?? "",
       parsed: plan,
-      comments: [],
+      comments: this._commentsByPlan.get(planId) ?? [],
       revision: 0,
     };
     const planDataJson = JSON.stringify(planData);
@@ -176,15 +177,15 @@ export class PlanViewProvider {
     // Badge chunk is extracted by Vite — only include it if the file actually exists on disk
     const badgeChunkPath = path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'badge.js');
     const badgeChunkTag = fs.existsSync(badgeChunkPath)
-      ? `<script nonce="${nonce}" src="${webview.asWebviewUri(vscode.Uri.file(badgeChunkPath))}"></script>`
-      : '<!-- badge.js not found, skipped -->';
+      ? `<script type="module" nonce="${nonce}" src="${webview.asWebviewUri(vscode.Uri.file(badgeChunkPath))}"></script>`
+      : "<!-- badge.js not found, skipped -->";
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
     <link href="${stylesUri}" rel="stylesheet">
     <title>Implementation Plan</title>
 </head>
@@ -194,10 +195,11 @@ export class PlanViewProvider {
         window.__PLAN_DATA__ = ${planDataJson};
     </script>
     ${badgeChunkTag}
-    <script nonce="${nonce}" src="${scriptUri}"></script>
+    <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
+
 }
 
 function getNonce() {

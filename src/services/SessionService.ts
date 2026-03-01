@@ -670,16 +670,10 @@ export class SessionService {
         console.log(
           `[SessionService] Fetched ${response.data.length} messages from server`,
         );
-        // Map to a flatter format for the UI and persistence
-        const mappedMessages = response.data.map(
-          (m: { info: unknown; parts: unknown[] }) => ({
-            ...(m.info as Record<string, unknown>),
-            parts: m.parts,
-          }),
-        );
-        // Persist to local storage
-        await this.saveSessionMessages(sessionId, mappedMessages);
-        return mappedMessages;
+        // Keep the nested info structure from server for proper type compatibility
+        // Server returns: { info: {...}, parts: [...] } which matches Message interface
+        await this.saveSessionMessages(sessionId, response.data);
+        return response.data;
       }
     } catch (error) {
       console.warn(

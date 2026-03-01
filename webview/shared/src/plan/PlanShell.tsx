@@ -108,9 +108,10 @@ export default function PlanShell() {
 
   // Expose postAddComment / postUpdateComment / postDeleteComment globals
   useEffect(() => {
-    window.postAddComment = (comment: PlanComment, planId?: string) => vscode?.postMessage({ type: 'addComment', comment, planId });
-    window.postUpdateComment = (comment: PlanComment, planId?: string) => vscode?.postMessage({ type: 'updateComment', comment, planId });
-    window.postDeleteComment = (id: string, planId?: string) => vscode?.postMessage({ type: 'deleteComment', id, planId });
+    const planId = plan?.goal || 'default';
+    window.postAddComment = (comment: PlanComment) => vscode?.postMessage({ type: 'addComment', comment, planId });
+    window.postUpdateComment = (comment: PlanComment) => vscode?.postMessage({ type: 'updateComment', comment, planId });
+    window.postDeleteComment = (id: string) => vscode?.postMessage({ type: 'deleteComment', id, planId });
     return () => {
       try {
         // @ts-ignore
@@ -123,13 +124,23 @@ export default function PlanShell() {
         /* ignore */
       }
     };
-  }, []);
+  }, [plan?.goal]);
 
   const rawPlan = (plan as PlanData)?.rawContent ?? envelope?.raw ?? '';
 
   useEffect(() => {
     window.__pendingPlanAnchor = pendingAnchor ?? null;
   }, [pendingAnchor]);
+
+  if (!plan) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[var(--vscode-editor-background)] text-[var(--vscode-descriptionForeground)] text-sm">No plan data available.</div>
+    );
+  }
+
+  const completedCount = checkedSteps.size;
+  const totalSteps = plan.steps.length;
+  const renderedHtml = renderMarkdown(rawPlan);
 
   // Text selection → floating popover
   useEffect(() => {
@@ -162,16 +173,18 @@ export default function PlanShell() {
         return;
       }
 
-      const idx = rawPlan.indexOf(selectedText);
-      if (idx === -1) {
-        setPendingAnchor(null);
-        setPopoverPos(null);
-        return;
-      }
+      // We capture surrounding text (parent paragraph/div) to disambiguate highlights later.
+      const surroundingText = sel.getRangeAt(0).commonAncestorContainer.textContent || '';
 
-      const startLine = rawPlan.slice(0, idx).split('\n').length - 1;
-      const endLine = rawPlan.slice(0, idx + selectedText.length).split('\n').length - 1;
-      setPendingAnchor({ startLine, endLine, selectedText });
+      // We calculate line numbers relative to the raw markdown for the LLM prompt,
+      // but note that this index-search on raw markdown can be brittle if
+      // the selection comes from a formatted text block (e.g. bold/italic).
+      // We keep it as a best-effort fallback, but the highlight system now uses text context.
+      const idx = rawPlan.indexOf(selectedText);
+      const startLine = idx !== -1 ? rawPlan.slice(0, idx).split('\n').length - 1 : 0;
+      const endLine = idx !== -1 ? rawPlan.slice(0, idx + selectedText.length).split('\n').length - 1 : 0;
+
+      setPendingAnchor({ startLine, endLine, selectedText, surroundingText });
 
       // Position popover near the selection
       try {
@@ -183,20 +196,111 @@ export default function PlanShell() {
       }
     }
 
+    function handleSelectionChange() {
+      const activeEl = document.activeElement;
+      // If the user is typing/clicking inside the popover (textarea or buttons), 
+      // the selection might collapse, but we shouldn't dismiss the popover.
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.closest('.comment-popover'))) {
+        return;
+      }
+
+      const sel = window.getSelection();
+      // Only hide the popover when the selection is cleared
+      if (!sel || sel.isCollapsed) {
+        setPendingAnchor(null);
+        setPopoverPos(null);
+      }
+    }
+
     const container = planContentRef.current;
-    if (container) container.addEventListener('mouseup', computeAnchorFromSelection);
-    document.addEventListener('selectionchange', computeAnchorFromSelection);
+    if (container) {
+      container.addEventListener('mouseup', computeAnchorFromSelection);
+      container.addEventListener('keyup', computeAnchorFromSelection);
+    }
+    document.addEventListener('selectionchange', handleSelectionChange);
+
     return () => {
-      if (container) container.removeEventListener('mouseup', computeAnchorFromSelection);
-      document.removeEventListener('selectionchange', computeAnchorFromSelection);
+      if (container) {
+        container.removeEventListener('mouseup', computeAnchorFromSelection);
+        container.removeEventListener('keyup', computeAnchorFromSelection);
+      }
+      document.removeEventListener('selectionchange', handleSelectionChange);
     };
   }, [rawPlan]);
 
-  if (!plan) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[var(--vscode-editor-background)] text-[var(--vscode-descriptionForeground)] text-sm">No plan data available.</div>
-    );
-  }
+  // Inline highlights for comments
+  useEffect(() => {
+    const container = planContentRef.current;
+    if (!container || !comments.length) return;
+
+    // Reset: The markdown renders clean via React, but we might want to be explicit
+    // if we were mutating the same DOM. Since renderedHtml is a dependency of this 
+    // fragment's parent, it's mostly handled.
+
+    const walk = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.nodeValue || '';
+        const parent = node.parentNode;
+        if (!parent || parent.nodeName === 'MARK' || parent.nodeName === 'SCRIPT' || parent.nodeName === 'STYLE') return;
+
+        // Try to find any comment that matches this text node
+        // We use a simple approach: if the exact selectedText is present, we wrap it.
+        // NOTE: This might highlight multiple occurrences if the text is generic.
+        for (const comment of comments) {
+          const needle = comment.anchor.selectedText;
+          if (!needle) continue;
+
+          const idx = text.indexOf(needle);
+          if (idx !== -1) {
+            // Disambiguation check: if the comment has surroundingText, verify that
+            // this text node's environment matches that context.
+            if (comment.anchor.surroundingText) {
+              const context = (parent as HTMLElement).innerText || parent.textContent || '';
+              if (!context.includes(comment.anchor.surroundingText)) continue;
+            }
+
+            const before = text.slice(0, idx);
+            const match = text.slice(idx, idx + needle.length);
+            const after = text.slice(idx + needle.length);
+
+            const fragment = document.createDocumentFragment();
+            if (before) fragment.appendChild(document.createTextNode(before));
+
+            const mark = document.createElement('mark');
+            mark.textContent = match;
+            mark.className = 'bg-amber-500/30 text-inherit cursor-pointer rounded-sm hover:bg-amber-500/50 transition-colors px-0.5 -mx-0.5';
+            mark.dataset.commentId = comment.id;
+            mark.title = comment.text;
+            mark.onclick = (e) => {
+              e.stopPropagation();
+              setCommentsPanelOpen(true);
+              // We could also scroll to the comment in the sidebar here if we wanted
+            };
+            fragment.appendChild(mark);
+
+            if (after) fragment.appendChild(document.createTextNode(after));
+
+            parent.replaceChild(fragment, node);
+            // After replacement, we stop processing this node but the fragment might contain 
+            // more text that needs processing (if we had multiple comments in one node).
+            // For simplicity, we just process one highlight per node per pass.
+            break;
+          }
+        }
+      } else {
+        const children = Array.from(node.childNodes);
+        for (const child of children) {
+          walk(child);
+        }
+      }
+    };
+
+    // Small delay to ensure renderMarkdown has finished and DOM is stable
+    const timer = setTimeout(() => walk(container), 20);
+    return () => clearTimeout(timer);
+  }, [renderedHtml, comments, rawPlan]);
+
+
 
   function toggleStep(index: number) {
     setCheckedSteps((prev) => {
@@ -222,10 +326,6 @@ export default function PlanShell() {
     setPopoverPos(null);
   }
 
-  const completedCount = checkedSteps.size;
-  const totalSteps = plan.steps.length;
-  const renderedHtml = renderMarkdown(rawPlan);
-
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
 
@@ -238,7 +338,6 @@ export default function PlanShell() {
               <Shield className="h-4 w-4 flex-shrink-0 text-[var(--vscode-focusBorder)]" />
               <h1 className="truncate text-sm font-semibold">{plan.goal}</h1>
             </div>
-            {plan.description && <p className="text-xs text-[var(--vscode-descriptionForeground)] line-clamp-2">{plan.description}</p>}
           </div>
 
           {/* Right: Comments + Proceed buttons */}
@@ -359,7 +458,7 @@ export default function PlanShell() {
             zIndex: 50,
             width: 300,
           }}
-          className="rounded-md border border-[var(--vscode-panel-border)] bg-[var(--vscode-editorWidget-background,var(--vscode-editor-background))] p-3 shadow-lg"
+          className="comment-popover rounded-md border border-[var(--vscode-panel-border)] bg-[var(--vscode-editorWidget-background,var(--vscode-editor-background))] p-3 shadow-lg"
         >
           <p className="mb-2 text-xs text-[var(--vscode-descriptionForeground)] italic line-clamp-2">
             &ldquo;{pendingAnchor.selectedText.length > 60 ? `${pendingAnchor.selectedText.slice(0, 60)}…` : pendingAnchor.selectedText}&rdquo;

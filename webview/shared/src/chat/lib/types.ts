@@ -28,6 +28,9 @@ export interface Session {
 export interface ContextItem {
   file: string;
   lineInfo: string;
+  isAuto?: boolean;
+  content?: string;
+  languageId?: string;
 }
 
 export interface FileResult {
@@ -47,11 +50,13 @@ export interface StreamingStep {
   id?: string;
   callID?: string;
   title: string;
-  type: 'step' | 'tool' | 'reasoning';
-  status: 'pending' | 'done' | 'error';
+  type: "step" | "tool" | "reasoning";
+  status: "pending" | "done" | "error";
   meta?: string;
   filePath?: string;
   startTime?: number;
+  /** Monotonic sequence stamp (Date.now()) set by the store when the step first arrives. */
+  streamSeq?: number;
   duration?: number;
   tokens?: {
     input?: number;
@@ -75,6 +80,13 @@ export interface StreamingState {
   edits: string[];
   isActive: boolean;
   usage?: { total: number; duration?: number };
+  /** Date.now() timestamp recorded when the first non-empty content chunk arrives. */
+  contentStartSeq?: number;
+  /** Metadata about the model/agent being used for this streaming response */
+  agent?: string;
+  model?: { modelID: string; providerID: string; name?: string };
+  modelID?: string;
+  providerID?: string;
 }
 
 export interface MessageInfo {
@@ -249,6 +261,21 @@ export interface Message {
   subagents?: SubagentDetail[];
   // Optional interactive UI event payloads
   interactiveEvents?: InteractiveEvent[];
+  // Optional top-level fields for backwards compatibility with flattened persisted messages
+  // These fields are also in info, but older persisted messages may have them at top level
+  id?: string;
+  agent?: string;
+  model?: { modelID: string; providerID: string; name?: string };
+  modelID?: string;
+  providerID?: string;
+  summary?: { title?: string; body?: string };
+  tokens?: {
+    input?: number;
+    output?: number;
+    cache?: { read?: number; write?: number };
+  };
+  duration?: number;
+  created?: number;
 }
 
 export interface QuotaItem {
@@ -273,6 +300,20 @@ export interface PlatformQuota {
 export interface QuotaData {
   platforms: PlatformQuota[];
   lastUpdated: number;
+}
+
+// ── Budget Management Types ─────────────────────────────────────────────────────
+
+export interface BudgetInfo {
+  planName: string;
+  monthlyQuota: number;
+  usedToday: number;
+  dailyAllowance: number;
+  remainingToday: number;
+  daysRemaining: number;
+  projectedMonthlyUsage: number;
+  warningLevel: 'ok' | 'warning' | 'critical';
+  advice: string[];
 }
 
 export interface AppState {
@@ -316,6 +357,7 @@ export interface AppState {
   selectedSubagentId: string | null;
   subagentsPanelOpen: boolean;
   interactiveEvents: InteractiveEvent[];
+  budgetInfo: BudgetInfo | null;
 }
 
 export interface AttachmentItem {
@@ -338,7 +380,12 @@ export interface TodoItem {
 
 export interface PlanComment {
   id: string;
-  anchor: { startLine: number; endLine: number; selectedText: string };
+  anchor: {
+    startLine: number;
+    endLine: number;
+    selectedText: string;
+    surroundingText?: string;
+  };
   text: string;
   createdAt: number;
 }

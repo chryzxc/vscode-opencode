@@ -119,7 +119,7 @@ export class DiffReviewProvider {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
     <link href="${stylesUri}" rel="stylesheet">
     <title>Diff Review</title>
 </head>
@@ -128,8 +128,8 @@ export class DiffReviewProvider {
     <script nonce="${nonce}">
         window.__DIFF_DATA__ = ${diffDataJson};
     </script>
-    <script nonce="${nonce}" src="${badgeChunkUri}"></script>
-    <script nonce="${nonce}" src="${scriptUri}"></script>
+    <script type="module" nonce="${nonce}" src="${badgeChunkUri}"></script>
+    <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }

@@ -79,13 +79,37 @@ test('quota monitor omits OK badge for healthy providers to reduce visual clutte
   // Verify only error and warning badges are rendered for unhealthy providers.
   const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
 
-  assert.match(quotaPanelBody, /platform\.status\s*===\s*'error'/, 'quota panel should check for error status');
-  assert.match(quotaPanelBody, /variant="destructive"[^>]*>error</, 'quota panel should render error badge for error status');
-  assert.match(quotaPanelBody, /platform\.status\s*===\s*'warning'/, 'quota panel should check for warning status');
-  assert.match(quotaPanelBody, /text-\[#d29922\][^>]*>warning</, 'quota panel should render warning badge for warning status');
+  assert.match(quotaPanelBody, /platform\.status\s*===\s*["']error["']/, 'quota panel should check for error status');
+  assert.match(quotaPanelBody, /variant=["']destructive["'][^>]*>\s*error\s*</, 'quota panel should render error badge for error status');
+  assert.match(quotaPanelBody, /platform\.status\s*===\s*["']warning["']/, 'quota panel should check for warning status');
+  assert.match(quotaPanelBody, /variant=["']warning["'][^>]*>\s*warning\s*</, 'quota panel should render warning badge for warning status');
   assert.match(quotaPanelBody, /\)\s*:\s*null\}/, 'quota panel should render null for healthy status instead of badge');
   
   // Verify the status check structure has null for the else branch (OK status)
-  const statusCheckMatch = quotaPanelBody.match(/platform\.status\s*===\s*'error'[^}]*\)\s*:\s*null\}/);
+  const statusCheckMatch = quotaPanelBody.match(/platform\.status\s*===\s*["']error["'][^}]*\)\s*:\s*null\}/);
   assert.ok(statusCheckMatch, 'quota panel should not render a badge for OK status');
+});
+test('quota monitor renders budget info section when budgetInfo exists', () => {
+  // Verify budget data integration and conditional rendering.
+  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+
+  assert.match(quotaPanelBody, /\{budgetInfo\s*\?\s*\(/, 'quota monitor should conditionally render budget section when budgetInfo exists');
+  assert.match(quotaPanelBody, /\{budgetInfo\.planName\}\s*\(\{budgetInfo\.monthlyQuota\}\s*requests\/month\)/, 'quota monitor should display plan name and monthly quota');
+  assert.match(quotaPanelBody, /\{budgetInfo\.usedToday\}\s*\/\s*\{budgetInfo\.dailyAllowance\}\s*requests/, 'quota monitor should show daily usage stats');
+});
+
+test('quota monitor renders budget bar with reactive scaling', () => {
+  // Verify the progress bar logic for the budget monitor.
+  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+
+  assert.match(quotaPanelBody, /Math\.min\(100,\s*\(budgetInfo\.usedToday\s*\/\s*budgetInfo\.dailyAllowance\)\s*\*\s*100\)/, 'budget bar should clamp width at 100%');
+  assert.match(quotaPanelBody, /barColor\(\(budgetInfo\.remainingToday\s*\/\s*budgetInfo\.dailyAllowance\)\s*\*\s*100\)/, 'budget bar should use barColor utility with remaining percentage');
+});
+
+test('quota monitor shows actionable advice items from budget payload', () => {
+  // Verify rendering of the first advice item in budget section.
+  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+
+  assert.match(quotaPanelBody, /budgetInfo\.advice\s*&&\s*budgetInfo\.advice\.length\s*>\s*0/, 'quota monitor should check for advice presence');
+  assert.match(quotaPanelBody, /\{budgetInfo\.advice\[0\]\}/, 'quota monitor should render the first advice item');
 });

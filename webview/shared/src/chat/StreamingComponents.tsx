@@ -115,7 +115,7 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
 
       {/* Step list */}
       {open ? (
-        <div className="space-y-1 p-2">
+        <div className="space-y-1 p-2 max-h-[300px] overflow-y-auto">
           {steps.map((step, index) => (
             <ProgressStep key={`${step.id ?? step.callID ?? step.title}-${index}`} step={step} />
           ))}
@@ -126,10 +126,23 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
 }
 
 export function StreamingCard() {
-  const { streaming } = useAppState();
+  const { streaming, isProcessing } = useAppState();
+
+  // Show streaming card if:
+  // 1. Streaming state exists (regardless of content - show early)
+  // 2. AND either: processing is true, streaming is active, or there's any content
   const visible = useMemo(
-    () => !!streaming && (streaming.isActive || streaming.content.length > 0),
-    [streaming],
+    () => !!streaming && (
+      streaming.isActive ||
+      streaming.content.length > 0 ||
+      streaming.reasoning.length > 0 ||
+      streaming.steps.length > 0 ||
+      streaming.reasoningEvents.length > 0 ||
+      streaming.progressEvents.length > 0 ||
+      isProcessing ||
+      streaming.messageId
+    ),
+    [streaming, isProcessing],
   );
 
   if (!visible || !streaming) return null;

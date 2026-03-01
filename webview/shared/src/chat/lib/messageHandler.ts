@@ -3,6 +3,7 @@ import type { Dispatch } from 'react';
 import type { AppAction } from './store';
 import type {
   AppState,
+  BudgetInfo,
   ContextItem,
   FileResult,
   InteractiveChoice,
@@ -14,8 +15,12 @@ import type {
   StreamingState,
   StreamingStep,
   SubagentDetail,
-  SubagentSummary
-} from './types';
+  SubagentSummary,
+  SubagentReference,
+  SubagentThinkingEvent,
+  SubagentProgressEvent,
+  SubagentTimelineEvent,
+} from "./types";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -397,12 +402,21 @@ function shouldBootstrapStreamingFromPart(part: UnknownRecord | null): boolean {
   }
 
   const partType = asString(part.type).toLowerCase();
-  if (partType === 'reasoning' || partType === 'step-start' || partType === 'tool' || partType === 'patch') {
+  // Include text parts to bootstrap streaming for regular content chunks
+  if (
+    partType === "reasoning" ||
+    partType === "step-start" ||
+    partType === "tool" ||
+    partType === "patch" ||
+    partType === "text"
+  ) {
     return true;
   }
 
   const reasoningLike =
-    asString(part.reasoning) || asString(part.thought) || asString(part.thinking);
+    asString(part.reasoning) ||
+    asString(part.thought) ||
+    asString(part.thinking);
   return Boolean(reasoningLike);
 }
 
@@ -698,20 +712,22 @@ function normalizeSubagentSummary(value: unknown): SubagentSummary | null {
 
   const references = Array.isArray(rec.references)
     ? rec.references
-      .map((entry) => {
-        const ref = asRecord(entry);
-        if (!ref) {
-          return null;
-        }
-        const messageID = asString(ref.messageID) || undefined;
-        const partID = asString(ref.partID) || undefined;
-        const callID = asString(ref.callID) || undefined;
-        if (!messageID && !partID && !callID) {
-          return null;
-        }
-        return { messageID, partID, callID };
-      })
-      .filter((entry): entry is NonNullable<SubagentSummary['references'][number]> => !!entry)
+        .map((entry) => {
+          const ref = asRecord(entry);
+          if (!ref) {
+            return null;
+          }
+          const res: SubagentReference = {
+            messageID: asString(ref.messageID) || undefined,
+            partID: asString(ref.partID) || undefined,
+            callID: asString(ref.callID) || undefined,
+          };
+          if (!res.messageID && !res.partID && !res.callID) {
+            return null;
+          }
+          return res;
+        })
+        .filter((entry): entry is SubagentReference => !!entry)
     : [];
 
   return {
@@ -743,76 +759,83 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
 
   const thinkingEvents = Array.isArray(rec.thinkingEvents)
     ? rec.thinkingEvents
-      .map((entry, index) => {
-        const evt = asRecord(entry);
-        if (!evt) {
-          return null;
-        }
-        const text = asString(evt.text);
-        if (!text) {
-          return null;
-        }
-        return {
-          id: asString(evt.id) || `${summary.id}:thinking:${index}`,
-          text,
-          createdAt: asNumber(evt.createdAt, Date.now()),
-          messageID: asString(evt.messageID) || undefined,
-          partID: asString(evt.partID) || undefined
-        };
-      })
-      .filter((entry): entry is SubagentDetail['thinkingEvents'][number] => !!entry)
+        .map((entry, index) => {
+          const evt = asRecord(entry);
+          if (!evt) {
+            return null;
+          }
+          const text = asString(evt.text);
+          if (!text) {
+            return null;
+          }
+          const res: SubagentThinkingEvent = {
+            id: asString(evt.id) || `${summary.id}:thinking:${index}`,
+            text,
+            createdAt: asNumber(evt.createdAt, Date.now()),
+            messageID: asString(evt.messageID) || undefined,
+            partID: asString(evt.partID) || undefined,
+          };
+          return res;
+        })
+        .filter((entry): entry is SubagentThinkingEvent => !!entry)
     : [];
 
   const progressEvents = Array.isArray(rec.progressEvents)
     ? rec.progressEvents
-      .map((entry, index) => {
-        const evt = asRecord(entry);
-        if (!evt) {
-          return null;
-        }
-        const title = asString(evt.title);
-        if (!title) {
-          return null;
-        }
-        return {
-          id: asString(evt.id) || `${summary.id}:progress:${index}`,
-          title,
-          status: asString(evt.status) === 'done' || asString(evt.status) === 'error' ? (asString(evt.status) as 'done' | 'error') : 'pending',
-          meta: asString(evt.meta) || undefined,
-          filePath: asString(evt.filePath) || undefined,
-          createdAt: asNumber(evt.createdAt, Date.now()),
-          messageID: asString(evt.messageID) || undefined,
-          partID: asString(evt.partID) || undefined,
-          callID: asString(evt.callID) || undefined
-        };
-      })
-      .filter((entry): entry is SubagentDetail['progressEvents'][number] => !!entry)
+        .map((entry, index) => {
+          const evt = asRecord(entry);
+          if (!evt) {
+            return null;
+          }
+          const title = asString(evt.title);
+          if (!title) {
+            return null;
+          }
+          const res: SubagentProgressEvent = {
+            id: asString(evt.id) || `${summary.id}:progress:${index}`,
+            title,
+            status:
+              asString(evt.status) === "done" ||
+              asString(evt.status) === "error"
+                ? (asString(evt.status) as "done" | "error")
+                : "pending",
+            meta: asString(evt.meta) || undefined,
+            filePath: asString(evt.filePath) || undefined,
+            createdAt: asNumber(evt.createdAt, Date.now()),
+            messageID: asString(evt.messageID) || undefined,
+            partID: asString(evt.partID) || undefined,
+            callID: asString(evt.callID) || undefined,
+          };
+          return res;
+        })
+        .filter((entry): entry is SubagentProgressEvent => !!entry)
     : [];
 
   const timelineEvents = Array.isArray(rec.timelineEvents)
     ? rec.timelineEvents
-      .map((entry, index) => {
-        const evt = asRecord(entry);
-        if (!evt) {
-          return null;
-        }
-        const key = asString(evt.key);
-        const type = asString(evt.type);
-        const label = asString(evt.label);
-        if (!key || !type || !label) {
-          return null;
-        }
-        return {
-          key: key || `${summary.id}:timeline:${index}`,
-          type,
-          label,
-          createdAt: asNumber(evt.createdAt, Date.now()),
-          messageID: asString(evt.messageID) || undefined,
-          partID: asString(evt.partID) || undefined,
-          callID: asString(evt.callID) || undefined
-        };
-      })
-      .filter((entry): entry is SubagentDetail['timelineEvents'][number] => !!entry)
+        .map((entry, index) => {
+          const evt = asRecord(entry);
+          if (!evt) {
+            return null;
+          }
+          const key = asString(evt.key);
+          const type = asString(evt.type);
+          const label = asString(evt.label);
+          if (!key || !type || !label) {
+            return null;
+          }
+          const res: SubagentTimelineEvent = {
+            key: key || `${summary.id}:timeline:${index}`,
+            type,
+            label,
+            createdAt: asNumber(evt.createdAt, Date.now()),
+            messageID: asString(evt.messageID) || undefined,
+            partID: asString(evt.partID) || undefined,
+            callID: asString(evt.callID) || undefined,
+          };
+          return res;
+        })
+        .filter((entry): entry is SubagentTimelineEvent => !!entry)
     : [];
 
   const tokenUsageRec = asRecord(rec.tokenUsage);
@@ -946,15 +969,65 @@ function stripChoicePrefix(input: string): string {
     .trim();
 }
 
+function stripMarkdownFormatting(input: string): string {
+  return input
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function isLikelyYesNoQuestion(question: string): boolean {
+  return /^(do|does|did|is|are|was|were|can|could|should|would|will|have|has|had|may|might|am)\b/i.test(
+    question.trim(),
+  );
+}
+
 function normalizeChoiceFromLine(line: string, index: number): InteractiveChoice | undefined {
   const trimmed = line.trim();
   if (!trimmed) {
     return undefined;
   }
 
-  let candidate = stripChoicePrefix(trimmed);
+  const hasListPrefix = /^(?:[-*]|\u2022|\d{1,2}[.)]|[a-zA-Z][.)])\s+/.test(
+    trimmed,
+  );
+  const hasLabelColon = /^[*_`"'(]*[A-Za-z][^?]{0,40}:\s+\S+/.test(trimmed);
+
+  let candidate = stripMarkdownFormatting(stripChoicePrefix(trimmed));
+  if (!hasListPrefix && !hasLabelColon) {
+    const plainWords = candidate.split(/\s+/).filter(Boolean);
+    const plainAllowed =
+      candidate.length > 0 &&
+      candidate.length <= 32 &&
+      plainWords.length > 0 &&
+      plainWords.length <= 4 &&
+      /^[A-Za-z0-9 /+._-]+$/.test(candidate) &&
+      !/[\\/]/.test(candidate);
+    if (!plainAllowed) {
+      return undefined;
+    }
+  }
 
   if (!candidate || candidate.length > 140 || candidate.includes('?')) {
+    return undefined;
+  }
+
+  const looksPathLike =
+    /(?:^|[\s"'`])(?:[A-Za-z]:\\|\.{0,2}[\\/]|[\w-]+[\\/][\w./\\-]+\.[A-Za-z0-9]{1,8})/.test(
+      candidate,
+    );
+  if (looksPathLike && !hasLabelColon) {
+    return undefined;
+  }
+  if (
+    /auto-generated|generated file|timestamp/i.test(candidate) &&
+    !/^(yes|no)\b/i.test(candidate)
+  ) {
     return undefined;
   }
 
@@ -968,7 +1041,7 @@ function normalizeChoiceFromLine(line: string, index: number): InteractiveChoice
   }
 
   label = label.replace(/[.,;:]$/, '').trim();
-  if (!label || label.length < 2) {
+  if (!label || label.length < 2 || label.split(/\s+/).length > 8) {
     return undefined;
   }
 
@@ -1103,6 +1176,7 @@ function detectInteractiveEventsFromText(text: string, message: Message): Intera
   const idBase = asString(info?.id) || asString(messageRec?.id) || `${Date.now()}`;
 
   for (const row of questionRows) {
+    const yesNoQuestion = isLikelyYesNoQuestion(row.question);
     const optionsAfter = collectOptionsInDirection(lines, row.index + 1, 1);
     const optionsBefore = collectOptionsInDirection(lines, row.index - 1, -1);
     const inlineOptions = extractInlineOrChoices(row.question);
@@ -1113,6 +1187,10 @@ function detectInteractiveEventsFromText(text: string, message: Message): Intera
           ? optionsBefore
           : inlineOptions
     );
+
+    if (yesNoQuestion && inlineOptions.length === 0) {
+      continue;
+    }
 
     if (options.length >= 2) {
       return [
@@ -1128,10 +1206,7 @@ function detectInteractiveEventsFromText(text: string, message: Message): Intera
   }
 
   const finalQuestion = questionRows[questionRows.length - 1].question;
-  const isLikelyYesNoQuestion = /^(do|does|did|is|are|was|were|can|could|should|would|will|have|has|had|may|might|am)\b/i.test(
-    finalQuestion
-  );
-  if (!isLikelyYesNoQuestion) {
+  if (!isLikelyYesNoQuestion(finalQuestion)) {
     return [];
   }
 
@@ -1187,7 +1262,7 @@ function buildStreamingMessage(streaming: StreamingState): Message {
   }
 
   return {
-    role: 'assistant',
+    role: "assistant",
     content: streaming.content || streaming.reasoning,
     parts,
     reasoningEvents: streaming.reasoningEvents,
@@ -1196,20 +1271,24 @@ function buildStreamingMessage(streaming: StreamingState): Message {
       title: step.title,
       content: step.filePath,
       status: step.status,
-      meta: step.meta
+      meta: step.meta,
     })),
     steps: streaming.steps.map((step) => ({
       type: step.type,
       title: step.title,
       content: step.filePath,
       status: step.status,
-      meta: step.meta
+      meta: step.meta,
     })),
     edits: streaming.edits.map((file) => ({ file })),
     info: {
       id: streaming.messageId ?? undefined,
-      duration: streaming.usage?.duration
-    }
+      agent: streaming.agent,
+      model: streaming.model,
+      modelID: streaming.modelID,
+      providerID: streaming.providerID,
+      duration: streaming.usage?.duration,
+    },
   };
 }
 
@@ -1273,19 +1352,53 @@ function handleStreamEvent(
     return;
   }
 
-  if (!current && (isExplicitStart || isAssistantUpdateStart || canBootstrapFromPart || state.isProcessing)) {
+  if (
+    !current &&
+    (isExplicitStart ||
+      isAssistantUpdateStart ||
+      canBootstrapFromPart ||
+      state.isProcessing)
+  ) {
+    // Extract model/agent metadata from the event payload or fall back to app state
+    const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
+    const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
+    const eventModelID =
+      asString(infoRecord?.modelID) || asString(payload.modelID);
+    const eventProviderID =
+      asString(infoRecord?.providerID) || asString(payload.providerID);
+
     dispatch({
-      type: 'SET_STREAMING',
+      type: "SET_STREAMING",
       payload: {
         messageId,
-        content: '',
-        reasoning: '',
+        content: "",
+        reasoning: "",
         reasoningEvents: [],
         steps: [],
         progressEvents: [],
         edits: [],
-        isActive: true
-      }
+        isActive: true,
+        // Include model/agent metadata for display during streaming
+        agent: eventAgent || state.selectedAgent || undefined,
+        model:
+          eventModel && typeof eventModel === "object"
+            ? {
+                modelID:
+                  asString(eventModel.modelID) ||
+                  state.selectedModel?.modelID ||
+                  "",
+                providerID:
+                  asString(eventModel.providerID) ||
+                  state.selectedModel?.providerID ||
+                  "",
+                name:
+                  asString((eventModel as Record<string, unknown>).name) ||
+                  undefined,
+              }
+            : undefined,
+        modelID: eventModelID || state.selectedModel?.modelID,
+        providerID: eventProviderID || state.selectedModel?.providerID,
+      },
     });
   }
 
@@ -1512,18 +1625,44 @@ function handleStreamEvent(
     }
     case 'start':
     case 'streamStart': {
+      // Extract model/agent metadata from the event payload or fall back to app state
+      const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
+      const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
+      const eventModelID = asString(infoRecord?.modelID) || asString(payload.modelID);
+      const eventProviderID = asString(infoRecord?.providerID) || asString(payload.providerID);
+
       dispatch({
-        type: 'SET_STREAMING',
+        type: "SET_STREAMING",
         payload: {
           messageId,
-          content: '',
-          reasoning: '',
+          content: "",
+          reasoning: "",
           reasoningEvents: [],
           steps: [],
           progressEvents: [],
           edits: [],
-          isActive: true
-        }
+          isActive: true,
+          // Include model/agent metadata for display during streaming
+          agent: eventAgent || state.selectedAgent || undefined,
+          model:
+            eventModel && typeof eventModel === "object"
+              ? {
+                  modelID:
+                    asString(eventModel.modelID) ||
+                    state.selectedModel?.modelID ||
+                    "",
+                  providerID:
+                    asString(eventModel.providerID) ||
+                    state.selectedModel?.providerID ||
+                    "",
+                  name:
+                    asString((eventModel as Record<string, unknown>).name) ||
+                    undefined,
+                }
+              : undefined,
+          modelID: eventModelID || state.selectedModel?.modelID,
+          providerID: eventProviderID || state.selectedModel?.providerID,
+        },
       });
       dispatch({ type: 'SET_PROCESSING', payload: true });
       break;
@@ -1652,64 +1791,100 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
     const type = asString(data.type);
 
+    // Set processing state BEFORE handling message types to ensure streaming state is created early
+    if (asBoolean(data.processing, false)) {
+      dispatch({ type: "SET_PROCESSING", payload: true });
+    }
+
     switch (type) {
-      case 'initState':
-      case 'init': {
+      case "initState":
+      case "init": {
         const state = asRecord(data.state) ?? data;
-        const sessionId = asString(state.sessionId) || asString(state.currentSessionId) || null;
+        const sessionId =
+          asString(state.sessionId) || asString(state.currentSessionId) || null;
 
         const selectedModelRecord = asRecord(state.selectedModel);
         const selectedModel = selectedModelRecord
           ? {
-            providerID: asString(selectedModelRecord.providerID),
-            modelID: asString(selectedModelRecord.modelID)
-          }
+              providerID: asString(selectedModelRecord.providerID),
+              modelID: asString(selectedModelRecord.modelID),
+            }
           : null;
 
-        dispatch({ type: 'SET_SESSION_ID', payload: sessionId });
-        dispatch({ type: 'SET_SERVER_STATUS', payload: asString(state.serverStatus, 'connected') });
+        dispatch({ type: "SET_SESSION_ID", payload: sessionId });
         dispatch({
-          type: 'SET_SELECTED_MODEL',
-          payload: selectedModel?.providerID && selectedModel?.modelID ? selectedModel : null
+          type: "SET_SERVER_STATUS",
+          payload: asString(state.serverStatus, "connected"),
         });
-        dispatch({ type: 'SET_SELECTED_AGENT', payload: asString(state.selectedAgent) });
-        dispatch({ type: 'SET_RECEIVED_INIT_STATE', payload: true });
-        break;
-      }
-      case 'modelsList': {
-        const models = asArray(data.models, (item): item is AppState['availableModels'][number] => {
-          const rec = asRecord(item);
-          return !!rec && typeof rec.modelID === 'string' && typeof rec.providerID === 'string' && typeof rec.name === 'string';
+        dispatch({
+          type: "SET_SELECTED_MODEL",
+          payload:
+            selectedModel?.providerID && selectedModel?.modelID
+              ? selectedModel
+              : null,
         });
-        dispatch({ type: 'SET_MODELS_LIST', payload: models });
-        break;
-      }
-      case 'agentsList': {
-        const agents = asArray(data.agents, (item): item is AppState['availableAgents'][number] => {
-          const rec = asRecord(item);
-          return !!rec && typeof rec.id === 'string' && typeof rec.name === 'string' && typeof rec.description === 'string';
+        dispatch({
+          type: "SET_SELECTED_AGENT",
+          payload: asString(state.selectedAgent),
         });
-        dispatch({ type: 'SET_AGENTS_LIST', payload: agents });
+        dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
         break;
       }
-      case 'statusUpdate': {
-        dispatch({ type: 'SET_SERVER_STATUS', payload: asString(data.status, 'unknown') });
+      case "modelsList": {
+        const models = asArray(
+          data.models,
+          (item): item is AppState["availableModels"][number] => {
+            const rec = asRecord(item);
+            return (
+              !!rec &&
+              typeof rec.modelID === "string" &&
+              typeof rec.providerID === "string" &&
+              typeof rec.name === "string"
+            );
+          },
+        );
+        dispatch({ type: "SET_MODELS_LIST", payload: models });
         break;
       }
-      case 'messageResponse': {
-        const msg = (asRecord(data.message) as Message | null) ?? (data as unknown as Message);
+      case "agentsList": {
+        const agents = asArray(
+          data.agents,
+          (item): item is AppState["availableAgents"][number] => {
+            const rec = asRecord(item);
+            return (
+              !!rec &&
+              typeof rec.id === "string" &&
+              typeof rec.name === "string" &&
+              typeof rec.description === "string"
+            );
+          },
+        );
+        dispatch({ type: "SET_AGENTS_LIST", payload: agents });
+        break;
+      }
+      case "statusUpdate": {
+        dispatch({
+          type: "SET_SERVER_STATUS",
+          payload: asString(data.status, "unknown"),
+        });
+        break;
+      }
+      case "messageResponse": {
+        const msg =
+          (asRecord(data.message) as Message | null) ??
+          (data as unknown as Message);
         const currentMessages = getState().messages;
 
         // FORBIDDEN TO REMOVE - token accumulation for sticky header
         dispatch({
-          type: 'ACCUMULATE_SESSION_STATS',
+          type: "ACCUMULATE_SESSION_STATS",
           payload: {
             input: msg.info?.tokens?.input || 0,
             output: msg.info?.tokens?.output || 0,
             read: msg.info?.tokens?.cache?.read || 0,
             write: msg.info?.tokens?.cache?.write || 0,
-            duration: msg.info?.duration || 0
-          }
+            duration: msg.info?.duration || 0,
+          },
         });
 
         const streaming = getState().streaming;
@@ -1719,44 +1894,57 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             ? buildStreamingMessage(streaming)
             : undefined;
         if (normalizedMessage) {
-          const sanitized = sanitizeAssistantMessageEcho(normalizedMessage, getState());
-          dispatch({ type: 'SET_MESSAGES', payload: [...currentMessages, sanitized] });
-          const { summariesByParentMessageId, detailsById } = extractSubagentsFromMessages([sanitized]);
+          const sanitized = sanitizeAssistantMessageEcho(
+            normalizedMessage,
+            getState(),
+          );
+          dispatch({
+            type: "SET_MESSAGES",
+            payload: [...currentMessages, sanitized],
+          });
+          const { summariesByParentMessageId, detailsById } =
+            extractSubagentsFromMessages([sanitized]);
           if (Object.keys(summariesByParentMessageId).length > 0) {
-            dispatch({ type: 'UPSERT_SUBAGENT_SUMMARIES', payload: summariesByParentMessageId });
+            dispatch({
+              type: "UPSERT_SUBAGENT_SUMMARIES",
+              payload: summariesByParentMessageId,
+            });
           }
           if (Object.keys(detailsById).length > 0) {
-            dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: detailsById });
+            dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
           }
           const interactiveEvents = interactiveEventsFromMessage(sanitized);
           if (interactiveEvents.length > 0) {
-            dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents });
+            dispatch({
+              type: "SET_INTERACTIVE_EVENTS",
+              payload: interactiveEvents,
+            });
           }
         }
-        dispatch({ type: 'SET_PROCESSING', payload: false });
-        dispatch({ type: 'SET_STREAMING', payload: null });
+        dispatch({ type: "SET_PROCESSING", payload: false });
+        dispatch({ type: "SET_STREAMING", payload: null });
         break;
       }
-      case 'chatHistory': {
+      case "chatHistory": {
         const messages = asArray(data.messages, isMessage)
           .map((msg) => normalizeMessage(msg, null))
           .filter((msg): msg is Message => !!msg);
 
         // Clear any stale streaming state and in-progress flag when history is
         // loaded (extension open or session switch) so the UI starts clean.
-        dispatch({ type: 'SET_STREAMING', payload: null });
-        dispatch({ type: 'SET_PROCESSING', payload: false });
+        dispatch({ type: "SET_STREAMING", payload: null });
+        dispatch({ type: "SET_PROCESSING", payload: false });
 
-        dispatch({ type: 'CLEAR_MESSAGES' });
-        dispatch({ type: 'SET_MESSAGES', payload: messages });
+        dispatch({ type: "CLEAR_MESSAGES" });
+        dispatch({ type: "SET_MESSAGES", payload: messages });
 
         // If the backend included a sessionId (e.g. on session switch), update it BEFORE
         // storing stats so RESET_SESSION_STATS writes under the correct key.
         const chatHistorySessionId = asString(data.sessionId);
         if (chatHistorySessionId) {
-          dispatch({ type: 'SET_SESSION_ID', payload: chatHistorySessionId });
+          dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
           // Clear todo items from the previous session so stale tasks are not shown.
-          dispatch({ type: 'SET_TODO_ITEMS', payload: [] });
+          dispatch({ type: "SET_TODO_ITEMS", payload: [] });
         }
 
         // FORBIDDEN TO REMOVE - recalculate session stats from full history
@@ -1768,14 +1956,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           stats.write += msg.info?.tokens?.cache?.write || 0;
           stats.duration += msg.info?.duration || 0;
         });
-        dispatch({ type: 'RESET_SESSION_STATS', payload: stats });
-        dispatch({ type: 'CLEAR_SUBAGENTS_FOR_SESSION' });
-        const { summariesByParentMessageId, detailsById } = extractSubagentsFromMessages(messages);
+        dispatch({ type: "RESET_SESSION_STATS", payload: stats });
+        dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
+        const { summariesByParentMessageId, detailsById } =
+          extractSubagentsFromMessages(messages);
         if (Object.keys(summariesByParentMessageId).length > 0) {
-          dispatch({ type: 'UPSERT_SUBAGENT_SUMMARIES', payload: summariesByParentMessageId });
+          dispatch({
+            type: "UPSERT_SUBAGENT_SUMMARIES",
+            payload: summariesByParentMessageId,
+          });
         }
         if (Object.keys(detailsById).length > 0) {
-          dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: detailsById });
+          dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
         }
         let latestInteractive: InteractiveEvent[] = [];
         for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -1786,156 +1978,240 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             latestInteractive = items;
             break;
           }
-          if (role === 'user') {
+          if (role === "user") {
             break;
           }
         }
-        dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: latestInteractive });
+        dispatch({
+          type: "SET_INTERACTIVE_EVENTS",
+          payload: latestInteractive,
+        });
         break;
       }
-      case 'subagentSnapshot': {
+      case "subagentSnapshot": {
         const summariesByParentMessageId = normalizeSubagentSummaryMap(
-          data.summariesByParentMessageId ?? data.subagentsByParentMessageId
+          data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
         );
-        const detailsById = normalizeSubagentDetailMap(data.detailsById ?? data.subagentDetailsById);
-        dispatch({ type: 'CLEAR_SUBAGENTS_FOR_SESSION' });
+        const detailsById = normalizeSubagentDetailMap(
+          data.detailsById ?? data.subagentDetailsById,
+        );
+        dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
         if (Object.keys(summariesByParentMessageId).length > 0) {
-          dispatch({ type: 'UPSERT_SUBAGENT_SUMMARIES', payload: summariesByParentMessageId });
+          dispatch({
+            type: "UPSERT_SUBAGENT_SUMMARIES",
+            payload: summariesByParentMessageId,
+          });
         }
         if (Object.keys(detailsById).length > 0) {
-          dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: detailsById });
+          dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
         }
         break;
       }
-      case 'subagentUpdate': {
+      case "subagentUpdate": {
         const summariesByParentMessageId = normalizeSubagentSummaryMap(
-          data.summariesByParentMessageId ?? data.subagentsByParentMessageId
+          data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
         );
-        const detailsById = normalizeSubagentDetailMap(data.detailsById ?? data.subagentDetailsById);
+        const detailsById = normalizeSubagentDetailMap(
+          data.detailsById ?? data.subagentDetailsById,
+        );
         if (Object.keys(summariesByParentMessageId).length > 0) {
-          dispatch({ type: 'UPSERT_SUBAGENT_SUMMARIES', payload: summariesByParentMessageId });
+          dispatch({
+            type: "UPSERT_SUBAGENT_SUMMARIES",
+            payload: summariesByParentMessageId,
+          });
         }
         if (Object.keys(detailsById).length > 0) {
-          dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: detailsById });
+          dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
         }
         break;
       }
-      case 'streamEvent': {
+      case "streamEvent": {
         const payload = asRecord(data.event) ?? data;
         handleStreamEvent(dispatch, getState, payload);
         break;
       }
-      case 'error': {
-        dispatch({ type: 'ADD_ERROR_MESSAGE', payload: asString(data.message, 'Unknown error') });
-        dispatch({ type: 'SET_PROCESSING', payload: false });
-        dispatch({ type: 'FINISH_STREAMING' });
-        dispatch({ type: 'SET_STREAMING', payload: null });
+      case "error": {
+        dispatch({
+          type: "ADD_ERROR_MESSAGE",
+          payload: asString(data.message, "Unknown error"),
+        });
+        dispatch({ type: "SET_PROCESSING", payload: false });
+        dispatch({ type: "FINISH_STREAMING" });
+        dispatch({ type: "SET_STREAMING", payload: null });
         break;
       }
-      case 'appendPrompt': {
+      case "appendPrompt": {
         const current = getState().inputValue;
         const extra = asString(data.text);
         const next = current ? `${current}\n${extra}` : extra;
-        dispatch({ type: 'SET_INPUT_VALUE', payload: next });
+        dispatch({ type: "SET_INPUT_VALUE", payload: next });
         break;
       }
-      case 'addContext': {
+      case "addContext": {
         const item = asRecord(data.context);
         if (!item) {
           break;
         }
         const context: ContextItem = {
-          file: asString(item.file),
-          lineInfo: asString(item.lineInfo)
+          file: asString(item.file) || "",
+          lineInfo: asString(item.lineInfo) || "",
+          isAuto: asBoolean(item.isAuto, false),
+          content: asString(item.content),
+          languageId: asString(item.languageId),
         };
         if (!context.file) {
           break;
         }
         const selected = getState().selectedContexts;
-        dispatch({ type: 'SET_SELECTED_CONTEXTS', payload: [...selected, context] });
+
+        let nextSelected = [...selected];
+
+        // If it's an auto context, remove any existing auto context
+        if (context.isAuto) {
+          nextSelected = nextSelected.filter((c) => !c.isAuto);
+        }
+
+        // Avoid exact duplicates
+        const exists = nextSelected.some(
+          (c) => c.file === context.file && c.lineInfo === context.lineInfo,
+        );
+
+        if (!exists) {
+          nextSelected.push(context);
+        }
+
+        dispatch({ type: "SET_SELECTED_CONTEXTS", payload: nextSelected });
         break;
       }
-      case 'fileSearchResults': {
+      case "clearAutoContext": {
+        const selected = getState().selectedContexts;
+        const nextSelected = selected.filter((c) => !c.isAuto);
+        if (nextSelected.length !== selected.length) {
+          dispatch({ type: "SET_SELECTED_CONTEXTS", payload: nextSelected });
+        }
+        break;
+      }
+      case "fileSearchResults": {
         const results = asArray(data.results, isFileResult);
-        dispatch({ type: 'SET_FILE_SUGGESTIONS', payload: results });
-        dispatch({ type: 'SET_SHOW_FILE_SUGGESTIONS', payload: results.length > 0 });
-        dispatch({ type: 'SET_SUGGESTION_INDEX', payload: 0 });
+        dispatch({ type: "SET_FILE_SUGGESTIONS", payload: results });
+        dispatch({
+          type: "SET_SHOW_FILE_SUGGESTIONS",
+          payload: results.length > 0,
+        });
+        dispatch({ type: "SET_SUGGESTION_INDEX", payload: 0 });
         break;
       }
-      case 'sessionsList': {
-        dispatch({ type: 'SET_SESSIONS_LIST', payload: asArray(data.sessions, isSession) });
-        dispatch({ type: 'SET_SESSION_ID', payload: asString(data.currentSessionId) || null });
+      case "sessionsList": {
+        dispatch({
+          type: "SET_SESSIONS_LIST",
+          payload: asArray(data.sessions, isSession),
+        });
+        dispatch({
+          type: "SET_SESSION_ID",
+          payload: asString(data.currentSessionId) || null,
+        });
         break;
       }
-      case 'queueUpdate': {
-        dispatch({ type: 'SET_QUEUE', payload: asArray(data.queue, isQueueItem) });
+      case "queueUpdate": {
+        dispatch({
+          type: "SET_QUEUE",
+          payload: asArray(data.queue, isQueueItem),
+        });
         break;
       }
-      case 'queueExecutionStarted': {
-        dispatch({ type: 'SET_EXECUTING_QUEUE', payload: true });
+      case "queueExecutionStarted": {
+        dispatch({ type: "SET_EXECUTING_QUEUE", payload: true });
         break;
       }
-      case 'queueExecutionFinished': {
-        dispatch({ type: 'SET_EXECUTING_QUEUE', payload: false });
+      case "queueExecutionFinished": {
+        dispatch({ type: "SET_EXECUTING_QUEUE", payload: false });
         break;
       }
-      case 'quotaData':
-      case 'quotaUpdate': {
-        dispatch({ type: 'SET_QUOTA_DATA', payload: data.data as QuotaData });
+      case "quotaData":
+      case "quotaUpdate": {
+        dispatch({ type: "SET_QUOTA_DATA", payload: data.data as QuotaData });
         break;
       }
-      case 'todoUpdate': {
+      case "budgetInfo": {
+        dispatch({ type: "SET_BUDGET_INFO", payload: data.data as BudgetInfo });
+        break;
+      }
+      case "todoUpdate": {
         const action = asString(data.action);
         const item = asRecord(data.item);
         if (!item) break;
         const todoId = asString(item.id);
         const patch: any = {};
-        if (typeof item.text === 'string') patch.text = item.text;
-        if (typeof item.status === 'string') patch.status = item.status;
-        if (typeof item.sessionId === 'string') patch.sessionId = item.sessionId;
-        if (action === 'add') {
-          dispatch({ type: 'ADD_TODO_ITEM', payload: { id: todoId, text: asString(item.text), status: asString(item.status) as any, sessionId: asString(item.sessionId) } });
-        } else if (action === 'update') {
-          dispatch({ type: 'UPDATE_TODO_ITEM', payload: { id: todoId, patch } });
+        if (typeof item.text === "string") patch.text = item.text;
+        if (typeof item.status === "string") patch.status = item.status;
+        if (typeof item.sessionId === "string")
+          patch.sessionId = item.sessionId;
+        if (action === "add") {
+          dispatch({
+            type: "ADD_TODO_ITEM",
+            payload: {
+              id: todoId,
+              text: asString(item.text),
+              status: asString(item.status) as any,
+              sessionId: asString(item.sessionId),
+            },
+          });
+        } else if (action === "update") {
+          dispatch({
+            type: "UPDATE_TODO_ITEM",
+            payload: { id: todoId, patch },
+          });
         }
         break;
       }
-      case 'thinkingLevelUpdate': {
+      case "thinkingLevelUpdate": {
         const level = asString(data.level) as any;
         if (level) {
-          dispatch({ type: 'SET_THINKING_LEVEL', payload: level });
+          dispatch({ type: "SET_THINKING_LEVEL", payload: level });
         }
         break;
       }
-      case 'addPlanAttachment': {
+      case "addPlanAttachment": {
         const p = asRecord(data.payload);
         if (!p) break;
         dispatch({
-          type: 'ADD_ATTACHMENT',
+          type: "ADD_ATTACHMENT",
           payload: {
             id: asString(p.id) || `plan-${Date.now()}`,
-            filename: asString(p.filename, 'Implementation Plan'),
-            mimeType: asString(p.mimeType, 'text/markdown'),
+            filename: asString(p.filename, "Implementation Plan"),
+            mimeType: asString(p.mimeType, "text/markdown"),
             dataUrl: asString(p.dataUrl),
-          }
+          },
         });
+        break;
+      }
+      case "injectThemeCss": {
+        const css = asString(data.css);
+        if (css) {
+          let styleTag = document.getElementById("vscode-theme-icons");
+          if (!styleTag) {
+            styleTag = document.createElement("style");
+            styleTag.id = "vscode-theme-icons";
+            document.head.appendChild(styleTag);
+          }
+          styleTag.textContent = css;
+        }
         break;
       }
       default:
         break;
     }
 
-    if (asBoolean(data.processing, false)) {
-      dispatch({ type: 'SET_PROCESSING', payload: true });
-    }
-
     const candidate = asRecord(data.message);
     if (candidate) {
       const text = extractMessageText(candidate as Message);
-      if (text && asString(data.type) === 'appendPrompt') {
+      if (text && asString(data.type) === "appendPrompt") {
         const current = getState().inputValue;
-        dispatch({ type: 'SET_INPUT_VALUE', payload: current ? `${current}\n${text}` : text });
+        dispatch({
+          type: "SET_INPUT_VALUE",
+          payload: current ? `${current}\n${text}` : text,
+        });
       }
     }
-  };
+  };;
 }

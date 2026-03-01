@@ -21,10 +21,14 @@ import { useAppDispatch, useAppState } from "./lib/store";
 import vscode from "./lib/vscode";
 import { jumpToMessage } from "./lib/messageJump";
 import type {
+  Message,
+  InteractiveEvent,
   SubagentDetail,
   SubagentSummary,
   ThinkingLevel,
 } from "./lib/types";
+
+import { FileIcon } from "./MessageComponents";
 
 function totalTokens(
   input: number,
@@ -746,9 +750,11 @@ export function ModelDropdown() {
     selectedModel,
     modelSearchQuery,
     modelDropdownOpen,
+    quotaData,
   } = useAppState();
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
+  const [selectedTab, setSelectedTab] = useState("All");
 
   // Close on outside click
   useEffect(() => {
@@ -765,22 +771,67 @@ export function ModelDropdown() {
     return () => document.removeEventListener("mousedown", handler);
   }, [modelDropdownOpen, dispatch]);
 
+  // Reset tab when dropdown closes
+  useEffect(() => {
+    if (!modelDropdownOpen) {
+      setSelectedTab("All");
+    }
+  }, [modelDropdownOpen]);
+
+  const subscribedProviders = useMemo(() => {
+    const providers = (quotaData?.platforms ?? [])
+      .map((p) => {
+        const key = p.platform.toLowerCase();
+        // Specific normalization for known broad providers
+        if (key === "openai") return "OpenAI";
+        if (key === "zai") return "Z.ai";
+        if (key === "zhipu") return "Zhipu AI";
+        if (key === "copilot") return "GitHub Copilot";
+
+        // Skip opencode platform in mapped providers since we have a dedicated persistent tab
+        if (key.includes("opencode")) return null;
+
+        // Fallback to title or platform name for other subscriptions (e.g. "Z.ai Coding Plan")
+        return p.title?.replace(" Account Quota", "") ?? p.platform;
+      })
+      .filter((name): name is string => name !== null);
+
+    // Always include OpenCode Free at the start
+    const result = ["OpenCode Free", ...providers];
+
+    return result.filter((name, index, self) => self.indexOf(name) === index);
+  }, [quotaData]);
+
   const grouped = useMemo(() => {
     const groups = new Map<string, typeof availableModels>();
     const query = modelSearchQuery.toLowerCase();
+
     availableModels
-      .filter((model) =>
-        `${model.providerID} ${model.name} ${model.modelID}`
+      .filter((model) => {
+        const matchesQuery = `${model.providerID} ${model.name} ${model.modelID}`
           .toLowerCase()
-          .includes(query),
-      )
+          .includes(query);
+
+        if (!matchesQuery) return false;
+
+        if (selectedTab !== "All") {
+          if (selectedTab === "OpenCode Free") {
+            return model.providerID === "opencode";
+          }
+          const providerName = model.providerName ?? model.providerID;
+          // Use exact match (case-insensitive) to prevent "Z.ai" tab from matching "Z.ai Coding Plan"
+          return providerName.toLowerCase() === selectedTab.toLowerCase();
+        }
+
+        return true;
+      })
       .forEach((model) => {
         const key = model.providerName ?? model.providerID;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key)?.push(model);
       });
     return groups;
-  }, [availableModels, modelSearchQuery]);
+  }, [availableModels, modelSearchQuery, selectedTab]);
 
   const label = selectedModel
     ? `${selectedModel.providerID}/${selectedModel.modelID}`
@@ -808,7 +859,7 @@ export function ModelDropdown() {
       </Button>
       {modelDropdownOpen && (
         <div className="oc-popover absolute bottom-full left-0 z-30 mb-1.5 w-72 rounded-xl border border-oc-border bg-oc-panel shadow-xl overflow-hidden">
-          <div className="px-3 pt-3 pb-2">
+          <div className="px-3 pt-3 pb-2 space-y-2">
             <input
               value={modelSearchQuery}
               onChange={(e) =>
@@ -817,6 +868,23 @@ export function ModelDropdown() {
               placeholder="Search models..."
               className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-oc-sm font-mono outline-none focus:border-oc-accent transition-colors"
             />
+            {subscribedProviders.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {["All", ...subscribedProviders].map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setSelectedTab(tab)}
+                    className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${selectedTab === tab
+                      ? "bg-oc-accent text-white"
+                      : "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
+                      }`}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="max-h-56 overflow-y-auto px-1.5 pb-1.5">
             {[...grouped.entries()].map(([provider, models]) => (
@@ -873,6 +941,11 @@ export function ModelDropdown() {
                 })}
               </div>
             ))}
+            {grouped.size === 0 && (
+              <div className="px-2.5 py-4 text-center text-oc-xs text-oc-text-muted font-mono italic">
+                No models found
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1113,6 +1186,199 @@ export function QueueContainer() {
   );
 }
 
+function renderInlineCodeText(text: string, keyPrefix: string) {
+  if (!text.includes("`")) {
+    return <span className="whitespace-pre-wrap">{text}</span>;
+  }
+
+  const nodes: JSX.Element[] = [];
+  let cursor = 0;
+  let segmentIndex = 0;
+  while (cursor < text.length) {
+    const open = text.indexOf("`", cursor);
+    if (open === -1) {
+      const plain = text.slice(cursor);
+      if (plain) {
+        nodes.push(
+          <span key={`${keyPrefix}-t-${segmentIndex++}`} className="whitespace-pre-wrap">
+            {plain}
+          </span>,
+        );
+      }
+      break;
+    }
+
+    const close = text.indexOf("`", open + 1);
+    if (close === -1) {
+      const plain = text.slice(cursor);
+      if (plain) {
+        nodes.push(
+          <span key={`${keyPrefix}-t-${segmentIndex++}`} className="whitespace-pre-wrap">
+            {plain}
+          </span>,
+        );
+      }
+      break;
+    }
+
+    if (open > cursor) {
+      nodes.push(
+        <span key={`${keyPrefix}-t-${segmentIndex++}`} className="whitespace-pre-wrap">
+          {text.slice(cursor, open)}
+        </span>,
+      );
+    }
+    const code = text.slice(open + 1, close);
+    nodes.push(
+      <code
+        key={`${keyPrefix}-c-${segmentIndex++}`}
+        className="rounded bg-[var(--oc-bg)] px-1 py-[1px] font-mono text-[10px] text-[var(--oc-text-soft)]"
+      >
+        {code}
+      </code>,
+    );
+    cursor = close + 1;
+  }
+
+  return <>{nodes}</>;
+}
+
+function renderCodeAwareText(text: string, keyPrefix: string) {
+  if (!text.includes("```")) {
+    return renderInlineCodeText(text, keyPrefix);
+  }
+
+  const nodes: JSX.Element[] = [];
+  const blockPattern = /```([a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let blockIndex = 0;
+  let match: RegExpExecArray | null = null;
+
+  while ((match = blockPattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      const plain = text.slice(lastIndex, match.index);
+      nodes.push(
+        <span key={`${keyPrefix}-plain-${blockIndex}`} className="whitespace-pre-wrap">
+          {renderInlineCodeText(plain, `${keyPrefix}-plain-inline-${blockIndex}`)}
+        </span>,
+      );
+    }
+
+    const language = (match[1] || "").trim();
+    const code = (match[2] || "").replace(/\n$/, "");
+    nodes.push(
+      <div key={`${keyPrefix}-block-${blockIndex}`} className="my-1">
+        {language ? (
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-[var(--oc-text-muted)]">
+            {language}
+          </div>
+        ) : null}
+        <pre className="overflow-x-auto rounded-md border border-[var(--oc-border)] bg-[var(--oc-bg)] px-2 py-1.5 font-mono text-[11px] leading-snug text-[var(--oc-text-soft)]">
+          <code>{code}</code>
+        </pre>
+      </div>,
+    );
+
+    lastIndex = match.index + match[0].length;
+    blockIndex += 1;
+  }
+
+  if (lastIndex < text.length) {
+    const tail = text.slice(lastIndex);
+    nodes.push(
+      <span key={`${keyPrefix}-tail`} className="whitespace-pre-wrap">
+        {renderInlineCodeText(tail, `${keyPrefix}-tail-inline`)}
+      </span>,
+    );
+  }
+
+  return <>{nodes}</>;
+}
+
+function extractLatestAssistantMessageText(messages: Message[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const msg = messages[index];
+    const role = msg.role || msg.info?.role;
+    if (role !== "assistant") {
+      continue;
+    }
+    if (typeof msg.content === "string" && msg.content.trim()) {
+      return msg.content;
+    }
+    if (typeof msg.text === "string" && msg.text.trim()) {
+      return msg.text;
+    }
+    if (Array.isArray(msg.parts)) {
+      const textPart = msg.parts.find(
+        (part) =>
+          part &&
+          typeof part === "object" &&
+          (part.type === "text" || typeof part.text === "string"),
+      );
+      const partText = (textPart?.text || textPart?.content || "").toString();
+      if (partText.trim()) {
+        return partText;
+      }
+    }
+  }
+  return "";
+}
+
+function normalizeCompareText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[`*_~]/g, "")
+    .trim();
+}
+
+function isAutoDetectedInteractiveEvent(event: InteractiveEvent): boolean {
+  return (
+    event.id.startsWith("auto-question-") ||
+    event.id.startsWith("auto-confirm-") ||
+    event.id.startsWith("auto-quick-")
+  );
+}
+
+function isRedundantInteractiveEvent(
+  event: InteractiveEvent,
+  messages: Message[],
+): boolean {
+  if (!isAutoDetectedInteractiveEvent(event)) {
+    return false;
+  }
+
+  const assistantText = normalizeCompareText(
+    extractLatestAssistantMessageText(messages),
+  );
+  if (!assistantText) {
+    return false;
+  }
+
+  if (event.type === "question" || event.type === "confirm") {
+    const question = normalizeCompareText(event.question);
+    if (!question || !assistantText.includes(question)) {
+      return false;
+    }
+    if (event.type === "confirm") {
+      return true;
+    }
+    const matchingOptions = event.options.filter((option) =>
+      assistantText.includes(normalizeCompareText(option.label)),
+    ).length;
+    return matchingOptions >= Math.min(2, event.options.length);
+  }
+
+  if (event.type === "quick_actions") {
+    const matchingActions = event.actions.filter((action) =>
+      assistantText.includes(normalizeCompareText(action.label)),
+    ).length;
+    return matchingActions >= Math.min(2, event.actions.length);
+  }
+
+  return false;
+}
+
 export function InputWrapper() {
   const {
     inputValue,
@@ -1131,7 +1397,10 @@ export function InputWrapper() {
   } = useAppState();
   const dispatch = useAppDispatch();
 
-  const activeInteractiveEvent = interactiveEvents[0] || null;
+  const displayInteractiveEvent =
+    interactiveEvents.find(
+      (event) => !isRedundantInteractiveEvent(event, messages),
+    ) || null;
 
   const sendPrompt = () => {
     const text = inputValue.trim();
@@ -1238,11 +1507,11 @@ export function InputWrapper() {
         className="oc-input-area"
         style={promptQueue.length > 0 ? { borderTop: "none" } : undefined}
       >
-        {activeInteractiveEvent ? (
+        {displayInteractiveEvent ? (
           <div className="mb-2 rounded-lg border border-[var(--oc-border)] bg-[var(--oc-panel-soft)] px-3 py-2">
             <div className="mb-1.5 flex items-center justify-between gap-2">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-muted)]">
-                {activeInteractiveEvent.title || "Quick Input"}
+                {displayInteractiveEvent.title || "Quick Input"}
               </div>
               <button
                 type="button"
@@ -1251,7 +1520,7 @@ export function InputWrapper() {
                 onClick={() =>
                   dispatch({
                     type: "DISMISS_INTERACTIVE_EVENT",
-                    payload: activeInteractiveEvent.id,
+                    payload: displayInteractiveEvent.id,
                   })
                 }
               >
@@ -1259,81 +1528,96 @@ export function InputWrapper() {
               </button>
             </div>
             <div className="mb-2 text-[12px] text-[var(--oc-text-soft)]">
-              {activeInteractiveEvent.type === "quick_actions"
-                ? activeInteractiveEvent.title || "Select an action"
-                : activeInteractiveEvent.question}
+              {renderCodeAwareText(
+                displayInteractiveEvent.type === "quick_actions"
+                  ? displayInteractiveEvent.title || "Select an action"
+                  : displayInteractiveEvent.question,
+                `interactive-question-${displayInteractiveEvent.id}`,
+              )}
             </div>
 
-            {activeInteractiveEvent.type === "question" ? (
+            {displayInteractiveEvent.type === "question" ? (
               <div className="flex flex-wrap gap-1.5">
-                {activeInteractiveEvent.options.map((option, index) => (
+                {displayInteractiveEvent.options.map((option, index) => (
                   <button
-                    key={`${activeInteractiveEvent.id}-q-${option.id || option.value || index}`}
+                    key={`${displayInteractiveEvent.id}-q-${option.id || option.value || index}`}
                     type="button"
                     className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-soft)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
                     title={option.description || option.label}
                     onClick={() =>
                       submitInteractiveResponse(
                         option.value || option.label,
-                        activeInteractiveEvent.id,
-                        activeInteractiveEvent.type,
+                        displayInteractiveEvent.id,
+                        displayInteractiveEvent.type,
                       )
                     }
                   >
-                    {option.label}
+                    {renderInlineCodeText(
+                      option.label,
+                      `interactive-option-${displayInteractiveEvent.id}-${index}`,
+                    )}
                   </button>
                 ))}
               </div>
             ) : null}
 
-            {activeInteractiveEvent.type === "confirm" ? (
+            {displayInteractiveEvent.type === "confirm" ? (
               <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
                   className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-soft)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
                   onClick={() =>
                     submitInteractiveResponse(
-                      activeInteractiveEvent.confirmLabel || "Yes",
-                      activeInteractiveEvent.id,
-                      activeInteractiveEvent.type,
+                      displayInteractiveEvent.confirmLabel || "Yes",
+                      displayInteractiveEvent.id,
+                      displayInteractiveEvent.type,
                     )
                   }
                 >
-                  {activeInteractiveEvent.confirmLabel || "Yes"}
+                  {renderInlineCodeText(
+                    displayInteractiveEvent.confirmLabel || "Yes",
+                    `interactive-confirm-yes-${displayInteractiveEvent.id}`,
+                  )}
                 </button>
                 <button
                   type="button"
                   className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-muted)] hover:text-[var(--oc-text-soft)]"
                   onClick={() =>
                     submitInteractiveResponse(
-                      activeInteractiveEvent.cancelLabel || "No",
-                      activeInteractiveEvent.id,
-                      activeInteractiveEvent.type,
+                      displayInteractiveEvent.cancelLabel || "No",
+                      displayInteractiveEvent.id,
+                      displayInteractiveEvent.type,
                     )
                   }
                 >
-                  {activeInteractiveEvent.cancelLabel || "No"}
+                  {renderInlineCodeText(
+                    displayInteractiveEvent.cancelLabel || "No",
+                    `interactive-confirm-no-${displayInteractiveEvent.id}`,
+                  )}
                 </button>
               </div>
             ) : null}
 
-            {activeInteractiveEvent.type === "quick_actions" ? (
+            {displayInteractiveEvent.type === "quick_actions" ? (
               <div className="flex flex-wrap gap-1.5">
-                {activeInteractiveEvent.actions.map((action, index) => (
+                {displayInteractiveEvent.actions.map((action, index) => (
                   <button
-                    key={`${activeInteractiveEvent.id}-a-${action.id || action.value || index}`}
+                    key={`${displayInteractiveEvent.id}-a-${action.id || action.value || index}`}
                     type="button"
                     className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-soft)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
                     title={action.description || action.label}
                     onClick={() =>
                       submitInteractiveResponse(
                         action.value || action.label,
-                        activeInteractiveEvent.id,
-                        activeInteractiveEvent.type,
+                        displayInteractiveEvent.id,
+                        displayInteractiveEvent.type,
                       )
                     }
                   >
-                    {action.label}
+                    {renderInlineCodeText(
+                      action.label,
+                      `interactive-action-${displayInteractiveEvent.id}-${index}`,
+                    )}
                   </button>
                 ))}
               </div>
@@ -1343,19 +1627,38 @@ export function InputWrapper() {
 
         {/* Context chips */}
         {(selectedFiles.length > 0 || selectedContexts.length > 0) && (
-          <div className="oc-context-chips">
+          <div className="oc-context-chips flex flex-wrap gap-1.5 mb-2">
             {selectedFiles.map((file) => (
-              <span key={file} className="oc-chip">
+              <Badge key={file} variant="secondary" className="flex items-center gap-1 font-mono text-[10px] bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-oc-text-soft">
+                <FileIcon filePath={file} />
                 {file}
-              </span>
+              </Badge>
             ))}
             {selectedContexts.map((context) => (
-              <span
+              <Badge
                 key={`${context.file}:${context.lineInfo}`}
-                className="oc-chip"
+                variant="secondary"
+                className="flex items-center gap-1 font-mono text-[10px] pr-1.5 bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-oc-text-soft"
               >
-                {context.file} {context.lineInfo}
-              </span>
+                <FileIcon filePath={context.file} />
+                <span>{context.file} {context.lineInfo}</span>
+                {context.languageId && <span className="opacity-60 text-[9px] font-semibold">{context.languageId}</span>}
+                {context.isAuto && (
+                  <button
+                    type="button"
+                    className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      dispatch({
+                        type: "SET_SELECTED_CONTEXTS",
+                        payload: selectedContexts.filter(c => c.file !== context.file || c.lineInfo !== context.lineInfo)
+                      });
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </Badge>
             ))}
           </div>
         )}
@@ -1547,8 +1850,12 @@ export function ThinkingLevelControl() {
 }
 
 export function QuotaMonitor() {
-  const { quotaData, quotaIsRefreshing } = useAppState();
+  const { quotaData, quotaIsRefreshing, budgetInfo } = useAppState();
   const dispatch = useAppDispatch();
+
+  // Debug logging
+  console.log('[QuotaMonitor] budgetInfo:', budgetInfo);
+  console.log('[QuotaMonitor] quotaData platforms:', quotaData?.platforms?.map((p) => p.platform));
   const [open, setOpen] = useState(true);
 
   const handleRefresh = () => {
@@ -1752,6 +2059,64 @@ export function QuotaMonitor() {
                     </div>
                   </div>
                 ))}
+
+              {/* Budget info - standalone card that always shows when budgetInfo exists */}
+              {budgetInfo ? (
+                <div className="mt-3 overflow-hidden rounded-xl border border-oc-border bg-[linear-gradient(180deg,var(--oc-panel)_0%,var(--oc-panel-soft)_100%)] shadow-[0_6px_20px_rgba(0,0,0,0.2)]">
+                  <div className="border-b border-oc-border px-3 py-2.5">
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <span className="text-oc-sm font-semibold tracking-tight text-oc-text-soft">
+                        📊 Request Budget (GitHub Copilot)
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[auto_1fr] gap-x-2 text-oc-2xs">
+                      <span className="font-mono uppercase tracking-wider text-oc-text-soft opacity-80">
+                        Plan:
+                      </span>
+                      <span className="font-mono text-oc-text-soft">
+                        {budgetInfo.planName} ({budgetInfo.monthlyQuota} requests/month)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2.5 px-3 py-2.5">
+                    <div className="rounded-lg border border-oc-border bg-[rgba(0,0,0,0.16)] p-2">
+                      <div className="mb-1 flex items-center justify-between text-oc-xs">
+                        <span className="font-medium text-oc-text-soft">Today's Usage</span>
+                        <span className="text-oc-text-soft">{budgetInfo.usedToday} / {budgetInfo.dailyAllowance} requests</span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-oc-border">
+                        <div
+                          className="h-full rounded-full transition-all duration-300"
+                          style={{
+                            width: `${Math.min(100, (budgetInfo.usedToday / budgetInfo.dailyAllowance) * 100)}%`,
+                            background: barColor((budgetInfo.remainingToday / budgetInfo.dailyAllowance) * 100),
+                          }}
+                        />
+                      </div>
+                      <div className="mt-1.5 grid grid-cols-2 gap-2 text-center text-oc-2xs">
+                        <div>
+                          <div className="text-oc-text-soft opacity-70">Remaining</div>
+                          <div className="font-medium text-oc-text-soft">{budgetInfo.remainingToday}</div>
+                        </div>
+                        <div>
+                          <div className="text-oc-text-soft opacity-70">Projected</div>
+                          <div className="font-medium text-oc-text-soft">~{Math.round(budgetInfo.projectedMonthlyUsage)}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {budgetInfo.advice && budgetInfo.advice.length > 0 ? (
+                      <div className="rounded-md border border-oc-accent/40 bg-oc-accent/10 px-2.5 py-2 text-oc-accent">
+                        <div className="text-oc-2xs opacity-80">
+                          {budgetInfo.advice[0]}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
               {lastUpdatedLabel ? (
                 <div className="text-center text-oc-2xs text-oc-text-soft opacity-50 font-mono">
                   Updated: {lastUpdatedLabel}

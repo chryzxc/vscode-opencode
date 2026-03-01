@@ -67,7 +67,8 @@ export const initialState: AppState = {
   subagentDetailsById: {},
   selectedSubagentId: null,
   subagentsPanelOpen: true,
-  interactiveEvents: []
+  interactiveEvents: [],
+  budgetInfo: null
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
@@ -135,7 +136,8 @@ export type AppAction =
   | { type: 'SET_SUBAGENTS_PANEL_OPEN'; payload: boolean }
   | { type: 'CLEAR_SUBAGENTS_FOR_SESSION' }
   | { type: 'SET_INTERACTIVE_EVENTS'; payload: InteractiveEvent[] }
-  | { type: 'DISMISS_INTERACTIVE_EVENT'; payload: string };
+  | { type: 'DISMISS_INTERACTIVE_EVENT'; payload: string }
+  | { type: 'SET_BUDGET_INFO'; payload: import('./types').BudgetInfo | null };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   return {
@@ -172,6 +174,51 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case 'CLEAR_MESSAGES':
       return { ...state, messages: [] };
     case 'SET_PROCESSING':
+      // When processing starts, create an empty streaming state so the StreamingCard is visible immediately
+      // instead of showing the "Thinking..." bubble
+      if (action.payload && !state.streaming) {
+        try {
+          // Only create streaming state if we have valid model selection
+          // Otherwise just set isProcessing and let stream events create the state
+          const hasValidModel = state.selectedModel?.modelID && state.selectedModel?.providerID;
+
+          if (!hasValidModel) {
+            // No valid model yet, just set processing flag
+            return { ...state, isProcessing: true };
+          }
+
+          const streamingState: StreamingState = {
+            messageId: null,
+            content: '',
+            reasoning: '',
+            reasoningEvents: [],
+            steps: [],
+            progressEvents: [],
+            edits: [],
+            isActive: true,
+            agent: state.selectedAgent || undefined,
+            model: state.selectedModel ? {
+              modelID: state.selectedModel.modelID,
+              providerID: state.selectedModel.providerID
+            } : undefined,
+            modelID: state.selectedModel.modelID,
+            providerID: state.selectedModel.providerID
+          };
+          return {
+            ...state,
+            isProcessing: true,
+            streaming: streamingState
+          };
+        } catch (error) {
+          // If creating streaming state fails, just set processing without it
+          console.error('Error creating streaming state:', error);
+          return { ...state, isProcessing: true };
+        }
+      }
+      // When processing ends, clear the streaming state
+      if (!action.payload) {
+        return { ...state, isProcessing: false, streaming: null };
+      }
       return { ...state, isProcessing: action.payload };
     case 'SET_SESSIONS_LIST':
       return { ...state, sessionsList: action.payload };
@@ -222,7 +269,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const content = action.payload.append
         ? `${state.streaming.content}${action.payload.content}`
         : action.payload.content;
-      return { ...state, streaming: { ...state.streaming, content } };
+      // Record the first moment non-empty content arrives so the timeline can order it correctly
+      const contentStartSeq =
+        state.streaming.contentStartSeq !== undefined
+          ? state.streaming.contentStartSeq
+          : content.trim().length > 0
+            ? Date.now()
+            : undefined;
+      return { ...state, streaming: { ...state.streaming, content, contentStartSeq } };
     }
     case 'UPDATE_STREAMING_REASONING': {
       if (!state.streaming) {
@@ -242,12 +296,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (!state.streaming) {
         return state;
       }
+      const stampedStep = { ...action.payload, streamSeq: Date.now() };
       return {
         ...state,
         streaming: {
           ...state.streaming,
-          steps: [...state.streaming.steps, action.payload],
-          progressEvents: [...state.streaming.progressEvents, { ...action.payload }]
+          steps: [...state.streaming.steps, stampedStep],
+          progressEvents: [...state.streaming.progressEvents, { ...stampedStep }]
         }
       };
     }
@@ -401,6 +456,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         interactiveEvents: state.interactiveEvents.filter((event) => event.id !== action.payload)
       };
     }
+    case 'SET_BUDGET_INFO':
+      return { ...state, budgetInfo: action.payload };
     default:
       return state;
   }

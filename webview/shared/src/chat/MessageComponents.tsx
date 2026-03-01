@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronDown,
-  ChevronRight,
   Check,
   Copy,
   FileText as FileTextIcon,
@@ -20,6 +18,7 @@ import type {
   StreamingState,
   StreamingStep,
   SubagentSummary,
+  ReasoningEvent,
 } from "./lib/types";
 import { useAppDispatch, useAppState } from "./lib/store";
 import { jumpToMessage } from "./lib/messageJump";
@@ -62,8 +61,43 @@ function getFileColor(ext: string): string {
 }
 
 // SVG file icon
-function FileIcon({ filePath }: { filePath?: string }) {
+export function FileIcon({ filePath, className }: { filePath?: string; className?: string }) {
   const ext = filePath ? getFileExtension(filePath) : "";
+
+  if (filePath) {
+    const fileName = (filePath.split(/[\\/]/).pop() || "").toLowerCase();
+    const cleanKey = (key: string) =>
+      key.replace(/\./g, '_')
+        .replace(/\//g, '-')
+        .replace(/\+/g, 'p')
+        .replace(/#/g, 'h')
+        .replace(/[^a-z0-9_-]/g, '_');
+
+    // The library uses .file-icon and .file-icon-type-[ext]
+    // We add both filename and extension classes to maximize match chances
+    // We also use a more aggressive sanitization to match processor's likely output
+    return (
+      <div
+        className={cn(
+          "file-icon",
+          `file-icon-type-${cleanKey(fileName)}`,
+          `file-icon-type-${cleanKey(ext)}`,
+          className
+        )}
+        style={{
+          width: '16px',
+          height: '16px',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+          marginRight: '4px',
+          verticalAlign: 'text-bottom'
+        }}
+      />
+    );
+  }
+
   const color = getFileColor(ext);
   return (
     <svg
@@ -73,7 +107,7 @@ function FileIcon({ filePath }: { filePath?: string }) {
       height="14"
       viewBox="0 0 24 24"
       fill="none"
-      className="file-icon-svg"
+      className={cn("file-icon-svg", className)}
     >
       <title>{filePath ?? "file"}</title>
       <path
@@ -96,97 +130,6 @@ function FileIcon({ filePath }: { filePath?: string }) {
   );
 }
 
-function InlineProgressSteps({ steps }: { steps: StreamingState["steps"] }) {
-  const [open, setOpen] = useState(true);
-  if (!steps.length) {
-    return null;
-  }
-
-  return (
-    <div className="oc-steps-wrap mt-3 p-2.5">
-      <button
-        type="button"
-        className="oc-steps-header mb-2 flex w-full items-center gap-1.5 text-left"
-        onClick={() => setOpen((value) => !value)}
-      >
-        {open ? (
-          <ChevronDown className="h-3 w-3" />
-        ) : (
-          <ChevronRight className="h-3 w-3" />
-        )}
-        Progress Updates ({steps.length})
-      </button>
-      {open ? (
-        <div className="space-y-1">
-          {steps.map((step, index) => {
-            // Detect file path from step title
-            const fileMatch = step.title.match(
-              /([a-zA-Z0-9_\-\.\/\\ +]+?\.[a-zA-Z0-9]+)(?::L\d+(?:-L\d+)?)?/,
-            );
-            const filePath = fileMatch
-              ? fileMatch[1].trim()
-              : (step as any).filePath;
-
-            if (filePath) {
-              return (
-                <button
-                  key={`${step.id ?? step.callID ?? step.title}-${index}`}
-                  type="button"
-                  className="oc-step-item file-step flex items-center gap-2 px-2.5 py-1.5 text-xs"
-                  onClick={() =>
-                    vscode.postMessage({ type: "openFile", file: filePath })
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      vscode.postMessage({ type: "openFile", file: filePath });
-                    }
-                  }}
-                  title={`Click to open ${filePath}`}
-                >
-                  <div className="step-icon shrink-0">
-                    <FileIcon filePath={filePath} />
-                  </div>
-                  <div className="step-content flex-1 min-w-0">
-                    <div className="step-title text-oc-text-soft opacity-80 truncate">
-                      {step.title}
-                    </div>
-                  </div>
-                </button>
-              );
-            }
-
-            return (
-              <div
-                key={`${step.id ?? step.callID ?? step.title}-${index}`}
-                className="oc-step-item flex items-center gap-2 px-2.5 py-1.5 text-xs"
-              >
-                {step.status === "pending" ? (
-                  <div className="step-icon shrink-0">
-                    <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
-                  </div>
-                ) : step.status === "error" ? (
-                  <div className="step-icon shrink-0">
-                    <X className="h-3 w-3 text-oc-red" />
-                  </div>
-                ) : (
-                  <div className="step-icon shrink-0">
-                    <Check className="h-3 w-3 text-oc-green" />
-                  </div>
-                )}
-                <div className="step-content flex-1 min-w-0">
-                  <div className="step-title text-oc-text-soft opacity-80 truncate">
-                    {step.title}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 function messageBodyFromParts(parts?: MessagePart[]): string {
   if (!parts) {
@@ -212,25 +155,38 @@ function reasoningFromParts(parts?: MessagePart[]): string {
   if (!parts) {
     return "";
   }
-  return parts
-    .map((part) => {
-      const explicit = part.reasoning ?? part.thought ?? part.thinking;
-      if (explicit) {
-        return explicit;
-      }
-      if (part.type === "reasoning") {
-        return part.text ?? part.content ?? "";
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
+  const fromParts = (parts: MessagePart[]) =>
+    parts
+      .map((part: MessagePart, _index: number) => {
+        const explicit = part.reasoning ?? part.thought ?? part.thinking;
+        if (explicit) {
+          return explicit;
+        }
+        if (part.type === "reasoning") {
+          return part.text ?? part.content ?? "";
+        }
+        if (part.type === "text" || part.text) {
+          const value = part.text || part.content || "";
+          // If it's a text part, but it's empty, it might be a placeholder for reasoning
+          // that was not explicitly typed as "reasoning".
+          if (value.trim().length === 0) {
+            return "";
+          }
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+
+  return fromParts(parts);
 }
 
 function summaryText(message?: Message): string {
-  const title = message?.info?.summary?.title?.trim() ?? "";
-  const body = message?.info?.summary?.body?.trim() ?? "";
+  // Check both nested info and top-level properties (for persisted messages)
+  const summary = message?.info?.summary ?? (message as Record<string, unknown>).summary as { title?: string; body?: string } | undefined;
+  const title = summary?.title?.trim() ?? "";
+  const body = summary?.body?.trim() ?? "";
   if (title && body) {
     return `${title}\n\n${body}`;
   }
@@ -238,6 +194,7 @@ function summaryText(message?: Message): string {
 }
 
 function modelLabel(message: Message): string {
+  // Check nested info structure first (from streaming)
   const modelObj = message.info?.model;
   if (modelObj && typeof modelObj === "object") {
     const name = (modelObj as Record<string, unknown>).name;
@@ -245,8 +202,20 @@ function modelLabel(message: Message): string {
     if (typeof name === "string" && name) return name;
     if (typeof modelID === "string" && modelID) return modelID;
   }
-  const model = message.info?.modelID;
-  const provider = message.info?.providerID;
+  // Check top-level model object (from persisted messages)
+  if (!modelObj && typeof message.model === "object" && message.model !== null) {
+    const name = (message.model as Record<string, unknown>).name;
+    const modelID = (message.model as Record<string, unknown>).modelID;
+    if (typeof name === "string" && name) return name;
+    if (typeof modelID === "string" && modelID) return modelID;
+  }
+  // Check nested info structure
+  let model = message.info?.modelID;
+  let provider = message.info?.providerID;
+  if (model && provider) return `${provider}/${model}`;
+  // Check top-level properties (from persisted messages)
+  model ??= (message as Record<string, unknown>).modelID as string | undefined;
+  provider ??= (message as Record<string, unknown>).providerID as string | undefined;
   if (model && provider) return `${provider}/${model}`;
   return model ?? provider ?? "assistant";
 }
@@ -285,19 +254,35 @@ type ProgressItem = {
   filePath?: string;
 };
 
+type ThinkingBlock = { kind: "thinking"; items: ThoughtItem[] };
+type StepsBlock = { kind: "steps"; items: ProgressItem[] };
+type ContentBlock = { kind: "content"; html: string };
+type TimelineBlock = ThinkingBlock | StepsBlock | ContentBlock;
+
+/**
+ * Extracts the Date.now() timestamp embedded in a streaming thought-item key.
+ * Keys are formatted as "stream-{idx}-{createdAt}".
+ */
+function seqFromThoughtKey(key: string): number {
+  const m = key.match(/stream-\d+-(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
 function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
-  const eventItems = (message?.reasoningEvents ?? [])
-    .map((event, index) => ({
-      key: `evt-${index}-${event.createdAt}`,
-      text: event.text.trim(),
-    }))
-    .filter((event) => event.text.length > 0);
-  if (eventItems.length > 0) {
-    return eventItems;
+  if (message?.reasoningEvents && message.reasoningEvents.length > 0) {
+    return message.reasoningEvents
+      .filter((event: ReasoningEvent) => {
+        const text = event.text;
+        return typeof text === "string" && text.length > 0;
+      })
+      .map((event: ReasoningEvent) => ({
+        key: `evt-${event.createdAt}`,
+        text: event.text.trim(),
+      }));
   }
 
   return (message?.parts ?? [])
-    .map((part, index) => {
+    .map((part: MessagePart, index: number) => {
       const text =
         part.reasoning ??
         part.thought ??
@@ -305,24 +290,25 @@ function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
         (part.type === "reasoning" ? (part.text ?? part.content ?? "") : "");
       return { key: `part-${index}`, text: text.trim() };
     })
-    .filter((item) => item.text.length > 0);
+    .filter((item: ThoughtItem) => item.text.length > 0);
 }
 
 function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
   if (!streaming) {
     return [];
   }
-  const eventItems = (streaming.reasoningEvents ?? [])
-    .map((event, index) => ({
-      key: `stream-${index}-${event.createdAt}`,
-      text: event.text.trim(),
-    }))
-    .filter((event) => event.text.length > 0);
-  if (eventItems.length > 0) {
-    return eventItems;
+  if (streaming.reasoningEvents && streaming.reasoningEvents.length > 0) {
+    return streaming.reasoningEvents
+      .filter((event: ReasoningEvent) => {
+        return event.text && event.text.length > 0;
+      })
+      .map((event: ReasoningEvent, idx: number) => ({
+        key: `stream-${idx}-${event.createdAt}`,
+        text: event.text.trim(),
+      }));
   }
 
-  const fallback = streaming.reasoning.trim();
+  const fallback = (streaming?.reasoning || "").trim();
   return fallback ? [{ key: "stream-reasoning-fallback", text: fallback }] : [];
 }
 
@@ -433,9 +419,174 @@ function statusBadgeClass(status: string): string {
 
 function sanitizeUserContent(raw: string): string {
   return raw
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
     .trim();
+}
+
+/**
+ * Builds a unified ordered timeline for a STREAMING message.
+ * Merges thinking events (timestamped via createdAt), steps (via streamSeq),
+ * and the response content (via contentStartSeq) into arrival order.
+ */
+function buildStreamingTimeline(
+  streaming: StreamingState,
+  thoughtItems: ThoughtItem[],
+  progressItems: ProgressItem[],
+  html: string,
+): TimelineBlock[] {
+  type RawEntry =
+    | { seq: number; kind: "thinking"; item: ThoughtItem }
+    | { seq: number; kind: "step"; item: ProgressItem }
+    | { seq: number; kind: "content" };
+
+  const entries: RawEntry[] = [];
+
+  for (const item of thoughtItems) {
+    entries.push({ kind: "thinking", item, seq: seqFromThoughtKey(item.key) });
+  }
+
+  for (const item of progressItems) {
+    // Match back to the original step to read its streamSeq timestamp
+    const step = streaming.steps.find((s) => s.title === item.title);
+    entries.push({
+      kind: "step",
+      item,
+      seq: step?.streamSeq ?? step?.startTime ?? 0,
+    });
+  }
+
+  if (html) {
+    // If contentStartSeq is missing the content starts last
+    entries.push({
+      kind: "content",
+      seq: streaming.contentStartSeq ?? Number.MAX_SAFE_INTEGER,
+    });
+  }
+
+  entries.sort((a, b) => a.seq - b.seq);
+
+  const blocks: TimelineBlock[] = [];
+  for (const entry of entries) {
+    const last = blocks[blocks.length - 1];
+    if (entry.kind === "thinking") {
+      if (last?.kind === "thinking") {
+        (last as ThinkingBlock).items.push(entry.item);
+      } else {
+        blocks.push({ kind: "thinking", items: [entry.item] });
+      }
+    } else if (entry.kind === "step") {
+      if (last?.kind === "steps") {
+        (last as StepsBlock).items.push(entry.item);
+      } else {
+        blocks.push({ kind: "steps", items: [entry.item] });
+      }
+    } else {
+      blocks.push({ kind: "content", html });
+    }
+  }
+
+  return blocks;
+}
+
+/**
+ * Builds a unified ordered timeline for a COMPLETED message.
+ * Uses message.parts (already in arrival order) for thinking/content interleaving.
+ * Steps are inserted before the first content block (their most common natural position).
+ */
+function buildMessageTimeline(
+  message: Message | undefined,
+  thoughtItems: ThoughtItem[],
+  progressItems: ProgressItem[],
+  html: string,
+): TimelineBlock[] {
+  const parts = message?.parts;
+
+  if (Array.isArray(parts) && parts.length > 0) {
+    const blocks: TimelineBlock[] = [];
+
+    for (const part of parts) {
+      const isReasoning =
+        part.type === "reasoning" ||
+        !!part.reasoning ||
+        !!part.thought ||
+        !!part.thinking;
+
+      if (isReasoning) {
+        const text = (
+          part.reasoning ??
+          part.thought ??
+          part.thinking ??
+          (part.type === "reasoning" ? (part.text ?? part.content ?? "") : "")
+        ).trim();
+        if (!text) continue;
+        const last = blocks[blocks.length - 1];
+        if (last?.kind === "thinking") {
+          (last as ThinkingBlock).items.push({
+            key: `msg-think-${blocks.length}`,
+            text,
+          });
+        } else {
+          blocks.push({
+            kind: "thinking",
+            items: [{ key: `msg-think-${blocks.length}`, text }],
+          });
+        }
+      } else {
+        const partText = (part.text ?? part.content ?? "").trim();
+        if (!partText) continue;
+        const parsed = marked.parse(partText);
+        const partHtml = typeof parsed === "string" ? parsed : "";
+        const last = blocks[blocks.length - 1];
+        if (last?.kind === "content") {
+          (last as ContentBlock).html += partHtml;
+        } else {
+          blocks.push({ kind: "content", html: partHtml });
+        }
+      }
+    }
+
+    // Steps don't appear in parts; insert them before the first content block
+    if (progressItems.length > 0) {
+      const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
+      const stepsBlock: TimelineBlock = { kind: "steps", items: progressItems };
+      if (firstContentIdx >= 0) {
+        blocks.splice(firstContentIdx, 0, stepsBlock);
+      } else {
+        blocks.push(stepsBlock);
+      }
+    }
+
+    // If parts had no reasoning entries but the message has reasoningEvents,
+    // they won't have been added above — insert them before the first content block.
+    const hasThinkingBlock = blocks.some((b) => b.kind === "thinking");
+    if (!hasThinkingBlock && thoughtItems.length > 0) {
+      const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
+      const thinkingBlock: TimelineBlock = {
+        kind: "thinking",
+        items: thoughtItems,
+      };
+      if (firstContentIdx >= 0) {
+        blocks.splice(firstContentIdx, 0, thinkingBlock);
+      } else {
+        blocks.unshift(thinkingBlock);
+      }
+    }
+
+    return blocks.filter((b) => {
+      if (b.kind === "content") return !!(b as ContentBlock).html;
+      return (b as ThinkingBlock | StepsBlock).items.length > 0;
+    });
+  }
+
+  // Fallback for messages that have no parts array — thinking always precedes content
+  const blocks: TimelineBlock[] = [];
+  if (thoughtItems.length > 0)
+    blocks.push({ kind: "thinking", items: thoughtItems });
+  if (progressItems.length > 0)
+    blocks.push({ kind: "steps", items: progressItems });
+  if (html) blocks.push({ kind: "content", html });
+  return blocks;
 }
 
 export function UserMessage({ message }: { message: Message }) {
@@ -467,7 +618,7 @@ export function UserMessage({ message }: { message: Message }) {
           )}
           {message.images && message.images.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
-              {message.images.map((src) => (
+              {message.images.map((src: string) => (
                 <img
                   key={src}
                   src={src}
@@ -483,6 +634,101 @@ export function UserMessage({ message }: { message: Message }) {
   );
 }
 
+/**
+ * Type-safe helper to get agent name from message or streaming state.
+ * Checks multiple possible locations for the agent name to support both
+ * persisted messages and real-time streaming.
+ */
+function getAgentName(message: Message | undefined, streaming: StreamingState | undefined): string {
+  // Check message.info first (from persisted messages with nested structure)
+  if (message?.info?.agent && typeof message.info.agent === 'string') {
+    return message.info.agent;
+  }
+
+  // Check message top-level (backwards compatibility with flattened persisted messages)
+  if (message && 'agent' in message) {
+    const agent = (message as Record<string, unknown>).agent;
+    if (typeof agent === 'string' && agent) {
+      return agent;
+    }
+  }
+
+  // Check streaming state (for real-time streaming)
+  if (streaming?.agent && typeof streaming.agent === 'string') {
+    return streaming.agent;
+  }
+
+  return 'assistant';
+}
+
+/**
+ * Type-safe helper to get token usage info from message.
+ * Returns undefined for streaming state since tokens aren't available until completion.
+ */
+function getTokenInfo(
+  message: Message | undefined
+): { input?: number; output?: number; cache?: { read?: number; write?: number } } | undefined {
+  if (!message) {
+    return undefined;
+  }
+
+  // Check nested info structure first
+  if (message.info?.tokens) {
+    return message.info.tokens;
+  }
+
+  // Check top-level tokens (backwards compatibility)
+  if ('tokens' in message) {
+    const tokens = (message as Record<string, unknown>).tokens;
+    if (tokens && typeof tokens === 'object') {
+      return tokens as { input?: number; output?: number; cache?: { read?: number; write?: number } };
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Type-safe helper to get duration from message or streaming state.
+ */
+function getDuration(
+  message: Message | undefined,
+  streaming: StreamingState | undefined
+): number | undefined {
+  // Check streaming state first (most common during streaming)
+  if (streaming?.usage?.duration !== undefined && typeof streaming.usage.duration === 'number') {
+    return streaming.usage.duration;
+  }
+
+  // Guard against undefined message
+  if (!message) {
+    return undefined;
+  }
+
+  // Check nested info structure
+  if (message.info?.duration !== undefined && typeof message.info.duration === 'number') {
+    return message.info.duration;
+  }
+
+  // Check top-level duration (backwards compatibility)
+  if ('duration' in message) {
+    const duration = (message as Record<string, unknown>).duration;
+    if (typeof duration === 'number') {
+      return duration;
+    }
+  }
+
+  // Check timing.duration only if timing exists
+  if (message.timing && 'duration' in message.timing) {
+    const timingDuration = message.timing.duration;
+    if (typeof timingDuration === 'number') {
+      return timingDuration;
+    }
+  }
+
+  return undefined;
+}
+
 export function AssistantMessage({
   message,
   streaming,
@@ -492,8 +738,6 @@ export function AssistantMessage({
 }) {
   const dispatch = useAppDispatch();
   const { subagentsByParentMessageId } = useAppState();
-  const [showThoughts, setShowThoughts] = useState(false);
-  const [showProgress, setShowProgress] = useState(false);
   const [showSubagents, setShowSubagents] = useState(false);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -514,24 +758,20 @@ export function AssistantMessage({
         : progressItemsFromMessage(message),
     [streaming, message],
   );
-  const previousThoughtCount = useRef(thoughtItems.length);
-  const previousProgressCount = useRef(progressItems.length);
 
-  useEffect(() => {
-    const hasNewThought = thoughtItems.length > previousThoughtCount.current;
-    previousThoughtCount.current = thoughtItems.length;
-    if (streaming && hasNewThought) {
-      setShowThoughts(true);
+  /** Unified chronological list of timeline blocks to render. */
+  const timelineBlocks = useMemo<TimelineBlock[]>(() => {
+    if (streaming) {
+      return buildStreamingTimeline(
+        streaming,
+        thoughtItems,
+        progressItems,
+        html,
+      );
     }
-  }, [streaming, thoughtItems.length]);
+    return buildMessageTimeline(message, thoughtItems, progressItems, html);
+  }, [streaming, message, thoughtItems, progressItems, html]);
 
-  useEffect(() => {
-    const hasNewProgress = progressItems.length > previousProgressCount.current;
-    previousProgressCount.current = progressItems.length;
-    if (streaming && hasNewProgress) {
-      setShowProgress(true);
-    }
-  }, [streaming, progressItems.length]);
   const info = message?.info;
   const plan = message?.plan;
   const messageId = info?.id;
@@ -563,14 +803,17 @@ export function AssistantMessage({
     ? subagents
     : subagents.slice(0, 10);
   const showStreamingLoading = !message && !!streaming?.isActive;
-  const agentName = info?.agent ?? "assistant";
+
+  // Use type-safe helpers instead of type assertions
+  const agentName = getAgentName(message, streaming);
   const modelName = modelLabel(message ?? ({} as Message));
-  const inputTok = info?.tokens?.input ?? 0;
-  const outputTok = info?.tokens?.output ?? 0;
-  const cacheRead = info?.tokens?.cache?.read ?? 0;
-  const cacheWrite = info?.tokens?.cache?.write ?? 0;
-  const duration =
-    info?.duration ?? message?.timing?.duration ?? streaming?.usage?.duration;
+  const tokens = getTokenInfo(message);
+  const inputTok = tokens?.input ?? 0;
+  const outputTok = tokens?.output ?? 0;
+  const cache = tokens?.cache;
+  const cacheRead = cache?.read ?? 0;
+  const cacheWrite = cache?.write ?? 0;
+  const duration = getDuration(message, streaming);
   const hasTokens = inputTok > 0 || outputTok > 0;
   const handleCopy = async () => {
     await navigator.clipboard.writeText(content);
@@ -688,99 +931,110 @@ export function AssistantMessage({
             </button>
           </div>
         </div>
-        {/* Progress Updates — compact GitHub Copilot–style stack, shown before response content */}
-        {progressItems.length > 0 && (
-          <details
-            className="group mb-3"
-            open={showProgress}
-            onToggle={(e) =>
-              setShowProgress((e.target as HTMLDetailsElement).open)
-            }
-          >
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
-              <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
-                ›
-              </span>
-              <span className="opacity-70">{progressItems.length} step{progressItems.length !== 1 ? "s" : ""}</span>
-            </summary>
-            <div className="mt-1.5 ml-0.5 border-l border-oc-border pl-3 space-y-0.5">
-              {progressItems.map((event) => (
-                <div
-                  key={event.key}
-                  className="flex items-start gap-1.5 py-0.5 text-xs"
-                >
-                  <span className="mt-px shrink-0">
-                    {event.status === "pending" ? (
-                      <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
-                    ) : event.status === "error" ? (
-                      <X className="h-3 w-3 text-oc-red" />
-                    ) : (
-                      <Check className="h-3 w-3 text-oc-green opacity-70" />
-                    )}
+
+        {/* Unified timeline: blocks rendered in arrival order (thinking → steps → content → ...) */}
+        {timelineBlocks.map((block, blockIdx) => {
+          if (block.kind === "thinking") {
+            const isStreaming = !!streaming;
+            return (
+              <details
+                // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
+                key={`block-thinking-${blockIdx}`}
+                className="group mb-3"
+                open={isStreaming}
+              >
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
+                  <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
+                    ›
                   </span>
-                  <span className={`min-w-0 flex-1 leading-relaxed ${event.status === "pending" ? "text-oc-text" : "text-oc-text-soft opacity-80"}`}>
-                    {event.title}
-                    {event.meta ? (
-                      <span className="ml-1.5 text-oc-text-muted opacity-60">{event.meta}</span>
-                    ) : null}
-                    {event.filePath ? (
-                      <button
-                        type="button"
-                        className="ml-1.5 inline-flex items-center gap-1 font-mono text-oc-text-muted opacity-60 hover:text-oc-accent hover:opacity-100 transition-colors"
-                        onClick={() =>
-                          vscode.postMessage({
-                            type: "openFile",
-                            file: event.filePath,
-                          })
-                        }
-                      >
-                        <FileIcon filePath={event.filePath} />
-                        {event.filePath.split(/[/\\]/).pop()}
-                      </button>
-                    ) : null}
+                  <span className="opacity-70">
+                    Thinking ({block.items.length})
                   </span>
+                  <span className="truncate opacity-50 text-oc-2xs">
+                    {block.items[block.items.length - 1]?.text.slice(0, 52)}
+                  </span>
+                </summary>
+                <div className="mt-1.5 ml-0.5 border-l border-oc-border pl-3 space-y-0.5 max-h-[300px] overflow-y-auto pr-2">
+                  {block.items.map((thought) => (
+                    <div
+                      key={thought.key}
+                      className="py-0.5 text-xs leading-relaxed text-oc-text-soft opacity-70 whitespace-pre-wrap"
+                    >
+                      {thought.text}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </details>
+            );
+          }
+
+          if (block.kind === "steps") {
+            return (
+              <div
+                // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
+                key={`block-steps-${blockIdx}`}
+                className="mb-3 ml-0.5 border-l border-oc-border pl-3 space-y-0.5 max-h-[300px] overflow-y-auto pr-2"
+              >
+                {block.items.map((event) => (
+                  <div
+                    key={event.key}
+                    className="flex items-start gap-1.5 py-0.5 text-xs"
+                  >
+                    <span className="mt-px shrink-0">
+                      {event.status === "pending" ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
+                      ) : event.status === "error" ? (
+                        <X className="h-3 w-3 text-oc-red" />
+                      ) : (
+                        <Check className="h-3 w-3 text-oc-green opacity-70" />
+                      )}
+                    </span>
+                    <span
+                      className={`min-w-0 flex-1 leading-relaxed ${event.status === "pending" ? "text-oc-text" : "text-oc-text-soft opacity-80"}`}
+                    >
+                      {event.title}
+                      {event.meta ? (
+                        <span className="ml-1.5 text-oc-text-muted opacity-60">
+                          {event.meta}
+                        </span>
+                      ) : null}
+                      {event.filePath ? (
+                        <button
+                          type="button"
+                          className="ml-1.5 inline-flex items-center gap-1 font-mono text-oc-text-muted opacity-60 hover:text-oc-accent hover:opacity-100 transition-colors"
+                          onClick={() =>
+                            vscode.postMessage({
+                              type: "openFile",
+                              file: event.filePath,
+                            })
+                          }
+                        >
+                          <FileIcon filePath={event.filePath} />
+                          {event.filePath.split(/[/\\]/).pop()}
+                        </button>
+                      ) : null}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            );
+          }
+
+          // block.kind === "content"
+          return (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
+              key={`block-content-${blockIdx}`}
+              className="mb-3 max-h-[500px] overflow-y-auto pr-2"
+            >
+              {/* biome-ignore lint/security/noDangerouslySetInnerHtml: markdown rendering requires HTML injection */}
+              <div
+                className="markdown-body text-sm"
+                dangerouslySetInnerHTML={{ __html: block.html }}
+              />
             </div>
-          </details>
-        )}
-        <div className="mb-3">
-          {/* biome-ignore lint/security/noDangerouslySetInnerHtml: markdown rendering requires HTML injection */}
-          <div
-            className="markdown-body text-sm"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
-        </div>
-        {/* Thinking — compact collapsible, shown after response */}
-        {thoughtItems.length > 0 && (
-          <details
-            className="group mb-3"
-            open={showThoughts}
-            onToggle={(e) =>
-              setShowThoughts((e.target as HTMLDetailsElement).open)
-            }
-          >
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
-              <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
-                ›
-              </span>
-              <span className="opacity-70">Thinking ({thoughtItems.length})</span>
-              <span className="truncate opacity-50 text-oc-2xs">
-                {thoughtItems[thoughtItems.length - 1]?.text.slice(0, 52)}
-              </span>
-            </summary>
-            <div className="mt-1.5 ml-0.5 border-l border-oc-border pl-3 space-y-0.5">
-              {thoughtItems.map((thought) => (
-                <div
-                  key={thought.key}
-                  className="py-0.5 text-xs leading-relaxed text-oc-text-soft opacity-70 whitespace-pre-wrap"
-                >
-                  {thought.text}
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
+          );
+        })}
         {subagents.length > 0 && (
           <details
             className="group mb-3"
@@ -793,7 +1047,9 @@ export function AssistantMessage({
               <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
                 ›
               </span>
-              <span className="opacity-70">Spawned Agents ({subagents.length})</span>
+              <span className="opacity-70">
+                Spawned Agents ({subagents.length})
+              </span>
               <span className="truncate opacity-50 text-oc-2xs">
                 {subagents[subagents.length - 1]?.latestActivity}
               </span>
@@ -898,8 +1154,9 @@ export function AssistantMessage({
                           hasProgressEvents: !!message.progressEvents?.length,
                           hasSubagents: !!message.subagents?.length,
                           hasPlan: !!message.plan,
-                          createdAt: message.info?.created,
-                          duration: message.info?.duration,
+                        edits: message.edits?.map((file: any) => file.file),
+                        createdAt: message.created,
+                        duration: message.info?.duration ?? message.duration,
                         }
                       : null,
                     streaming: streaming
@@ -908,12 +1165,7 @@ export function AssistantMessage({
                           contentLength: streaming.content?.length || 0,
                           stepsCount: streaming.steps?.length || 0,
                           progressEventsCount:
-                            streaming.progressEvents?.length || 0,
-                          partsCount: streaming.parts?.length || 0,
-                          hasError: !!streaming.error,
-                          error: streaming.error,
-                          role: streaming.role,
-                          info: streaming.info,
+                          streaming.progressEvents?.length || 0,
                         }
                       : null,
                   },
