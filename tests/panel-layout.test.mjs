@@ -42,9 +42,9 @@ test('thinking, model, and agent controls post selection events and expose commo
   const modelBody = extractFunctionBody(panelSource, 'export function ModelDropdown()');
   const agentBody = extractFunctionBody(panelSource, 'export function AgentDropdown()');
 
-  assert.match(thinkingBody, /vscode\.postMessage\(\{\s*type:\s*'setThinkingLevel',\s*level\s*\}\)/, 'thinking control should post setThinkingLevel messages');
+  assert.match(thinkingBody, /vscode\.postMessage\(\{\s*type:\s*["']setThinkingLevel["'],\s*level\s*\}\)/, 'thinking control should post setThinkingLevel messages');
   assert.match(thinkingBody, /catch\s*\(e\)\s*\{\}/, 'thinking control should guard messaging errors');
 
-  assert.match(modelBody, /vscode\.postMessage\(\{[\s\S]*type:\s*'selectModel'/, 'model dropdown should post selectModel when a model is picked');
-  assert.match(agentBody, /vscode\.postMessage\(\{\s*type:\s*'selectAgent',\s*agent:\s*agent\.id\s*\}\)/, 'agent dropdown should post selectAgent when an agent is picked');
+  assert.match(modelBody, /vscode\.postMessage\(\{[\s\S]*type:\s*["']selectModel["']/, 'model dropdown should post selectModel when a model is picked');
+  assert.match(agentBody, /vscode\.postMessage\(\{\s*type:\s*["']selectAgent["'],\s*agent:\s*agent\.id\s*\}\)/, 'agent dropdown should post selectAgent when an agent is picked');
 });

@@ -43,7 +43,7 @@ test('plan detection preserves safety guards and persistence behavior', () => {
 test('assistant message UI renders plan buttons and core plan card affordances', () => {
   // Verify the two plan entry points in message UI are present.
   assert.match(messageSource, /title="Core Feature: View Implementation Plan"/, 'header-level plan button must keep core-feature tooltip');
-  assert.match(messageSource, /onClick=\{\(\)\s*=>\s*vscode\.postMessage\(\{\s*type:\s*'viewPlan',\s*plan\s*\}\)\}/, 'plan button should dispatch viewPlan event');
+  assert.match(messageSource, /onClick=\{\(\)\s*=>\s*vscode\.postMessage\(\{\s*type:\s*["']viewPlan["'],\s*plan\s*\}\)\}/, 'plan button should dispatch viewPlan event');
   assert.match(messageSource, /className="plan-card[^"]*"/, 'assistant message should render plan card container');
   assert.match(messageSource, /View Implementation Plan/, 'plan card must expose View Implementation Plan call-to-action');
 });

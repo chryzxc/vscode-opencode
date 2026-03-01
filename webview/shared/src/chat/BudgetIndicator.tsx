@@ -14,19 +14,24 @@ export function BudgetIndicator() {
     return null;
   }
 
-  const usagePercent = budget.dailyAllowance > 0
-    ? (budget.usedToday / budget.dailyAllowance) * 100
-    : 0;
+  const usagePercent =
+    budget.dailyAllowance > 0
+      ? (budget.usedToday / budget.dailyAllowance) * 100
+      : 0;
 
   const barColor =
-    budget.warningLevel === 'critical' ? 'bg-red-500' :
-    budget.warningLevel === 'warning' ? 'bg-yellow-500' :
-    'bg-green-500';
+    budget.warningLevel === 'critical'
+      ? 'bg-red-500'
+      : budget.warningLevel === 'warning'
+        ? 'bg-yellow-500'
+        : 'bg-green-500';
 
   const textColor =
-    budget.warningLevel === 'critical' ? 'text-red-500' :
-    budget.warningLevel === 'warning' ? 'text-yellow-500' :
-    'text-green-500';
+    budget.warningLevel === 'critical'
+      ? 'text-red-500'
+      : budget.warningLevel === 'warning'
+        ? 'text-yellow-500'
+        : 'text-green-500';
 
   return (
     <div className="mb-2 rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] p-2 text-xs">
@@ -68,7 +73,9 @@ export function BudgetIndicator() {
           </div>
         </div>
         <div className="text-center">
-          <div className="text-[var(--oc-text-muted)]">{budget.daysRemaining} days left</div>
+          <div className="text-[var(--oc-text-muted)]">
+            {budget.daysRemaining} days left
+          </div>
           <div className="font-medium text-[var(--oc-text)]">
             ~{Math.round(budget.projectedMonthlyUsage)} projected
           </div>
@@ -103,14 +110,15 @@ export function CompactBudgetIndicator({
   dailyAllowance,
   warningLevel,
 }: CompactBudgetIndicatorProps) {
-  const usagePercent = dailyAllowance > 0
-    ? (usedToday / dailyAllowance) * 100
-    : 0;
+  const usagePercent =
+    dailyAllowance > 0 ? (usedToday / dailyAllowance) * 100 : 0;
 
   const barColor =
-    warningLevel === 'critical' ? 'bg-red-500' :
-    warningLevel === 'warning' ? 'bg-yellow-500' :
-    'bg-green-500';
+    warningLevel === 'critical'
+      ? 'bg-red-500'
+      : warningLevel === 'warning'
+        ? 'bg-yellow-500'
+        : 'bg-green-500';
 
   return (
     <div

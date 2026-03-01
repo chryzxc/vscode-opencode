@@ -12,5 +12,5 @@ if (!rootEl) {
 createRoot(rootEl).render(
   <StrictMode>
     <ChatShell />
-  </StrictMode>
+  </StrictMode>,
 );

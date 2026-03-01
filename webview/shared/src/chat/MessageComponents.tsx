@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   Copy,
@@ -6,10 +6,11 @@ import {
   Loader2,
   X,
   Sparkles,
-} from "lucide-react";
-import { marked } from "marked";
+} from 'lucide-react';
 
-import { cn } from "@/utils";
+import { MarkdownRenderer } from '../components/MarkdownRenderer';
+
+import { cn } from '@/utils';
 
 import type {
   Message,
@@ -19,55 +20,62 @@ import type {
   StreamingStep,
   SubagentSummary,
   ReasoningEvent,
-} from "./lib/types";
-import { useAppDispatch, useAppState } from "./lib/store";
-import { jumpToMessage } from "./lib/messageJump";
-import vscode from "./lib/vscode";
+} from './lib/types';
+import { useAppDispatch, useAppState } from './lib/store';
+import { jumpToMessage } from './lib/messageJump';
+import vscode from './lib/vscode';
 
 // File extension color mapping for icons
 const FILE_COLOR_MAP: Record<string, string> = {
-  ts: "#3178c6",
-  js: "#f1e05a",
-  tsx: "#3178c6",
-  jsx: "#f1e05a",
-  css: "#563d7c",
-  html: "#e34c26",
-  json: "#f1e05a",
-  md: "#083fa1",
-  vue: "#41b883",
-  py: "#3572A5",
-  go: "#00ADD8",
-  java: "#b07219",
-  rs: "#dea584",
-  php: "#4F5D95",
-  rb: "#701516",
-  swift: "#ffac45",
-  kt: "#F18E33",
-  c: "#555555",
-  cpp: "#f34b7d",
-  h: "#a8ff97",
-  hpp: "#a8ff97",
+  ts: '#3178c6',
+  js: '#f1e05a',
+  tsx: '#3178c6',
+  jsx: '#f1e05a',
+  css: '#563d7c',
+  html: '#e34c26',
+  json: '#f1e05a',
+  md: '#083fa1',
+  vue: '#41b883',
+  py: '#3572A5',
+  go: '#00ADD8',
+  java: '#b07219',
+  rs: '#dea584',
+  php: '#4F5D95',
+  rb: '#701516',
+  swift: '#ffac45',
+  kt: '#F18E33',
+  c: '#555555',
+  cpp: '#f34b7d',
+  h: '#a8ff97',
+  hpp: '#a8ff97',
 };
 
 // Extract file extension from path
 function getFileExtension(path: string): string {
   const match = path.match(/\.([a-zA-Z0-9]+)(?::|:|$)/);
-  return match ? match[1].toLowerCase() : "";
+  return match ? match[1].toLowerCase() : '';
 }
 
 // Get color for file extension
 function getFileColor(ext: string): string {
-  return FILE_COLOR_MAP[ext] || "var(--oc-text-muted)";
+  return FILE_COLOR_MAP[ext] || 'var(--oc-text-muted)';
 }
 
 // SVG file icon
-export function FileIcon({ filePath, className }: { filePath?: string; className?: string }) {
-  const ext = filePath ? getFileExtension(filePath) : "";
+export function FileIcon({
+  filePath,
+  className,
+}: {
+  filePath?: string;
+  className?: string;
+}) {
+  const ext = filePath ? getFileExtension(filePath) : '';
 
   if (filePath) {
-    const fileName = (filePath.split(/[\\/]/).pop() || "").toLowerCase();
+    const fileName = (filePath.split(/[\\/]/).pop() || '').toLowerCase();
     const cleanKey = (key: string) =>
-      key.replace(/\./g, '_')
+      key
+        .replace(/\./g, '_')
         .replace(/\//g, '-')
         .replace(/\+/g, 'p')
         .replace(/#/g, 'h')
@@ -79,10 +87,10 @@ export function FileIcon({ filePath, className }: { filePath?: string; className
     return (
       <div
         className={cn(
-          "file-icon",
+          'file-icon',
           `file-icon-type-${cleanKey(fileName)}`,
           `file-icon-type-${cleanKey(ext)}`,
-          className
+          className,
         )}
         style={{
           width: '16px',
@@ -92,7 +100,7 @@ export function FileIcon({ filePath, className }: { filePath?: string; className
           justifyContent: 'center',
           flexShrink: 0,
           marginRight: '4px',
-          verticalAlign: 'text-bottom'
+          verticalAlign: 'text-bottom',
         }}
       />
     );
@@ -102,14 +110,14 @@ export function FileIcon({ filePath, className }: { filePath?: string; className
   return (
     <svg
       role="img"
-      aria-label={filePath ?? "file"}
+      aria-label={filePath ?? 'file'}
       width="14"
       height="14"
       viewBox="0 0 24 24"
       fill="none"
-      className={cn("file-icon-svg", className)}
+      className={cn('file-icon-svg', className)}
     >
-      <title>{filePath ?? "file"}</title>
+      <title>{filePath ?? 'file'}</title>
       <path
         d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"
         stroke={color}
@@ -130,30 +138,29 @@ export function FileIcon({ filePath, className }: { filePath?: string; className
   );
 }
 
-
 function messageBodyFromParts(parts?: MessagePart[]): string {
   if (!parts) {
-    return "";
+    return '';
   }
   return parts
     .map((part) => {
       const isReasoning =
-        part.type === "reasoning" ||
+        part.type === 'reasoning' ||
         !!part.reasoning ||
         !!part.thought ||
         !!part.thinking;
       if (isReasoning) {
-        return "";
+        return '';
       }
-      return part.text ?? part.content ?? "";
+      return part.text ?? part.content ?? '';
     })
-    .join("")
+    .join('')
     .trim();
 }
 
 function reasoningFromParts(parts?: MessagePart[]): string {
   if (!parts) {
-    return "";
+    return '';
   }
   const fromParts = (parts: MessagePart[]) =>
     parts
@@ -162,21 +169,21 @@ function reasoningFromParts(parts?: MessagePart[]): string {
         if (explicit) {
           return explicit;
         }
-        if (part.type === "reasoning") {
-          return part.text ?? part.content ?? "";
+        if (part.type === 'reasoning') {
+          return part.text ?? part.content ?? '';
         }
-        if (part.type === "text" || part.text) {
-          const value = part.text || part.content || "";
+        if (part.type === 'text' || part.text) {
+          const value = part.text || part.content || '';
           // If it's a text part, but it's empty, it might be a placeholder for reasoning
           // that was not explicitly typed as "reasoning".
           if (value.trim().length === 0) {
-            return "";
+            return '';
           }
         }
-        return "";
+        return '';
       })
       .filter(Boolean)
-      .join("\n\n")
+      .join('\n\n')
       .trim();
 
   return fromParts(parts);
@@ -184,9 +191,13 @@ function reasoningFromParts(parts?: MessagePart[]): string {
 
 function summaryText(message?: Message): string {
   // Check both nested info and top-level properties (for persisted messages)
-  const summary = message?.info?.summary ?? (message as Record<string, unknown>).summary as { title?: string; body?: string } | undefined;
-  const title = summary?.title?.trim() ?? "";
-  const body = summary?.body?.trim() ?? "";
+  const summary =
+    message?.info?.summary ??
+    ((message as Record<string, unknown>).summary as
+      | { title?: string; body?: string }
+      | undefined);
+  const title = summary?.title?.trim() ?? '';
+  const body = summary?.body?.trim() ?? '';
   if (title && body) {
     return `${title}\n\n${body}`;
   }
@@ -196,18 +207,22 @@ function summaryText(message?: Message): string {
 function modelLabel(message: Message): string {
   // Check nested info structure first (from streaming)
   const modelObj = message.info?.model;
-  if (modelObj && typeof modelObj === "object") {
+  if (modelObj && typeof modelObj === 'object') {
     const name = (modelObj as Record<string, unknown>).name;
     const modelID = (modelObj as Record<string, unknown>).modelID;
-    if (typeof name === "string" && name) return name;
-    if (typeof modelID === "string" && modelID) return modelID;
+    if (typeof name === 'string' && name) return name;
+    if (typeof modelID === 'string' && modelID) return modelID;
   }
   // Check top-level model object (from persisted messages)
-  if (!modelObj && typeof message.model === "object" && message.model !== null) {
+  if (
+    !modelObj &&
+    typeof message.model === 'object' &&
+    message.model !== null
+  ) {
     const name = (message.model as Record<string, unknown>).name;
     const modelID = (message.model as Record<string, unknown>).modelID;
-    if (typeof name === "string" && name) return name;
-    if (typeof modelID === "string" && modelID) return modelID;
+    if (typeof name === 'string' && name) return name;
+    if (typeof modelID === 'string' && modelID) return modelID;
   }
   // Check nested info structure
   let model = message.info?.modelID;
@@ -215,9 +230,11 @@ function modelLabel(message: Message): string {
   if (model && provider) return `${provider}/${model}`;
   // Check top-level properties (from persisted messages)
   model ??= (message as Record<string, unknown>).modelID as string | undefined;
-  provider ??= (message as Record<string, unknown>).providerID as string | undefined;
+  provider ??= (message as Record<string, unknown>).providerID as
+    | string
+    | undefined;
   if (model && provider) return `${provider}/${model}`;
-  return model ?? provider ?? "assistant";
+  return model ?? provider ?? 'assistant';
 }
 
 function getMessageContent(
@@ -228,7 +245,7 @@ function getMessageContent(
     return streaming.content || streaming.reasoning;
   }
   if (!message) {
-    return "";
+    return '';
   }
   const candidates = [
     message.content,
@@ -240,8 +257,8 @@ function getMessageContent(
   return (
     candidates.find(
       (candidate) =>
-        typeof candidate === "string" && candidate.trim().length > 0,
-    ) ?? ""
+        typeof candidate === 'string' && candidate.trim().length > 0,
+    ) ?? ''
   );
 }
 
@@ -249,14 +266,14 @@ type ThoughtItem = { key: string; text: string };
 type ProgressItem = {
   key: string;
   title: string;
-  status: "pending" | "done" | "error";
+  status: 'pending' | 'done' | 'error';
   meta?: string;
   filePath?: string;
 };
 
-type ThinkingBlock = { kind: "thinking"; items: ThoughtItem[] };
-type StepsBlock = { kind: "steps"; items: ProgressItem[] };
-type ContentBlock = { kind: "content"; html: string };
+type ThinkingBlock = { kind: 'thinking'; items: ThoughtItem[] };
+type StepsBlock = { kind: 'steps'; items: ProgressItem[] };
+type ContentBlock = { kind: 'content'; html: string };
 type TimelineBlock = ThinkingBlock | StepsBlock | ContentBlock;
 
 /**
@@ -273,7 +290,7 @@ function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
     return message.reasoningEvents
       .filter((event: ReasoningEvent) => {
         const text = event.text;
-        return typeof text === "string" && text.length > 0;
+        return typeof text === 'string' && text.length > 0;
       })
       .map((event: ReasoningEvent) => ({
         key: `evt-${event.createdAt}`,
@@ -287,7 +304,7 @@ function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
         part.reasoning ??
         part.thought ??
         part.thinking ??
-        (part.type === "reasoning" ? (part.text ?? part.content ?? "") : "");
+        (part.type === 'reasoning' ? part.text ?? part.content ?? '' : '');
       return { key: `part-${index}`, text: text.trim() };
     })
     .filter((item: ThoughtItem) => item.text.length > 0);
@@ -308,25 +325,25 @@ function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
       }));
   }
 
-  const fallback = (streaming?.reasoning || "").trim();
-  return fallback ? [{ key: "stream-reasoning-fallback", text: fallback }] : [];
+  const fallback = (streaming?.reasoning || '').trim();
+  return fallback ? [{ key: 'stream-reasoning-fallback', text: fallback }] : [];
 }
 
-function normalizeProgressStatus(value?: string): "pending" | "done" | "error" {
-  if (value === "done" || value === "error") {
+function normalizeProgressStatus(value?: string): 'pending' | 'done' | 'error' {
+  if (value === 'done' || value === 'error') {
     return value;
   }
-  return "pending";
+  return 'pending';
 }
 
 function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
-  const type = (step.type ?? "").toLowerCase();
-  if (type === "reasoning") {
+  const type = (step.type ?? '').toLowerCase();
+  if (type === 'reasoning') {
     return false;
   }
 
   const title = step.title.trim().toLowerCase();
-  if (title === "thinking..." || title === "thinking") {
+  if (title === 'thinking...' || title === 'thinking') {
     return false;
   }
 
@@ -350,9 +367,9 @@ function progressItemsFromSteps(
           status: normalizeProgressStatus(step.status),
           meta: step.meta,
           filePath:
-            "filePath" in step
+            'filePath' in step
               ? (step as StreamingStep).filePath
-              : ((step as MessageStep).content ?? undefined),
+              : (step as MessageStep).content ?? undefined,
         });
       }
       return acc;
@@ -369,11 +386,11 @@ function progressItemsFromMessage(message?: Message): ProgressItem[] {
   ) {
     return progressItemsFromSteps(
       message.progressEvents,
-      "msg-progress-events",
+      'msg-progress-events',
     );
   }
   if (Array.isArray(message.steps) && message.steps.length > 0) {
-    return progressItemsFromSteps(message.steps, "msg-steps");
+    return progressItemsFromSteps(message.steps, 'msg-steps');
   }
   return [];
 }
@@ -390,18 +407,18 @@ function progressItemsFromStreaming(
   ) {
     return progressItemsFromSteps(
       streaming.progressEvents,
-      "stream-progress-events",
+      'stream-progress-events',
     );
   }
   if (Array.isArray(streaming.steps) && streaming.steps.length > 0) {
-    return progressItemsFromSteps(streaming.steps, "stream-steps");
+    return progressItemsFromSteps(streaming.steps, 'stream-steps');
   }
   return [];
 }
 
 function formatDurationMs(ms?: number): string {
-  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
-    return "n/a";
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+    return 'n/a';
   }
   if (ms >= 1000) {
     return `${(ms / 1000).toFixed(1)}s`;
@@ -410,17 +427,17 @@ function formatDurationMs(ms?: number): string {
 }
 
 function statusBadgeClass(status: string): string {
-  if (status === "done") return "text-oc-green border-oc-border";
-  if (status === "error") return "text-oc-red border-oc-border";
-  if (status === "running") return "text-oc-accent border-oc-border";
-  if (status === "orphaned") return "text-oc-yellow border-oc-border";
-  return "text-oc-text-muted border-oc-border";
+  if (status === 'done') return 'text-oc-green border-oc-border';
+  if (status === 'error') return 'text-oc-red border-oc-border';
+  if (status === 'running') return 'text-oc-accent border-oc-border';
+  if (status === 'orphaned') return 'text-oc-yellow border-oc-border';
+  return 'text-oc-text-muted border-oc-border';
 }
 
 function sanitizeUserContent(raw: string): string {
   return raw
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
     .trim();
 }
 
@@ -436,21 +453,21 @@ function buildStreamingTimeline(
   html: string,
 ): TimelineBlock[] {
   type RawEntry =
-    | { seq: number; kind: "thinking"; item: ThoughtItem }
-    | { seq: number; kind: "step"; item: ProgressItem }
-    | { seq: number; kind: "content" };
+    | { seq: number; kind: 'thinking'; item: ThoughtItem }
+    | { seq: number; kind: 'step'; item: ProgressItem }
+    | { seq: number; kind: 'content' };
 
   const entries: RawEntry[] = [];
 
   for (const item of thoughtItems) {
-    entries.push({ kind: "thinking", item, seq: seqFromThoughtKey(item.key) });
+    entries.push({ kind: 'thinking', item, seq: seqFromThoughtKey(item.key) });
   }
 
   for (const item of progressItems) {
     // Match back to the original step to read its streamSeq timestamp
     const step = streaming.steps.find((s) => s.title === item.title);
     entries.push({
-      kind: "step",
+      kind: 'step',
       item,
       seq: step?.streamSeq ?? step?.startTime ?? 0,
     });
@@ -459,7 +476,7 @@ function buildStreamingTimeline(
   if (html) {
     // If contentStartSeq is missing the content starts last
     entries.push({
-      kind: "content",
+      kind: 'content',
       seq: streaming.contentStartSeq ?? Number.MAX_SAFE_INTEGER,
     });
   }
@@ -469,20 +486,20 @@ function buildStreamingTimeline(
   const blocks: TimelineBlock[] = [];
   for (const entry of entries) {
     const last = blocks[blocks.length - 1];
-    if (entry.kind === "thinking") {
-      if (last?.kind === "thinking") {
+    if (entry.kind === 'thinking') {
+      if (last?.kind === 'thinking') {
         (last as ThinkingBlock).items.push(entry.item);
       } else {
-        blocks.push({ kind: "thinking", items: [entry.item] });
+        blocks.push({ kind: 'thinking', items: [entry.item] });
       }
-    } else if (entry.kind === "step") {
-      if (last?.kind === "steps") {
+    } else if (entry.kind === 'step') {
+      if (last?.kind === 'steps') {
         (last as StepsBlock).items.push(entry.item);
       } else {
-        blocks.push({ kind: "steps", items: [entry.item] });
+        blocks.push({ kind: 'steps', items: [entry.item] });
       }
     } else {
-      blocks.push({ kind: "content", html });
+      blocks.push({ kind: 'content', html });
     }
   }
 
@@ -507,7 +524,7 @@ function buildMessageTimeline(
 
     for (const part of parts) {
       const isReasoning =
-        part.type === "reasoning" ||
+        part.type === 'reasoning' ||
         !!part.reasoning ||
         !!part.thought ||
         !!part.thinking;
@@ -517,39 +534,37 @@ function buildMessageTimeline(
           part.reasoning ??
           part.thought ??
           part.thinking ??
-          (part.type === "reasoning" ? (part.text ?? part.content ?? "") : "")
+          (part.type === 'reasoning' ? part.text ?? part.content ?? '' : '')
         ).trim();
         if (!text) continue;
         const last = blocks[blocks.length - 1];
-        if (last?.kind === "thinking") {
+        if (last?.kind === 'thinking') {
           (last as ThinkingBlock).items.push({
             key: `msg-think-${blocks.length}`,
             text,
           });
         } else {
           blocks.push({
-            kind: "thinking",
+            kind: 'thinking',
             items: [{ key: `msg-think-${blocks.length}`, text }],
           });
         }
       } else {
-        const partText = (part.text ?? part.content ?? "").trim();
+        const partText = (part.text ?? part.content ?? '').trim();
         if (!partText) continue;
-        const parsed = marked.parse(partText);
-        const partHtml = typeof parsed === "string" ? parsed : "";
         const last = blocks[blocks.length - 1];
-        if (last?.kind === "content") {
-          (last as ContentBlock).html += partHtml;
+        if (last?.kind === 'content') {
+          (last as ContentBlock).html += partText;
         } else {
-          blocks.push({ kind: "content", html: partHtml });
+          blocks.push({ kind: 'content', html: partText });
         }
       }
     }
 
     // Steps don't appear in parts; insert them before the first content block
     if (progressItems.length > 0) {
-      const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
-      const stepsBlock: TimelineBlock = { kind: "steps", items: progressItems };
+      const firstContentIdx = blocks.findIndex((b) => b.kind === 'content');
+      const stepsBlock: TimelineBlock = { kind: 'steps', items: progressItems };
       if (firstContentIdx >= 0) {
         blocks.splice(firstContentIdx, 0, stepsBlock);
       } else {
@@ -559,11 +574,11 @@ function buildMessageTimeline(
 
     // If parts had no reasoning entries but the message has reasoningEvents,
     // they won't have been added above — insert them before the first content block.
-    const hasThinkingBlock = blocks.some((b) => b.kind === "thinking");
+    const hasThinkingBlock = blocks.some((b) => b.kind === 'thinking');
     if (!hasThinkingBlock && thoughtItems.length > 0) {
-      const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
+      const firstContentIdx = blocks.findIndex((b) => b.kind === 'content');
       const thinkingBlock: TimelineBlock = {
-        kind: "thinking",
+        kind: 'thinking',
         items: thoughtItems,
       };
       if (firstContentIdx >= 0) {
@@ -574,7 +589,7 @@ function buildMessageTimeline(
     }
 
     return blocks.filter((b) => {
-      if (b.kind === "content") return !!(b as ContentBlock).html;
+      if (b.kind === 'content') return !!(b as ContentBlock).html;
       return (b as ThinkingBlock | StepsBlock).items.length > 0;
     });
   }
@@ -582,10 +597,10 @@ function buildMessageTimeline(
   // Fallback for messages that have no parts array — thinking always precedes content
   const blocks: TimelineBlock[] = [];
   if (thoughtItems.length > 0)
-    blocks.push({ kind: "thinking", items: thoughtItems });
+    blocks.push({ kind: 'thinking', items: thoughtItems });
   if (progressItems.length > 0)
-    blocks.push({ kind: "steps", items: progressItems });
-  if (html) blocks.push({ kind: "content", html });
+    blocks.push({ kind: 'steps', items: progressItems });
+  if (html) blocks.push({ kind: 'content', html });
   return blocks;
 }
 
@@ -639,7 +654,10 @@ export function UserMessage({ message }: { message: Message }) {
  * Checks multiple possible locations for the agent name to support both
  * persisted messages and real-time streaming.
  */
-function getAgentName(message: Message | undefined, streaming: StreamingState | undefined): string {
+function getAgentName(
+  message: Message | undefined,
+  streaming: StreamingState | undefined,
+): string {
   // Check message.info first (from persisted messages with nested structure)
   if (message?.info?.agent && typeof message.info.agent === 'string') {
     return message.info.agent;
@@ -666,8 +684,14 @@ function getAgentName(message: Message | undefined, streaming: StreamingState | 
  * Returns undefined for streaming state since tokens aren't available until completion.
  */
 function getTokenInfo(
-  message: Message | undefined
-): { input?: number; output?: number; cache?: { read?: number; write?: number } } | undefined {
+  message: Message | undefined,
+):
+  | {
+      input?: number;
+      output?: number;
+      cache?: { read?: number; write?: number };
+    }
+  | undefined {
   if (!message) {
     return undefined;
   }
@@ -681,7 +705,11 @@ function getTokenInfo(
   if ('tokens' in message) {
     const tokens = (message as Record<string, unknown>).tokens;
     if (tokens && typeof tokens === 'object') {
-      return tokens as { input?: number; output?: number; cache?: { read?: number; write?: number } };
+      return tokens as {
+        input?: number;
+        output?: number;
+        cache?: { read?: number; write?: number };
+      };
     }
   }
 
@@ -693,10 +721,13 @@ function getTokenInfo(
  */
 function getDuration(
   message: Message | undefined,
-  streaming: StreamingState | undefined
+  streaming: StreamingState | undefined,
 ): number | undefined {
   // Check streaming state first (most common during streaming)
-  if (streaming?.usage?.duration !== undefined && typeof streaming.usage.duration === 'number') {
+  if (
+    streaming?.usage?.duration !== undefined &&
+    typeof streaming.usage.duration === 'number'
+  ) {
     return streaming.usage.duration;
   }
 
@@ -706,7 +737,10 @@ function getDuration(
   }
 
   // Check nested info structure
-  if (message.info?.duration !== undefined && typeof message.info.duration === 'number') {
+  if (
+    message.info?.duration !== undefined &&
+    typeof message.info.duration === 'number'
+  ) {
     return message.info.duration;
   }
 
@@ -742,8 +776,6 @@ export function AssistantMessage({
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [copied, setCopied] = useState(false);
   const content = getMessageContent(message, streaming);
-  const parsed = marked.parse(content || "");
-  const html = typeof parsed === "string" ? parsed : "";
   const thoughtItems = useMemo(
     () =>
       streaming
@@ -766,11 +798,11 @@ export function AssistantMessage({
         streaming,
         thoughtItems,
         progressItems,
-        html,
+        content,
       );
     }
-    return buildMessageTimeline(message, thoughtItems, progressItems, html);
-  }, [streaming, message, thoughtItems, progressItems, html]);
+    return buildMessageTimeline(message, thoughtItems, progressItems, content);
+  }, [streaming, message, thoughtItems, progressItems, content]);
 
   const info = message?.info;
   const plan = message?.plan;
@@ -781,7 +813,7 @@ export function AssistantMessage({
       ? message.subagents
       : [];
     const fromStore = messageId
-      ? (subagentsByParentMessageId[messageId] ?? [])
+      ? subagentsByParentMessageId[messageId] ?? []
       : [];
     if (fromStore.length === 0) return fromMessage;
     if (fromMessage.length === 0) return fromStore;
@@ -821,8 +853,8 @@ export function AssistantMessage({
     setTimeout(() => setCopied(false), 1200);
   };
   const openSubagentDetails = (subagentId: string) => {
-    dispatch({ type: "SELECT_SUBAGENT", payload: subagentId });
-    dispatch({ type: "SET_SUBAGENTS_PANEL_OPEN", payload: true });
+    dispatch({ type: 'SELECT_SUBAGENT', payload: subagentId });
+    dispatch({ type: 'SET_SUBAGENTS_PANEL_OPEN', payload: true });
   };
   return (
     <div
@@ -837,15 +869,15 @@ export function AssistantMessage({
               <div className="inline-flex items-center gap-1.5 oc-msg-agent-label font-mono">
                 <span
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: "0ms" }}
+                  style={{ animationDelay: '0ms' }}
                 />
                 <span
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: "150ms" }}
+                  style={{ animationDelay: '150ms' }}
                 />
                 <span
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: "300ms" }}
+                  style={{ animationDelay: '300ms' }}
                 />
                 <span className="ml-1 oc-msg-model-label">Thinking...</span>
               </div>
@@ -857,10 +889,10 @@ export function AssistantMessage({
                   </div>
                   <span className="oc-msg-agent-label font-mono">
                     {agentName}
-                    {modelName && modelName !== "assistant" ? (
+                    {modelName && modelName !== 'assistant' ? (
                       <span className="oc-msg-model-label"> - {modelName}</span>
                     ) : (
-                      ""
+                      ''
                     )}
                   </span>
                 </div>
@@ -893,7 +925,7 @@ export function AssistantMessage({
                         </span>
                       </>
                     )}
-                    {typeof duration === "number" && (
+                    {typeof duration === 'number' && (
                       <>
                         <span className="opacity-30">-</span>
                         <span className="tabular-nums">
@@ -911,7 +943,7 @@ export function AssistantMessage({
               <button
                 type="button"
                 title="Core Feature: View Implementation Plan"
-                onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
+                onClick={() => vscode.postMessage({ type: 'viewPlan', plan })}
                 className="oc-plan-btn"
               >
                 <FileTextIcon className="h-3 w-3" /> View Plan
@@ -934,7 +966,7 @@ export function AssistantMessage({
 
         {/* Unified timeline: blocks rendered in arrival order (thinking → steps → content → ...) */}
         {timelineBlocks.map((block, blockIdx) => {
-          if (block.kind === "thinking") {
+          if (block.kind === 'thinking') {
             const isStreaming = !!streaming;
             return (
               <details
@@ -968,7 +1000,7 @@ export function AssistantMessage({
             );
           }
 
-          if (block.kind === "steps") {
+          if (block.kind === 'steps') {
             return (
               <div
                 // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
@@ -981,16 +1013,20 @@ export function AssistantMessage({
                     className="flex items-start gap-1.5 py-0.5 text-xs"
                   >
                     <span className="mt-px shrink-0">
-                      {event.status === "pending" ? (
+                      {event.status === 'pending' ? (
                         <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
-                      ) : event.status === "error" ? (
+                      ) : event.status === 'error' ? (
                         <X className="h-3 w-3 text-oc-red" />
                       ) : (
                         <Check className="h-3 w-3 text-oc-green opacity-70" />
                       )}
                     </span>
                     <span
-                      className={`min-w-0 flex-1 leading-relaxed ${event.status === "pending" ? "text-oc-text" : "text-oc-text-soft opacity-80"}`}
+                      className={`min-w-0 flex-1 leading-relaxed ${
+                        event.status === 'pending'
+                          ? 'text-oc-text'
+                          : 'text-oc-text-soft opacity-80'
+                      }`}
                     >
                       {event.title}
                       {event.meta ? (
@@ -1004,7 +1040,7 @@ export function AssistantMessage({
                           className="ml-1.5 inline-flex items-center gap-1 font-mono text-oc-text-muted opacity-60 hover:text-oc-accent hover:opacity-100 transition-colors"
                           onClick={() =>
                             vscode.postMessage({
-                              type: "openFile",
+                              type: 'openFile',
                               file: event.filePath,
                             })
                           }
@@ -1028,10 +1064,7 @@ export function AssistantMessage({
               className="mb-3 max-h-[500px] overflow-y-auto pr-2"
             >
               {/* biome-ignore lint/security/noDangerouslySetInnerHtml: markdown rendering requires HTML injection */}
-              <div
-                className="markdown-body text-sm"
-                dangerouslySetInnerHTML={{ __html: block.html }}
-              />
+              <MarkdownRenderer content={block.html} />
             </div>
           );
         })}
@@ -1062,7 +1095,9 @@ export function AssistantMessage({
                 >
                   <div className="mb-1.5 flex items-center justify-between gap-2">
                     <span
-                      className={`rounded border px-1.5 py-0.5 font-mono text-oc-2xs uppercase tracking-wider ${statusBadgeClass(subagent.status)}`}
+                      className={`rounded border px-1.5 py-0.5 font-mono text-oc-2xs uppercase tracking-wider ${statusBadgeClass(
+                        subagent.status,
+                      )}`}
                     >
                       {subagent.status}
                     </span>
@@ -1071,13 +1106,13 @@ export function AssistantMessage({
                     </span>
                   </div>
                   <div className="truncate text-oc-text-soft">
-                    {subagent.agentId || "subagent"}{" "}
+                    {subagent.agentId || 'subagent'}{' '}
                     {subagent.providerID && subagent.modelID
                       ? `- ${subagent.providerID}/${subagent.modelID}`
-                      : ""}
+                      : ''}
                   </div>
                   <div className="mt-0.5 truncate text-oc-text-muted">
-                    {subagent.latestActivity || "No activity yet"}
+                    {subagent.latestActivity || 'No activity yet'}
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-2">
                     <button
@@ -1092,7 +1127,7 @@ export function AssistantMessage({
                       className="text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
                       onClick={() =>
                         jumpToMessage(
-                          subagent.parentMessageId || messageId || "",
+                          subagent.parentMessageId || messageId || '',
                         )
                       }
                     >
@@ -1115,7 +1150,7 @@ export function AssistantMessage({
                   onClick={() => setShowAllSubagents((value) => !value)}
                 >
                   {showAllSubagents
-                    ? "Show less"
+                    ? 'Show less'
                     : `Show all (${subagents.length})`}
                 </button>
               ) : null}
@@ -1154,9 +1189,9 @@ export function AssistantMessage({
                           hasProgressEvents: !!message.progressEvents?.length,
                           hasSubagents: !!message.subagents?.length,
                           hasPlan: !!message.plan,
-                        edits: message.edits?.map((file: any) => file.file),
-                        createdAt: message.created,
-                        duration: message.info?.duration ?? message.duration,
+                          edits: message.edits?.map((file: any) => file.file),
+                          createdAt: message.created,
+                          duration: message.info?.duration ?? message.duration,
                         }
                       : null,
                     streaming: streaming
@@ -1165,7 +1200,7 @@ export function AssistantMessage({
                           contentLength: streaming.content?.length || 0,
                           stepsCount: streaming.steps?.length || 0,
                           progressEventsCount:
-                          streaming.progressEvents?.length || 0,
+                            streaming.progressEvents?.length || 0,
                         }
                       : null,
                   },
@@ -1185,7 +1220,7 @@ export function AssistantMessage({
             <button
               type="button"
               title="Core Feature: Do not remove"
-              onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
+              onClick={() => vscode.postMessage({ type: 'viewPlan', plan })}
               className="oc-plan-btn"
             >
               <FileTextIcon className="h-3 w-3" />
@@ -1198,7 +1233,7 @@ export function AssistantMessage({
   );
 }
 export function PermissionCard({ perm }: { perm: unknown }) {
-  const label = typeof perm === "string" ? perm : JSON.stringify(perm);
+  const label = typeof perm === 'string' ? perm : JSON.stringify(perm);
   return (
     <div className="oc-message-enter mb-5 px-4">
       <div className="rounded-xl border oc-warning-border oc-warning-bg p-3.5">
@@ -1236,8 +1271,8 @@ export function ThinkingBubble() {
           <span
             key={index}
             className={cn(
-              "h-1.5 w-1.5 rounded-full bg-oc-accent",
-              index > 0 ? "ml-0.5" : "",
+              'h-1.5 w-1.5 rounded-full bg-oc-accent',
+              index > 0 ? 'ml-0.5' : '',
             )}
             style={{
               animation: `thinking-pulse 1.3s ${index * 0.16}s infinite`,
@@ -1306,7 +1341,7 @@ export function MessageStatus({
         ) : (
           <Check className="h-3 w-3 text-oc-green" />
         )}
-        {active ? "Working..." : failed ? "Failed" : "Done"}
+        {active ? 'Working...' : failed ? 'Failed' : 'Done'}
       </span>
     </div>
   );

@@ -39,9 +39,9 @@ test('history sidebar emits session create/switch/delete events to extension', (
   // Verify webview session controls post expected protocol messages.
   const historyBody = extractFunctionBody(panelSource, 'export function HistorySidebar()');
 
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*'createSession'\s*\}\)/, 'new session button should post createSession');
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*'switchSession',\s*sessionId:\s*session\.id\s*\}\)/, 'session row should post switchSession with selected id');
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*'deleteSession',\s*sessionId:\s*session\.id\s*\}\)/, 'session delete action should post deleteSession with selected id');
+  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']createSession["']\s*\}\)/, 'new session button should post createSession');
+  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']switchSession["'],\s*sessionId:\s*session\.id\s*\}\)/, 'session row should post switchSession with selected id');
+  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']deleteSession["'],\s*sessionId:\s*session\.id\s*\}\)/, 'session delete action should post deleteSession with selected id');
 });
 
 test('chat provider routes session CRUD messages and handles delete edge cases', () => {

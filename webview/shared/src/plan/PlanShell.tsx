@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/utils';
 import { renderMarkdown } from './markdownRenderer';
+import { MarkdownRenderer } from '../components/MarkdownRenderer';
 
 interface PlanFile {
   path: string;
@@ -391,11 +392,10 @@ export default function PlanShell() {
       {/* ─── Main scroll area ────────────────────────────────────────────── */}
       <main className="flex-1 overflow-y-auto px-6 py-4">
         {/* Rendered markdown */}
-        {/* biome-disable-next-line lint/security/noDangerouslySetInnerHtml */}
-        <div
+        <MarkdownRenderer
           ref={planContentRef}
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: plan content is from trusted extension backend
-          dangerouslySetInnerHTML={{ __html: renderedHtml }}
+          content={renderedHtml}
+          isPreParsed={true}
           className="prose prose-invert max-w-none text-xs leading-relaxed text-[var(--vscode-editor-foreground)] select-text cursor-text mb-6 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mb-3 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mb-2 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mb-1.5 [&_pre]:bg-white/5 [&_pre]:rounded [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:bg-white/10 [&_code]:px-1 [&_code]:rounded [&_pre_code]:bg-transparent [&_pre_code]:px-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:mb-0.5 [&_p]:mb-2 [&_strong]:font-semibold [&_em]:italic"
         />
 

@@ -70,7 +70,7 @@ test('PlanParser initializes plan with required structure', () => {
   const parseBody = extractFunctionBody(planParserSource, 'public static parse(markdown: string): ImplementationPlan');
 
   assert.match(parseBody, /const plan: ImplementationPlan = \{/, 'parse should create typed plan object');
-  assert.match(parseBody, /goal:\s*\'\',/, 'parse should initialize empty goal');
+  assert.match(parseBody, /goal:\s*\["']\["'],/, 'parse should initialize empty goal');
   assert.match(parseBody, /files:\s*\[\],/, 'parse should initialize empty files array');
   assert.match(parseBody, /steps:\s*\[\],/, 'parse should initialize empty steps array');
   assert.match(parseBody, /verification:\s*\[\],/, 'parse should initialize empty verification array');
@@ -109,7 +109,7 @@ test('PlanParser handles completed and incomplete checkboxes', () => {
   // Verify checkbox completion detection
   const parseBody = extractFunctionBody(planParserSource, 'public static parse(markdown: string): ImplementationPlan');
 
-  assert.match(parseBody, /completed: match\[1\] === 'x'/, 'parse should set completed true for [x]');
+  assert.match(parseBody, /completed: match\[1\] === ["']x["']/, 'parse should set completed true for [x]');
 });
 
 test('PlanParser integrates with plan shell', () => {

@@ -24,21 +24,21 @@ test('chat send flow posts message with image attachments and updates thread sta
   // Verify primary send behavior includes image payload and optimistic user message rendering state.
   const inputBody = extractFunctionBody(panelSource, 'export function InputWrapper()');
 
-  assert.match(inputBody, /type:\s*'sendMessage'/, 'InputWrapper must send a sendMessage event');
+  assert.match(inputBody, /type:\s*["']sendMessage["']/, 'InputWrapper must send a sendMessage event');
   assert.match(inputBody, /images:\s*attachments\s*\|\|\s*\[\]/, 'sendMessage payload must include attachments as images');
-  assert.match(inputBody, /role:\s*'user'/, 'send flow should append an optimistic user message');
+  assert.match(inputBody, /role:\s*["']user["']/, 'send flow should append an optimistic user message');
   assert.match(inputBody, /images:\s*\(attachments\s*\|\|\s*\[\]\)\.map\(\(a\)\s*=>\s*a\.dataUrl\)/, 'optimistic user message should map attachment data URLs into images');
-  assert.match(inputBody, /type:\s*'CLEAR_ATTACHMENTS'/, 'attachments must be cleared after send');
+  assert.match(inputBody, /type:\s*["']CLEAR_ATTACHMENTS["']/, 'attachments must be cleared after send');
 });
 
 test('chat flow handles paste attachments and queued sends while processing', () => {
   // Verify common alternate paths: paste image ingestion and queue fallback when processing is active.
   const inputBody = extractFunctionBody(panelSource, 'export function InputWrapper()');
 
-  assert.match(inputBody, /if\s*\(isProcessing\)\s*\{[\s\S]*type:\s*'addToQueue'/, 'when processing, prompt should be queued instead of directly sent');
-  assert.match(inputBody, /type:\s*'ADD_ATTACHMENT'/, 'paste handler should add image attachments to state');
-  assert.match(inputBody, /item\.type\.startsWith\('image\/'\)/, 'paste handler must filter clipboard items by image MIME type');
-  assert.match(inputBody, /type:\s*'REMOVE_ATTACHMENT'/, 'attachment chips must support removing individual attachments');
+  assert.match(inputBody, /if\s*\(isProcessing\)\s*\{[\s\S]*type:\s*["']addToQueue["']/, 'when processing, prompt should be queued instead of directly sent');
+  assert.match(inputBody, /type:\s*["']ADD_ATTACHMENT["']/, 'paste handler should add image attachments to state');
+  assert.match(inputBody, /item\.type\.startsWith\(["']image\/["']\)/, 'paste handler must filter clipboard items by image MIME type');
+  assert.match(inputBody, /type:\s*["']REMOVE_ATTACHMENT["']/, 'attachment chips must support removing individual attachments');
 });
 
 test('message thread renders user and assistant content including image thumbnails', () => {
@@ -58,7 +58,7 @@ test('error events clear processing and streaming state to avoid stuck thinking 
     'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
   );
 
-  assert.match(handlerBody, /case\s+'error'\s*:\s*\{[\s\S]*SET_PROCESSING[\s\S]*false/, 'error handler should stop processing state');
-  assert.match(handlerBody, /case\s+'error'\s*:\s*\{[\s\S]*FINISH_STREAMING/, 'error handler should finish any active stream');
-  assert.match(handlerBody, /case\s+'error'\s*:\s*\{[\s\S]*SET_STREAMING',\s*payload:\s*null/, 'error handler should clear streaming state');
+  assert.match(handlerBody, /case\s+["']error["']\s*:\s*\{[\s\S]*SET_PROCESSING[\s\S]*false/, 'error handler should stop processing state');
+  assert.match(handlerBody, /case\s+["']error["']\s*:\s*\{[\s\S]*FINISH_STREAMING/, 'error handler should finish any active stream');
+  assert.match(handlerBody, /case\s+["']error["']\s*:\s*\{[\s\S]*SET_STREAMING["'],\s*payload:\s*null/, 'error handler should clear streaming state');
 });

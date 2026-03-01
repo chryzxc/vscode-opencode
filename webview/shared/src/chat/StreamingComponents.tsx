@@ -1,5 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, FileText, Loader2, X } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Loader2,
+  X,
+} from 'lucide-react';
 
 import { useAppState } from './lib/store';
 import type { StreamingStep } from './lib/types';
@@ -16,8 +23,8 @@ function extClass(path?: string): string {
 
 export function ProgressStep({ step }: { step: StreamingStep }) {
   const isPending = step.status === 'pending';
-  const isError   = step.status === 'error';
-  const isDone    = !isPending && !isError;
+  const isError = step.status === 'error';
+  const isDone = !isPending && !isError;
 
   const statusIcon = isPending ? (
     <Loader2 className="h-3.5 w-3.5 animate-spin text-oc-accent" />
@@ -54,7 +61,9 @@ export function ProgressStep({ step }: { step: StreamingStep }) {
               className="inline-flex items-center gap-1 text-oc-text-soft hover:text-oc-accent hover:underline transition-colors"
               title={step.filePath}
             >
-              <FileText className={`h-3.5 w-3.5 shrink-0 ${extClass(step.filePath)}`} />
+              <FileText
+                className={`h-3.5 w-3.5 shrink-0 ${extClass(step.filePath)}`}
+              />
               <span className="truncate font-mono">{step.title}</span>
             </button>
           ) : (
@@ -63,7 +72,7 @@ export function ProgressStep({ step }: { step: StreamingStep }) {
             </span>
           )}
         </div>
-          {step.meta ? (
+        {step.meta ? (
           <div className="mt-0.5 text-oc-text-muted">{step.meta}</div>
         ) : null}
       </div>
@@ -76,9 +85,9 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
 
   if (!steps.length) return null;
 
-  const doneCount    = steps.filter((s) => s.status !== 'pending').length;
-  const hasError     = steps.some((s) => s.status === 'error');
-  const allDone      = doneCount === steps.length;
+  const doneCount = steps.filter((s) => s.status !== 'pending').length;
+  const hasError = steps.some((s) => s.status === 'error');
+  const allDone = doneCount === steps.length;
 
   const accentColor = hasError
     ? 'text-oc-red'
@@ -108,8 +117,12 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
       {/* Progress bar */}
       <div className="h-px w-full bg-oc-border">
         <div
-          className={`h-px transition-all duration-500 ${hasError ? 'bg-oc-red' : allDone ? 'bg-oc-green' : 'bg-oc-accent'}`}
-          style={{ width: steps.length ? `${(doneCount / steps.length) * 100}%` : '0%' }}
+          className={`h-px transition-all duration-500 ${
+            hasError ? 'bg-oc-red' : allDone ? 'bg-oc-green' : 'bg-oc-accent'
+          }`}
+          style={{
+            width: steps.length ? `${(doneCount / steps.length) * 100}%` : '0%',
+          }}
         />
       </div>
 
@@ -117,7 +130,10 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
       {open ? (
         <div className="space-y-1 p-2 max-h-[300px] overflow-y-auto">
           {steps.map((step, index) => (
-            <ProgressStep key={`${step.id ?? step.callID ?? step.title}-${index}`} step={step} />
+            <ProgressStep
+              key={`${step.id ?? step.callID ?? step.title}-${index}`}
+              step={step}
+            />
           ))}
         </div>
       ) : null}
@@ -132,16 +148,16 @@ export function StreamingCard() {
   // 1. Streaming state exists (regardless of content - show early)
   // 2. AND either: processing is true, streaming is active, or there's any content
   const visible = useMemo(
-    () => !!streaming && (
-      streaming.isActive ||
-      streaming.content.length > 0 ||
-      streaming.reasoning.length > 0 ||
-      streaming.steps.length > 0 ||
-      streaming.reasoningEvents.length > 0 ||
-      streaming.progressEvents.length > 0 ||
-      isProcessing ||
-      streaming.messageId
-    ),
+    () =>
+      !!streaming &&
+      (streaming.isActive ||
+        streaming.content.length > 0 ||
+        streaming.reasoning.length > 0 ||
+        streaming.steps.length > 0 ||
+        streaming.reasoningEvents.length > 0 ||
+        streaming.progressEvents.length > 0 ||
+        isProcessing ||
+        streaming.messageId),
     [streaming, isProcessing],
   );
 

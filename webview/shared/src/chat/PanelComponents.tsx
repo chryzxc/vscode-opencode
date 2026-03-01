@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Copy,
@@ -11,24 +11,24 @@ import {
   Square,
   X,
   Zap,
-} from "lucide-react";
+} from 'lucide-react';
 
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
 
-import { useAppDispatch, useAppState } from "./lib/store";
-import vscode from "./lib/vscode";
-import { jumpToMessage } from "./lib/messageJump";
+import { useAppDispatch, useAppState } from './lib/store';
+import vscode from './lib/vscode';
+import { jumpToMessage } from './lib/messageJump';
 import type {
   Message,
   InteractiveEvent,
   SubagentDetail,
   SubagentSummary,
   ThinkingLevel,
-} from "./lib/types";
+} from './lib/types';
 
-import { FileIcon } from "./MessageComponents";
+import { FileIcon } from './MessageComponents';
 
 function totalTokens(
   input: number,
@@ -40,8 +40,8 @@ function totalTokens(
 }
 
 function formatDurationMs(ms?: number): string {
-  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
-    return "n/a";
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+    return 'n/a';
   }
   if (ms >= 1000) {
     return `${(ms / 1000).toFixed(1)}s`;
@@ -49,12 +49,12 @@ function formatDurationMs(ms?: number): string {
   return `${Math.round(ms)}ms`;
 }
 
-function subagentStatusClass(status: SubagentSummary["status"]): string {
-  if (status === "done") return "text-oc-green";
-  if (status === "error") return "text-oc-red";
-  if (status === "running") return "text-oc-accent";
-  if (status === "orphaned") return "text-oc-yellow";
-  return "text-oc-text-muted";
+function subagentStatusClass(status: SubagentSummary['status']): string {
+  if (status === 'done') return 'text-oc-green';
+  if (status === 'error') return 'text-oc-red';
+  if (status === 'running') return 'text-oc-accent';
+  if (status === 'orphaned') return 'text-oc-yellow';
+  return 'text-oc-text-muted';
 }
 
 export function StickyHeader() {
@@ -68,15 +68,15 @@ export function StickyHeader() {
   } = useAppState();
   const dispatch = useAppDispatch();
 
-  const sessionLabel = currentSessionId ? currentSessionId.slice(0, 8) : "new";
+  const sessionLabel = currentSessionId ? currentSessionId.slice(0, 8) : 'new';
   const taskName =
-    isProcessing || streaming ? "Active request" : "No active task";
+    isProcessing || streaming ? 'Active request' : 'No active task';
   const taskStatus =
     isProcessing || streaming
-      ? "RUNNING"
+      ? 'RUNNING'
       : promptQueue.length > 0
-        ? "PENDING"
-        : "IDLE";
+        ? 'PENDING'
+        : 'IDLE';
   const durationLabel =
     sessionStats.duration >= 1000
       ? `${(sessionStats.duration / 1000).toFixed(1)}s`
@@ -92,7 +92,7 @@ export function StickyHeader() {
           title="History"
           aria-label="Open history sidebar"
           onClick={() =>
-            dispatch({ type: "SET_SIDEBAR_OPEN", payload: !isSidebarOpen })
+            dispatch({ type: 'SET_SIDEBAR_OPEN', payload: !isSidebarOpen })
           }
         >
           <History className="h-3.5 w-3.5" />
@@ -141,7 +141,13 @@ export function StickyHeader() {
           {taskName}
         </span>
         <span
-          className={`oc-status-pill ${taskStatus === "IDLE" ? "idle" : taskStatus === "PENDING" ? "pending" : "running"}`}
+          className={`oc-status-pill ${
+            taskStatus === 'IDLE'
+              ? 'idle'
+              : taskStatus === 'PENDING'
+                ? 'pending'
+                : 'running'
+          }`}
         >
           {taskStatus}
         </span>
@@ -158,25 +164,25 @@ export function HistorySidebar() {
   const dispatch = useAppDispatch();
 
   function relativeSessionTime(ts: number | undefined): string {
-    if (!ts) return "";
+    if (!ts) return '';
     const now = Date.now();
     const diff = now - ts;
     const minute = 60_000;
     const hour = 60 * minute;
     const day = 24 * hour;
 
-    if (diff < minute) return "Just now";
+    if (diff < minute) return 'Just now';
     if (diff < hour) {
       const mins = Math.round(diff / minute);
-      return `${mins} min${mins === 1 ? "" : "s"} ago`;
+      return `${mins} min${mins === 1 ? '' : 's'} ago`;
     }
     if (diff < day) {
       const hrs = Math.round(diff / hour);
-      return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+      return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
     }
     if (diff < 7 * day) {
       const days = Math.round(diff / day);
-      return days === 1 ? "Yesterday" : `${days} days ago`;
+      return days === 1 ? 'Yesterday' : `${days} days ago`;
     }
 
     const d = new Date(ts);
@@ -186,7 +192,7 @@ export function HistorySidebar() {
   return (
     <aside
       className={`oc-history-sidebar absolute bottom-0 left-0 top-0 z-20 w-72 border-r border-oc-border bg-oc-bg-soft transition-transform duration-200 ${
-        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+        isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}
     >
       <div className="flex items-center justify-between border-b border-oc-border px-3 py-2.5">
@@ -201,7 +207,7 @@ export function HistorySidebar() {
           size="icon"
           className="h-6 w-6 rounded-md"
           aria-label="Close history sidebar"
-          onClick={() => dispatch({ type: "SET_SIDEBAR_OPEN", payload: false })}
+          onClick={() => dispatch({ type: 'SET_SIDEBAR_OPEN', payload: false })}
         >
           <X className="h-3.5 w-3.5" />
         </Button>
@@ -210,7 +216,7 @@ export function HistorySidebar() {
         <Button
           variant="ghost-accent"
           size="sm"
-          onClick={() => vscode.postMessage({ type: "createSession" })}
+          onClick={() => vscode.postMessage({ type: 'createSession' })}
         >
           <span className="text-sm">+</span> New Chat
         </Button>
@@ -234,15 +240,15 @@ export function HistorySidebar() {
                   type="button"
                   onClick={() =>
                     vscode.postMessage({
-                      type: "switchSession",
+                      type: 'switchSession',
                       sessionId: session.id,
                     })
                   }
                   className={
                     `oc-session-item flex-1 min-w-0 overflow-hidden rounded-md px-2.5 py-2 text-left text-xs ` +
                     (isActive
-                      ? "bg-oc-accent-soft border oc-accent-border-light"
-                      : "border border-transparent")
+                      ? 'bg-oc-accent-soft border oc-accent-border-light'
+                      : 'border border-transparent')
                   }
                 >
                   <div className="flex items-center gap-2">
@@ -252,15 +258,17 @@ export function HistorySidebar() {
                       <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-border-soft" />
                     )}
                     <div
-                      className={`truncate font-medium ${isActive ? "text-oc-text" : "text-oc-text-soft"}`}
+                      className={`truncate font-medium ${
+                        isActive ? 'text-oc-text' : 'text-oc-text-soft'
+                      }`}
                     >
-                      {session.title || "Untitled chat"}
+                      {session.title || 'Untitled chat'}
                     </div>
                   </div>
                   <div className="truncate text-oc-text-muted text-oc-2xs pl-3.5 mt-0.5">
                     {session.createdAt
                       ? relativeSessionTime(session.createdAt)
-                      : "Unknown"}
+                      : 'Unknown'}
                   </div>
                 </button>
                 <Button
@@ -271,7 +279,7 @@ export function HistorySidebar() {
                   aria-label={`Delete session ${session.title ?? session.id}`}
                   onClick={() =>
                     vscode.postMessage({
-                      type: "deleteSession",
+                      type: 'deleteSession',
                       sessionId: session.id,
                     })
                   }
@@ -309,15 +317,21 @@ function MiniSection({
         className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs rounded-none"
       >
         <span
-          className={`inline-block h-1.5 w-1.5 rounded-full transition-colors ${open ? "bg-oc-accent" : "bg-oc-border-soft"}`}
+          className={`inline-block h-1.5 w-1.5 rounded-full transition-colors ${
+            open ? 'bg-oc-accent' : 'bg-oc-border-soft'
+          }`}
         />
         <span
-          className={`font-mono text-oc-2xs uppercase tracking-widest font-semibold ${open ? "text-oc-text-soft" : "text-oc-text-soft opacity-70"}`}
+          className={`font-mono text-oc-2xs uppercase tracking-widest font-semibold ${
+            open ? 'text-oc-text-soft' : 'text-oc-text-soft opacity-70'
+          }`}
         >
           {title}
         </span>
         <span
-          className={`ml-auto transition-transform ${open ? "rotate-0" : "-rotate-90"}`}
+          className={`ml-auto transition-transform ${
+            open ? 'rotate-0' : '-rotate-90'
+          }`}
         >
           <ChevronDown className="h-3 w-3 text-oc-text-soft opacity-70" />
         </span>
@@ -358,7 +372,7 @@ export function ActiveTaskPanel() {
     : undefined;
   const startedLabel = currentSession?.createdAt
     ? new Date(currentSession.createdAt).toLocaleString()
-    : "—";
+    : '—';
 
   return (
     <div className="oc-active-task-panel flex flex-col w-full bg-oc-bg-soft">
@@ -366,7 +380,9 @@ export function ActiveTaskPanel() {
       <div className="border-b border-oc-border px-3 py-2.5">
         <div className="flex items-center gap-2">
           <div
-            className={`h-1.5 w-1.5 rounded-full ${isActive ? "bg-oc-accent animate-pulse" : "bg-oc-border-soft"}`}
+            className={`h-1.5 w-1.5 rounded-full ${
+              isActive ? 'bg-oc-accent animate-pulse' : 'bg-oc-border-soft'
+            }`}
           />
           <div className="oc-panel-title">Active Task</div>
         </div>
@@ -389,10 +405,10 @@ export function ActiveTaskPanel() {
                   width: `${pct}%`,
                   background:
                     pct > 80
-                      ? "linear-gradient(90deg, #f0883e, #f85149)"
+                      ? 'linear-gradient(90deg, #f0883e, #f85149)'
                       : pct > 50
-                        ? "linear-gradient(90deg, #d29922, #f0883e)"
-                        : "linear-gradient(90deg, #1f6feb, #58a6ff)",
+                        ? 'linear-gradient(90deg, #d29922, #f0883e)'
+                        : 'linear-gradient(90deg, #1f6feb, #58a6ff)',
                 }}
               />
             </div>
@@ -431,7 +447,7 @@ export function ActiveTaskPanel() {
             <div className="flex items-center justify-between col-span-2">
               <span className="text-oc-text-soft opacity-80">ID</span>
               <span className="font-mono text-oc-2xs text-oc-text-soft opacity-70">
-                {currentSessionId ? currentSessionId.slice(0, 16) : "—"}
+                {currentSessionId ? currentSessionId.slice(0, 16) : '—'}
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -443,7 +459,9 @@ export function ActiveTaskPanel() {
             <div className="flex items-center justify-between">
               <span className="text-oc-text-soft opacity-80">Date started</span>
               <span
-                className={`font-mono tabular-nums ${isActive ? "text-oc-accent" : "text-oc-text-soft"}`}
+                className={`font-mono tabular-nums ${
+                  isActive ? 'text-oc-accent' : 'text-oc-text-soft'
+                }`}
               >
                 {startedLabel}
               </span>
@@ -451,9 +469,11 @@ export function ActiveTaskPanel() {
             <div className="flex items-center justify-between col-span-2">
               <span className="text-oc-text-soft opacity-80">Status</span>
               <span
-                className={`font-mono text-oc-2xs uppercase tracking-wider font-semibold ${isActive ? "text-oc-accent" : "text-oc-text-soft opacity-70"}`}
+                className={`font-mono text-oc-2xs uppercase tracking-wider font-semibold ${
+                  isActive ? 'text-oc-accent' : 'text-oc-text-soft opacity-70'
+                }`}
               >
-                {isActive ? "ACTIVE" : "IDLE"}
+                {isActive ? 'ACTIVE' : 'IDLE'}
               </span>
             </div>
           </div>
@@ -499,8 +519,8 @@ export function SubagentsPanel() {
   }
 
   const selectSubagent = (subagentId: string) => {
-    dispatch({ type: "SELECT_SUBAGENT", payload: subagentId });
-    dispatch({ type: "SET_SUBAGENTS_PANEL_OPEN", payload: true });
+    dispatch({ type: 'SELECT_SUBAGENT', payload: subagentId });
+    dispatch({ type: 'SET_SUBAGENTS_PANEL_OPEN', payload: true });
   };
 
   const copyRefs = async (detail: SubagentDetail) => {
@@ -514,11 +534,11 @@ export function SubagentsPanel() {
           ref.partID ? `partID=${ref.partID}` : null,
           ref.callID ? `callID=${ref.callID}` : null,
         ].filter(Boolean);
-        return parts.length > 0 ? `ref${index + 1}: ${parts.join(" ")}` : null;
+        return parts.length > 0 ? `ref${index + 1}: ${parts.join(' ')}` : null;
       }),
     ]
       .filter((item): item is string => !!item)
-      .join("\n");
+      .join('\n');
 
     await navigator.clipboard.writeText(refs);
   };
@@ -533,12 +553,12 @@ export function SubagentsPanel() {
           size="icon"
           aria-label={
             subagentsPanelOpen
-              ? "Collapse subagents panel"
-              : "Expand subagents panel"
+              ? 'Collapse subagents panel'
+              : 'Expand subagents panel'
           }
           onClick={() =>
             dispatch({
-              type: "SET_SUBAGENTS_PANEL_OPEN",
+              type: 'SET_SUBAGENTS_PANEL_OPEN',
               payload: !subagentsPanelOpen,
             })
           }
@@ -573,14 +593,16 @@ export function SubagentsPanel() {
                     type="button"
                     className={`w-full rounded-md border px-2 py-1.5 text-left text-oc-xs transition-colors ${
                       selectedSubagentId === subagent.id
-                        ? "border-oc-accent bg-oc-accent-soft"
-                        : "border-oc-border hover:bg-oc-accent-soft"
+                        ? 'border-oc-accent bg-oc-accent-soft'
+                        : 'border-oc-border hover:bg-oc-accent-soft'
                     }`}
                     onClick={() => selectSubagent(subagent.id)}
                   >
                     <div className="mb-0.5 flex items-center justify-between gap-2">
                       <span
-                        className={`font-mono uppercase tracking-wider ${subagentStatusClass(subagent.status)}`}
+                        className={`font-mono uppercase tracking-wider ${subagentStatusClass(
+                          subagent.status,
+                        )}`}
                       >
                         {subagent.status}
                       </span>
@@ -589,10 +611,10 @@ export function SubagentsPanel() {
                       </span>
                     </div>
                     <div className="truncate text-oc-text-soft">
-                      {subagent.agentId || "subagent"}{" "}
+                      {subagent.agentId || 'subagent'}{' '}
                       {subagent.providerID && subagent.modelID
                         ? `- ${subagent.providerID}/${subagent.modelID}`
-                        : ""}
+                        : ''}
                     </div>
                     <div className="truncate text-oc-2xs text-oc-text-muted">
                       {subagent.latestActivity}
@@ -607,26 +629,28 @@ export function SubagentsPanel() {
             <div className="rounded-md border border-oc-border bg-oc-panel p-2.5">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div className="text-oc-xs font-semibold text-oc-text-soft">
-                  {selectedDetail.agentId || "subagent"}
+                  {selectedDetail.agentId || 'subagent'}
                 </div>
                 <span
-                  className={`font-mono text-oc-2xs uppercase ${subagentStatusClass(selectedDetail.status)}`}
+                  className={`font-mono text-oc-2xs uppercase ${subagentStatusClass(
+                    selectedDetail.status,
+                  )}`}
                 >
                   {selectedDetail.status}
                 </span>
               </div>
               <div className="space-y-1 text-oc-2xs text-oc-text-muted">
                 <div>
-                  model:{" "}
+                  model:{' '}
                   {selectedDetail.providerID && selectedDetail.modelID
                     ? `${selectedDetail.providerID}/${selectedDetail.modelID}`
-                    : "n/a"}
+                    : 'n/a'}
                 </div>
                 <div>
                   duration: {formatDurationMs(selectedDetail.durationMs)}
                 </div>
                 <div>
-                  child session: {selectedDetail.childSessionId || "n/a"}
+                  child session: {selectedDetail.childSessionId || 'n/a'}
                 </div>
               </div>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -754,7 +778,7 @@ export function ModelDropdown() {
   } = useAppState();
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
-  const [selectedTab, setSelectedTab] = useState("All");
+  const [selectedTab, setSelectedTab] = useState('All');
 
   // Close on outside click
   useEffect(() => {
@@ -764,17 +788,17 @@ export function ModelDropdown() {
         containerRef.current &&
         !containerRef.current.contains(e.target as Node)
       ) {
-        dispatch({ type: "SET_MODEL_DROPDOWN_OPEN", payload: false });
+        dispatch({ type: 'SET_MODEL_DROPDOWN_OPEN', payload: false });
       }
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
   }, [modelDropdownOpen, dispatch]);
 
   // Reset tab when dropdown closes
   useEffect(() => {
     if (!modelDropdownOpen) {
-      setSelectedTab("All");
+      setSelectedTab('All');
     }
   }, [modelDropdownOpen]);
 
@@ -783,21 +807,21 @@ export function ModelDropdown() {
       .map((p) => {
         const key = p.platform.toLowerCase();
         // Specific normalization for known broad providers
-        if (key === "openai") return "OpenAI";
-        if (key === "zai") return "Z.ai";
-        if (key === "zhipu") return "Zhipu AI";
-        if (key === "copilot") return "GitHub Copilot";
+        if (key === 'openai') return 'OpenAI';
+        if (key === 'zai') return 'Z.ai';
+        if (key === 'zhipu') return 'Zhipu AI';
+        if (key === 'copilot') return 'GitHub Copilot';
 
         // Skip opencode platform in mapped providers since we have a dedicated persistent tab
-        if (key.includes("opencode")) return null;
+        if (key.includes('opencode')) return null;
 
         // Fallback to title or platform name for other subscriptions (e.g. "Z.ai Coding Plan")
-        return p.title?.replace(" Account Quota", "") ?? p.platform;
+        return p.title?.replace(' Account Quota', '') ?? p.platform;
       })
       .filter((name): name is string => name !== null);
 
     // Always include OpenCode Free at the start
-    const result = ["OpenCode Free", ...providers];
+    const result = ['OpenCode Free', ...providers];
 
     return result.filter((name, index, self) => self.indexOf(name) === index);
   }, [quotaData]);
@@ -808,15 +832,16 @@ export function ModelDropdown() {
 
     availableModels
       .filter((model) => {
-        const matchesQuery = `${model.providerID} ${model.name} ${model.modelID}`
-          .toLowerCase()
-          .includes(query);
+        const matchesQuery =
+          `${model.providerID} ${model.name} ${model.modelID}`
+            .toLowerCase()
+            .includes(query);
 
         if (!matchesQuery) return false;
 
-        if (selectedTab !== "All") {
-          if (selectedTab === "OpenCode Free") {
-            return model.providerID === "opencode";
+        if (selectedTab !== 'All') {
+          if (selectedTab === 'OpenCode Free') {
+            return model.providerID === 'opencode';
           }
           const providerName = model.providerName ?? model.providerID;
           // Use exact match (case-insensitive) to prevent "Z.ai" tab from matching "Z.ai Coding Plan"
@@ -835,7 +860,7 @@ export function ModelDropdown() {
 
   const label = selectedModel
     ? `${selectedModel.providerID}/${selectedModel.modelID}`
-    : "Model";
+    : 'Model';
 
   return (
     <div className="relative" ref={containerRef}>
@@ -845,7 +870,7 @@ export function ModelDropdown() {
         size="chip"
         onClick={() =>
           dispatch({
-            type: "SET_MODEL_DROPDOWN_OPEN",
+            type: 'SET_MODEL_DROPDOWN_OPEN',
             payload: !modelDropdownOpen,
           })
         }
@@ -854,7 +879,9 @@ export function ModelDropdown() {
       >
         <span className="truncate max-w-[140px]">{label}</span>
         <ChevronDown
-          className={`h-3 w-3 shrink-0 transition-transform ${modelDropdownOpen ? "rotate-180" : ""}`}
+          className={`h-3 w-3 shrink-0 transition-transform ${
+            modelDropdownOpen ? 'rotate-180' : ''
+          }`}
         />
       </Button>
       {modelDropdownOpen && (
@@ -863,22 +890,23 @@ export function ModelDropdown() {
             <input
               value={modelSearchQuery}
               onChange={(e) =>
-                dispatch({ type: "SET_MODEL_SEARCH", payload: e.target.value })
+                dispatch({ type: 'SET_MODEL_SEARCH', payload: e.target.value })
               }
               placeholder="Search models..."
               className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-oc-sm font-mono outline-none focus:border-oc-accent transition-colors"
             />
             {subscribedProviders.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
-                {["All", ...subscribedProviders].map((tab) => (
+                {['All', ...subscribedProviders].map((tab) => (
                   <button
                     key={tab}
                     type="button"
                     onClick={() => setSelectedTab(tab)}
-                    className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${selectedTab === tab
-                      ? "bg-oc-accent text-white"
-                      : "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
-                      }`}
+                    className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${
+                      selectedTab === tab
+                        ? 'bg-oc-accent text-white'
+                        : 'bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text'
+                    }`}
                   >
                     {tab}
                   </button>
@@ -900,21 +928,25 @@ export function ModelDropdown() {
                     <button
                       key={`${model.providerID}-${model.modelID}`}
                       type="button"
-                      className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${isCurrent ? "bg-oc-accent-soft text-oc-accent" : "hover:bg-oc-panel-soft"}`}
+                      className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
+                        isCurrent
+                          ? 'bg-oc-accent-soft text-oc-accent'
+                          : 'hover:bg-oc-panel-soft'
+                      }`}
                       onClick={() => {
                         dispatch({
-                          type: "SET_SELECTED_MODEL",
+                          type: 'SET_SELECTED_MODEL',
                           payload: {
                             providerID: model.providerID,
                             modelID: model.modelID,
                           },
                         });
                         dispatch({
-                          type: "SET_MODEL_DROPDOWN_OPEN",
+                          type: 'SET_MODEL_DROPDOWN_OPEN',
                           payload: false,
                         });
                         vscode.postMessage({
-                          type: "selectModel",
+                          type: 'selectModel',
                           model: {
                             providerID: model.providerID,
                             modelID: model.modelID,
@@ -971,11 +1003,11 @@ export function AgentDropdown() {
         containerRef.current &&
         !containerRef.current.contains(e.target as Node)
       ) {
-        dispatch({ type: "SET_AGENT_DROPDOWN_OPEN", payload: false });
+        dispatch({ type: 'SET_AGENT_DROPDOWN_OPEN', payload: false });
       }
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
   }, [agentDropdownOpen, dispatch]);
 
   const filtered = useMemo(
@@ -989,7 +1021,7 @@ export function AgentDropdown() {
   );
 
   const selectedAgentItem = availableAgents.find((a) => a.id === selectedAgent);
-  const label = selectedAgentItem?.name ?? selectedAgent ?? "Agent";
+  const label = selectedAgentItem?.name ?? selectedAgent ?? 'Agent';
 
   return (
     <div className="relative" ref={containerRef}>
@@ -999,7 +1031,7 @@ export function AgentDropdown() {
         size="chip"
         onClick={() =>
           dispatch({
-            type: "SET_AGENT_DROPDOWN_OPEN",
+            type: 'SET_AGENT_DROPDOWN_OPEN',
             payload: !agentDropdownOpen,
           })
         }
@@ -1007,7 +1039,9 @@ export function AgentDropdown() {
       >
         <span className="truncate max-w-[120px]">{label}</span>
         <ChevronDown
-          className={`h-3 w-3 shrink-0 transition-transform ${agentDropdownOpen ? "rotate-180" : ""}`}
+          className={`h-3 w-3 shrink-0 transition-transform ${
+            agentDropdownOpen ? 'rotate-180' : ''
+          }`}
         />
       </Button>
       {agentDropdownOpen && (
@@ -1016,7 +1050,7 @@ export function AgentDropdown() {
             <input
               value={agentSearchQuery}
               onChange={(e) =>
-                dispatch({ type: "SET_AGENT_SEARCH", payload: e.target.value })
+                dispatch({ type: 'SET_AGENT_SEARCH', payload: e.target.value })
               }
               placeholder="Search agents..."
               className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-oc-sm font-mono outline-none focus:border-oc-accent transition-colors"
@@ -1037,11 +1071,15 @@ export function AgentDropdown() {
               <button
                 key={agent.id}
                 type="button"
-                className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${selectedAgent === agent.id ? "bg-oc-accent-soft text-oc-accent" : "hover:bg-oc-panel-soft"}`}
+                className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
+                  selectedAgent === agent.id
+                    ? 'bg-oc-accent-soft text-oc-accent'
+                    : 'hover:bg-oc-panel-soft'
+                }`}
                 onClick={() => {
-                  dispatch({ type: "SET_SELECTED_AGENT", payload: agent.id });
-                  dispatch({ type: "SET_AGENT_DROPDOWN_OPEN", payload: false });
-                  vscode.postMessage({ type: "selectAgent", agent: agent.id });
+                  dispatch({ type: 'SET_SELECTED_AGENT', payload: agent.id });
+                  dispatch({ type: 'SET_AGENT_DROPDOWN_OPEN', payload: false });
+                  vscode.postMessage({ type: 'selectAgent', agent: agent.id });
                 }}
               >
                 <div className="text-oc-sm font-medium">{agent.name}</div>
@@ -1071,10 +1109,10 @@ export function QueueContainer() {
         type="button"
         className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-oc-panel-soft"
         onClick={() =>
-          dispatch({ type: "SET_QUEUE_OPEN", payload: !isQueueOpen })
+          dispatch({ type: 'SET_QUEUE_OPEN', payload: !isQueueOpen })
         }
         aria-expanded={isQueueOpen}
-        aria-label={isQueueOpen ? "Collapse queue panel" : "Expand queue panel"}
+        aria-label={isQueueOpen ? 'Collapse queue panel' : 'Expand queue panel'}
       >
         <div className="flex items-center gap-2">
           <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-oc-text-muted">
@@ -1093,14 +1131,14 @@ export function QueueContainer() {
               title="Clear all queued prompts"
               onClick={(e) => {
                 e.stopPropagation();
-                dispatch({ type: "SET_QUEUE", payload: [] });
-                vscode.postMessage({ type: "clearQueue" });
+                dispatch({ type: 'SET_QUEUE', payload: [] });
+                vscode.postMessage({ type: 'clearQueue' });
               }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
+                if (e.key === 'Enter' || e.key === ' ') {
                   e.stopPropagation();
-                  dispatch({ type: "SET_QUEUE", payload: [] });
-                  vscode.postMessage({ type: "clearQueue" });
+                  dispatch({ type: 'SET_QUEUE', payload: [] });
+                  vscode.postMessage({ type: 'clearQueue' });
                 }
               }}
             >
@@ -1129,7 +1167,7 @@ export function QueueContainer() {
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="line-clamp-2 font-mono text-[11px] text-oc-text-soft">
-                    {item.text || "(empty)"}
+                    {item.text || '(empty)'}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
@@ -1139,10 +1177,10 @@ export function QueueContainer() {
                     title="Send immediately"
                     onClick={() => {
                       const next = promptQueue.filter((_, i) => i !== index);
-                      dispatch({ type: "SET_QUEUE", payload: next });
-                      vscode.postMessage({ type: "removeFromQueue", index });
+                      dispatch({ type: 'SET_QUEUE', payload: next });
+                      vscode.postMessage({ type: 'removeFromQueue', index });
                       vscode.postMessage({
-                        type: "sendMessage",
+                        type: 'sendMessage',
                         text: item.text,
                         files: item.files ?? [],
                         contexts: item.contexts ?? [],
@@ -1159,8 +1197,8 @@ export function QueueContainer() {
                     title="Remove from queue"
                     onClick={() => {
                       const next = promptQueue.filter((_, i) => i !== index);
-                      dispatch({ type: "SET_QUEUE", payload: next });
-                      vscode.postMessage({ type: "removeFromQueue", index });
+                      dispatch({ type: 'SET_QUEUE', payload: next });
+                      vscode.postMessage({ type: 'removeFromQueue', index });
                     }}
                   >
                     <X className="h-3 w-3" />
@@ -1175,7 +1213,7 @@ export function QueueContainer() {
               variant="secondary"
               size="sm"
               disabled={isExecutingQueue}
-              onClick={() => vscode.postMessage({ type: "executeQueue" })}
+              onClick={() => vscode.postMessage({ type: 'executeQueue' })}
             >
               <Play className="mr-1 h-3 w-3" /> Execute All
             </Button>
@@ -1187,7 +1225,7 @@ export function QueueContainer() {
 }
 
 function renderInlineCodeText(text: string, keyPrefix: string) {
-  if (!text.includes("`")) {
+  if (!text.includes('`')) {
     return <span className="whitespace-pre-wrap">{text}</span>;
   }
 
@@ -1195,12 +1233,15 @@ function renderInlineCodeText(text: string, keyPrefix: string) {
   let cursor = 0;
   let segmentIndex = 0;
   while (cursor < text.length) {
-    const open = text.indexOf("`", cursor);
+    const open = text.indexOf('`', cursor);
     if (open === -1) {
       const plain = text.slice(cursor);
       if (plain) {
         nodes.push(
-          <span key={`${keyPrefix}-t-${segmentIndex++}`} className="whitespace-pre-wrap">
+          <span
+            key={`${keyPrefix}-t-${segmentIndex++}`}
+            className="whitespace-pre-wrap"
+          >
             {plain}
           </span>,
         );
@@ -1208,12 +1249,15 @@ function renderInlineCodeText(text: string, keyPrefix: string) {
       break;
     }
 
-    const close = text.indexOf("`", open + 1);
+    const close = text.indexOf('`', open + 1);
     if (close === -1) {
       const plain = text.slice(cursor);
       if (plain) {
         nodes.push(
-          <span key={`${keyPrefix}-t-${segmentIndex++}`} className="whitespace-pre-wrap">
+          <span
+            key={`${keyPrefix}-t-${segmentIndex++}`}
+            className="whitespace-pre-wrap"
+          >
             {plain}
           </span>,
         );
@@ -1223,7 +1267,10 @@ function renderInlineCodeText(text: string, keyPrefix: string) {
 
     if (open > cursor) {
       nodes.push(
-        <span key={`${keyPrefix}-t-${segmentIndex++}`} className="whitespace-pre-wrap">
+        <span
+          key={`${keyPrefix}-t-${segmentIndex++}`}
+          className="whitespace-pre-wrap"
+        >
           {text.slice(cursor, open)}
         </span>,
       );
@@ -1244,7 +1291,7 @@ function renderInlineCodeText(text: string, keyPrefix: string) {
 }
 
 function renderCodeAwareText(text: string, keyPrefix: string) {
-  if (!text.includes("```")) {
+  if (!text.includes('```')) {
     return renderInlineCodeText(text, keyPrefix);
   }
 
@@ -1258,14 +1305,20 @@ function renderCodeAwareText(text: string, keyPrefix: string) {
     if (match.index > lastIndex) {
       const plain = text.slice(lastIndex, match.index);
       nodes.push(
-        <span key={`${keyPrefix}-plain-${blockIndex}`} className="whitespace-pre-wrap">
-          {renderInlineCodeText(plain, `${keyPrefix}-plain-inline-${blockIndex}`)}
+        <span
+          key={`${keyPrefix}-plain-${blockIndex}`}
+          className="whitespace-pre-wrap"
+        >
+          {renderInlineCodeText(
+            plain,
+            `${keyPrefix}-plain-inline-${blockIndex}`,
+          )}
         </span>,
       );
     }
 
-    const language = (match[1] || "").trim();
-    const code = (match[2] || "").replace(/\n$/, "");
+    const language = (match[1] || '').trim();
+    const code = (match[2] || '').replace(/\n$/, '');
     nodes.push(
       <div key={`${keyPrefix}-block-${blockIndex}`} className="my-1">
         {language ? (
@@ -1299,44 +1352,44 @@ function extractLatestAssistantMessageText(messages: Message[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const msg = messages[index];
     const role = msg.role || msg.info?.role;
-    if (role !== "assistant") {
+    if (role !== 'assistant') {
       continue;
     }
-    if (typeof msg.content === "string" && msg.content.trim()) {
+    if (typeof msg.content === 'string' && msg.content.trim()) {
       return msg.content;
     }
-    if (typeof msg.text === "string" && msg.text.trim()) {
+    if (typeof msg.text === 'string' && msg.text.trim()) {
       return msg.text;
     }
     if (Array.isArray(msg.parts)) {
       const textPart = msg.parts.find(
         (part) =>
           part &&
-          typeof part === "object" &&
-          (part.type === "text" || typeof part.text === "string"),
+          typeof part === 'object' &&
+          (part.type === 'text' || typeof part.text === 'string'),
       );
-      const partText = (textPart?.text || textPart?.content || "").toString();
+      const partText = (textPart?.text || textPart?.content || '').toString();
       if (partText.trim()) {
         return partText;
       }
     }
   }
-  return "";
+  return '';
 }
 
 function normalizeCompareText(value: string): string {
   return value
     .toLowerCase()
-    .replace(/\s+/g, " ")
-    .replace(/[`*_~]/g, "")
+    .replace(/\s+/g, ' ')
+    .replace(/[`*_~]/g, '')
     .trim();
 }
 
 function isAutoDetectedInteractiveEvent(event: InteractiveEvent): boolean {
   return (
-    event.id.startsWith("auto-question-") ||
-    event.id.startsWith("auto-confirm-") ||
-    event.id.startsWith("auto-quick-")
+    event.id.startsWith('auto-question-') ||
+    event.id.startsWith('auto-confirm-') ||
+    event.id.startsWith('auto-quick-')
   );
 }
 
@@ -1355,12 +1408,12 @@ function isRedundantInteractiveEvent(
     return false;
   }
 
-  if (event.type === "question" || event.type === "confirm") {
+  if (event.type === 'question' || event.type === 'confirm') {
     const question = normalizeCompareText(event.question);
     if (!question || !assistantText.includes(question)) {
       return false;
     }
-    if (event.type === "confirm") {
+    if (event.type === 'confirm') {
       return true;
     }
     const matchingOptions = event.options.filter((option) =>
@@ -1369,7 +1422,7 @@ function isRedundantInteractiveEvent(
     return matchingOptions >= Math.min(2, event.options.length);
   }
 
-  if (event.type === "quick_actions") {
+  if (event.type === 'quick_actions') {
     const matchingActions = event.actions.filter((action) =>
       assistantText.includes(normalizeCompareText(action.label)),
     ).length;
@@ -1407,19 +1460,19 @@ export function InputWrapper() {
     if (!text) return;
     if (isProcessing) {
       vscode.postMessage({
-        type: "addToQueue",
+        type: 'addToQueue',
         text,
         files: selectedFiles,
         contexts: selectedContexts,
         agent: selectedAgent || null,
         images: attachments || [],
       });
-      dispatch({ type: "SET_QUEUE_OPEN", payload: true });
-      dispatch({ type: "SET_INPUT_VALUE", payload: "" });
+      dispatch({ type: 'SET_QUEUE_OPEN', payload: true });
+      dispatch({ type: 'SET_INPUT_VALUE', payload: '' });
       return;
     }
     vscode.postMessage({
-      type: "sendMessage",
+      type: 'sendMessage',
       text,
       files: selectedFiles,
       contexts: selectedContexts,
@@ -1427,20 +1480,20 @@ export function InputWrapper() {
       images: attachments || [],
     });
     dispatch({
-      type: "SET_MESSAGES",
+      type: 'SET_MESSAGES',
       payload: [
         ...messages,
         {
-          role: "user",
+          role: 'user',
           content: text,
-          parts: [{ type: "text", text }],
+          parts: [{ type: 'text', text }],
           images: (attachments || []).map((a) => a.dataUrl),
         },
       ],
     });
-    dispatch({ type: "SET_PROCESSING", payload: true });
-    dispatch({ type: "SET_INPUT_VALUE", payload: "" });
-    dispatch({ type: "CLEAR_ATTACHMENTS" });
+    dispatch({ type: 'SET_PROCESSING', payload: true });
+    dispatch({ type: 'SET_INPUT_VALUE', payload: '' });
+    dispatch({ type: 'CLEAR_ATTACHMENTS' });
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1448,17 +1501,17 @@ export function InputWrapper() {
     if (!items) return;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (!item.type.startsWith("image/")) continue;
+      if (!item.type.startsWith('image/')) continue;
       const blob = item.getAsFile();
       if (!blob) continue;
       const reader = new FileReader();
       reader.onload = () => {
         try {
           const dataUrl = reader.result as string;
-          const ext = blob.type.split("/")[1] ?? "png";
+          const ext = blob.type.split('/')[1] ?? 'png';
           const filename = (blob as any).name ?? `pasted-${Date.now()}.${ext}`;
           dispatch({
-            type: "ADD_ATTACHMENT",
+            type: 'ADD_ATTACHMENT',
             payload: {
               id: crypto.randomUUID(),
               dataUrl,
@@ -1475,7 +1528,7 @@ export function InputWrapper() {
   };
 
   const stopRequest = () =>
-    vscode.postMessage({ type: "stopRequest", sessionId: currentSessionId });
+    vscode.postMessage({ type: 'stopRequest', sessionId: currentSessionId });
 
   const submitInteractiveResponse = (
     text: string,
@@ -1487,7 +1540,7 @@ export function InputWrapper() {
       return;
     }
     vscode.postMessage({
-      type: "interactiveResponse",
+      type: 'interactiveResponse',
       eventId,
       eventType,
       selection: {
@@ -1497,7 +1550,7 @@ export function InputWrapper() {
       text: trimmed,
       agent: selectedAgent || null,
     });
-    dispatch({ type: "DISMISS_INTERACTIVE_EVENT", payload: eventId });
+    dispatch({ type: 'DISMISS_INTERACTIVE_EVENT', payload: eventId });
   };
 
   return (
@@ -1505,13 +1558,13 @@ export function InputWrapper() {
       <QueueContainer />
       <div
         className="oc-input-area"
-        style={promptQueue.length > 0 ? { borderTop: "none" } : undefined}
+        style={promptQueue.length > 0 ? { borderTop: 'none' } : undefined}
       >
         {displayInteractiveEvent ? (
           <div className="mb-2 rounded-lg border border-[var(--oc-border)] bg-[var(--oc-panel-soft)] px-3 py-2">
             <div className="mb-1.5 flex items-center justify-between gap-2">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-muted)]">
-                {displayInteractiveEvent.title || "Quick Input"}
+                {displayInteractiveEvent.title || 'Quick Input'}
               </div>
               <button
                 type="button"
@@ -1519,7 +1572,7 @@ export function InputWrapper() {
                 title="Dismiss"
                 onClick={() =>
                   dispatch({
-                    type: "DISMISS_INTERACTIVE_EVENT",
+                    type: 'DISMISS_INTERACTIVE_EVENT',
                     payload: displayInteractiveEvent.id,
                   })
                 }
@@ -1529,18 +1582,20 @@ export function InputWrapper() {
             </div>
             <div className="mb-2 text-[12px] text-[var(--oc-text-soft)]">
               {renderCodeAwareText(
-                displayInteractiveEvent.type === "quick_actions"
-                  ? displayInteractiveEvent.title || "Select an action"
+                displayInteractiveEvent.type === 'quick_actions'
+                  ? displayInteractiveEvent.title || 'Select an action'
                   : displayInteractiveEvent.question,
                 `interactive-question-${displayInteractiveEvent.id}`,
               )}
             </div>
 
-            {displayInteractiveEvent.type === "question" ? (
+            {displayInteractiveEvent.type === 'question' ? (
               <div className="flex flex-wrap gap-1.5">
                 {displayInteractiveEvent.options.map((option, index) => (
                   <button
-                    key={`${displayInteractiveEvent.id}-q-${option.id || option.value || index}`}
+                    key={`${displayInteractiveEvent.id}-q-${
+                      option.id || option.value || index
+                    }`}
                     type="button"
                     className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-soft)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
                     title={option.description || option.label}
@@ -1561,21 +1616,21 @@ export function InputWrapper() {
               </div>
             ) : null}
 
-            {displayInteractiveEvent.type === "confirm" ? (
+            {displayInteractiveEvent.type === 'confirm' ? (
               <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
                   className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-soft)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
                   onClick={() =>
                     submitInteractiveResponse(
-                      displayInteractiveEvent.confirmLabel || "Yes",
+                      displayInteractiveEvent.confirmLabel || 'Yes',
                       displayInteractiveEvent.id,
                       displayInteractiveEvent.type,
                     )
                   }
                 >
                   {renderInlineCodeText(
-                    displayInteractiveEvent.confirmLabel || "Yes",
+                    displayInteractiveEvent.confirmLabel || 'Yes',
                     `interactive-confirm-yes-${displayInteractiveEvent.id}`,
                   )}
                 </button>
@@ -1584,25 +1639,27 @@ export function InputWrapper() {
                   className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-muted)] hover:text-[var(--oc-text-soft)]"
                   onClick={() =>
                     submitInteractiveResponse(
-                      displayInteractiveEvent.cancelLabel || "No",
+                      displayInteractiveEvent.cancelLabel || 'No',
                       displayInteractiveEvent.id,
                       displayInteractiveEvent.type,
                     )
                   }
                 >
                   {renderInlineCodeText(
-                    displayInteractiveEvent.cancelLabel || "No",
+                    displayInteractiveEvent.cancelLabel || 'No',
                     `interactive-confirm-no-${displayInteractiveEvent.id}`,
                   )}
                 </button>
               </div>
             ) : null}
 
-            {displayInteractiveEvent.type === "quick_actions" ? (
+            {displayInteractiveEvent.type === 'quick_actions' ? (
               <div className="flex flex-wrap gap-1.5">
                 {displayInteractiveEvent.actions.map((action, index) => (
                   <button
-                    key={`${displayInteractiveEvent.id}-a-${action.id || action.value || index}`}
+                    key={`${displayInteractiveEvent.id}-a-${
+                      action.id || action.value || index
+                    }`}
                     type="button"
                     className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2 py-1 text-[11px] text-[var(--oc-text-soft)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)]"
                     title={action.description || action.label}
@@ -1629,7 +1686,11 @@ export function InputWrapper() {
         {(selectedFiles.length > 0 || selectedContexts.length > 0) && (
           <div className="oc-context-chips flex flex-wrap gap-1.5 mb-2">
             {selectedFiles.map((file) => (
-              <Badge key={file} variant="secondary" className="flex items-center gap-1 font-mono text-[10px] bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-oc-text-soft">
+              <Badge
+                key={file}
+                variant="secondary"
+                className="flex items-center gap-1 font-mono text-[10px] bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-oc-text-soft"
+              >
                 <FileIcon filePath={file} />
                 {file}
               </Badge>
@@ -1641,8 +1702,14 @@ export function InputWrapper() {
                 className="flex items-center gap-1 font-mono text-[10px] pr-1.5 bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-oc-text-soft"
               >
                 <FileIcon filePath={context.file} />
-                <span>{context.file} {context.lineInfo}</span>
-                {context.languageId && <span className="opacity-60 text-[9px] font-semibold">{context.languageId}</span>}
+                <span>
+                  {context.file} {context.lineInfo}
+                </span>
+                {context.languageId && (
+                  <span className="opacity-60 text-[9px] font-semibold">
+                    {context.languageId}
+                  </span>
+                )}
                 {context.isAuto && (
                   <button
                     type="button"
@@ -1650,8 +1717,12 @@ export function InputWrapper() {
                     onClick={(e) => {
                       e.preventDefault();
                       dispatch({
-                        type: "SET_SELECTED_CONTEXTS",
-                        payload: selectedContexts.filter(c => c.file !== context.file || c.lineInfo !== context.lineInfo)
+                        type: 'SET_SELECTED_CONTEXTS',
+                        payload: selectedContexts.filter(
+                          (c) =>
+                            c.file !== context.file ||
+                            c.lineInfo !== context.lineInfo,
+                        ),
                       });
                     }}
                   >
@@ -1673,7 +1744,7 @@ export function InputWrapper() {
                   type="button"
                   className="oc-chip-remove"
                   onClick={() =>
-                    dispatch({ type: "REMOVE_ATTACHMENT", payload: a.id })
+                    dispatch({ type: 'REMOVE_ATTACHMENT', payload: a.id })
                   }
                   title={`Remove ${a.filename}`}
                 >
@@ -1691,10 +1762,10 @@ export function InputWrapper() {
             placeholder="Ask anything (Enter to send, Shift+Enter for newline), @ to mention, / for commands"
             className="oc-textarea"
             onChange={(e) =>
-              dispatch({ type: "SET_INPUT_VALUE", payload: e.target.value })
+              dispatch({ type: 'SET_INPUT_VALUE', payload: e.target.value })
             }
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendPrompt();
               }
@@ -1709,14 +1780,16 @@ export function InputWrapper() {
                 <button
                   key={suggestion.path}
                   type="button"
-                  className={`oc-suggestion-item ${index === selectedSuggestionIndex ? "active" : ""}`}
+                  className={`oc-suggestion-item ${
+                    index === selectedSuggestionIndex ? 'active' : ''
+                  }`}
                   onClick={() => {
                     dispatch({
-                      type: "SET_SELECTED_FILES",
+                      type: 'SET_SELECTED_FILES',
                       payload: [...selectedFiles, suggestion.path],
                     });
                     dispatch({
-                      type: "SET_SHOW_FILE_SUGGESTIONS",
+                      type: 'SET_SHOW_FILE_SUGGESTIONS',
                       payload: false,
                     });
                   }}
@@ -1750,7 +1823,7 @@ export function InputWrapper() {
                 ) : (
                   <Send className="h-3.5 w-3.5" />
                 )}
-                {isProcessing ? "Queue" : "Send"}
+                {isProcessing ? 'Queue' : 'Send'}
               </Button>
             </div>
           </div>
@@ -1766,10 +1839,10 @@ export function ThinkingLevelControl() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const setLevel = (level: ThinkingLevel) => {
-    dispatch({ type: "SET_THINKING_LEVEL", payload: level });
-    dispatch({ type: "SET_THINKING_DROPDOWN_OPEN", payload: false });
+    dispatch({ type: 'SET_THINKING_LEVEL', payload: level });
+    dispatch({ type: 'SET_THINKING_DROPDOWN_OPEN', payload: false });
     try {
-      vscode.postMessage({ type: "setThinkingLevel", level });
+      vscode.postMessage({ type: 'setThinkingLevel', level });
     } catch (e) {}
   };
 
@@ -1781,17 +1854,17 @@ export function ThinkingLevelControl() {
         containerRef.current &&
         !containerRef.current.contains(e.target as Node)
       ) {
-        dispatch({ type: "SET_THINKING_DROPDOWN_OPEN", payload: false });
+        dispatch({ type: 'SET_THINKING_DROPDOWN_OPEN', payload: false });
       }
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
   }, [thinkingDropdownOpen, dispatch]);
 
   const levelLabels: Record<ThinkingLevel, string> = {
-    high: "High",
-    medium: "Med",
-    low: "Low",
+    high: 'High',
+    medium: 'Med',
+    low: 'Low',
   };
 
   return (
@@ -1802,25 +1875,31 @@ export function ThinkingLevelControl() {
         size="chip"
         onClick={() =>
           dispatch({
-            type: "SET_THINKING_DROPDOWN_OPEN",
+            type: 'SET_THINKING_DROPDOWN_OPEN',
             payload: !thinkingDropdownOpen,
           })
         }
         aria-label="Set thinking level"
       >
-        <span>Think: {levelLabels[thinkingLevel ?? "medium"]}</span>
+        <span>Think: {levelLabels[thinkingLevel ?? 'medium']}</span>
         <ChevronDown
-          className={`h-3 w-3 shrink-0 transition-transform ${thinkingDropdownOpen ? "rotate-180" : ""}`}
+          className={`h-3 w-3 shrink-0 transition-transform ${
+            thinkingDropdownOpen ? 'rotate-180' : ''
+          }`}
         />
       </Button>
       {thinkingDropdownOpen && (
         <div className="oc-popover absolute bottom-full left-0 z-30 mb-1.5 w-44 rounded-xl border border-oc-border bg-oc-panel shadow-xl overflow-hidden">
           <div className="px-1.5 py-1.5">
-            {(["high", "medium", "low"] as ThinkingLevel[]).map((level) => (
+            {(['high', 'medium', 'low'] as ThinkingLevel[]).map((level) => (
               <button
                 key={level}
                 type="button"
-                className={`oc-popover-item w-full rounded-lg px-3 py-2 text-left transition-colors ${thinkingLevel === level ? "bg-oc-accent-soft text-oc-accent" : "hover:bg-oc-panel-soft"}`}
+                className={`oc-popover-item w-full rounded-lg px-3 py-2 text-left transition-colors ${
+                  thinkingLevel === level
+                    ? 'bg-oc-accent-soft text-oc-accent'
+                    : 'hover:bg-oc-panel-soft'
+                }`}
                 onClick={() => setLevel(level)}
               >
                 <div className="flex items-center justify-between">
@@ -1834,11 +1913,11 @@ export function ThinkingLevelControl() {
                   )}
                 </div>
                 <div className="text-oc-2xs font-mono text-oc-text-muted mt-0.5">
-                  {level === "high"
-                    ? "Deep reasoning"
-                    : level === "medium"
-                      ? "Balanced"
-                      : "Fast response"}
+                  {level === 'high'
+                    ? 'Deep reasoning'
+                    : level === 'medium'
+                      ? 'Balanced'
+                      : 'Fast response'}
                 </div>
               </button>
             ))}
@@ -1855,12 +1934,15 @@ export function QuotaMonitor() {
 
   // Debug logging
   console.log('[QuotaMonitor] budgetInfo:', budgetInfo);
-  console.log('[QuotaMonitor] quotaData platforms:', quotaData?.platforms?.map((p) => p.platform));
+  console.log(
+    '[QuotaMonitor] quotaData platforms:',
+    quotaData?.platforms?.map((p) => p.platform),
+  );
   const [open, setOpen] = useState(true);
 
   const handleRefresh = () => {
-    dispatch({ type: "SET_QUOTA_REFRESHING", payload: true });
-    vscode.postMessage({ type: "refreshQuota" });
+    dispatch({ type: 'SET_QUOTA_REFRESHING', payload: true });
+    vscode.postMessage({ type: 'refreshQuota' });
   };
 
   const lastUpdatedLabel = quotaData
@@ -1868,21 +1950,21 @@ export function QuotaMonitor() {
     : null;
 
   const toProviderName = (platform: string, title?: string) => {
-    if (title && title.includes("Account Quota")) {
+    if (title && title.includes('Account Quota')) {
       return title;
     }
     const key = platform.toLowerCase();
-    if (key.includes("openai")) return "OpenAI Account Quota";
-    if (key.includes("zai")) return "Z.ai Account Quota";
-    if (key.includes("zhipu")) return "Zhipu AI Account Quota";
-    if (key.includes("copilot")) return "GitHub Copilot Account Quota";
+    if (key.includes('openai')) return 'OpenAI Account Quota';
+    if (key.includes('zai')) return 'Z.ai Account Quota';
+    if (key.includes('zhipu')) return 'Zhipu AI Account Quota';
+    if (key.includes('copilot')) return 'GitHub Copilot Account Quota';
     return title ?? `${platform} Account Quota`;
   };
 
   const barColor = (pct: number) => {
-    if (pct >= 50) return "linear-gradient(90deg, #2ea043, #3fb950)";
-    if (pct >= 20) return "linear-gradient(90deg, #bf8700, #d29922)";
-    return "linear-gradient(90deg, #da3633, #f85149)";
+    if (pct >= 50) return 'linear-gradient(90deg, #2ea043, #3fb950)';
+    if (pct >= 20) return 'linear-gradient(90deg, #bf8700, #d29922)';
+    return 'linear-gradient(90deg, #da3633, #f85149)';
   };
 
   return (
@@ -1902,14 +1984,16 @@ export function QuotaMonitor() {
             onClick={handleRefresh}
           >
             <RefreshCw
-              className={`mr-1 h-3 w-3 ${quotaIsRefreshing ? "animate-spin" : ""}`}
+              className={`mr-1 h-3 w-3 ${
+                quotaIsRefreshing ? 'animate-spin' : ''
+              }`}
             />
             Refresh
           </Button>
           <Button
             type="button"
             aria-label={
-              open ? "Collapse Quota Monitor" : "Expand Quota Monitor"
+              open ? 'Collapse Quota Monitor' : 'Expand Quota Monitor'
             }
             onClick={() => setOpen((v) => !v)}
             variant="ghost"
@@ -1963,14 +2047,14 @@ export function QuotaMonitor() {
                         <span className="text-oc-sm font-semibold tracking-tight text-oc-text-soft">
                           {toProviderName(platform.platform, platform.title)}
                         </span>
-                        {platform.status === "error" ? (
+                        {platform.status === 'error' ? (
                           <Badge
                             variant="destructive"
                             className="text-oc-2xs uppercase"
                           >
                             error
                           </Badge>
-                        ) : platform.status === "warning" ? (
+                        ) : platform.status === 'warning' ? (
                           <Badge
                             variant="warning"
                             className="text-oc-2xs uppercase"
@@ -1984,7 +2068,7 @@ export function QuotaMonitor() {
                           Account:
                         </span>
                         <span className="truncate font-mono text-oc-text-soft">
-                          {platform.account} {platform.accountLabel ?? ""}
+                          {platform.account} {platform.accountLabel ?? ''}
                         </span>
                       </div>
                     </div>
@@ -2074,7 +2158,8 @@ export function QuotaMonitor() {
                         Plan:
                       </span>
                       <span className="font-mono text-oc-text-soft">
-                        {budgetInfo.planName} ({budgetInfo.monthlyQuota} requests/month)
+                        {budgetInfo.planName} ({budgetInfo.monthlyQuota}{' '}
+                        requests/month)
                       </span>
                     </div>
                   </div>
@@ -2082,26 +2167,48 @@ export function QuotaMonitor() {
                   <div className="space-y-2.5 px-3 py-2.5">
                     <div className="rounded-lg border border-oc-border bg-[rgba(0,0,0,0.16)] p-2">
                       <div className="mb-1 flex items-center justify-between text-oc-xs">
-                        <span className="font-medium text-oc-text-soft">Today's Usage</span>
-                        <span className="text-oc-text-soft">{budgetInfo.usedToday} / {budgetInfo.dailyAllowance} requests</span>
+                        <span className="font-medium text-oc-text-soft">
+                          Today's Usage
+                        </span>
+                        <span className="text-oc-text-soft">
+                          {budgetInfo.usedToday} / {budgetInfo.dailyAllowance}{' '}
+                          requests
+                        </span>
                       </div>
                       <div className="h-2 w-full overflow-hidden rounded-full bg-oc-border">
                         <div
                           className="h-full rounded-full transition-all duration-300"
                           style={{
-                            width: `${Math.min(100, (budgetInfo.usedToday / budgetInfo.dailyAllowance) * 100)}%`,
-                            background: barColor((budgetInfo.remainingToday / budgetInfo.dailyAllowance) * 100),
+                            width: `${Math.min(
+                              100,
+                              (budgetInfo.usedToday /
+                                budgetInfo.dailyAllowance) *
+                                100,
+                            )}%`,
+                            background: barColor(
+                              (budgetInfo.remainingToday /
+                                budgetInfo.dailyAllowance) *
+                                100,
+                            ),
                           }}
                         />
                       </div>
                       <div className="mt-1.5 grid grid-cols-2 gap-2 text-center text-oc-2xs">
                         <div>
-                          <div className="text-oc-text-soft opacity-70">Remaining</div>
-                          <div className="font-medium text-oc-text-soft">{budgetInfo.remainingToday}</div>
+                          <div className="text-oc-text-soft opacity-70">
+                            Remaining
+                          </div>
+                          <div className="font-medium text-oc-text-soft">
+                            {budgetInfo.remainingToday}
+                          </div>
                         </div>
                         <div>
-                          <div className="text-oc-text-soft opacity-70">Projected</div>
-                          <div className="font-medium text-oc-text-soft">~{Math.round(budgetInfo.projectedMonthlyUsage)}</div>
+                          <div className="text-oc-text-soft opacity-70">
+                            Projected
+                          </div>
+                          <div className="font-medium text-oc-text-soft">
+                            ~{Math.round(budgetInfo.projectedMonthlyUsage)}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -2137,17 +2244,17 @@ export function TodoPanel() {
 
   const statusIcon = (status?: string) => {
     switch (status) {
-      case "pending":
-        return "⏳";
-      case "in_progress":
-        return "🔄";
-      case "completed":
-        return "✅";
-      case "failed":
-      case "cancelled":
-        return "❌";
+      case 'pending':
+        return '⏳';
+      case 'in_progress':
+        return '🔄';
+      case 'completed':
+        return '✅';
+      case 'failed':
+      case 'cancelled':
+        return '❌';
       default:
-        return "•";
+        return '•';
     }
   };
 
@@ -2157,7 +2264,7 @@ export function TodoPanel() {
         <div className="oc-panel-title">TODOs</div>
         <Button
           type="button"
-          aria-label={open ? "Collapse TODOs" : "Expand TODOs"}
+          aria-label={open ? 'Collapse TODOs' : 'Expand TODOs'}
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
@@ -2188,7 +2295,7 @@ export function TodoPanel() {
                     {statusIcon(t.status)}
                   </div>
                   <div className="text-oc-xs text-oc-text-soft leading-relaxed">
-                    {(t as any).description ?? t.text ?? "Untitled"}
+                    {(t as any).description ?? t.text ?? 'Untitled'}
                   </div>
                 </div>
               ))}
@@ -2206,9 +2313,9 @@ export function McpPanel() {
 
   // Placeholder MCP servers data - this would come from the backend in production
   const mcpServers = [
-    { name: "context7", status: "connected", tools: 12 },
-    { name: "serena", status: "connected", tools: 8 },
-    { name: "web-reader", status: "connected", tools: 3 },
+    { name: 'context7', status: 'connected', tools: 12 },
+    { name: 'serena', status: 'connected', tools: 8 },
+    { name: 'web-reader', status: 'connected', tools: 3 },
   ];
 
   return (
@@ -2217,7 +2324,7 @@ export function McpPanel() {
         <div className="oc-panel-title">MCP Servers</div>
         <Button
           type="button"
-          aria-label={open ? "Collapse MCP" : "Expand MCP"}
+          aria-label={open ? 'Collapse MCP' : 'Expand MCP'}
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
@@ -2241,7 +2348,11 @@ export function McpPanel() {
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span
-                    className={`inline-block h-1.5 w-1.5 rounded-full ${server.status === "connected" ? "bg-oc-green" : "bg-oc-red"}`}
+                    className={`inline-block h-1.5 w-1.5 rounded-full ${
+                      server.status === 'connected'
+                        ? 'bg-oc-green'
+                        : 'bg-oc-red'
+                    }`}
                   />
                   <span className="font-mono text-oc-xs font-medium text-oc-text-soft">
                     {server.name}
@@ -2268,9 +2379,9 @@ export function LspPanel() {
 
   // Placeholder LSP servers data - this would come from VSCode in production
   const lspServers = [
-    { name: "TypeScript", status: "running", version: "5.6.0" },
-    { name: "Python", status: "running", version: "2024.2" },
-    { name: "JSON", status: "running", version: "3.5.1" },
+    { name: 'TypeScript', status: 'running', version: '5.6.0' },
+    { name: 'Python', status: 'running', version: '2024.2' },
+    { name: 'JSON', status: 'running', version: '3.5.1' },
   ];
 
   return (
@@ -2279,7 +2390,7 @@ export function LspPanel() {
         <div className="oc-panel-title">LSP Servers</div>
         <Button
           type="button"
-          aria-label={open ? "Collapse LSP" : "Expand LSP"}
+          aria-label={open ? 'Collapse LSP' : 'Expand LSP'}
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
@@ -2303,7 +2414,9 @@ export function LspPanel() {
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span
-                    className={`inline-block h-1.5 w-1.5 rounded-full ${server.status === "running" ? "bg-oc-green" : "bg-oc-red"}`}
+                    className={`inline-block h-1.5 w-1.5 rounded-full ${
+                      server.status === 'running' ? 'bg-oc-green' : 'bg-oc-red'
+                    }`}
                   />
                   <span className="font-mono text-oc-xs font-medium text-oc-text-soft">
                     {server.name}
