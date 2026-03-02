@@ -39,8 +39,8 @@ test('history sidebar emits session create/switch/delete events to extension', (
   // Verify webview session controls post expected protocol messages.
   const historyBody = extractFunctionBody(panelSource, 'export function HistorySidebar()');
 
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']createSession["']\s*\}\)/, 'new session button should post createSession');
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']switchSession["'],\s*sessionId:\s*session\.id,?\s*\}\)/, 'session row should post switchSession with selected id');
+  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']createSession["']\s*\}\)[\s\S]*dispatch\(\{\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*payload:\s*false\s*\}\)/, 'new session button should post createSession and close sidebar');
+  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']switchSession["'],\s*sessionId:\s*session\.id,?\s*\}\)[\s\S]*dispatch\(\{\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*payload:\s*false\s*\}\)/, 'session row should post switchSession and close sidebar');
   assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']deleteSession["'],\s*sessionId:\s*session\.id,?\s*\}\)/, 'session delete action should post deleteSession with selected id');
 });
 

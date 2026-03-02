@@ -87,16 +87,16 @@ export function StickyHeader() {
       </div>
 
       {/* Token stats center - FORBIDDEN TO REMOVE */}
-      <div className="oc-header-center items-center gap-3 font-mono text-oc-xs opacity-60">
+      <div className="oc-header-center items-center gap-3 font-mono text-xs opacity-60">
         <div className="flex items-center gap-1.5">
-          <span className="opacity-70 text-oc-2xs uppercase tracking-wider">
+          <span className="opacity-70 text-xs uppercase tracking-wider">
             Tokens
           </span>
           <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
             {(sessionStats.input + sessionStats.output || 0).toLocaleString()}
           </span>
         </div>
-        <div className="flex items-center gap-1 text-oc-2xs opacity-80">
+        <div className="flex items-center gap-1 text-xs opacity-80">
           <span className="text-[var(--oc-text-soft)]">{sessionStats.input}i</span>
           <span className="opacity-30">·</span>
           <span className="text-[var(--oc-text-soft)]">{sessionStats.output}o</span>
@@ -117,7 +117,7 @@ export function StickyHeader() {
 
       <div className="oc-header-right ml-auto flex items-center gap-1.5">
         <span className="oc-task-pill">TASK</span>
-        <span className="oc-task-name text-oc-xs text-[var(--oc-text-soft)] opacity-80">
+        <span className="oc-task-name text-xs text-[var(--oc-text-soft)] opacity-80">
           {taskName}
         </span>
         <span
@@ -196,9 +196,12 @@ export function HistorySidebar() {
         <Button
           variant="ghost-accent"
           size="sm"
-          onClick={() => vscode.postMessage({ type: 'createSession' })}
+          onClick={() => {
+            vscode.postMessage({ type: 'createSession' });
+            dispatch({ type: 'SET_SIDEBAR_OPEN', payload: false });
+          }}
         >
-          <span className="text-sm">+</span> New Chat
+          <span className="text-xs">+</span> New Chat
         </Button>
       </div>
       <div className="h-[calc(100%-88px)] overflow-y-auto p-2">
@@ -220,12 +223,13 @@ export function HistorySidebar() {
               >
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
                     vscode.postMessage({
                       type: 'switchSession',
                       sessionId: session.id,
-                    })
-                  }
+                    });
+                    dispatch({ type: 'SET_SIDEBAR_OPEN', payload: false });
+                  }}
                   className={
                     `oc-session-item flex-1 min-w-0 overflow-hidden rounded-md px-2.5 py-2 text-left text-xs ` +
                     (isActive
@@ -247,7 +251,7 @@ export function HistorySidebar() {
                       {session.title || 'Untitled chat'}
                     </div>
                   </div>
-                  <div className="truncate text-oc-text-muted text-oc-2xs pl-3.5 mt-0.5">
+                  <div className="truncate text-oc-text-muted text-xs pl-3.5 mt-0.5">
                     {session.createdAt
                       ? relativeSessionTime(session.createdAt)
                       : 'Unknown'}
@@ -304,7 +308,7 @@ function MiniSection({
           }`}
         />
         <span
-          className={`font-mono text-oc-2xs uppercase tracking-widest font-semibold ${
+          className={`font-mono text-xs uppercase tracking-widest font-semibold ${
             open ? 'text-[var(--oc-text-soft)]' : 'text-[var(--oc-text-soft)] opacity-70'
           }`}
         >
@@ -430,7 +434,7 @@ export function ActiveTaskPanel() {
         {isActive && (
           <MiniSection title="Progress Updates">
             {liveProgressSteps.length === 0 ? (
-              <div className="flex items-center gap-1.5 py-0.5 text-oc-xs text-oc-text-muted opacity-70">
+              <div className="flex items-center gap-1.5 py-0.5 text-xs text-oc-text-muted opacity-70">
                 <span
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
                   style={{ animationDelay: '0ms' }}
@@ -448,7 +452,7 @@ export function ActiveTaskPanel() {
                   <div
                     // biome-ignore lint/suspicious/noArrayIndexKey: steps are append-only during a stream
                     key={`progress-${idx}-${step.title}`}
-                    className="flex items-start gap-1.5 py-0.5 text-oc-xs"
+                    className="flex items-start gap-1.5 py-0.5 text-xs"
                   >
                     <span className="mt-px shrink-0">
                       {step.status === 'pending' ? (
@@ -491,7 +495,7 @@ export function ActiveTaskPanel() {
                   <div className="text-[14px] leading-none mt-0.5 shrink-0">
                     {todoStatusIcon(t.status)}
                   </div>
-                  <div className="text-oc-xs text-[var(--oc-text-soft)] leading-relaxed">
+                  <div className="text-xs text-[var(--oc-text-soft)] leading-relaxed">
                     {(t as any).description ?? t.text ?? 'Untitled'}
                   </div>
                 </div>
@@ -504,8 +508,8 @@ export function ActiveTaskPanel() {
           {/* Token usage bar */}
           <div className="mb-3">
             <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-oc-xs text-[var(--oc-text-soft)]">Tokens used</span>
-              <span className="font-mono tabular-nums text-oc-xs text-[var(--oc-text-soft)]">
+              <span className="text-xs text-[var(--oc-text-soft)]">Tokens used</span>
+              <span className="font-mono tabular-nums text-xs text-[var(--oc-text-soft)]">
                 {total.toLocaleString()} / {maxContext.toLocaleString()}
               </span>
             </div>
@@ -525,7 +529,7 @@ export function ActiveTaskPanel() {
             </div>
           </div>
           {/* 2-col token grid */}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-oc-xs">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
             <div className="flex items-center justify-between">
               <span className="text-[var(--oc-text-soft)] opacity-80">In</span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
@@ -554,10 +558,10 @@ export function ActiveTaskPanel() {
         </MiniSection>
 
         <MiniSection title="Session">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-oc-xs">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
             <div className="flex items-center justify-between col-span-2">
               <span className="text-[var(--oc-text-soft)] opacity-80">ID</span>
-              <span className="font-mono text-oc-2xs text-[var(--oc-text-soft)] opacity-70">
+              <span className="font-mono text-xs text-[var(--oc-text-soft)] opacity-70">
                 {currentSessionId ? currentSessionId.slice(0, 16) : '—'}
               </span>
             </div>
@@ -580,7 +584,7 @@ export function ActiveTaskPanel() {
             <div className="flex items-center justify-between col-span-2">
               <span className="text-[var(--oc-text-soft)] opacity-80">Status</span>
               <span
-                className={`font-mono text-oc-2xs uppercase tracking-wider font-semibold ${
+                className={`font-mono text-xs uppercase tracking-wider font-semibold ${
                   isActive ? 'text-oc-accent' : 'text-[var(--oc-text-soft)] opacity-70'
                 }`}
               >
@@ -602,7 +606,7 @@ export function MobileRightSummary() {
   return (
     <div className="block [@media(min-width:1100px)]:hidden border-b border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs text-oc-text">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 font-mono text-oc-xs">
+        <div className="flex items-center gap-2 font-mono text-xs">
           <span className="text-oc-text-muted">In</span>
           <span className="tabular-nums text-[var(--oc-text-soft)]">
             {sessionStats.input.toLocaleString()}
@@ -616,7 +620,7 @@ export function MobileRightSummary() {
 
         <div className="flex items-center">
           {isProcessing ? (
-            <span className="rounded-md bg-oc-accent-soft px-2 py-0.5 text-oc-xs font-medium text-oc-accent font-mono tracking-wider">
+            <span className="rounded-md bg-oc-accent-soft px-2 py-0.5 text-xs font-medium text-oc-accent font-mono tracking-wider">
               PROCESSING
             </span>
           ) : null}
@@ -735,7 +739,10 @@ export function ModelDropdown() {
         aria-expanded={modelDropdownOpen}
         aria-label="Choose model"
       >
-        <span className="truncate max-w-[140px]">{label}</span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="opacity-60">Model</span>
+          <span className="truncate max-w-[120px]">{label}</span>
+        </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${
             modelDropdownOpen ? 'rotate-180' : ''
@@ -775,7 +782,7 @@ export function ModelDropdown() {
           <div className="max-h-56 overflow-y-auto px-1.5 pb-1.5">
             {[...grouped.entries()].map(([provider, models]) => (
               <div key={provider} className="mb-1">
-                <div className="px-2.5 py-1 text-oc-2xs font-semibold uppercase tracking-widest text-oc-text-muted opacity-60">
+                <div className="px-2.5 py-1 text-xs font-semibold uppercase tracking-widest text-oc-text-muted opacity-60">
                   {provider}
                 </div>
                 {models.map((model) => {
@@ -818,12 +825,12 @@ export function ModelDropdown() {
                           {model.name}
                         </span>
                         {isCurrent && (
-                          <span className="text-oc-2xs font-mono uppercase tracking-wider text-oc-accent shrink-0">
+                          <span className="text-xs font-mono uppercase tracking-wider text-oc-accent shrink-0">
                             active
                           </span>
                         )}
                       </div>
-                      <div className="text-oc-2xs font-mono text-oc-text-muted truncate mt-0.5">
+                      <div className="text-xs font-mono text-oc-text-muted truncate mt-0.5">
                         {model.modelID}
                       </div>
                     </button>
@@ -832,7 +839,7 @@ export function ModelDropdown() {
               </div>
             ))}
             {grouped.size === 0 && (
-              <div className="px-2.5 py-4 text-center text-oc-xs text-oc-text-muted font-mono italic">
+              <div className="px-2.5 py-4 text-center text-xs text-oc-text-muted font-mono italic">
                 No models found
               </div>
             )}
@@ -895,7 +902,10 @@ export function AgentDropdown() {
         }
         aria-label="Choose agent"
       >
-        <span className="truncate max-w-[120px]">{label}</span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="opacity-60">Agent</span>
+          <span className="truncate max-w-[100px]">{label}</span>
+        </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${
             agentDropdownOpen ? 'rotate-180' : ''
@@ -941,7 +951,7 @@ export function AgentDropdown() {
                 }}
               >
                 <div className="text-oc-sm font-medium">{agent.name}</div>
-                <div className="text-oc-2xs font-mono text-oc-text-muted truncate mt-0.5">
+                <div className="text-xs font-mono text-oc-text-muted truncate mt-0.5">
                   {agent.description}
                 </div>
               </button>
@@ -1109,6 +1119,7 @@ export function InputWrapper() {
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
   const [isCustomMode, setIsCustomMode] = useState(false);
   const [customValue, setCustomValue] = useState('');
+  const [pendingAnswers, setPendingAnswers] = useState<Record<string, { text: string; eventType: string }>>({});
 
   // Centralized Interactive Event Handler
   // By design, ALL interactive choices (whether explicitly sent by the server or
@@ -1125,6 +1136,7 @@ export function InputWrapper() {
     setCurrentInteractiveIndex(0);
     setIsCustomMode(false);
     setCustomValue('');
+    setPendingAnswers({});
   }, [displayInteractiveEvents.length]);
 
   const activeInteractiveEvent = displayInteractiveEvents[currentInteractiveIndex];
@@ -1215,18 +1227,66 @@ export function InputWrapper() {
     if (!trimmed) {
       return;
     }
-    vscode.postMessage({
-      type: "interactiveResponse",
+
+    const nextAnswers = {
+      ...pendingAnswers,
+      [eventId]: { text: trimmed, eventType },
+    };
+    setPendingAnswers(nextAnswers);
+
+    // If there are more questions, go to the next one
+    if (currentInteractiveIndex < displayInteractiveEvents.length - 1) {
+      setCurrentInteractiveIndex(prev => prev + 1);
+      setIsCustomMode(false);
+      setCustomValue('');
+    } else {
+      // All questions are answered, submit batch
+      submitBatchResponses(nextAnswers);
+    }
+  };
+
+  const submitBatchResponses = (answers: Record<string, { text: string; eventType: string }>) => {
+    const batch = Object.entries(answers).map(([eventId, data]) => ({
       eventId,
-      eventType,
-      selection: {
-        label: trimmed,
-        value: trimmed,
-      },
-      text: trimmed,
+      eventType: data.eventType,
+      text: data.text,
+    }));
+
+    // Optimistically update UI so that the user message appears before the assistant responds
+    const composedPrompt = batch
+      .map(
+        (resp) =>
+          `[interactive:${resp.eventType || 'event'}:${resp.eventId || 'unknown'}] ${resp.text}`,
+      )
+      .join('\n');
+
+    dispatch({
+      type: 'SET_MESSAGES',
+      payload: [
+        ...messages,
+        {
+          id: `interactive-${Date.now()}`,
+          role: 'user',
+          content: composedPrompt,
+          parts: [{ type: 'text', text: composedPrompt }],
+        },
+      ],
+    });
+
+    vscode.postMessage({
+      type: 'batchInteractiveResponse',
+      responses: batch,
       agent: selectedAgent || null,
     });
-    dispatch({ type: 'DISMISS_INTERACTIVE_EVENT', payload: eventId });
+
+    // Dismiss all events that were part of this batch
+    batch.forEach(resp => {
+      dispatch({ type: 'DISMISS_INTERACTIVE_EVENT', payload: resp.eventId });
+    });
+
+    // Reset state
+    setPendingAnswers({});
+    setCurrentInteractiveIndex(0);
   };
 
   const stopRequest = () =>
@@ -1635,7 +1695,10 @@ export function ThinkingLevelControl() {
         }
         aria-label="Set thinking level"
       >
-        <span>Think: {levelLabels[thinkingLevel ?? 'medium']}</span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="opacity-60">Think</span>
+          <span className="font-medium text-oc-accent">{levelLabels[thinkingLevel ?? 'medium']}</span>
+        </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${
             thinkingDropdownOpen ? 'rotate-180' : ''
@@ -1661,12 +1724,12 @@ export function ThinkingLevelControl() {
                     {level}
                   </span>
                   {thinkingLevel === level && (
-                    <span className="text-oc-2xs font-mono uppercase tracking-wider text-oc-accent">
+                    <span className="text-xs font-mono uppercase tracking-wider text-oc-accent">
                       active
                     </span>
                   )}
                 </div>
-                <div className="text-oc-2xs font-mono text-oc-text-muted mt-0.5">
+                <div className="text-xs font-mono text-oc-text-muted mt-0.5">
                   {level === 'high'
                     ? 'Deep reasoning'
                     : level === 'medium'
@@ -1688,6 +1751,8 @@ export function QuotaMonitor() {
 
   // Debug logging
   console.log('[QuotaMonitor] budgetInfo:', budgetInfo);
+  console.log('[QuotaMonitor] quotaData:', quotaData);
+  console.log('[QuotaMonitor] quotaData.platforms:', quotaData?.platforms);
   console.log(
     '[QuotaMonitor] quotaData platforms:',
     quotaData?.platforms?.map((p) => p.platform),
@@ -1732,7 +1797,7 @@ export function QuotaMonitor() {
             type="button"
             variant="ghost-accent"
             size="sm"
-            className="h-7 px-2 text-oc-xs font-mono"
+            className="h-7 px-2 text-xs font-mono"
             title="Refresh quota"
             disabled={quotaIsRefreshing}
             onClick={handleRefresh}
@@ -1752,7 +1817,7 @@ export function QuotaMonitor() {
             onClick={() => setOpen((v) => !v)}
             variant="ghost"
             size="icon"
-            className="flex items-center gap-1 text-oc-xs text-[var(--oc-text-soft)] opacity-80 hover:text-oc-accent transition-colors p-1"
+            className="flex items-center gap-1 text-xs text-[var(--oc-text-soft)] opacity-80 hover:text-oc-accent transition-colors p-1"
           >
             {open ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
           </Button>
@@ -1762,7 +1827,7 @@ export function QuotaMonitor() {
       {open ? (
         <div className="p-3">
           {!quotaData && !quotaIsRefreshing ? (
-            <div className="py-4 text-center text-[var(--oc-text-soft)] opacity-60 text-oc-xs">
+            <div className="py-4 text-center text-[var(--oc-text-soft)] opacity-60 text-xs">
               No quota data
             </div>
           ) : null}
@@ -1798,12 +1863,12 @@ export function QuotaMonitor() {
                           {toProviderName(platform.platform, platform.title)}
                         </span>
                         {(platform.status === 'error') ? (
-                          <Badge variant="destructive" className="text-oc-2xs uppercase">error</Badge>
+                          <Badge variant="destructive" className="text-xs uppercase">error</Badge>
                         ) : (platform.status === 'warning') ? (
-                          <Badge variant="warning" className="text-[#d29922] text-oc-2xs uppercase">warning</Badge>
+                            <Badge variant="warning" className="text-[#d29922] text-xs uppercase">warning</Badge>
                         ) : null}
                       </div>
-                      <div className="grid grid-cols-[auto_1fr] gap-x-2 text-oc-2xs">
+                      <div className="grid grid-cols-[auto_1fr] gap-x-2 text-xs">
                         <span className="font-mono uppercase tracking-wider text-[var(--oc-text-soft)] opacity-80">
                           Account:
                         </span>
@@ -1834,10 +1899,10 @@ export function QuotaMonitor() {
                             className="rounded-lg border border-oc-border bg-[rgba(0,0,0,0.16)] p-2"
                           >
                             <div className="mb-1 flex items-center justify-between gap-2">
-                              <span className="text-oc-xs font-medium text-[var(--oc-text-soft)]">
+                              <span className="text-xs font-medium text-[var(--oc-text-soft)]">
                                 {quota.label}
                               </span>
-                              <span className="font-mono text-oc-2xs text-[var(--oc-text-soft)]">
+                              <span className="font-mono text-xs text-[var(--oc-text-soft)]">
                                 {quota.percentLabel ??
                                   `${Math.round(pct)}% remaining`}
                               </span>
@@ -1852,7 +1917,7 @@ export function QuotaMonitor() {
                               />
                             </div>
 
-                            <div className="mt-1.5 space-y-0.5 text-oc-2xs text-[var(--oc-text-soft)] opacity-70">
+                            <div className="mt-1.5 space-y-0.5 text-xs text-[var(--oc-text-soft)] opacity-70">
                               {quota.usedTotalDisplay ? (
                                 <div className="flex items-center justify-between gap-2">
                                   <span>Used</span>
@@ -1893,7 +1958,7 @@ export function QuotaMonitor() {
                         📊 Request Budget (GitHub Copilot)
                       </span>
                     </div>
-                    <div className="grid grid-cols-[auto_1fr] gap-x-2 text-oc-2xs">
+                    <div className="grid grid-cols-[auto_1fr] gap-x-2 text-xs">
                       <span className="font-mono uppercase tracking-wider text-[var(--oc-text-soft)] opacity-80">
                         Plan:
                       </span>
@@ -1905,7 +1970,7 @@ export function QuotaMonitor() {
 
                   <div className="space-y-2.5 px-3 py-2.5">
                     <div className="rounded-lg border border-oc-border bg-[rgba(0,0,0,0.16)] p-2">
-                      <div className="mb-1 flex items-center justify-between text-oc-xs">
+                      <div className="mb-1 flex items-center justify-between text-xs">
                         <span className="font-medium text-[var(--oc-text-soft)]">
                           Today's Usage
                         </span>
@@ -1922,7 +1987,7 @@ export function QuotaMonitor() {
                           }}
                         />
                       </div>
-                      <div className="mt-1.5 grid grid-cols-2 gap-2 text-center text-oc-2xs">
+                      <div className="mt-1.5 grid grid-cols-2 gap-2 text-center text-xs">
                         <div>
                           <div className="text-[var(--oc-text-soft)] opacity-70">
                             Remaining
@@ -1944,7 +2009,7 @@ export function QuotaMonitor() {
 
                     {budgetInfo.advice && budgetInfo.advice.length > 0 ? (
                       <div className="rounded-md border border-oc-accent/40 bg-oc-accent/10 px-2.5 py-2 text-oc-accent">
-                        <div className="text-oc-2xs opacity-80">
+                        <div className="text-xs opacity-80">
                           {budgetInfo.advice[0]}
                         </div>
                       </div>
@@ -1954,7 +2019,7 @@ export function QuotaMonitor() {
               ) : null}
 
               {lastUpdatedLabel ? (
-                <div className="text-center text-oc-2xs text-[var(--oc-text-soft)] opacity-50 font-mono">
+                <div className="text-center text-xs text-[var(--oc-text-soft)] opacity-50 font-mono">
                   Updated: {lastUpdatedLabel}
                 </div>
               ) : null}
@@ -1997,7 +2062,7 @@ export function TodoPanel() {
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
-          className="flex items-center gap-1 text-oc-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+          className="flex items-center gap-1 text-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
         >
           {open ? (
             <ChevronDown className="h-3 w-3" />
@@ -2010,7 +2075,7 @@ export function TodoPanel() {
       {open ? (
         <div>
           {!todoItems || todoItems.length === 0 ? (
-            <div className="py-3 text-center text-[var(--oc-text-soft)] opacity-60 text-oc-xs">
+            <div className="py-3 text-center text-[var(--oc-text-soft)] opacity-60 text-xs">
               No tasks yet
             </div>
           ) : (
@@ -2023,7 +2088,7 @@ export function TodoPanel() {
                   <div className="text-[14px] leading-none mt-0.5">
                     {statusIcon(t.status)}
                   </div>
-                  <div className="text-oc-xs text-[var(--oc-text-soft)] leading-relaxed">
+                  <div className="text-xs text-[var(--oc-text-soft)] leading-relaxed">
                     {(t as any).description ?? t.text ?? 'Untitled'}
                   </div>
                 </div>
@@ -2057,7 +2122,7 @@ export function McpPanel() {
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
-          className="oc-collapse-btn flex items-center gap-1 text-oc-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+          className="oc-collapse-btn flex items-center gap-1 text-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
         >
           {open ? (
             <ChevronDown className="h-3 w-3" />
@@ -2083,17 +2148,17 @@ export function McpPanel() {
                       : 'bg-[var(--oc-red)]'
                     }`}
                   />
-                  <span className="font-mono text-oc-xs font-medium text-[var(--oc-text-soft)]">
+                  <span className="font-mono text-xs font-medium text-[var(--oc-text-soft)]">
                     {server.name}
                   </span>
                 </div>
-                <span className="text-oc-2xs text-[var(--oc-text-soft)] opacity-80">
+                <span className="text-xs text-[var(--oc-text-soft)] opacity-80">
                   {server.tools} tools
                 </span>
               </div>
             </div>
           ))}
-          <div className="mt-2 text-center text-oc-2xs text-[var(--oc-text-soft)] opacity-60">
+          <div className="mt-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
             {mcpServers.length} servers connected
           </div>
         </div>
@@ -2123,7 +2188,7 @@ export function LspPanel() {
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
-          className="flex items-center gap-1 text-oc-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+          className="flex items-center gap-1 text-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
         >
           {open ? (
             <ChevronDown className="h-3 w-3" />
@@ -2147,17 +2212,17 @@ export function LspPanel() {
                       server.status === 'running' ? 'bg-[var(--oc-green)]' : 'bg-[var(--oc-red)]'
                     }`}
                   />
-                  <span className="font-mono text-oc-xs font-medium text-[var(--oc-text-soft)]">
+                  <span className="font-mono text-xs font-medium text-[var(--oc-text-soft)]">
                     {server.name}
                   </span>
                 </div>
-                <span className="text-oc-2xs font-mono text-[var(--oc-text-soft)] opacity-80">
+                <span className="text-xs font-mono text-[var(--oc-text-soft)] opacity-80">
                   {server.version}
                 </span>
               </div>
             </div>
           ))}
-          <div className="mt-2 text-center text-oc-2xs text-[var(--oc-text-soft)] opacity-60">
+          <div className="mt-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
             {lspServers.length} language servers active
           </div>
         </div>

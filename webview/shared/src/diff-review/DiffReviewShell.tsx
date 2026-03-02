@@ -55,7 +55,7 @@ declare global {
   }
 }
 
-const vscode = window.acquireVsCodeApi?.();
+import vscode from '@/chat/lib/vscode';
 
 type FilterType = 'all' | 'create' | 'modify' | 'delete';
 
@@ -344,7 +344,7 @@ export default function DiffReviewShell() {
 
   if (!data || data.files.length === 0) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[var(--vscode-editor-background)] text-[var(--vscode-descriptionForeground)] text-sm">
+      <div className="flex h-screen items-center justify-center bg-[var(--vscode-editor-background)] text-[var(--vscode-descriptionForeground)] text-xs">
         No diff data available.
       </div>
     );
@@ -389,7 +389,7 @@ export default function DiffReviewShell() {
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <GitMerge className="h-4 w-4 text-[var(--vscode-focusBorder)]" />
-            <h1 className="text-sm font-semibold">Diff Review</h1>
+            <h1 className="text-xs font-semibold">Diff Review</h1>
             <Badge variant="secondary" className="text-[10px]">
               {data.files.length} file{data.files.length !== 1 ? 's' : ''}
             </Badge>

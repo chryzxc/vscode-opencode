@@ -279,6 +279,8 @@ export interface Message {
   };
   duration?: number;
   created?: number;
+  /** Optional error message if the generation failed */
+  error?: string;
 }
 
 export interface QuotaItem {

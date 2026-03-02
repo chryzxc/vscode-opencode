@@ -135,13 +135,17 @@ export class DiffReviewProvider {
     const scriptUri = webview.asWebviewUri(vscode.Uri.file(
       path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'diff-review.js')
     ));
-    const stylesUri = webview.asWebviewUri(vscode.Uri.file(
-      path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'chat.css')
-    ));
-    const badgeChunkUri = webview.asWebviewUri(vscode.Uri.file(
-      path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'badge.js')
-    ));
-
+    const stylesUri = webview.asWebviewUri(
+      vscode.Uri.file(
+        path.join(
+          this._extensionUri.fsPath,
+          "webview",
+          "shared",
+          "dist",
+          "chat.css",
+        ),
+      ),
+    );
     const nonce = getNonce();
     const diffDataJson = JSON.stringify(data);
 
@@ -159,7 +163,6 @@ export class DiffReviewProvider {
     <script nonce="${nonce}">
         window.__DIFF_DATA__ = ${diffDataJson};
     </script>
-    <script type="module" nonce="${nonce}" src="${badgeChunkUri}"></script>
     <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

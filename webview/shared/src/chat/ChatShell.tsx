@@ -97,24 +97,38 @@ function ChatContent() {
             <ErrorBanner key={`err-${msg}`} message={msg} />
           ))}
 
-          {state.messages.map((msg: Message) => {
+          {state.messages.map((msg: Message, idx: number) => {
             const role = msg.role ?? msg.info?.role ?? 'user';
             const key =
               msg.info?.id ??
               `${role}-${(msg.content ?? msg.text ?? '').slice(0, 32)}-${
                 msg.parts?.length ?? 0
               }-${msg.steps?.length ?? 0}`;
+
+            const prevMsg = state.messages[idx - 1];
+            const isContiguous = role === 'assistant' &&
+              prevMsg?.role === 'assistant' &&
+              (prevMsg.info?.agent === msg.info?.agent ||
+                (!prevMsg.info?.agent && !msg.info?.agent));
+
             if (role === 'user') {
               return <UserMessage key={key} message={msg} />;
             }
             if ((msg as Record<string, unknown>).type === 'permission') {
               return <PermissionCard key={key} perm={msg} />;
             }
-            return <AssistantMessage key={key} message={msg} />;
+            return (
+              <AssistantMessage
+                key={key}
+                message={msg}
+                isContiguous={isContiguous}
+              />
+            );
           })}
 
           {/* Live streaming card */}
-          <StreamingCard />
+          <StreamingCard isContiguous={state.messages.length > 0 &&
+            state.messages[state.messages.length - 1].role === 'assistant'} />
 
           {/* "Thinking…" dots when waiting for first streaming event */}
           {showThinking ? <ThinkingBubble /> : null}

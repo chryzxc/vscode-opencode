@@ -60,7 +60,13 @@ body.vscode-high-contrast-light {
   --oc-yellow: var(--vscode-terminal-ansiYellow, #f9e2af);
   --oc-red:    var(--vscode-errorForeground, #f38ba8);
   --oc-orange: var(--vscode-terminal-ansiBrightRed, #fab387);
+
+  /* AI Response Enhanced Colors */
+  --oc-amber-custom: #d97706;
 }
+
+.text-oc-agent-custom { color: var(--oc-amber-custom); }
+.bg-oc-agent-custom { background: color-mix(in srgb, var(--oc-amber-custom) 10%, transparent); }
 
 /* ── Reset ───────────────────────────────────────────────────────────────── */
 body {
@@ -613,7 +619,7 @@ body {
   -webkit-text-fill-color: transparent;
   width: fit-content;
 } 
-.markdown-body h2 { font-size: 1.3em; color: var(--oc-accent); }
+.markdown-body h2 { font-size: 1.3em; }
 .markdown-body h3 { font-size: 1.15em; }
 
 .markdown-body p {
@@ -635,20 +641,16 @@ body {
   font-size: 0.88em;
   padding: 0.15em 0.4em;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--oc-accent) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--oc-accent) 20%, transparent);
-  color: var(--oc-accent);
+  background: var(--oc-bg-soft);
+  border: 1px solid var(--oc-border);
   font-weight: 500;
 }
 
 .markdown-body strong {
-  color: var(--oc-accent);
   font-weight: 700;
-  text-shadow: 0 0 10px color-mix(in srgb, var(--oc-accent) 15%, transparent);
 }
 
 .markdown-body em {
-  color: var(--oc-orange);
   font-style: italic;
 }
 
@@ -707,7 +709,7 @@ body {
 }
 
 .markdown-body a {
-  color: var(--oc-accent);
+  color: var(--oc-green-custom);
   text-decoration: none;
   transition: opacity 0.1s;
 }
@@ -922,7 +924,7 @@ body {
   min-height: 60px;
   max-height: 220px;
   padding: 0.625rem 0.75rem 0.25rem;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--oc-text);
 }

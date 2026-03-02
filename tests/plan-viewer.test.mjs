@@ -28,6 +28,13 @@ test('plan viewer HTML wiring injects plan payload and required bundled assets',
   assert.match(htmlBody, /script-src\s+\$\{webview\.cspSource\}/, 'plan webview CSP must include webview.cspSource in script-src');
   assert.match(htmlBody, /<script type="module" nonce="\$\{nonce\}" src="\$\{scriptUri\}"><\/script>/, 'plan viewer should load plan.js as a module');
   assert.match(htmlBody, /dist["'], ["']chat\.css["']/, 'plan viewer should load shared chat.css stylesheet');
+  assert.doesNotMatch(htmlBody, /badge\.js/, 'plan viewer MUST NOT manually load badge.js (handled by Vite)');
+});
+
+test('plan shell adheres to centralized VS Code API acquisition safety', () => {
+  // Verify PlanShell does not call acquireVsCodeApi directly and imports from correct lib
+  assert.match(planShellSource, /import\s+vscode\s+from\s+['"]@\/chat\/lib\/vscode['"]/, 'PlanShell must import vscode from centralized lib');
+  assert.doesNotMatch(planShellSource, /window\.acquireVsCodeApi\?\.\(\)/, 'PlanShell must NOT call acquireVsCodeApi directly');
 });
 
 test('plan viewer supports interactive comment mutation events and updates comments stream', () => {
@@ -54,7 +61,7 @@ test('proceed flow forwards plan payload, persists comments, and sends Proceed w
   assert.match(planShellSource, /vscode\?\.postMessage\(\{\s*type:\s*["']proceedWithPlan["'],\s*rawPlan,\s*comments\s*\}\)/, 'plan shell should post proceedWithPlan including rawPlan and comments');
   assert.match(ctorBody, /case\s+["']proceedWithPlan["']:\s*\{[\s\S]*opencode\.planProceed/, 'plan provider should route proceedWithPlan to opencode.planProceed command');
   assert.match(chatProviderSource, /async\s+handlePlanProceed\([\s\S]*## Comments/, 'plan proceed handler should append comments section into persisted markdown');
-  assert.match(chatProviderSource, /await\s+this\.handleSendMessage\(\s*["']The implementation plan has been reviewed and approved/, 'plan proceed handler should send human-friendly approval message');
+  assert.match(chatProviderSource, /await\s+this\.handleSendMessage\(\s*["']Proceed["']/, 'plan proceed handler should send a short "Proceed" message with the plan file attached');
   assert.match(chatProviderSource, /PlanViewProvider\.closeCurrentPanel\(\)/, 'plan proceed handler should close plan viewer after triggering proceed');
 });
 

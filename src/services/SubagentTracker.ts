@@ -157,10 +157,16 @@ function sanitizeReasoningText(value: string): string {
 
 function normalizeProgressStatus(value: unknown): "pending" | "done" | "error" {
   const status = asString(value).toLowerCase();
-  if (status === "done") {
+  if (
+    status === "done" ||
+    status === "completed" ||
+    status === "success" ||
+    status === "finished" ||
+    status === "complete"
+  ) {
     return "done";
   }
-  if (status === "error") {
+  if (status === "error" || status === "failed") {
     return "error";
   }
   return "pending";
@@ -259,12 +265,17 @@ export class SubagentTracker {
       }
 
       const parentMessageId =
-        asString(info?.id) || asString(message.id) || asString(message.messageID);
+        asString(info?.id) ||
+        asString(message.id) ||
+        asString(message.messageID);
       if (!parentMessageId) {
         continue;
       }
       const parentSessionId =
-        asString(info?.sessionID) || asString(message.sessionID) || this.activeSessionId || "";
+        asString(info?.sessionID) ||
+        asString(message.sessionID) ||
+        this.activeSessionId ||
+        "";
       if (!parentSessionId) {
         continue;
       }
@@ -376,7 +387,10 @@ export class SubagentTracker {
 
           const subagentId =
             this.childSessionToSubagentId.get(childSessionId) ||
-            this.bindChildSessionToKnownSubtask(parentSessionId, childSessionId);
+            this.bindChildSessionToKnownSubtask(
+              parentSessionId,
+              childSessionId,
+            );
           if (!subagentId) {
             continue;
           }
@@ -448,20 +462,20 @@ export class SubagentTracker {
 
     const references = Array.isArray(rec.references)
       ? rec.references
-          .map((item) => {
+          .map((item): SubagentReference | null => {
             const ref = asRecord(item);
             if (!ref) {
               return null;
             }
-            const messageID = asString(ref.messageID);
-            const partID = asString(ref.partID);
-            const callID = asString(ref.callID);
+            const messageID = asString(ref.messageID) || undefined;
+            const partID = asString(ref.partID) || undefined;
+            const callID = asString(ref.callID) || undefined;
             if (!messageID && !partID && !callID) {
               return null;
             }
             return { messageID, partID, callID };
           })
-          .filter((item): item is SubagentReference => !!item)
+          .filter((item): item is SubagentReference => item !== null)
       : [];
 
     const thinkingEvents = Array.isArray(rec.thinkingEvents)
@@ -626,7 +640,10 @@ export class SubagentTracker {
     );
   }
 
-  private attachToParentMessage(parentMessageId: string, subagentId: string): void {
+  private attachToParentMessage(
+    parentMessageId: string,
+    subagentId: string,
+  ): void {
     const ids = this.idsByParentMessageId.get(parentMessageId) || [];
     if (!ids.includes(subagentId)) {
       ids.push(subagentId);
@@ -666,21 +683,30 @@ export class SubagentTracker {
     }
   }
 
-  private pushTimeline(detail: SubagentDetail, event: SubagentTimelineEvent): void {
+  private pushTimeline(
+    detail: SubagentDetail,
+    event: SubagentTimelineEvent,
+  ): void {
     detail.timelineEvents = clampEvents(
       [...detail.timelineEvents, event],
       MAX_TIMELINE_EVENTS,
     );
   }
 
-  private pushThinking(detail: SubagentDetail, event: SubagentThinkingEvent): void {
+  private pushThinking(
+    detail: SubagentDetail,
+    event: SubagentThinkingEvent,
+  ): void {
     detail.thinkingEvents = clampEvents(
       [...detail.thinkingEvents, event],
       MAX_THINKING_EVENTS,
     );
   }
 
-  private pushProgress(detail: SubagentDetail, event: SubagentProgressEvent): void {
+  private pushProgress(
+    detail: SubagentDetail,
+    event: SubagentProgressEvent,
+  ): void {
     detail.progressEvents = clampEvents(
       [...detail.progressEvents, event],
       MAX_PROGRESS_EVENTS,
@@ -714,8 +740,10 @@ export class SubagentTracker {
       return;
     }
     const partType = asString(part.type).toLowerCase();
-    const sessionId = asString(part.sessionID) || asString(properties.sessionID);
-    const messageId = asString(part.messageID) || asString(properties.messageID);
+    const sessionId =
+      asString(part.sessionID) || asString(properties.sessionID);
+    const messageId =
+      asString(part.messageID) || asString(properties.messageID);
     const partId = asString(part.id) || "part";
     const createdAt = Date.now();
 
@@ -734,19 +762,17 @@ export class SubagentTracker {
     if (partType === "subtask" && sessionId === this.activeSessionId) {
       const detailId = this.makeSubtaskSubagentId(sessionId, messageId, partId);
       const existing = this.detailsById.get(detailId);
-      const detail: SubagentDetail =
-        existing ||
-        {
-          id: detailId,
-          parentSessionId: sessionId,
-          parentMessageId: messageId,
-          status: "pending",
-          latestActivity: "Subagent requested",
-          references: [],
-          thinkingEvents: [],
-          progressEvents: [],
-          timelineEvents: [],
-        };
+      const detail: SubagentDetail = existing || {
+        id: detailId,
+        parentSessionId: sessionId,
+        parentMessageId: messageId,
+        status: "pending",
+        latestActivity: "Subagent requested",
+        references: [],
+        thinkingEvents: [],
+        progressEvents: [],
+        timelineEvents: [],
+      };
 
       detail.agentId = asString(part.agent) || detail.agentId;
       detail.latestActivity =
@@ -770,7 +796,8 @@ export class SubagentTracker {
         partID: partId,
       });
 
-      const pending = this.pendingSubtasksByParentSessionId.get(sessionId) || [];
+      const pending =
+        this.pendingSubtasksByParentSessionId.get(sessionId) || [];
       if (!detail.childSessionId && !pending.includes(detailId)) {
         pending.push(detailId);
         this.pendingSubtasksByParentSessionId.set(sessionId, pending);
@@ -819,7 +846,12 @@ export class SubagentTracker {
     const eventLabel =
       progress?.title || thinkingText.trim() || `${partType || "part"} updated`;
     this.pushTimeline(detail, {
-      key: this.makeTimelineKey(partType || "part", messageId, partId, createdAt),
+      key: this.makeTimelineKey(
+        partType || "part",
+        messageId,
+        partId,
+        createdAt,
+      ),
       type: partType || "part",
       label: eventLabel,
       createdAt,
@@ -900,6 +932,7 @@ export class SubagentTracker {
         detail.status = "done";
       }
       detail.latestActivity = "Completed";
+      this.ensureAllProgressDone(detail);
     } else if (detail.status === "pending" || detail.status === "orphaned") {
       detail.status = "running";
       detail.latestActivity = "Running";
@@ -918,7 +951,12 @@ export class SubagentTracker {
 
     const label = detail.latestActivity || "Message updated";
     this.pushTimeline(detail, {
-      key: this.makeTimelineKey("message.updated", messageId, undefined, createdAt),
+      key: this.makeTimelineKey(
+        "message.updated",
+        messageId,
+        undefined,
+        createdAt,
+      ),
       type: "message.updated",
       label,
       createdAt,
@@ -954,7 +992,8 @@ export class SubagentTracker {
     }
 
     const createdAt = Date.now();
-    const pending = this.pendingSubtasksByParentSessionId.get(parentSessionId) || [];
+    const pending =
+      this.pendingSubtasksByParentSessionId.get(parentSessionId) || [];
     let detailId: string | undefined;
     while (pending.length > 0) {
       const candidate = pending.shift();
@@ -1011,10 +1050,16 @@ export class SubagentTracker {
     }
     detail.childSessionId = childSessionId;
     detail.status = "running";
-    detail.startedAt = detail.startedAt ?? asNumber(asRecord(info.time)?.created) ?? createdAt;
+    detail.startedAt =
+      detail.startedAt ?? asNumber(asRecord(info.time)?.created) ?? createdAt;
     detail.latestActivity = "Child session started";
     this.pushTimeline(detail, {
-      key: this.makeTimelineKey("session.created", undefined, undefined, createdAt),
+      key: this.makeTimelineKey(
+        "session.created",
+        undefined,
+        undefined,
+        createdAt,
+      ),
       type: "session.created",
       label: "Child session started",
       createdAt,
@@ -1056,7 +1101,12 @@ export class SubagentTracker {
     detail.endedAt = detail.endedAt ?? createdAt;
     this.recomputeDuration(detail);
     this.pushTimeline(detail, {
-      key: this.makeTimelineKey("session.error", undefined, undefined, createdAt),
+      key: this.makeTimelineKey(
+        "session.error",
+        undefined,
+        undefined,
+        createdAt,
+      ),
       type: "session.error",
       label: errorText,
       createdAt,
@@ -1082,7 +1132,10 @@ export class SubagentTracker {
       if (!detail) {
         continue;
       }
-      if (detail.parentSessionId === sessionId || detail.childSessionId === sessionId) {
+      if (
+        detail.parentSessionId === sessionId ||
+        detail.childSessionId === sessionId
+      ) {
         return detail;
       }
     }
@@ -1129,7 +1182,8 @@ export class SubagentTracker {
     if (partType === "step-finish") {
       return {
         id: `${asString(part.id) || "step-finish"}:${createdAt}`,
-        title: asString(part.reason) || asString(part.snapshot) || "Step completed",
+        title:
+          asString(part.reason) || asString(part.snapshot) || "Step completed",
         status: "done",
         createdAt,
         callID,
@@ -1188,7 +1242,8 @@ export class SubagentTracker {
     if (this.childSessionToSubagentId.has(childSessionId)) {
       return this.childSessionToSubagentId.get(childSessionId);
     }
-    const pending = this.pendingSubtasksByParentSessionId.get(parentSessionId) || [];
+    const pending =
+      this.pendingSubtasksByParentSessionId.get(parentSessionId) || [];
     while (pending.length > 0) {
       const candidate = pending.shift();
       if (!candidate) {
@@ -1271,10 +1326,22 @@ export class SubagentTracker {
         }
         detail.latestActivity =
           detail.status === "done" ? "Completed" : detail.latestActivity;
+        this.ensureAllProgressDone(detail);
       }
       this.recomputeDuration(detail);
     } catch {
       detail.hydrationUnavailable = true;
+    }
+  }
+
+  private ensureAllProgressDone(detail: SubagentDetail): void {
+    if (!detail.progressEvents) {
+      return;
+    }
+    for (const event of detail.progressEvents) {
+      if (event.status === "pending") {
+        event.status = "done";
+      }
     }
   }
 }

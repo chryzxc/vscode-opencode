@@ -39,7 +39,7 @@ const chatViewProviderSource = readSource(
 test('SET_PROCESSING reducer creates streaming state when processing starts', () => {
   // Verify that when processing starts, a streaming state is created
   const setProcessingCase = storeSource.match(
-    /case 'SET_PROCESSING':[\s\S]*?case '[\w]+':|case 'SET_PROCESSING':[\s\S]*?\n\s{2}\}/
+    /case ['"]SET_PROCESSING['"]:[\s\S]*?case ['"][\w]+['"]:|case ['"]SET_PROCESSING['"]:[\s\S]*?\n\s{2}\}/
   );
 
   assert.ok(setProcessingCase, 'SET_PROCESSING case should exist in reducer');
@@ -74,13 +74,13 @@ test('SET_PROCESSING reducer creates streaming state when processing starts', ()
 
   assert.match(
     processingLogic,
-    /content:\s*''/,
+    /content:\s*['"]{2}/,
     'StreamingState should have empty content initially'
   );
 
   assert.match(
     processingLogic,
-    /reasoning:\s*''/,
+    /reasoning:\s*['"]{2}/,
     'StreamingState should have empty reasoning initially'
   );
 
@@ -93,14 +93,14 @@ test('SET_PROCESSING reducer creates streaming state when processing starts', ()
 
   assert.match(
     processingLogic,
-    /console\.error\('Error creating streaming state:'/,
+    /console\.error\(['"]Error creating streaming state:['"]/,
     'Should log errors if streaming state creation fails'
   );
 });
 
 test('SET_PROCESSING clears streaming state when processing ends', () => {
   const setProcessingCase = storeSource.match(
-    /case 'SET_PROCESSING':[\s\S]*?case '[\w]+':|case 'SET_PROCESSING':[\s\S]*?\n\s{2}\}/
+    /case ['"]SET_PROCESSING['"]:[\s\S]*?case ['"][\w]+['"]:|case ['"]SET_PROCESSING['"]:[\s\S]*?\n\s{2}\}/
   );
 
   assert.ok(setProcessingCase, 'SET_PROCESSING case should exist');

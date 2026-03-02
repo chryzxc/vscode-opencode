@@ -6,6 +6,10 @@ import {
   Loader2,
   X,
   Sparkles,
+  RotateCw,
+  User,
+  Zap,
+  AlertCircle,
 } from "lucide-react";
 import * as Popover from "@radix-ui/react-popover";
 
@@ -24,7 +28,7 @@ import type {
   SubagentDetail,
   ReasoningEvent,
 } from "./lib/types";
-import { useAppState } from "./lib/store";
+import { useAppDispatch, useAppState } from "./lib/store";
 import { jumpToMessage } from "./lib/messageJump";
 import vscode from "./lib/vscode";
 
@@ -351,9 +355,13 @@ function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
   return fallback ? [{ key: "stream-reasoning-fallback", text: fallback }] : [];
 }
 
-function normalizeProgressStatus(value?: string): "pending" | "done" | "error" {
-  if (value === "done" || value === "error") {
-    return value;
+function normalizeProgressStatus(value?: string | null): "pending" | "done" | "error" {
+  const v = value?.toLowerCase();
+  if (v === "done" || v === "completed" || v === "success" || v === "finished" || v === "complete") {
+    return "done";
+  }
+  if (v === "error" || v === "failed") {
+    return "error";
   }
   return "pending";
 }
@@ -480,6 +488,7 @@ function sanitizeUserContent(raw: string): string {
   return raw
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
     .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\[interactive:[^:]+:[^\]]+\]\s*/gi, "")
     .trim();
 }
 
@@ -658,7 +667,7 @@ export function UserMessage({ message }: { message: Message }) {
     <div className="oc-message-enter mb-5 flex items-end justify-end gap-2.5 px-4">
       <div className="w-fit max-w-[78%]">
         <div className="oc-msg-user">
-          <div className="whitespace-pre-wrap text-sm leading-relaxed">
+          <div className="whitespace-pre-wrap text-xs leading-relaxed">
             {content}
           </div>
           {fileChips.length > 0 && (
@@ -875,10 +884,13 @@ export function SubagentProgressPopover({
 export function AssistantMessage({
   message,
   streaming,
+  isContiguous,
 }: {
   message?: Message;
   streaming?: StreamingState;
+    isContiguous?: boolean;
 }) {
+  const dispatch = useAppDispatch();
   const { subagentsByParentMessageId, subagentDetailsById } = useAppState();
   const [showSubagents, setShowSubagents] = useState(false);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
@@ -915,7 +927,7 @@ export function AssistantMessage({
 
   const info = message?.info;
   const plan = message?.plan;
-  const messageId = info?.id;
+  const messageId = info?.id || streaming?.messageId;
   // Merge subagents from message data and from the store lookup by parent message ID
   const subagents = useMemo(() => {
     const fromMessage = Array.isArray(message?.subagents)
@@ -958,7 +970,14 @@ export function AssistantMessage({
 
   // Use type-safe helpers instead of type assertions
   const agentName = getAgentName(message, streaming);
-  const modelName = modelLabel(message ?? ({} as Message));
+  const modelName = useMemo(() => {
+    if (streaming?.isActive) {
+      if (streaming.model?.name) return streaming.model.name;
+      if (streaming.providerID && streaming.modelID) return `${streaming.providerID}/${streaming.modelID}`;
+      if (streaming.modelID) return streaming.modelID;
+    }
+    return modelLabel(message ?? ({} as Message));
+  }, [message, streaming]);
   const tokens = getTokenInfo(message);
   const inputTok = tokens?.input ?? 0;
   const outputTok = tokens?.output ?? 0;
@@ -997,10 +1016,11 @@ export function AssistantMessage({
     <div
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
-      className="oc-message-enter mb-5 px-4"
+      className={`oc-message-enter ${isContiguous ? 'mb-4 mt-[-12px]' : 'mb-5'} px-4`}
     >
       <div className="oc-msg-assistant">
-        <div className="mb-2.5 flex items-center justify-between gap-2">
+        {!isContiguous && (
+          <div className="mb-2.5 flex items-center justify-between gap-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {showStreamingLoading ? (
               <div className="inline-flex items-center gap-1.5 oc-msg-agent-label font-mono">
@@ -1020,19 +1040,24 @@ export function AssistantMessage({
               </div>
             ) : (
               <>
-                <div className="flex items-center gap-1.5">
-                  <div className="oc-agent-icon">
-                    <Sparkles className="h-2.5 w-2.5" />
-                  </div>
-                  <span className="oc-msg-agent-label font-mono">
-                    {agentName}
-                      {modelName && modelName !== "assistant" ? (
-                      <span className="oc-msg-model-label"> - {modelName}</span>
-                    ) : (
-                          ""
-                    )}
-                  </span>
-                </div>
+                    <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
+                      <div className="oc-agent-icon flex items-center justify-center rounded-md bg-oc-accent-soft p-1">
+                        <Zap className="h-4 w-4 text-oc-accent" />
+                      </div>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="oc-msg-agent-name px-2 py-0.5 rounded-md font-semibold text-oc-sm text-oc-agent-custom bg-oc-agent-custom truncate shrink-0">
+                          {agentName}
+                        </span>
+                        {modelName && modelName !== "assistant" && (
+                          <div className="flex items-center gap-1.5 opacity-60 min-w-0 truncate">
+                            <span className="text-oc-xs font-mono shrink-0">•</span>
+                            <span className="oc-msg-model-label truncate text-oc-xs">
+                              {modelName}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                 {hasTokens && (
                   <div className="oc-msg-token-chips flex shrink-0 items-center gap-1">
                       <span title="Tokens in system prompt + conversation history + your message" className="cursor-help decoration-dotted underline underline-offset-2">prompt</span>
@@ -1100,27 +1125,23 @@ export function AssistantMessage({
             </button>
           </div>
         </div>
+        )}
 
         {/* Unified timeline: blocks rendered in arrival order (thinking → steps → content → ...) */}
         {timelineBlocks.map((block, blockIdx) => {
           if (block.kind === "thinking") {
-            const isStreaming = !!streaming;
             return (
               <details
                 // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
                 key={`block-thinking-${blockIdx}`}
                 className="group mb-3"
-                open={isStreaming}
               >
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors mt-1">
                   <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
                     ›
                   </span>
-                  <span className="opacity-70">
-                    Thinking ({block.items.length})
-                  </span>
-                  <span className="truncate opacity-50 text-oc-2xs">
-                    {block.items[block.items.length - 1]?.text.slice(0, 52)}
+                  <span className="opacity-70 whitespace-nowrap shrink-0">
+                    Thinking
                   </span>
                 </summary>
                 <div className="mt-1.5 ml-0.5 border-l border-oc-border pl-3 space-y-0.5 max-h-[300px] overflow-y-auto pr-2">
@@ -1197,6 +1218,20 @@ export function AssistantMessage({
                         </span>
                       ) : null}
                     </span>
+                    {event.status === "done" && event.filePath && (event.diffStats || /edit|writ|modif|updat|delet/i.test(event.title)) && (
+                      <button
+                        type="button"
+                        className="ml-2 shrink-0 text-[10px] uppercase font-semibold tracking-wider text-oc-accent hover:underline opacity-80 hover:opacity-100"
+                        onClick={() =>
+                          vscode.postMessage({
+                            type: "openDiff",
+                            file: event.filePath,
+                          })
+                        }
+                      >
+                        View diff
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1215,26 +1250,22 @@ export function AssistantMessage({
             </div>
           );
         })}
+
+        {message?.error && (
+          <div className="mt-2">
+            <ErrorBanner
+              message={message.error}
+              onRetry={() => {
+                dispatch({ type: "SET_PROCESSING", payload: true });
+                dispatch({ type: "CLEAR_ERROR_MESSAGES" });
+                vscode.postMessage({ type: "retryLastMessage" });
+              }}
+            />
+          </div>
+        )}
+
         {subagents.length > 0 && (
-          <details
-            className="group mb-3"
-            open={showSubagents}
-            onToggle={(e) =>
-              setShowSubagents((e.target as HTMLDetailsElement).open)
-            }
-          >
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-accent hover:text-oc-text-soft transition-colors tracking-wide font-semibold">
-              <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
-                ›
-              </span>
-              <span>
-                Spawned Agents ({subagents.length})
-              </span>
-              <span className="truncate opacity-50 text-oc-2xs font-normal text-oc-text-muted">
-                {subagents[subagents.length - 1]?.latestActivity}
-              </span>
-            </summary>
-            <div className="mt-2 space-y-1.5">
+          <div className="mt-3 mb-3 space-y-2">
               {visibleSubagents.map((subagent: SubagentSummary) => {
                 const isExpanded = expandedSubagentId === subagent.id;
                 // Merge data from the subagent store
@@ -1255,17 +1286,20 @@ export function AssistantMessage({
                             type="button"
                             className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 hover:bg-oc-panel-hover text-left"
                           >
-                            <div className={cn("oc-agent-icon shrink-0", getSubagentColor(subagent.id))}>
-                              <Sparkles className="h-2.5 w-2.5" />
+                            <div className={cn("oc-agent-icon shrink-0 flex items-center justify-center", getSubagentColor(subagent.id))}>
+                              {subagent.status === "running" ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : subagent.status === "error" ? (
+                                <X className="h-3 w-3 text-oc-red" />
+                              ) : (
+                                <Check className="h-3 w-3" />
+                              )}
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5">
                                 <span className={cn("truncate text-oc-xs font-semibold", getSubagentColor(subagent.id))}>
                                   {subagent.agentId || `Agent ${subagent.id.slice(0, 4)}`}
                                 </span>
-                                {subagent.status === "running" && (
-                                  <Loader2 className="h-2.5 w-2.5 animate-spin text-oc-accent" />
-                                )}
                               </div>
                               <div className="truncate text-[10px] text-oc-text-muted font-mono leading-tight">
                                 {subagent.latestActivity || "Initializing..."}
@@ -1334,7 +1368,7 @@ export function AssistantMessage({
                         {(detailData as SubagentDetail).thinkingEvents?.length > 0 ? (
                           <details className="mt-2" open={false}>
                             <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
-                              Thinking ({(detailData as SubagentDetail).thinkingEvents.length})
+                              Thinking
                             </summary>
                             <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
                               {(detailData as SubagentDetail).thinkingEvents.map((ev) => (
@@ -1404,8 +1438,7 @@ export function AssistantMessage({
                     : `Show all (${subagents.length})`}
                 </button>
               ) : null}
-            </div>
-          </details>
+          </div>
         )}
         {/* Raw Data — moved last so it doesn't interrupt the reading flow */}
         {(message || streaming) && (
@@ -1503,11 +1536,37 @@ export function PermissionCard({ perm }: { perm: unknown }) {
   );
 }
 
-export function ErrorBanner({ message }: { message: string }) {
+export function ErrorBanner({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry?: () => void;
+}) {
   return (
     <div className="mb-3 px-4">
-      <div className="rounded-lg border border-oc-red/30 bg-oc-red/5 px-3.5 py-2.5 text-oc-sm text-oc-red leading-relaxed">
-        {message}
+      <div className="flex flex-col gap-2 rounded-md border border-oc-red/50 bg-oc-red/10 px-3 py-2 text-oc-sm text-oc-red shadow-sm transition-all duration-200">
+        <div className="flex items-center gap-2">
+          <AlertCircle className="h-4 w-4 shrink-0 text-oc-red" />
+          <h4 className="text-[11px] font-bold uppercase tracking-wider text-oc-red opacity-90">
+            Request Failed
+          </h4>
+        </div>
+        <div className="overflow-hidden border-l border-oc-red/30 pl-2.5 py-0.5 font-mono text-[11px] leading-relaxed text-oc-red/90 whitespace-pre-wrap break-words">
+          {message}
+        </div>
+        {onRetry && (
+          <div className="flex justify-start">
+            <button
+              type="button"
+              onClick={onRetry}
+              className="group relative mt-1 inline-flex items-center gap-1.5 overflow-hidden rounded border border-oc-red/40 bg-oc-red/20 px-2.5 py-1 text-[10px] font-bold uppercase tracking-tight text-oc-red transition-all hover:bg-oc-red/30 active:scale-95"
+            >
+              <RotateCw className="h-3 w-3 transition-transform group-hover:rotate-180" />
+              <span>Retry Generation</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1547,7 +1606,7 @@ export function EmptyState() {
       <div className="text-xl font-semibold text-oc-text tracking-tight mb-1">
         OpenCode
       </div>
-      <div className="text-sm text-oc-text-soft opacity-70 max-w-[240px] leading-relaxed">
+      <div className="text-xs text-oc-text-soft opacity-70 max-w-[240px] leading-relaxed">
         AI-powered coding assistant. Ask anything, build anything.
       </div>
       <div className="mt-6 flex flex-col items-center gap-2 text-oc-xs text-oc-text-soft opacity-70 font-mono">

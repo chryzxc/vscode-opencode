@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as https from "https";
+import { GeminiTokenUsageTracker } from "./GeminiTokenUsageTracker";
 import type {
   QuotaData,
   QuotaItem,
@@ -743,6 +744,37 @@ export class QuotaService extends EventEmitter {
           percentLabel: `${percentBar(remainPct)}% remaining`,
           resetLabel: "Resets daily",
         });
+      }
+
+      // Add tracked token usage from stream events
+      const tracker = GeminiTokenUsageTracker.getInstance();
+      const trackedUsage = tracker.getAllUsage();
+      const totalTracked = tracker.getGrandTotal();
+      const dailyLimit = 1_000_000; // 1M tokens per day for free tier
+      const trackedPercent = Math.min(100, (totalTracked / dailyLimit) * 100);
+
+      if (trackedUsage.length > 0) {
+        // Add summary of tracked usage
+        quotas.push({
+          label: "Tokens Used Today",
+          remainPercent: percentBar(100 - trackedPercent),
+          usedTotalDisplay: `${totalTracked.toLocaleString()} / ${dailyLimit.toLocaleString()}`,
+          percentLabel: `${trackedPercent.toFixed(1)}% used`,
+          resetLabel: "Resets at midnight UTC",
+          note: "From usageMetadata",
+        });
+
+        // Add per-model tracked usage
+        for (const usage of trackedUsage.slice(0, 3)) {
+          // Show top 3 models
+          const modelPercent = dailyLimit > 0 ? (usage.grandTotal / dailyLimit) * 100 : 0;
+          quotas.push({
+            label: `  ${usage.model}`,
+            remainPercent: percentBar(100 - modelPercent),
+            usedTotalDisplay: `${usage.grandTotal.toLocaleString()} tokens`,
+            percentLabel: `${usage.requestCount} requests`,
+          });
+        }
       }
 
       if (quotas.length === 0) {

@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
-import * as fs from 'fs';
+import * as path from "path";
 import { PlanParser } from '../services/PlanParser';
 
 export class PlanViewProvider {
@@ -174,12 +173,6 @@ export class PlanViewProvider {
     };
     const planDataJson = JSON.stringify(planData);
 
-    // Badge chunk is extracted by Vite — only include it if the file actually exists on disk
-    const badgeChunkPath = path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'badge.js');
-    const badgeChunkTag = fs.existsSync(badgeChunkPath)
-      ? `<script type="module" nonce="${nonce}" src="${webview.asWebviewUri(vscode.Uri.file(badgeChunkPath))}"></script>`
-      : "<!-- badge.js not found, skipped -->";
-
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -194,7 +187,6 @@ export class PlanViewProvider {
     <script nonce="${nonce}">
         window.__PLAN_DATA__ = ${planDataJson};
     </script>
-    ${badgeChunkTag}
     <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

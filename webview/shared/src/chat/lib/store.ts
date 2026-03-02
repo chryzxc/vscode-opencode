@@ -81,63 +81,75 @@ type StreamingStepUpdatePayload = {
 };
 
 export type AppAction =
-  | { type: 'SET_RECEIVED_INIT_STATE'; payload: boolean }
-  | { type: 'SET_SESSION_ID'; payload: string | null }
-  | { type: 'SET_SERVER_STATUS'; payload: string }
-  | { type: 'SET_SELECTED_MODEL'; payload: { providerID: string; modelID: string } | null }
-  | { type: 'SET_MODELS_LIST'; payload: Model[] }
-  | { type: 'SET_SELECTED_AGENT'; payload: string }
-  | { type: 'SET_AGENTS_LIST'; payload: Agent[] }
-  | { type: 'SET_MESSAGES'; payload: Message[] }
-  | { type: 'CLEAR_MESSAGES' }
-  | { type: 'SET_PROCESSING'; payload: boolean }
-  | { type: 'SET_SESSIONS_LIST'; payload: Session[] }
-  | { type: 'ADD_SESSION_EDIT'; payload: string }
-  | { type: 'CLEAR_SESSION_EDITS' }
-  | { type: 'UPDATE_SESSION_STATS'; payload: Partial<SessionStats> }
-  | { type: 'RESET_SESSION_STATS'; payload?: SessionStats }
-  | { type: 'ACCUMULATE_SESSION_STATS'; payload: SessionStats }
-  | { type: 'SET_STREAMING'; payload: StreamingState | null }
-  | { type: 'UPDATE_STREAMING_CONTENT'; payload: StreamingContentPayload }
-  | { type: 'UPDATE_STREAMING_REASONING'; payload: StreamingReasoningPayload }
-  | { type: 'ADD_STREAMING_STEP'; payload: StreamingStep }
-  | { type: 'UPDATE_STREAMING_STEP'; payload: StreamingStepUpdatePayload }
-  | { type: 'ADD_STREAMING_EDIT'; payload: string }
-  | { type: 'FINISH_STREAMING'; payload?: { usage?: { total: number; duration?: number } } }
-  | { type: 'SET_INPUT_VALUE'; payload: string }
-  | { type: 'SET_FILE_SUGGESTIONS'; payload: FileResult[] }
-  | { type: 'SET_SHOW_FILE_SUGGESTIONS'; payload: boolean }
-  | { type: 'SET_SUGGESTION_INDEX'; payload: number }
-  | { type: 'SET_SELECTED_FILES'; payload: string[] }
-  | { type: 'SET_SELECTED_CONTEXTS'; payload: ContextItem[] }
-  | { type: 'SET_QUEUE'; payload: QueueItem[] }
-  | { type: 'SET_EXECUTING_QUEUE'; payload: boolean }
-  | { type: 'SET_QUEUE_OPEN'; payload: boolean }
-  | { type: 'SET_SIDEBAR_OPEN'; payload: boolean }
-  | { type: 'SET_MODEL_DROPDOWN_OPEN'; payload: boolean }
-  | { type: 'SET_AGENT_DROPDOWN_OPEN'; payload: boolean }
-  | { type: 'SET_THINKING_DROPDOWN_OPEN'; payload: boolean }
-  | { type: 'SET_MODEL_SEARCH'; payload: string }
-  | { type: 'SET_AGENT_SEARCH'; payload: string }
-  | { type: 'ADD_ERROR_MESSAGE'; payload: string }
-  | { type: 'SET_QUOTA_DATA'; payload: QuotaData | null }
-  | { type: 'SET_QUOTA_REFRESHING'; payload: boolean }
-
-  | { type: 'ADD_ATTACHMENT'; payload: AttachmentItem }
-  | { type: 'REMOVE_ATTACHMENT'; payload: string }
-  | { type: 'CLEAR_ATTACHMENTS' }
-  | { type: 'SET_THINKING_LEVEL'; payload: ThinkingLevel }
-  | { type: 'SET_TODO_ITEMS'; payload: TodoItem[] }
-  | { type: 'UPDATE_TODO_ITEM'; payload: { id: string; patch: Partial<TodoItem> } }
-  | { type: 'ADD_TODO_ITEM'; payload: TodoItem }
-  | { type: 'UPSERT_SUBAGENT_SUMMARIES'; payload: Record<string, SubagentSummary[]> }
-  | { type: 'UPSERT_SUBAGENT_DETAIL'; payload: Record<string, SubagentDetail> }
-  | { type: 'SELECT_SUBAGENT'; payload: string | null }
-  | { type: 'SET_SUBAGENTS_PANEL_OPEN'; payload: boolean }
-  | { type: 'CLEAR_SUBAGENTS_FOR_SESSION' }
-  | { type: 'SET_INTERACTIVE_EVENTS'; payload: InteractiveEvent[] }
-  | { type: 'DISMISS_INTERACTIVE_EVENT'; payload: string }
-  | { type: 'SET_BUDGET_INFO'; payload: import('./types').BudgetInfo | null };
+  | { type: "SET_RECEIVED_INIT_STATE"; payload: boolean }
+  | { type: "SET_SESSION_ID"; payload: string | null }
+  | { type: "SET_SERVER_STATUS"; payload: string }
+  | {
+      type: "SET_SELECTED_MODEL";
+      payload: { providerID: string; modelID: string } | null;
+    }
+  | { type: "SET_MODELS_LIST"; payload: Model[] }
+  | { type: "SET_SELECTED_AGENT"; payload: string }
+  | { type: "SET_AGENTS_LIST"; payload: Agent[] }
+  | { type: "SET_MESSAGES"; payload: Message[] }
+  | { type: "CLEAR_MESSAGES" }
+  | { type: "SET_PROCESSING"; payload: boolean }
+  | { type: "SET_SESSIONS_LIST"; payload: Session[] }
+  | { type: "ADD_SESSION_EDIT"; payload: string }
+  | { type: "CLEAR_SESSION_EDITS" }
+  | { type: "UPDATE_SESSION_STATS"; payload: Partial<SessionStats> }
+  | { type: "RESET_SESSION_STATS"; payload?: SessionStats }
+  | { type: "ACCUMULATE_SESSION_STATS"; payload: SessionStats }
+  | { type: "SET_STREAMING"; payload: StreamingState | null }
+  | { type: "UPDATE_STREAMING_CONTENT"; payload: StreamingContentPayload }
+  | { type: "UPDATE_STREAMING_REASONING"; payload: StreamingReasoningPayload }
+  | { type: "ADD_STREAMING_STEP"; payload: StreamingStep }
+  | { type: "UPDATE_STREAMING_STEP"; payload: StreamingStepUpdatePayload }
+  | { type: "ADD_STREAMING_EDIT"; payload: string }
+  | {
+      type: "FINISH_STREAMING";
+      payload?: { usage?: { total: number; duration?: number } };
+    }
+  | { type: "SET_INPUT_VALUE"; payload: string }
+  | { type: "SET_FILE_SUGGESTIONS"; payload: FileResult[] }
+  | { type: "SET_SHOW_FILE_SUGGESTIONS"; payload: boolean }
+  | { type: "SET_SUGGESTION_INDEX"; payload: number }
+  | { type: "SET_SELECTED_FILES"; payload: string[] }
+  | { type: "SET_SELECTED_CONTEXTS"; payload: ContextItem[] }
+  | { type: "SET_QUEUE"; payload: QueueItem[] }
+  | { type: "SET_EXECUTING_QUEUE"; payload: boolean }
+  | { type: "SET_QUEUE_OPEN"; payload: boolean }
+  | { type: "SET_SIDEBAR_OPEN"; payload: boolean }
+  | { type: "SET_MODEL_DROPDOWN_OPEN"; payload: boolean }
+  | { type: "SET_AGENT_DROPDOWN_OPEN"; payload: boolean }
+  | { type: "SET_THINKING_DROPDOWN_OPEN"; payload: boolean }
+  | { type: "SET_MODEL_SEARCH"; payload: string }
+  | { type: "SET_AGENT_SEARCH"; payload: string }
+  | { type: "ADD_ERROR_MESSAGE"; payload: string }
+  | { type: "CLEAR_ERROR_MESSAGES" }
+  | { type: "SET_QUOTA_DATA"; payload: QuotaData | null }
+  | { type: "SET_QUOTA_REFRESHING"; payload: boolean }
+  | { type: "ADD_ATTACHMENT"; payload: AttachmentItem }
+  | { type: "REMOVE_ATTACHMENT"; payload: string }
+  | { type: "CLEAR_ATTACHMENTS" }
+  | { type: "SET_THINKING_LEVEL"; payload: ThinkingLevel }
+  | { type: "SET_TODO_ITEMS"; payload: TodoItem[] }
+  | {
+      type: "UPDATE_TODO_ITEM";
+      payload: { id: string; patch: Partial<TodoItem> };
+    }
+  | { type: "ADD_TODO_ITEM"; payload: TodoItem }
+  | {
+      type: "UPSERT_SUBAGENT_SUMMARIES";
+      payload: Record<string, SubagentSummary[]>;
+    }
+  | { type: "UPSERT_SUBAGENT_DETAIL"; payload: Record<string, SubagentDetail> }
+  | { type: "SELECT_SUBAGENT"; payload: string | null }
+  | { type: "SET_SUBAGENTS_PANEL_OPEN"; payload: boolean }
+  | { type: "CLEAR_SUBAGENTS_FOR_SESSION" }
+  | { type: "SET_INTERACTIVE_EVENTS"; payload: InteractiveEvent[] }
+  | { type: "DISMISS_INTERACTIVE_EVENT"; payload: string }
+  | { type: "SET_BUDGET_INFO"; payload: import("./types").BudgetInfo | null };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   return {
@@ -151,36 +163,43 @@ function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
 
 export function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
-    case 'SET_RECEIVED_INIT_STATE':
+    case "SET_RECEIVED_INIT_STATE":
       return { ...state, receivedInitState: action.payload };
-    case 'SET_SESSION_ID': {
+    case "SET_SESSION_ID": {
       const newId = action.payload;
       const zeroStats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
-      const statsForNew = newId ? (state.sessionsStatsById?.[newId] ?? zeroStats) : zeroStats;
-      return { ...state, currentSessionId: action.payload, sessionStats: statsForNew };
+      const statsForNew = newId
+        ? (state.sessionsStatsById?.[newId] ?? zeroStats)
+        : zeroStats;
+      return {
+        ...state,
+        currentSessionId: action.payload,
+        sessionStats: statsForNew,
+      };
     }
-    case 'SET_SERVER_STATUS':
+    case "SET_SERVER_STATUS":
       return { ...state, serverStatus: action.payload };
-    case 'SET_SELECTED_MODEL':
+    case "SET_SELECTED_MODEL":
       return { ...state, selectedModel: action.payload };
-    case 'SET_MODELS_LIST':
+    case "SET_MODELS_LIST":
       return { ...state, availableModels: action.payload };
-    case 'SET_SELECTED_AGENT':
+    case "SET_SELECTED_AGENT":
       return { ...state, selectedAgent: action.payload };
-    case 'SET_AGENTS_LIST':
+    case "SET_AGENTS_LIST":
       return { ...state, availableAgents: action.payload };
-    case 'SET_MESSAGES':
+    case "SET_MESSAGES":
       return { ...state, messages: action.payload };
-    case 'CLEAR_MESSAGES':
+    case "CLEAR_MESSAGES":
       return { ...state, messages: [] };
-    case 'SET_PROCESSING':
+    case "SET_PROCESSING":
       // When processing starts, create an empty streaming state so the StreamingCard is visible immediately
       // instead of showing the "Thinking..." bubble
       if (action.payload && !state.streaming) {
         try {
           // Only create streaming state if we have valid model selection
           // Otherwise just set isProcessing and let stream events create the state
-          const hasValidModel = state.selectedModel?.modelID && state.selectedModel?.providerID;
+          const hasValidModel =
+            state.selectedModel?.modelID && state.selectedModel?.providerID;
 
           if (!hasValidModel) {
             // No valid model yet, just set processing flag
@@ -189,29 +208,29 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
           const streamingState: StreamingState = {
             messageId: null,
-            content: '',
-            reasoning: '',
+            content: "",
+            reasoning: "",
             reasoningEvents: [],
             steps: [],
             progressEvents: [],
             edits: [],
             isActive: true,
             agent: state.selectedAgent || undefined,
-            model: state.selectedModel ? {
-              modelID: state.selectedModel.modelID,
-              providerID: state.selectedModel.providerID
-            } : undefined,
-            modelID: state.selectedModel.modelID,
-            providerID: state.selectedModel.providerID
+            model: {
+              modelID: state.selectedModel!.modelID,
+              providerID: state.selectedModel!.providerID,
+            },
+            modelID: state.selectedModel!.modelID,
+            providerID: state.selectedModel!.providerID,
           };
           return {
             ...state,
             isProcessing: true,
-            streaming: streamingState
+            streaming: streamingState,
           };
         } catch (error) {
           // If creating streaming state fails, just set processing without it
-          console.error('Error creating streaming state:', error);
+          console.error("Error creating streaming state:", error);
           return { ...state, isProcessing: true };
         }
       }
@@ -220,19 +239,28 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         return { ...state, isProcessing: false, streaming: null };
       }
       return { ...state, isProcessing: action.payload };
-    case 'SET_SESSIONS_LIST':
+    case "SET_SESSIONS_LIST":
       return { ...state, sessionsList: action.payload };
-    case 'ADD_SESSION_EDIT': {
+    case "ADD_SESSION_EDIT": {
       const edits = new Set(state.sessionEdits);
       edits.add(action.payload);
       return { ...state, sessionEdits: edits };
     }
-    case 'CLEAR_SESSION_EDITS':
+    case "CLEAR_SESSION_EDITS":
       return { ...state, sessionEdits: new Set<string>() };
-    case 'UPDATE_SESSION_STATS':
-      return { ...state, sessionStats: { ...state.sessionStats, ...action.payload } };
-    case 'RESET_SESSION_STATS': {
-      const next = action.payload ?? { input: 0, output: 0, read: 0, write: 0, duration: 0 };
+    case "UPDATE_SESSION_STATS":
+      return {
+        ...state,
+        sessionStats: { ...state.sessionStats, ...action.payload },
+      };
+    case "RESET_SESSION_STATS": {
+      const next = action.payload ?? {
+        input: 0,
+        output: 0,
+        read: 0,
+        write: 0,
+        duration: 0,
+      };
       const sessionsStatsById = { ...state.sessionsStatsById };
       if (state.currentSessionId) {
         sessionsStatsById[state.currentSessionId] = next;
@@ -240,10 +268,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         sessionStats: next,
-        sessionsStatsById
+        sessionsStatsById,
       };
     }
-    case 'ACCUMULATE_SESSION_STATS': {
+    case "ACCUMULATE_SESSION_STATS": {
       const merged = mergeStats(state.sessionStats, action.payload);
       const sessionsStatsById = { ...state.sessionsStatsById };
       if (state.currentSessionId) {
@@ -251,18 +279,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       return { ...state, sessionStats: merged, sessionsStatsById };
     }
-    case 'SET_STREAMING':
+    case "SET_STREAMING":
       return action.payload
         ? {
-          ...state,
-          streaming: {
-            ...action.payload,
-            reasoningEvents: action.payload.reasoningEvents ?? [],
-            progressEvents: action.payload.progressEvents ?? []
+            ...state,
+            streaming: {
+              ...action.payload,
+              reasoningEvents: action.payload.reasoningEvents ?? [],
+              progressEvents: action.payload.progressEvents ?? [],
+            },
           }
-        }
         : { ...state, streaming: null };
-    case 'UPDATE_STREAMING_CONTENT': {
+    case "UPDATE_STREAMING_CONTENT": {
       if (!state.streaming) {
         return state;
       }
@@ -276,9 +304,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           : content.trim().length > 0
             ? Date.now()
             : undefined;
-      return { ...state, streaming: { ...state.streaming, content, contentStartSeq } };
+      return {
+        ...state,
+        streaming: { ...state.streaming, content, contentStartSeq },
+      };
     }
-    case 'UPDATE_STREAMING_REASONING': {
+    case "UPDATE_STREAMING_REASONING": {
       if (!state.streaming) {
         return state;
       }
@@ -288,11 +319,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const chunk = action.payload.reasoning.trim();
       const reasoningEvents =
         chunk.length > 0
-          ? [...state.streaming.reasoningEvents, { text: chunk, createdAt: Date.now() }]
+          ? [
+              ...state.streaming.reasoningEvents,
+              { text: chunk, createdAt: Date.now() },
+            ]
           : state.streaming.reasoningEvents;
-      return { ...state, streaming: { ...state.streaming, reasoning, reasoningEvents } };
+      return {
+        ...state,
+        streaming: { ...state.streaming, reasoning, reasoningEvents },
+      };
     }
-    case 'ADD_STREAMING_STEP': {
+    case "ADD_STREAMING_STEP": {
       if (!state.streaming) {
         return state;
       }
@@ -302,22 +339,26 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         streaming: {
           ...state.streaming,
           steps: [...state.streaming.steps, stampedStep],
-          progressEvents: [...state.streaming.progressEvents, { ...stampedStep }]
-        }
+          progressEvents: [
+            ...state.streaming.progressEvents,
+            { ...stampedStep },
+          ],
+        },
       };
     }
-    case 'UPDATE_STREAMING_STEP': {
+    case "UPDATE_STREAMING_STEP": {
       if (!state.streaming) {
         return state;
       }
       const idx =
-        typeof action.payload.index === 'number'
+        typeof action.payload.index === "number"
           ? action.payload.index
           : state.streaming.steps.findIndex(
-            (step) =>
-              (action.payload.id && step.id === action.payload.id) ||
-              (action.payload.callID && step.callID === action.payload.callID)
-          );
+              (step) =>
+                (action.payload.id && step.id === action.payload.id) ||
+                (action.payload.callID &&
+                  step.callID === action.payload.callID),
+            );
       if (idx < 0) {
         return state;
       }
@@ -328,11 +369,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         streaming: {
           ...state.streaming,
           steps,
-          progressEvents: [...state.streaming.progressEvents, { ...steps[idx] }]
-        }
+          progressEvents: [
+            ...state.streaming.progressEvents,
+            { ...steps[idx] },
+          ],
+        },
       };
     }
-    case 'ADD_STREAMING_EDIT': {
+    case "ADD_STREAMING_EDIT": {
       if (!state.streaming) {
         return state;
       }
@@ -340,11 +384,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         streaming: {
           ...state.streaming,
-          edits: [...state.streaming.edits, action.payload]
-        }
+          edits: [...state.streaming.edits, action.payload],
+        },
       };
     }
-    case 'FINISH_STREAMING': {
+    case "FINISH_STREAMING": {
       if (!state.streaming) {
         return state;
       }
@@ -353,111 +397,131 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         streaming: {
           ...state.streaming,
           isActive: false,
-          usage: action.payload?.usage ?? state.streaming.usage
-        }
+          usage: action.payload?.usage ?? state.streaming.usage,
+        },
       };
     }
-    case 'SET_INPUT_VALUE':
+    case "SET_INPUT_VALUE":
       return { ...state, inputValue: action.payload };
-    case 'SET_FILE_SUGGESTIONS':
+    case "SET_FILE_SUGGESTIONS":
       return { ...state, fileSuggestions: action.payload };
-    case 'SET_SHOW_FILE_SUGGESTIONS':
+    case "SET_SHOW_FILE_SUGGESTIONS":
       return { ...state, showFileSuggestions: action.payload };
-    case 'SET_SUGGESTION_INDEX':
+    case "SET_SUGGESTION_INDEX":
       return { ...state, selectedSuggestionIndex: action.payload };
-    case 'SET_SELECTED_FILES':
+    case "SET_SELECTED_FILES":
       return { ...state, selectedFiles: action.payload };
-    case 'SET_SELECTED_CONTEXTS':
+    case "SET_SELECTED_CONTEXTS":
       return { ...state, selectedContexts: action.payload };
-    case 'SET_QUEUE':
+    case "SET_QUEUE":
       return { ...state, promptQueue: action.payload };
-    case 'SET_EXECUTING_QUEUE':
+    case "SET_EXECUTING_QUEUE":
       return { ...state, isExecutingQueue: action.payload };
-    case 'SET_QUEUE_OPEN':
+    case "SET_QUEUE_OPEN":
       return { ...state, isQueueOpen: action.payload };
-    case 'SET_SIDEBAR_OPEN':
+    case "SET_SIDEBAR_OPEN":
       return { ...state, isSidebarOpen: action.payload };
-    case 'SET_MODEL_DROPDOWN_OPEN':
+    case "SET_MODEL_DROPDOWN_OPEN":
       return { ...state, modelDropdownOpen: action.payload };
-    case 'SET_AGENT_DROPDOWN_OPEN':
+    case "SET_AGENT_DROPDOWN_OPEN":
       return { ...state, agentDropdownOpen: action.payload };
-    case 'SET_THINKING_DROPDOWN_OPEN':
+    case "SET_THINKING_DROPDOWN_OPEN":
       return { ...state, thinkingDropdownOpen: action.payload };
-    case 'SET_MODEL_SEARCH':
+    case "SET_MODEL_SEARCH":
       return { ...state, modelSearchQuery: action.payload };
-    case 'SET_AGENT_SEARCH':
+    case "SET_AGENT_SEARCH":
       return { ...state, agentSearchQuery: action.payload };
-    case 'ADD_ERROR_MESSAGE':
-      return { ...state, errorMessages: [...state.errorMessages, action.payload] };
-    case 'SET_QUOTA_DATA':
+    case "ADD_ERROR_MESSAGE":
+      return {
+        ...state,
+        errorMessages: [...state.errorMessages, action.payload],
+      };
+    case "CLEAR_ERROR_MESSAGES":
+      return { ...state, errorMessages: [] };
+    case "SET_QUOTA_DATA":
       return { ...state, quotaData: action.payload, quotaIsRefreshing: false };
-    case 'SET_QUOTA_REFRESHING':
+    case "SET_QUOTA_REFRESHING":
       return { ...state, quotaIsRefreshing: action.payload };
-    case 'ADD_ATTACHMENT': {
-      return { ...state, attachments: [...(state.attachments || []), action.payload] };
+    case "ADD_ATTACHMENT": {
+      return {
+        ...state,
+        attachments: [...(state.attachments || []), action.payload],
+      };
     }
-    case 'REMOVE_ATTACHMENT': {
-      return { ...state, attachments: (state.attachments || []).filter((a) => a.id !== action.payload) };
+    case "REMOVE_ATTACHMENT": {
+      return {
+        ...state,
+        attachments: (state.attachments || []).filter(
+          (a) => a.id !== action.payload,
+        ),
+      };
     }
-    case 'CLEAR_ATTACHMENTS': {
+    case "CLEAR_ATTACHMENTS": {
       return { ...state, attachments: [] };
     }
-    case 'SET_THINKING_LEVEL': {
+    case "SET_THINKING_LEVEL": {
       return { ...state, thinkingLevel: action.payload };
     }
-    case 'SET_TODO_ITEMS': {
+    case "SET_TODO_ITEMS": {
       return { ...state, todoItems: action.payload };
     }
-    case 'UPDATE_TODO_ITEM': {
-      const items = (state.todoItems || []).map((it) => (it.id === action.payload.id ? { ...it, ...action.payload.patch } : it));
+    case "UPDATE_TODO_ITEM": {
+      const items = (state.todoItems || []).map((it) =>
+        it.id === action.payload.id ? { ...it, ...action.payload.patch } : it,
+      );
       return { ...state, todoItems: items };
     }
-    case 'ADD_TODO_ITEM': {
-      return { ...state, todoItems: [...(state.todoItems || []), action.payload] };
+    case "ADD_TODO_ITEM": {
+      return {
+        ...state,
+        todoItems: [...(state.todoItems || []), action.payload],
+      };
     }
-    case 'UPSERT_SUBAGENT_SUMMARIES': {
+    case "UPSERT_SUBAGENT_SUMMARIES": {
       return {
         ...state,
         subagentsByParentMessageId: {
           ...state.subagentsByParentMessageId,
-          ...action.payload
-        }
+          ...action.payload,
+        },
       };
     }
-    case 'UPSERT_SUBAGENT_DETAIL': {
+    case "UPSERT_SUBAGENT_DETAIL": {
       return {
         ...state,
         subagentDetailsById: {
           ...state.subagentDetailsById,
-          ...action.payload
-        }
+          ...action.payload,
+        },
       };
     }
-    case 'SELECT_SUBAGENT': {
+    case "SELECT_SUBAGENT": {
       return { ...state, selectedSubagentId: action.payload };
     }
-    case 'SET_SUBAGENTS_PANEL_OPEN': {
+    case "SET_SUBAGENTS_PANEL_OPEN": {
       return { ...state, subagentsPanelOpen: action.payload };
     }
-    case 'CLEAR_SUBAGENTS_FOR_SESSION': {
+    case "CLEAR_SUBAGENTS_FOR_SESSION": {
       return {
         ...state,
         subagentsByParentMessageId: {},
         subagentDetailsById: {},
-        selectedSubagentId: null
+        selectedSubagentId: null,
       };
     }
-    case 'SET_INTERACTIVE_EVENTS': {
+    case "SET_INTERACTIVE_EVENTS": {
       return { ...state, interactiveEvents: action.payload };
     }
-    case 'DISMISS_INTERACTIVE_EVENT': {
+    case "DISMISS_INTERACTIVE_EVENT": {
       return {
         ...state,
-        interactiveEvents: state.interactiveEvents.filter((event) => event.id !== action.payload)
+        interactiveEvents: state.interactiveEvents.filter(
+          (event) => event.id !== action.payload,
+        ),
       };
     }
-    case 'SET_BUDGET_INFO':
-      console.log('[store] SET_BUDGET_INFO action:', action.payload);
+    case "SET_BUDGET_INFO":
+      console.log("[store] SET_BUDGET_INFO action:", action.payload);
       return { ...state, budgetInfo: action.payload };
     default:
       return state;

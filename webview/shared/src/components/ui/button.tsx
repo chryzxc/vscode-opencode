@@ -5,7 +5,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center whitespace-nowrap rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
@@ -18,11 +18,11 @@ const buttonVariants = cva(
         secondary: "bg-secondary text-secondary-foreground hover:opacity-90",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
-        chip: "rounded-full border border-oc-border bg-transparent text-oc-text-muted font-mono text-oc-2xs hover:bg-oc-panel-soft hover:border-oc-accent hover:text-oc-text-soft",
+        chip: "rounded-full border border-oc-border bg-transparent text-oc-text-muted font-mono text-xs hover:bg-oc-panel-soft hover:border-oc-accent hover:text-oc-text-soft",
         queue:
-          "rounded-full border border-oc-border bg-transparent text-oc-text-muted font-mono text-oc-2xs hover:bg-oc-panel-soft hover:text-oc-text-soft",
-        send: "rounded-full border border-transparent bg-oc-accent text-white font-mono text-oc-xs font-semibold hover:opacity-90 active:opacity-75",
-        stop: "rounded-full border border-oc-red/40 bg-oc-red/10 text-oc-red font-mono text-oc-xs hover:bg-oc-red/20 hover:border-oc-red/70",
+          "rounded-full border border-oc-border bg-transparent text-oc-text-muted font-mono text-xs hover:bg-oc-panel-soft hover:text-oc-text-soft",
+        send: "rounded-full border border-transparent bg-oc-accent text-white font-mono text-xs font-semibold hover:opacity-90 active:opacity-75",
+        stop: "rounded-full border border-oc-red/40 bg-oc-red/10 text-oc-red font-mono text-xs hover:bg-oc-red/20 hover:border-oc-red/70",
         "ghost-accent": "hover:bg-oc-accent-soft hover:text-oc-accent",
       },
       size: {

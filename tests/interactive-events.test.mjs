@@ -102,3 +102,28 @@ test('InputWrapper supports Custom Answer mode', () => {
     'Submitting in custom mode should send the customValue',
   );
 });
+
+test('InputWrapper batches interactive responses', () => {
+  const body = extractFunctionBody(panelSource, 'export function InputWrapper()');
+
+  // Verify pendingAnswers state
+  assert.match(
+    body,
+    /const\s+\[pendingAnswers,\s*setPendingAnswers\]\s*=\s*useState/,
+    'InputWrapper should have pendingAnswers state',
+  );
+
+  // Verify batch submission logic
+  assert.match(
+    body,
+    /type:\s*'batchInteractiveResponse'/,
+    'InputWrapper should send batchInteractiveResponse type',
+  );
+
+  // Verify auto-advance logic
+  assert.match(
+    body,
+    /currentInteractiveIndex\s*<\s*displayInteractiveEvents\.length\s*-\s*1/,
+    'Should check if more questions remain before submitting batch',
+  );
+});

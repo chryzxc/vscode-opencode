@@ -141,7 +141,7 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
   );
 }
 
-export function StreamingCard() {
+export function StreamingCard({ isContiguous }: { isContiguous?: boolean }) {
   const { streaming, isProcessing } = useAppState();
 
   // Show streaming card if:
@@ -163,5 +163,5 @@ export function StreamingCard() {
 
   if (!visible || !streaming) return null;
 
-  return <AssistantMessage streaming={streaming} />;
+  return <AssistantMessage streaming={streaming} isContiguous={isContiguous} />;
 }

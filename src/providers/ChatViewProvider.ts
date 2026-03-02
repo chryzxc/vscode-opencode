@@ -91,7 +91,7 @@
  * @module ChatViewProvider
  * @see MessageStreamService for streaming implementation
  * @see SessionService for session management
- * @see webview/chat/app.js for frontend implementation
+ * @see webview/shared/src/chat/index.tsx for frontend implementation
  */
 
 import * as vscode from "vscode";
@@ -111,6 +111,8 @@ import type { SessionPromptData } from "@opencode-ai/sdk";
 import { QuotaService } from "../services/QuotaService";
 import { RequestBudgeter } from "../services/RequestBudgeter";
 import { SubagentTracker } from "../services/SubagentTracker";
+import { GeminiTokenUsageTracker } from "../services/GeminiTokenUsageTracker";
+import type { TokenUsage } from "../services/GeminiTokenUsageTracker";
 import { PlanViewProvider } from "./PlanViewProvider";
 import { createLogger } from "../utils/Logger";
 
@@ -194,6 +196,13 @@ type StructuredAssistantOutput = {
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
   interactiveEvents?: StructuredInteractiveEvent[];
+  subagents?: Array<{
+    id: string;
+    name: string;
+    status?: string;
+    progress?: number;
+    description?: string;
+  }>;
   plan?: {
     file?: string;
     content?: string;
@@ -243,6 +252,9 @@ export class ChatViewProvider
   /** Service for monitoring AI platform quota usage */
   private quotaService: QuotaService;
   private subagentTracker: SubagentTracker;
+
+  /** Service for tracking Gemini token usage from stream events */
+  private geminiTokenTracker: GeminiTokenUsageTracker;
   /** Service for managing daily request budgets */
   private budgeter: RequestBudgeter;
 
@@ -290,6 +302,14 @@ export class ChatViewProvider
   private isProcessingRequest: boolean = false;
   private isBootstrappingWebview: boolean = false;
   private hasInitializedWebview: boolean = false;
+  /** Cache last message args for retry functionality */
+  private lastSendMessageArgs?: {
+    text: string;
+    files?: string[];
+    contexts?: any[];
+    images?: any[];
+    agent?: string;
+  };
   private structuredOutputMode: "outputFormat" | "format" | "disabled" =
     "outputFormat";
   private modelsFetchPromise: Promise<
@@ -327,6 +347,7 @@ export class ChatViewProvider
     this.quotaService = new QuotaService();
     this.subagentTracker = new SubagentTracker();
     this.budgeter = new RequestBudgeter();
+    this.geminiTokenTracker = GeminiTokenUsageTracker.getInstance();
     this.quotaService.on("quotaUpdate", (data) => {
       this.view?.webview.postMessage({ type: "quotaData", data });
     });
@@ -517,6 +538,44 @@ export class ChatViewProvider
               )}:${this.firstNonEmptyString(message?.eventId, "unknown")}] `
             : "";
           const composedPrompt = `${contextPrefix}${choiceText}`;
+
+          if (this.isProcessingRequest) {
+            this.handleAddToQueue(
+              composedPrompt,
+              undefined,
+              undefined,
+              undefined,
+              message?.agent,
+            );
+            this.sendQueueUpdate();
+            break;
+          }
+
+          await this.handleSendMessage(
+            composedPrompt,
+            undefined,
+            undefined,
+            undefined,
+            message?.agent,
+          );
+          break;
+        }
+        case "batchInteractiveResponse": {
+          const responses = message.responses as Array<{
+            eventId: string;
+            eventType: string;
+            text: string;
+          }>;
+          if (!responses || responses.length === 0) {
+            break;
+          }
+
+          const composedPrompt = responses
+            .map((resp) => {
+              const contextPrefix = `[interactive:${resp.eventType || "event"}:${resp.eventId || "unknown"}] `;
+              return `${contextPrefix}${resp.text}`;
+            })
+            .join("\n");
 
           if (this.isProcessingRequest) {
             this.handleAddToQueue(
@@ -750,6 +809,38 @@ export class ChatViewProvider
           });
           break;
         }
+        case "retryLastMessage": {
+          if (this.lastSendMessageArgs && !this.isProcessingRequest) {
+            if (this.currentSessionId) {
+              try {
+                const rawMessages = await this.sessionService.getMessages(
+                  this.currentSessionId,
+                );
+                const messages = rawMessages.map((m: any) =>
+                  this.enrichMessageWithPlan(
+                    this.applyStructuredOutputToMessage(m),
+                  ),
+                );
+                this.view?.webview.postMessage({
+                  type: "chatHistory",
+                  sessionId: this.currentSessionId,
+                  messages: messages,
+                });
+              } catch (err) {
+                console.error("Failed to load messages for retry", err);
+              }
+            }
+            await this.handleSendMessage(
+              this.lastSendMessageArgs.text,
+              this.lastSendMessageArgs.files,
+              this.lastSendMessageArgs.contexts,
+              this.lastSendMessageArgs.images,
+              this.lastSendMessageArgs.agent,
+              true,
+            );
+          }
+          break;
+        }
         case "clearAttachments": {
           await this.context.globalState.update("pendingAttachments", []);
           this.view?.webview.postMessage({ type: "attachmentsCleared" });
@@ -779,6 +870,24 @@ export class ChatViewProvider
           type: "subagentUpdate",
           ...subagentUpdate,
         });
+      }
+
+      // Track token usage from message.updated events
+      if (event.type === "message.updated" && event.properties) {
+        const info = (event.properties as any)?.info;
+        if (info?.tokens && info?.modelID) {
+          const tokens: TokenUsage = {
+            input: info.tokens.input || 0,
+            output: info.tokens.output || 0,
+            reasoning: info.tokens.reasoning || 0,
+            cacheRead: info.tokens.cache?.read || 0,
+            cacheWrite: info.tokens.cache?.write || 0,
+          };
+          // Track only if there's actual token usage
+          if (tokens.input > 0 || tokens.output > 0 || tokens.reasoning > 0) {
+            this.geminiTokenTracker.recordUsage(info.modelID, tokens);
+          }
+        }
       }
 
       // Forward events to webview
@@ -843,6 +952,7 @@ export class ChatViewProvider
       this.hasInitializedWebview = false;
       statusSubscription.dispose();
       this.quotaService.dispose();
+      // Don't dispose the singleton tracker - it's shared
       this.view = undefined;
     });
   }
@@ -1055,6 +1165,20 @@ export class ChatViewProvider
               content: { type: "string" },
               title: { type: "string" },
               summary: { type: "string" },
+            },
+          },
+          subagents: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: true,
+              properties: {
+                id: { type: "string" },
+                name: { type: "string" },
+                status: { type: "string" },
+                progress: { type: "number" },
+                description: { type: "string" },
+              },
             },
           },
         },
@@ -1539,6 +1663,20 @@ export class ChatViewProvider
       }
     }
 
+    if (structured.subagents && structured.subagents.length > 0) {
+      if (!next.subagents) {
+        next.subagents = [];
+      }
+      structured.subagents.forEach((sa: any) => {
+        const existing = next.subagents.find((item: any) => item.id === sa.id);
+        if (existing) {
+          Object.assign(existing, sa);
+        } else {
+          next.subagents.push(sa);
+        }
+      });
+    }
+
     if (
       structured.responseType === "implementation_plan" ||
       structured.plan?.content
@@ -1640,7 +1778,10 @@ export class ChatViewProvider
     contexts?: any[],
     images?: any[],
     agent?: string,
+    isRetry = false,
   ): Promise<void> {
+    // Cache for retry
+    this.lastSendMessageArgs = { text, files, contexts, images, agent };
     this.isProcessingRequest = true;
     try {
       const normalizedImages = (images || [])
@@ -1680,21 +1821,23 @@ export class ChatViewProvider
       );
       const isNewSession = existingMessages.length === 0;
 
-      // Save user message to local history immediately
-      await this.sessionService.appendMessage(session.id, {
-        role: "user",
-        parts: [
-          {
-            type: "text",
-            text: text,
+      // Save user message to local history immediately, unless this is a retry
+      if (!isRetry) {
+        await this.sessionService.appendMessage(session.id, {
+          role: "user",
+          parts: [
+            {
+              type: "text",
+              text: text,
+            },
+          ],
+          images: imageUrls,
+          time: {
+            created: Date.now(),
           },
-        ],
-        images: imageUrls,
-        time: {
-          created: Date.now(),
-        },
-      });
-      await this.handleGetSessions();
+        });
+        await this.handleGetSessions();
+      }
 
       console.log(
         `[ChatViewProvider] Session ${session.id}: ${existingMessages.length} existing messages. isNew: ${isNewSession}`,
@@ -2064,27 +2207,14 @@ export class ChatViewProvider
     const hasPlanKeywords = basicPlanKeywordMatch && hasStructuralMarkers;
 
     if (hasPlanFile || hasPlanKeywords) {
-      // Extract the content that looks like a plan to pass it directly
-      // in case the file isn't written yet.
-      const planContent = message.content || partsContent;
-      // Minimum-length guard: avoid false positives on short "I'll help" replies
-      if (!planContent || planContent.length < 200) {
-        return message;
-      }
-
-      // PERSISTENCE FIX: Automatically save the detected plan to disk
-      // This ensures handleViewPlan can read it even if the SDK didn't write it.
-      if (planContent.length > 100) {
-        this.persistPlan(planContent).catch((err) => {
-          console.error("[ChatViewProvider] Failed to auto-persist plan:", err);
-        });
-      }
-
+      // NOTE: We intentionally do NOT embed the raw message content as plan.content here.
+      // The raw message content may include AI tool call outputs, thinking traces, and
+      // previous conversation data read by the AI — which is NOT the clean plan text.
+      // Instead we only set plan.file so handleViewPlan reads the persisted .md file on disk.
       return {
         ...message,
         plan: {
           file: "implementation_plan.md",
-          content: planContent,
         },
       };
     }
@@ -2194,7 +2324,9 @@ export class ChatViewProvider
     const comments = Array.isArray(payload?.comments) ? payload.comments : [];
 
     const commentLines = comments.map((comment) => {
-      const textRef = comment.anchor?.selectedText ? `On text "${comment.anchor.selectedText}": ` : "";
+      const textRef = comment.anchor?.selectedText
+        ? `On text "${comment.anchor.selectedText}": `
+        : "";
       return `- ${textRef}${comment.text}`;
     });
 
@@ -2214,7 +2346,7 @@ export class ChatViewProvider
     );
 
     await this.handleSendMessage(
-      "The implementation plan has been reviewed and approved. Please proceed with the implementation according to the plan.",
+      "Proceed",
       [planFilePath],
     );
 
@@ -3053,32 +3185,43 @@ export class ChatViewProvider
    * Sends the current budget status to the webview
    */
   private sendBudgetInfo() {
-    console.log('[ChatViewProvider] sendBudgetInfo() called');
-    console.log('[ChatViewProvider] Webview ready:', !!this.view?.webview);
+    console.log("[ChatViewProvider] sendBudgetInfo() called");
+    console.log("[ChatViewProvider] Webview ready:", !!this.view?.webview);
 
     try {
       // Check if budgeter is initialized
       if (!this.budgeter) {
-        console.error('[ChatViewProvider] Budgeter not initialized!');
+        console.error("[ChatViewProvider] Budgeter not initialized!");
         return;
       }
 
       const config = this.budgeter.getConfig();
-      console.log('[ChatViewProvider] Budgeter config:', JSON.stringify(config));
+      console.log(
+        "[ChatViewProvider] Budgeter config:",
+        JSON.stringify(config),
+      );
 
       if (!config.enabled) {
-        console.warn('[ChatViewProvider] Budgeter is disabled, enabling it automatically');
+        console.warn(
+          "[ChatViewProvider] Budgeter is disabled, enabling it automatically",
+        );
         this.budgeter.updateConfig({ enabled: true });
       }
 
       const plan = this.budgeter.getPlan();
-      console.log('[ChatViewProvider] Budgeter plan:', JSON.stringify(plan));
+      console.log("[ChatViewProvider] Budgeter plan:", JSON.stringify(plan));
 
       const status = this.budgeter.getBudgetStatus();
-      console.log('[ChatViewProvider] Budgeter status:', JSON.stringify(status));
+      console.log(
+        "[ChatViewProvider] Budgeter status:",
+        JSON.stringify(status),
+      );
 
       const advice = this.budgeter.getAdvice();
-      console.log('[ChatViewProvider] Budgeter advice:', JSON.stringify(advice));
+      console.log(
+        "[ChatViewProvider] Budgeter advice:",
+        JSON.stringify(advice),
+      );
 
       const budgetInfo = {
         planName: plan.name,
@@ -3092,17 +3235,23 @@ export class ChatViewProvider
         advice: advice,
       };
 
-      console.log('[ChatViewProvider] Sending budget info:', JSON.stringify(budgetInfo));
+      console.log(
+        "[ChatViewProvider] Sending budget info:",
+        JSON.stringify(budgetInfo),
+      );
       const postResult = this.view?.webview.postMessage({
         type: "budgetInfo",
         data: budgetInfo,
       });
-      console.log('[ChatViewProvider] PostMessage result:', postResult);
+      console.log("[ChatViewProvider] PostMessage result:", postResult);
     } catch (error) {
-      console.error('[ChatViewProvider] Failed to send budget info:', error);
-      console.error('[ChatViewProvider] Error name:', (error as Error).name);
-      console.error('[ChatViewProvider] Error message:', (error as Error).message);
-      console.error('[ChatViewProvider] Error stack:', (error as Error).stack);
+      console.error("[ChatViewProvider] Failed to send budget info:", error);
+      console.error("[ChatViewProvider] Error name:", (error as Error).name);
+      console.error(
+        "[ChatViewProvider] Error message:",
+        (error as Error).message,
+      );
+      console.error("[ChatViewProvider] Error stack:", (error as Error).stack);
     }
   }
 

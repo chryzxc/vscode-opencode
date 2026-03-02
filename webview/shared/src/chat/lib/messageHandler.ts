@@ -101,6 +101,25 @@ type StructuredProgressUpdate = {
   filePath?: string;
 };
 
+function normalizeProgressStatus(
+  value?: string | null,
+): "pending" | "done" | "error" {
+  const v = value?.toLowerCase();
+  if (
+    v === "done" ||
+    v === "completed" ||
+    v === "success" ||
+    v === "finished" ||
+    v === "complete"
+  ) {
+    return "done";
+  }
+  if (v === "error" || v === "failed") {
+    return "error";
+  }
+  return "pending";
+}
+
 type StructuredInteractiveEvent = {
   type: 'question' | 'confirm' | 'quick_actions';
   id?: string;
@@ -169,10 +188,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
           return undefined;
         }
         const statusValue = asString(step.status);
-        const status =
-          statusValue === 'pending' || statusValue === 'done' || statusValue === 'error'
-            ? statusValue
-            : undefined;
+        const status = normalizeProgressStatus(statusValue);
         return {
           title,
           status,
@@ -794,11 +810,7 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
           const res: SubagentProgressEvent = {
             id: asString(evt.id) || `${summary.id}:progress:${index}`,
             title,
-            status:
-              asString(evt.status) === "done" ||
-              asString(evt.status) === "error"
-                ? (asString(evt.status) as "done" | "error")
-                : "pending",
+            status: normalizeProgressStatus(asString(evt.status)),
             meta: asString(evt.meta) || undefined,
             filePath: asString(evt.filePath) || undefined,
             createdAt: asNumber(evt.createdAt, Date.now()),
@@ -998,7 +1010,7 @@ function normalizeChoiceFromLine(line: string, index: number): InteractiveChoice
   );
   const hasLabelColon = /^[*_`"'(]*[A-Za-z][^?]{0,40}:\s+\S+/.test(trimmed);
 
-  let candidate = stripMarkdownFormatting(stripChoicePrefix(trimmed));
+  const candidate = stripMarkdownFormatting(stripChoicePrefix(trimmed));
   if (!hasListPrefix && !hasLabelColon) {
     const plainWords = candidate.split(/\s+/).filter(Boolean);
     const plainAllowed =
@@ -1795,6 +1807,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
     const type = asString(data.type);
 
+    // Log all incoming message types for debugging
+    if (type === 'budgetInfo' || type === 'quotaData' || type === 'quotaUpdate') {
+      console.log(`[messageHandler] Received message type: ${type}`, data);
+    }
+
     // Set processing state BEFORE handling message types to ensure streaming state is created early
     if (asBoolean(data.processing, false)) {
       dispatch({ type: "SET_PROCESSING", payload: true });
@@ -1883,11 +1900,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         dispatch({
           type: "ACCUMULATE_SESSION_STATS",
           payload: {
-            input: msg.info?.tokens?.input || 0,
-            output: msg.info?.tokens?.output || 0,
-            read: msg.info?.tokens?.cache?.read || 0,
-            write: msg.info?.tokens?.cache?.write || 0,
-            duration: msg.info?.duration || 0,
+            input: msg.tokens?.input || msg.info?.tokens?.input || 0,
+            output: msg.tokens?.output || msg.info?.tokens?.output || 0,
+            read: msg.tokens?.cache?.read || msg.info?.tokens?.cache?.read || 0,
+            write:
+              msg.tokens?.cache?.write || msg.info?.tokens?.cache?.write || 0,
+            duration:
+              msg.duration || msg.timing?.duration || msg.info?.duration || 0,
           },
         });
 
@@ -1954,11 +1973,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         // FORBIDDEN TO REMOVE - recalculate session stats from full history
         const stats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
         messages.forEach((msg) => {
-          stats.input += msg.info?.tokens?.input || 0;
-          stats.output += msg.info?.tokens?.output || 0;
-          stats.read += msg.info?.tokens?.cache?.read || 0;
-          stats.write += msg.info?.tokens?.cache?.write || 0;
-          stats.duration += msg.info?.duration || 0;
+          stats.input += msg.tokens?.input || msg.info?.tokens?.input || 0;
+          stats.output += msg.tokens?.output || msg.info?.tokens?.output || 0;
+          stats.read +=
+            msg.tokens?.cache?.read || msg.info?.tokens?.cache?.read || 0;
+          stats.write +=
+            msg.tokens?.cache?.write || msg.info?.tokens?.cache?.write || 0;
+          stats.duration +=
+            msg.duration || msg.timing?.duration || msg.info?.duration || 0;
         });
         dispatch({ type: "RESET_SESSION_STATS", payload: stats });
         dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
@@ -2035,10 +2057,32 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       case "error": {
+        const errorMsg = asString(data.message, "Unknown error");
         dispatch({
           type: "ADD_ERROR_MESSAGE",
-          payload: asString(data.message, "Unknown error"),
+          payload: errorMsg,
         });
+
+        // If we were in the middle of a stream, preserve it as a message so the user
+        // can see partial output + the error banner + retry.
+        const currentStreaming = getState().streaming;
+        if (currentStreaming) {
+          const partialMessage: Message = {
+            id: currentStreaming.messageId || `error-${Date.now()}`,
+            role: "assistant",
+            agent: currentStreaming.agent,
+            modelID: currentStreaming.modelID,
+            providerID: currentStreaming.providerID,
+            content: currentStreaming.content,
+            reasoningEvents: currentStreaming.reasoningEvents,
+            steps: currentStreaming.steps as any,
+            created: Date.now(),
+            error: errorMsg,
+          };
+          const messages = getState().messages;
+          dispatch({ type: "SET_MESSAGES", payload: [...messages, partialMessage] });
+        }
+
         dispatch({ type: "SET_PROCESSING", payload: false });
         dispatch({ type: "FINISH_STREAMING" });
         dispatch({ type: "SET_STREAMING", payload: null });
@@ -2133,6 +2177,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       }
       case "quotaData":
       case "quotaUpdate": {
+        console.log('[messageHandler] Received quotaData/quotaUpdate message:', data);
         dispatch({ type: "SET_QUOTA_DATA", payload: data.data as QuotaData });
         break;
       }
@@ -2204,6 +2249,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       default:
+        console.log('[messageHandler] Unhandled message type:', type, 'Full message:', data);
         break;
     }
 

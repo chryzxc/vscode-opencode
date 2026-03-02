@@ -62,3 +62,21 @@ test('error events clear processing and streaming state to avoid stuck thinking 
   assert.match(handlerBody, /case\s+["']error["']\s*:\s*\{[\s\S]*FINISH_STREAMING/, 'error handler should finish any active stream');
   assert.match(handlerBody, /case\s+["']error["']\s*:\s*\{[\s\S]*SET_STREAMING["'],\s*payload:\s*null/, 'error handler should clear streaming state');
 });
+
+test('error handler retains partial streaming response as a message', () => {
+  const handlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+
+  assert.match(handlerBody, /const\s+currentStreaming\s*=\s*getState\(\)\.streaming/, 'error handler should access current streaming state');
+  assert.match(handlerBody, /if\s*\(currentStreaming\)\s*\{/, 'error handler should check if streaming state exists');
+  assert.match(handlerBody, /type:\s*["']SET_MESSAGES["']/, 'error handler should dispatch SET_MESSAGES to append partial message');
+  assert.match(handlerBody, /error:\s*errorMsg/, 'partial message should include the error message');
+});
+
+test('AssistantMessage renders error banner and retry button when message has error', () => {
+  assert.match(messageSource, /message\?\.error\s*&&\s*\(/, 'AssistantMessage should check for message error');
+  assert.match(messageSource, /<ErrorBanner\s+message=\{message\.error\}\s+onRetry=\{/, 'AssistantMessage should render ErrorBanner with onRetry');
+  assert.match(messageSource, /type:\s*["']retryLastMessage["']/, 'Retry button should post retryLastMessage event');
+});
