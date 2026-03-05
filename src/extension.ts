@@ -306,8 +306,8 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.commands.registerCommand(
         "opencode.showPlan",
-        async (content: string) => {
-          PlanViewProvider.show(context.extensionUri, content);
+        async (payload: string | { content?: string; title?: string }) => {
+          PlanViewProvider.show(context.extensionUri, payload);
         },
       ),
     );
@@ -409,7 +409,11 @@ export async function activate(context: vscode.ExtensionContext) {
     console.log("OpenCode extension activated successfully");
     log.info("Extension activated successfully");
   } catch (error) {
-    log.error("Extension activation failed", { error }, error);
+    log.error(
+      "Extension activation failed",
+      { error },
+      error instanceof Error ? error : undefined,
+    );
   }
 }
 

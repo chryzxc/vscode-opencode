@@ -14,19 +14,35 @@ export interface DiffFile {
   hunks: DiffHunk[];
 }
 
+export interface DiffComment {
+  id: string;
+  anchor: {
+    startLine: number;
+    endLine: number;
+    selectedText: string;
+    surroundingText?: string;
+  };
+  text: string;
+  createdAt: number;
+}
+
 export interface DiffData {
   files: DiffFile[];
-  comments?: any[];
+  comments?: DiffComment[];
 }
 
 export class DiffReviewProvider {
-  public static readonly viewType = 'opencode.diffReview';
+  public static readonly viewType = "opencode.diffReview";
   private static currentPanel: DiffReviewProvider | undefined;
   private readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
   private _disposables: vscode.Disposable[] = [];
 
-  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, data: DiffData) {
+  private constructor(
+    panel: vscode.WebviewPanel,
+    extensionUri: vscode.Uri,
+    data: DiffData,
+  ) {
     this._panel = panel;
     this._extensionUri = extensionUri;
 
@@ -37,35 +53,52 @@ export class DiffReviewProvider {
     this._panel.onDidChangeViewState(
       () => {
         if (this._panel.visible) {
-          this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, data);
+          this._panel.webview.html = this._getHtmlForWebview(
+            this._panel.webview,
+            data,
+          );
         }
       },
       null,
-      this._disposables
+      this._disposables,
     );
 
     this._panel.webview.onDidReceiveMessage(
-      message => {
+      (message) => {
         switch (message.type) {
-          case 'approveDiff':
+          case "approveDiff":
             vscode.window.showInformationMessage(`Approved: ${message.file}`);
             return;
-          case 'rejectDiff':
+          case "rejectDiff":
             vscode.window.showInformationMessage(`Rejected: ${message.file}`);
             return;
-          case 'addComment':
+          case "addComment":
             this._addComment(message.comment, data);
             return;
-          case 'updateComment':
+          case "updateComment":
             this._updateComment(message.comment, data);
             return;
-          case 'deleteComment':
+          case "deleteComment":
             this._deleteComment(message.id, data);
             return;
+          case "openFile": {
+            const filePath = message.file;
+            const fullPath = path.isAbsolute(filePath)
+              ? filePath
+              : path.join(
+                  vscode.workspace.workspaceFolders?.[0].uri.fsPath || "",
+                  filePath,
+                );
+            vscode.commands.executeCommand(
+              "vscode.open",
+              vscode.Uri.file(fullPath),
+            );
+            return;
+          }
         }
       },
       null,
-      this._disposables
+      this._disposables,
     );
   }
 
@@ -79,24 +112,30 @@ export class DiffReviewProvider {
       DiffReviewProvider.currentPanel._panel.webview.html =
         DiffReviewProvider.currentPanel._getHtmlForWebview(
           DiffReviewProvider.currentPanel._panel.webview,
-          data
+          data,
         );
       return;
     }
 
     const panel = vscode.window.createWebviewPanel(
       DiffReviewProvider.viewType,
-      'Diff Review',
+      "Diff Review",
       column || vscode.ViewColumn.One,
       {
         enableScripts: true,
         localResourceRoots: [
-          vscode.Uri.file(path.join(extensionUri.fsPath, 'webview', 'shared', 'dist')),
+          vscode.Uri.file(
+            path.join(extensionUri.fsPath, "webview", "shared", "dist"),
+          ),
         ],
-      }
+      },
     );
 
-    DiffReviewProvider.currentPanel = new DiffReviewProvider(panel, extensionUri, data);
+    DiffReviewProvider.currentPanel = new DiffReviewProvider(
+      panel,
+      extensionUri,
+      data,
+    );
   }
 
   public dispose() {
@@ -110,31 +149,50 @@ export class DiffReviewProvider {
     }
   }
 
-  private _addComment(comment: any, data: DiffData) {
+  private _addComment(comment: DiffComment, data: DiffData) {
     if (!data.comments) data.comments = [];
     data.comments.push(comment);
-    this._panel.webview.postMessage({ type: 'commentsUpdated', comments: data.comments });
+    this._panel.webview.postMessage({
+      type: "commentsUpdated",
+      comments: data.comments,
+    });
   }
 
-  private _updateComment(comment: any, data: DiffData) {
+  private _updateComment(comment: DiffComment, data: DiffData) {
     if (!data.comments) return;
-    const idx = data.comments.findIndex((c: any) => c.id === comment.id);
+    const idx = data.comments.findIndex(
+      (c: DiffComment) => c.id === comment.id,
+    );
     if (idx !== -1) {
       data.comments[idx] = comment;
-      this._panel.webview.postMessage({ type: 'commentsUpdated', comments: data.comments });
+      this._panel.webview.postMessage({
+        type: "commentsUpdated",
+        comments: data.comments,
+      });
     }
   }
 
   private _deleteComment(id: string, data: DiffData) {
     if (!data.comments) return;
-    data.comments = data.comments.filter((c: any) => c.id !== id);
-    this._panel.webview.postMessage({ type: 'commentsUpdated', comments: data.comments });
+    data.comments = data.comments.filter((c: DiffComment) => c.id !== id);
+    this._panel.webview.postMessage({
+      type: "commentsUpdated",
+      comments: data.comments,
+    });
   }
 
   private _getHtmlForWebview(webview: vscode.Webview, data: DiffData) {
-    const scriptUri = webview.asWebviewUri(vscode.Uri.file(
-      path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'diff-review.js')
-    ));
+    const scriptUri = webview.asWebviewUri(
+      vscode.Uri.file(
+        path.join(
+          this._extensionUri.fsPath,
+          "webview",
+          "shared",
+          "dist",
+          "diff-review.js",
+        ),
+      ),
+    );
     const stylesUri = webview.asWebviewUri(
       vscode.Uri.file(
         path.join(

@@ -33,17 +33,27 @@ const ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const GITHUB_API_BASE_URL = "https://api.github.com";
 const GOOGLE_QUOTA_API_URL =
   "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+const GEMINI_CLI_QUOTA_API_URL =
+  "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 const GOOGLE_TOKEN_REFRESH_URL = "https://oauth2.googleapis.com/token";
 
 const GOOGLE_CLIENT_ID =
   "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const GOOGLE_CLIENT_SECRET = "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";
 
+const GEMINI_CLI_OAUTH_CLIENT_ID =
+  "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+const GEMINI_CLI_OAUTH_CLIENT_SECRET = "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";
+
 const GOOGLE_MODELS = [
   { key: "gemini-3-pro-high", altKey: "gemini-3-pro-low", display: "G3 Pro" },
   { key: "gemini-3-pro-image", display: "G3 Image" },
   { key: "gemini-3-flash", display: "G3 Flash" },
-  { key: "claude-opus-4-5-thinking", altKey: "claude-opus-4-5", display: "Claude" },
+  {
+    key: "claude-opus-4-5-thinking",
+    altKey: "claude-opus-4-5",
+    display: "Claude",
+  },
 ] as const;
 
 const COPILOT_PLAN_LIMITS: Record<string, number> = {
@@ -75,6 +85,42 @@ const copilotConfigPath = path.join(
   "opencode",
   "copilot-quota-token.json",
 );
+const geminiOAuthPath = path.join(os.homedir(), ".gemini", "oauth_creds.json");
+const geminiProjectsPath = path.join(os.homedir(), ".gemini", "projects.json");
+const geminiAccountsPath = path.join(
+  os.homedir(),
+  ".gemini",
+  "google_accounts.json",
+);
+
+interface GeminiCliOAuthCredentials {
+  access_token?: string;
+  refresh_token?: string;
+  expiry_date?: number;
+  token_type?: string;
+  scope?: string;
+}
+
+interface GeminiCliProjectsFile {
+  projects?: Record<string, string>;
+}
+
+interface GeminiCliAccountsFile {
+  active?: string;
+  old?: string[];
+}
+
+interface GeminiQuotaBucket {
+  modelId?: string;
+  tokenType?: string;
+  remainingAmount?: string;
+  remainingFraction?: number;
+  resetTime?: string;
+}
+
+interface GeminiQuotaResponse {
+  buckets?: GeminiQuotaBucket[];
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -177,7 +223,13 @@ function formatResetFromTimestampMs(resetAtMs?: number): string | undefined {
   if (diffSec <= 0) {
     return "soon";
   }
-  return formatDuration(diffSec);
+  const dateStr = new Date(resetAtMs).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${formatDuration(diffSec)} (${dateStr})`;
 }
 
 function maskAccount(value: string, start = 4, end = 4): string {
@@ -196,6 +248,10 @@ function normalizePlatformId(platformName: string): string {
 
 function percentBar(pct: number): number {
   return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
+function normalizePathForLookup(value: string): string {
+  return value.replace(/\\/g, "/").toLowerCase();
 }
 
 // ── QuotaService ───────────────────────────────────────────────────────────────
@@ -229,6 +285,12 @@ export class QuotaService extends EventEmitter {
 
   public async refreshQuota(): Promise<QuotaData> {
     const auth = readJsonFile<AuthData>(authPath);
+    const geminiOauth =
+      readJsonFile<GeminiCliOAuthCredentials>(geminiOAuthPath);
+    const geminiProjects =
+      readJsonFile<GeminiCliProjectsFile>(geminiProjectsPath);
+    const geminiAccounts =
+      readJsonFile<GeminiCliAccountsFile>(geminiAccountsPath);
     const platforms: PlatformQuota[] = [];
 
     const tasks: Promise<void>[] = [];
@@ -300,6 +362,20 @@ export class QuotaService extends EventEmitter {
       }
     }
 
+    if (geminiOauth?.access_token || geminiOauth?.refresh_token) {
+      tasks.push(
+        this.fetchGeminiCliQuota(
+          geminiOauth,
+          geminiProjects ?? undefined,
+          geminiAccounts ?? undefined,
+        )
+          .then((p) => {
+            if (p) platforms.push(p);
+          })
+          .catch(() => {}),
+      );
+    }
+
     await Promise.allSettled(tasks);
 
     // If no auth file, surface an OpenCode card in error state so UI still shows a provider
@@ -308,6 +384,8 @@ export class QuotaService extends EventEmitter {
       auth?.["zhipuai-coding-plan"] ||
       auth?.["zai-coding-plan"] ||
       auth?.["github-copilot"] ||
+      geminiOauth?.access_token ||
+      geminiOauth?.refresh_token ||
       (antigravityFile &&
         antigravityFile.accounts &&
         antigravityFile.accounts.length > 0),
@@ -344,7 +422,9 @@ export class QuotaService extends EventEmitter {
 
   // ── Platform fetchers ────────────────────────────────────────────────────────
 
-  private async fetchOpenAI(auth: OpenAIAuthData): Promise<PlatformQuota | null> {
+  private async fetchOpenAI(
+    auth: OpenAIAuthData,
+  ): Promise<PlatformQuota | null> {
     if (!auth?.access) {
       return null;
     }
@@ -358,23 +438,8 @@ export class QuotaService extends EventEmitter {
 
       const quotas: QuotaItem[] = [];
 
-      const primaryWindow = json?.rate_limit?.primary_window;
-      if (primaryWindow && typeof primaryWindow === "object") {
-        const usedPercent = Number(primaryWindow.used_percent ?? 0);
-        const remain = percentBar(100 - usedPercent);
-        const windowSeconds = Number(primaryWindow.limit_window_seconds ?? 0);
-        const windowHours = Math.max(1, Math.round(windowSeconds / 3600));
-        const resetAfterSeconds = Number(primaryWindow.reset_after_seconds ?? 0);
-
-        quotas.push({
-          label: `${windowHours}-hour limit`,
-          remainPercent: remain,
-          percentLabel: `${remain}% remaining`,
-          resetLabel: resetAfterSeconds > 0 ? formatDuration(resetAfterSeconds) : undefined,
-        });
-      }
-
-      const weeklyWindow = json?.rate_limit?.weekly_window ?? json?.rate_limit?.secondary_window;
+      const weeklyWindow =
+        json?.rate_limit?.weekly_window ?? json?.rate_limit?.secondary_window;
       if (weeklyWindow && typeof weeklyWindow === "object") {
         const usedPercent = Number(weeklyWindow.used_percent ?? 0);
         const remainRaw = 100 - usedPercent;
@@ -385,7 +450,35 @@ export class QuotaService extends EventEmitter {
           label: `Weekly limit`,
           remainPercent: remain,
           percentLabel: `${remainRaw.toFixed(1)}% remaining`,
-          resetLabel: resetAfterSeconds > 0 ? formatDuration(resetAfterSeconds) : undefined,
+          resetLabel:
+            resetAfterSeconds > 0
+              ? formatResetFromTimestampMs(
+                  Date.now() + resetAfterSeconds * 1000,
+                )
+              : undefined,
+        });
+      }
+
+      const primaryWindow = json?.rate_limit?.primary_window;
+      if (primaryWindow && typeof primaryWindow === "object") {
+        const usedPercent = Number(primaryWindow.used_percent ?? 0);
+        const remain = percentBar(100 - usedPercent);
+        const windowSeconds = Number(primaryWindow.limit_window_seconds ?? 0);
+        const windowHours = Math.max(1, Math.round(windowSeconds / 3600));
+        const resetAfterSeconds = Number(
+          primaryWindow.reset_after_seconds ?? 0,
+        );
+
+        quotas.push({
+          label: `${windowHours}-hour limit`,
+          remainPercent: remain,
+          percentLabel: `${remain}% remaining`,
+          resetLabel:
+            resetAfterSeconds > 0
+              ? formatResetFromTimestampMs(
+                  Date.now() + resetAfterSeconds * 1000,
+                )
+              : undefined,
         });
       }
 
@@ -396,23 +489,25 @@ export class QuotaService extends EventEmitter {
             label: key,
             remainPercent: 100,
             percentLabel: String(value),
-            note: "Additional Detail"
+            note: "Additional Detail",
           });
         }
       }
 
       const allotments: any[] = json?.allotments ?? [];
       for (const allotment of allotments) {
-        const label = allotment.model_group_display ?? allotment.model_group ?? "Model";
+        const label =
+          allotment.model_group_display ?? allotment.model_group ?? "Model";
         const used = Number(allotment.usage ?? 0);
         const total = Number(allotment.limit ?? 0);
         if (total <= 0) {
           continue;
         }
         const remain = percentBar(((total - used) / total) * 100);
-        const resetAt = typeof allotment.reset_at === "number"
-          ? formatResetFromTimestampMs(allotment.reset_at * 1000)
-          : undefined;
+        const resetAt =
+          typeof allotment.reset_at === "number"
+            ? formatResetFromTimestampMs(allotment.reset_at * 1000)
+            : undefined;
         quotas.push({
           label,
           remainPercent: remain,
@@ -426,7 +521,8 @@ export class QuotaService extends EventEmitter {
         quotas.push({ label: "No quota data", remainPercent: 0 });
       }
 
-      const planType = typeof json?.plan_type === "string" ? json.plan_type : "unknown";
+      const planType =
+        typeof json?.plan_type === "string" ? json.plan_type : "unknown";
 
       return {
         platform: "openai",
@@ -440,10 +536,17 @@ export class QuotaService extends EventEmitter {
       return {
         platform: "openai",
         account: "ChatGPT",
-        title: "OpenAI / ChatGPT",
+        title: "OpenAI Account Quota",
         status: "error",
         error: String(e),
-        quotas: [],
+        quotas: [
+          {
+            label: "Error",
+            remainPercent: 0,
+            percentLabel: "—",
+            note: "Check auth.json token or rate limits.",
+          },
+        ],
       };
     }
   }
@@ -484,7 +587,7 @@ export class QuotaService extends EventEmitter {
             : undefined,
         );
         const isTokenLimit = type === "TOKENS_LIMIT";
-        
+
         // Token limits are 5-hour limits, other limits are monthly limits
         const label = isTokenLimit ? "5 hrs token limit" : "Monthly limit";
 
@@ -534,7 +637,9 @@ export class QuotaService extends EventEmitter {
   ): Promise<PlatformQuota | null> {
     // Refresh token if expired
     let token = auth?.access;
-    const expired = auth?.expires ? auth.expires < Date.now() / 1000 - 60 : true;
+    const expired = auth?.expires
+      ? auth.expires < Date.now() / 1000 - 60
+      : true;
 
     if (expired && auth?.refresh) {
       try {
@@ -655,7 +760,7 @@ export class QuotaService extends EventEmitter {
             usedTotalDisplay: `${used} / ${effectiveLimit}`,
             percentLabel: `${rawRemainPct.toFixed(1)}%`,
             resetLabel: quotaResetDate
-              ? `${Math.max(0, Math.ceil((new Date(quotaResetDate).getTime() - Date.now()) / 86_400_000))}d (${new Date(quotaResetDate).toISOString().slice(0, 10)})`
+              ? formatResetFromTimestampMs(new Date(quotaResetDate).getTime())
               : undefined,
           },
         ],
@@ -746,28 +851,46 @@ export class QuotaService extends EventEmitter {
         });
       }
 
-      // Add tracked token usage from stream events
-      const tracker = GeminiTokenUsageTracker.getInstance();
-      const trackedUsage = tracker.getAllUsage();
-      const totalTracked = tracker.getGrandTotal();
-      const dailyLimit = 1_000_000; // 1M tokens per day for free tier
-      const trackedPercent = Math.min(100, (totalTracked / dailyLimit) * 100);
+      if (quotas.length === 0) {
+        quotas.push({ label: "No quota data", remainPercent: 0 });
+      }
 
-      if (trackedUsage.length > 0) {
-        // Add summary of tracked usage
+      // Add tracked token usage for Gemini models only
+      const tracker = GeminiTokenUsageTracker.getInstance();
+      const allTrackedUsage = tracker.getAllUsage();
+
+      // Filter to only Google/Gemini models
+      const geminiModels = allTrackedUsage.filter(
+        (usage) =>
+          usage.model.startsWith("gemini-") || usage.model.includes("claude-"), // Google also hosts Claude
+      );
+
+      if (geminiModels.length > 0) {
+        const totalTracked = geminiModels.reduce(
+          (sum, usage) => sum + usage.grandTotal,
+          0,
+        );
+        const dailyLimit = 1_000_000; // 1M tokens per day for free tier
+        const trackedPercent = Math.min(100, (totalTracked / dailyLimit) * 100);
+
+        // Add separator
         quotas.push({
-          label: "Tokens Used Today",
+          label: "─────────────────────────",
+          remainPercent: 0,
+        });
+
+        // Add tracked usage summary
+        quotas.push({
+          label: "Tracked Today (usageMetadata)",
           remainPercent: percentBar(100 - trackedPercent),
           usedTotalDisplay: `${totalTracked.toLocaleString()} / ${dailyLimit.toLocaleString()}`,
           percentLabel: `${trackedPercent.toFixed(1)}% used`,
           resetLabel: "Resets at midnight UTC",
-          note: "From usageMetadata",
         });
 
         // Add per-model tracked usage
-        for (const usage of trackedUsage.slice(0, 3)) {
-          // Show top 3 models
-          const modelPercent = dailyLimit > 0 ? (usage.grandTotal / dailyLimit) * 100 : 0;
+        for (const usage of geminiModels) {
+          const modelPercent = (usage.grandTotal / dailyLimit) * 100;
           quotas.push({
             label: `  ${usage.model}`,
             remainPercent: percentBar(100 - modelPercent),
@@ -775,10 +898,6 @@ export class QuotaService extends EventEmitter {
             percentLabel: `${usage.requestCount} requests`,
           });
         }
-      }
-
-      if (quotas.length === 0) {
-        quotas.push({ label: "No quota data", remainPercent: 0 });
       }
 
       return [
@@ -803,6 +922,256 @@ export class QuotaService extends EventEmitter {
         },
       ];
     }
+  }
+
+  private resolveGeminiCliProjectId(
+    projectsFile?: GeminiCliProjectsFile,
+  ): string | undefined {
+    const envProject =
+      process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT_ID;
+    if (envProject) {
+      return envProject;
+    }
+
+    const projects = projectsFile?.projects;
+    if (!projects || typeof projects !== "object") {
+      return undefined;
+    }
+
+    const entries = Object.entries(projects).filter(
+      ([key, value]) => typeof key === "string" && typeof value === "string",
+    );
+
+    if (entries.length === 0) {
+      return undefined;
+    }
+
+    const cwd = normalizePathForLookup(process.cwd());
+    const exactMatch = entries.find(
+      ([projectPath]) => normalizePathForLookup(projectPath) === cwd,
+    );
+    if (exactMatch) {
+      return exactMatch[1];
+    }
+
+    const cwdBase = path.basename(cwd);
+    const suffixMatch = entries.find(([projectPath]) =>
+      normalizePathForLookup(projectPath).endsWith(`/${cwdBase}`),
+    );
+    if (suffixMatch) {
+      return suffixMatch[1];
+    }
+
+    if (entries.length === 1) {
+      return entries[0][1];
+    }
+
+    return undefined;
+  }
+
+  private async refreshGeminiCliAccessToken(
+    creds: GeminiCliOAuthCredentials,
+  ): Promise<GeminiCliOAuthCredentials | null> {
+    if (!creds.refresh_token) {
+      return null;
+    }
+
+    try {
+      const refreshRaw = await httpsPost(
+        GOOGLE_TOKEN_REFRESH_URL,
+        { "Content-Type": "application/x-www-form-urlencoded" },
+        new URLSearchParams({
+          client_id: GEMINI_CLI_OAUTH_CLIENT_ID,
+          client_secret: GEMINI_CLI_OAUTH_CLIENT_SECRET,
+          refresh_token: creds.refresh_token,
+          grant_type: "refresh_token",
+        }).toString(),
+      );
+
+      const refreshed = JSON.parse(refreshRaw);
+      if (!refreshed?.access_token) {
+        return null;
+      }
+
+      const next: GeminiCliOAuthCredentials = {
+        ...creds,
+        access_token: refreshed.access_token,
+        token_type: refreshed.token_type ?? creds.token_type,
+        scope: refreshed.scope ?? creds.scope,
+        expiry_date:
+          typeof refreshed.expires_in === "number"
+            ? Date.now() + refreshed.expires_in * 1000
+            : creds.expiry_date,
+      };
+
+      try {
+        fs.writeFileSync(
+          geminiOAuthPath,
+          JSON.stringify(next, null, 2),
+          "utf8",
+        );
+      } catch {}
+
+      return next;
+    } catch {
+      return null;
+    }
+  }
+
+  private async requestGeminiCliQuota(
+    accessToken: string,
+    projectId: string,
+  ): Promise<GeminiQuotaResponse> {
+    const raw = await httpsPost(
+      GEMINI_CLI_QUOTA_API_URL,
+      {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+      },
+      JSON.stringify({ project: projectId }),
+    );
+
+    return JSON.parse(raw) as GeminiQuotaResponse;
+  }
+
+  private async fetchGeminiCliQuota(
+    creds: GeminiCliOAuthCredentials,
+    projectsFile?: GeminiCliProjectsFile,
+    accountsFile?: GeminiCliAccountsFile,
+  ): Promise<PlatformQuota | null> {
+    let activeCreds = creds;
+
+    if (
+      (!activeCreds.access_token ||
+        (typeof activeCreds.expiry_date === "number" &&
+          activeCreds.expiry_date <= Date.now() + 60_000)) &&
+      activeCreds.refresh_token
+    ) {
+      const refreshed = await this.refreshGeminiCliAccessToken(activeCreds);
+      if (refreshed) {
+        activeCreds = refreshed;
+      }
+    }
+
+    if (!activeCreds.access_token) {
+      return {
+        platform: "google-gemini-cli",
+        account: accountsFile?.active ?? "Gemini CLI",
+        title: "Google / Gemini CLI",
+        status: "error",
+        error: "No Gemini CLI access token available",
+        quotas: [],
+      };
+    }
+
+    const initialAccessToken = activeCreds.access_token;
+
+    const projectId = this.resolveGeminiCliProjectId(projectsFile);
+    if (!projectId) {
+      return {
+        platform: "google-gemini-cli",
+        account: accountsFile?.active ?? "Gemini CLI",
+        title: "Google / Gemini CLI",
+        status: "warning",
+        error:
+          "No Gemini CLI project mapping found. Set GOOGLE_CLOUD_PROJECT or open from a mapped workspace.",
+        quotas: [{ label: "No quota data", remainPercent: 0 }],
+      };
+    }
+
+    let quotaResponse: GeminiQuotaResponse | null = null;
+
+    try {
+      quotaResponse = await this.requestGeminiCliQuota(
+        initialAccessToken,
+        projectId,
+      );
+    } catch {
+      if (activeCreds.refresh_token) {
+        const refreshed = await this.refreshGeminiCliAccessToken(activeCreds);
+        const refreshedToken = refreshed?.access_token;
+        if (refreshedToken) {
+          activeCreds = refreshed;
+          try {
+            quotaResponse = await this.requestGeminiCliQuota(
+              refreshedToken,
+              projectId,
+            );
+          } catch {
+            quotaResponse = null;
+          }
+        }
+      }
+    }
+
+    if (!quotaResponse) {
+      return {
+        platform: "google-gemini-cli",
+        account: accountsFile?.active ?? "Gemini CLI",
+        title: "Google / Gemini CLI",
+        status: "error",
+        error: "Failed to retrieve Gemini CLI quota",
+        quotas: [],
+      };
+    }
+
+    const buckets = Array.isArray(quotaResponse.buckets)
+      ? quotaResponse.buckets
+      : [];
+    const quotas: QuotaItem[] = [];
+
+    for (const bucket of buckets) {
+      if (!bucket?.modelId) {
+        continue;
+      }
+
+      const fraction = Number(bucket.remainingFraction ?? 0);
+      if (!Number.isFinite(fraction)) {
+        continue;
+      }
+
+      const remainPercentRaw = Math.max(0, Math.min(100, fraction * 100));
+      const remaining = Number(bucket.remainingAmount ?? 0);
+      let usedTotalDisplay: string | undefined;
+
+      if (remaining > 0 && fraction > 0) {
+        const limit = Math.round(remaining / fraction);
+        if (limit > 0 && Number.isFinite(limit)) {
+          const used = Math.max(0, limit - remaining);
+          usedTotalDisplay = `${formatNumber(used)} / ${formatNumber(limit)}`;
+        }
+      }
+
+      const resetAtMs = bucket.resetTime ? Date.parse(bucket.resetTime) : NaN;
+
+      quotas.push({
+        label: bucket.tokenType
+          ? `${bucket.modelId} (${bucket.tokenType.toLowerCase()})`
+          : bucket.modelId,
+        remainPercent: percentBar(remainPercentRaw),
+        usedTotalDisplay,
+        percentLabel: `${remainPercentRaw.toFixed(1)}% remaining`,
+        resetLabel: Number.isFinite(resetAtMs)
+          ? formatResetFromTimestampMs(resetAtMs)
+          : undefined,
+      });
+    }
+
+    if (quotas.length === 0) {
+      quotas.push({ label: "No quota data", remainPercent: 0 });
+    }
+
+    const hasLowQuota = quotas.some((q) => q.remainPercent <= 10);
+
+    return {
+      platform: "google-gemini-cli",
+      account: accountsFile?.active ?? "Gemini CLI",
+      accountLabel: projectId,
+      title: "Google / Gemini CLI",
+      status: hasLowQuota ? "warning" : "ok",
+      quotas,
+    };
   }
 
   // ── Dispose ──────────────────────────────────────────────────────────────────

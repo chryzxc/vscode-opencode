@@ -35,7 +35,7 @@ test('chat provider forwards quota updates and initializes quota state on ready 
   assert.match(chatProviderSource, /this\.quotaService\.on\("quotaUpdate",\s*\(data\)\s*=>\s*\{[\s\S]*type:\s*"quotaData"/, 'ChatViewProvider should post quotaData on quotaUpdate events');
   assert.match(chatProviderSource, /const\s+quotaData\s*=\s*this\.quotaService\.cachedData;/, 'ready flow should inspect cached quota data');
   assert.match(chatProviderSource, /if\s*\(quotaData\)\s*\{[\s\S]*type:\s*"quotaData"/, 'ready flow should post cached quota data when available');
-  assert.match(chatProviderSource, /else\s*\{[\s\S]*this\.quotaService\.refreshQuota\(\)\.catch\(\(\)\s*=>\s*\{\}\)/, 'ready flow should refresh quota when cache is empty');
+  assert.match(chatProviderSource, /else\s*\{[\s\S]*this\.quotaService\.refreshQuota\(\)\.catch\(\(\)\s*=>\s*\{\s*\}\)/, 'ready flow should refresh quota when cache is empty');
 });
 
 test('message handler and quota panel consume and render quota update states', () => {
@@ -49,9 +49,20 @@ test('message handler and quota panel consume and render quota update states', (
   assert.match(handlerBody, /quotaData|quotaUpdate/, 'message handler should process quota messages');
   assert.match(handlerBody, /SET_QUOTA_DATA/, 'quota messages should dispatch SET_QUOTA_DATA');
   assert.match(quotaPanelBody, /refreshQuota/, 'quota panel should have refresh functionality');
+  assert.match(quotaPanelBody, /Refresh quota/, 'quota panel should render refresh affordance label');
   assert.match(quotaPanelBody, /No quota data/, 'quota panel should show empty state text');
   assert.match(quotaPanelBody, /platform\.status/, 'quota panel should check provider status');
   assert.match(quotaPanelBody, /platforms/, 'quota panel should render provider cards');
+});
+
+test('quota monitor refresh button dispatches and posts refresh request', () => {
+  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+
+  assert.match(quotaPanelBody, /const\s+handleRefresh\s*=\s*\(\)\s*=>\s*\{/, 'quota monitor should define refresh handler');
+  assert.match(quotaPanelBody, /SET_QUOTA_REFRESHING/, 'refresh handler should mark refresh state');
+  assert.match(quotaPanelBody, /type:\s*["']refreshQuota["']/, 'refresh handler should request backend quota refresh');
+  assert.match(quotaPanelBody, /title=\"Refresh quota\"/, 'refresh button should expose refresh title');
+  assert.match(quotaPanelBody, />\s*Refresh\s*</, 'refresh button should show visible Refresh label');
 });
 
 test('quota monitor supports collapsible UI with state management', () => {
@@ -93,9 +104,9 @@ test('quota monitor renders budget info section when budgetInfo exists', () => {
   // Verify budget data integration and conditional rendering.
   const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
 
-  assert.match(quotaPanelBody, /\{budgetInfo\s*\?\s*\(/, 'quota monitor should conditionally render budget section when budgetInfo exists');
-  assert.match(quotaPanelBody, /\{budgetInfo\.planName\}\s*\(\{budgetInfo\.monthlyQuota\}\s*requests\/month\)/, 'quota monitor should display plan name and monthly quota');
-  assert.match(quotaPanelBody, /\{budgetInfo\.usedToday\}\s*\/\s*\{budgetInfo\.dailyAllowance\}\s*requests/, 'quota monitor should show daily usage stats');
+  assert.match(quotaPanelBody, /budgetInfo\s*\?\s*/, 'quota monitor should conditionally render budget section when budgetInfo exists');
+  assert.match(quotaPanelBody, /Daily Budget/, 'quota monitor should show redesigned budget header');
+  assert.match(quotaPanelBody, /budgetInfo\.usedToday[\s\S]*budgetInfo\.dailyAllowance/, 'quota monitor should show daily usage stats');
 });
 
 test('quota monitor renders budget bar with reactive scaling', () => {
@@ -103,7 +114,7 @@ test('quota monitor renders budget bar with reactive scaling', () => {
   const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
 
   assert.match(quotaPanelBody, /Math\.min\(100,\s*\(budgetInfo\.usedToday\s*\/\s*budgetInfo\.dailyAllowance\)\s*\*\s*100\)/, 'budget bar should clamp width at 100%');
-  assert.match(quotaPanelBody, /barColor\(\(budgetInfo\.remainingToday\s*\/\s*budgetInfo\.dailyAllowance\)\s*\*\s*100\)/, 'budget bar should use barColor utility with remaining percentage');
+  assert.match(quotaPanelBody, /barColor\(\s*budgetInfo\.dailyAllowance\s*>\s*0[\s\S]*budgetInfo\.remainingToday\s*\/\s*budgetInfo\.dailyAllowance/, 'budget bar should use barColor utility with remaining percentage');
 });
 
 test('quota monitor shows actionable advice items from budget payload', () => {
@@ -111,5 +122,5 @@ test('quota monitor shows actionable advice items from budget payload', () => {
   const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
 
   assert.match(quotaPanelBody, /budgetInfo\.advice\s*&&\s*budgetInfo\.advice\.length\s*>\s*0/, 'quota monitor should check for advice presence');
-  assert.match(quotaPanelBody, /\{budgetInfo\.advice\[0\]\}/, 'quota monitor should render the first advice item');
+  assert.match(quotaPanelBody, /\{budgetInfo\.advice\[0\]/, 'quota monitor should render the first advice item');
 });

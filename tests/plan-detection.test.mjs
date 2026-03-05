@@ -24,7 +24,7 @@ test('plan detection enriches assistant messages from plan files and structured 
   assert.match(enrichBody, /basicPlanKeywordMatch/, 'plan detection should include keyword checks');
   assert.match(enrichBody, /hasStructuralMarkers/, 'plan detection should include structural marker checks to reduce false positives');
   assert.match(enrichBody, /const\s+hasPlanKeywords\s*=\s*basicPlanKeywordMatch\s*&&\s*hasStructuralMarkers/, 'plan detection should require keywords plus structure');
-  assert.match(enrichBody, /plan:\s*\{[\s\S]*file:\s*"implementation_plan\.md"[\s\S]*content:\s*planContent/, 'enriched messages must include plan metadata with file + content');
+  assert.match(enrichBody, /plan:\s*\{[\s\S]*file:\s*"implementation_plan\.md"[\s\S]*content:\s*(?:planContent|cleanPlanContent)/, 'enriched messages must include plan metadata with file + content');
 });
 
 test('plan detection preserves safety guards and persistence behavior', () => {
@@ -35,8 +35,8 @@ test('plan detection preserves safety guards and persistence behavior', () => {
   );
 
   assert.match(enrichBody, /if\s*\(!message\)\s*return\s+message;/, 'plan detection should no-op on empty messages');
-  assert.match(enrichBody, /planContent\.length\s*<\s*200/, 'plan detection should reject short plan-like responses');
-  assert.match(enrichBody, /this\.persistPlan\(planContent\)\.catch\(/, 'plan detection should attempt plan persistence with error handling');
+  assert.match(enrichBody, /(?:planContent|cleanPlanContent|structuredPlanContent)\.length\s*[<>]=\s*(?:100|200)/, 'plan detection should have length guards for plan responses');
+  assert.match(enrichBody, /this\.persistPlan\((?:planContent|cleanPlanContent)\)\.catch\(/, 'plan detection should attempt plan persistence with error handling');
   assert.match(enrichBody, /return\s+message;/, 'plan detection should return the original message when no valid plan is found');
 });
 

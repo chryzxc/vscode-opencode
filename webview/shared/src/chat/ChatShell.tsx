@@ -86,7 +86,7 @@ function ChatContent() {
         <div className="block [@media(min-width:1100px)]:hidden">
           <MobileRightSummary />
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto py-4">
+        <div className="flex-1 min-h-0 overflow-y-auto py-4" style={{ background: 'var(--oc-chat-bg)' }}>
           {state.messages.length === 0 &&
           !state.streaming &&
           !state.isProcessing ? (

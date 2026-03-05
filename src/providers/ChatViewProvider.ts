@@ -31,7 +31,7 @@
  * WEBVIEW → EXTENSION messages (received in onDidReceiveMessage):
  * {
  *   type: 'ready' | 'sendMessage' | 'createSession' | 'switchSession' |
- *         'deleteSession' | 'getSessions' | 'toggleMode' | 'getModels' |
+ *         'deleteSession' | 'renameSession' | 'getSessions' | 'toggleMode' | 'getModels' |
  *         'selectModel' | 'getAgents' | 'selectAgent' | 'addToQueue' |
  *         'executeQueue' | 'clearQueue' | 'viewPlan' | 'openDiff',
  *   ...payload
@@ -97,7 +97,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
-// import * as cp from "child_process";
+import * as cp from "child_process";
 import {
   FileThemeProcessor,
   CssGenerator,
@@ -114,14 +114,23 @@ import { SubagentTracker } from "../services/SubagentTracker";
 import { GeminiTokenUsageTracker } from "../services/GeminiTokenUsageTracker";
 import type { TokenUsage } from "../services/GeminiTokenUsageTracker";
 import { PlanViewProvider } from "./PlanViewProvider";
+import { PlanParser } from "../services/PlanParser";
 import { createLogger } from "../utils/Logger";
 
 const log = createLogger("ChatViewProvider");
 type QueuedPrompt = {
   text: string;
   files?: string[];
-  contexts?: any[];
-  images?: any[];
+  contexts?: {
+    file: string;
+    lineInfo: string;
+    content: string;
+    languageId: string;
+  }[];
+  images?: {
+    dataUrl: string;
+    filename?: string;
+  }[];
   agent?: string;
 };
 
@@ -167,28 +176,28 @@ type StructuredInteractiveChoice = {
 
 type StructuredInteractiveEvent =
   | {
-      type: "question";
-      id?: string;
-      title?: string;
-      question: string;
-      options: StructuredInteractiveChoice[];
-      multiSelect?: boolean;
-      allowCustomInput?: boolean;
-    }
+    type: "question";
+    id?: string;
+    title?: string;
+    question: string;
+    options: StructuredInteractiveChoice[];
+    multiSelect?: boolean;
+    allowCustomInput?: boolean;
+  }
   | {
-      type: "confirm";
-      id?: string;
-      title?: string;
-      question: string;
-      confirmLabel?: string;
-      cancelLabel?: string;
-    }
+    type: "confirm";
+    id?: string;
+    title?: string;
+    question: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+  }
   | {
-      type: "quick_actions";
-      id?: string;
-      title?: string;
-      actions: StructuredInteractiveChoice[];
-    };
+    type: "quick_actions";
+    id?: string;
+    title?: string;
+    actions: StructuredInteractiveChoice[];
+  };
 
 type StructuredAssistantOutput = {
   responseType?: StructuredResponseType | string;
@@ -238,8 +247,7 @@ type StructuredAssistantOutput = {
  * @see WebviewViewProvider for VSCode webview provider interface
  */
 export class ChatViewProvider
-  implements vscode.WebviewViewProvider, FileThemeProcessorObserver
-{
+  implements vscode.WebviewViewProvider, FileThemeProcessorObserver {
   /** The webview instance (undefined before initialization) */
   private view?: vscode.WebviewView;
 
@@ -271,10 +279,10 @@ export class ChatViewProvider
     modelID: string;
     providerName?: string;
   } = {
-    providerID: "opencode",
-    modelID: "big-pickle",
-    providerName: undefined,
-  };
+      providerID: "opencode",
+      modelID: "big-pickle",
+      providerName: undefined,
+    };
 
   /** Cache of available models returned from the server (used to resolve providerName) */
   // Cache of available models returned from the server (used to resolve providerName)
@@ -350,6 +358,7 @@ export class ChatViewProvider
     this.geminiTokenTracker = GeminiTokenUsageTracker.getInstance();
     this.quotaService.on("quotaUpdate", (data) => {
       this.view?.webview.postMessage({ type: "quotaData", data });
+      this.sendBudgetInfo();
     });
 
     // Initialize file theme processor
@@ -489,6 +498,10 @@ export class ChatViewProvider
             await this.handleGetSessions();
             this.refreshView();
 
+            // Fetch live MCP and LSP server status from OpenCode SDK
+            this.handleGetMcpStatus().catch(() => { });
+            this.handleGetLspStatus().catch(() => { });
+
             // Send quota data or trigger initial fetch
             const quotaData = this.quotaService.cachedData;
             if (quotaData) {
@@ -497,7 +510,7 @@ export class ChatViewProvider
                 data: quotaData,
               });
             } else {
-              this.quotaService.refreshQuota().catch(() => {});
+              this.quotaService.refreshQuota().catch(() => { });
             }
             // Send initial theme data
             await this.sendThemeDataToWebview();
@@ -533,9 +546,9 @@ export class ChatViewProvider
             message?.eventId,
           )
             ? `[interactive:${this.firstNonEmptyString(
-                message?.eventType,
-                "event",
-              )}:${this.firstNonEmptyString(message?.eventId, "unknown")}] `
+              message?.eventType,
+              "event",
+            )}:${this.firstNonEmptyString(message?.eventId, "unknown")}] `
             : "";
           const composedPrompt = `${contextPrefix}${choiceText}`;
 
@@ -719,6 +732,10 @@ export class ChatViewProvider
           await this.handleDeleteSession(message.sessionId);
           break;
         }
+        case "renameSession": {
+          await this.handleRenameSession(message.sessionId, message.newTitle);
+          break;
+        }
         case "stopRequest": {
           await this.handleStopRequest(message.sessionId);
           break;
@@ -846,6 +863,18 @@ export class ChatViewProvider
           this.view?.webview.postMessage({ type: "attachmentsCleared" });
           break;
         }
+        case "getMcpStatus": {
+          this.handleGetMcpStatus().catch((err) =>
+            log.error("handleGetMcpStatus error", {}, err instanceof Error ? err : undefined),
+          );
+          break;
+        }
+        case "getLspStatus": {
+          this.handleGetLspStatus().catch((err) =>
+            log.error("handleGetLspStatus error", {}, err instanceof Error ? err : undefined),
+          );
+          break;
+        }
         case "planProceed": {
           const payload = message.payload;
           await this.context.globalState.update(
@@ -863,7 +892,7 @@ export class ChatViewProvider
     });
 
     // Subscribe to stream events
-    this.unsubscribe = this.streamService.subscribe((event) => {
+    this.unsubscribe = this.streamService.subscribe(async (event) => {
       const subagentUpdate = this.subagentTracker.consumeStreamEvent(event);
       if (subagentUpdate) {
         this.view?.webview.postMessage({
@@ -892,6 +921,40 @@ export class ChatViewProvider
 
       // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
+
+      // If this is a step-finish or tool completion for an edit, calculate diff stats
+      if (enrichedEvent?.structured?.kind === "progress") {
+        const props = (event.properties || {}) as any;
+        const part = props.part || {};
+        const partType = (part.type || "").toLowerCase();
+
+        // Check if it's a tool that modified a file or a step-finish for an edit
+        const isToolDone = partType === "tool" && part.state?.status === "done";
+        const isStepFinish = partType === "step-finish";
+
+        if (isToolDone || isStepFinish) {
+          const toolName = (part.tool || "").toLowerCase();
+          const filePath =
+            part.state?.input?.file || part.state?.input?.path || part.filePath;
+
+          if (
+            filePath &&
+            (toolName.includes("write") ||
+              toolName.includes("replace") ||
+              toolName.includes("edit") ||
+              isStepFinish)
+          ) {
+            const stats = await this.getDiffStats(filePath);
+            if (stats) {
+              if (!enrichedEvent.diffStats) enrichedEvent.diffStats = stats;
+              // Also update the structured part if it exists
+              if (enrichedEvent.structured) {
+                (enrichedEvent.structured as any).diffStats = stats;
+              }
+            }
+          }
+        }
+      }
 
       // Log stream event for debugging response types (with error handling)
       try {
@@ -1063,6 +1126,26 @@ export class ChatViewProvider
       }
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to delete session: ${error}`);
+    }
+  }
+
+  /**
+   * Handles renaming a session.
+   *
+   * Updates the session title on the server and refreshes the session list.
+   *
+   * @param sessionId - The ID of the session to rename
+   * @param newTitle - The new title for the session
+   */
+  private async handleRenameSession(
+    sessionId: string,
+    newTitle: string,
+  ): Promise<void> {
+    try {
+      await this.sessionService.renameSession(sessionId, newTitle);
+      await this.handleGetSessions(); // Refresh the session list
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to rename session: ${error}`);
     }
   }
 
@@ -1320,9 +1403,9 @@ export class ChatViewProvider
     const reasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
     const reasoning = Array.isArray(reasoningRaw)
       ? reasoningRaw
-          .filter((item): item is string => typeof item === "string")
-          .map((item) => item.trim())
-          .filter(Boolean)
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
       : typeof reasoningRaw === "string" && reasoningRaw.trim()
         ? [reasoningRaw.trim()]
         : [];
@@ -1330,31 +1413,31 @@ export class ChatViewProvider
     const progressRaw = rec.progressUpdates ?? rec.progress_updates;
     const progressUpdates = Array.isArray(progressRaw)
       ? progressRaw
-          .map((item) => {
-            const update = this.asRecord(item);
-            if (!update) return null;
-            const title = this.firstNonEmptyString(
-              update.title,
-              update.message,
-            );
-            if (!title) return null;
-            const status = this.firstNonEmptyString(update.status);
-            const normalizedStatus =
-              status === "done" || status === "error" || status === "pending"
-                ? status
-                : undefined;
-            return {
-              title,
-              status: normalizedStatus,
-              meta: this.firstNonEmptyString(update.meta, update.detail),
-              filePath: this.firstNonEmptyString(
-                update.filePath,
-                update.file,
-                update.path,
-              ),
-            } as StructuredProgressUpdate;
-          })
-          .filter((item): item is StructuredProgressUpdate => !!item)
+        .map((item) => {
+          const update = this.asRecord(item);
+          if (!update) return null;
+          const title = this.firstNonEmptyString(
+            update.title,
+            update.message,
+          );
+          if (!title) return null;
+          const status = this.firstNonEmptyString(update.status);
+          const normalizedStatus =
+            status === "done" || status === "error" || status === "pending"
+              ? status
+              : undefined;
+          return {
+            title,
+            status: normalizedStatus,
+            meta: this.firstNonEmptyString(update.meta, update.detail),
+            filePath: this.firstNonEmptyString(
+              update.filePath,
+              update.file,
+              update.path,
+            ),
+          } as StructuredProgressUpdate;
+        })
+        .filter((item): item is StructuredProgressUpdate => !!item)
       : [];
 
     const normalizeChoices = (
@@ -1459,8 +1542,8 @@ export class ChatViewProvider
     const singleInteractive = normalizeInteractiveEvent(interactiveRaw, 0);
     let interactiveEvents = Array.isArray(interactiveRaw)
       ? interactiveRaw
-          .map((item, index) => normalizeInteractiveEvent(item, index))
-          .filter((item): item is StructuredInteractiveEvent => !!item)
+        .map((item, index) => normalizeInteractiveEvent(item, index))
+        .filter((item): item is StructuredInteractiveEvent => !!item)
       : singleInteractive
         ? [singleInteractive]
         : [];
@@ -1487,17 +1570,16 @@ export class ChatViewProvider
     const plan =
       planRec || responseType === "implementation_plan"
         ? {
-            file:
-              this.firstNonEmptyString(planRec?.file) ||
-              "implementation_plan.md",
-            content: this.firstNonEmptyString(
-              planRec?.content,
-              planRec?.markdown,
-              message,
-            ),
-            title: this.firstNonEmptyString(planRec?.title),
-            summary: this.firstNonEmptyString(planRec?.summary),
-          }
+          file:
+            this.firstNonEmptyString(planRec?.file) ||
+            "implementation_plan.md",
+          content: this.firstNonEmptyString(
+            planRec?.content,
+            planRec?.markdown,
+          ),
+          title: this.firstNonEmptyString(planRec?.title),
+          summary: this.firstNonEmptyString(planRec?.summary),
+        }
         : undefined;
 
     if (
@@ -1677,16 +1759,42 @@ export class ChatViewProvider
       });
     }
 
-    if (
-      structured.responseType === "implementation_plan" ||
-      structured.plan?.content
-    ) {
-      const planContent =
-        structured.plan?.content || structured.message || next.content || "";
-      if (typeof planContent === "string" && planContent.trim().length >= 200) {
+    if (structured.responseType === "implementation_plan") {
+      const summaryMessage = this.firstNonEmptyString(structured.message);
+      const safeMessage =
+        summaryMessage && summaryMessage.length <= 280
+          ? summaryMessage
+          : "Implementation plan is ready. Use View Plan to inspect details.";
+      next.content = safeMessage;
+      const parts = Array.isArray(next.parts) ? [...next.parts] : [];
+      const textIndex = parts.findIndex(
+        (part: any) =>
+          part &&
+          typeof part === "object" &&
+          (part.type === "text" ||
+            typeof part.text === "string" ||
+            typeof part.content === "string"),
+      );
+      if (textIndex >= 0) {
+        parts[textIndex] = {
+          ...parts[textIndex],
+          type: "text",
+          text: safeMessage,
+        };
+      } else {
+        parts.push({ type: "text", text: safeMessage });
+      }
+      next.parts = parts;
+    }
+
+    if (structured.responseType === "implementation_plan" || structured.plan?.content) {
+      const planContent = structured.plan?.content || "";
+      if (typeof planContent === "string" && planContent.trim().length >= 80) {
         next.plan = {
           file: structured.plan?.file || "implementation_plan.md",
           content: planContent,
+          title: structured.plan?.title,
+          summary: structured.plan?.summary,
         };
       }
     }
@@ -1941,9 +2049,10 @@ export class ChatViewProvider
         messageId: (response.data as any)?.info?.id,
       });
 
-      // Record the request in the budgeter after successful send
+      // Update budget info after successful send
+      // Note: recordRequest() temporarily disabled - budget now reads from actual Copilot quota data
       if (!response.error) {
-        this.budgeter.recordRequest();
+        // this.budgeter.recordRequest(); // DISABLED - was tracking all requests, not just Copilot
         this.sendBudgetInfo();
       }
 
@@ -2001,7 +2110,7 @@ export class ChatViewProvider
             await this.handleGetSessions();
 
             // Retry sending (recursive call)
-            return this.handleSendMessage(text, files, contexts, images, agent);
+            return this.handleSendMessage(text, files, contexts, images, agent, isRetry);
           } catch (recreateError) {
             console.error(
               "[ChatViewProvider] Failed to re-create session:",
@@ -2124,11 +2233,7 @@ export class ChatViewProvider
 
     const structured = this.extractStructuredOutput(message);
     if (structured) {
-      const structuredPlanContent =
-        structured.plan?.content ||
-        (structured.responseType === "implementation_plan"
-          ? structured.message
-          : undefined);
+      const structuredPlanContent = structured.plan?.content;
       if (
         structuredPlanContent &&
         typeof structuredPlanContent === "string" &&
@@ -2146,6 +2251,8 @@ export class ChatViewProvider
           plan: {
             file: structured.plan?.file || "implementation_plan.md",
             content: structuredPlanContent,
+            title: structured.plan?.title,
+            summary: structured.plan?.summary,
           },
         };
       }
@@ -2170,10 +2277,9 @@ export class ChatViewProvider
 
     // 2. Fallback: Check for plan-like content in message summary, parts, or plain content
     const partsContent = parts
+      .filter((p: any) => p.type === "text" || p.text || p.content) // ignore reasoning parts directly
       .map((p: any) => {
-        let c = p.text || p.content || p.reasoning || "";
-        // Check for file part text/language if available
-        if (p.type === "text" && p.text) c += " " + p.text;
+        let c = p.text || p.content || "";
         if (p.files && Array.isArray(p.files)) c += " " + p.files.join(" ");
         return c;
       })
@@ -2200,21 +2306,47 @@ export class ChatViewProvider
 
     // Require structural markers to avoid false positives from short mentions
     const hasStructuralMarkers =
-      /##\s|###\s|\- \[ \]|Files:|Steps:|Goal:/i.test(fullContent) ||
+      /##\s|###\s|- \[ \]|Files:|Steps:|Goal:/i.test(fullContent) ||
       // Long content is likely a real plan even if markers are missing
       fullContent.length > 500;
 
     const hasPlanKeywords = basicPlanKeywordMatch && hasStructuralMarkers;
 
     if (hasPlanFile || hasPlanKeywords) {
-      // NOTE: We intentionally do NOT embed the raw message content as plan.content here.
-      // The raw message content may include AI tool call outputs, thinking traces, and
-      // previous conversation data read by the AI — which is NOT the clean plan text.
-      // Instead we only set plan.file so handleViewPlan reads the persisted .md file on disk.
+      // Extract and clean the plan content using the PlanParser
+      let rawContent = message.content || partsContent;
+
+      // If the AI structured output placed the overarching title in the summary but not the text, inject it as the H1
+      const summaryTitle = info.summary?.title;
+      if (summaryTitle && !rawContent.includes(summaryTitle)) {
+        rawContent = `# ${summaryTitle}\n\n${rawContent}`;
+      }
+
+      const parsed = PlanParser.parse(rawContent);
+      const cleanPlanContent = PlanParser.toMarkdown(parsed);
+
+      // PERSISTENCE: Automatically save the cleaned plan to disk.
+      // This ensures handleViewPlan can read it even if the SDK didn't write it.
+      // We only persist if it actually looks like a valid plan (has a goal or files/steps).
+      if (
+        cleanPlanContent.length > 100 &&
+        (parsed.goal || parsed.files.length > 0 || parsed.steps.length > 0)
+      ) {
+        this.persistPlan(cleanPlanContent).catch((err) => {
+          console.error(
+            "[ChatViewProvider] Failed to auto-persist cleaned plan:",
+            err,
+          );
+        });
+      }
+
       return {
         ...message,
         plan: {
           file: "implementation_plan.md",
+          // Note: We also include the clean content in the message so it shows up
+          // immediately without needing to wait for a file read on the first open.
+          content: cleanPlanContent,
         },
       };
     }
@@ -2322,6 +2454,9 @@ export class ChatViewProvider
   }): Promise<void> {
     const rawPlan = typeof payload?.rawPlan === "string" ? payload.rawPlan : "";
     const comments = Array.isArray(payload?.comments) ? payload.comments : [];
+    const hasChangeRequests = comments.some(
+      (comment) => comment.text.trim().length > 0,
+    );
 
     const commentLines = comments.map((comment) => {
       const textRef = comment.anchor?.selectedText
@@ -2330,30 +2465,45 @@ export class ChatViewProvider
       return `- ${textRef}${comment.text}`;
     });
 
-    const updatedPlanMd =
+    const commentsMd =
       commentLines.length > 0
-        ? `${rawPlan}\n\n## Comments\n\n${commentLines.join("\n")}`
-        : rawPlan;
+        ? `# Implementation Plan Comments\n\n${commentLines.join("\n")}`
+        : "";
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     const planFilePath = workspaceFolder
       ? path.join(workspaceFolder.uri.fsPath, "implementation_plan.md")
       : path.join(os.tmpdir(), `opencode-plan-${Date.now()}.md`);
+    const commentsFilePath = workspaceFolder
+      ? path.join(workspaceFolder.uri.fsPath, "implementation_plan_comments.md")
+      : path.join(os.tmpdir(), `opencode-plan-comments-${Date.now()}.md`);
 
     await vscode.workspace.fs.writeFile(
       vscode.Uri.file(planFilePath),
-      new TextEncoder().encode(updatedPlanMd),
+      new TextEncoder().encode(rawPlan),
     );
 
-    await this.handleSendMessage(
-      "Proceed",
-      [planFilePath],
-    );
+    if (hasChangeRequests && commentsMd) {
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(commentsFilePath),
+        new TextEncoder().encode(commentsMd),
+      );
+    }
+
+    const proceedMessage = hasChangeRequests
+      ? "Revise the implementation plan based on the attached comments. Do not implement yet."
+      : "Proceed with the approved plan and implement it now.";
+
+    const attachedFiles = hasChangeRequests
+      ? [planFilePath, commentsFilePath]
+      : [planFilePath];
+
+    await this.handleSendMessage(proceedMessage, attachedFiles);
 
     // Post addPlanAttachment message to chat webview for the visual chip
     const planGoal =
       rawPlan.match(/^#\s+(.+)/m)?.[1]?.trim() ?? "Implementation Plan";
-    const planBase64 = Buffer.from(updatedPlanMd, "utf-8").toString("base64");
+    const planBase64 = Buffer.from(rawPlan, "utf-8").toString("base64");
     const dataUrl = `data:text/markdown;base64,${planBase64}`;
     this.view?.webview.postMessage({
       type: "addPlanAttachment",
@@ -2373,6 +2523,7 @@ export class ChatViewProvider
   private async handleViewPlan(plan: {
     file?: string;
     content?: string;
+    title?: string;
   }): Promise<void> {
     let planData: string | undefined;
 
@@ -2406,7 +2557,11 @@ export class ChatViewProvider
 
     // If we have plan data, show it
     if (planData) {
-      await vscode.commands.executeCommand("opencode.showPlan", planData);
+      const fallbackTitle = planData.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim();
+      await vscode.commands.executeCommand("opencode.showPlan", {
+        content: planData,
+        title: this.firstNonEmptyString(plan.title, fallbackTitle),
+      });
     } else {
       vscode.window.showErrorMessage(
         "Could not read plan file: No plan content available",
@@ -2460,7 +2615,7 @@ export class ChatViewProvider
         const mimeType = this.getMimeType(uri.fsPath);
         images.push({
           dataUrl: `data:${mimeType};base64,${base64}`,
-          filename: uri.fsPath.split(/[\\/]/).pop() || uri.fsPath,
+          filename: uri.fsPath.split(/[/\\]/).pop() || uri.fsPath,
           size: data.byteLength,
         });
       } catch (error) {
@@ -2721,11 +2876,11 @@ export class ChatViewProvider
         const providerModelMatch = defaultId.match(/^([^\/:\s]+)[\/:](.+)$/);
         let match:
           | {
-              providerID: string;
-              modelID: string;
-              name: string;
-              providerName?: string;
-            }
+            providerID: string;
+            modelID: string;
+            name: string;
+            providerName?: string;
+          }
           | undefined;
 
         // Preferred: explicit provider/model pair
@@ -2741,7 +2896,7 @@ export class ChatViewProvider
             match = models.find(
               (m) =>
                 (m.providerName || "").toLowerCase() ===
-                  providerRef.toLowerCase() &&
+                providerRef.toLowerCase() &&
                 (m.modelID === modelRef || m.name === modelRef),
             );
           }
@@ -2941,19 +3096,19 @@ export class ChatViewProvider
       name: string;
       description: string;
     }> = [
-      {
-        id: "build",
-        name: "Build",
-        description:
-          "Default agent for development work with all tools enabled",
-      },
-      {
-        id: "plan",
-        name: "Plan",
-        description:
-          "Restricted agent for planning and analysis without making changes",
-      },
-    ];
+        {
+          id: "build",
+          name: "Build",
+          description:
+            "Default agent for development work with all tools enabled",
+        },
+        {
+          id: "plan",
+          name: "Plan",
+          description:
+            "Restricted agent for planning and analysis without making changes",
+        },
+      ];
 
     try {
       const client = await this.serverManager.ensureRunning();
@@ -3026,6 +3181,61 @@ export class ChatViewProvider
   }
 
   /**
+   * Fetches MCP server status from the OpenCode SDK and forwards it to the
+   * webview. The webview dispatches `SET_MCP_SERVERS` from the `mcpStatus`
+   * message. Tool IDs are fetched in parallel so each server row can show its
+   * list of tools when the user expands it.
+   */
+  private async handleGetMcpStatus(): Promise<void> {
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const [mcpRes, toolIdsRes] = await Promise.all([
+        client.mcp.status(),
+        client.tool.ids().catch(() => ({ data: [] })),
+      ]);
+
+      const servers = mcpRes.data ?? {};
+      const toolIds: string[] = Array.isArray(toolIdsRes?.data)
+        ? toolIdsRes.data
+        : [];
+
+      this.view?.webview.postMessage({
+        type: "mcpStatus",
+        servers,
+        toolIds,
+      });
+
+      log.info(
+        `MCP status sent: ${Object.keys(servers).length} server(s), ${toolIds.length} tool(s)`,
+      );
+    } catch (err) {
+      log.error("handleGetMcpStatus failed", {}, err instanceof Error ? err : undefined);
+    }
+  }
+
+  /**
+   * Fetches LSP server status from the OpenCode SDK and forwards it to the
+   * webview. The webview dispatches `SET_LSP_SERVERS` from the `lspStatus`
+   * message.
+   */
+  private async handleGetLspStatus(): Promise<void> {
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const res = await client.lsp.status();
+      const servers = Array.isArray(res.data) ? res.data : [];
+
+      this.view?.webview.postMessage({
+        type: "lspStatus",
+        servers,
+      });
+
+      log.info(`LSP status sent: ${servers.length} server(s)`);
+    } catch (err) {
+      log.error("handleGetLspStatus failed", {}, err instanceof Error ? err : undefined);
+    }
+  }
+
+  /**
    * Ensures a default primary agent is selected for the current session.
    * Falls back to "build" (the built-in default primary agent) if nothing
    * has been persisted.
@@ -3048,6 +3258,72 @@ export class ChatViewProvider
     }
   }
 
+  private async getDiffStats(
+    filePath: string,
+  ): Promise<{ added: number; deleted: number } | undefined> {
+    try {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) return undefined;
+
+      const fullPath = path.isAbsolute(filePath)
+        ? filePath
+        : path.join(workspaceFolder.uri.fsPath, filePath);
+      const cwd = workspaceFolder.uri.fsPath;
+
+      const runGit = (...args: string[]): Promise<string> =>
+        new Promise((resolve, reject) => {
+          cp.execFile(
+            "git",
+            args,
+            { cwd, maxBuffer: 10 * 1024 * 1024 },
+            (err, stdout) => {
+              if (err && err.code !== 1) {
+                reject(err);
+              } else {
+                resolve(stdout);
+              }
+            },
+          );
+        });
+
+      let diffOutput = "";
+      try {
+        diffOutput = await runGit("diff", "HEAD", "--", fullPath);
+        if (!diffOutput) {
+          diffOutput = await runGit("diff", "--cached", "--", fullPath);
+        }
+        if (!diffOutput) {
+          // New file fallback
+          try {
+            const fileUri = vscode.Uri.file(fullPath);
+            const content = await vscode.workspace.fs.readFile(fileUri);
+            const text = new TextDecoder().decode(content);
+            const lines = text.split("\n").length;
+            return { added: lines, deleted: 0 };
+          } catch {
+            return undefined;
+          }
+        }
+      } catch {
+        return undefined;
+      }
+
+      if (diffOutput) {
+        const diffFiles = this.parseUnifiedDiff(diffOutput);
+        if (diffFiles.length > 0) {
+          return {
+            added: diffFiles[0].added,
+            deleted: diffFiles[0].deleted,
+          };
+        }
+      }
+      return undefined;
+    } catch (error) {
+      console.error("[ChatViewProvider] getDiffStats error:", error);
+      return undefined;
+    }
+  }
+
   private async handleOpenDiff(filePath: string) {
     try {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -3057,37 +3333,113 @@ export class ChatViewProvider
         ? filePath
         : path.join(workspaceFolder.uri.fsPath, filePath);
       const fileUri = vscode.Uri.file(fullPath);
+      const cwd = workspaceFolder.uri.fsPath;
 
-      // In a real scenario, we'd compare against a backup or git state.
-      // For now, if we don't have the original, we just open the file.
-      // Ideally, we'd have the 'original' URI stored in a session temp folder.
+      const runGit = (...args: string[]): Promise<string> =>
+        new Promise((resolve, reject) => {
+          cp.execFile(
+            "git",
+            args,
+            { cwd, maxBuffer: 10 * 1024 * 1024 },
+            (err, stdout) => {
+              // exit code 1 from git diff means there are changes (not an error)
+              if (err && err.code !== 1) {
+                reject(err);
+              } else {
+                resolve(stdout);
+              }
+            },
+          );
+        });
 
-      // Let's try to find if there's a backup (this is speculative but good for the logic)
-      // For this implementation, we will use the file itself as both sides OR
-      // check if it's a git repo and use the HEAD version.
-
+      let diffOutput = "";
       try {
-        // Try to get HEAD content via git if available
-        const gitExtension =
-          vscode.extensions.getExtension("vscode.git")?.exports;
-        if (gitExtension) {
-          const api = gitExtension.getAPI(1);
-          const repository = api.repositories[0];
-          if (repository) {
-            // This is the correct way to show a diff in VS Code for git-tracked files
-            await vscode.commands.executeCommand("git.openChange", fileUri);
-            return;
-          }
+        // Try HEAD diff first (tracked modified file)
+        diffOutput = await runGit("diff", "HEAD", "--", fullPath);
+        if (!diffOutput) {
+          // Maybe the file is staged but not committed — try staged diff
+          diffOutput = await runGit("diff", "--cached", "--", fullPath);
+        }
+        if (!diffOutput) {
+          // New untracked file: generate a pseudo-diff showing full content as additions
+          const content = await vscode.workspace.fs.readFile(fileUri);
+          const text = new TextDecoder().decode(content);
+          const lines = text.split("\n");
+          diffOutput = [
+            `--- /dev/null`,
+            `+++ b/${filePath.replace(/\\/g, "/")}`,
+            `@@ -0,0 +1,${lines.length} @@`,
+            ...lines.map((l) => `+${l}`),
+          ].join("\n");
         }
       } catch (e) {
-        // Fallback to simple open if git fails
+        console.warn("[ChatViewProvider] git diff failed:", e);
       }
 
-      // Default fallback: Just open the file if we can't do a proper diff
+      if (diffOutput) {
+        const diffFiles = this.parseUnifiedDiff(diffOutput);
+        if (diffFiles.length > 0) {
+          await vscode.commands.executeCommand("opencode.showDiffReview", {
+            files: diffFiles,
+          });
+          return;
+        }
+      }
+
+      // Absolute fallback: open the file normally
       await vscode.commands.executeCommand("vscode.open", fileUri);
     } catch (error: any) {
       vscode.window.showErrorMessage(`Failed to open diff: ${error.message}`);
     }
+  }
+
+  private parseUnifiedDiff(diff: string): any[] {
+    const files: any[] = [];
+    const lines = diff.split("\n");
+    let currentFile: any = null;
+    let currentHunk: any = null;
+
+    for (const line of lines) {
+      if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+        const isNew = line.startsWith("+++ ");
+        const pathMatch = line.match(/^\+\+\+ (?:b\/)?(.*)$/);
+        if (isNew && pathMatch) {
+          if (currentFile) files.push(currentFile);
+          currentFile = {
+            path: pathMatch[1],
+            added: 0,
+            deleted: 0,
+            hunks: [],
+          };
+        }
+        continue;
+      }
+
+      if (line.startsWith("@@ ")) {
+        if (!currentFile) continue;
+        currentHunk = {
+          header: line,
+          lines: [],
+        };
+        currentFile.hunks.push(currentHunk);
+        continue;
+      }
+
+      if (currentHunk) {
+        if (line.startsWith("+")) {
+          currentFile.added++;
+          currentHunk.lines.push(line);
+        } else if (line.startsWith("-")) {
+          currentFile.deleted++;
+          currentHunk.lines.push(line);
+        } else if (line.startsWith(" ") || line === "") {
+          currentHunk.lines.push(line);
+        }
+      }
+    }
+
+    if (currentFile) files.push(currentFile);
+    return files;
   }
 
   /**
@@ -3185,73 +3537,115 @@ export class ChatViewProvider
    * Sends the current budget status to the webview
    */
   private sendBudgetInfo() {
-    console.log("[ChatViewProvider] sendBudgetInfo() called");
-    console.log("[ChatViewProvider] Webview ready:", !!this.view?.webview);
-
     try {
-      // Check if budgeter is initialized
-      if (!this.budgeter) {
-        console.error("[ChatViewProvider] Budgeter not initialized!");
+      // Get actual Copilot quota data from QuotaService
+      const quotaData = this.quotaService.cachedData;
+      const copilotPlatform = quotaData?.platforms?.find(
+        (p) => p.platform === "github-copilot",
+      );
+
+      if (!copilotPlatform) {
         return;
       }
 
-      const config = this.budgeter.getConfig();
-      console.log(
-        "[ChatViewProvider] Budgeter config:",
-        JSON.stringify(config),
-      );
-
-      if (!config.enabled) {
-        console.warn(
-          "[ChatViewProvider] Budgeter is disabled, enabling it automatically",
-        );
-        this.budgeter.updateConfig({ enabled: true });
+      // Extract data from Copilot quota
+      const copilotQuota = copilotPlatform.quotas?.[0]; // "Premium" quota
+      if (!copilotQuota) {
+        return;
       }
 
-      const plan = this.budgeter.getPlan();
-      console.log("[ChatViewProvider] Budgeter plan:", JSON.stringify(plan));
+      // Parse "usedTotalDisplay" which is in format "X / Y"
+      const usedTotalMatch =
+        copilotQuota.usedTotalDisplay?.match(/(\d+)\s*\/\s*(\d+)/);
+      const totalUsed = usedTotalMatch ? parseInt(usedTotalMatch[1], 10) : 0;
+      const monthlyQuota = usedTotalMatch ? parseInt(usedTotalMatch[2], 10) : 300;
 
-      const status = this.budgeter.getBudgetStatus();
-      console.log(
-        "[ChatViewProvider] Budgeter status:",
-        JSON.stringify(status),
-      );
+      // Calculate daily allowance
+      const today = new Date();
+      const todayStr = today.toISOString().split("T")[0];
+      const daysInMonth = new Date(
+        today.getFullYear(),
+        today.getMonth() + 1,
+        0,
+      ).getDate();
+      const dayOfMonth = today.getDate();
+      const dailyAllowance = Math.ceil(monthlyQuota / daysInMonth);
 
-      const advice = this.budgeter.getAdvice();
-      console.log(
-        "[ChatViewProvider] Budgeter advice:",
-        JSON.stringify(advice),
-      );
+      // --- NEW ACCURATE USAGE CALCULATION ---
+      // Get baseline for today. If none exists, this is the first time we're seeing
+      // quota data today, so current totalUsed becomes the baseline.
+      let baseline = this.budgeter.getBaselineForDate(todayStr);
+      if (baseline === null) {
+        this.budgeter.setBaselineForDate(todayStr, totalUsed);
+        baseline = totalUsed;
+      }
+
+      // Today's usage is the difference between current total and morning's baseline
+      const usedToday = Math.max(0, totalUsed - baseline);
+      // --------------------------------------
+
+      // Calculate accumulated budget up to today (days passed × daily allowance)
+      const budgetSoFar = dayOfMonth * dailyAllowance;
+
+      // Available today = (accumulated budget - baseline) - used today
+      // Simplified: accumulated budget - totalUsed
+      const availableToday = Math.max(0, budgetSoFar - totalUsed);
+
+      const remainingToday = Math.max(0, dailyAllowance - usedToday);
+
+      // Project monthly usage (current rate × days in month)
+      const projectedMonthlyUsage =
+        dayOfMonth > 0 ? Math.round((totalUsed / dayOfMonth) * daysInMonth) : 0;
+
+      // Determine warning level
+      let warningLevel: "ok" | "warning" | "critical" = "ok";
+      if (remainingToday === 0) {
+        warningLevel = "critical";
+      } else if (remainingToday < dailyAllowance * 0.3) {
+        warningLevel = "warning";
+      }
+
+      // Generate advice
+      const advice: string[] = [];
+      if (remainingToday === 0) {
+        advice.push(
+          "⚠️ You've used your available requests for today. Consider reducing usage to avoid running out this month.",
+        );
+      } else if (availableToday > dailyAllowance * 2) {
+        advice.push(
+          `💡 You have ${availableToday} requests available today (including ${availableToday - dailyAllowance
+          } unused from previous days)!`,
+        );
+      } else if (projectedMonthlyUsage > monthlyQuota) {
+        advice.push(
+          `🚨 At your current rate, you'll exceed your monthly quota! Try to stay under ${dailyAllowance} requests/day.`,
+        );
+      } else if (warningLevel === "ok") {
+        advice.push(
+          `✅ You have ${remainingToday} requests available today. Base daily allowance: ${dailyAllowance}.`,
+        );
+      }
 
       const budgetInfo = {
-        planName: plan.name,
-        monthlyQuota: plan.monthlyQuota,
-        usedToday: status.currentDailyBudget?.used ?? 0,
-        dailyAllowance: status.currentDailyBudget?.dailyAllowance ?? 0,
-        remainingToday: status.currentDailyBudget?.remaining ?? 0,
-        daysRemaining: status.daysRemaining,
-        projectedMonthlyUsage: status.projectedMonthlyUsage,
-        warningLevel: status.warningLevel,
+        planName: copilotPlatform.accountLabel?.replace(/[()]/g, "") || "Pro",
+        monthlyQuota: monthlyQuota,
+        usedToday: usedToday,
+        dailyAllowance: dailyAllowance,
+        availableToday: availableToday,
+        remainingToday: remainingToday,
+        daysRemaining: daysInMonth - dayOfMonth + 1,
+        projectedMonthlyUsage: projectedMonthlyUsage,
+        warningLevel: warningLevel,
         advice: advice,
       };
 
-      console.log(
-        "[ChatViewProvider] Sending budget info:",
-        JSON.stringify(budgetInfo),
-      );
-      const postResult = this.view?.webview.postMessage({
+
+      this.view?.webview.postMessage({
         type: "budgetInfo",
         data: budgetInfo,
       });
-      console.log("[ChatViewProvider] PostMessage result:", postResult);
     } catch (error) {
       console.error("[ChatViewProvider] Failed to send budget info:", error);
-      console.error("[ChatViewProvider] Error name:", (error as Error).name);
-      console.error(
-        "[ChatViewProvider] Error message:",
-        (error as Error).message,
-      );
-      console.error("[ChatViewProvider] Error stack:", (error as Error).stack);
     }
   }
 

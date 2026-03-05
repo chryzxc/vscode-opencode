@@ -37,6 +37,7 @@ export type SubagentProgressEvent = {
   status: "pending" | "done" | "error";
   meta?: string;
   filePath?: string;
+  diffStats?: { added: number; deleted: number };
   createdAt: number;
   messageID?: string;
   partID?: string;
@@ -511,12 +512,21 @@ export class SubagentTracker {
             if (!title) {
               return null;
             }
+            const diffStatsRec = asRecord(event.diffStats);
+            const diffStats = diffStatsRec
+              ? {
+                  added: asNumber(diffStatsRec.added) || 0,
+                  deleted: asNumber(diffStatsRec.deleted) || 0,
+                }
+              : undefined;
+
             return {
               id: asString(event.id) || `progress-${Date.now()}`,
               title,
               status: normalizeProgressStatus(event.status),
               meta: asString(event.meta) || undefined,
               filePath: asString(event.filePath) || undefined,
+              diffStats,
               createdAt: toTimestamp(event.createdAt),
               messageID: asString(event.messageID) || undefined,
               partID: asString(event.partID) || undefined,
@@ -1159,12 +1169,23 @@ export class SubagentTracker {
         asString(input?.filename) ||
         asString(part.filePath) ||
         undefined;
+
+      const result = asRecord(state?.result);
+      const diffStatsRec = asRecord(result?.diffStats || part.diffStats);
+      const diffStats = diffStatsRec
+        ? {
+            added: asNumber(diffStatsRec.added) || 0,
+            deleted: asNumber(diffStatsRec.deleted) || 0,
+          }
+        : undefined;
+
       return {
         id: `${asString(part.id) || "tool"}:${createdAt}`,
         title: `Tool: ${tool}`,
         status: normalizeProgressStatus(state?.status || part.status),
         meta: asString(part.meta) || undefined,
         filePath,
+        diffStats,
         createdAt,
         callID,
       };
@@ -1180,17 +1201,34 @@ export class SubagentTracker {
       };
     }
     if (partType === "step-finish") {
+      const diffStatsRec = asRecord(part.diffStats);
+      const diffStats = diffStatsRec
+        ? {
+            added: asNumber(diffStatsRec.added) || 0,
+            deleted: asNumber(diffStatsRec.deleted) || 0,
+          }
+        : undefined;
+
       return {
         id: `${asString(part.id) || "step-finish"}:${createdAt}`,
         title:
           asString(part.reason) || asString(part.snapshot) || "Step completed",
         status: "done",
+        diffStats,
         createdAt,
         callID,
       };
     }
     if (partType === "patch") {
       const files = Array.isArray(part.files) ? part.files : [];
+      const diffStatsRec = asRecord(part.diffStats);
+      const diffStats = diffStatsRec
+        ? {
+            added: asNumber(diffStatsRec.added) || 0,
+            deleted: asNumber(diffStatsRec.deleted) || 0,
+          }
+        : undefined;
+
       return {
         id: `${asString(part.id) || "patch"}:${createdAt}`,
         title:
@@ -1198,6 +1236,7 @@ export class SubagentTracker {
             ? `Patched ${files.length} file${files.length === 1 ? "" : "s"}`
             : "Patch applied",
         status: "done",
+        diffStats,
         createdAt,
         callID,
       };

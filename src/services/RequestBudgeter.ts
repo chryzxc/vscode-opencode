@@ -117,11 +117,12 @@ function getDayOfMonth(date: Date): number {
 export class RequestBudgeter {
   private config: BudgetConfig;
   private usage: Record<string, number>; // Key: date, Value: request count
+  private baselines: Record<string, number>; // Key: date, Value: baseline totalUsed
 
   constructor(config?: Partial<BudgetConfig>) {
     this.config = {
       enabled: true,
-      planId: 'pro',
+      planId: "pro",
       dailySafetyMargin: null,
       enforceLimit: false,
       warnThreshold: 0.8, // Warn at 80% of daily budget
@@ -129,6 +130,7 @@ export class RequestBudgeter {
     };
 
     this.usage = {};
+    this.baselines = {};
 
     this.loadConfig();
     this.loadUsage();
@@ -158,7 +160,9 @@ export class RequestBudgeter {
 
   public setPlan(planId: string): void {
     if (!DEFAULT_PLANS[planId]) {
-      throw new Error(`Unknown plan: ${planId}. Available: ${Object.keys(DEFAULT_PLANS).join(', ')}`);
+      throw new Error(
+        `Unknown plan: ${planId}. Available: ${Object.keys(DEFAULT_PLANS).join(", ")}`,
+      );
     }
     this.config.planId = planId;
     this.saveConfig();
@@ -171,14 +175,24 @@ export class RequestBudgeter {
   // ── Usage Tracking ────────────────────────────────────────────────────────────
 
   public loadUsage(): void {
-    const saved = readJsonFile<Record<string, number>>(USAGE_PATH);
+    const saved = readJsonFile<any>(USAGE_PATH);
     if (saved) {
-      this.usage = saved;
+      if (saved.usage && typeof saved.usage === "object") {
+        this.usage = saved.usage;
+        this.baselines = saved.baselines || {};
+      } else {
+        // Migrate from old format (just the usage record)
+        this.usage = saved;
+        this.baselines = {};
+      }
     }
   }
 
   public saveUsage(): void {
-    writeJsonFile(USAGE_PATH, this.usage);
+    writeJsonFile(USAGE_PATH, {
+      usage: this.usage,
+      baselines: this.baselines,
+    });
   }
 
   public recordRequest(): void {
@@ -195,13 +209,23 @@ export class RequestBudgeter {
     return this.usage[date] || 0;
   }
 
+  public getBaselineForDate(date: string): number | null {
+    return this.baselines[date] !== undefined ? this.baselines[date] : null;
+  }
+
+  public setBaselineForDate(date: string, totalUsed: number): void {
+    // Only set if not already set for today (unless it's a reset/explicit update)
+    this.baselines[date] = totalUsed;
+    this.saveUsage();
+  }
+
   public getTotalUsageThisMonth(): number {
     const today = new Date();
     const daysInMonth = getDaysInMonth(today);
 
     let total = 0;
     for (let day = 1; day <= daysInMonth; day++) {
-      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       total += this.usage[dateStr] || 0;
     }
     return total;
@@ -211,7 +235,7 @@ export class RequestBudgeter {
 
   public getBudgetStatus(): BudgetStatus {
     if (!this.config.enabled) {
-      throw new Error('Budgeter is disabled');
+      throw new Error("Budgeter is disabled");
     }
 
     const today = new Date();
@@ -229,9 +253,10 @@ export class RequestBudgeter {
     // Daily allowance is the minimum of:
     // 1. Recommended daily limit (even spread)
     // 2. Configured safety margin (if user wants to be more conservative)
-    const dailyAllowance = this.config.dailySafetyMargin !== null
-      ? Math.min(recommendedDailyLimit, this.config.dailySafetyMargin)
-      : recommendedDailyLimit;
+    const dailyAllowance =
+      this.config.dailySafetyMargin !== null
+        ? Math.min(recommendedDailyLimit, this.config.dailySafetyMargin)
+        : recommendedDailyLimit;
 
     const todayStr = getTodayDate();
     const usedToday = this.usage[todayStr] || 0;
@@ -239,19 +264,21 @@ export class RequestBudgeter {
     const remainingMonthly = Math.max(0, monthlyQuota - totalUsedSoFar);
 
     // Project monthly usage based on current daily rate
-    const projectedMonthlyUsage = totalUsedSoFar + (usedToday * daysRemaining);
+    const projectedMonthlyUsage = totalUsedSoFar + usedToday * daysRemaining;
 
     // Check if we're on track
-    const expectedUsageByNow = Math.ceil((monthlyQuota / daysInMonth) * dayOfMonth);
+    const expectedUsageByNow = Math.ceil(
+      (monthlyQuota / daysInMonth) * dayOfMonth,
+    );
     const onTrack = totalUsedSoFar <= expectedUsageByNow;
 
     // Determine warning level
     const usagePercent = dailyAllowance > 0 ? usedToday / dailyAllowance : 1;
-    let warningLevel: 'ok' | 'warning' | 'critical' = 'ok';
+    let warningLevel: "ok" | "warning" | "critical" = "ok";
     if (usagePercent >= 1) {
-      warningLevel = 'critical';
+      warningLevel = "critical";
     } else if (usagePercent >= this.config.warnThreshold) {
-      warningLevel = 'warning';
+      warningLevel = "warning";
     }
 
     return {
@@ -287,7 +314,7 @@ export class RequestBudgeter {
     const daily = status.currentDailyBudget;
 
     if (!daily) {
-      return { allowed: false, reason: 'Could not calculate daily budget' };
+      return { allowed: false, reason: "Could not calculate daily budget" };
     }
 
     if (daily.isExceeded) {
@@ -334,10 +361,11 @@ export class RequestBudgeter {
   } {
     const status = this.getBudgetStatus();
     const plan = this.getPlan();
+    const totalUsed = this.getTotalUsageThisMonth();
 
     return {
-      totalUsed: status.getTotalUsageThisMonth(),
-      totalRemaining: Math.max(0, plan.monthlyQuota - status.getTotalUsageThisMonth()),
+      totalUsed: totalUsed,
+      totalRemaining: Math.max(0, plan.monthlyQuota - totalUsed),
       usedToday: status.currentDailyBudget?.used ?? 0,
       dailyAllowance: status.currentDailyBudget?.dailyAllowance ?? 0,
       remainingToday: status.currentDailyBudget?.remaining ?? 0,
@@ -354,7 +382,10 @@ export class RequestBudgeter {
     const status = this.getBudgetStatus();
     const daysRemaining = status.daysRemaining;
     const plan = this.getPlan();
-    const remainingQuota = Math.max(0, plan.monthlyQuota - status.getTotalUsageThisMonth());
+    const remainingQuota = Math.max(
+      0,
+      plan.monthlyQuota - this.getTotalUsageThisMonth(),
+    );
 
     if (daysRemaining <= 0) {
       return 0;
@@ -371,26 +402,37 @@ export class RequestBudgeter {
     const advice: string[] = [];
 
     if (!status.onTrack) {
-      advice.push('⚠️  You\'re using requests faster than planned. Consider reducing usage to avoid running out.');
+      advice.push(
+        "⚠️  You're using requests faster than planned. Consider reducing usage to avoid running out.",
+      );
     }
 
     if (status.projectedMonthlyUsage > status.monthlyQuota) {
-      advice.push(`🚨 At your current rate, you'll run out ${status.daysRemaining} days early! Reduce to ${status.recommendedDailyLimit} requests/day.`);
+      advice.push(
+        `🚨 At your current rate, you'll run out ${status.daysRemaining} days early! Reduce to ${status.recommendedDailyLimit} requests/day.`,
+      );
     }
 
     const optimalDaily = this.getOptimalDailyLimit();
     const currentDaily = status.currentDailyBudget?.dailyAllowance ?? 0;
 
     if (optimalDaily < currentDaily && optimalDaily > 0) {
-      advice.push(`💡 Consider reducing to ${optimalDaily} requests/day to last the month.`);
+      advice.push(
+        `💡 Consider reducing to ${optimalDaily} requests/day to last the month.`,
+      );
     }
 
-    if (status.daysRemaining <= 5 && status.currentDailyBudget?.remaining === 0) {
-      advice.push('📅 Month is almost over. Your quota will reset soon!');
+    if (
+      status.daysRemaining <= 5 &&
+      status.currentDailyBudget?.remaining === 0
+    ) {
+      advice.push("📅 Month is almost over. Your quota will reset soon!");
     }
 
     if (advice.length === 0) {
-      advice.push('✅ You\'re on track! Keep using requests at your current pace.');
+      advice.push(
+        "✅ You're on track! Keep using requests at your current pace.",
+      );
     }
 
     return advice;
@@ -420,7 +462,7 @@ export class RequestBudgeter {
   public resetConfig(): void {
     this.config = {
       enabled: true,
-      planId: 'pro',
+      planId: "pro",
       dailySafetyMargin: null,
       enforceLimit: false,
       warnThreshold: 0.8,

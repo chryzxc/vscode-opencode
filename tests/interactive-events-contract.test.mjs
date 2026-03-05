@@ -27,6 +27,8 @@ test('structured output schema supports interactive event types', () => {
   );
 
   assert.match(schemaBody, /interactiveEvents/, 'schema should declare interactiveEvents');
+  assert.match(schemaBody, /question:\s*\{/, 'schema should declare a typed question payload');
+  assert.match(schemaBody, /options:\s*\{/, 'schema should declare question options payload');
   assert.match(schemaBody, /"question"/, 'schema should allow question response type');
   assert.match(schemaBody, /"quick_actions"/, 'schema should allow quick_actions interactive event type');
   assert.match(schemaBody, /"confirm"/, 'schema should allow confirm interactive event type');
@@ -40,15 +42,12 @@ test('provider accepts interactive responses from webview', () => {
 test('frontend normalizes and stores interactive events', () => {
   assert.match(handlerSource, /toInteractiveEvents\(/, 'message handler should map structured output to interactive events');
   assert.match(handlerSource, /SET_INTERACTIVE_EVENTS/, 'message handler should update interactive event state');
-  assert.match(handlerSource, /detectInteractiveEventsFromText\(/, 'message handler should detect interactive events from plain assistant text');
-  assert.match(handlerSource, /collectOptionsInDirection\(/, 'question detection should scan option lists around the question');
-  assert.match(handlerSource, /extractInlineOrChoices\(/, 'question detection should parse inline A-or-B options');
-  assert.match(handlerSource, /isLikelyYesNoQuestion\(/, 'question detection should classify yes-no prompts');
-  assert.match(handlerSource, /stripMarkdownFormatting\(/, 'question detection should sanitize markdown noise in choices');
-  assert.match(handlerSource, /auto-question-/, 'auto-detected questions should be assigned deterministic ids');
+  assert.match(handlerSource, /typeRaw\s*===\s*'question'\s*\|\|\s*typeRaw\s*===\s*'interactive'/, 'interactive payloads should be gated by typed responseType');
+  assert.doesNotMatch(handlerSource, /return\s+detectInteractiveEventsFromText\(/, 'plain assistant text should not auto-generate interactive popups');
+  assert.doesNotMatch(handlerSource, /const\s+interactiveEvents\s*=\s*detectInteractiveEventsFromText\(/, 'streaming completion should not infer popup questions from text heuristics');
 });
 
-test('input wrapper renders top popup choices and posts interactiveResponse', () => {
+test('input wrapper renders top popup choices and posts batchInteractiveResponse', () => {
   const inputBody = extractFunctionBody(
     panelSource,
     'export function InputWrapper()',
@@ -56,7 +55,7 @@ test('input wrapper renders top popup choices and posts interactiveResponse', ()
 
   assert.match(inputBody, /activeInteractiveEvent/, 'input wrapper should compute active interactive event');
   assert.match(inputBody, /Quick Input/, 'input wrapper should render a top prompt popup');
-  assert.match(inputBody, /type: "interactiveResponse"/, 'popup choice clicks should post interactiveResponse');
+  assert.match(inputBody, /type:\s*"batchInteractiveResponse"/, 'popup choice clicks should post batchInteractiveResponse');
 });
 
 test('interactive event domain types are defined', () => {

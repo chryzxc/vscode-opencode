@@ -51,7 +51,7 @@ test('InputWrapper renders Stepper navigation controls', () => {
   // Verify "Next" button logic
   assert.match(
     body,
-    /disabled=\{currentInteractiveIndex\s*===\s*displayInteractiveEvents\.length\s*-\s*1\}/,
+    /disabled=\{[\s\n]*currentInteractiveIndex\s*===\s*displayInteractiveEvents(?:\.length)?\s*-\s*1[\s\n]*\}/,
     'Next button should be disabled at the last question',
   );
 
@@ -73,7 +73,7 @@ test('InputWrapper integrates MarkdownRenderer and Capitalization', () => {
   // Verify choice capitalization
   assert.match(
     body,
-    /\{capitalizeFirst\(option\.label\)\}/,
+    /\{capitalizeFirst\(\s*option\.(?:label|text)\s*\)\}/,
     'Option labels should be capitalized using capitalizeFirst helper',
   );
 });
@@ -98,7 +98,7 @@ test('InputWrapper supports Custom Answer mode', () => {
   // Verify submission in custom mode
   assert.match(
     body,
-    /submitInteractiveResponse\(customValue/,
+    /submitInteractiveResponse\(\s*customValue/,
     'Submitting in custom mode should send the customValue',
   );
 });
@@ -116,7 +116,7 @@ test('InputWrapper batches interactive responses', () => {
   // Verify batch submission logic
   assert.match(
     body,
-    /type:\s*'batchInteractiveResponse'/,
+    /type:\s*['"]batchInteractiveResponse['"]/,
     'InputWrapper should send batchInteractiveResponse type',
   );
 

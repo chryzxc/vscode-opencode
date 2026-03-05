@@ -5,6 +5,8 @@ import type {
   AppState,
   AttachmentItem,
   InteractiveEvent,
+  LspServerInfo,
+  McpServerInfo,
   ThinkingLevel,
   TodoItem,
   ContextItem,
@@ -68,7 +70,9 @@ export const initialState: AppState = {
   selectedSubagentId: null,
   subagentsPanelOpen: true,
   interactiveEvents: [],
-  budgetInfo: null
+  budgetInfo: null,
+  mcpServers: [],
+  lspServers: []
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
@@ -149,7 +153,9 @@ export type AppAction =
   | { type: "CLEAR_SUBAGENTS_FOR_SESSION" }
   | { type: "SET_INTERACTIVE_EVENTS"; payload: InteractiveEvent[] }
   | { type: "DISMISS_INTERACTIVE_EVENT"; payload: string }
-  | { type: "SET_BUDGET_INFO"; payload: import("./types").BudgetInfo | null };
+  | { type: "SET_BUDGET_INFO"; payload: import("./types").BudgetInfo | null }
+  | { type: "SET_MCP_SERVERS"; payload: McpServerInfo[] }
+  | { type: "SET_LSP_SERVERS"; payload: LspServerInfo[] };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   return {
@@ -521,8 +527,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "SET_BUDGET_INFO":
-      console.log("[store] SET_BUDGET_INFO action:", action.payload);
       return { ...state, budgetInfo: action.payload };
+    case "SET_MCP_SERVERS":
+      return { ...state, mcpServers: action.payload };
+    case "SET_LSP_SERVERS":
+      return { ...state, lspServers: action.payload };
     default:
       return state;
   }

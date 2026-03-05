@@ -381,7 +381,7 @@ test('AssistantMessage uses type-safe helpers instead of type assertions', () =>
 test('StreamingCard visibility is enhanced for early display', () => {
   const streamingCardBody = extractFunctionBody(
     streamingComponentsSource,
-    'export function StreamingCard'
+    'export function StreamingCard('
   );
 
   assert.ok(streamingCardBody, 'StreamingCard function body should be extracted');
@@ -391,6 +391,12 @@ test('StreamingCard visibility is enhanced for early display', () => {
     streamingCardBody,
     /const visible = useMemo/,
     'Should use useMemo for visibility calculation'
+  );
+
+  assert.match(
+    streamingCardBody,
+    /\[streaming, isProcessing, isContiguous\]/,
+    'Should use useMemo with correct dependencies including isContiguous'
   );
 
   assert.match(

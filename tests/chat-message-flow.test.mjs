@@ -47,9 +47,9 @@ test('message thread renders user and assistant content including image thumbnai
   assert.match(messageSource, /message\.images\s*&&\s*message\.images\.length\s*>\s*0/, 'UserMessage should guard image rendering with a non-empty images check');
   assert.match(messageSource, /<img\s+key=\{src\}\s+src=\{src\}\s+alt="attachment"/, 'UserMessage should render image thumbnails for attachments');
 
-  assert.match(chatShellSource, /state\.messages\.map\(\(msg:\s*Message\)\s*=>/, 'Chat shell must iterate and render message thread');
+  assert.match(chatShellSource, /state\.messages\.map\(\(msg:\s*Message(?:,\s*idx:\s*number)?\)\s*=>/, 'Chat shell must iterate and render message thread');
   assert.match(chatShellSource, /return\s*<UserMessage\s+key=\{key\}\s+message=\{msg\}\s*\/>/, 'chat shell should render user messages with UserMessage component');
-  assert.match(chatShellSource, /return\s*<AssistantMessage\s+key=\{key\}\s+message=\{msg\}\s*\/>/, 'chat shell should render assistant messages with AssistantMessage component');
+  assert.match(chatShellSource, /return\s*\([\s\S]*<AssistantMessage[\s\S]*key=\{key\}[\s\S]*message=\{msg\}/, 'chat shell should render assistant messages with AssistantMessage component');
 });
 
 test('error events clear processing and streaming state to avoid stuck thinking UI', () => {

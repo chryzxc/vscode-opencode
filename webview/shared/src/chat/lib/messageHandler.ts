@@ -8,6 +8,9 @@ import type {
   FileResult,
   InteractiveChoice,
   InteractiveEvent,
+  LspServerInfo,
+  McpServerInfo,
+  McpServerStatus,
   Message,
   QueueItem,
   QuotaData,
@@ -641,21 +644,59 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
       const stateRec = asRecord(rec.state);
       const inputRec = asRecord(stateRec?.['input']);
       const filePath =
-        asString(inputRec?.['file']) ||
-        asString(inputRec?.['path']) ||
-        asString(inputRec?.['filename']) ||
-        asString(inputRec?.['TargetFile']) ||
+        asString(inputRec?.["file"]) ||
+        asString(inputRec?.["path"]) ||
+        asString(inputRec?.["filename"]) ||
+        asString(inputRec?.["TargetFile"]) ||
+        asString(inputRec?.["AbsolutePath"]) ||
+        asString(inputRec?.["uri"]) ||
+        asString(inputRec?.["DirectoryPath"]) ||
+        asString(inputRec?.["SearchPath"]) ||
+        asString(inputRec?.["SearchDirectory"]) ||
         asString(rec.filePath) ||
         undefined;
+      const metaValues = [
+        asString(inputRec?.["CommandId"]),
+        asString(inputRec?.["CommandLine"]),
+        asString(inputRec?.["Query"]),
+        asString(inputRec?.["Pattern"]),
+        asString(inputRec?.["pattern"]),
+        asString(inputRec?.["command"]),
+        asString(inputRec?.["query"]),
+        asString(inputRec?.["url"]),
+        asString(inputRec?.["Url"]),
+      ].filter(Boolean);
       const title = asString(rec.title) || (tool ? `${tool}` : 'Tool call');
       const statusStr = asString(stateRec?.['status'] ?? rec.status);
+
+      let diffStats: { added: number; deleted: number } | undefined = undefined;
+      const resultRec = asRecord(stateRec?.["result"]);
+      if (resultRec?.diffStats) {
+        const ds = asRecord(resultRec.diffStats);
+        if (ds) {
+          diffStats = {
+            added: asNumber(ds.added) || 0,
+            deleted: asNumber(ds.deleted) || 0,
+          };
+        }
+      } else if (rec.diffStats) {
+        const ds = asRecord(rec.diffStats);
+        if (ds) {
+          diffStats = {
+            added: asNumber(ds.added) || 0,
+            deleted: asNumber(ds.deleted) || 0,
+          };
+        }
+      }
+
       fromParts.push({
-        type: 'tool',
+        type: "tool",
         title,
         content: filePath || undefined,
-        status: statusStr || 'done',
-        meta: asString(rec.meta) || undefined
-      });
+        status: statusStr || "done",
+        meta: asString(rec.meta) || metaValues[0] || undefined,
+        diffStats,
+      } as any);
     }
     if (fromParts.length > 0) {
       normalized.progressEvents = fromParts;
@@ -1260,7 +1301,7 @@ function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
   if (fromStructured.length > 0) {
     return fromStructured;
   }
-  return detectInteractiveEventsFromText(extractMessageText(message), message);
+  return [];
 }
 
 function buildStreamingMessage(streaming: StreamingState): Message {
@@ -1428,16 +1469,32 @@ function handleStreamEvent(
       }
 
       const partType = asString(part.type).toLowerCase();
-      const delta =
-        asString(properties?.delta) || asString(payload.delta) || asString(part.delta);
+      const deltaChunk =
+        asRichString(properties?.delta) ||
+        asRichString(payload.delta) ||
+        asRichString(part.delta);
       const reasoningChunk =
-        asString(part.reasoning) || asString(part.thought) || asString(part.thinking);
+        asRichString(part.reasoning) ||
+        asRichString(part.thought) ||
+        asRichString(part.thinking);
       const textChunk =
-        structuredText || delta || asRichString(part.text) || asRichString(part.content);
+        structuredText ||
+        deltaChunk ||
+        asRichString(part.text) ||
+        asRichString(part.content) ||
+        asRichString(properties?.text) ||
+        asRichString(properties?.content);
+      const isProgressPartType =
+        partType === "tool" ||
+        partType === "step-start" ||
+        partType === "step-finish" ||
+        partType === "patch";
 
       const isReasoning = structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk;
       if (isReasoning) {
-        const nextReasoning = sanitizeReasoningChunk(reasoningChunk || structuredText || delta);
+        const nextReasoning = sanitizeReasoningChunk(
+          reasoningChunk || structuredText || deltaChunk,
+        );
         if (nextReasoning) {
           dispatch({
             type: 'UPDATE_STREAMING_REASONING',
@@ -1445,22 +1502,25 @@ function handleStreamEvent(
           });
         }
       } else if (
-        structuredKind === 'message' ||
-        partType === 'text' ||
-        (!partType && structuredKind !== 'progress')
+        structuredKind === "message" ||
+        partType === "text" ||
+        (!!textChunk && !isProgressPartType) ||
+        (!partType && structuredKind !== "progress")
       ) {
         // Ignore id-like echoes that can appear before assistant output begins.
         if (isOpaqueIdLike(textChunk.trim())) {
-          dispatch({ type: 'SET_PROCESSING', payload: true });
+          dispatch({ type: "SET_PROCESSING", payload: true });
           break;
         }
         const streamingState = getState().streaming;
         const contentEmpty = !streamingState || !streamingState.content.trim();
-        const cleanedChunk = contentEmpty ? stripLeadingUserEcho(textChunk, getState()) : textChunk;
+        const cleanedChunk = contentEmpty
+          ? stripLeadingUserEcho(textChunk, getState())
+          : textChunk;
         if (cleanedChunk) {
           dispatch({
-            type: 'UPDATE_STREAMING_CONTENT',
-            payload: { content: cleanedChunk, append: true }
+            type: "UPDATE_STREAMING_CONTENT",
+            payload: { content: cleanedChunk, append: true },
           });
         }
       }
@@ -1480,16 +1540,25 @@ function handleStreamEvent(
       }
 
       if (partType === 'step-finish' && structuredKind !== 'thinking') {
+        const diffStatsRec = asRecord(part.diffStats);
+        const diffStats = diffStatsRec
+          ? {
+              added: asNumber(diffStatsRec.added) || 0,
+              deleted: asNumber(diffStatsRec.deleted) || 0,
+            }
+          : undefined;
+
         dispatch({
-          type: 'UPDATE_STREAMING_STEP',
+          type: "UPDATE_STREAMING_STEP",
           payload: {
             id: asString(part.id) || undefined,
             callID: asString(part.callID) || undefined,
             patch: {
-              status: 'done',
-              duration: asOptionalNumber(asRecord(part.timing)?.duration)
-            }
-          }
+              status: "done",
+              duration: asOptionalNumber(asRecord(part.timing)?.duration),
+              diffStats,
+            },
+          },
         });
       }
 
@@ -1502,8 +1571,24 @@ function handleStreamEvent(
           asString(inputObj?.path) ||
           asString(inputObj?.filename) ||
           asString(inputObj?.TargetFile) ||
+          asString(inputObj?.AbsolutePath) ||
+          asString(inputObj?.uri) ||
+          asString(inputObj?.DirectoryPath) ||
+          asString(inputObj?.SearchPath) ||
+          asString(inputObj?.SearchDirectory) ||
           asString(part.filePath) ||
           undefined;
+        const metaValues = [
+          asString(inputObj?.CommandId),
+          asString(inputObj?.CommandLine),
+          asString(inputObj?.Query),
+          asString(inputObj?.Pattern),
+          asString(inputObj?.pattern),
+          asString(inputObj?.command),
+          asString(inputObj?.query),
+          asString(inputObj?.url),
+          asString(inputObj?.Url),
+        ].filter(Boolean);
         const callID = asString(part.callID) || undefined;
         const title = asString(part.title) || (tool ? `Running ${tool}...` : inferredStepTitle(part));
 
@@ -1512,35 +1597,46 @@ function handleStreamEvent(
         );
         if (!existing) {
           dispatch({
-            type: 'ADD_STREAMING_STEP',
+            type: "ADD_STREAMING_STEP",
             payload: {
               id: asString(part.id) || undefined,
               callID,
               title,
-              type: 'tool',
-              status: asString(part.status) === 'error' ? 'error' : 'pending',
-              meta: asString(part.meta) || undefined,
+              type: "tool",
+              status: asString(part.status) === "error" ? "error" : "pending",
+              meta: asString(part.meta) || metaValues[0] || undefined,
               filePath,
-              startTime: Date.now()
-            }
+              startTime: Date.now(),
+            },
           });
         } else {
+          // Determine the final status for this tool step.
+          // The backend reports completion in two places:
+          //   1. part.status === 'done' (direct top-level field)
+          //   2. part.state.status === 'done' (nested state object)
+          //   3. part.state.result exists (implicit done — tool produced a result)
+          const stateStatus = asString(stateObj?.status);
+          const hasResult = stateObj && "result" in stateObj;
+          const resolvedStatus =
+            asString(part.status) === "done" ||
+            stateStatus === "done" ||
+            hasResult
+              ? "done"
+              : asString(part.status) === "error" || stateStatus === "error"
+                ? "error"
+                : existing.status; // keep current status if no new info
+
           dispatch({
-            type: 'UPDATE_STREAMING_STEP',
+            type: "UPDATE_STREAMING_STEP",
             payload: {
               callID,
               patch: {
                 title,
-                status:
-                  asString(part.status) === 'done'
-                    ? 'done'
-                    : asString(part.status) === 'error'
-                      ? 'error'
-                      : existing.status,
-                meta: asString(part.meta) || existing.meta,
-                filePath: filePath || existing.filePath
-              }
-            }
+                status: resolvedStatus,
+                meta: asString(part.meta) || metaValues[0] || existing.meta,
+                filePath: filePath || existing.filePath,
+              },
+            },
           });
         }
 
@@ -1607,23 +1703,7 @@ function handleStreamEvent(
         }
       }
 
-      if (finish && !structuredOutput) {
-        const streamingState = getState().streaming;
-        const content = streamingState?.content || '';
-        if (content.trim()) {
-          const interactiveEvents = detectInteractiveEventsFromText(content, {
-            role: 'assistant',
-            content,
-            info: {
-              id: messageId || undefined,
-              role: 'assistant'
-            }
-          });
-          if (interactiveEvents.length > 0) {
-            dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents });
-          }
-        }
-      }
+
 
       if (finish) {
         dispatch({ type: 'FINISH_STREAMING' });
@@ -1806,11 +1886,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     }
 
     const type = asString(data.type);
-
-    // Log all incoming message types for debugging
-    if (type === 'budgetInfo' || type === 'quotaData' || type === 'quotaUpdate') {
-      console.log(`[messageHandler] Received message type: ${type}`, data);
-    }
 
     // Set processing state BEFORE handling message types to ensure streaming state is created early
     if (asBoolean(data.processing, false)) {
@@ -2058,13 +2133,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       }
       case "error": {
         const errorMsg = asString(data.message, "Unknown error");
-        dispatch({
-          type: "ADD_ERROR_MESSAGE",
-          payload: errorMsg,
-        });
 
         // If we were in the middle of a stream, preserve it as a message so the user
         // can see partial output + the error banner + retry.
+        // NOTE: In that case, the error is shown via partialMessage.error inside
+        // AssistantMessage, so we must NOT also dispatch ADD_ERROR_MESSAGE — that
+        // would render a second, duplicate "Request Failed" banner above the message.
         const currentStreaming = getState().streaming;
         if (currentStreaming) {
           const partialMessage: Message = {
@@ -2080,7 +2154,17 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             error: errorMsg,
           };
           const messages = getState().messages;
-          dispatch({ type: "SET_MESSAGES", payload: [...messages, partialMessage] });
+          dispatch({
+            type: "SET_MESSAGES",
+            payload: [...messages, partialMessage],
+          });
+        } else {
+          // No active stream — show the error as a top-level banner since there is no
+          // message card to attach it to.
+          dispatch({
+            type: "ADD_ERROR_MESSAGE",
+            payload: errorMsg,
+          });
         }
 
         dispatch({ type: "SET_PROCESSING", payload: false });
@@ -2177,13 +2261,55 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       }
       case "quotaData":
       case "quotaUpdate": {
-        console.log('[messageHandler] Received quotaData/quotaUpdate message:', data);
         dispatch({ type: "SET_QUOTA_DATA", payload: data.data as QuotaData });
         break;
       }
       case "budgetInfo": {
-        console.log('[messageHandler] Received budgetInfo message:', data);
         dispatch({ type: "SET_BUDGET_INFO", payload: data.data as BudgetInfo });
+        break;
+      }
+      case "mcpStatus": {
+        // Payload: { servers: Record<string, { status: string; error?: string }>, toolIds?: string[] }
+        const serversRec = asRecord(data.servers);
+        const toolIds: string[] = Array.isArray(data.toolIds)
+          ? (data.toolIds as unknown[]).filter(
+              (t): t is string => typeof t === "string",
+            )
+          : [];
+        if (serversRec) {
+          const mcpServers: McpServerInfo[] = Object.entries(serversRec).map(
+            ([name, raw]) => {
+              const entry = asRecord(raw);
+              const status =
+                (asString(entry?.status) as McpServerStatus) || "disconnected";
+              const error = entry?.error ? asString(entry.error) : undefined;
+              // Associate tools whose ID starts with `name/` convention
+              const serverTools = toolIds.filter(
+                (id) =>
+                  id === name ||
+                  id.startsWith(`${name}/`) ||
+                  id.startsWith(`${name}_`),
+              );
+              return { name, status, error, tools: serverTools };
+            },
+          );
+          dispatch({ type: "SET_MCP_SERVERS", payload: mcpServers });
+        }
+        break;
+      }
+      case "lspStatus": {
+        // Payload: { servers: Array<LspStatus> }
+        const rawServers = Array.isArray(data.servers) ? data.servers : [];
+        const lspServers: LspServerInfo[] = rawServers.map((raw) => {
+          const entry = asRecord(raw) ?? {};
+          return {
+            id: asString(entry.id),
+            name: asString(entry.name),
+            root: asString(entry.root),
+            status: asString(entry.status) === "error" ? "error" : "connected",
+          };
+        });
+        dispatch({ type: "SET_LSP_SERVERS", payload: lspServers });
         break;
       }
       case "todoUpdate": {
@@ -2249,7 +2375,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       default:
-        console.log('[messageHandler] Unhandled message type:', type, 'Full message:', data);
         break;
     }
 

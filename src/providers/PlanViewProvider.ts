@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as path from "path";
-import { PlanParser } from '../services/PlanParser';
 
 export class PlanViewProvider {
   public static readonly viewType = 'opencode.planView';
@@ -12,12 +11,22 @@ export class PlanViewProvider {
   // Keep comments as a simple local structure to avoid cross-package import issues
   private _commentsByPlan: Map<string, { id: string; anchor: { startLine: number; endLine: number; selectedText: string }; text: string; createdAt: number; }[]> = new Map();
 
-  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, content: string) {
+  private _currentContent: string;
+  private _currentTitle: string;
+
+  private constructor(
+    panel: vscode.WebviewPanel,
+    extensionUri: vscode.Uri,
+    content: string,
+    title?: string,
+  ) {
     this._panel = panel;
     this._extensionUri = extensionUri;
+    this._currentContent = content;
+    this._currentTitle = title?.trim() || this.deriveTitle(content) || 'Implementation Plan';
 
     // Set the webview's initial html content
-    this._update(content);
+    this._update(content, title);
 
     // Listen for when the panel is disposed
     // This happens when the user closes the panel or when the panel is closed programmatically
@@ -27,7 +36,7 @@ export class PlanViewProvider {
     this._panel.onDidChangeViewState(
       () => {
         if (this._panel.visible) {
-          this._update(content);
+          this._update(this._currentContent, this._currentTitle);
         }
       },
       null,
@@ -97,7 +106,12 @@ export class PlanViewProvider {
     );
   }
 
-  public static show(extensionUri: vscode.Uri, content: string) {
+  public static show(
+    extensionUri: vscode.Uri,
+    payload: string | { content?: string; title?: string },
+  ) {
+    const content = typeof payload === 'string' ? payload : payload?.content ?? '';
+    const title = typeof payload === 'string' ? undefined : payload?.title;
     const column = vscode.window.activeTextEditor
       ? vscode.window.activeTextEditor.viewColumn
       : undefined;
@@ -105,14 +119,14 @@ export class PlanViewProvider {
     // If we already have a panel, show it.
     if (PlanViewProvider.currentPanel) {
       PlanViewProvider.currentPanel._panel.reveal(column);
-      PlanViewProvider.currentPanel._update(content);
+      PlanViewProvider.currentPanel._update(content, title);
       return;
     }
 
     // Otherwise, create a new panel.
     const panel = vscode.window.createWebviewPanel(
       PlanViewProvider.viewType,
-      'Implementation Plan',
+      title?.trim() || 'Implementation Plan',
       column || vscode.ViewColumn.One,
       {
         enableScripts: true,
@@ -124,7 +138,7 @@ export class PlanViewProvider {
       }
     );
 
-    PlanViewProvider.currentPanel = new PlanViewProvider(panel, extensionUri, content);
+    PlanViewProvider.currentPanel = new PlanViewProvider(panel, extensionUri, content, title);
   }
 
   public static closeCurrentPanel() {
@@ -145,15 +159,22 @@ export class PlanViewProvider {
     }
   }
 
-  private _update(content: string) {
-    const webview = this._panel.webview;
-    const plan = PlanParser.parse(content);
-    console.log("Parsed Plan:", JSON.stringify(plan, null, 2));
-    this._panel.title = `Plan: ${plan.goal || 'OpenCode Implementation Plan'}`;
-    this._panel.webview.html = this._getHtmlForWebview(webview, plan);
+  private deriveTitle(content: string): string | undefined {
+    const match = content.match(/^#{1,3}\s+(.+)$/m);
+    const value = match?.[1]?.trim();
+    return value || undefined;
   }
 
-  private _getHtmlForWebview(webview: vscode.Webview, plan: import('../types/Plan').ImplementationPlan) {
+  private _update(content: string, explicitTitle?: string) {
+    this._currentContent = content;
+    const webview = this._panel.webview;
+    this._currentTitle =
+      explicitTitle?.trim() || this.deriveTitle(content) || this._currentTitle || 'Implementation Plan';
+    this._panel.title = this._currentTitle;
+    this._panel.webview.html = this._getHtmlForWebview(webview, content, this._currentTitle);
+  }
+
+  private _getHtmlForWebview(webview: vscode.Webview, content: string, title: string) {
 
     const scriptUri = webview.asWebviewUri(vscode.Uri.file(
       path.join(this._extensionUri.fsPath, 'webview', 'shared', 'dist', 'plan.js')
@@ -164,12 +185,13 @@ export class PlanViewProvider {
 
     const nonce = getNonce();
     // Inject wrapper payload: raw + parsed + comments + revision
-    const planId = plan.goal || "default";
+    const planId = title || "default";
     const planData = {
-      raw: plan.rawContent ?? "",
-      parsed: plan,
+      raw: content,
+      title,
       comments: this._commentsByPlan.get(planId) ?? [],
       revision: 0,
+      planId,
     };
     const planDataJson = JSON.stringify(planData);
 

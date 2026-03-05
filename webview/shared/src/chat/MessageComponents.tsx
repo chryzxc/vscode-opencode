@@ -14,6 +14,7 @@ import {
 import * as Popover from "@radix-ui/react-popover";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 
 import { cn } from "@/utils";
 import { Badge } from "@/components/ui/badge";
@@ -229,7 +230,8 @@ function summaryText(message?: Message): string {
   return title || body;
 }
 
-function modelLabel(message: Message): string {
+function modelLabel(message?: Message): string {
+  if (!message) return "assistant";
   // Check nested info structure first (from streaming)
   const modelObj = message.info?.model;
   if (modelObj && typeof modelObj === "object") {
@@ -240,7 +242,6 @@ function modelLabel(message: Message): string {
   }
   // Check top-level model object (from persisted messages)
   if (
-    !modelObj &&
     typeof message.model === "object" &&
     message.model !== null
   ) {
@@ -392,7 +393,7 @@ function progressItemsFromSteps(
       const title = step.title;
       const status = normalizeProgressStatus(step.status);
       const meta = step.meta;
-      const filePath =
+      const stepFilePath =
         "filePath" in step
           ? (step as StreamingStep).filePath
           : ((step as MessageStep).content ?? undefined);
@@ -401,7 +402,7 @@ function progressItemsFromSteps(
         const existing = stepMap.get(title)!;
         existing.status = status;
         if (meta) existing.meta = meta;
-        if (filePath) existing.filePath = filePath;
+        if (stepFilePath) existing.filePath = stepFilePath;
         if ("diffStats" in step) existing.diffStats = step.diffStats as { added: number; deleted: number };
       } else {
         stepMap.set(title, {
@@ -409,7 +410,7 @@ function progressItemsFromSteps(
           title,
           status,
           meta,
-          filePath,
+          filePath: stepFilePath,
           diffStats: "diffStats" in step ? (step.diffStats as { added: number; deleted: number }) : undefined,
         });
       }
@@ -515,12 +516,18 @@ function buildStreamingTimeline(
   }
 
   for (const item of progressItems) {
-    // Match back to the original step to read its streamSeq timestamp
+    // Match back to the original step to read its streamSeq timestamp.
+    // Use the first occurrence so we get the arrival time, not a later update.
     const step = streaming.steps.find((s) => s.title === item.title);
+    // NOTE: Fall back to MAX_SAFE_INTEGER (not 0) so that steps with
+    // no timestamp always sort AFTER thinking/content, never before.
+    const rawSeq = step?.streamSeq ?? step?.startTime;
     entries.push({
       kind: "step",
       item,
-      seq: step?.streamSeq ?? step?.startTime ?? 0,
+      // Add a tiny +1 offset so that a step arriving at the exact same
+      // millisecond as a thinking event always renders after it.
+      seq: rawSeq != null ? rawSeq + 1 : Number.MAX_SAFE_INTEGER,
     });
   }
 
@@ -655,18 +662,39 @@ function buildMessageTimeline(
   return blocks;
 }
 
-export function UserMessage({ message }: { message: Message }) {
+export function UserMessage({ message }: { message?: Message }) {
+  const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+  const userMessageRef = useRef<HTMLDivElement>(null);
   const rawContent =
-    message.content ?? message.text ?? messageBodyFromParts(message.parts);
+    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
   const content = sanitizeUserContent(rawContent);
-  const fileChips = (message.parts ?? [])
+  const fileChips = (message?.parts ?? [])
     .map((part) => part.filename ?? part.source?.path)
     .filter((value): value is string => !!value);
+
+  useEffect(() => {
+    const root = userMessageRef.current;
+    if (!root) return;
+
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLImageElement)) return;
+
+      const src = target.currentSrc || target.src;
+      if (!src) return;
+      setPreviewImageSrc(src);
+    };
+
+    root.addEventListener("click", onClick);
+    return () => root.removeEventListener("click", onClick);
+  }, []);
+
+  if (!message) return null;
 
   return (
     <div className="oc-message-enter mb-5 flex items-end justify-end gap-2.5 px-4">
       <div className="w-fit max-w-[78%]">
-        <div className="oc-msg-user">
+        <div className="oc-msg-user" ref={userMessageRef}>
           <div className="whitespace-pre-wrap text-xs leading-relaxed">
             {content}
           </div>
@@ -689,13 +717,20 @@ export function UserMessage({ message }: { message: Message }) {
                   key={src}
                   src={src}
                   alt="attachment"
-                  className="max-h-20 rounded-lg border border-oc-border"
+                  className="max-h-20 rounded-lg border border-oc-border cursor-zoom-in"
                 />
               ))}
             </div>
           )}
         </div>
       </div>
+      <ImagePreviewModal
+        isOpen={previewImageSrc !== null}
+        imageSrc={previewImageSrc}
+        imageAlt="Message image"
+        title="Image Preview"
+        onClose={() => setPreviewImageSrc(null)}
+      />
     </div>
   );
 }
@@ -861,8 +896,8 @@ export function SubagentProgressPopover({
                       Recent Steps
                     </span>
                     <div className="max-h-32 overflow-y-auto pr-1 space-y-2">
-                      {subagentDetail.progressEvents.slice(-3).reverse().map((event, idx) => (
-                        <div key={idx} className="flex flex-col gap-1 border-l-2 border-oc-border pl-2 py-0.5">
+                      {subagentDetail.progressEvents.slice(-3).reverse().map((event) => (
+                        <div key={event.id} className="flex flex-col gap-1 border-l-2 border-oc-border pl-2 py-0.5">
                           <span className="text-[10px] text-oc-text-soft leading-tight">
                             {event.title}
                           </span>
@@ -891,11 +926,13 @@ export function AssistantMessage({
     isContiguous?: boolean;
 }) {
   const dispatch = useAppDispatch();
-  const { subagentsByParentMessageId, subagentDetailsById } = useAppState();
-  const [showSubagents, setShowSubagents] = useState(false);
+  const { subagentsByParentMessageId, subagentDetailsById, selectedSubagentId } = useAppState();
+  const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [expandedSubagentId, setExpandedSubagentId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+  const messageBodyRef = useRef<HTMLDivElement>(null);
   const content = getMessageContent(message, streaming);
   const thoughtItems = useMemo(
     () =>
@@ -955,6 +992,49 @@ export function AssistantMessage({
   const visibleSubagents = showAllSubagents
     ? subagents
     : subagents.slice(0, 10);
+
+  useEffect(() => {
+    if (subagents.length === 0) {
+      setExpandedSubagentId(null);
+      dispatch({ type: "SELECT_SUBAGENT", payload: null });
+      return;
+    }
+
+    if (
+      selectedSubagentId &&
+      subagents.some((subagent) => subagent.id === selectedSubagentId)
+    ) {
+      setExpandedSubagentId(selectedSubagentId);
+      return;
+    }
+
+    if (!expandedSubagentId) {
+      const firstId = subagents[0].id;
+      setExpandedSubagentId(firstId);
+      dispatch({ type: "SELECT_SUBAGENT", payload: firstId });
+    }
+  }, [
+    subagents,
+    selectedSubagentId,
+    expandedSubagentId,
+    dispatch,
+  ]);
+
+  const subagentStatusCounts = useMemo(
+    () =>
+      subagents.reduce(
+        (acc, subagent) => {
+          const key = subagent.status;
+          if (key === "running") acc.running += 1;
+          else if (key === "done") acc.done += 1;
+          else if (key === "error") acc.error += 1;
+          else acc.pending += 1;
+          return acc;
+        },
+        { pending: 0, running: 0, done: 0, error: 0 },
+      ),
+    [subagents],
+  );
   const hasStreamingActivity = !!(
     streaming &&
     ((streaming.content && String(streaming.content).trim().length > 0) ||
@@ -992,7 +1072,11 @@ export function AssistantMessage({
     setTimeout(() => setCopied(false), 1200);
   };
   const toggleSubagentDetails = (subagentId: string) => {
-    setExpandedSubagentId(prev => prev === subagentId ? null : subagentId);
+    setExpandedSubagentId((prev) => {
+      const next = prev === subagentId ? null : subagentId;
+      dispatch({ type: "SELECT_SUBAGENT", payload: next });
+      return next;
+    });
   };
   const copyRefs = async (detail: SubagentDetail) => {
     const refs = [
@@ -1012,13 +1096,32 @@ export function AssistantMessage({
       .join('\n');
     await navigator.clipboard.writeText(refs);
   };
+
+  useEffect(() => {
+    const root = messageBodyRef.current;
+    if (!root) return;
+
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLImageElement)) return;
+      if (!target.closest(".markdown-body")) return;
+
+      const src = target.currentSrc || target.src;
+      if (!src) return;
+      setPreviewImageSrc(src);
+    };
+
+    root.addEventListener("click", onClick);
+    return () => root.removeEventListener("click", onClick);
+  }, []);
+
   return (
     <div
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
       className={`oc-message-enter ${isContiguous ? 'mb-4 mt-[-12px]' : 'mb-5'} px-4`}
     >
-      <div className="oc-msg-assistant">
+      <div className="oc-msg-assistant" ref={messageBodyRef}>
         {!isContiguous && (
           <div className="mb-2.5 flex items-center justify-between gap-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -1036,7 +1139,7 @@ export function AssistantMessage({
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
                   style={{ animationDelay: "300ms" }}
                 />
-                <span className="ml-1 oc-msg-model-label">Thinking...</span>
+                  <span className="ml-1 oc-msg-model-label italic">Thinking...</span>
               </div>
             ) : (
               <>
@@ -1046,7 +1149,7 @@ export function AssistantMessage({
                       </div>
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="oc-msg-agent-name px-2 py-0.5 rounded-md font-semibold text-oc-sm text-oc-agent-custom bg-oc-agent-custom truncate shrink-0">
-                          {agentName}
+                          {agentName !== "assistant" ? agentName : "AI"}
                         </span>
                         {modelName && modelName !== "assistant" && (
                           <div className="flex items-center gap-1.5 opacity-60 min-w-0 truncate">
@@ -1060,39 +1163,29 @@ export function AssistantMessage({
                     </div>
                 {hasTokens && (
                   <div className="oc-msg-token-chips flex shrink-0 items-center gap-1">
-                      <span title="Tokens in system prompt + conversation history + your message" className="cursor-help decoration-dotted underline underline-offset-2">prompt</span>
-                      <span className="tabular-nums cursor-help" title="Tokens in system prompt + conversation history + your message">
-                      {inputTok.toLocaleString()}
-                    </span>
+                        <span title="Tokens in system prompt + conversation history + your message" className="cursor-help decoration-dotted underline underline-offset-2">prompt</span>
+                        <span className="tabular-nums cursor-help" title="Tokens in system prompt + conversation history + your message">{inputTok.toLocaleString()}</span>
                     <span className="opacity-30">-</span>
-                      <span title="Tokens generated in this reply" className="cursor-help decoration-dotted underline underline-offset-2">response</span>
-                      <span className="tabular-nums cursor-help" title="Tokens generated in this reply">
-                      {outputTok.toLocaleString()}
-                    </span>
+                        <span title="Tokens generated in this reply" className="cursor-help decoration-dotted underline underline-offset-2">response</span>
+                        <span className="tabular-nums cursor-help" title="Tokens generated in this reply">{outputTok.toLocaleString()}</span>
                     {cacheRead > 0 && (
                       <>
                         <span className="opacity-30">-</span>
-                          <span title="Tokens retrieved from prompt cache" className="cursor-help decoration-dotted underline underline-offset-2">cache read</span>
-                          <span className="tabular-nums cursor-help" title="Tokens retrieved from prompt cache">
-                          {cacheRead.toLocaleString()}
-                        </span>
+                            <span title="Tokens retrieved from prompt cache" className="cursor-help decoration-dotted underline underline-offset-2">cache read</span>
+                            <span className="tabular-nums cursor-help" title="Tokens retrieved from prompt cache">{cacheRead.toLocaleString()}</span>
                       </>
                     )}
                     {cacheWrite > 0 && (
                       <>
                         <span className="opacity-30">-</span>
-                          <span title="New tokens written to prompt cache" className="cursor-help decoration-dotted underline underline-offset-2">cache write</span>
-                          <span className="tabular-nums cursor-help" title="New tokens written to prompt cache">
-                          {cacheWrite.toLocaleString()}
-                        </span>
+                            <span title="New tokens written to prompt cache" className="cursor-help decoration-dotted underline underline-offset-2">cache write</span>
+                            <span className="tabular-nums cursor-help" title="New tokens written to prompt cache">{cacheWrite.toLocaleString()}</span>
                       </>
                     )}
-                      {typeof duration === "number" && (
+                        {typeof duration === "number" && (
                       <>
                         <span className="opacity-30">-</span>
-                        <span className="tabular-nums">
-                          {duration.toFixed(1)}s
-                        </span>
+                            <span className="tabular-nums">{duration.toFixed(1)}s</span>
                       </>
                     )}
                   </div>
@@ -1136,21 +1229,29 @@ export function AssistantMessage({
                 key={`block-thinking-${blockIdx}`}
                 className="group mb-3"
               >
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors mt-1">
-                  <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors mt-1 relative z-10 overflow-hidden">
+                  <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90 shrink-0">
                     ›
                   </span>
-                  <span className="opacity-70 whitespace-nowrap shrink-0">
+                  <span className="opacity-70 whitespace-nowrap shrink-0 italic">
                     Thinking
                   </span>
+                  {block.items.length > 0 && (
+                    <span className="truncate opacity-80 ml-0.5 group-open:hidden text-oc-accent">
+                      <MarkdownRenderer
+                        content={block.items[block.items.length - 1].text.trim() || "\u2026"}
+                        isInline={true}
+                      />
+                    </span>
+                  )}
                 </summary>
-                <div className="mt-1.5 ml-0.5 border-l border-oc-border pl-3 space-y-0.5 max-h-[300px] overflow-y-auto pr-2">
+                <div className="mt-1.5 ml-[6px] border-l border-oc-border/30 pl-3.5 space-y-0.5 max-h-[300px] overflow-y-auto pr-2">
                   {block.items.map((thought) => (
                     <div
                       key={thought.key}
-                      className="py-0.5 text-xs leading-relaxed text-oc-text-soft opacity-70 whitespace-pre-wrap"
+                      className="py-0.5 text-xs leading-relaxed text-oc-text-soft opacity-70 whitespace-pre-wrap markdown-inline-overrides"
                     >
-                      {thought.text}
+                      <MarkdownRenderer content={thought.text} isInline={true} />
                     </div>
                   ))}
                 </div>
@@ -1163,14 +1264,15 @@ export function AssistantMessage({
               <div
                 // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
                 key={`block-steps-${blockIdx}`}
-                className="mb-3 ml-0.5 border-l border-oc-border pl-3 space-y-0.5 max-h-[300px] overflow-y-auto pr-2"
+                className="mb-3 space-y-0 px-0.5"
               >
-                {block.items.map((event) => (
+                {block.items.map((event, eventIdx) => (
                   <div
                     key={event.key}
-                    className="flex items-start gap-1.5 py-0.5 text-xs"
+                    className="flex items-start gap-1.5 py-1 text-xs oc-timeline-connector oc-timeline-item"
                   >
-                    <span className="mt-px shrink-0">
+                    <div className="oc-timeline-line" />
+                    <span className="mt-0.5 shrink-0 relative z-10 bg-oc-bg ring-[3px] ring-oc-bg rounded-full">
                       {event.status === "pending" ? (
                         <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
                       ) : event.status === "error" ? (
@@ -1180,54 +1282,73 @@ export function AssistantMessage({
                       )}
                     </span>
                     <span
-                      className={`min-w-0 flex-1 leading-relaxed ${
+                      className={`min-w-0 flex-1 flex items-center leading-relaxed ${
                         event.status === "pending"
                           ? "text-oc-text"
                           : "text-oc-text-soft opacity-80"
                       }`}
                     >
-                      {event.title}
-                      {event.meta ? (
-                        <span className="ml-1.5 text-oc-text-muted opacity-60">
-                          {event.meta}
-                        </span>
-                      ) : null}
-                      {event.filePath ? (
-                        <button
-                          type="button"
-                          className="ml-1.5 inline-flex items-center gap-1 font-mono text-oc-text-muted opacity-60 hover:text-oc-accent hover:opacity-100 transition-colors"
-                          onClick={() =>
-                            vscode.postMessage({
-                              type: "openFile",
-                              file: event.filePath,
-                            })
+                      <span className="font-medium shrink-0">{event.title}</span>
+                      <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-hidden">
+                        {(() => {
+                          let displayPath = event.filePath;
+                          // Fallback: If title is "edit" or similar and path is missing, check message edits
+                          if (!displayPath && /edit|writ|modif|updat|patch/i.test(event.title) && message?.edits?.length) {
+                            displayPath = message.edits[0].file;
                           }
-                        >
-                          <FileIcon filePath={event.filePath} />
-                          {event.filePath.split(/[/\\]/).pop()}
-                        </button>
-                      ) : null}
-                      {event.diffStats && (event.diffStats.added > 0 || event.diffStats.deleted > 0) ? (
-                        <span className="ml-1.5 inline-flex items-center gap-1 font-mono text-[10px]">
-                          {event.diffStats.added > 0 && (
-                            <span className="text-oc-green">+{event.diffStats.added}</span>
-                          )}
-                          {event.diffStats.deleted > 0 && (
-                            <span className="text-oc-red">-{event.diffStats.deleted}</span>
-                          )}
-                        </span>
-                      ) : null}
+
+                          if (!displayPath) return null;
+                          const fileName = displayPath.split(/[/\\]/).pop();
+                          return (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 font-mono text-oc-text-muted opacity-70 hover:text-oc-accent hover:opacity-100 transition-colors truncate"
+                              title={displayPath}
+                              onClick={() =>
+                                vscode.postMessage({
+                                  type: "openFile",
+                                  file: displayPath!,
+                                })
+                              }
+                            >
+                              <FileIcon filePath={displayPath} />
+                              <span className="truncate">{fileName}</span>
+                            </button>
+                          );
+                        })()}
+                        {event.meta && (
+                          <span
+                            className="truncate text-oc-text-muted opacity-70"
+                            title={event.meta}
+                          >
+                            {event.meta}
+                          </span>
+                        )}
+                        {event.diffStats && (event.diffStats.added > 0 || event.diffStats.deleted > 0) ? (
+                          <span className="shrink-0 inline-flex items-center gap-1 font-mono text-[10px] bg-oc-bg-active/30 px-1 rounded">
+                            {event.diffStats.added > 0 && (
+                              <span className="text-oc-green">+{event.diffStats.added}</span>
+                            )}
+                            {event.diffStats.deleted > 0 && (
+                              <span className="text-oc-red">-{event.diffStats.deleted}</span>
+                            )}
+                          </span>
+                        ) : null}
+                      </div>
                     </span>
-                    {event.status === "done" && event.filePath && (event.diffStats || /edit|writ|modif|updat|delet/i.test(event.title)) && (
+                    {event.status === "done" && (event.diffStats || /edit|writ|modif|updat|patch/i.test(event.title)) && (
                       <button
                         type="button"
                         className="ml-2 shrink-0 text-[10px] uppercase font-semibold tracking-wider text-oc-accent hover:underline opacity-80 hover:opacity-100"
-                        onClick={() =>
-                          vscode.postMessage({
-                            type: "openDiff",
-                            file: event.filePath,
-                          })
-                        }
+                        onClick={() => {
+                          const fileToOpen = event.filePath || message?.edits?.[0]?.file;
+                          if (fileToOpen) {
+                            vscode.postMessage({
+                              type: "openDiff",
+                              file: fileToOpen,
+                            });
+                          }
+                        }}
                       >
                         View diff
                       </button>
@@ -1243,7 +1364,7 @@ export function AssistantMessage({
             <div
               // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
               key={`block-content-${blockIdx}`}
-              className="mb-3 max-h-[500px] overflow-y-auto pr-2"
+              className="mb-3"
             >
               {/* biome-ignore lint/security/noDangerouslySetInnerHtml: markdown rendering requires HTML injection */}
               <MarkdownRenderer content={block.html} />
@@ -1264,184 +1385,241 @@ export function AssistantMessage({
           </div>
         )}
 
+        <ImagePreviewModal
+          isOpen={previewImageSrc !== null}
+          imageSrc={previewImageSrc}
+          imageAlt="Conversation image"
+          title="Image Preview"
+          onClose={() => setPreviewImageSrc(null)}
+        />
+
         {subagents.length > 0 && (
-          <div className="mt-3 mb-3 space-y-2">
-              {visibleSubagents.map((subagent: SubagentSummary) => {
-                const isExpanded = expandedSubagentId === subagent.id;
-                // Merge data from the subagent store
-                const detailData = subagentDetailsById[subagent.id] || subagent;
-                return (
-                  <div
-                    key={subagent.id}
-                    className="rounded-md border border-oc-border bg-oc-panel-soft overflow-hidden text-xs"
-                  >
-                    <div className="p-2.5">
-                      <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <SubagentProgressPopover
-                          subagent={subagent}
-                          subagentDetail={subagentDetailsById?.[subagent.id]}
-                          colorClass={getSubagentColor(subagent.id)}
-                        >
-                          <button
-                            type="button"
-                            className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 hover:bg-oc-panel-hover text-left"
-                          >
-                            <div className={cn("oc-agent-icon shrink-0 flex items-center justify-center", getSubagentColor(subagent.id))}>
-                              {subagent.status === "running" ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : subagent.status === "error" ? (
-                                <X className="h-3 w-3 text-oc-red" />
-                              ) : (
-                                <Check className="h-3 w-3" />
-                              )}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5">
-                                <span className={cn("truncate text-oc-xs font-semibold", getSubagentColor(subagent.id))}>
-                                  {subagent.agentId || `Agent ${subagent.id.slice(0, 4)}`}
-                                </span>
-                              </div>
-                              <div className="truncate text-[10px] text-oc-text-muted font-mono leading-tight">
-                                {subagent.latestActivity || "Initializing..."}
-                              </div>
-                            </div>
-                          </button>
-                        </SubagentProgressPopover>
-                        <span className="font-mono text-oc-2xs text-oc-text-muted">
-                          {formatDurationMs(subagent.durationMs)}
-                        </span>
-                      </div>
-                      <div className="truncate text-oc-text-soft">
-                        {subagent.agentId || "subagent"}{" "}
-                        {subagent.providerID && subagent.modelID
-                          ? `- ${subagent.providerID}/${subagent.modelID}`
-                          : ""}
-                      </div>
-                      <div className="mt-0.5 truncate text-oc-text-muted">
-                        {subagent.latestActivity || "No activity yet"}
-                      </div>
-                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <div className="mt-3 mb-3 overflow-hidden rounded-md border border-oc-border bg-oc-panel-soft">
+            <button
+              type="button"
+              className="w-full border-b border-oc-border px-2.5 py-2 text-left hover:bg-oc-panel"
+              onClick={() => setShowSubagents((value) => !value)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Sparkles className="h-3.5 w-3.5 text-oc-accent" />
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
+                    Spawned Subagents
+                  </span>
+                  <span className="rounded-md border border-oc-border px-1.5 py-0.5 font-mono text-oc-2xs text-oc-text-muted">
+                    {subagents.length}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {subagentStatusCounts.running > 0 && (
+                    <Badge className="h-5 border-oc-accent/30 bg-oc-accent/10 px-1.5 text-[10px] text-oc-accent">
+                      {subagentStatusCounts.running} running
+                    </Badge>
+                  )}
+                  {subagentStatusCounts.done > 0 && (
+                    <Badge className="h-5 border-oc-green/30 bg-oc-green/10 px-1.5 text-[10px] text-oc-green">
+                      {subagentStatusCounts.done} done
+                    </Badge>
+                  )}
+                  {subagentStatusCounts.error > 0 && (
+                    <Badge className="h-5 border-oc-red/30 bg-oc-red/10 px-1.5 text-[10px] text-oc-red">
+                      {subagentStatusCounts.error} error
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            </button>
+
+            {showSubagents && (
+              <div className="space-y-2 p-2.5">
+                <div className="space-y-1.5">
+                  {visibleSubagents.map((subagent: SubagentSummary) => {
+                    const isExpanded = expandedSubagentId === subagent.id;
+                    const statusClass = getSubagentColor(subagent.id);
+
+                    return (
+                      <SubagentProgressPopover
+                        key={subagent.id}
+                        subagent={subagent}
+                        subagentDetail={subagentDetailsById?.[subagent.id]}
+                        colorClass={statusClass}
+                      >
                         <button
                           type="button"
-                          className="text-oc-2xs font-mono text-oc-accent hover:underline"
+                          className={cn(
+                            "w-full rounded-md border px-2 py-1.5 text-left transition-colors",
+                            isExpanded
+                              ? "border-oc-accent/40 bg-oc-panel"
+                              : "border-oc-border bg-oc-bg-soft hover:bg-oc-panel",
+                          )}
                           onClick={() => toggleSubagentDetails(subagent.id)}
                         >
-                          {isExpanded ? "Hide details" : "Open details"}
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <div className={cn("oc-agent-icon shrink-0", statusClass)}>
+                                {subagent.status === "running" ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : subagent.status === "error" ? (
+                                  <X className="h-3 w-3 text-oc-red" />
+                                ) : (
+                                  <Check className="h-3 w-3" />
+                                )}
+                              </div>
+                              <span className={cn("truncate text-oc-xs font-semibold", statusClass)}>
+                                {subagent.agentId || `Agent ${subagent.id.slice(0, 4)}`}
+                              </span>
+                            </div>
+                            <span className="font-mono text-oc-2xs text-oc-text-muted">
+                              {formatDurationMs(subagent.durationMs)}
+                            </span>
+                          </div>
+                          <div className="mt-0.5 truncate font-mono text-[10px] text-oc-text-muted">
+                            {subagent.latestActivity || "Initializing..."}
+                          </div>
                         </button>
+                      </SubagentProgressPopover>
+                    );
+                  })}
+                  {subagents.length > 10 ? (
+                    <button
+                      type="button"
+                      className="text-oc-2xs font-mono text-oc-accent hover:underline"
+                      onClick={() => setShowAllSubagents((value) => !value)}
+                    >
+                      {showAllSubagents
+                        ? "Show less"
+                        : `Show all (${subagents.length})`}
+                    </button>
+                  ) : null}
+                </div>
+
+                {expandedSubagentId && (() => {
+                  const selected = subagents.find(
+                    (subagent) => subagent.id === expandedSubagentId,
+                  );
+                  if (!selected) return null;
+
+                  const detailData =
+                    (subagentDetailsById[selected.id] as SubagentDetail | undefined) ||
+                    ({
+                      ...selected,
+                      thinkingEvents: [],
+                      progressEvents: [],
+                      timelineEvents: [],
+                    } as SubagentDetail);
+
+                  return (
+                    <div className="rounded-md border border-oc-border bg-oc-panel p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className={cn("truncate text-oc-xs font-semibold", getSubagentColor(selected.id))}>
+                            {selected.agentId || `Agent ${selected.id.slice(0, 4)}`}
+                          </div>
+                          <div className="truncate font-mono text-oc-2xs text-oc-text-muted">
+                            {selected.providerID && selected.modelID
+                              ? `${selected.providerID}/${selected.modelID}`
+                              : (selected.agentId || "subagent")}
+                          </div>
+                        </div>
                         <button
                           type="button"
                           className="text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
                           onClick={() =>
                             jumpToMessage(
-                              subagent.parentMessageId || messageId || "",
+                              selected.parentMessageId || messageId || "",
                             )
                           }
                         >
                           Jump to parent
                         </button>
                       </div>
-                    </div>
 
-                    {isExpanded && (
-                      <div className="border-t border-oc-border bg-oc-panel p-2.5">
-                        <div className="space-y-1 text-oc-2xs text-oc-text-muted">
-                          <div>
-                            model:{" "}
-                            {subagent.providerID && subagent.modelID
-                              ? `${subagent.providerID}/${subagent.modelID}`
-                              : "n/a"}
-                          </div>
-                          <div>
-                            child session: {(detailData as SubagentDetail).childSessionId || "n/a"}
-                          </div>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
-                            onClick={() => copyRefs(detailData as SubagentDetail)}
-                          >
-                            <Copy className="h-3 w-3" />
-                            Copy refs
-                          </button>
-                        </div>
-                        {(detailData as SubagentDetail).thinkingEvents?.length > 0 ? (
-                          <details className="mt-2" open={false}>
-                            <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
-                              Thinking
-                            </summary>
-                            <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
-                              {(detailData as SubagentDetail).thinkingEvents.map((ev) => (
-                                <div
-                                  key={ev.id}
-                                  className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs text-oc-text-muted whitespace-pre-wrap"
-                                >
-                                  {ev.text}
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        ) : null}
-                        {(detailData as SubagentDetail).progressEvents?.length > 0 ? (
-                          <details className="mt-2" open={false}>
-                            <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
-                              Progress ({(detailData as SubagentDetail).progressEvents.length})
-                            </summary>
-                            <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
-                              {(detailData as SubagentDetail).progressEvents.map((ev) => (
-                                <div
-                                  key={ev.id}
-                                  className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs"
-                                >
-                                  <div className="text-oc-text-soft">{ev.title}</div>
-                                  {ev.meta ? (
-                                    <div className="text-oc-text-muted mt-0.5">{ev.meta}</div>
-                                  ) : null}
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        ) : null}
-                        {(detailData as SubagentDetail).timelineEvents?.length > 0 ? (
-                          <details className="mt-2" open={true}>
-                            <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
-                              Timeline ({(detailData as SubagentDetail).timelineEvents.length})
-                            </summary>
-                            <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
-                              {(detailData as SubagentDetail).timelineEvents.map((ev) => (
-                                <div
-                                  key={ev.key}
-                                  className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs"
-                                >
-                                  <div className="text-oc-text-soft">{ev.label}</div>
-                                  <div className="font-mono text-oc-text-muted mt-0.5">
-                                    {new Date(ev.createdAt).toLocaleTimeString()}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        ) : null}
+                      <div className="mt-2 rounded border border-oc-border bg-oc-bg-soft px-2 py-1.5 text-oc-2xs text-oc-text-soft">
+                        {selected.latestActivity || "Initializing..."}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-              {subagents.length > 10 ? (
-                <button
-                  type="button"
-                  className="text-oc-2xs font-mono text-oc-accent hover:underline"
-                  onClick={() => setShowAllSubagents((value) => !value)}
-                >
-                  {showAllSubagents
-                    ? "Show less"
-                    : `Show all (${subagents.length})`}
-                </button>
-              ) : null}
+
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
+                          onClick={() => copyRefs(detailData)}
+                        >
+                          <Copy className="h-3 w-3" />
+                          Copy refs
+                        </button>
+                        <span className="text-oc-2xs font-mono text-oc-text-muted">
+                          child session: {detailData.childSessionId || "n/a"}
+                        </span>
+                      </div>
+
+                      {detailData.progressEvents?.length > 0 ? (
+                        <details className="mt-2" open>
+                          <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
+                            Progress ({detailData.progressEvents.length})
+                          </summary>
+                          <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
+                            {detailData.progressEvents.map((ev) => (
+                              <div
+                                key={ev.id}
+                                className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs"
+                              >
+                                <div className="text-oc-text-soft">{ev.title}</div>
+                                {ev.meta ? (
+                                  <div className="mt-0.5 text-oc-text-muted">{ev.meta}</div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ) : null}
+
+                      {detailData.timelineEvents?.length > 0 ? (
+                        <details className="mt-2" open>
+                          <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
+                            Timeline ({detailData.timelineEvents.length})
+                          </summary>
+                          <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
+                            {detailData.timelineEvents.map((ev) => (
+                              <div
+                                key={ev.key}
+                                className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs"
+                              >
+                                <div className="text-oc-text-soft">{ev.label}</div>
+                                <div className="mt-0.5 font-mono text-oc-text-muted">
+                                  {new Date(ev.createdAt).toLocaleTimeString()}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ) : null}
+
+                      {detailData.thinkingEvents?.length > 0 ? (
+                        <details className="mt-2" open={false}>
+                          <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
+                            Thinking ({detailData.thinkingEvents.length})
+                          </summary>
+                          <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
+                            {detailData.thinkingEvents.map((ev) => (
+                              <div
+                                key={ev.id}
+                                className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs text-oc-text-muted whitespace-pre-wrap"
+                              >
+                                {ev.text}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ) : null}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         )}
         {/* Raw Data — moved last so it doesn't interrupt the reading flow */}
-        {(message || streaming) && (
+        {/* {(message || streaming) && (
           <details className="group mb-3">
             <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
               <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
@@ -1493,7 +1671,7 @@ export function AssistantMessage({
               </pre>
             </div>
           </details>
-        )}
+        )} */}
         {/* FORBIDDEN TO REMOVE: Plan card rendering - core UI element for viewing implementation plans */}
         {plan ? (
           <div className="plan-card mt-3 p-3">
@@ -1544,15 +1722,15 @@ export function ErrorBanner({
   onRetry?: () => void;
 }) {
   return (
-    <div className="mb-3 px-4">
-      <div className="flex flex-col gap-2 rounded-md border border-oc-red/50 bg-oc-red/10 px-3 py-2 text-oc-sm text-oc-red shadow-sm transition-all duration-200">
+    <div className="mb-4 px-4">
+      <div className="flex flex-col gap-2 rounded-lg border border-oc-red/30 bg-oc-red/5 p-3 text-oc-sm text-oc-red shadow-sm transition-all duration-200">
         <div className="flex items-center gap-2">
-          <AlertCircle className="h-4 w-4 shrink-0 text-oc-red" />
-          <h4 className="text-[11px] font-bold uppercase tracking-wider text-oc-red opacity-90">
-            Request Failed
-          </h4>
+          <AlertCircle className="h-4 w-4 shrink-0 text-oc-red/80" />
+          <span className="text-xs font-semibold tracking-tight">
+            Generation failed
+          </span>
         </div>
-        <div className="overflow-hidden border-l border-oc-red/30 pl-2.5 py-0.5 font-mono text-[11px] leading-relaxed text-oc-red/90 whitespace-pre-wrap break-words">
+        <div className="overflow-hidden py-0.5 text-oc-xs leading-relaxed text-oc-red/80 opacity-90 whitespace-pre-wrap break-words">
           {message}
         </div>
         {onRetry && (
@@ -1560,10 +1738,10 @@ export function ErrorBanner({
             <button
               type="button"
               onClick={onRetry}
-              className="group relative mt-1 inline-flex items-center gap-1.5 overflow-hidden rounded border border-oc-red/40 bg-oc-red/20 px-2.5 py-1 text-[10px] font-bold uppercase tracking-tight text-oc-red transition-all hover:bg-oc-red/30 active:scale-95"
+              className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-oc-red/20 bg-oc-red/10 px-3 py-1.5 text-oc-xs font-medium text-oc-red transition-all hover:bg-oc-red/20 active:scale-95"
             >
-              <RotateCw className="h-3 w-3 transition-transform group-hover:rotate-180" />
-              <span>Retry Generation</span>
+              <RotateCw className="h-3.5 w-3.5" />
+              <span>Retry</span>
             </button>
           </div>
         )}
@@ -1589,7 +1767,7 @@ export function ThinkingBubble() {
           />
         ))}
         <Loader2 className="ml-1.5 h-3 w-3 animate-spin text-oc-text-soft opacity-70" />
-        <span className="ml-1 text-oc-xs text-oc-text-soft opacity-70 font-mono">
+        <span className="ml-1 text-oc-xs text-oc-text-soft opacity-70 font-mono italic">
           Thinking…
         </span>
       </div>

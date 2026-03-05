@@ -1,15 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
   Check,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
+  Edit,
   History,
   Loader2,
+  Lock,
   Play,
   RefreshCw,
   Send,
   Square,
+  WifiOff,
+  Wrench,
   X,
   Zap,
   ArrowLeft,
@@ -17,25 +23,21 @@ import {
 } from "lucide-react";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 
-import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 
-import { useAppDispatch, useAppState } from './lib/store';
-import vscode from './lib/vscode';
-import type {
-  Message,
-  ThinkingLevel,
-  TodoItem,
-} from './lib/types';
+import { useAppDispatch, useAppState } from "./lib/store";
+import vscode from "./lib/vscode";
+import type { Message, ThinkingLevel, TodoItem } from "./lib/types";
 
-import { FileIcon } from './MessageComponents';
+import { FileIcon } from "./MessageComponents";
 
 function totalTokens(i: number, o: number, r: number, w: number): number {
   return (i || 0) + (o || 0) + (r || 0) + (w || 0);
 }
-
 
 export function StickyHeader() {
   const {
@@ -48,15 +50,15 @@ export function StickyHeader() {
   } = useAppState();
   const dispatch = useAppDispatch();
 
-  const sessionLabel = currentSessionId ? currentSessionId.slice(0, 8) : 'new';
+  const sessionLabel = currentSessionId ? currentSessionId.slice(0, 8) : "new";
   const taskName =
-    isProcessing || streaming ? 'Active request' : 'No active task';
+    isProcessing || streaming ? "Active request" : "No active task";
   const taskStatus =
     isProcessing || streaming
-      ? 'RUNNING'
+      ? "RUNNING"
       : promptQueue.length > 0
-        ? 'PENDING'
-        : 'IDLE';
+        ? "PENDING"
+        : "IDLE";
   const durationLabel =
     sessionStats.duration >= 1000
       ? `${(sessionStats.duration / 1000).toFixed(1)}s`
@@ -72,7 +74,7 @@ export function StickyHeader() {
           title="History"
           aria-label="Open history sidebar"
           onClick={() =>
-            dispatch({ type: 'SET_SIDEBAR_OPEN', payload: !isSidebarOpen })
+            dispatch({ type: "SET_SIDEBAR_OPEN", payload: !isSidebarOpen })
           }
         >
           <History className="h-3.5 w-3.5" />
@@ -97,19 +99,27 @@ export function StickyHeader() {
           </span>
         </div>
         <div className="flex items-center gap-1 text-xs opacity-80">
-          <span className="text-[var(--oc-text-soft)]">{sessionStats.input}i</span>
+          <span className="text-[var(--oc-text-soft)]">
+            {sessionStats.input}i
+          </span>
           <span className="opacity-30">·</span>
-          <span className="text-[var(--oc-text-soft)]">{sessionStats.output}o</span>
+          <span className="text-[var(--oc-text-soft)]">
+            {sessionStats.output}o
+          </span>
           {sessionStats.read > 0 && (
             <>
               <span className="opacity-30">·</span>
-              <span className="text-[var(--oc-text-soft)]">{sessionStats.read}r</span>
+              <span className="text-[var(--oc-text-soft)]">
+                {sessionStats.read}r
+              </span>
             </>
           )}
           {sessionStats.write > 0 && (
             <>
               <span className="opacity-30">·</span>
-              <span className="text-[var(--oc-text-soft)]">{sessionStats.write}w</span>
+              <span className="text-[var(--oc-text-soft)]">
+                {sessionStats.write}w
+              </span>
             </>
           )}
         </div>
@@ -122,11 +132,11 @@ export function StickyHeader() {
         </span>
         <span
           className={`oc-status-pill ${
-            taskStatus === 'IDLE'
-              ? 'idle'
-              : taskStatus === 'PENDING'
-                ? 'pending'
-                : 'running'
+            taskStatus === "IDLE"
+              ? "idle"
+              : taskStatus === "PENDING"
+                ? "pending"
+                : "running"
           }`}
         >
           {taskStatus}
@@ -142,27 +152,38 @@ export function StickyHeader() {
 export function HistorySidebar() {
   const { isSidebarOpen, sessionsList, currentSessionId } = useAppState();
   const dispatch = useAppDispatch();
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [newTitle, setNewTitle] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Focus input when editing starts
+  useEffect(() => {
+    if (editingSessionId && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editingSessionId]);
 
   function relativeSessionTime(ts: number | undefined): string {
-    if (!ts) return '';
+    if (!ts) return "";
     const now = Date.now();
     const diff = now - ts;
     const minute = 60_000;
     const hour = 60 * minute;
     const day = 24 * hour;
 
-    if (diff < minute) return 'Just now';
+    if (diff < minute) return "Just now";
     if (diff < hour) {
       const mins = Math.round(diff / minute);
-      return `${mins} min${mins === 1 ? '' : 's'} ago`;
+      return `${mins} min${mins === 1 ? "" : "s"} ago`;
     }
     if (diff < day) {
       const hrs = Math.round(diff / hour);
-      return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
+      return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
     }
     if (diff < 7 * day) {
       const days = Math.round(diff / day);
-      return days === 1 ? 'Yesterday' : `${days} days ago`;
+      return days === 1 ? "Yesterday" : `${days} days ago`;
     }
 
     const d = new Date(ts);
@@ -172,7 +193,7 @@ export function HistorySidebar() {
   return (
     <aside
       className={`oc-history-sidebar absolute bottom-0 left-0 top-0 z-20 w-72 border-r border-oc-border bg-oc-bg-soft transition-transform duration-200 ${
-        isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
       }`}
     >
       <div className="flex items-center justify-between border-b border-oc-border px-3 py-2.5">
@@ -187,7 +208,7 @@ export function HistorySidebar() {
           size="icon"
           className="h-6 w-6 rounded-md"
           aria-label="Close history sidebar"
-          onClick={() => dispatch({ type: 'SET_SIDEBAR_OPEN', payload: false })}
+          onClick={() => dispatch({ type: "SET_SIDEBAR_OPEN", payload: false })}
         >
           <X className="h-3.5 w-3.5" />
         </Button>
@@ -197,15 +218,15 @@ export function HistorySidebar() {
           variant="ghost-accent"
           size="sm"
           onClick={() => {
-            vscode.postMessage({ type: 'createSession' });
-            dispatch({ type: 'SET_SIDEBAR_OPEN', payload: false });
+            vscode.postMessage({ type: "createSession" });
+            dispatch({ type: "SET_SIDEBAR_OPEN", payload: false });
           }}
         >
           <span className="text-xs">+</span> New Chat
         </Button>
       </div>
       <div className="h-[calc(100%-88px)] overflow-y-auto p-2">
-        {sessionsList.filter(s => !s.parentSessionId).length === 0 ? (
+        {sessionsList.filter((s) => !s.parentSessionId).length === 0 ? (
           <div className="p-4 text-center text-xs text-oc-text-muted opacity-70">
             No sessions yet.
             <br />
@@ -213,68 +234,141 @@ export function HistorySidebar() {
           </div>
         ) : (
             sessionsList
-              .filter(s => !s.parentSessionId)
+              .filter((s) => !s.parentSessionId)
               .map((session) => {
-            const isActive = session.id === currentSessionId;
-            return (
-              <div
-                key={session.id}
-                className="group mb-1 flex min-w-0 items-center gap-1"
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    vscode.postMessage({
-                      type: 'switchSession',
-                      sessionId: session.id,
-                    });
-                    dispatch({ type: 'SET_SIDEBAR_OPEN', payload: false });
-                  }}
-                  className={
-                    `oc-session-item flex-1 min-w-0 overflow-hidden rounded-md px-2.5 py-2 text-left text-xs ` +
-                    (isActive
-                      ? 'bg-oc-accent-soft border oc-accent-border-light'
-                      : 'border border-transparent')
-                  }
+                const isActive = session.id === currentSessionId;
+              const isEditing = editingSessionId === session.id;
+
+              const handleStartEdit = () => {
+                setEditingSessionId(session.id);
+                setNewTitle(session.title || "");
+              };
+
+              const handleSaveEdit = () => {
+                if (newTitle.trim()) {
+                  vscode.postMessage({
+                    type: "renameSession",
+                    sessionId: session.id,
+                    newTitle: newTitle.trim(),
+                  });
+                }
+                setEditingSessionId(null);
+                setNewTitle("");
+              };
+
+              const handleCancelEdit = () => {
+                setEditingSessionId(null);
+                setNewTitle("");
+              };
+
+              const handleKeyDown = (e: React.KeyboardEvent) => {
+                if (e.key === "Enter") {
+                  handleSaveEdit();
+                } else if (e.key === "Escape") {
+                  handleCancelEdit();
+                }
+              };
+
+              return (
+                <div
+                  key={session.id}
+                  className="group mb-1 flex min-w-0 items-center gap-1"
                 >
-                  <div className="flex items-center gap-2">
-                    {isActive ? (
-                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-accent" />
-                    ) : (
-                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-border-soft" />
-                    )}
-                    <div
-                      className={`truncate font-medium ${
-                        isActive ? 'text-oc-text' : 'text-[var(--oc-text-soft)]'
-                      }`}
-                    >
-                      {session.title || 'Untitled chat'}
+                  {isEditing ? (
+                    <div className="flex-1 flex items-center gap-1 rounded-md border border-oc-accent bg-oc-accent-soft px-2 py-1.5">
+                      <input
+                        ref={inputRef}
+                        type="text"
+                        value={newTitle}
+                        onChange={(e) => setNewTitle(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        onBlur={handleSaveEdit}
+                        className="flex-1 bg-transparent text-xs text-oc-text outline-none"
+                        placeholder="Enter session title..."
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Cancel"
+                        className="h-5 w-5 rounded-md"
+                        onClick={handleCancelEdit}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
                     </div>
-                  </div>
-                  <div className="truncate text-oc-text-muted text-xs pl-3.5 mt-0.5">
-                    {session.createdAt
-                      ? relativeSessionTime(session.createdAt)
-                      : 'Unknown'}
-                  </div>
-                </button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  title="Delete session"
-                  className="oc-session-delete h-6 w-6 shrink-0 rounded-md opacity-70 group-hover:opacity-100"
-                  aria-label={`Delete session ${session.title ?? session.id}`}
-                  onClick={() =>
-                    vscode.postMessage({
-                      type: 'deleteSession',
-                      sessionId: session.id,
-                    })
-                  }
-                >
-                  <X className="h-3 w-3" />
-                </Button>
-              </div>
-            );
-          })
+                  ) : (
+                    <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            vscode.postMessage({
+                            type: "switchSession",
+                            sessionId: session.id,
+                          });
+                            dispatch({
+                              type: "SET_SIDEBAR_OPEN",
+                              payload: false,
+                            });
+                          }}
+                          className={
+                            `oc-session-item flex-1 min-w-0 overflow-hidden rounded-md px-2.5 py-2 text-left text-xs ` +
+                            (isActive
+                              ? "bg-oc-accent-soft border oc-accent-border-light"
+                              : "border border-transparent")
+                          }
+                        >
+                          <div className="flex items-center gap-2">
+                            {isActive ? (
+                              <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-accent" />
+                            ) : (
+                              <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-border-soft" />
+                            )}
+                            <div
+                              className={`truncate font-medium ${
+                                isActive
+                                  ? "text-oc-text"
+                                  : "text-[var(--oc-text-soft)]"
+                                }`}
+                            >
+                              {session.title || "Untitled chat"}
+                            </div>
+                          </div>
+                          <div className="truncate text-oc-text-muted text-xs pl-3.5 mt-0.5">
+                            {session.createdAt
+                              ? relativeSessionTime(session.createdAt)
+                              : "Unknown"}
+                          </div>
+                        </button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Rename session"
+                          className="oc-session-rename h-6 w-6 shrink-0 rounded-md opacity-70 group-hover:opacity-100"
+                          aria-label={`Rename session ${session.title ?? session.id}`}
+                          onClick={handleStartEdit}
+                        >
+                          <Edit className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Delete session"
+                          className="oc-session-delete h-6 w-6 shrink-0 rounded-md opacity-70 group-hover:opacity-100"
+                          aria-label={`Delete session ${session.title ?? session.id}`}
+                          onClick={() =>
+                            vscode.postMessage({
+                            type: "deleteSession",
+                            sessionId: session.id,
+                          })
+                          }
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                    </>
+                  )}
+                </div>
+              );
+            })
         )}
       </div>
     </aside>
@@ -304,19 +398,21 @@ function MiniSection({
       >
         <span
           className={`inline-block h-1.5 w-1.5 rounded-full transition-colors ${
-            open ? 'bg-oc-accent' : 'bg-oc-border-soft'
+            open ? "bg-oc-accent" : "bg-oc-border-soft"
           }`}
         />
         <span
           className={`font-mono text-xs uppercase tracking-widest font-semibold ${
-            open ? 'text-[var(--oc-text-soft)]' : 'text-[var(--oc-text-soft)] opacity-70'
+            open
+              ? "text-[var(--oc-text-soft)]"
+              : "text-[var(--oc-text-soft)] opacity-70"
           }`}
         >
           {title}
         </span>
         <span
           className={`ml-auto transition-transform ${
-            open ? 'rotate-0' : '-rotate-90'
+            open ? "rotate-0" : "-rotate-90"
           }`}
         >
           <ChevronDown className="h-3 w-3 text-[var(--oc-text-soft)] opacity-70" />
@@ -336,8 +432,14 @@ function useMiniSectionState(def: boolean) {
 
 // ─── ActiveTaskPanel ──────────────────────────────────────────────────────────
 export function ActiveTaskPanel() {
-  const { sessionStats, streaming, messages, currentSessionId, sessionsList, todoItems } =
-    useAppState();
+  const {
+    sessionStats,
+    streaming,
+    messages,
+    currentSessionId,
+    sessionsList,
+    todoItems,
+  } = useAppState();
   const progressListRef = useRef<HTMLDivElement>(null);
 
   const total = totalTokens(
@@ -359,24 +461,25 @@ export function ActiveTaskPanel() {
     : undefined;
   const startedLabel = currentSession?.createdAt
     ? new Date(currentSession.createdAt).toLocaleString()
-    : '—';
+    : "—";
 
   // Derive live progress steps from streaming state.
   // Exclude reasoning-type steps and "thinking" title rows (same logic as MessageComponents).
   const liveProgressSteps = useMemo(() => {
     const source =
-      Array.isArray(streaming?.progressEvents) && streaming.progressEvents.length > 0
+      Array.isArray(streaming?.progressEvents) &&
+        streaming.progressEvents.length > 0
         ? streaming.progressEvents
         : Array.isArray(streaming?.steps)
           ? streaming.steps
           : [];
     const seen = new Set<string>();
     return source.filter((step) => {
-      const type = (step.type ?? '').toLowerCase();
-      if (type === 'reasoning') return false;
+      const type = (step.type ?? "").toLowerCase();
+      if (type === "reasoning") return false;
       const title = step.title.trim().toLowerCase();
-      if (title === 'thinking...' || title === 'thinking') return false;
-      const key = `${step.title}-${step.status ?? 'pending'}`;
+      if (title === "thinking..." || title === "thinking") return false;
+      const key = `${step.title}-${step.status ?? "pending"}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -385,19 +488,22 @@ export function ActiveTaskPanel() {
 
   // Latest reasoning snippet shown when the AI is thinking but no steps have arrived yet.
   const latestReasoningSnippet = useMemo(() => {
-    if (!streaming?.isActive) return '';
+    if (!streaming?.isActive) return "";
     const events = streaming.reasoningEvents;
-    if (!Array.isArray(events) || events.length === 0) return '';
-    const last = events[events.length - 1]?.text ?? '';
+    if (!Array.isArray(events) || events.length === 0) return "";
+    const last = events[events.length - 1]?.text ?? "";
     return last.slice(0, 80);
   }, [streaming?.isActive, streaming?.reasoningEvents]);
 
+  const progressStepCount = liveProgressSteps.length;
+
   // Auto-scroll the progress list to the bottom when new steps arrive.
   useEffect(() => {
+    if (progressStepCount === 0) return;
     if (progressListRef.current) {
       progressListRef.current.scrollTop = progressListRef.current.scrollHeight;
     }
-  }, [liveProgressSteps.length]);
+  }, [progressStepCount]);
 
   // Session-scoped todos (only items belonging to the active session).
   const sessionTodos = useMemo(() => {
@@ -407,11 +513,16 @@ export function ActiveTaskPanel() {
 
   const todoStatusIcon = (status?: string) => {
     switch (status) {
-      case 'pending': return '⏳';
-      case 'in_progress': return '🔄';
-      case 'completed': return '✅';
-      case 'cancelled': return '❌';
-      default: return '•';
+      case "pending":
+        return "⏳";
+      case "in_progress":
+        return "🔄";
+      case "completed":
+        return "✅";
+      case "cancelled":
+        return "❌";
+      default:
+        return "•";
     }
   };
 
@@ -422,7 +533,7 @@ export function ActiveTaskPanel() {
         <div className="flex items-center gap-2">
           <div
             className={`h-1.5 w-1.5 rounded-full ${
-              isActive ? 'bg-oc-accent animate-pulse' : 'bg-oc-border-soft'
+              isActive ? "bg-oc-accent animate-pulse" : "bg-oc-border-soft"
             }`}
           />
           <div className="oc-panel-title">Active Task</div>
@@ -437,10 +548,12 @@ export function ActiveTaskPanel() {
               <div className="flex items-center gap-1.5 py-0.5 text-xs text-oc-text-muted opacity-70">
                 <span
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: '0ms' }}
+                  style={{ animationDelay: "0ms" }}
                 />
                 <span className="truncate">
-                  {latestReasoningSnippet ? latestReasoningSnippet : 'Thinking…'}
+                  {latestReasoningSnippet
+                    ? latestReasoningSnippet
+                    : "Thinking…"}
                 </span>
               </div>
             ) : (
@@ -455,18 +568,18 @@ export function ActiveTaskPanel() {
                     className="flex items-start gap-1.5 py-0.5 text-xs"
                   >
                     <span className="mt-px shrink-0">
-                      {step.status === 'pending' ? (
+                      {step.status === "pending" ? (
                         <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
-                      ) : step.status === 'error' ? (
+                      ) : step.status === "error" ? (
                         <X className="h-3 w-3 text-oc-red" />
                       ) : (
                         <Check className="h-3 w-3 text-oc-green opacity-70" />
                       )}
                     </span>
                     <span
-                      className={`min-w-0 flex-1 leading-relaxed truncate ${step.status === 'pending'
-                        ? 'text-oc-text'
-                        : 'text-[var(--oc-text-soft)] opacity-80'
+                      className={`min-w-0 flex-1 leading-relaxed truncate ${step.status === "pending"
+                          ? "text-oc-text"
+                          : "text-[var(--oc-text-soft)] opacity-80"
                         }`}
                     >
                       {step.title}
@@ -496,7 +609,7 @@ export function ActiveTaskPanel() {
                     {todoStatusIcon(t.status)}
                   </div>
                   <div className="text-xs text-[var(--oc-text-soft)] leading-relaxed">
-                    {(t as any).description ?? t.text ?? 'Untitled'}
+                    {(t as any).description ?? t.text ?? "Untitled"}
                   </div>
                 </div>
               ))}
@@ -508,7 +621,9 @@ export function ActiveTaskPanel() {
           {/* Token usage bar */}
           <div className="mb-3">
             <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-xs text-[var(--oc-text-soft)]">Tokens used</span>
+              <span className="text-xs text-[var(--oc-text-soft)]">
+                Tokens used
+              </span>
               <span className="font-mono tabular-nums text-xs text-[var(--oc-text-soft)]">
                 {total.toLocaleString()} / {maxContext.toLocaleString()}
               </span>
@@ -520,10 +635,10 @@ export function ActiveTaskPanel() {
                   width: `${pct}%`,
                   background:
                     pct > 80
-                      ? 'linear-gradient(90deg, #f0883e, #f85149)'
+                      ? "linear-gradient(90deg, #f0883e, #f85149)"
                       : pct > 50
-                        ? 'linear-gradient(90deg, #d29922, #f0883e)'
-                        : 'linear-gradient(90deg, #1f6feb, #58a6ff)',
+                        ? "linear-gradient(90deg, #d29922, #f0883e)"
+                        : "linear-gradient(90deg, #1f6feb, #58a6ff)",
                 }}
               />
             </div>
@@ -543,13 +658,17 @@ export function ActiveTaskPanel() {
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Cache R</span>
+              <span className="text-[var(--oc-text-soft)] opacity-80">
+                Cache R
+              </span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {sessionStats.read.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Cache W</span>
+              <span className="text-[var(--oc-text-soft)] opacity-80">
+                Cache W
+              </span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {sessionStats.write.toLocaleString()}
               </span>
@@ -562,33 +681,41 @@ export function ActiveTaskPanel() {
             <div className="flex items-center justify-between col-span-2">
               <span className="text-[var(--oc-text-soft)] opacity-80">ID</span>
               <span className="font-mono text-xs text-[var(--oc-text-soft)] opacity-70">
-                {currentSessionId ? currentSessionId.slice(0, 16) : '—'}
+                {currentSessionId ? currentSessionId.slice(0, 16) : "—"}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Messages</span>
+              <span className="text-[var(--oc-text-soft)] opacity-80">
+                Messages
+              </span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {messageCount}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Date started</span>
+              <span className="text-[var(--oc-text-soft)] opacity-80">
+                Date started
+              </span>
               <span
                 className={`font-mono tabular-nums ${
-                  isActive ? 'text-oc-accent' : 'text-[var(--oc-text-soft)]'
+                  isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)]"
                 }`}
               >
                 {startedLabel}
               </span>
             </div>
             <div className="flex items-center justify-between col-span-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Status</span>
+              <span className="text-[var(--oc-text-soft)] opacity-80">
+                Status
+              </span>
               <span
                 className={`font-mono text-xs uppercase tracking-wider font-semibold ${
-                  isActive ? 'text-oc-accent' : 'text-[var(--oc-text-soft)] opacity-70'
+                  isActive
+                    ? "text-oc-accent"
+                    : "text-[var(--oc-text-soft)] opacity-70"
                 }`}
               >
-                {isActive ? 'ACTIVE' : 'IDLE'}
+                {isActive ? "ACTIVE" : "IDLE"}
               </span>
             </div>
           </div>
@@ -597,8 +724,6 @@ export function ActiveTaskPanel() {
     </div>
   );
 }
-
-
 
 export function MobileRightSummary() {
   const { sessionStats, isProcessing } = useAppState();
@@ -650,11 +775,11 @@ export function ModelDropdown() {
         containerRef.current &&
         !containerRef.current.contains(e.target as Node)
       ) {
-        dispatch({ type: 'SET_MODEL_DROPDOWN_OPEN', payload: false });
+        dispatch({ type: "SET_MODEL_DROPDOWN_OPEN", payload: false });
       }
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, [modelDropdownOpen, dispatch]);
 
   // Reset tab when dropdown closes
@@ -669,21 +794,21 @@ export function ModelDropdown() {
       .map((p) => {
         const key = p.platform.toLowerCase();
         // Specific normalization for known broad providers
-        if (key === 'openai') return 'OpenAI';
-        if (key === 'zai') return 'Z.ai';
-        if (key === 'zhipu') return 'Zhipu AI';
-        if (key === 'copilot') return 'GitHub Copilot';
+        if (key === "openai") return "OpenAI";
+        if (key === "zai") return "Z.ai";
+        if (key === "zhipu") return "Zhipu AI";
+        if (key === "copilot") return "GitHub Copilot";
 
         // Skip opencode platform in mapped providers since we have a dedicated persistent tab
         if (key.includes("opencode")) return null;
 
         // Fallback to title or platform name for other subscriptions (e.g. "Z.ai Coding Plan")
-        return p.title?.replace(' Account Quota', '') ?? p.platform;
+        return p.title?.replace(" Account Quota", "") ?? p.platform;
       })
       .filter((name): name is string => name !== null);
 
     // Always include OpenCode Free at the start
-    const result = ['OpenCode Free', ...providers];
+    const result = ["OpenCode Free", ...providers];
 
     return result.filter((name, index, self) => self.indexOf(name) === index);
   }, [quotaData]);
@@ -702,8 +827,8 @@ export function ModelDropdown() {
         if (!matchesQuery) return false;
 
         if (selectedTab !== "All") {
-          if (selectedTab === 'OpenCode Free') {
-            return model.providerID === 'opencode';
+          if (selectedTab === "OpenCode Free") {
+            return model.providerID === "opencode";
           }
           const providerName = model.providerName ?? model.providerID;
           // Use exact match (case-insensitive) to prevent "Z.ai" tab from matching "Z.ai Coding Plan"
@@ -722,7 +847,7 @@ export function ModelDropdown() {
 
   const label = selectedModel
     ? `${selectedModel.providerID}/${selectedModel.modelID}`
-    : 'Model';
+    : "Model";
 
   return (
     <div className="relative" ref={containerRef}>
@@ -732,7 +857,7 @@ export function ModelDropdown() {
         size="chip"
         onClick={() =>
           dispatch({
-            type: 'SET_MODEL_DROPDOWN_OPEN',
+            type: "SET_MODEL_DROPDOWN_OPEN",
             payload: !modelDropdownOpen,
           })
         }
@@ -745,7 +870,7 @@ export function ModelDropdown() {
         </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${
-            modelDropdownOpen ? 'rotate-180' : ''
+            modelDropdownOpen ? "rotate-180" : ""
           }`}
         />
       </Button>
@@ -755,22 +880,22 @@ export function ModelDropdown() {
             <input
               value={modelSearchQuery}
               onChange={(e) =>
-                dispatch({ type: 'SET_MODEL_SEARCH', payload: e.target.value })
+                dispatch({ type: "SET_MODEL_SEARCH", payload: e.target.value })
               }
               placeholder="Search models..."
               className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-oc-sm font-mono outline-none focus:border-oc-accent transition-colors"
             />
             {subscribedProviders.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
-                {['All', ...subscribedProviders].map((tab) => (
+                {["All", ...subscribedProviders].map((tab) => (
                   <button
                     key={tab}
                     type="button"
                     onClick={() => setSelectedTab(tab)}
                     className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${
                       selectedTab === tab
-                        ? 'bg-oc-accent text-white'
-                        : 'bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text'
+                      ? "bg-oc-accent text-white"
+                      : "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
                     }`}
                   >
                     {tab}
@@ -795,23 +920,23 @@ export function ModelDropdown() {
                       type="button"
                       className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
                         isCurrent
-                          ? 'bg-oc-accent-soft text-oc-accent'
-                          : 'hover:bg-oc-panel-soft'
+                        ? "bg-oc-accent-soft text-oc-accent"
+                        : "hover:bg-oc-panel-soft"
                       }`}
                       onClick={() => {
                         dispatch({
-                          type: 'SET_SELECTED_MODEL',
+                          type: "SET_SELECTED_MODEL",
                           payload: {
                             providerID: model.providerID,
                             modelID: model.modelID,
                           },
                         });
                         dispatch({
-                          type: 'SET_MODEL_DROPDOWN_OPEN',
+                          type: "SET_MODEL_DROPDOWN_OPEN",
                           payload: false,
                         });
                         vscode.postMessage({
-                          type: 'selectModel',
+                          type: "selectModel",
                           model: {
                             providerID: model.providerID,
                             modelID: model.modelID,
@@ -868,11 +993,11 @@ export function AgentDropdown() {
         containerRef.current &&
         !containerRef.current.contains(e.target as Node)
       ) {
-        dispatch({ type: 'SET_AGENT_DROPDOWN_OPEN', payload: false });
+        dispatch({ type: "SET_AGENT_DROPDOWN_OPEN", payload: false });
       }
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, [agentDropdownOpen, dispatch]);
 
   const filtered = useMemo(
@@ -886,7 +1011,7 @@ export function AgentDropdown() {
   );
 
   const selectedAgentItem = availableAgents.find((a) => a.id === selectedAgent);
-  const label = selectedAgentItem?.name ?? selectedAgent ?? 'Agent';
+  const label = selectedAgentItem?.name ?? selectedAgent ?? "Agent";
 
   return (
     <div className="relative" ref={containerRef}>
@@ -896,7 +1021,7 @@ export function AgentDropdown() {
         size="chip"
         onClick={() =>
           dispatch({
-            type: 'SET_AGENT_DROPDOWN_OPEN',
+            type: "SET_AGENT_DROPDOWN_OPEN",
             payload: !agentDropdownOpen,
           })
         }
@@ -908,7 +1033,7 @@ export function AgentDropdown() {
         </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${
-            agentDropdownOpen ? 'rotate-180' : ''
+            agentDropdownOpen ? "rotate-180" : ""
           }`}
         />
       </Button>
@@ -918,7 +1043,7 @@ export function AgentDropdown() {
             <input
               value={agentSearchQuery}
               onChange={(e) =>
-                dispatch({ type: 'SET_AGENT_SEARCH', payload: e.target.value })
+                dispatch({ type: "SET_AGENT_SEARCH", payload: e.target.value })
               }
               placeholder="Search agents..."
               className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-oc-sm font-mono outline-none focus:border-oc-accent transition-colors"
@@ -941,13 +1066,13 @@ export function AgentDropdown() {
                 type="button"
                 className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
                   selectedAgent === agent.id
-                    ? 'bg-oc-accent-soft text-oc-accent'
-                    : 'hover:bg-oc-panel-soft'
+                  ? "bg-oc-accent-soft text-oc-accent"
+                  : "hover:bg-oc-panel-soft"
                 }`}
                 onClick={() => {
-                  dispatch({ type: 'SET_SELECTED_AGENT', payload: agent.id });
-                  dispatch({ type: 'SET_AGENT_DROPDOWN_OPEN', payload: false });
-                  vscode.postMessage({ type: 'selectAgent', agent: agent.id });
+                  dispatch({ type: "SET_SELECTED_AGENT", payload: agent.id });
+                  dispatch({ type: "SET_AGENT_DROPDOWN_OPEN", payload: false });
+                  vscode.postMessage({ type: "selectAgent", agent: agent.id });
                 }}
               >
                 <div className="text-oc-sm font-medium">{agent.name}</div>
@@ -977,10 +1102,10 @@ export function QueueContainer() {
         type="button"
         className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-oc-panel-soft"
         onClick={() =>
-          dispatch({ type: 'SET_QUEUE_OPEN', payload: !isQueueOpen })
+          dispatch({ type: "SET_QUEUE_OPEN", payload: !isQueueOpen })
         }
         aria-expanded={isQueueOpen}
-        aria-label={isQueueOpen ? 'Collapse queue panel' : 'Expand queue panel'}
+        aria-label={isQueueOpen ? "Collapse queue panel" : "Expand queue panel"}
       >
         <div className="flex items-center gap-2">
           <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-oc-text-muted">
@@ -992,26 +1117,18 @@ export function QueueContainer() {
         </div>
         <div className="flex items-center gap-2">
           {isQueueOpen && (
-            <span
-              role="button"
-              tabIndex={0}
+            <button
+              type="button"
               className="rounded px-1.5 py-0.5 font-mono text-[10px] text-oc-red transition-colors hover:bg-[rgba(248,81,73,0.12)]"
               title="Clear all queued prompts"
               onClick={(e) => {
                 e.stopPropagation();
-                dispatch({ type: 'SET_QUEUE', payload: [] });
-                vscode.postMessage({ type: 'clearQueue' });
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.stopPropagation();
-                  dispatch({ type: 'SET_QUEUE', payload: [] });
-                  vscode.postMessage({ type: 'clearQueue' });
-                }
+                dispatch({ type: "SET_QUEUE", payload: [] });
+                vscode.postMessage({ type: "clearQueue" });
               }}
             >
               Clear all
-            </span>
+            </button>
           )}
           {isQueueOpen ? (
             <ChevronDown className="h-3.5 w-3.5 text-oc-text-muted" />
@@ -1035,7 +1152,7 @@ export function QueueContainer() {
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="line-clamp-2 font-mono text-[11px] text-[var(--oc-text-soft)]">
-                    {item.text || '(empty)'}
+                    {item.text || "(empty)"}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
@@ -1045,10 +1162,10 @@ export function QueueContainer() {
                     title="Send immediately"
                     onClick={() => {
                       const next = promptQueue.filter((_, i) => i !== index);
-                      dispatch({ type: 'SET_QUEUE', payload: next });
-                      vscode.postMessage({ type: 'removeFromQueue', index });
+                      dispatch({ type: "SET_QUEUE", payload: next });
+                      vscode.postMessage({ type: "removeFromQueue", index });
                       vscode.postMessage({
-                        type: 'sendMessage',
+                        type: "sendMessage",
                         text: item.text,
                         files: item.files ?? [],
                         contexts: item.contexts ?? [],
@@ -1065,8 +1182,8 @@ export function QueueContainer() {
                     title="Remove from queue"
                     onClick={() => {
                       const next = promptQueue.filter((_, i) => i !== index);
-                      dispatch({ type: 'SET_QUEUE', payload: next });
-                      vscode.postMessage({ type: 'removeFromQueue', index });
+                      dispatch({ type: "SET_QUEUE", payload: next });
+                      vscode.postMessage({ type: "removeFromQueue", index });
                     }}
                   >
                     <X className="h-3 w-3" />
@@ -1081,7 +1198,7 @@ export function QueueContainer() {
               variant="secondary"
               size="sm"
               disabled={isExecutingQueue}
-              onClick={() => vscode.postMessage({ type: 'executeQueue' })}
+              onClick={() => vscode.postMessage({ type: "executeQueue" })}
             >
               <Play className="mr-1 h-3 w-3" /> Execute All
             </Button>
@@ -1091,12 +1208,6 @@ export function QueueContainer() {
     </div>
   );
 }
-
-
-
-
-
-
 
 export function InputWrapper() {
   const {
@@ -1118,8 +1229,14 @@ export function InputWrapper() {
 
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
   const [isCustomMode, setIsCustomMode] = useState(false);
-  const [customValue, setCustomValue] = useState('');
-  const [pendingAnswers, setPendingAnswers] = useState<Record<string, { text: string; eventType: string }>>({});
+  const [customValue, setCustomValue] = useState("");
+  const customInputRef = useRef<HTMLInputElement>(null);
+  const [previewAttachmentSrc, setPreviewAttachmentSrc] = useState<string | null>(
+    null,
+  );
+  const [pendingAnswers, setPendingAnswers] = useState<
+    Record<string, { text: string; eventType: string }>
+  >({});
 
   // Centralized Interactive Event Handler
   // By design, ALL interactive choices (whether explicitly sent by the server or
@@ -1130,16 +1247,25 @@ export function InputWrapper() {
   // Even if the AI types the question in the chat bubble, we show the popup
   // here to make the call-to-action obvious and clickable.
   const displayInteractiveEvents = interactiveEvents;
+  const interactiveEventCount = displayInteractiveEvents.length;
 
   // Reset index and custom mode when interactive events change
   useEffect(() => {
+    if (interactiveEventCount < 0) return;
     setCurrentInteractiveIndex(0);
     setIsCustomMode(false);
-    setCustomValue('');
+    setCustomValue("");
     setPendingAnswers({});
-  }, [displayInteractiveEvents.length]);
+  }, [interactiveEventCount]);
 
-  const activeInteractiveEvent = displayInteractiveEvents[currentInteractiveIndex];
+  useEffect(() => {
+    if (isCustomMode) {
+      customInputRef.current?.focus();
+    }
+  }, [isCustomMode]);
+
+  const activeInteractiveEvent =
+    displayInteractiveEvents[currentInteractiveIndex];
   const event = activeInteractiveEvent;
 
   const capitalizeFirst = (str: string) => {
@@ -1152,19 +1278,19 @@ export function InputWrapper() {
     if (!text) return;
     if (isProcessing) {
       vscode.postMessage({
-        type: 'addToQueue',
+        type: "addToQueue",
         text,
         files: selectedFiles,
         contexts: selectedContexts,
         agent: selectedAgent || null,
         images: attachments || [],
       });
-      dispatch({ type: 'SET_QUEUE_OPEN', payload: true });
-      dispatch({ type: 'SET_INPUT_VALUE', payload: '' });
+      dispatch({ type: "SET_QUEUE_OPEN", payload: true });
+      dispatch({ type: "SET_INPUT_VALUE", payload: "" });
       return;
     }
     vscode.postMessage({
-      type: 'sendMessage',
+      type: "sendMessage",
       text,
       files: selectedFiles,
       contexts: selectedContexts,
@@ -1172,38 +1298,44 @@ export function InputWrapper() {
       images: attachments || [],
     });
     dispatch({
-      type: 'SET_MESSAGES',
+      type: "SET_MESSAGES",
       payload: [
         ...messages,
         {
-          role: 'user',
+          role: "user",
           content: text,
-          parts: [{ type: 'text', text }],
+          parts: [{ type: "text", text }],
           images: (attachments || []).map((a) => a.dataUrl),
         },
       ],
     });
-    dispatch({ type: 'SET_PROCESSING', payload: true });
-    dispatch({ type: 'SET_INPUT_VALUE', payload: '' });
-    dispatch({ type: 'CLEAR_ATTACHMENTS' });
+    dispatch({ type: "SET_PROCESSING", payload: true });
+    dispatch({ type: "SET_INPUT_VALUE", payload: "" });
+    dispatch({ type: "CLEAR_ATTACHMENTS" });
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
     if (!items) return;
+    let pastedImage = false;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (!item.type.startsWith('image/')) continue;
+      if (!item.type.startsWith("image/")) continue;
       const blob = item.getAsFile();
       if (!blob) continue;
+      pastedImage = true;
       const reader = new FileReader();
       reader.onload = () => {
         try {
-          const dataUrl = reader.result as string;
-          const ext = blob.type.split('/')[1] ?? 'png';
-          const filename = (blob as any).name ?? `pasted-${Date.now()}.${ext}`;
+          const dataUrl = reader.result;
+          if (typeof dataUrl !== "string") return;
+          const ext = blob.type.split("/")[1] ?? "png";
+          const filename =
+            blob.name && blob.name.length > 0
+              ? blob.name
+              : `pasted-${Date.now()}.${ext}`;
           dispatch({
-            type: 'ADD_ATTACHMENT',
+            type: "ADD_ATTACHMENT",
             payload: {
               id: crypto.randomUUID(),
               dataUrl,
@@ -1215,6 +1347,11 @@ export function InputWrapper() {
           /* ignore */
         }
       };
+      reader.readAsDataURL(blob);
+    }
+
+    if (pastedImage) {
+      e.preventDefault();
     }
   };
 
@@ -1236,16 +1373,18 @@ export function InputWrapper() {
 
     // If there are more questions, go to the next one
     if (currentInteractiveIndex < displayInteractiveEvents.length - 1) {
-      setCurrentInteractiveIndex(prev => prev + 1);
+      setCurrentInteractiveIndex((prev) => prev + 1);
       setIsCustomMode(false);
-      setCustomValue('');
+      setCustomValue("");
     } else {
       // All questions are answered, submit batch
       submitBatchResponses(nextAnswers);
     }
   };
 
-  const submitBatchResponses = (answers: Record<string, { text: string; eventType: string }>) => {
+  const submitBatchResponses = (
+    answers: Record<string, { text: string; eventType: string }>,
+  ) => {
     const batch = Object.entries(answers).map(([eventId, data]) => ({
       eventId,
       eventType: data.eventType,
@@ -1256,32 +1395,32 @@ export function InputWrapper() {
     const composedPrompt = batch
       .map(
         (resp) =>
-          `[interactive:${resp.eventType || 'event'}:${resp.eventId || 'unknown'}] ${resp.text}`,
+          `[interactive:${resp.eventType || "event"}:${resp.eventId || "unknown"}] ${resp.text}`,
       )
-      .join('\n');
+      .join("\n");
 
     dispatch({
-      type: 'SET_MESSAGES',
+      type: "SET_MESSAGES",
       payload: [
         ...messages,
         {
           id: `interactive-${Date.now()}`,
-          role: 'user',
+          role: "user",
           content: composedPrompt,
-          parts: [{ type: 'text', text: composedPrompt }],
+          parts: [{ type: "text", text: composedPrompt }],
         },
       ],
     });
 
     vscode.postMessage({
-      type: 'batchInteractiveResponse',
+      type: "batchInteractiveResponse",
       responses: batch,
       agent: selectedAgent || null,
     });
 
     // Dismiss all events that were part of this batch
-    batch.forEach(resp => {
-      dispatch({ type: 'DISMISS_INTERACTIVE_EVENT', payload: resp.eventId });
+    batch.forEach((resp) => {
+      dispatch({ type: "DISMISS_INTERACTIVE_EVENT", payload: resp.eventId });
     });
 
     // Reset state
@@ -1290,21 +1429,31 @@ export function InputWrapper() {
   };
 
   const stopRequest = () =>
-    vscode.postMessage({ type: 'stopRequest', sessionId: currentSessionId });
+    vscode.postMessage({ type: "stopRequest", sessionId: currentSessionId });
+
+  const isImageAttachment = (mimeType?: string, dataUrl?: string) => {
+    if (typeof mimeType === "string" && mimeType.startsWith("image/")) {
+      return true;
+    }
+    if (typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) {
+      return true;
+    }
+    return false;
+  };
 
   return (
     <>
       <QueueContainer />
       <div
         className="oc-input-area"
-        style={promptQueue.length > 0 ? { borderTop: 'none' } : undefined}
+        style={promptQueue.length > 0 ? { borderTop: "none" } : undefined}
       >
         {event && (
           <div className="mb-2 rounded-lg border border-[var(--oc-border)] bg-[var(--oc-panel-soft)] px-3 py-2">
             <div className="mb-2 flex items-center justify-between gap-2 border-b border-[var(--oc-border)] pb-1.5">
               <div className="flex items-center gap-2">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-muted)]">
-                  {event.title || 'Quick Input'}
+                  {event.title || "Quick Input"}
                 </div>
                 {displayInteractiveEvents.length > 1 && (
                   <div className="flex items-center gap-1.5 ml-2 border-l border-[var(--oc-border)] pl-3">
@@ -1312,9 +1461,9 @@ export function InputWrapper() {
                       type="button"
                       disabled={currentInteractiveIndex === 0}
                       onClick={() => {
-                        setCurrentInteractiveIndex(i => i - 1);
+                        setCurrentInteractiveIndex((i) => i - 1);
                         setIsCustomMode(false);
-                        setCustomValue('');
+                        setCustomValue("");
                       }}
                       className="text-[var(--oc-text-muted)] hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-[var(--oc-text-muted)] transition-colors"
                       title="Previous"
@@ -1322,15 +1471,19 @@ export function InputWrapper() {
                       <ArrowLeft className="h-3 w-3" />
                     </button>
                     <span className="text-[10px] font-mono text-[var(--oc-text-muted)] tabular-nums">
-                      {currentInteractiveIndex + 1} / {displayInteractiveEvents.length}
+                      {currentInteractiveIndex + 1} /{" "}
+                      {displayInteractiveEvents.length}
                     </span>
                     <button
                       type="button"
-                      disabled={currentInteractiveIndex === displayInteractiveEvents.length - 1}
+                      disabled={
+                        currentInteractiveIndex ===
+                        displayInteractiveEvents.length - 1
+                      }
                       onClick={() => {
-                        setCurrentInteractiveIndex(i => i + 1);
+                        setCurrentInteractiveIndex((i) => i + 1);
                         setIsCustomMode(false);
-                        setCustomValue('');
+                        setCustomValue("");
                       }}
                       className="text-[var(--oc-text-muted)] hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-[var(--oc-text-muted)] transition-colors"
                       title="Next"
@@ -1348,7 +1501,7 @@ export function InputWrapper() {
                   title="Dismiss This"
                   onClick={() => {
                     dispatch({
-                      type: 'DISMISS_INTERACTIVE_EVENT',
+                      type: "DISMISS_INTERACTIVE_EVENT",
                       payload: event.id,
                     });
                   }}
@@ -1362,8 +1515,8 @@ export function InputWrapper() {
               <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
                 <MarkdownRenderer
                   content={
-                    event.type === 'quick_actions'
-                      ? event.title || 'Select an action'
+                    event.type === "quick_actions"
+                      ? event.title || "Select an action"
                       : event.question
                   }
                 />
@@ -1372,17 +1525,21 @@ export function InputWrapper() {
               {isCustomMode ? (
                 <div className="flex flex-col gap-2 animate-in fade-in slide-in-from-top-1 duration-200">
                   <input
+                    ref={customInputRef}
                     type="text"
-                    autoFocus
                     className="w-full bg-oc-panel border border-oc-border rounded px-2 py-1.5 text-xs text-oc-text outline-none focus:border-oc-accent transition-colors"
                     placeholder="Type your answer..."
                     value={customValue}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        submitInteractiveResponse(customValue, event.id, event.type);
-                      } else if (e.key === 'Escape') {
+                      if (e.key === "Enter") {
+                        submitInteractiveResponse(
+                          customValue,
+                          event.id,
+                          event.type,
+                        );
+                      } else if (e.key === "Escape") {
                         setIsCustomMode(false);
-                        setCustomValue('');
+                        setCustomValue("");
                       }
                     }}
                     onChange={(e) => setCustomValue(e.target.value)}
@@ -1391,7 +1548,13 @@ export function InputWrapper() {
                     <button
                       type="button"
                       className="flex-1 rounded-md bg-oc-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-oc-accent/90 transition-colors"
-                      onClick={() => submitInteractiveResponse(customValue, event.id, event.type)}
+                      onClick={() =>
+                        submitInteractiveResponse(
+                          customValue,
+                          event.id,
+                          event.type,
+                        )
+                      }
                     >
                       Submit
                     </button>
@@ -1400,7 +1563,7 @@ export function InputWrapper() {
                       className="rounded-md border border-oc-border bg-oc-panel px-3 py-1.5 text-xs font-medium text-[var(--oc-text-soft)] hover:bg-oc-panel-hover transition-colors"
                       onClick={() => {
                         setIsCustomMode(false);
-                        setCustomValue('');
+                        setCustomValue("");
                       }}
                     >
                       Cancel
@@ -1409,7 +1572,7 @@ export function InputWrapper() {
                 </div>
               ) : (
                 <>
-                  {event.type === 'question' ? (
+                    {event.type === "question" ? (
                     <div className="flex flex-wrap gap-2">
                       {event.options.map((option, index) => (
                         <button
@@ -1438,38 +1601,38 @@ export function InputWrapper() {
                       </div>
                     ) : null}
 
-                    {event.type === 'confirm' ? (
+                    {event.type === "confirm" ? (
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
                           className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
                           onClick={() =>
                             submitInteractiveResponse(
-                              event.confirmLabel || 'Yes',
-                              event.id,
-                              event.type,
-                            )
+                            event.confirmLabel || "Yes",
+                            event.id,
+                            event.type,
+                          )
                           }
                         >
-                          {capitalizeFirst(event.confirmLabel || 'Yes')}
+                          {capitalizeFirst(event.confirmLabel || "Yes")}
                         </button>
                         <button
                           type="button"
                           className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-muted)] hover:border-[var(--oc-border-strong)] hover:text-[var(--oc-text-soft)] transition-all"
                           onClick={() =>
                             submitInteractiveResponse(
-                              event.cancelLabel || 'No',
-                              event.id,
-                              event.type,
-                            )
+                            event.cancelLabel || "No",
+                            event.id,
+                            event.type,
+                          )
                           }
                         >
-                          {capitalizeFirst(event.cancelLabel || 'No')}
+                          {capitalizeFirst(event.cancelLabel || "No")}
                         </button>
                       </div>
                     ) : null}
 
-                    {event.type === 'quick_actions' ? (
+                    {event.type === "quick_actions" ? (
                       <div className="flex flex-wrap gap-2">
                         {event.actions.map((action, index) => (
                           <button
@@ -1531,7 +1694,7 @@ export function InputWrapper() {
                     onClick={(e) => {
                       e.preventDefault();
                       dispatch({
-                        type: 'SET_SELECTED_CONTEXTS',
+                        type: "SET_SELECTED_CONTEXTS",
                         payload: selectedContexts.filter(
                           (c) =>
                             c.file !== context.file ||
@@ -1553,12 +1716,28 @@ export function InputWrapper() {
           <div className="oc-context-chips">
             {attachments.map((a) => (
               <div key={a.id} className="oc-chip oc-chip-removable">
-                <span className="truncate max-w-[140px]">{a.filename}</span>
+                {isImageAttachment(a.mimeType, a.dataUrl) ? (
+                  <button
+                    type="button"
+                    className="oc-chip-preview"
+                    onClick={() => setPreviewAttachmentSrc(a.dataUrl)}
+                    title={`Preview ${a.filename ?? "image"}`}
+                  >
+                    <img
+                      src={a.dataUrl}
+                      alt={a.filename ?? "attachment image"}
+                      className="oc-chip-thumb"
+                    />
+                    <span className="truncate max-w-[140px]">{a.filename}</span>
+                  </button>
+                ) : (
+                  <span className="truncate max-w-[140px]">{a.filename}</span>
+                )}
                 <button
                   type="button"
                   className="oc-chip-remove"
                   onClick={() =>
-                    dispatch({ type: 'REMOVE_ATTACHMENT', payload: a.id })
+                    dispatch({ type: "REMOVE_ATTACHMENT", payload: a.id })
                   }
                   title={`Remove ${a.filename}`}
                 >
@@ -1576,10 +1755,10 @@ export function InputWrapper() {
             placeholder="Ask anything (Enter to send, Shift+Enter for newline), @ to mention, / for commands"
             className="oc-textarea"
             onChange={(e) =>
-              dispatch({ type: 'SET_INPUT_VALUE', payload: e.target.value })
+              dispatch({ type: "SET_INPUT_VALUE", payload: e.target.value })
             }
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 sendPrompt();
               }
@@ -1595,15 +1774,15 @@ export function InputWrapper() {
                   key={suggestion.path}
                   type="button"
                   className={`oc-suggestion-item ${
-                    index === selectedSuggestionIndex ? 'active' : ''
+                    index === selectedSuggestionIndex ? "active" : ""
                   }`}
                   onClick={() => {
                     dispatch({
-                      type: 'SET_SELECTED_FILES',
+                      type: "SET_SELECTED_FILES",
                       payload: [...selectedFiles, suggestion.path],
                     });
                     dispatch({
-                      type: 'SET_SHOW_FILE_SUGGESTIONS',
+                      type: "SET_SHOW_FILE_SUGGESTIONS",
                       payload: false,
                     });
                   }}
@@ -1637,11 +1816,18 @@ export function InputWrapper() {
                 ) : (
                   <Send className="h-3.5 w-3.5" />
                 )}
-                {isProcessing ? 'Queue' : 'Send'}
+                {isProcessing ? "Queue" : "Send"}
               </Button>
             </div>
           </div>
         </div>
+        <ImagePreviewModal
+          isOpen={previewAttachmentSrc !== null}
+          imageSrc={previewAttachmentSrc}
+          imageAlt="Attachment image"
+          title="Attachment Preview"
+          onClose={() => setPreviewAttachmentSrc(null)}
+        />
       </div>
     </>
   );
@@ -1653,10 +1839,10 @@ export function ThinkingLevelControl() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const setLevel = (level: ThinkingLevel) => {
-    dispatch({ type: 'SET_THINKING_LEVEL', payload: level });
-    dispatch({ type: 'SET_THINKING_DROPDOWN_OPEN', payload: false });
+    dispatch({ type: "SET_THINKING_LEVEL", payload: level });
+    dispatch({ type: "SET_THINKING_DROPDOWN_OPEN", payload: false });
     try {
-      vscode.postMessage({ type: 'setThinkingLevel', level });
+      vscode.postMessage({ type: "setThinkingLevel", level });
     } catch (e) {}
   };
 
@@ -1668,17 +1854,17 @@ export function ThinkingLevelControl() {
         containerRef.current &&
         !containerRef.current.contains(e.target as Node)
       ) {
-        dispatch({ type: 'SET_THINKING_DROPDOWN_OPEN', payload: false });
+        dispatch({ type: "SET_THINKING_DROPDOWN_OPEN", payload: false });
       }
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, [thinkingDropdownOpen, dispatch]);
 
   const levelLabels: Record<ThinkingLevel, string> = {
-    high: 'High',
-    medium: 'Med',
-    low: 'Low',
+    high: "High",
+    medium: "Med",
+    low: "Low",
   };
 
   return (
@@ -1689,7 +1875,7 @@ export function ThinkingLevelControl() {
         size="chip"
         onClick={() =>
           dispatch({
-            type: 'SET_THINKING_DROPDOWN_OPEN',
+            type: "SET_THINKING_DROPDOWN_OPEN",
             payload: !thinkingDropdownOpen,
           })
         }
@@ -1697,25 +1883,27 @@ export function ThinkingLevelControl() {
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="opacity-60">Think</span>
-          <span className="font-medium text-oc-accent">{levelLabels[thinkingLevel ?? 'medium']}</span>
+          <span className="font-medium text-oc-accent">
+            {levelLabels[thinkingLevel ?? "medium"]}
+          </span>
         </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${
-            thinkingDropdownOpen ? 'rotate-180' : ''
+            thinkingDropdownOpen ? "rotate-180" : ""
           }`}
         />
       </Button>
       {thinkingDropdownOpen && (
         <div className="oc-popover absolute bottom-full left-0 z-30 mb-1.5 w-44 rounded-xl border border-oc-border bg-oc-panel shadow-xl overflow-hidden">
           <div className="px-1.5 py-1.5">
-            {(['high', 'medium', 'low'] as ThinkingLevel[]).map((level) => (
+            {(["high", "medium", "low"] as ThinkingLevel[]).map((level) => (
               <button
                 key={level}
                 type="button"
                 className={`oc-popover-item w-full rounded-lg px-3 py-2 text-left transition-colors ${
                   thinkingLevel === level
-                    ? 'bg-oc-accent-soft text-oc-accent'
-                    : 'hover:bg-oc-panel-soft'
+                  ? "bg-oc-accent-soft text-oc-accent"
+                  : "hover:bg-oc-panel-soft"
                 }`}
                 onClick={() => setLevel(level)}
               >
@@ -1730,11 +1918,11 @@ export function ThinkingLevelControl() {
                   )}
                 </div>
                 <div className="text-xs font-mono text-oc-text-muted mt-0.5">
-                  {level === 'high'
-                    ? 'Deep reasoning'
-                    : level === 'medium'
-                      ? 'Balanced'
-                      : 'Fast response'}
+                  {level === "high"
+                    ? "Deep reasoning"
+                    : level === "medium"
+                      ? "Balanced"
+                      : "Fast response"}
                 </div>
               </button>
             ))}
@@ -1749,19 +1937,11 @@ export function QuotaMonitor() {
   const { quotaData, quotaIsRefreshing, budgetInfo } = useAppState();
   const dispatch = useAppDispatch();
 
-  // Debug logging
-  console.log('[QuotaMonitor] budgetInfo:', budgetInfo);
-  console.log('[QuotaMonitor] quotaData:', quotaData);
-  console.log('[QuotaMonitor] quotaData.platforms:', quotaData?.platforms);
-  console.log(
-    '[QuotaMonitor] quotaData platforms:',
-    quotaData?.platforms?.map((p) => p.platform),
-  );
   const [open, setOpen] = useState(true);
 
   const handleRefresh = () => {
-    dispatch({ type: 'SET_QUOTA_REFRESHING', payload: true });
-    vscode.postMessage({ type: 'refreshQuota' });
+    dispatch({ type: "SET_QUOTA_REFRESHING", payload: true });
+    vscode.postMessage({ type: "refreshQuota" });
   };
 
   const lastUpdatedLabel = quotaData
@@ -1769,21 +1949,21 @@ export function QuotaMonitor() {
     : null;
 
   const toProviderName = (platform: string, title?: string) => {
-    if (title && title.includes('Account Quota')) {
+    if (title && title.includes("Account Quota")) {
       return title;
     }
     const key = platform.toLowerCase();
-    if (key.includes('openai')) return 'OpenAI Account Quota';
-    if (key.includes('zai')) return 'Z.ai Account Quota';
-    if (key.includes('zhipu')) return 'Zhipu AI Account Quota';
-    if (key.includes('copilot')) return 'GitHub Copilot Account Quota';
+    if (key.includes("openai")) return "OpenAI Account Quota";
+    if (key.includes("zai")) return "Z.ai Account Quota";
+    if (key.includes("zhipu")) return "Zhipu AI Account Quota";
+    if (key.includes("copilot")) return "GitHub Copilot Account Quota";
     return title ?? `${platform} Account Quota`;
   };
 
   const barColor = (pct: number) => {
-    if (pct >= 50) return 'linear-gradient(90deg, #2ea043, #3fb950)';
-    if (pct >= 20) return 'linear-gradient(90deg, #bf8700, #d29922)';
-    return 'linear-gradient(90deg, #da3633, #f85149)';
+    if (pct >= 50) return "linear-gradient(90deg, #2ea043, #3fb950)";
+    if (pct >= 20) return "linear-gradient(90deg, #bf8700, #d29922)";
+    return "linear-gradient(90deg, #da3633, #f85149)";
   };
 
   return (
@@ -1799,12 +1979,12 @@ export function QuotaMonitor() {
             size="sm"
             className="h-7 px-2 text-xs font-mono"
             title="Refresh quota"
+            aria-label="Refresh quota"
             disabled={quotaIsRefreshing}
             onClick={handleRefresh}
           >
             <RefreshCw
-              className={`mr-1 h-3 w-3 ${
-                quotaIsRefreshing ? 'animate-spin' : ''
+              className={`mr-1 h-3.5 w-3.5 ${quotaIsRefreshing ? "animate-spin" : ""
               }`}
             />
             Refresh
@@ -1812,14 +1992,18 @@ export function QuotaMonitor() {
           <Button
             type="button"
             aria-label={
-              open ? 'Collapse Quota Monitor' : 'Expand Quota Monitor'
+              open ? "Collapse Quota Monitor" : "Expand Quota Monitor"
             }
             onClick={() => setOpen((v) => !v)}
             variant="ghost"
             size="icon"
             className="flex items-center gap-1 text-xs text-[var(--oc-text-soft)] opacity-80 hover:text-oc-accent transition-colors p-1"
           >
-            {open ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+            {open ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronUp className="h-3 w-3" />
+            )}
           </Button>
         </div>
       </div>
@@ -1862,10 +2046,20 @@ export function QuotaMonitor() {
                         <span className="text-oc-sm font-semibold tracking-tight text-[var(--oc-text-soft)]">
                           {toProviderName(platform.platform, platform.title)}
                         </span>
-                        {(platform.status === 'error') ? (
-                          <Badge variant="destructive" className="text-xs uppercase">error</Badge>
-                        ) : (platform.status === 'warning') ? (
-                            <Badge variant="warning" className="text-[#d29922] text-xs uppercase">warning</Badge>
+                        {platform.status === "error" ? (
+                          <Badge
+                            variant="destructive"
+                            className="text-xs uppercase"
+                          >
+                            error
+                          </Badge>
+                        ) : platform.status === "warning" ? (
+                          <Badge
+                            variant="warning"
+                            className="text-[#d29922] text-xs uppercase"
+                          >
+                            warning
+                          </Badge>
                         ) : null}
                       </div>
                       <div className="grid grid-cols-[auto_1fr] gap-x-2 text-xs">
@@ -1873,7 +2067,7 @@ export function QuotaMonitor() {
                           Account:
                         </span>
                         <span className="truncate font-mono text-[var(--oc-text-soft)]">
-                          {platform.account} {platform.accountLabel ?? ''}
+                          {platform.account} {platform.accountLabel ?? ""}
                         </span>
                       </div>
                     </div>
@@ -1945,78 +2139,121 @@ export function QuotaMonitor() {
                           </div>
                         );
                       })}
+
+                      {/* Budget info - integrated into GitHub Copilot card */}
+                      {platform.platform === "github-copilot" && budgetInfo ? (
+                        <div className="mt-3 overflow-hidden rounded-xl border border-oc-border bg-[var(--oc-panel-soft)]/40 shadow-sm">
+                          {/* Header */}
+                          <div className="border-b border-oc-border/50 px-3 py-2 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <div className="flex h-5 w-5 items-center justify-center rounded-md bg-oc-accent/10 text-oc-accent">
+                                <Zap className="h-3 w-3 fill-current" />
+                              </div>
+                              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-soft)]">
+                                Daily Budget
+                              </span>
+                            </div>
+                            <Badge
+                              variant="accent"
+                              className={`font-mono text-[10px] uppercase h-5 px-1.5 border-none ${budgetInfo.warningLevel === "critical"
+                                  ? "bg-oc-red/10 text-oc-red"
+                                  : budgetInfo.warningLevel === "warning"
+                                    ? "bg-[#d29922]/10 text-[#d29922]"
+                                    : "bg-oc-accent/10 text-oc-accent"
+                                }`}
+                            >
+                              {budgetInfo.warningLevel}
+                            </Badge>
+                          </div>
+
+                          {/* Progress bar section */}
+                          <div className="px-3 pt-2.5 pb-2">
+                            <div className="mb-1.5 flex items-center justify-between">
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--oc-text-soft)] opacity-50">
+                                Used Today
+                              </span>
+                              <span className="font-mono text-[10px] font-bold text-[var(--oc-text-soft)] opacity-70">
+                                {budgetInfo.usedToday} /{" "}
+                                {budgetInfo.dailyAllowance}
+                              </span>
+                            </div>
+                            <div className="relative h-2 w-full overflow-hidden rounded-full bg-oc-border/40">
+                              <div
+                                className="h-full rounded-full transition-all duration-500 ease-out"
+                                style={{
+                                  width: `${budgetInfo.dailyAllowance > 0 ? Math.min(100, (budgetInfo.usedToday / budgetInfo.dailyAllowance) * 100) : 0}%`,
+                                  background: barColor(
+                                    budgetInfo.dailyAllowance > 0
+                                      ? (budgetInfo.remainingToday /
+                                        budgetInfo.dailyAllowance) *
+                                      100
+                                      : 100,
+                                  ),
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* 3-column stats grid */}
+                          <div className="grid grid-cols-3 divide-x divide-oc-border/30 border-t border-oc-border/30 px-1 py-2">
+                            <div className="px-2 text-center">
+                              <div className="text-[9px] font-semibold uppercase tracking-tighter text-[var(--oc-text-soft)] opacity-50">
+                                Available
+                              </div>
+                              <div
+                                className={`text-sm font-bold leading-tight ${budgetInfo.warningLevel === "critical"
+                                    ? "text-oc-red"
+                                    : budgetInfo.warningLevel === "warning"
+                                      ? "text-[#d29922]"
+                                      : "text-oc-accent"
+                                  }`}
+                              >
+                                {budgetInfo.availableToday}
+                              </div>
+                              {budgetInfo.availableToday >
+                                budgetInfo.dailyAllowance ? (
+                                <div className="mt-0.5 text-[9px] font-medium text-oc-accent/70 leading-none">
+                                  +
+                                  {budgetInfo.availableToday -
+                                    budgetInfo.dailyAllowance}{" "}
+                                  rollover
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="px-2 text-center">
+                              <div className="text-[9px] font-semibold uppercase tracking-tighter text-[var(--oc-text-soft)] opacity-50">
+                                Used
+                              </div>
+                              <div className="text-sm font-bold leading-tight text-[var(--oc-text-soft)]">
+                                {budgetInfo.usedToday}
+                              </div>
+                            </div>
+                            <div className="px-2 text-center">
+                              <div className="text-[9px] font-semibold uppercase tracking-tighter text-[var(--oc-text-soft)] opacity-50">
+                                Days Left
+                              </div>
+                              <div className="text-sm font-bold leading-tight text-[var(--oc-text-soft)]">
+                                {budgetInfo.daysRemaining}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Advice footer */}
+                          {budgetInfo.advice && budgetInfo.advice.length > 0 ? (
+                            <div className="border-t border-oc-border/30 bg-oc-accent/5 px-3 py-1.5">
+                              <p className="text-[10px] leading-relaxed text-[var(--oc-text-soft)] opacity-75 italic">
+                                {budgetInfo.advice[0].replace(
+                                  /^(?:💡|✅|⚠️|🚨)\s*/,
+                                  "",
+                                )}
+                              </p>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ))}
-
-              {/* Budget info - standalone card that always shows when budgetInfo exists */}
-              {budgetInfo ? (
-                <div className="mt-3 overflow-hidden rounded-xl border border-oc-border bg-[linear-gradient(180deg,var(--oc-panel)_0%,var(--oc-panel-soft)_100%)] shadow-[0_6px_20px_rgba(0,0,0,0.2)]">
-                  <div className="border-b border-oc-border px-3 py-2.5">
-                    <div className="mb-1.5 flex items-center justify-between gap-2">
-                      <span className="text-oc-sm font-semibold tracking-tight text-[var(--oc-text-soft)]">
-                        📊 Request Budget (GitHub Copilot)
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-[auto_1fr] gap-x-2 text-xs">
-                      <span className="font-mono uppercase tracking-wider text-[var(--oc-text-soft)] opacity-80">
-                        Plan:
-                      </span>
-                      <span className="font-mono text-[var(--oc-text-soft)]">
-                        {budgetInfo.planName} ({budgetInfo.monthlyQuota} requests/month)
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2.5 px-3 py-2.5">
-                    <div className="rounded-lg border border-oc-border bg-[rgba(0,0,0,0.16)] p-2">
-                      <div className="mb-1 flex items-center justify-between text-xs">
-                        <span className="font-medium text-[var(--oc-text-soft)]">
-                          Today's Usage
-                        </span>
-                        <span className="text-[var(--oc-text-soft)]">
-                          {budgetInfo.usedToday} / {budgetInfo.dailyAllowance} requests
-                        </span>
-                      </div>
-                      <div className="h-2 w-full overflow-hidden rounded-full bg-oc-border">
-                        <div
-                          className="h-full rounded-full transition-all duration-300"
-                          style={{
-                            width: `${Math.min(100, (budgetInfo.usedToday / budgetInfo.dailyAllowance) * 100)}%`,
-                            background: barColor((budgetInfo.remainingToday / budgetInfo.dailyAllowance) * 100),
-                          }}
-                        />
-                      </div>
-                      <div className="mt-1.5 grid grid-cols-2 gap-2 text-center text-xs">
-                        <div>
-                          <div className="text-[var(--oc-text-soft)] opacity-70">
-                            Remaining
-                          </div>
-                          <div className="font-medium text-[var(--oc-text-soft)]">
-                            {budgetInfo.remainingToday}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-[var(--oc-text-soft)] opacity-70">
-                            Projected
-                          </div>
-                          <div className="font-medium text-[var(--oc-text-soft)]">
-                            ~{Math.round(budgetInfo.projectedMonthlyUsage)}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {budgetInfo.advice && budgetInfo.advice.length > 0 ? (
-                      <div className="rounded-md border border-oc-accent/40 bg-oc-accent/10 px-2.5 py-2 text-oc-accent">
-                        <div className="text-xs opacity-80">
-                          {budgetInfo.advice[0]}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
 
               {lastUpdatedLabel ? (
                 <div className="text-center text-xs text-[var(--oc-text-soft)] opacity-50 font-mono">
@@ -2038,17 +2275,17 @@ export function TodoPanel() {
 
   const statusIcon = (status?: string) => {
     switch (status) {
-      case 'pending':
-        return '⏳';
-      case 'in_progress':
-        return '🔄';
-      case 'completed':
-        return '✅';
-      case 'failed':
-      case 'cancelled':
-        return '❌';
+      case "pending":
+        return "⏳";
+      case "in_progress":
+        return "🔄";
+      case "completed":
+        return "✅";
+      case "failed":
+      case "cancelled":
+        return "❌";
       default:
-        return '•';
+        return "•";
     }
   };
 
@@ -2058,7 +2295,7 @@ export function TodoPanel() {
         <div className="oc-panel-title">TODOs</div>
         <Button
           type="button"
-          aria-label={open ? 'Collapse TODOs' : 'Expand TODOs'}
+          aria-label={open ? "Collapse TODOs" : "Expand TODOs"}
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
@@ -2089,7 +2326,7 @@ export function TodoPanel() {
                     {statusIcon(t.status)}
                   </div>
                   <div className="text-xs text-[var(--oc-text-soft)] leading-relaxed">
-                    {(t as any).description ?? t.text ?? 'Untitled'}
+                    {(t as any).description ?? t.text ?? "Untitled"}
                   </div>
                 </div>
               ))}
@@ -2101,82 +2338,206 @@ export function TodoPanel() {
   );
 }
 
-// McpPanel - displays MCP (Model Context Protocol) server status
+// McpPanel - displays MCP (Model Context Protocol) server status with live data from OpenCode SDK
 export function McpPanel() {
   const [open, setOpen] = useState(true);
+  const [expandedServers, setExpandedServers] = useState<Set<string>>(
+    new Set(),
+  );
+  const { mcpServers } = useAppState();
+  const dispatch = useAppDispatch();
 
-  // Placeholder MCP servers data - this would come from the backend in production
-  const mcpServers = [
-    { name: 'context7', status: 'connected', tools: 12 },
-    { name: 'serena', status: 'connected', tools: 8 },
-    { name: 'web-reader', status: 'connected', tools: 3 },
-  ];
+  function toggleServer(name: string) {
+    setExpandedServers((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  }
+
+  function requestRefresh() {
+    dispatch({ type: "SET_MCP_SERVERS", payload: [] });
+    vscode.postMessage({ type: "getMcpStatus" });
+  }
+
+  const connectedCount = mcpServers.filter(
+    (s) => s.status === "connected",
+  ).length;
+  const hasServers = mcpServers.length > 0;
+
+  function statusDot(status: string) {
+    if (status === "connected") return "bg-[var(--oc-green)]";
+    if (status === "disabled") return "bg-[var(--oc-text-soft)] opacity-40";
+    if (status === "needs_auth" || status === "needs_client_registration")
+      return "bg-[var(--oc-yellow,#f59e0b)]";
+    return "bg-[var(--oc-red)]";
+  }
+
+  function StatusIcon({ status }: { status: string }) {
+    if (status === "failed")
+      return (
+        <AlertCircle
+          className="h-3 w-3 text-[var(--oc-red)]"
+          aria-label="Server failed"
+        />
+      );
+    if (status === "needs_auth" || status === "needs_client_registration")
+      return (
+        <Lock
+          className="h-3 w-3 text-[var(--oc-yellow,#f59e0b)]"
+          aria-label="Authentication needed"
+        />
+      );
+    if (status === "disabled")
+      return (
+        <WifiOff
+          className="h-3 w-3 text-[var(--oc-text-soft)] opacity-40"
+          aria-label="Disabled"
+        />
+      );
+    return null;
+  }
 
   return (
     <div className="oc-mcp-panel border-t border-oc-border p-3 text-xs">
       <div className="mb-2 flex items-center justify-between">
         <div className="oc-panel-title">MCP Servers</div>
-        <Button
-          type="button"
-          aria-label={open ? 'Collapse MCP' : 'Expand MCP'}
-          onClick={() => setOpen((v) => !v)}
-          variant="ghost"
-          size="icon"
-          className="oc-collapse-btn flex items-center gap-1 text-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
-        >
-          {open ? (
-            <ChevronDown className="h-3 w-3" />
-          ) : (
-            <ChevronUp className="h-3 w-3" />
-          )}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            aria-label="Refresh MCP status"
+            onClick={requestRefresh}
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            title="Refresh MCP server status"
+          >
+            <RefreshCw className="h-3 w-3" />
+          </Button>
+          <Button
+            type="button"
+            aria-label={open ? "Collapse MCP" : "Expand MCP"}
+            onClick={() => setOpen((v) => !v)}
+            variant="ghost"
+            size="icon"
+            className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+          >
+            {open ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronUp className="h-3 w-3" />
+            )}
+          </Button>
+        </div>
       </div>
 
       {open ? (
-        <div className="space-y-2">
-          {mcpServers.map((server) => (
-            <div
-              key={server.name}
-              className="rounded-md border border-oc-border bg-oc-panel-soft p-2"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`inline-block h-1.5 w-1.5 rounded-full ${
-                      server.status === 'connected'
-                      ? 'bg-[var(--oc-green)]'
-                      : 'bg-[var(--oc-red)]'
-                    }`}
-                  />
-                  <span className="font-mono text-xs font-medium text-[var(--oc-text-soft)]">
-                    {server.name}
-                  </span>
-                </div>
-                <span className="text-xs text-[var(--oc-text-soft)] opacity-80">
-                  {server.tools} tools
-                </span>
-              </div>
+        <div className="space-y-1.5">
+          {!hasServers ? (
+            <div className="py-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+              No MCP servers configured
             </div>
-          ))}
-          <div className="mt-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
-            {mcpServers.length} servers connected
-          </div>
+          ) : (
+            mcpServers.map((server) => {
+              const isExpanded = expandedServers.has(server.name);
+              const hasTools = server.tools.length > 0;
+              return (
+                <div
+                  key={server.name}
+                  className="rounded-md border border-oc-border bg-oc-panel-soft"
+                >
+                  {/* Server row */}
+                  <div className="flex items-center gap-2 p-2">
+                    <span
+                      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(server.status)}`}
+                      aria-hidden="true"
+                    />
+                    <span className="flex-1 truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
+                      {server.name}
+                    </span>
+                    <StatusIcon status={server.status} />
+                    <span className="text-xs text-[var(--oc-text-soft)] opacity-70 tabular-nums">
+                      {server.tools.length > 0
+                        ? `${server.tools.length} tools`
+                        : server.status}
+                    </span>
+                    {hasTools && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={
+                          isExpanded
+                            ? `Collapse ${server.name} tools`
+                            : `Expand ${server.name} tools`
+                        }
+                        aria-expanded={isExpanded}
+                        onClick={() => toggleServer(server.name)}
+                        className="h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-3 w-3" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3" />
+                        )}
+                      </Button>
+                    )}
+                  </div>
+
+                  {/* Error message */}
+                  {server.error && (
+                    <div className="px-2 pb-1.5 text-xs text-[var(--oc-red)] opacity-80">
+                      <AlertTriangle className="mr-1 inline h-3 w-3" />
+                      {server.error}
+                    </div>
+                  )}
+
+                  {/* Tool list (expandable) */}
+                  {isExpanded && hasTools && (
+                    <div className="border-t border-oc-border px-2 pb-2 pt-1">
+                      <div className="mb-1 flex items-center gap-1 text-xs text-[var(--oc-text-soft)] opacity-60">
+                        <Wrench className="h-2.5 w-2.5" />
+                        <span>Tools</span>
+                      </div>
+                      <ul className="space-y-0.5">
+                        {server.tools.map((tool) => (
+                          <li
+                            key={tool}
+                            className="truncate rounded px-1 py-0.5 font-mono text-[10px] text-[var(--oc-text-soft)] opacity-80 hover:bg-oc-border/40"
+                            title={tool}
+                          >
+                            {tool}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+          {hasServers && (
+            <div className="mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+              {connectedCount} / {mcpServers.length} connected
+            </div>
+          )}
         </div>
       ) : null}
     </div>
   );
 }
 
-// LspPanel - displays Language Server Protocol status
+// LspPanel - displays Language Server Protocol status with live data from OpenCode SDK
 export function LspPanel() {
   const [open, setOpen] = useState(true);
+  const { lspServers } = useAppState();
 
-  // Placeholder LSP servers data - this would come from VSCode in production
-  const lspServers = [
-    { name: 'TypeScript', status: 'running', version: '5.6.0' },
-    { name: 'Python', status: 'running', version: '2024.2' },
-    { name: 'JSON', status: 'running', version: '3.5.1' },
-  ];
+  const activeCount = lspServers.filter((s) => s.status === "connected").length;
+  const hasServers = lspServers.length > 0;
 
   return (
     <div className="oc-lsp-panel border-t border-oc-border p-3 text-xs">
@@ -2184,11 +2545,11 @@ export function LspPanel() {
         <div className="oc-panel-title">LSP Servers</div>
         <Button
           type="button"
-          aria-label={open ? 'Collapse LSP' : 'Expand LSP'}
+          aria-label={open ? "Collapse LSP" : "Expand LSP"}
           onClick={() => setOpen((v) => !v)}
           variant="ghost"
           size="icon"
-          className="flex items-center gap-1 text-xs text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+          className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
         >
           {open ? (
             <ChevronDown className="h-3 w-3" />
@@ -2199,32 +2560,53 @@ export function LspPanel() {
       </div>
 
       {open ? (
-        <div className="space-y-2">
-          {lspServers.map((server) => (
-            <div
-              key={server.name}
-              className="rounded-md border border-oc-border bg-oc-panel-soft p-2"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`inline-block h-1.5 w-1.5 rounded-full ${
-                      server.status === 'running' ? 'bg-[var(--oc-green)]' : 'bg-[var(--oc-red)]'
-                    }`}
-                  />
-                  <span className="font-mono text-xs font-medium text-[var(--oc-text-soft)]">
-                    {server.name}
-                  </span>
-                </div>
-                <span className="text-xs font-mono text-[var(--oc-text-soft)] opacity-80">
-                  {server.version}
-                </span>
-              </div>
+        <div className="space-y-1.5">
+          {!hasServers ? (
+            <div className="py-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+              No language servers active
             </div>
-          ))}
-          <div className="mt-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
-            {lspServers.length} language servers active
-          </div>
+          ) : (
+            lspServers.map((server) => (
+              <div
+                key={server.id}
+                className="rounded-md border border-oc-border bg-oc-panel-soft p-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${server.status === "connected"
+                          ? "bg-[var(--oc-green)]"
+                          : "bg-[var(--oc-red)]"
+                        }`}
+                      aria-hidden="true"
+                    />
+                    <span className="truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
+                      {server.name}
+                    </span>
+                  </div>
+                  {server.status === "error" && (
+                    <AlertCircle
+                      className="h-3 w-3 shrink-0 text-[var(--oc-red)]"
+                      aria-label="Language server error"
+                    />
+                  )}
+                </div>
+                {server.root && (
+                  <div
+                    className="mt-0.5 truncate pl-3.5 text-[10px] text-[var(--oc-text-soft)] opacity-50"
+                    title={server.root}
+                  >
+                    {server.root}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+          {hasServers && (
+            <div className="mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+              {activeCount} / {lspServers.length} language servers active
+            </div>
+          )}
         </div>
       ) : null}
     </div>

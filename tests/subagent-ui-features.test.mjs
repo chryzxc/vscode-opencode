@@ -14,7 +14,7 @@ const panelSource = readSource(
 
 test('subagent inline expansion logic uses toggleSubagentDetails', () => {
   assert.match(messageSource, /const\s+toggleSubagentDetails\s*=\s*\(subagentId:\s*string\)\s*=>/, 'Should have toggleSubagentDetails function');
-  assert.match(messageSource, /setExpandedSubagentId\(\s*prev\s*=>\s*prev\s*===\s*subagentId\s*\?\s*null\s*:\s*subagentId\s*\)/, 'Should use local state for expansion');
+  assert.match(messageSource, /setExpandedSubagentId\s*\(\s*\(prev\)\s*=>\s*\{[\s\S]*?prev\s*===\s*subagentId\s*\?\s*null\s*:\s*subagentId[\s\S]*?\}\s*\)/, 'Should use local state for expansion');
   assert.match(messageSource, /onClick={\(\)\s*=>\s*toggleSubagentDetails\(subagent\.id\)}/, 'Should call toggleSubagentDetails on click');
 });
 
@@ -32,10 +32,11 @@ test('diffStats are rendered in progress events', () => {
 });
 
 test('AssistantMessage component types subagent data to SubagentDetail', () => {
-  assert.match(messageSource, /as SubagentDetail\)\.childSessionId/, 'Should cast detailData to SubagentDetail for childSessionId');
-  assert.match(messageSource, /as SubagentDetail\)\.thinkingEvents/, 'Should cast detailData to SubagentDetail for thinkingEvents');
-  assert.match(messageSource, /as SubagentDetail\)\.progressEvents/, 'Should cast detailData to SubagentDetail for progressEvents');
-  assert.match(messageSource, /as SubagentDetail\)\.timelineEvents/, 'Should cast detailData to SubagentDetail for timelineEvents');
+  assert.match(messageSource, /const\s+detailData\s*=\s*\(subagentDetailsById\[selected\.id\]\s+as\s+SubagentDetail\s*\|\s*undefined\)\s*\|\|/, 'Should normalize selected detailData to SubagentDetail shape');
+  assert.match(messageSource, /detailData\.childSessionId/, 'Should use typed detailData childSessionId');
+  assert.match(messageSource, /detailData\.thinkingEvents\?\.length/, 'Should use typed detailData thinkingEvents');
+  assert.match(messageSource, /detailData\.progressEvents\?\.length/, 'Should use typed detailData progressEvents');
+  assert.match(messageSource, /detailData\.timelineEvents\?\.length/, 'Should use typed detailData timelineEvents');
 });
 
 test('SubagentProgressPopover is integrated into the subagent item loop', () => {
@@ -46,16 +47,16 @@ test('SubagentProgressPopover is integrated into the subagent item loop', () => 
   assert.match(messageSource, /export\s+function\s+SubagentProgressPopover/, 'SubagentProgressPopover should be an exported component');
   assert.match(messageSource, /<Popover\.Root>/, 'Popover should use Radix Popover.Root');
   assert.match(messageSource, /Latest activity/, 'Popover should show "Latest activity" header');
-  assert.match(messageSource, /Progress/, 'Popover should show "Progress" header');
+  assert.match(messageSource, /Recent Steps/, 'Popover should show "Recent Steps" header');
 });
 
 test('subagent color differentiation is applied deterministically', () => {
   assert.match(messageSource, /function\s+getSubagentColor/, 'Should have getSubagentColor helper');
-  assert.match(messageSource, /colorClass=\{getSubagentColor\(subagent\.id\)\}/, 'Should pass subagent color to the popover');
-  assert.match(messageSource, /className=\{cn\(".*",\s*getSubagentColor\(subagent\.id\)\)\}/, 'Should apply color via getSubagentColor to icon and text');
+  assert.match(messageSource, /const\s+statusClass\s*=\s*getSubagentColor\(subagent\.id\)/, 'Should derive deterministic subagent status color once per row');
+  assert.match(messageSource, /colorClass=\{statusClass\}/, 'Should pass derived subagent color to the popover');
+  assert.match(messageSource, /cn\("truncate text-oc-xs font-semibold",\s*getSubagentColor\(selected\.id\)\)/, 'Should apply deterministic color to selected detail header');
 });
 
 test('subagent sessions are filtered out of History Sidebar', () => {
-  assert.match(panelSource, /sessionsList\.filter\(s\s*=>\s*!s\.parentSessionId\)/, 'Should filter sessionsList by !parentSessionId');
+  assert.match(panelSource, /sessionsList\.filter\(\(?s\)?\s*=>\s*!s\.parentSessionId\)/, 'Should filter sessionsList by !parentSessionId');
 });
-

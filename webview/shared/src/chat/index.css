@@ -35,11 +35,14 @@ body.vscode-high-contrast-light {
 /* ── OpenCode Design Tokens ──────────────────────────────────────────────── */
 :root {
   /* Surfaces */
-  --oc-bg:         var(--vscode-editor-background);
-  --oc-bg-soft:    var(--vscode-editorWidget-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
-  --oc-bg-overlay: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-  --oc-panel:      var(--vscode-editorWidget-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
-  --oc-panel-soft: var(--vscode-inputBackground, var(--vscode-editorWidget-background, var(--vscode-editor-background)));
+  --oc-bg:              var(--vscode-editor-background);
+  /* NOTE: --oc-chat-bg uses the IDE tab background so the conversation feed
+     feels native to the editor environment rather than the sidebar widget. */
+  --oc-chat-bg:         var(--vscode-tab-activeBackground, var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background)));
+  --oc-bg-soft:         var(--vscode-editorWidget-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
+  --oc-bg-overlay:      var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --oc-panel:           var(--vscode-editorWidget-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
+  --oc-panel-soft:      var(--vscode-inputBackground, var(--vscode-editorWidget-background, var(--vscode-editor-background)));
 
   /* Borders */
   --oc-border:      var(--vscode-widget-border, var(--vscode-panel-border, rgba(205, 214, 244, 0.08)));
@@ -76,7 +79,7 @@ body {
   background: var(--oc-bg);
   color: var(--oc-text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Inter', sans-serif;
-  font-size: var(--vscode-font-size, 13px);
+  font-size: var(--vscode-font-size, 14px);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -123,9 +126,9 @@ body {
 
 .oc-title {
   color: var(--oc-text);
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: -0.01em;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .oc-session-chip {
@@ -151,17 +154,16 @@ body {
 
 /* ── Status Chips ────────────────────────────────────────────────────────── */
 .oc-task-pill {
-  font-size: 9px;
-  letter-spacing: 0.1em;
+  font-size: 10px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   font-family: 'SF Mono', 'Cascadia Code', monospace;
   border: 1px solid var(--oc-border);
-  color: var(--oc-text-soft);
+  color: var(--oc-text-muted);
   background: transparent;
   border-radius: 3px;
-  padding: 1px 5px;
-  font-weight: 500;
-  opacity: 0.75;
+  padding: 1px 6px;
+  font-weight: 600;
 }
 
 .oc-task-name {
@@ -170,24 +172,23 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .oc-status-pill {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   font-family: 'SF Mono', 'Cascadia Code', monospace;
   border-radius: 3px;
-  padding: 1px 5px;
+  padding: 1px 6px;
   border: 1px solid var(--oc-border);
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .oc-status-pill.idle {
-  color: var(--oc-text-soft);
+  color: var(--oc-text-muted);
   background: transparent;
-  opacity: 0.75;
 }
 
 .oc-status-pill.pending {
@@ -210,7 +211,7 @@ body {
 
 .oc-duration {
   font-family: 'SF Mono', 'Cascadia Code', monospace;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 /* ── Right Panel ─────────────────────────────────────────────────────────── */
@@ -224,13 +225,12 @@ body {
 }
 
 .oc-panel-title {
-  letter-spacing: 0.08em;
+  letter-spacing: 0.09em;
   font-family: 'SF Mono', 'Cascadia Code', monospace;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   color: var(--oc-text-soft);
-  opacity: 0.85;
 }
 
 /* ── History Sidebar ─────────────────────────────────────────────────────── */
@@ -359,16 +359,15 @@ body {
 .oc-group-label {
   letter-spacing: 0.07em;
   font-family: 'SF Mono', 'Cascadia Code', monospace;
-  font-size: 9px;
+  font-size: 10px;
   text-transform: uppercase;
-  color: var(--oc-text-soft);
-  opacity: 0.75;
+  color: var(--oc-text-muted);
 }
 
 .oc-dropdown-option {
   border: 1px solid transparent;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 12px;
   transition: background 0.08s ease, border-color 0.08s ease;
 }
 
@@ -401,13 +400,12 @@ body {
 }
 
 .oc-steps-header {
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-family: 'SF Mono', 'Cascadia Code', monospace;
   color: var(--oc-text-soft);
   font-weight: 500;
-  opacity: 0.85;
 }
 
 .oc-step-item {
@@ -425,6 +423,25 @@ body {
 /* ── Quota Monitor ───────────────────────────────────────────────────────── */
 .oc-quota-monitor {
   border-color: var(--oc-border);
+}
+
+/* ── Timeline Connector ──────────────────────────────────────────────────── */
+.oc-timeline-connector {
+  position: relative;
+}
+
+.oc-timeline-line {
+  position: absolute;
+  left: 6px;
+  top: 14px;
+  bottom: -6px;
+  width: 1px;
+  background: var(--oc-border);
+  opacity: 0.5;
+}
+
+.oc-timeline-item:last-child .oc-timeline-line {
+  display: none;
 }
 
 /* ── Thinking pulse animation ────────────────────────────────────────────── */
@@ -464,13 +481,6 @@ body {
   line-height: 1.55;
 }
 
-/* ── Assistant Message ────────────────────────────────────────────────────── */
-.oc-msg-assistant {
-  /* Clean left-accent approach — no heavy card */
-  padding-left: 14px;
-  border-left: 2px solid color-mix(in srgb, var(--oc-accent) 30%, transparent);
-}
-
 /* ── Avatar ──────────────────────────────────────────────────────────────── */
 .oc-avatar {
   width: 24px;
@@ -502,22 +512,21 @@ body {
 
 /* ── Message header labels ───────────────────────────────────────────────── */
 .oc-msg-agent-label {
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--oc-text-soft);
-  opacity: 0.85;
 }
 
 .oc-msg-model-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--oc-text-soft);
-  opacity: 0.75;
+  opacity: 0.9;
 }
 
 .oc-msg-token-chips {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--oc-text-soft);
-  opacity: 0.65;
+  opacity: 0.8;
   font-family: 'SF Mono', 'Cascadia Code', monospace;
   white-space: nowrap;
 }
@@ -595,8 +604,8 @@ body {
 .markdown-body {
   color: var(--oc-text);
   font-family: inherit;
-  font-size: 13px;
-  line-height: 1.65;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .markdown-body h1,
@@ -924,7 +933,7 @@ body {
   min-height: 60px;
   max-height: 220px;
   padding: 0.625rem 0.75rem 0.25rem;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--oc-text);
 }
@@ -1016,13 +1025,128 @@ body {
 /* Popover list items */
 .oc-popover-item {
   display: block;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--oc-text-soft);
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
 }
 .oc-popover-item:hover {
   background: var(--oc-panel-soft);
+}
+
+.oc-chip-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: zoom-in;
+}
+
+.oc-chip-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  object-fit: cover;
+  border: 1px solid var(--oc-border);
+  flex-shrink: 0;
+}
+
+.oc-inline-image-trigger {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: zoom-in;
+}
+
+.oc-image-preview-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.oc-image-preview-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  margin: 0;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.oc-image-preview-modal {
+  position: relative;
+  z-index: 1;
+  width: min(960px, 100%);
+  max-height: 90vh;
+  border: 1px solid var(--oc-border);
+  border-radius: 0.75rem;
+  background: var(--oc-panel);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.oc-image-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--oc-border);
+}
+
+.oc-image-preview-title {
+  font-size: 11px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--oc-text-soft);
+}
+
+.oc-image-preview-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--oc-border);
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--oc-text-muted);
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+}
+
+.oc-image-preview-close:hover {
+  color: var(--oc-text);
+  background: var(--oc-accent-soft);
+}
+
+.oc-image-preview-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  background: color-mix(in srgb, var(--oc-bg) 85%, transparent);
+  max-height: calc(90vh - 52px);
+}
+
+.oc-image-preview-img {
+  max-width: 100%;
+  max-height: calc(90vh - 76px);
+  object-fit: contain;
+  border-radius: 0.5rem;
+  border: 1px solid var(--oc-border);
+}
+
+.markdown-body img {
+  cursor: zoom-in;
 }
 
 

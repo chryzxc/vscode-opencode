@@ -177,7 +177,7 @@ export class PlanParser {
    */
   public static parse(markdown: string): ImplementationPlan {
     const plan: ImplementationPlan = {
-      goal: '',
+      goal: "",
       files: [],
       steps: [],
       verification: [],
@@ -189,24 +189,26 @@ export class PlanParser {
     if (goalMatch) {
       plan.goal = goalMatch[1].trim();
 
-      // Extract Description: text after Goal but before first specific technical section
+      // Extract Description: text after Goal but before a standard technical section
       const goalEndIndex = markdown.indexOf(goalMatch[0]) + goalMatch[0].length;
-      // Look for any section starting with ## or ###
-      const sectionMatch = markdown
+
+      // Look for standard technical sections indicating the end of the intro
+      const nextHeaderMatch = markdown
         .slice(goalEndIndex)
         .match(
-          /^#{2,4}\s+(Proposed Changes|Verification Plan|Tasks|Checklist|Proposed|Files|Steps|Tests|Verification)/im,
+          /^#{2,4}\s+(Proposed Changes|Tasks|Checklist|Verification Plan|Steps|Files)/im,
         );
 
-      if (sectionMatch && sectionMatch.index !== undefined) {
+      if (nextHeaderMatch && nextHeaderMatch.index !== undefined) {
         const description = markdown
-          .slice(goalEndIndex, goalEndIndex + sectionMatch.index)
+          .slice(goalEndIndex, goalEndIndex + nextHeaderMatch.index)
           .trim();
         if (description) {
           plan.description = description;
         }
       } else {
-        // Fallback: if no clear sections, take everything else as description
+        // Fallback: if no standard sections, take everything else as description
+        // (This keeps the full text intact if the LLM didn't use expected sections but still sent a plan)
         const remaining = markdown.slice(goalEndIndex).trim();
         if (remaining) {
           plan.description = remaining;
@@ -216,7 +218,8 @@ export class PlanParser {
 
     // Extract Files - More lenient regex
     // Matches #### [MODIFY] file.path, ### MODIFY: file.path, [MODIFY] file.path, etc.
-    const fileRegex = /(?:#{1,4}\s+)?\[(MODIFY|NEW|DELETE)\]\s+([^\s()]+)(?:\((file:\/\/\/.*?)\))?/gi;
+    const fileRegex =
+      /(?:#{1,4}\s+)?\[(MODIFY|NEW|DELETE)\]\s+([^\s()]+)(?:\((file:\/\/\/.*?)\))?/gi;
     let match;
     while ((match = fileRegex.exec(markdown)) !== null) {
       const type = match[1].toUpperCase() as "MODIFY" | "NEW" | "DELETE";
@@ -236,8 +239,8 @@ export class PlanParser {
     const vMatch = markdown.match(verificationRegex);
     if (vMatch) {
       const content = vMatch[1];
-      const items = content.split('\n');
-      items.forEach(item => {
+      const items = content.split("\n");
+      items.forEach((item) => {
         const desc = item.replace(/^[-*+]\s*/, "").trim();
         if (desc) {
           const type = /auto|script|test/i.test(desc) ? "Automated" : "Manual";
@@ -247,14 +250,98 @@ export class PlanParser {
     }
 
     // Extract Steps (Checklist)
-    const stepRegex = /^[-*+]\s*\[([ x/])\]\s*(.*)/gm;
-    while ((match = stepRegex.exec(markdown)) !== null) {
+    // First try strict checkbox format: - [ ] Task
+    const checkboxRegex = /^[-*+]\s*\[([ xX\/])\]\s*(.*)/gm;
+    let foundCheckboxes = false;
+    while ((match = checkboxRegex.exec(markdown)) !== null) {
+      foundCheckboxes = true;
       plan.steps.push({
         title: match[2].trim(),
-        completed: match[1] === 'x',
+        completed: match[1].toLowerCase() === "x",
       });
     }
 
+    // If no checkboxes found, fallback to capturing standard bullet points or numbered lists
+    // This assumes the core "description" is already extracted and we are crawling technical sections
+    if (!foundCheckboxes) {
+      // Find a likely "Tasks" section first to avoid grabbing random text
+      const tasksSectionRegex =
+        /^#+\s+(Tasks|Steps|Implementation Plan|Proposed Changes)\s*([\s\S]*?)(?=#+|$)/im;
+      const tasksMatch = markdown.match(tasksSectionRegex);
+
+      const textToSearch = tasksMatch ? tasksMatch[2] : markdown;
+      const listRegex = /^(?:[-*+]|\d+\.)\s+(?!\[[ xX\/]\])(.*)/gm;
+
+      while ((match = listRegex.exec(textToSearch)) !== null) {
+        // Ignore lines that look like file operations (handled separately)
+        if (!/\[(MODIFY|NEW|DELETE)\]/i.test(match[1])) {
+          plan.steps.push({
+            title: match[1].trim(),
+            completed: false,
+          });
+        }
+      }
+    }
+
     return plan;
+  }
+
+  /**
+   * Converts a structured ImplementationPlan back into a clean markdown string.
+   * This is useful for "cleaning" a plan that may have been parsed from a message
+   * containing extra noise (like conversation history or thinking traces).
+   *
+   * @param plan - The structured plan to convert
+   * @returns Clean markdown string
+   */
+  public static toMarkdown(plan: ImplementationPlan): string {
+    const lines: string[] = [];
+
+    if (plan.goal) {
+      lines.push(`# ${plan.goal}`);
+      lines.push("");
+    }
+
+    if (plan.description) {
+      lines.push(plan.description);
+      lines.push("");
+    }
+
+    if (plan.files && plan.files.length > 0) {
+      lines.push("## Proposed Changes");
+      lines.push("");
+      plan.files.forEach((file) => {
+        lines.push(`#### [${file.type}] ${file.path}`);
+        if (file.summary) {
+          lines.push(file.summary);
+          lines.push("");
+        }
+      });
+      lines.push("");
+    }
+
+    if (plan.steps && plan.steps.length > 0) {
+      lines.push("## Tasks");
+      lines.push("");
+      plan.steps.forEach((step) => {
+        const marker = step.completed ? "x" : " ";
+        lines.push(`- [${marker}] ${step.title}`);
+        if (step.description) {
+          lines.push(`  ${step.description}`);
+        }
+      });
+      lines.push("");
+    }
+
+    if (plan.verification && plan.verification.length > 0) {
+      lines.push("## Verification Plan");
+      lines.push("");
+      plan.verification.forEach((v) => {
+        lines.push(`- ${v.description}`);
+      });
+      lines.push("");
+    }
+
+    return lines.join("\n").trim();
   }
 }

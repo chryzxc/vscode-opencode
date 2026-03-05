@@ -22,12 +22,13 @@ test('chat shell does not mount subagents panel in right rail anymore', () => {
 
 test('assistant messages render spawned agents section', () => {
   assert.match(messageSource, /subagents\.length > 0/, 'assistant card should check for spawned agents');
+  assert.match(messageSource, /Spawned Subagents/, 'assistant card should show a dedicated spawned-subagents section title');
   assert.match(messageSource, /toggleSubagentDetails\(/, 'assistant subagent rows should be able to toggle details inline');
 });
 
 test('subagents inline list shows row details and timeline drilldown', () => {
   assert.match(messageSource, /formatDurationMs\(subagent\.durationMs\)/, 'subagent rows should include elapsed time');
-  assert.match(messageSource, /subagent\.providerID && subagent\.modelID/, 'subagent rows should include provider/model fields');
+  assert.match(messageSource, /selected\.providerID && selected\.modelID/, 'selected subagent detail should include provider/model fields');
   assert.match(messageSource, /subagent\.latestActivity/, 'subagent rows should include latest activity');
   assert.match(messageSource, /Timeline \(\{.*timelineEvents\.length\}\)/, 'subagent inline details should include timeline events');
 });

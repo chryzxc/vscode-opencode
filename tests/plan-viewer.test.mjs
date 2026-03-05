@@ -20,7 +20,7 @@ test('plan viewer HTML wiring injects plan payload and required bundled assets',
   // Verify plan webview receives bootstrap payload and compiled assets.
   const htmlBody = extractFunctionBody(
     planProviderSource,
-    'private _getHtmlForWebview(webview: vscode.Webview, plan: import(\'../types/Plan\').ImplementationPlan)',
+    'private _getHtmlForWebview(webview: vscode.Webview, content: string, title: string)',
   );
 
   assert.match(htmlBody, /window\.__PLAN_DATA__\s*=\s*\$\{planDataJson\}/, 'plan webview must inject __PLAN_DATA__ payload');
@@ -41,7 +41,7 @@ test('plan viewer supports interactive comment mutation events and updates comme
   // Verify add/update/delete comment actions are accepted and synchronized back to the webview.
   const ctorBody = extractFunctionBody(
     planProviderSource,
-    'private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, content: string)',
+    'private constructor(',
   );
 
   assert.match(ctorBody, /case\s+["']addComment["']:\s*\{[\s\S]*commentsUpdated/, 'addComment should update store and emit commentsUpdated');
@@ -52,16 +52,17 @@ test('plan viewer supports interactive comment mutation events and updates comme
   assert.match(planShellSource, /window\.postDeleteComment\s*=\s*\(id:\s*string\)\s*=>\s*vscode\?\.postMessage\(\{\s*type:\s*["']deleteComment["'],\s*id,\s*planId\s*\}\)/, 'plan shell should wire delete comment bridge');
 });
 
-test('proceed flow forwards plan payload, persists comments, and sends Proceed with plan attachment', () => {
-  // Verify full proceed path: webview -> plan provider -> chat provider -> Proceed message.
+test('proceed flow forwards plan payload, persists comments file, and sends compact proceed message', () => {
+  // Verify full proceed path: webview -> plan provider -> chat provider with compact user-facing message.
   const ctorBody = extractFunctionBody(
     planProviderSource,
-    'private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, content: string)',
+    'private constructor(',
   );
   assert.match(planShellSource, /vscode\?\.postMessage\(\{\s*type:\s*["']proceedWithPlan["'],\s*rawPlan,\s*comments\s*\}\)/, 'plan shell should post proceedWithPlan including rawPlan and comments');
   assert.match(ctorBody, /case\s+["']proceedWithPlan["']:\s*\{[\s\S]*opencode\.planProceed/, 'plan provider should route proceedWithPlan to opencode.planProceed command');
-  assert.match(chatProviderSource, /async\s+handlePlanProceed\([\s\S]*## Comments/, 'plan proceed handler should append comments section into persisted markdown');
-  assert.match(chatProviderSource, /await\s+this\.handleSendMessage\(\s*["']Proceed["']/, 'plan proceed handler should send a short "Proceed" message with the plan file attached');
+  assert.match(chatProviderSource, /implementation_plan_comments\.md/, 'plan proceed handler should persist reviewer comments in a dedicated markdown file');
+  assert.match(chatProviderSource, /Revise the implementation plan based on the attached comments\./, 'plan proceed handler should ask AI to revise plan when comments exist');
+  assert.match(chatProviderSource, /Proceed with the approved plan and implement it now\./, 'plan proceed handler should use a different proceed message when no changes are requested');
   assert.match(chatProviderSource, /PlanViewProvider\.closeCurrentPanel\(\)/, 'plan proceed handler should close plan viewer after triggering proceed');
 });
 
@@ -78,4 +79,31 @@ test('plan viewer read-path has error fallback for unreadable plan files', () =>
 
 test('chat provider routes viewPlan to handleViewPlan', () => {
   assert.match(chatProviderSource, /case\s+["']viewPlan["']:\s*\{[\s\S]*await\s+this\.handleViewPlan\(message\.plan\)/, 'chat provider should route viewPlan to handleViewPlan');
+});
+
+test('enrichMessageWithPlan cleanses background noise from perceived plans', () => {
+  // Verify enrichMessageWithPlan uses PlanParser to strip conversation history/logs.
+  const enrichBody = extractFunctionBody(
+    chatProviderSource,
+    'private enrichMessageWithPlan(message: any): any',
+  );
+
+  assert.match(enrichBody, /PlanParser\.parse/, 'enrichMessageWithPlan must parse the message content');
+  assert.match(enrichBody, /PlanParser\.toMarkdown/, 'enrichMessageWithPlan must generate clean markdown from parsed plan');
+  assert.match(enrichBody, /this\.persistPlan\(cleanPlanContent\)/, 'enrichMessageWithPlan should persist the cleaned content');
+  assert.match(enrichBody, /content:\s*cleanPlanContent/, 'enrichMessageWithPlan should include cleaned content in return payload');
+});
+
+test('structured implementation plan parsing uses plan.content as source of truth', () => {
+  const normalizeBody = extractFunctionBody(
+    chatProviderSource,
+    'private normalizeStructuredOutput(',
+  );
+  const applyBody = extractFunctionBody(
+    chatProviderSource,
+    'private applyStructuredOutputToMessage(message: any): any',
+  );
+
+  assert.doesNotMatch(normalizeBody, /planRec\?\.markdown,\s*message/, 'normalizeStructuredOutput should not fallback to structured message for plan content');
+  assert.doesNotMatch(applyBody, /structured\.plan\?\.content\s*\|\|\s*structured\.message/, 'applyStructuredOutputToMessage should not use message as plan content fallback');
 });

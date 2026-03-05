@@ -622,6 +622,96 @@ export class SessionService {
   }
 
   /**
+   * Renames a session by updating its title.
+   *
+   * **Behavior:**
+   * 1. Calls server API to update session title
+   * 2. Updates the session in local history
+   * 3. Updates current session reference if renaming active session
+   * 4. Persists updated state to workspace storage
+   *
+   * **Error Handling:**
+   * - Throws if server returns error response
+   * - Updates local state even if server update fails (optimistic update)
+   *
+   * @param sessionId - The ID of the session to rename
+   * @param newTitle - The new title for the session
+   * @returns Promise resolving to the updated session
+   * @throws {Error} If server fails to update session
+   *
+   * @example
+   * ```typescript
+   * const session = await service.renameSession('session-123', 'My New Title');
+   * console.log('Renamed session:', session.title);
+   * ```
+   */
+  async renameSession(sessionId: string, newTitle: string): Promise<Session> {
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const response = await client.session.update({
+        path: { id: sessionId },
+        body: { title: newTitle },
+      });
+
+      if (!response.data) {
+        const errorDetails = JSON.stringify(response.error || {}, null, 2);
+        log.error("Failed to rename session", {
+          sessionId,
+          newTitle,
+          status: response.response.status,
+          error: response.error,
+        });
+        const em = (response.error || {}) as {
+          message?: string;
+          errors?: Array<{ message?: string }>;
+        };
+        const msg =
+          em?.message ||
+          (Array.isArray(em?.errors) ? em.errors[0]?.message : undefined) ||
+          "Unknown error";
+        throw new Error(`Failed to rename session: ${msg}`);
+      }
+
+      const updatedSession = response.data;
+
+      // Update in session history
+      const index = this.sessionHistory.findIndex((s) => s.id === sessionId);
+      if (index !== -1) {
+        this.sessionHistory[index] = updatedSession;
+      }
+
+      // Update current session if it's the one being renamed
+      if (this.currentSession?.id === sessionId) {
+        this.currentSession = updatedSession;
+      }
+
+      log.sessionEvent("rename", sessionId, {
+        newTitle: updatedSession.title,
+      });
+
+      this.persistState();
+      return updatedSession;
+    } catch (error) {
+      // If server update fails, still update local state (optimistic update)
+      log.warn(`Server rename failed for session ${sessionId}, updating local state only:`, error);
+
+      const localSession = this.sessionHistory.find((s) => s.id === sessionId);
+      if (localSession) {
+        localSession.title = newTitle;
+
+        if (this.currentSession?.id === sessionId) {
+          this.currentSession.title = newTitle;
+        }
+
+        this.persistState();
+        return localSession;
+      }
+
+      throw error;
+    }
+  }
+
+  /**
    * Gets messages for a session, with server fallback to local storage.
    *
    * **Retrieval Strategy:**

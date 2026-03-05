@@ -307,6 +307,33 @@ export interface QuotaData {
   lastUpdated: number;
 }
 
+// ── MCP / LSP Server Info Types ────────────────────────────────────────────────
+
+export type McpServerStatus =
+  | 'connected'
+  | 'disconnected'
+  | 'failed'
+  | 'needs_auth'
+  | 'needs_client_registration'
+  | 'disabled';
+
+export interface McpServerInfo {
+  /** Server name as registered in opencode config */
+  name: string;
+  status: McpServerStatus;
+  /** Present when status is 'failed' or 'needs_client_registration' */
+  error?: string;
+  /** Tool IDs belonging to this server (matched by prefix convention) */
+  tools: string[];
+}
+
+export interface LspServerInfo {
+  id: string;
+  name: string;
+  root: string;
+  status: 'connected' | 'error';
+}
+
 // ── Budget Management Types ─────────────────────────────────────────────────────
 
 export interface BudgetInfo {
@@ -314,10 +341,11 @@ export interface BudgetInfo {
   monthlyQuota: number;
   usedToday: number;
   dailyAllowance: number;
+  availableToday: number;
   remainingToday: number;
   daysRemaining: number;
   projectedMonthlyUsage: number;
-  warningLevel: 'ok' | 'warning' | 'critical';
+  warningLevel: "ok" | "warning" | "critical";
   advice: string[];
 }
 
@@ -363,6 +391,8 @@ export interface AppState {
   subagentsPanelOpen: boolean;
   interactiveEvents: InteractiveEvent[];
   budgetInfo: BudgetInfo | null;
+  mcpServers: McpServerInfo[];
+  lspServers: LspServerInfo[];
 }
 
 export interface AttachmentItem {

@@ -157,8 +157,9 @@ export function StreamingCard({ isContiguous }: { isContiguous?: boolean }) {
         streaming.reasoningEvents.length > 0 ||
         streaming.progressEvents.length > 0 ||
         isProcessing ||
-        streaming.messageId),
-    [streaming, isProcessing],
+        streaming.messageId ||
+        isContiguous),
+    [streaming, isProcessing, isContiguous],
   );
 
   if (!visible || !streaming) return null;

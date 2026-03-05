@@ -8,6 +8,7 @@ interface MarkdownRendererProps {
   content: string;
   className?: string;
   isPreParsed?: boolean;
+  isInline?: boolean;
 }
 
 
@@ -230,6 +231,7 @@ export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps
   content,
   className = '',
   isPreParsed = false,
+  isInline = false,
 }, ref) => {
   const innerRef = useRef<HTMLDivElement>(null);
 
@@ -238,7 +240,8 @@ export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps
     if (typeof ref === 'function') {
       ref(element);
     } else if (ref && 'current' in ref) {
-      (ref as any).current = element;
+      // @ts-ignore
+      ref.current = element;
     }
   };
 
@@ -255,11 +258,17 @@ export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps
     }
   }, [content, isPreParsed]);
 
-  const html = isPreParsed ? content : marked.parse(content || '');
+  const html = isPreParsed
+    ? content
+    : isInline
+      ? marked.parseInline(content || '')
+      : marked.parse(content || '');
+
+  const Tag = isInline ? 'span' : 'div';
 
   return (
-    <div
-      ref={setRefs}
+    <Tag
+      ref={setRefs as any}
       className={`markdown-body ${className}`}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown rendering requires HTML injection
       dangerouslySetInnerHTML={{ __html: html as string }}

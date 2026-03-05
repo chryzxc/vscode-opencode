@@ -1,41 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, FileEdit, FilePlus, FileX, MessageSquare, Play, Shield, X } from 'lucide-react';
+import { MessageSquare, Play, Shield, X } from 'lucide-react';
 
 import type { PlanComment } from '@/chat/lib/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { cn } from '@/utils';
-import { renderMarkdown } from './markdownRenderer';
+
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
+import { renderMarkdown } from './markdownRenderer';
 
-interface PlanFile {
-  path: string;
-  type: 'create' | 'modify' | 'delete';
-}
-
-interface PlanStep {
-  title: string;
-  completed: boolean;
-}
-
-interface PlanVerification {
-  type: string;
-  description: string;
-}
-
-interface PlanData {
-  goal: string;
-  description?: string;
-  files: PlanFile[];
-  steps: PlanStep[];
-  verification: PlanVerification[];
-  rawContent: string;
+interface PlanEnvelope {
+  raw?: string;
+  title?: string;
+  comments?: PlanComment[];
+  planId?: string;
 }
 
 declare global {
   interface Window {
-    __PLAN_DATA__?: PlanData;
+    __PLAN_DATA__?: PlanEnvelope;
     __pendingPlanAnchor?: PlanComment['anchor'] | null;
     acquireVsCodeApi?: () => { postMessage: (msg: unknown) => void };
     postAddComment?: (comment: PlanComment, planId?: string) => void;
@@ -46,43 +29,13 @@ declare global {
 
 import vscode from '@/chat/lib/vscode';
 
-function fileTypeIcon(type: PlanFile['type']) {
-  if (type === 'create') return <FilePlus className="h-3.5 w-3.5 text-emerald-400" />;
-  if (type === 'delete') return <FileX className="h-3.5 w-3.5 text-red-400" />;
-  return <FileEdit className="h-3.5 w-3.5 text-amber-400" />;
-}
-
-function fileTypeBadgeVariant(type: PlanFile['type']): 'default' | 'secondary' | 'destructive' | 'outline' {
-  if (type === 'create') return 'default';
-  if (type === 'delete') return 'destructive';
-  return 'secondary';
-}
-
-function Section({ title, count, children, defaultOpen = true }: { title: string; count?: number; children: React.ReactNode; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className="mb-4 rounded-md border border-[var(--vscode-panel-border)]">
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--vscode-descriptionForeground)] hover:bg-white/5"
-        onClick={() => setOpen((v) => !v)}
-      >
-        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        {title}
-        {count !== undefined && (
-          <span className="ml-auto rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-mono">{count}</span>
-        )}
-      </button>
-      {open && <div className="px-3 pb-3 pt-1">{children}</div>}
-    </div>
-  );
-}
-
 export default function PlanShell() {
-  const envelope = window.__PLAN_DATA__ as any;
-  const plan = (envelope?.parsed ?? envelope) as PlanData | undefined;
+  const envelope = window.__PLAN_DATA__;
+  const rawPlan = envelope?.raw ?? '';
+  const planTitle = envelope?.title?.trim() || 'Implementation Plan';
+  const planId = envelope?.planId?.trim() || planTitle;
 
-  const [checkedSteps, setCheckedSteps] = useState<Set<number>>(() => new Set(plan?.steps.map((s, i) => (s.completed ? i : -1)).filter((i) => i >= 0) ?? []));
+
   const [executing, setExecuting] = useState(false);
 
   const [comments, setComments] = useState<PlanComment[]>(envelope?.comments ?? []);
@@ -109,7 +62,6 @@ export default function PlanShell() {
 
   // Expose postAddComment / postUpdateComment / postDeleteComment globals
   useEffect(() => {
-    const planId = plan?.goal || 'default';
     window.postAddComment = (comment: PlanComment) => vscode?.postMessage({ type: 'addComment', comment, planId });
     window.postUpdateComment = (comment: PlanComment) => vscode?.postMessage({ type: 'updateComment', comment, planId });
     window.postDeleteComment = (id: string) => vscode?.postMessage({ type: 'deleteComment', id, planId });
@@ -125,22 +77,12 @@ export default function PlanShell() {
         /* ignore */
       }
     };
-  }, [plan?.goal]);
-
-  const rawPlan = (plan as PlanData)?.rawContent ?? envelope?.raw ?? '';
+  }, [planId]);
 
   useEffect(() => {
     window.__pendingPlanAnchor = pendingAnchor ?? null;
   }, [pendingAnchor]);
 
-  if (!plan) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[var(--vscode-editor-background)] text-[var(--vscode-descriptionForeground)] text-xs">No plan data available.</div>
-    );
-  }
-
-  const completedCount = checkedSteps.size;
-  const totalSteps = plan.steps.length;
   const renderedHtml = renderMarkdown(rawPlan);
 
   // Text selection → floating popover
@@ -299,17 +241,11 @@ export default function PlanShell() {
     // Small delay to ensure renderMarkdown has finished and DOM is stable
     const timer = setTimeout(() => walk(container), 20);
     return () => clearTimeout(timer);
-  }, [renderedHtml, comments, rawPlan]);
+  }, [comments]);
 
 
 
-  function toggleStep(index: number) {
-    setCheckedSteps((prev) => {
-      const next = new Set(prev);
-      if (next.has(index)) next.delete(index); else next.add(index);
-      return next;
-    });
-  }
+
 
   function handleProceed() {
     if (executing) return;
@@ -337,7 +273,7 @@ export default function PlanShell() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-1">
               <Shield className="h-4 w-4 flex-shrink-0 text-[var(--vscode-focusBorder)]" />
-              <h1 className="truncate text-xs font-semibold">{plan.goal}</h1>
+              <h1 className="truncate text-xs font-semibold">{planTitle}</h1>
             </div>
           </div>
 
@@ -372,79 +308,20 @@ export default function PlanShell() {
           </div>
         </div>
 
-        {/* Progress bar */}
-        {totalSteps > 0 && (
-          <div className="mt-2.5">
-            <div className="flex justify-between text-[10px] text-[var(--vscode-descriptionForeground)] mb-1">
-              <span>Steps</span>
-              <span>{completedCount}/{totalSteps}</span>
-            </div>
-            <div className="h-1 rounded-full bg-white/10 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-[var(--vscode-progressBar-background,#007acc)] transition-all duration-300"
-                style={{ width: `${totalSteps > 0 ? (completedCount / totalSteps) * 100 : 0}%` }}
-              />
-            </div>
-          </div>
-        )}
+
       </header>
 
       {/* ─── Main scroll area ────────────────────────────────────────────── */}
       <main className="flex-1 overflow-y-auto px-6 py-4">
-        {/* Rendered markdown */}
-        <MarkdownRenderer
-          ref={planContentRef}
-          content={renderedHtml}
-          isPreParsed={true}
-          className="prose prose-invert max-w-none text-xs leading-relaxed text-[var(--vscode-editor-foreground)] select-text cursor-text mb-6 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mb-3 [&_h2]:text-xs [&_h2]:font-semibold [&_h2]:mb-2 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mb-1.5 [&_pre]:bg-white/5 [&_pre]:rounded [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:bg-white/10 [&_code]:px-1 [&_code]:rounded [&_pre_code]:bg-transparent [&_pre_code]:px-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:mb-0.5 [&_p]:mb-2 [&_strong]:font-semibold [&_em]:italic"
-        />
-
-        {/* Proposed Changes */}
-        {plan.files.length > 0 && (
-          <Section title="Proposed Changes" count={plan.files.length}>
-            <div className="space-y-1">
-              {plan.files.map((file) => (
-                <div key={file.path} className="flex items-center gap-2 rounded border border-[var(--vscode-panel-border)] bg-white/5 px-2.5 py-1.5 text-xs font-mono">
-                  {fileTypeIcon(file.type)}
-                  <span className="flex-1 truncate text-[var(--vscode-editor-foreground)]">{file.path}</span>
-                  <Badge variant={fileTypeBadgeVariant(file.type)} className="text-[10px] px-1.5 py-0">{file.type}</Badge>
-                </div>
-              ))}
-            </div>
-          </Section>
-        )}
-
-        {/* Task Checklist */}
-        {plan.steps.length > 0 && (
-          <Section title="Task Checklist" count={totalSteps}>
-            <div className="space-y-1.5">
-              {plan.steps.map((step, i) => {
-                const done = checkedSteps.has(i);
-                return (
-                  <div key={`${i}-${step.title}`} className={cn('flex items-center gap-2.5 rounded border px-2.5 py-2 text-xs transition-colors', done ? 'border-[var(--vscode-panel-border)] bg-white/5 text-[var(--vscode-descriptionForeground)] line-through' : 'border-[var(--vscode-panel-border)] bg-white/5 hover:bg-white/10')}>
-                    <button type="button" onClick={() => toggleStep(i)} aria-pressed={done} className={cn('flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition-colors', done ? 'border-emerald-500 bg-emerald-500/20' : 'border-[var(--vscode-panel-border)] bg-transparent')}>
-                      {done && <Check className="h-2.5 w-2.5 text-emerald-400" />}
-                    </button>
-                    <span className="flex-1">{step.title}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </Section>
-        )}
-
-        {/* Verification Plan */}
-        {plan.verification.length > 0 && (
-          <Section title="Verification Plan" count={plan.verification.length} defaultOpen={false}>
-            <div className="space-y-1.5">
-              {plan.verification.map((v, i) => (
-                <div key={`${i}-${v.type}`} className="flex items-start gap-2.5 rounded border border-[var(--vscode-panel-border)] bg-white/5 px-2.5 py-2 text-xs">
-                  <Badge variant="outline" className="flex-shrink-0 text-[10px] mt-0.5 capitalize">{v.type}</Badge>
-                  <span className="text-[var(--vscode-descriptionForeground)]">{v.description}</span>
-                </div>
-              ))}
-            </div>
-          </Section>
+        {rawPlan.trim() ? (
+          <MarkdownRenderer
+            ref={planContentRef}
+            content={renderedHtml}
+            isPreParsed={true}
+            className="prose prose-invert max-w-none text-xs leading-relaxed text-[var(--vscode-editor-foreground)] select-text cursor-text mb-6 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mb-3 [&_h2]:text-xs [&_h2]:font-semibold [&_h2]:mb-2 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mb-1.5 [&_pre]:bg-white/5 [&_pre]:rounded [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:bg-white/10 [&_code]:px-1 [&_code]:rounded [&_pre_code]:bg-transparent [&_pre_code]:px-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:mb-0.5 [&_p]:mb-2 [&_strong]:font-semibold [&_em]:italic"
+          />
+        ) : (
+          <div className="py-8 text-xs text-[var(--vscode-descriptionForeground)]">No plan data available.</div>
         )}
       </main>
 
