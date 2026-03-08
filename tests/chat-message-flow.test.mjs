@@ -19,6 +19,10 @@ const chatShellSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
   'ChatShell.tsx',
 );
+const chatCssSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'index.css')],
+  'index.css',
+);
 
 test('chat send flow posts message with image attachments and updates thread state', () => {
   // Verify primary send behavior includes image payload and optimistic user message rendering state.
@@ -79,4 +83,11 @@ test('AssistantMessage renders error banner and retry button when message has er
   assert.match(messageSource, /message\?\.error\s*&&\s*\(/, 'AssistantMessage should check for message error');
   assert.match(messageSource, /<ErrorBanner\s+message=\{message\.error\}\s+onRetry=\{/, 'AssistantMessage should render ErrorBanner with onRetry');
   assert.match(messageSource, /type:\s*["']retryLastMessage["']/, 'Retry button should post retryLastMessage event');
+});
+
+test('Assistant responses include dedicated enter transition classes', () => {
+  assert.match(messageSource, /const\s+responseEnterClass\s*=\s*streaming\s*\?\s*["']oc-assistant-streaming-enter["']\s*:\s*["']oc-assistant-response-enter["']/, 'AssistantMessage should choose distinct enter classes for streaming and completed responses');
+  assert.match(messageSource, /className=\{`oc-message-enter \$\{responseEnterClass\}/, 'AssistantMessage container should include response enter class');
+  assert.match(chatCssSource, /\.oc-assistant-response-enter\s*\{[\s\S]*assistant-response-in/, 'chat css should define animation for completed assistant responses');
+  assert.match(chatCssSource, /\.oc-assistant-streaming-enter\s*\{[\s\S]*assistant-streaming-in/, 'chat css should define animation for streaming assistant responses');
 });

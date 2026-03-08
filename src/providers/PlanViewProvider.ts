@@ -96,7 +96,31 @@ export class PlanViewProvider {
               rawPlan: message.rawPlan ?? '',
               comments: message.comments ?? [],
             };
-            vscode.commands.executeCommand('opencode.planProceed', payload);
+            if (!payload.rawPlan.trim()) {
+              this._panel.webview.postMessage({
+                type: 'planProceedStatus',
+                ok: false,
+                message: 'Cannot proceed because plan content is empty.',
+              });
+              return;
+            }
+            this._panel.webview.postMessage({
+              type: 'planProceedStatus',
+              ok: true,
+              stage: 'accepted',
+            });
+            vscode.commands
+              .executeCommand('opencode.planProceed', payload)
+              .catch((err) => {
+                this._panel.webview.postMessage({
+                  type: 'planProceedStatus',
+                  ok: false,
+                  message:
+                    err instanceof Error
+                      ? err.message
+                      : 'Failed to start plan execution.',
+                });
+              });
             return;
           }
         }

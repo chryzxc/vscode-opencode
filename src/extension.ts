@@ -356,16 +356,11 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.commands.registerCommand(
         "opencode.executePlan",
         async (planContent: string) => {
-          // Find the active chat view and send a message
           if (chatViewProvider) {
-            // Send a message to the chat view effectively asking the AI to implement the plan
-            const prompt = `Please implement the following plan:\n\n${planContent}`;
-            await chatViewProvider.appendToPrompt(prompt);
-            await vscode.commands.executeCommand("opencode.chatView.focus");
-
-            // Optionally auto-send? For now, let's just populate the input
-            // Future: Add user preference for auto-send behavior
-            // await chatViewProvider.handleMessage({ type: 'sendMessage', text: prompt });
+            await chatViewProvider.handlePlanProceed({
+              rawPlan: typeof planContent === "string" ? planContent : "",
+              comments: [],
+            });
           } else {
             vscode.window.showErrorMessage("Chat view is not available.");
           }

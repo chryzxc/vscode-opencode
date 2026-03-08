@@ -52,18 +52,23 @@ test('plan viewer supports interactive comment mutation events and updates comme
   assert.match(planShellSource, /window\.postDeleteComment\s*=\s*\(id:\s*string\)\s*=>\s*vscode\?\.postMessage\(\{\s*type:\s*["']deleteComment["'],\s*id,\s*planId\s*\}\)/, 'plan shell should wire delete comment bridge');
 });
 
-test('proceed flow forwards plan payload, persists comments file, and sends compact proceed message', () => {
-  // Verify full proceed path: webview -> plan provider -> chat provider with compact user-facing message.
+test('proceed flow forwards plan payload, returns status feedback, and sends explicit proceed-on-plan prompt', () => {
+  // Verify full proceed path: webview -> plan provider -> chat provider with explicit source-of-truth instructions.
   const ctorBody = extractFunctionBody(
     planProviderSource,
     'private constructor(',
   );
   assert.match(planShellSource, /vscode\?\.postMessage\(\{\s*type:\s*["']proceedWithPlan["'],\s*rawPlan,\s*comments\s*\}\)/, 'plan shell should post proceedWithPlan including rawPlan and comments');
   assert.match(ctorBody, /case\s+["']proceedWithPlan["']:\s*\{[\s\S]*opencode\.planProceed/, 'plan provider should route proceedWithPlan to opencode.planProceed command');
-  assert.match(chatProviderSource, /implementation_plan_comments\.md/, 'plan proceed handler should persist reviewer comments in a dedicated markdown file');
-  assert.match(chatProviderSource, /Revise the implementation plan based on the attached comments\./, 'plan proceed handler should ask AI to revise plan when comments exist');
-  assert.match(chatProviderSource, /Proceed with the approved plan and implement it now\./, 'plan proceed handler should use a different proceed message when no changes are requested');
-  assert.match(chatProviderSource, /PlanViewProvider\.closeCurrentPanel\(\)/, 'plan proceed handler should close plan viewer after triggering proceed');
+  assert.match(ctorBody, /type:\s*['"]planProceedStatus['"]/, 'plan provider should emit planProceedStatus messages for UI feedback');
+  assert.match(chatProviderSource, /implementation_plan_comments_\$\{id\}\.md/, 'plan proceed handler should persist reviewer comments in a dedicated markdown file with unique suffix');
+  assert.match(chatProviderSource, /Proceed on this plan\./, 'plan proceed handler should explicitly instruct AI to proceed on plan');
+  assert.match(chatProviderSource, /\$\{planFilename\}\\` is the source of truth\./, 'plan proceed handler should anchor execution to the attached unique implementation plan filename');
+  assert.match(chatProviderSource, /const\s+planFilename\s*=\s*this\.createPlanFilename\(artifactId\)/, 'plan proceed handler should generate unique implementation plan filenames');
+  assert.match(chatProviderSource, /const\s+commentsFilename\s*=\s*this\.createPlanCommentsFilename\(artifactId\)/, 'plan proceed handler should generate unique comments filenames');
+  assert.match(chatProviderSource, /PlanViewProvider\.closeCurrentPanel\(\)/, 'plan proceed handler should close plan viewer immediately after triggering proceed');
+  assert.match(chatProviderSource, /void this\.handleSendMessage\(proceedMessage, attachedFiles\)/, 'plan proceed handler should dispatch send asynchronously to avoid blocking the plan tab');
+  assert.match(planShellSource, /Proceed on this plan/, 'plan shell should present explicit proceed-on-plan action label');
 });
 
 test('plan viewer read-path has error fallback for unreadable plan files', () => {
@@ -90,7 +95,7 @@ test('enrichMessageWithPlan cleanses background noise from perceived plans', () 
 
   assert.match(enrichBody, /PlanParser\.parse/, 'enrichMessageWithPlan must parse the message content');
   assert.match(enrichBody, /PlanParser\.toMarkdown/, 'enrichMessageWithPlan must generate clean markdown from parsed plan');
-  assert.match(enrichBody, /this\.persistPlan\(cleanPlanContent\)/, 'enrichMessageWithPlan should persist the cleaned content');
+  assert.match(enrichBody, /this\.persistPlan\(cleanPlanContent(?:,\s*[^)]+)?\)/, 'enrichMessageWithPlan should persist the cleaned content');
   assert.match(enrichBody, /content:\s*cleanPlanContent/, 'enrichMessageWithPlan should include cleaned content in return payload');
 });
 

@@ -21,17 +21,24 @@ const typesSource = readSource(
 );
 
 test('structured output schema supports interactive event types', () => {
-  const schemaBody = extractFunctionBody(
-    providerSource,
-    'private getStructuredOutputFormat(): Record<string, unknown>',
+  const schemaSource = readSource(
+    [joinFromRoot('src', 'shared', 'structuredOutputSchema.ts')],
+    'structuredOutputSchema.ts',
   );
+  const schemaText = schemaSource;
+  assert.match(schemaText, /interactiveEvents/, 'schema should declare interactiveEvents');
+  assert.match(schemaText, /"question"/, 'schema should allow question response type');
+  assert.match(schemaText, /"quick_actions"/, 'schema should allow quick_actions interactive event type');
+  assert.match(schemaText, /"confirm"/, 'schema should allow confirm interactive event type');
+  assert.match(schemaText, /options/, 'schema should declare question options payload');
+});
 
-  assert.match(schemaBody, /interactiveEvents/, 'schema should declare interactiveEvents');
-  assert.match(schemaBody, /question:\s*\{/, 'schema should declare a typed question payload');
-  assert.match(schemaBody, /options:\s*\{/, 'schema should declare question options payload');
-  assert.match(schemaBody, /"question"/, 'schema should allow question response type');
-  assert.match(schemaBody, /"quick_actions"/, 'schema should allow quick_actions interactive event type');
-  assert.match(schemaBody, /"confirm"/, 'schema should allow confirm interactive event type');
+test('structured output schema is defined in shared module', () => {
+  assert.match(
+    providerSource,
+    /structuredOutputSchema/,
+    'provider should reference shared structuredOutputSchema'
+  );
 });
 
 test('provider accepts interactive responses from webview', () => {

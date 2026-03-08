@@ -89,9 +89,9 @@ export type AppAction =
   | { type: "SET_SESSION_ID"; payload: string | null }
   | { type: "SET_SERVER_STATUS"; payload: string }
   | {
-      type: "SET_SELECTED_MODEL";
-      payload: { providerID: string; modelID: string } | null;
-    }
+    type: "SET_SELECTED_MODEL";
+    payload: { providerID: string; modelID: string } | null;
+  }
   | { type: "SET_MODELS_LIST"; payload: Model[] }
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
@@ -111,9 +111,9 @@ export type AppAction =
   | { type: "UPDATE_STREAMING_STEP"; payload: StreamingStepUpdatePayload }
   | { type: "ADD_STREAMING_EDIT"; payload: string }
   | {
-      type: "FINISH_STREAMING";
-      payload?: { usage?: { total: number; duration?: number } };
-    }
+    type: "FINISH_STREAMING";
+    payload?: { usage?: { total: number; duration?: number } };
+  }
   | { type: "SET_INPUT_VALUE"; payload: string }
   | { type: "SET_FILE_SUGGESTIONS"; payload: FileResult[] }
   | { type: "SET_SHOW_FILE_SUGGESTIONS"; payload: boolean }
@@ -139,14 +139,14 @@ export type AppAction =
   | { type: "SET_THINKING_LEVEL"; payload: ThinkingLevel }
   | { type: "SET_TODO_ITEMS"; payload: TodoItem[] }
   | {
-      type: "UPDATE_TODO_ITEM";
-      payload: { id: string; patch: Partial<TodoItem> };
-    }
+    type: "UPDATE_TODO_ITEM";
+    payload: { id: string; patch: Partial<TodoItem> };
+  }
   | { type: "ADD_TODO_ITEM"; payload: TodoItem }
   | {
-      type: "UPSERT_SUBAGENT_SUMMARIES";
-      payload: Record<string, SubagentSummary[]>;
-    }
+    type: "UPSERT_SUBAGENT_SUMMARIES";
+    payload: Record<string, SubagentSummary[]>;
+  }
   | { type: "UPSERT_SUBAGENT_DETAIL"; payload: Record<string, SubagentDetail> }
   | { type: "SELECT_SUBAGENT"; payload: string | null }
   | { type: "SET_SUBAGENTS_PANEL_OPEN"; payload: boolean }
@@ -288,13 +288,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_STREAMING":
       return action.payload
         ? {
-            ...state,
-            streaming: {
-              ...action.payload,
-              reasoningEvents: action.payload.reasoningEvents ?? [],
-              progressEvents: action.payload.progressEvents ?? [],
-            },
-          }
+          ...state,
+          streaming: {
+            ...action.payload,
+            reasoningEvents: action.payload.reasoningEvents ?? [],
+            progressEvents: action.payload.progressEvents ?? [],
+          },
+        }
         : { ...state, streaming: null };
     case "UPDATE_STREAMING_CONTENT": {
       if (!state.streaming) {
@@ -326,9 +326,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const reasoningEvents =
         chunk.length > 0
           ? [
-              ...state.streaming.reasoningEvents,
-              { text: chunk, createdAt: Date.now() },
-            ]
+            ...state.streaming.reasoningEvents,
+            { text: chunk, createdAt: Date.now() },
+          ]
           : state.streaming.reasoningEvents;
       return {
         ...state,
@@ -360,11 +360,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         typeof action.payload.index === "number"
           ? action.payload.index
           : state.streaming.steps.findIndex(
-              (step) =>
-                (action.payload.id && step.id === action.payload.id) ||
-                (action.payload.callID &&
-                  step.callID === action.payload.callID),
-            );
+            (step) =>
+              (action.payload.id && step.id === action.payload.id) ||
+              (action.payload.callID &&
+                step.callID === action.payload.callID),
+          );
       if (idx < 0) {
         return state;
       }

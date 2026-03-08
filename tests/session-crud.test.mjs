@@ -40,7 +40,7 @@ test('history sidebar emits session create/switch/delete events to extension', (
   const historyBody = extractFunctionBody(panelSource, 'export function HistorySidebar()');
 
   assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']createSession["']\s*\}\)[\s\S]*dispatch\(\{\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*payload:\s*false\s*\}\)/, 'new session button should post createSession and close sidebar');
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']switchSession["'],\s*sessionId:\s*session\.id,?\s*\}\)[\s\S]*dispatch\(\{\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*payload:\s*false\s*\}\)/, 'session row should post switchSession and close sidebar');
+  assert.match(historyBody, /vscode\.postMessage\(\{\s*\n?\s*type:\s*["']switchSession["'],\s*\n?\s*sessionId:\s*session\.id,?\s*\n?\s*\}\)[\s\S]*dispatch\(\{\s*\n?\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*\n?\s*payload:\s*false,\s*\n?\s*\}\)/, 'session row should post switchSession and close sidebar');
   assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']deleteSession["'],\s*sessionId:\s*session\.id,?\s*\}\)/, 'session delete action should post deleteSession with selected id');
 });
 
@@ -54,4 +54,31 @@ test('chat provider routes session CRUD messages and handles delete edge cases',
   assert.match(deleteBody, /await\s+this\.sessionService\.deleteSession\(sessionId\)/, 'delete handler should call SessionService.deleteSession');
   assert.match(deleteBody, /if\s*\(!currentSession\)\s*\{[\s\S]*createNewSession\(\)/, 'delete handler should create a new session when none remains');
   assert.match(deleteBody, /showErrorMessage\(`Failed to delete session:\s*\$\{error\}`\)/, 'delete handler should surface deletion failures');
+});
+
+test('chat provider preserves conversation context when recreating missing server sessions', () => {
+  const sendBody = extractFunctionBody(
+    chatProviderSource,
+    'private async handleSendMessage(',
+  );
+
+  assert.match(sendBody, /buildRecoveredTranscript\(/, 'send handler should build a recovered transcript during session recreation');
+  assert.match(sendBody, /saveSessionRecoveryMap\(/, 'send handler should persist old-to-new session mapping for recovery visibility');
+  assert.match(sendBody, /migrateSessionSettings\(/, 'send handler should migrate per-session settings when session IDs are recreated');
+  assert.match(sendBody, /return this\.handleSendMessage\([\s\S]*true,[\s\S]*previousSessionId/, 'send handler should retry as retry=true with recovered context payload');
+  assert.match(sendBody, /if \(this\.currentSessionId && session\.id !== this\.currentSessionId\)/, 'send handler should realign to explicitly selected session before prompting');
+
+  assert.match(chatProviderSource, /private buildRecoveredTranscript\(messages: unknown\[\]\): string/, 'chat provider should expose transcript compaction helper for session recovery');
+  assert.match(chatProviderSource, /private migrateSessionSettings\(oldSessionId: string, newSessionId: string\): void/, 'chat provider should expose session settings migration helper');
+});
+
+test('chat provider refreshes sessions list immediately and during streaming updates', () => {
+  const sendBody = extractFunctionBody(
+    chatProviderSource,
+    'private async handleSendMessage(',
+  );
+
+  assert.match(chatProviderSource, /private scheduleSessionListRefresh\(force = false\): void/, 'chat provider should expose throttled session list refresh helper');
+  assert.match(sendBody, /this\.scheduleSessionListRefresh\(true\)/, 'send flow should trigger an immediate sessions refresh when user or assistant messages are appended');
+  assert.match(chatProviderSource, /event\?\.type === "message\.part\.updated"[\s\S]*this\.scheduleSessionListRefresh\(\)/, 'stream subscription should refresh sessions while responses are still streaming');
 });

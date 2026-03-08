@@ -37,6 +37,7 @@ export default function PlanShell() {
 
 
   const [executing, setExecuting] = useState(false);
+  const [proceedError, setProceedError] = useState<string | null>(null);
 
   const [comments, setComments] = useState<PlanComment[]>(envelope?.comments ?? []);
 
@@ -53,8 +54,17 @@ export default function PlanShell() {
   // Listen for commentsUpdated messages from the extension
   useEffect(() => {
     function handler(e: MessageEvent) {
-      const data = e.data as { type?: string; comments?: PlanComment[] } | undefined;
+      const data = e.data as {
+        type?: string;
+        comments?: PlanComment[];
+        ok?: boolean;
+        message?: string;
+      } | undefined;
       if (data?.type === 'commentsUpdated') setComments(data.comments ?? []);
+      if (data?.type === 'planProceedStatus' && data.ok === false) {
+        setExecuting(false);
+        setProceedError(data.message || 'Failed to start plan execution.');
+      }
     }
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
@@ -249,6 +259,7 @@ export default function PlanShell() {
 
   function handleProceed() {
     if (executing) return;
+    setProceedError(null);
     setExecuting(true);
     vscode?.postMessage({ type: 'proceedWithPlan', rawPlan, comments });
   }
@@ -300,13 +311,19 @@ export default function PlanShell() {
               onClick={handleProceed}
               disabled={executing}
               className="flex items-center gap-1.5"
-              aria-label="Proceed to implementation"
+              aria-label="Proceed on this plan"
             >
               <Play className="h-3.5 w-3.5" />
-              <span>{executing ? 'Executing…' : 'Proceed'}</span>
+              <span>{executing ? 'Submitting…' : 'Proceed on this plan'}</span>
             </Button>
           </div>
         </div>
+
+        {proceedError ? (
+          <p className="mt-2 text-xs text-[var(--vscode-errorForeground)]" role="status" aria-live="polite">
+            {proceedError}
+          </p>
+        ) : null}
 
 
       </header>

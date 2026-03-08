@@ -12,10 +12,10 @@ const panelSource = readSource(
   'PanelComponents.tsx',
 );
 
-test('subagent inline expansion logic uses toggleSubagentDetails', () => {
-  assert.match(messageSource, /const\s+toggleSubagentDetails\s*=\s*\(subagentId:\s*string\)\s*=>/, 'Should have toggleSubagentDetails function');
-  assert.match(messageSource, /setExpandedSubagentId\s*\(\s*\(prev\)\s*=>\s*\{[\s\S]*?prev\s*===\s*subagentId\s*\?\s*null\s*:\s*subagentId[\s\S]*?\}\s*\)/, 'Should use local state for expansion');
-  assert.match(messageSource, /onClick={\(\)\s*=>\s*toggleSubagentDetails\(subagent\.id\)}/, 'Should call toggleSubagentDetails on click');
+test('subagent modal logic uses openSubagentModal and closeSubagentModal', () => {
+  assert.match(messageSource, /const\s+openSubagentModal\s*=\s*\(subagentId:\s*string\)\s*=>/, 'Should have openSubagentModal function');
+  assert.match(messageSource, /const\s+closeSubagentModal\s*=\s*\(\)\s*=>/, 'Should have closeSubagentModal function');
+  assert.match(messageSource, /onClick={\(\)\s*=>\s*openSubagentModal\(subagent\.id\)}/, 'Should open modal on subagent click');
 });
 
 test('token usage tooltips are descriptive', () => {
@@ -33,10 +33,14 @@ test('diffStats are rendered in progress events', () => {
 
 test('AssistantMessage component types subagent data to SubagentDetail', () => {
   assert.match(messageSource, /const\s+detailData\s*=\s*\(subagentDetailsById\[selected\.id\]\s+as\s+SubagentDetail\s*\|\s*undefined\)\s*\|\|/, 'Should normalize selected detailData to SubagentDetail shape');
-  assert.match(messageSource, /detailData\.childSessionId/, 'Should use typed detailData childSessionId');
-  assert.match(messageSource, /detailData\.thinkingEvents\?\.length/, 'Should use typed detailData thinkingEvents');
-  assert.match(messageSource, /detailData\.progressEvents\?\.length/, 'Should use typed detailData progressEvents');
-  assert.match(messageSource, /detailData\.timelineEvents\?\.length/, 'Should use typed detailData timelineEvents');
+  const modalSource = readSource(
+    [joinFromRoot('webview', 'shared', 'src', 'chat', 'SubagentDetailModal.tsx')],
+    'SubagentDetailModal.tsx',
+  );
+  assert.match(modalSource, /detail\.childSessionId/, 'Should use typed detailData childSessionId');
+  assert.match(modalSource, /detail\.thinkingEvents\?\.length/, 'Should use typed detailData thinkingEvents');
+  assert.match(modalSource, /detail\.progressEvents\?\.length/, 'Should use typed detailData progressEvents');
+  assert.match(modalSource, /detail\.timelineEvents\?\.length/, 'Should use typed detailData timelineEvents');
 });
 
 test('SubagentProgressPopover is integrated into the subagent item loop', () => {
@@ -50,11 +54,20 @@ test('SubagentProgressPopover is integrated into the subagent item loop', () => 
   assert.match(messageSource, /Recent Steps/, 'Popover should show "Recent Steps" header');
 });
 
+test('subagent detail modal is wired for selected subagents', () => {
+  assert.match(messageSource, /<SubagentDetailModal/, 'AssistantMessage should render SubagentDetailModal');
+  assert.match(messageSource, /providerLabel/, 'SubagentDetailModal should receive provider/model label');
+});
+
 test('subagent color differentiation is applied deterministically', () => {
   assert.match(messageSource, /function\s+getSubagentColor/, 'Should have getSubagentColor helper');
   assert.match(messageSource, /const\s+statusClass\s*=\s*getSubagentColor\(subagent\.id\)/, 'Should derive deterministic subagent status color once per row');
   assert.match(messageSource, /colorClass=\{statusClass\}/, 'Should pass derived subagent color to the popover');
-  assert.match(messageSource, /cn\("truncate text-oc-xs font-semibold",\s*getSubagentColor\(selected\.id\)\)/, 'Should apply deterministic color to selected detail header');
+  const modalSource = readSource(
+    [joinFromRoot('webview', 'shared', 'src', 'chat', 'SubagentDetailModal.tsx')],
+    'SubagentDetailModal.tsx',
+  );
+  assert.match(modalSource, /colorClass/, 'SubagentDetailModal should accept colorClass');
 });
 
 test('subagent sessions are filtered out of History Sidebar', () => {

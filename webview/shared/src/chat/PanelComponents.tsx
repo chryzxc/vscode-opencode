@@ -324,8 +324,7 @@ export function HistorySidebar() {
                               <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-border-soft" />
                             )}
                             <div
-                              className={`truncate font-medium ${
-                                isActive
+                              className={`truncate font-medium ${isActive
                                   ? "text-oc-text"
                                   : "text-[var(--oc-text-soft)]"
                                 }`}
@@ -360,7 +359,7 @@ export function HistorySidebar() {
                             type: "deleteSession",
                             sessionId: session.id,
                           })
-                          }
+                        }
                         >
                           <X className="h-3 w-3" />
                         </Button>
@@ -798,6 +797,7 @@ export function ModelDropdown() {
         if (key === "zai") return "Z.ai";
         if (key === "zhipu") return "Zhipu AI";
         if (key === "copilot") return "GitHub Copilot";
+        if (key === "google" || key === "google-gemini-cli") return "Google";
 
         // Skip opencode platform in mapped providers since we have a dedicated persistent tab
         if (key.includes("opencode")) return null;
@@ -866,7 +866,7 @@ export function ModelDropdown() {
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="opacity-60">Model</span>
-          <span className="truncate max-w-[120px]">{label}</span>
+          <span>{label}</span>
         </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${
@@ -1029,7 +1029,7 @@ export function AgentDropdown() {
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="opacity-60">Agent</span>
-          <span className="truncate max-w-[100px]">{label}</span>
+          <span>{label}</span>
         </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${
@@ -1231,9 +1231,9 @@ export function InputWrapper() {
   const [isCustomMode, setIsCustomMode] = useState(false);
   const [customValue, setCustomValue] = useState("");
   const customInputRef = useRef<HTMLInputElement>(null);
-  const [previewAttachmentSrc, setPreviewAttachmentSrc] = useState<string | null>(
-    null,
-  );
+  const [previewAttachmentSrc, setPreviewAttachmentSrc] = useState<
+    string | null
+  >(null);
   const [pendingAnswers, setPendingAnswers] = useState<
     Record<string, { text: string; eventType: string }>
   >({});
@@ -1612,7 +1612,7 @@ export function InputWrapper() {
                             event.id,
                             event.type,
                           )
-                          }
+                        }
                         >
                           {capitalizeFirst(event.confirmLabel || "Yes")}
                         </button>
@@ -1625,7 +1625,7 @@ export function InputWrapper() {
                             event.id,
                             event.type,
                           )
-                          }
+                        }
                         >
                           {capitalizeFirst(event.cancelLabel || "No")}
                         </button>
@@ -2101,7 +2101,7 @@ export function QuotaMonitor() {
                                   `${Math.round(pct)}% remaining`}
                               </span>
                             </div>
-                            <div className="h-2 w-full overflow-hidden rounded-full bg-oc-border">
+                            <div className="h-1 w-full overflow-hidden rounded-full bg-oc-border">
                               <div
                                 className="h-full rounded-full transition-all duration-300"
                                 style={{
@@ -2177,7 +2177,7 @@ export function QuotaMonitor() {
                                 {budgetInfo.dailyAllowance}
                               </span>
                             </div>
-                            <div className="relative h-2 w-full overflow-hidden rounded-full bg-oc-border/40">
+                            <div className="relative h-1 w-full overflow-hidden rounded-full bg-oc-border/40">
                               <div
                                 className="h-full rounded-full transition-all duration-500 ease-out"
                                 style={{

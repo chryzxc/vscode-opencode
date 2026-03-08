@@ -115,6 +115,14 @@ import { GeminiTokenUsageTracker } from "../services/GeminiTokenUsageTracker";
 import type { TokenUsage } from "../services/GeminiTokenUsageTracker";
 import { PlanViewProvider } from "./PlanViewProvider";
 import { PlanParser } from "../services/PlanParser";
+import {
+  structuredOutputSchema,
+  StructuredResponseType as StructuredResponseTypeDefinition,
+} from "../shared/structuredOutputSchema";
+import {
+  sanitizeStructuredOutput,
+  validateStructuredOutput,
+} from "../shared/structuredOutputValidator";
 import { createLogger } from "../utils/Logger";
 
 const log = createLogger("ChatViewProvider");
@@ -152,13 +160,12 @@ type SessionSettings = {
   thinkingLevel?: string;
 };
 
-type StructuredResponseType =
-  | "message"
-  | "implementation_plan"
-  | "progress_update"
-  | "question"
-  | "interactive"
-  | "error";
+type RecoveredSessionContext = {
+  previousSessionId: string;
+  transcript: string;
+};
+
+type StructuredResponseType = StructuredResponseTypeDefinition;
 
 type StructuredProgressUpdate = {
   title: string;
@@ -211,7 +218,52 @@ type StructuredAssistantOutput = {
     status?: string;
     progress?: number;
     description?: string;
+    latestActivity?: string;
+    childSessionId?: string;
+    parentSessionId?: string;
+    parentMessageId?: string;
+    timelineEvents?: Array<{
+      key?: string;
+      type?: string;
+      label?: string;
+      createdAt?: number;
+      messageID?: string;
+      partID?: string;
+      callID?: string;
+    }>;
+    progressEvents?: Array<{
+      id?: string;
+      title?: string;
+      status?: string;
+      meta?: string;
+      filePath?: string;
+      createdAt?: number;
+      messageID?: string;
+      partID?: string;
+      callID?: string;
+    }>;
+    thinkingEvents?: Array<{
+      id?: string;
+      text?: string;
+      createdAt?: number;
+      messageID?: string;
+      partID?: string;
+    }>;
   }>;
+  subagentsDelta?: {
+    parentMessageId?: string;
+    items: Array<{
+      id: string;
+      name?: string;
+      status?: string;
+      progress?: number;
+      description?: string;
+      latestActivity?: string;
+      childSessionId?: string;
+      parentSessionId?: string;
+      parentMessageId?: string;
+    }>;
+  };
   plan?: {
     file?: string;
     content?: string;
@@ -1153,120 +1205,21 @@ export class ChatViewProvider
    * Gets the unified system instruction
    */
   private getSystemInstruction(): string {
-    return "";
+    return [
+      "You are an assistant integrated in a VS Code extension UI that expects structured JSON output.",
+      "Always produce a JSON object matching the provided json_schema when structured output format is enabled.",
+      "Set responseType explicitly and keep message concise for chat rendering.",
+      "responseType rules:",
+      "- implementation_plan: put full markdown only in plan.content, include plan.title, keep message short.",
+      "- question/interactive: use interactiveEvents only; do not infer or mix with plain prose questions.",
+      "- progress_update: use progressUpdates for machine-readable steps.",
+      "- subagents: include subagents[] with id/name/status/latestActivity and optional progress/thinking/timeline events.",
+      "For subagent updates, prioritize structured fields over narrative text so the UI can render clickable subagent cards.",
+    ].join("\n");
   }
 
   private getStructuredOutputFormat(): Record<string, unknown> {
-    return {
-      type: "json_schema",
-      name: "opencode_assistant_response",
-      strict: false,
-      schema: {
-        type: "object",
-        additionalProperties: true,
-        properties: {
-          responseType: {
-            type: "string",
-            enum: [
-              "message",
-              "implementation_plan",
-              "progress_update",
-              "question",
-              "interactive",
-              "error",
-            ],
-          },
-          message: { type: "string" },
-          reasoning: {
-            type: "array",
-            items: { type: "string" },
-          },
-          progressUpdates: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: true,
-              properties: {
-                title: { type: "string" },
-                status: { type: "string", enum: ["pending", "done", "error"] },
-                meta: { type: "string" },
-                filePath: { type: "string" },
-              },
-            },
-          },
-          interactiveEvents: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: true,
-              properties: {
-                type: {
-                  type: "string",
-                  enum: ["question", "confirm", "quick_actions"],
-                },
-                id: { type: "string" },
-                title: { type: "string" },
-                question: { type: "string" },
-                multiSelect: { type: "boolean" },
-                allowCustomInput: { type: "boolean" },
-                confirmLabel: { type: "string" },
-                cancelLabel: { type: "string" },
-                options: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    additionalProperties: true,
-                    properties: {
-                      id: { type: "string" },
-                      label: { type: "string" },
-                      value: { type: "string" },
-                      description: { type: "string" },
-                    },
-                  },
-                },
-                actions: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    additionalProperties: true,
-                    properties: {
-                      id: { type: "string" },
-                      label: { type: "string" },
-                      value: { type: "string" },
-                      description: { type: "string" },
-                    },
-                  },
-                },
-              },
-            },
-          },
-          plan: {
-            type: "object",
-            additionalProperties: true,
-            properties: {
-              file: { type: "string" },
-              content: { type: "string" },
-              title: { type: "string" },
-              summary: { type: "string" },
-            },
-          },
-          subagents: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: true,
-              properties: {
-                id: { type: "string" },
-                name: { type: "string" },
-                status: { type: "string" },
-                progress: { type: "number" },
-                description: { type: "string" },
-              },
-            },
-          },
-        },
-      },
-    };
+    return structuredOutputSchema as Record<string, unknown>;
   }
 
   private isStructuredFormatUnsupportedError(error: unknown): boolean {
@@ -1386,21 +1339,31 @@ export class ChatViewProvider
       return undefined;
     }
 
+    const validation = validateStructuredOutput(rec);
+    if (!validation.valid) {
+      this.logger.warn(
+        "Structured output validation failed",
+        { errors: validation.errors },
+      );
+    }
+    const sanitizedRec = sanitizeStructuredOutput(rec);
+
     const responseType = this.firstNonEmptyString(
-      rec.responseType,
+      sanitizedRec.responseType,
       rec.type,
       rec.kind,
       rec.category,
     );
     const message = this.firstNonEmptyString(
-      rec.message,
+      sanitizedRec.message,
       rec.output,
       rec.answer,
       rec.content,
       rec.text,
     );
 
-    const reasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
+    const reasoningRaw =
+      sanitizedRec.reasoning ?? rec.thinking ?? rec.thoughts;
     const reasoning = Array.isArray(reasoningRaw)
       ? reasoningRaw
         .filter((item): item is string => typeof item === "string")
@@ -1410,7 +1373,8 @@ export class ChatViewProvider
         ? [reasoningRaw.trim()]
         : [];
 
-    const progressRaw = rec.progressUpdates ?? rec.progress_updates;
+    const progressRaw =
+      sanitizedRec.progressUpdates ?? (rec.progress_updates as unknown);
     const progressUpdates = Array.isArray(progressRaw)
       ? progressRaw
         .map((item) => {
@@ -1534,7 +1498,7 @@ export class ChatViewProvider
     };
 
     const interactiveRaw =
-      rec.interactiveEvents ??
+      sanitizedRec.interactiveEvents ??
       rec.interactions ??
       rec.uiEvents ??
       rec.question ??
@@ -1566,7 +1530,214 @@ export class ChatViewProvider
       }
     }
 
-    const planRec = this.asRecord(rec.plan);
+    const subagentsDeltaRaw = this.asRecord(
+      sanitizedRec.subagentsDelta ?? rec.subagents_delta,
+    );
+    const subagentsDeltaItems = Array.isArray(subagentsDeltaRaw?.items)
+      ? subagentsDeltaRaw?.items
+          .map((entry) => {
+            const item = this.asRecord(entry);
+            if (!item) return null;
+            const id = this.firstNonEmptyString(item.id);
+            if (!id) return null;
+            return {
+              id,
+              name: this.firstNonEmptyString(item.name, item.agentId),
+              status: this.firstNonEmptyString(item.status),
+              progress:
+                typeof item.progress === "number" && Number.isFinite(item.progress)
+                  ? item.progress
+                  : undefined,
+              description: this.firstNonEmptyString(item.description),
+              latestActivity: this.firstNonEmptyString(
+                item.latestActivity,
+                item.description,
+              ),
+              childSessionId: this.firstNonEmptyString(item.childSessionId),
+              parentSessionId: this.firstNonEmptyString(item.parentSessionId),
+              parentMessageId: this.firstNonEmptyString(item.parentMessageId),
+            };
+          })
+          .filter(Boolean) as Array<{
+            id: string;
+            name?: string;
+            status?: string;
+            progress?: number;
+            description?: string;
+            latestActivity?: string;
+            childSessionId?: string;
+            parentSessionId?: string;
+            parentMessageId?: string;
+          }>
+      : undefined;
+    const subagentsDelta =
+      subagentsDeltaItems && subagentsDeltaItems.length > 0
+        ? {
+            parentMessageId: this.firstNonEmptyString(
+              subagentsDeltaRaw?.parentMessageId,
+            ),
+            items: subagentsDeltaItems as Array<{
+              id: string;
+              name?: string;
+              status?: string;
+              progress?: number;
+              description?: string;
+              latestActivity?: string;
+              childSessionId?: string;
+              parentSessionId?: string;
+              parentMessageId?: string;
+            }>,
+          }
+        : undefined;
+
+    const subagentsRaw =
+      sanitizedRec.subagents ?? (rec.spawnedSubagents as unknown);
+    const subagents = Array.isArray(subagentsRaw)
+      ? subagentsRaw
+          .map((item, index) => {
+            const subagent = this.asRecord(item);
+            if (!subagent) return null;
+            const id = this.firstNonEmptyString(subagent.id);
+            if (!id) return null;
+            const status = this.firstNonEmptyString(subagent.status)?.toLowerCase();
+            const normalizedStatus =
+              status === "pending" ||
+              status === "running" ||
+              status === "done" ||
+              status === "error" ||
+              status === "orphaned"
+                ? status
+                : undefined;
+            const progressValue = subagent.progress;
+            const progress =
+              typeof progressValue === "number" && Number.isFinite(progressValue)
+                ? progressValue
+                : undefined;
+            const normalizeProgressEvents = (value: unknown) => {
+              if (!Array.isArray(value)) return undefined;
+              const events = value
+                .map((entry, eventIndex) => {
+                  const evt = this.asRecord(entry);
+                  if (!evt) return null;
+                  const title = this.firstNonEmptyString(evt.title);
+                  if (!title) return null;
+                  return {
+                    id:
+                      this.firstNonEmptyString(evt.id) ||
+                      `${id}:progress:${eventIndex}`,
+                    title,
+                    status: this.firstNonEmptyString(evt.status),
+                    meta: this.firstNonEmptyString(evt.meta),
+                    filePath: this.firstNonEmptyString(evt.filePath, evt.file, evt.path),
+                    createdAt:
+                      typeof evt.createdAt === "number"
+                        ? evt.createdAt
+                        : undefined,
+                    messageID: this.firstNonEmptyString(evt.messageID),
+                    partID: this.firstNonEmptyString(evt.partID),
+                    callID: this.firstNonEmptyString(evt.callID),
+                  };
+                })
+                .filter(Boolean) as Array<{
+                id: string;
+                title: string;
+                status?: string;
+                meta?: string;
+                filePath?: string;
+                createdAt?: number;
+                messageID?: string;
+                partID?: string;
+                callID?: string;
+              }>;
+              return events.length > 0 ? events : undefined;
+            };
+            const normalizeThinkingEvents = (value: unknown) => {
+              if (!Array.isArray(value)) return undefined;
+              const events = value
+                .map((entry, eventIndex) => {
+                  const evt = this.asRecord(entry);
+                  if (!evt) return null;
+                  const text = this.firstNonEmptyString(evt.text);
+                  if (!text) return null;
+                  return {
+                    id:
+                      this.firstNonEmptyString(evt.id) ||
+                      `${id}:thinking:${eventIndex}`,
+                    text,
+                    createdAt:
+                      typeof evt.createdAt === "number"
+                        ? evt.createdAt
+                        : undefined,
+                    messageID: this.firstNonEmptyString(evt.messageID),
+                    partID: this.firstNonEmptyString(evt.partID),
+                  };
+                })
+                .filter(Boolean) as Array<{
+                id: string;
+                text: string;
+                createdAt?: number;
+                messageID?: string;
+                partID?: string;
+              }>;
+              return events.length > 0 ? events : undefined;
+            };
+            const normalizeTimelineEvents = (value: unknown) => {
+              if (!Array.isArray(value)) return undefined;
+              const events = value
+                .map((entry, eventIndex) => {
+                  const evt = this.asRecord(entry);
+                  if (!evt) return null;
+                  const label = this.firstNonEmptyString(evt.label);
+                  if (!label) return null;
+                  return {
+                    key:
+                      this.firstNonEmptyString(evt.key) || `${id}:timeline:${eventIndex}`,
+                    type: this.firstNonEmptyString(evt.type) || "event",
+                    label,
+                    createdAt:
+                      typeof evt.createdAt === "number"
+                        ? evt.createdAt
+                        : undefined,
+                    messageID: this.firstNonEmptyString(evt.messageID),
+                    partID: this.firstNonEmptyString(evt.partID),
+                    callID: this.firstNonEmptyString(evt.callID),
+                  };
+                })
+                .filter(Boolean) as Array<{
+                key: string;
+                type: string;
+                label: string;
+                createdAt?: number;
+                messageID?: string;
+                partID?: string;
+                callID?: string;
+              }>;
+              return events.length > 0 ? events : undefined;
+            };
+            return {
+              id,
+              name:
+                this.firstNonEmptyString(subagent.name, subagent.agentId, subagent.id) ||
+                id,
+              status: normalizedStatus,
+              progress,
+              description: this.firstNonEmptyString(subagent.description),
+              latestActivity: this.firstNonEmptyString(
+                subagent.latestActivity,
+                subagent.description,
+              ),
+              childSessionId: this.firstNonEmptyString(subagent.childSessionId),
+              parentSessionId: this.firstNonEmptyString(subagent.parentSessionId),
+              parentMessageId: this.firstNonEmptyString(subagent.parentMessageId),
+              progressEvents: normalizeProgressEvents(subagent.progressEvents),
+              thinkingEvents: normalizeThinkingEvents(subagent.thinkingEvents),
+              timelineEvents: normalizeTimelineEvents(subagent.timelineEvents),
+            };
+          })
+          .filter((item) => !!item) as NonNullable<StructuredAssistantOutput["subagents"]>
+      : undefined;
+
+    const planRec = this.asRecord(sanitizedRec.plan ?? rec.plan);
     const plan =
       planRec || responseType === "implementation_plan"
         ? {
@@ -1588,7 +1759,9 @@ export class ChatViewProvider
       reasoning.length === 0 &&
       progressUpdates.length === 0 &&
       interactiveEvents.length === 0 &&
-      !plan?.content
+      (!subagents || subagents.length === 0) &&
+      !plan?.content &&
+      !subagentsDelta
     ) {
       return undefined;
     }
@@ -1600,6 +1773,8 @@ export class ChatViewProvider
       progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
       interactiveEvents:
         interactiveEvents.length > 0 ? interactiveEvents : undefined,
+      subagents: subagents && subagents.length > 0 ? subagents : undefined,
+      subagentsDelta,
       plan: plan?.content ? plan : undefined,
     };
   }
@@ -1750,13 +1925,48 @@ export class ChatViewProvider
         next.subagents = [];
       }
       structured.subagents.forEach((sa: any) => {
+        const normalized = {
+          ...sa,
+          agentId: this.firstNonEmptyString(sa.agentId, sa.name) || sa.id,
+          latestActivity: this.firstNonEmptyString(
+            sa.latestActivity,
+            sa.description,
+          ) || "Subagent update",
+        };
         const existing = next.subagents.find((item: any) => item.id === sa.id);
         if (existing) {
-          Object.assign(existing, sa);
+          Object.assign(existing, normalized);
         } else {
-          next.subagents.push(sa);
+          next.subagents.push(normalized);
         }
       });
+
+      const hasTextContent =
+        (typeof next.content === "string" && next.content.trim().length > 0) ||
+        (Array.isArray(next.parts) &&
+          next.parts.some(
+            (part: any) =>
+              part?.type === "text" &&
+              typeof part?.text === "string" &&
+              part.text.trim().length > 0,
+          ));
+      if (
+        !hasTextContent &&
+        (structured.responseType === "subagents" ||
+          (structured.subagentsDelta && structured.subagentsDelta.items.length > 0))
+      ) {
+        const subagentCount =
+          structured.subagents?.length ??
+          structured.subagentsDelta?.items.length ??
+          0;
+        const summaryText = `Spawned ${subagentCount} subagent${
+          subagentCount === 1 ? "" : "s"
+        }.`;
+        next.content = summaryText;
+        const parts = Array.isArray(next.parts) ? [...next.parts] : [];
+        parts.push({ type: "text", text: summaryText });
+        next.parts = parts;
+      }
     }
 
     if (structured.responseType === "implementation_plan") {
@@ -1887,6 +2097,7 @@ export class ChatViewProvider
     images?: any[],
     agent?: string,
     isRetry = false,
+    recoveredContext?: RecoveredSessionContext,
   ): Promise<void> {
     // Cache for retry
     this.lastSendMessageArgs = { text, files, contexts, images, agent };
@@ -1910,7 +2121,10 @@ export class ChatViewProvider
       const imageUrls = normalizedImages.map((img) => img.dataUrl);
 
       const client = await this.serverManager.ensureRunning();
-      const session = await this.sessionService.getCurrentSession();
+      let session = await this.sessionService.getCurrentSession();
+      if (this.currentSessionId && session.id !== this.currentSessionId) {
+        session = await this.sessionService.switchSession(this.currentSessionId);
+      }
       this.subagentTracker.setActiveSession(session.id);
 
       // Check budget before sending
@@ -1967,6 +2181,20 @@ export class ChatViewProvider
             text: `\`\`\`${ctx.languageId}\n// ${ctx.file}:${ctx.lineInfo}\n${ctx.content}\n\`\`\``,
           });
         }
+      }
+
+      if (recoveredContext?.transcript) {
+        parts.push({
+          type: "text",
+          text: [
+            "Recovered conversation context from the previous session ID",
+            `(${recoveredContext.previousSessionId}).`,
+            "Treat this as existing conversation history and continue from it.",
+            "--- BEGIN RECOVERED CONTEXT ---",
+            recoveredContext.transcript,
+            "--- END RECOVERED CONTEXT ---",
+          ].join("\n"),
+        });
       }
 
       // Add file references if any
@@ -2109,8 +2337,30 @@ export class ChatViewProvider
             // Notify UI of the ID change if possible, or just refresh sessions
             await this.handleGetSessions();
 
-            // Retry sending (recursive call)
-            return this.handleSendMessage(text, files, contexts, images, agent, isRetry);
+            const recoveryTranscript = this.buildRecoveredTranscript(
+              localMessages,
+            );
+            if (recoveryTranscript) {
+              await this.saveSessionRecoveryMap(session.id, newSession.id);
+            }
+            this.migrateSessionSettings(session.id, newSession.id);
+            this.currentSessionId = newSession.id;
+
+            // Retry sending (recursive call) with preserved context
+            return this.handleSendMessage(
+              text,
+              files,
+              contexts,
+              images,
+              agent,
+              true,
+              recoveryTranscript
+                ? {
+                    previousSessionId: session.id,
+                    transcript: recoveryTranscript,
+                  }
+                : undefined,
+            );
           } catch (recreateError) {
             console.error(
               "[ChatViewProvider] Failed to re-create session:",
@@ -2231,6 +2481,14 @@ export class ChatViewProvider
   private enrichMessageWithPlan(message: any): any {
     if (!message) return message;
 
+    const role = message?.info?.role || message?.role;
+    if (typeof role === "string" && role.toLowerCase() !== "assistant") {
+      return message;
+    }
+
+    const fallbackPlanFile = "implementation_plan.md";
+    const planFilePattern = /implementation_plan(?:_[a-z0-9-]+)?\.md/i;
+
     const structured = this.extractStructuredOutput(message);
     if (structured) {
       const structuredPlanContent = structured.plan?.content;
@@ -2249,7 +2507,7 @@ export class ChatViewProvider
           ...message,
           structuredOutput: structured,
           plan: {
-            file: structured.plan?.file || "implementation_plan.md",
+            file: structured.plan?.file || fallbackPlanFile,
             content: structuredPlanContent,
             title: structured.plan?.title,
             summary: structured.plan?.summary,
@@ -2266,13 +2524,13 @@ export class ChatViewProvider
     // 1. Check for explicit filename in edits/parts
     const hasPlanFile =
       edits.some(
-        (e: any) => e.file && e.file.endsWith("implementation_plan.md"),
+        (e: any) => e.file && planFilePattern.test(e.file),
       ) ||
       parts.some(
         (p: any) =>
           p.type === "patch" &&
           p.files &&
-          p.files.some((f: string) => f.endsWith("implementation_plan.md")),
+          p.files.some((f: string) => planFilePattern.test(f)),
       );
 
     // 2. Fallback: Check for plan-like content in message summary, parts, or plain content
@@ -2340,15 +2598,42 @@ export class ChatViewProvider
         });
       }
 
-      return {
+      const nextMessage = {
         ...message,
         plan: {
-          file: "implementation_plan.md",
+          file: fallbackPlanFile,
           // Note: We also include the clean content in the message so it shows up
           // immediately without needing to wait for a file read on the first open.
           content: cleanPlanContent,
         },
       };
+      if (message?.structuredOutput?.responseType !== "implementation_plan") {
+        const safeMessage =
+          "Implementation plan is ready. Use View Plan to inspect details.";
+        nextMessage.content = safeMessage;
+        const parts = Array.isArray(nextMessage.parts)
+          ? [...nextMessage.parts]
+          : [];
+        const textIndex = parts.findIndex(
+          (part: any) =>
+            part &&
+            typeof part === "object" &&
+            (part.type === "text" ||
+              typeof part.text === "string" ||
+              typeof part.content === "string"),
+        );
+        if (textIndex >= 0) {
+          parts[textIndex] = {
+            ...parts[textIndex],
+            type: "text",
+            text: safeMessage,
+          };
+        } else {
+          parts.push({ type: "text", text: safeMessage });
+        }
+        nextMessage.parts = parts;
+      }
+      return nextMessage;
     }
 
     return message;
@@ -2413,9 +2698,17 @@ export class ChatViewProvider
    * Appends text to the prompt input
    */
   async appendToPrompt(text: string): Promise<void> {
+    const value = typeof text === "string" ? text.trim() : "";
+    if (!value) {
+      return;
+    }
     this.view?.webview.postMessage({
       type: "appendPrompt",
-      text,
+      message: {
+        role: "user",
+        content: value,
+        parts: [{ type: "text", text: value }],
+      },
     });
   }
 
@@ -2453,6 +2746,12 @@ export class ChatViewProvider
     comments: PlanProceedComment[];
   }): Promise<void> {
     const rawPlan = typeof payload?.rawPlan === "string" ? payload.rawPlan : "";
+    if (!rawPlan.trim()) {
+      vscode.window.showErrorMessage(
+        "Cannot proceed because implementation plan content is empty.",
+      );
+      return;
+    }
     const comments = Array.isArray(payload?.comments) ? payload.comments : [];
     const hasChangeRequests = comments.some(
       (comment) => comment.text.trim().length > 0,
@@ -2471,11 +2770,14 @@ export class ChatViewProvider
         : "";
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const artifactId = this.createPlanArtifactId();
+    const planFilename = this.createPlanFilename(artifactId);
+    const commentsFilename = this.createPlanCommentsFilename(artifactId);
     const planFilePath = workspaceFolder
-      ? path.join(workspaceFolder.uri.fsPath, "implementation_plan.md")
+      ? path.join(workspaceFolder.uri.fsPath, planFilename)
       : path.join(os.tmpdir(), `opencode-plan-${Date.now()}.md`);
     const commentsFilePath = workspaceFolder
-      ? path.join(workspaceFolder.uri.fsPath, "implementation_plan_comments.md")
+      ? path.join(workspaceFolder.uri.fsPath, commentsFilename)
       : path.join(os.tmpdir(), `opencode-plan-comments-${Date.now()}.md`);
 
     await vscode.workspace.fs.writeFile(
@@ -2491,14 +2793,24 @@ export class ChatViewProvider
     }
 
     const proceedMessage = hasChangeRequests
-      ? "Revise the implementation plan based on the attached comments. Do not implement yet."
-      : "Proceed with the approved plan and implement it now.";
+      ? [
+          "Proceed on this plan.",
+          `The attached file \`${planFilename}\` is the source of truth.`,
+          `Apply all reviewer comments from \`${commentsFilename}\`, then execute the resulting plan.`,
+          "Begin making real edits now and continue until the implementation is complete.",
+          "Do not return only a status update.",
+        ].join("\n")
+      : [
+          "Proceed on this plan.",
+          `The attached file \`${planFilename}\` is the source of truth.`,
+          "Execute the plan step-by-step and implement the described changes now.",
+          "Begin making real edits now and continue until the implementation is complete.",
+          "Do not return only a status update.",
+        ].join("\n");
 
     const attachedFiles = hasChangeRequests
       ? [planFilePath, commentsFilePath]
       : [planFilePath];
-
-    await this.handleSendMessage(proceedMessage, attachedFiles);
 
     // Post addPlanAttachment message to chat webview for the visual chip
     const planGoal =
@@ -2514,7 +2826,100 @@ export class ChatViewProvider
         dataUrl,
       },
     });
+
     PlanViewProvider.closeCurrentPanel();
+
+    // Fire and forget so the plan tab closes immediately and execution starts in chat.
+    void this.handleSendMessage(
+      proceedMessage,
+      attachedFiles,
+      undefined,
+      undefined,
+      "build",
+    ).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Failed to proceed with plan: ${message}`);
+    });
+  }
+
+  private createPlanArtifactId(): string {
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[-:TZ.]/g, "")
+      .slice(0, 14);
+    const random = Math.random().toString(36).slice(2, 8);
+    return `${timestamp}-${random}`;
+  }
+
+  private createPlanFilename(id: string = this.createPlanArtifactId()): string {
+    return `implementation_plan_${id}.md`;
+  }
+
+  private createPlanCommentsFilename(
+    id: string = this.createPlanArtifactId(),
+  ): string {
+    return `implementation_plan_comments_${id}.md`;
+  }
+
+  private buildRecoveredTranscript(messages: unknown[]): string {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return "";
+    }
+
+    const maxChars = 24_000;
+    const lines: string[] = [];
+    let used = 0;
+    const recent = messages.slice(-40);
+
+    for (const msg of recent) {
+      const rec = this.asRecord(msg);
+      if (!rec) {
+        continue;
+      }
+      const role =
+        this.firstNonEmptyString(rec.role, rec.info && this.asRecord(rec.info)?.role) ||
+        "assistant";
+      const content = this.extractMessageBodyText(rec);
+      if (!content) {
+        continue;
+      }
+      const line = `[${role}] ${content}`;
+      if (used + line.length + 1 > maxChars) {
+        break;
+      }
+      lines.push(line);
+      used += line.length + 1;
+    }
+
+    return lines.join("\n");
+  }
+
+  private migrateSessionSettings(oldSessionId: string, newSessionId: string): void {
+    if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) {
+      return;
+    }
+    const map = this.getSessionSettingsMap();
+    const oldSettings = map[oldSessionId];
+    if (!oldSettings) {
+      return;
+    }
+    map[newSessionId] = { ...oldSettings, ...map[newSessionId] };
+    void this.context.globalState.update("sessionSettings", map);
+  }
+
+  private async saveSessionRecoveryMap(
+    previousSessionId: string,
+    newSessionId: string,
+  ): Promise<void> {
+    if (!previousSessionId || !newSessionId || previousSessionId === newSessionId) {
+      return;
+    }
+    const existing =
+      this.context.globalState.get<Record<string, string>>(
+        "sessionRecoveryMap",
+      ) ?? {};
+    existing[previousSessionId] = newSessionId;
+    await this.context.globalState.update("sessionRecoveryMap", existing);
   }
 
   /**

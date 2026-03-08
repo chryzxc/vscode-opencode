@@ -751,9 +751,15 @@ export class SubagentTracker {
     }
     const partType = asString(part.type).toLowerCase();
     const sessionId =
-      asString(part.sessionID) || asString(properties.sessionID);
+      asString(part.sessionID) ||
+      asString(part.sessionId) ||
+      asString(properties.sessionID) ||
+      asString(properties.sessionId);
     const messageId =
-      asString(part.messageID) || asString(properties.messageID);
+      asString(part.messageID) ||
+      asString(part.messageId) ||
+      asString(properties.messageID) ||
+      asString(properties.messageId);
     const partId = asString(part.id) || "part";
     const createdAt = Date.now();
 
@@ -893,8 +899,9 @@ export class SubagentTracker {
     if (!info) {
       return;
     }
-    const sessionId = asString(info.sessionID);
-    const messageId = asString(info.id);
+    const sessionId = asString(info.sessionID) || asString(info.sessionId);
+    const messageId =
+      asString(info.id) || asString(info.messageID) || asString(info.messageId);
     if (!sessionId) {
       return;
     }
@@ -991,7 +998,7 @@ export class SubagentTracker {
       return;
     }
 
-    const parentSessionId = asString(info.parentID);
+    const parentSessionId = asString(info.parentID) || asString(info.parentId);
     const childSessionId = asString(info.id);
     if (!parentSessionId || !childSessionId) {
       return;
@@ -1084,7 +1091,8 @@ export class SubagentTracker {
     changedParents: Set<string>,
     changedDetails: Set<string>,
   ): void {
-    const sessionId = asString(properties.sessionID);
+    const sessionId =
+      asString(properties.sessionID) || asString(properties.sessionId);
     if (!sessionId) {
       return;
     }

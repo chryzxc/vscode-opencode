@@ -24,6 +24,10 @@ import type {
   SubagentProgressEvent,
   SubagentTimelineEvent,
 } from "./types";
+import {
+  sanitizeStructuredOutput,
+  validateStructuredOutput,
+} from "./structuredOutputValidator";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -136,12 +140,32 @@ type StructuredInteractiveEvent = {
   allowCustomInput?: boolean;
 };
 
+type StructuredSubagent = {
+  id: string;
+  name?: string;
+  status?: string;
+  progress?: number;
+  description?: string;
+  latestActivity?: string;
+  childSessionId?: string;
+  parentSessionId?: string;
+  parentMessageId?: string;
+  thinkingEvents?: SubagentThinkingEvent[];
+  progressEvents?: SubagentProgressEvent[];
+  timelineEvents?: SubagentTimelineEvent[];
+};
+
 type StructuredOutput = {
   responseType?: string;
   message?: string;
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
   interactiveEvents?: StructuredInteractiveEvent[];
+  subagents?: StructuredSubagent[];
+  subagentsDelta?: {
+    parentMessageId?: string;
+    items: StructuredSubagent[];
+  };
 };
 
 function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined {
@@ -157,18 +181,24 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   if (!rec) {
     return undefined;
   }
+  const validation = validateStructuredOutput(rec);
+  if (!validation.valid) {
+    console.warn("Structured output validation failed", validation.errors);
+  }
+  const sanitizedRec = sanitizeStructuredOutput(rec);
 
   const responseType =
-    asString(rec.responseType) || asString(rec.type) || asString(rec.kind) || undefined;
+    asString(sanitizedRec.responseType) || asString(rec.type) || asString(rec.kind) || undefined;
   const message =
-    asString(rec.message) ||
+    asString(sanitizedRec.message) ||
     asString(rec.output) ||
     asString(rec.answer) ||
     asString(rec.content) ||
     asString(rec.text) ||
     undefined;
 
-  const reasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
+  const reasoningRaw =
+    sanitizedRec.reasoning ?? rec.thinking ?? rec.thoughts;
   const reasoning = Array.isArray(reasoningRaw)
     ? reasoningRaw
       .filter((item): item is string => typeof item === 'string')
@@ -178,7 +208,8 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
       ? [reasoningRaw.trim()]
       : [];
 
-  const progressRaw = rec.progressUpdates ?? rec.progress_updates;
+  const progressRaw =
+    sanitizedRec.progressUpdates ?? (rec.progress_updates as unknown);
   const progressUpdates = Array.isArray(progressRaw)
     ? progressRaw
       .map((item) => {
@@ -290,7 +321,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   };
 
   const interactiveRaw =
-    rec.interactiveEvents ??
+    sanitizedRec.interactiveEvents ??
     rec.interactions ??
     rec.uiEvents ??
     rec.question ??
@@ -322,12 +353,82 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     }
   }
 
+  const subagentsRaw =
+    sanitizedRec.subagents ?? (rec.spawnedSubagents as unknown);
+  const subagents = Array.isArray(subagentsRaw)
+      ? subagentsRaw
+      .map((item): StructuredSubagent | null => {
+        const subagent = asRecord(item);
+        if (!subagent) {
+          return null;
+        }
+        const id = asString(subagent.id);
+        if (!id) {
+          return null;
+        }
+        const normalizeStatus = (value: string): SubagentSummary['status'] => {
+          const lowered = value.toLowerCase();
+          if (lowered === 'running' || lowered === 'done' || lowered === 'error' || lowered === 'orphaned') {
+            return lowered;
+          }
+          return 'pending';
+        };
+        return {
+          id,
+          name: asString(subagent.name) || asString(subagent.agentId) || undefined,
+          status: asString(subagent.status) ? normalizeStatus(asString(subagent.status)) : undefined,
+          progress: typeof subagent.progress === 'number' ? subagent.progress : undefined,
+          description: asString(subagent.description) || undefined,
+          latestActivity: asString(subagent.latestActivity) || asString(subagent.description) || undefined,
+          childSessionId: asString(subagent.childSessionId) || undefined,
+          parentSessionId: asString(subagent.parentSessionId) || undefined,
+          parentMessageId: asString(subagent.parentMessageId) || undefined
+        };
+      })
+      .filter(Boolean) as StructuredSubagent[]
+    : [];
+
+  const subagentsDeltaRaw = (rec.subagentsDelta ?? rec.subagents_delta) as
+    | { parentMessageId?: unknown; items?: unknown }
+    | undefined;
+  const subagentsDelta =
+    subagentsDeltaRaw &&
+    Array.isArray(subagentsDeltaRaw.items)
+      ? {
+          parentMessageId: asString(subagentsDeltaRaw.parentMessageId) || undefined,
+          items: subagentsDeltaRaw.items
+            .map((item) => {
+              const subagent = asRecord(item);
+              if (!subagent) {
+                return null;
+              }
+              const id = asString(subagent.id);
+              if (!id) {
+                return null;
+              }
+              return {
+                id,
+                name: asString(subagent.name) || asString(subagent.agentId) || undefined,
+                status: asString(subagent.status) || undefined,
+                progress: typeof subagent.progress === 'number' ? subagent.progress : undefined,
+                description: asString(subagent.description) || undefined,
+                latestActivity: asString(subagent.latestActivity) || asString(subagent.description) || undefined,
+                childSessionId: asString(subagent.childSessionId) || undefined,
+                parentSessionId: asString(subagent.parentSessionId) || undefined,
+                parentMessageId: asString(subagent.parentMessageId) || undefined
+              } as StructuredSubagent;
+            })
+            .filter(Boolean) as StructuredSubagent[]
+        }
+      : undefined;
+
   if (
     !responseType &&
     !message &&
     reasoning.length === 0 &&
     progressUpdates.length === 0 &&
-    interactiveEvents.length === 0
+    interactiveEvents.length === 0 &&
+    subagents.length === 0
   ) {
     return undefined;
   }
@@ -337,7 +438,9 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     message,
     reasoning: reasoning.length > 0 ? reasoning : undefined,
     progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
-    interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined
+    interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined,
+    subagents: subagents.length > 0 ? subagents : undefined,
+    subagentsDelta
   };
 }
 
@@ -769,22 +872,22 @@ function normalizeSubagentSummary(value: unknown): SubagentSummary | null {
 
   const references = Array.isArray(rec.references)
     ? rec.references
-        .map((entry) => {
-          const ref = asRecord(entry);
-          if (!ref) {
-            return null;
-          }
-          const res: SubagentReference = {
-            messageID: asString(ref.messageID) || undefined,
-            partID: asString(ref.partID) || undefined,
-            callID: asString(ref.callID) || undefined,
-          };
-          if (!res.messageID && !res.partID && !res.callID) {
-            return null;
-          }
-          return res;
-        })
-        .filter((entry): entry is SubagentReference => !!entry)
+      .map((entry) => {
+        const ref = asRecord(entry);
+        if (!ref) {
+          return null;
+        }
+        const res: SubagentReference = {
+          messageID: asString(ref.messageID) || undefined,
+          partID: asString(ref.partID) || undefined,
+          callID: asString(ref.callID) || undefined,
+        };
+        if (!res.messageID && !res.partID && !res.callID) {
+          return null;
+        }
+        return res;
+      })
+      .filter((entry): entry is SubagentReference => !!entry)
     : [];
 
   return {
@@ -816,79 +919,79 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
 
   const thinkingEvents = Array.isArray(rec.thinkingEvents)
     ? rec.thinkingEvents
-        .map((entry, index) => {
-          const evt = asRecord(entry);
-          if (!evt) {
-            return null;
-          }
-          const text = asString(evt.text);
-          if (!text) {
-            return null;
-          }
-          const res: SubagentThinkingEvent = {
-            id: asString(evt.id) || `${summary.id}:thinking:${index}`,
-            text,
-            createdAt: asNumber(evt.createdAt, Date.now()),
-            messageID: asString(evt.messageID) || undefined,
-            partID: asString(evt.partID) || undefined,
-          };
-          return res;
-        })
-        .filter((entry): entry is SubagentThinkingEvent => !!entry)
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const text = asString(evt.text);
+        if (!text) {
+          return null;
+        }
+        const res: SubagentThinkingEvent = {
+          id: asString(evt.id) || `${summary.id}:thinking:${index}`,
+          text,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+        };
+        return res;
+      })
+      .filter((entry): entry is SubagentThinkingEvent => !!entry)
     : [];
 
   const progressEvents = Array.isArray(rec.progressEvents)
     ? rec.progressEvents
-        .map((entry, index) => {
-          const evt = asRecord(entry);
-          if (!evt) {
-            return null;
-          }
-          const title = asString(evt.title);
-          if (!title) {
-            return null;
-          }
-          const res: SubagentProgressEvent = {
-            id: asString(evt.id) || `${summary.id}:progress:${index}`,
-            title,
-            status: normalizeProgressStatus(asString(evt.status)),
-            meta: asString(evt.meta) || undefined,
-            filePath: asString(evt.filePath) || undefined,
-            createdAt: asNumber(evt.createdAt, Date.now()),
-            messageID: asString(evt.messageID) || undefined,
-            partID: asString(evt.partID) || undefined,
-            callID: asString(evt.callID) || undefined,
-          };
-          return res;
-        })
-        .filter((entry): entry is SubagentProgressEvent => !!entry)
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const title = asString(evt.title);
+        if (!title) {
+          return null;
+        }
+        const res: SubagentProgressEvent = {
+          id: asString(evt.id) || `${summary.id}:progress:${index}`,
+          title,
+          status: normalizeProgressStatus(asString(evt.status)),
+          meta: asString(evt.meta) || undefined,
+          filePath: asString(evt.filePath) || undefined,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+          callID: asString(evt.callID) || undefined,
+        };
+        return res;
+      })
+      .filter((entry): entry is SubagentProgressEvent => !!entry)
     : [];
 
   const timelineEvents = Array.isArray(rec.timelineEvents)
     ? rec.timelineEvents
-        .map((entry, index) => {
-          const evt = asRecord(entry);
-          if (!evt) {
-            return null;
-          }
-          const key = asString(evt.key);
-          const type = asString(evt.type);
-          const label = asString(evt.label);
-          if (!key || !type || !label) {
-            return null;
-          }
-          const res: SubagentTimelineEvent = {
-            key: key || `${summary.id}:timeline:${index}`,
-            type,
-            label,
-            createdAt: asNumber(evt.createdAt, Date.now()),
-            messageID: asString(evt.messageID) || undefined,
-            partID: asString(evt.partID) || undefined,
-            callID: asString(evt.callID) || undefined,
-          };
-          return res;
-        })
-        .filter((entry): entry is SubagentTimelineEvent => !!entry)
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const key = asString(evt.key);
+        const type = asString(evt.type);
+        const label = asString(evt.label);
+        if (!key || !type || !label) {
+          return null;
+        }
+        const res: SubagentTimelineEvent = {
+          key: key || `${summary.id}:timeline:${index}`,
+          type,
+          label,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+          callID: asString(evt.callID) || undefined,
+        };
+        return res;
+      })
+      .filter((entry): entry is SubagentTimelineEvent => !!entry)
     : [];
 
   const tokenUsageRec = asRecord(rec.tokenUsage);
@@ -1440,18 +1543,18 @@ function handleStreamEvent(
         model:
           eventModel && typeof eventModel === "object"
             ? {
-                modelID:
-                  asString(eventModel.modelID) ||
-                  state.selectedModel?.modelID ||
-                  "",
-                providerID:
-                  asString(eventModel.providerID) ||
-                  state.selectedModel?.providerID ||
-                  "",
-                name:
-                  asString((eventModel as Record<string, unknown>).name) ||
-                  undefined,
-              }
+              modelID:
+                asString(eventModel.modelID) ||
+                state.selectedModel?.modelID ||
+                "",
+              providerID:
+                asString(eventModel.providerID) ||
+                state.selectedModel?.providerID ||
+                "",
+              name:
+                asString((eventModel as Record<string, unknown>).name) ||
+                undefined,
+            }
             : undefined,
         modelID: eventModelID || state.selectedModel?.modelID,
         providerID: eventProviderID || state.selectedModel?.providerID,
@@ -1518,6 +1621,13 @@ function handleStreamEvent(
           ? stripLeadingUserEcho(textChunk, getState())
           : textChunk;
         if (cleanedChunk) {
+          console.debug("[OpenCode][stream] message.part.updated chunk", {
+            messageId,
+            eventType,
+            partType,
+            length: cleanedChunk.length,
+            preview: cleanedChunk.slice(0, 80),
+          });
           dispatch({
             type: "UPDATE_STREAMING_CONTENT",
             payload: { content: cleanedChunk, append: true },
@@ -1543,9 +1653,9 @@ function handleStreamEvent(
         const diffStatsRec = asRecord(part.diffStats);
         const diffStats = diffStatsRec
           ? {
-              added: asNumber(diffStatsRec.added) || 0,
-              deleted: asNumber(diffStatsRec.deleted) || 0,
-            }
+            added: asNumber(diffStatsRec.added) || 0,
+            deleted: asNumber(diffStatsRec.deleted) || 0,
+          }
           : undefined;
 
         dispatch({
@@ -1619,8 +1729,8 @@ function handleStreamEvent(
           const hasResult = stateObj && "result" in stateObj;
           const resolvedStatus =
             asString(part.status) === "done" ||
-            stateStatus === "done" ||
-            hasResult
+              stateStatus === "done" ||
+              hasResult
               ? "done"
               : asString(part.status) === "error" || stateStatus === "error"
                 ? "error"
@@ -1701,6 +1811,102 @@ function handleStreamEvent(
         if (interactiveEvents.length > 0) {
           dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents });
         }
+
+        if (structuredOutput && structuredOutput.responseType === 'subagents' && messageId) {
+          if (!structuredOutput.subagents || structuredOutput.subagents.length === 0) {
+            console.warn('Structured subagents responseType received without subagents array');
+          }
+        }
+
+        if (structuredOutput.subagents && structuredOutput.subagents.length > 0 && messageId) {
+          const parentSessionId = state.currentSessionId || '';
+          const summaries: SubagentSummary[] = [];
+          const details: Record<string, SubagentDetail> = {};
+
+          structuredOutput.subagents.forEach((subagent) => {
+            const statusValue = (subagent.status || 'pending').toLowerCase();
+            const status: SubagentSummary['status'] =
+              statusValue === 'running' || statusValue === 'done' || statusValue === 'error' || statusValue === 'orphaned'
+                ? statusValue
+                : 'pending';
+            const summary: SubagentSummary = {
+              id: subagent.id,
+              parentSessionId: subagent.parentSessionId || parentSessionId,
+              parentMessageId: subagent.parentMessageId || messageId,
+              childSessionId: subagent.childSessionId,
+              agentId: subagent.name || subagent.id,
+              status,
+              latestActivity:
+                subagent.latestActivity || subagent.description || subagent.name || 'Subagent update',
+              references: []
+            };
+            summaries.push(summary);
+            details[subagent.id] = {
+              ...summary,
+              thinkingEvents: subagent.thinkingEvents || [],
+              progressEvents: subagent.progressEvents || [],
+              timelineEvents: subagent.timelineEvents || []
+            };
+          });
+
+          if (summaries.length > 0) {
+            dispatch({
+              type: 'UPSERT_SUBAGENT_SUMMARIES',
+              payload: { [messageId]: summaries }
+            });
+          }
+          if (Object.keys(details).length > 0) {
+            dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: details });
+          }
+        }
+
+        if (structuredOutput.subagentsDelta && structuredOutput.subagentsDelta.items.length > 0) {
+          const targetMessageId =
+            structuredOutput.subagentsDelta.parentMessageId || messageId || '';
+          if (targetMessageId) {
+            const summaries: SubagentSummary[] = [];
+            const details: Record<string, SubagentDetail> = {};
+
+            structuredOutput.subagentsDelta.items.forEach((subagent) => {
+              const statusValue = (subagent.status || 'pending').toLowerCase();
+              const status: SubagentSummary['status'] =
+                statusValue === 'running' ||
+                statusValue === 'done' ||
+                statusValue === 'error' ||
+                statusValue === 'orphaned'
+                  ? statusValue
+                  : 'pending';
+              const summary: SubagentSummary = {
+                id: subagent.id,
+                parentSessionId: subagent.parentSessionId || state.currentSessionId || '',
+                parentMessageId: subagent.parentMessageId || targetMessageId,
+                childSessionId: subagent.childSessionId,
+                agentId: subagent.name || subagent.id,
+                status,
+                latestActivity:
+                  subagent.latestActivity || subagent.description || subagent.name || 'Subagent update',
+                references: []
+              };
+              summaries.push(summary);
+              details[subagent.id] = {
+                ...summary,
+                thinkingEvents: subagent.thinkingEvents || [],
+                progressEvents: subagent.progressEvents || [],
+                timelineEvents: subagent.timelineEvents || []
+              };
+            });
+
+            if (summaries.length > 0) {
+              dispatch({
+                type: 'UPSERT_SUBAGENT_SUMMARIES',
+                payload: { [targetMessageId]: summaries }
+              });
+            }
+            if (Object.keys(details).length > 0) {
+              dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: details });
+            }
+          }
+        }
       }
 
 
@@ -1743,18 +1949,18 @@ function handleStreamEvent(
           model:
             eventModel && typeof eventModel === "object"
               ? {
-                  modelID:
-                    asString(eventModel.modelID) ||
-                    state.selectedModel?.modelID ||
-                    "",
-                  providerID:
-                    asString(eventModel.providerID) ||
-                    state.selectedModel?.providerID ||
-                    "",
-                  name:
-                    asString((eventModel as Record<string, unknown>).name) ||
-                    undefined,
-                }
+                modelID:
+                  asString(eventModel.modelID) ||
+                  state.selectedModel?.modelID ||
+                  "",
+                providerID:
+                  asString(eventModel.providerID) ||
+                  state.selectedModel?.providerID ||
+                  "",
+                name:
+                  asString((eventModel as Record<string, unknown>).name) ||
+                  undefined,
+              }
               : undefined,
           modelID: eventModelID || state.selectedModel?.modelID,
           providerID: eventProviderID || state.selectedModel?.providerID,
@@ -1776,6 +1982,12 @@ function handleStreamEvent(
         if (!cleanedChunk) {
           break;
         }
+        console.debug("[OpenCode][stream] content delta chunk", {
+          messageId,
+          eventType,
+          length: cleanedChunk.length,
+          preview: cleanedChunk.slice(0, 80),
+        });
         dispatch({ type: 'UPDATE_STREAMING_CONTENT', payload: { content: cleanedChunk, append: true } });
       }
       break;
@@ -1902,9 +2114,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const selectedModelRecord = asRecord(state.selectedModel);
         const selectedModel = selectedModelRecord
           ? {
-              providerID: asString(selectedModelRecord.providerID),
-              modelID: asString(selectedModelRecord.modelID),
-            }
+            providerID: asString(selectedModelRecord.providerID),
+            modelID: asString(selectedModelRecord.modelID),
+          }
           : null;
 
         dispatch({ type: "SET_SESSION_ID", payload: sessionId });
@@ -2273,8 +2485,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const serversRec = asRecord(data.servers);
         const toolIds: string[] = Array.isArray(data.toolIds)
           ? (data.toolIds as unknown[]).filter(
-              (t): t is string => typeof t === "string",
-            )
+            (t): t is string => typeof t === "string",
+          )
           : [];
         if (serversRec) {
           const mcpServers: McpServerInfo[] = Object.entries(serversRec).map(

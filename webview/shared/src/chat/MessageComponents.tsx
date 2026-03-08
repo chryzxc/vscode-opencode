@@ -13,21 +13,22 @@ import {
 } from "lucide-react";
 import * as Popover from "@radix-ui/react-popover";
 
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/utils";
+
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ImagePreviewModal } from "./ImagePreviewModal";
-
-import { cn } from "@/utils";
-import { Badge } from "@/components/ui/badge";
+import { SubagentDetailModal } from "./SubagentDetailModal";
 
 import type {
   Message,
   MessagePart,
   MessageStep,
+  ReasoningEvent,
   StreamingState,
   StreamingStep,
-  SubagentSummary,
   SubagentDetail,
-  ReasoningEvent,
+  SubagentSummary,
 } from "./lib/types";
 import { useAppDispatch, useAppState } from "./lib/store";
 import { jumpToMessage } from "./lib/messageJump";
@@ -926,10 +927,10 @@ export function AssistantMessage({
     isContiguous?: boolean;
 }) {
   const dispatch = useAppDispatch();
-  const { subagentsByParentMessageId, subagentDetailsById, selectedSubagentId } = useAppState();
+  const { subagentsByParentMessageId, subagentDetailsById } = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
-  const [expandedSubagentId, setExpandedSubagentId] = useState<string | null>(null);
+  const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const messageBodyRef = useRef<HTMLDivElement>(null);
@@ -995,30 +996,10 @@ export function AssistantMessage({
 
   useEffect(() => {
     if (subagents.length === 0) {
-      setExpandedSubagentId(null);
+      setSelectedSubagentId(null);
       dispatch({ type: "SELECT_SUBAGENT", payload: null });
-      return;
     }
-
-    if (
-      selectedSubagentId &&
-      subagents.some((subagent) => subagent.id === selectedSubagentId)
-    ) {
-      setExpandedSubagentId(selectedSubagentId);
-      return;
-    }
-
-    if (!expandedSubagentId) {
-      const firstId = subagents[0].id;
-      setExpandedSubagentId(firstId);
-      dispatch({ type: "SELECT_SUBAGENT", payload: firstId });
-    }
-  }, [
-    subagents,
-    selectedSubagentId,
-    expandedSubagentId,
-    dispatch,
-  ]);
+  }, [subagents.length, dispatch]);
 
   const subagentStatusCounts = useMemo(
     () =>
@@ -1071,12 +1052,14 @@ export function AssistantMessage({
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
-  const toggleSubagentDetails = (subagentId: string) => {
-    setExpandedSubagentId((prev) => {
-      const next = prev === subagentId ? null : subagentId;
-      dispatch({ type: "SELECT_SUBAGENT", payload: next });
-      return next;
-    });
+  const openSubagentModal = (subagentId: string) => {
+    setSelectedSubagentId(subagentId);
+    dispatch({ type: "SELECT_SUBAGENT", payload: subagentId });
+  };
+
+  const closeSubagentModal = () => {
+    setSelectedSubagentId(null);
+    dispatch({ type: "SELECT_SUBAGENT", payload: null });
   };
   const copyRefs = async (detail: SubagentDetail) => {
     const refs = [
@@ -1393,6 +1376,45 @@ export function AssistantMessage({
           onClose={() => setPreviewImageSrc(null)}
         />
 
+        {selectedSubagentId && (() => {
+          const selected = subagents.find(
+            (subagent) => subagent.id === selectedSubagentId,
+          );
+          if (!selected) return null;
+
+          const detailData =
+            (subagentDetailsById[selected.id] as SubagentDetail | undefined) ||
+            ({
+              ...selected,
+              thinkingEvents: [],
+              progressEvents: [],
+              timelineEvents: [],
+            } as SubagentDetail);
+          const providerLabel =
+            selected.providerID && selected.modelID
+              ? `${selected.providerID}/${selected.modelID}`
+              : selected.providerID || selected.modelID || "Unknown provider";
+          const displayTitle =
+            selected.agentId || `Agent ${selected.id.slice(0, 4)}`;
+
+          return (
+            <SubagentDetailModal
+              isOpen={Boolean(selectedSubagentId)}
+              title={displayTitle}
+              providerLabel={providerLabel}
+              detail={detailData}
+              colorClass={getSubagentColor(selected.id)}
+              onClose={closeSubagentModal}
+              onCopyRefs={copyRefs}
+              onJumpToParent={() =>
+                jumpToMessage(
+                  selected.parentMessageId || messageId || "",
+                )
+              }
+            />
+          );
+        })()}
+
         {subagents.length > 0 && (
           <div className="mt-3 mb-3 overflow-hidden rounded-md border border-oc-border bg-oc-panel-soft">
             <button
@@ -1434,7 +1456,6 @@ export function AssistantMessage({
               <div className="space-y-2 p-2.5">
                 <div className="space-y-1.5">
                   {visibleSubagents.map((subagent: SubagentSummary) => {
-                    const isExpanded = expandedSubagentId === subagent.id;
                     const statusClass = getSubagentColor(subagent.id);
 
                     return (
@@ -1448,11 +1469,9 @@ export function AssistantMessage({
                           type="button"
                           className={cn(
                             "w-full rounded-md border px-2 py-1.5 text-left transition-colors",
-                            isExpanded
-                              ? "border-oc-accent/40 bg-oc-panel"
-                              : "border-oc-border bg-oc-bg-soft hover:bg-oc-panel",
+                            "border-oc-border bg-oc-bg-soft hover:bg-oc-panel",
                           )}
-                          onClick={() => toggleSubagentDetails(subagent.id)}
+                          onClick={() => openSubagentModal(subagent.id)}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex min-w-0 items-center gap-2">
@@ -1492,128 +1511,6 @@ export function AssistantMessage({
                     </button>
                   ) : null}
                 </div>
-
-                {expandedSubagentId && (() => {
-                  const selected = subagents.find(
-                    (subagent) => subagent.id === expandedSubagentId,
-                  );
-                  if (!selected) return null;
-
-                  const detailData =
-                    (subagentDetailsById[selected.id] as SubagentDetail | undefined) ||
-                    ({
-                      ...selected,
-                      thinkingEvents: [],
-                      progressEvents: [],
-                      timelineEvents: [],
-                    } as SubagentDetail);
-
-                  return (
-                    <div className="rounded-md border border-oc-border bg-oc-panel p-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className={cn("truncate text-oc-xs font-semibold", getSubagentColor(selected.id))}>
-                            {selected.agentId || `Agent ${selected.id.slice(0, 4)}`}
-                          </div>
-                          <div className="truncate font-mono text-oc-2xs text-oc-text-muted">
-                            {selected.providerID && selected.modelID
-                              ? `${selected.providerID}/${selected.modelID}`
-                              : (selected.agentId || "subagent")}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
-                          onClick={() =>
-                            jumpToMessage(
-                              selected.parentMessageId || messageId || "",
-                            )
-                          }
-                        >
-                          Jump to parent
-                        </button>
-                      </div>
-
-                      <div className="mt-2 rounded border border-oc-border bg-oc-bg-soft px-2 py-1.5 text-oc-2xs text-oc-text-soft">
-                        {selected.latestActivity || "Initializing..."}
-                      </div>
-
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 text-oc-2xs font-mono text-oc-text-muted hover:text-oc-accent"
-                          onClick={() => copyRefs(detailData)}
-                        >
-                          <Copy className="h-3 w-3" />
-                          Copy refs
-                        </button>
-                        <span className="text-oc-2xs font-mono text-oc-text-muted">
-                          child session: {detailData.childSessionId || "n/a"}
-                        </span>
-                      </div>
-
-                      {detailData.progressEvents?.length > 0 ? (
-                        <details className="mt-2" open>
-                          <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
-                            Progress ({detailData.progressEvents.length})
-                          </summary>
-                          <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
-                            {detailData.progressEvents.map((ev) => (
-                              <div
-                                key={ev.id}
-                                className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs"
-                              >
-                                <div className="text-oc-text-soft">{ev.title}</div>
-                                {ev.meta ? (
-                                  <div className="mt-0.5 text-oc-text-muted">{ev.meta}</div>
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      ) : null}
-
-                      {detailData.timelineEvents?.length > 0 ? (
-                        <details className="mt-2" open>
-                          <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
-                            Timeline ({detailData.timelineEvents.length})
-                          </summary>
-                          <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
-                            {detailData.timelineEvents.map((ev) => (
-                              <div
-                                key={ev.key}
-                                className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs"
-                              >
-                                <div className="text-oc-text-soft">{ev.label}</div>
-                                <div className="mt-0.5 font-mono text-oc-text-muted">
-                                  {new Date(ev.createdAt).toLocaleTimeString()}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      ) : null}
-
-                      {detailData.thinkingEvents?.length > 0 ? (
-                        <details className="mt-2" open={false}>
-                          <summary className="cursor-pointer text-oc-2xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
-                            Thinking ({detailData.thinkingEvents.length})
-                          </summary>
-                          <div className="mt-1.5 max-h-44 space-y-1 overflow-y-auto pr-1">
-                            {detailData.thinkingEvents.map((ev) => (
-                              <div
-                                key={ev.id}
-                                className="rounded border border-oc-border bg-oc-panel-soft px-2 py-1.5 text-oc-2xs text-oc-text-muted whitespace-pre-wrap"
-                              >
-                                {ev.text}
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      ) : null}
-                    </div>
-                  );
-                })()}
               </div>
             )}
           </div>

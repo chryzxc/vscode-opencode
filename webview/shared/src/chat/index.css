@@ -460,6 +460,38 @@ body {
   animation: message-in 0.18s ease-out both;
 }
 
+@keyframes assistant-response-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+    filter: saturate(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: saturate(1);
+  }
+}
+
+@keyframes assistant-streaming-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.oc-assistant-response-enter {
+  animation: assistant-response-in 0.26s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.oc-assistant-streaming-enter {
+  animation: assistant-streaming-in 0.22s ease-out both;
+}
+
 @keyframes oc-message-focus-pulse {
   0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--oc-accent) 35%, transparent); }
   100% { box-shadow: 0 0 0 6px transparent; }
