@@ -4,3 +4,6 @@ dist/
 *.vsix
 .vscode-test/
 .DS_Store
+.serena
+.claude
+.sisyphus

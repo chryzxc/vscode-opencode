@@ -1,1 +1,0 @@
-tsc was run in webview/shared and completed without TypeScript errors at placeholder (evidence placeholder - actual run produced no visible output in this environment)
