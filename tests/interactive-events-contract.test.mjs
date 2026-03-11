@@ -54,6 +54,19 @@ test('frontend normalizes and stores interactive events', () => {
   assert.doesNotMatch(handlerSource, /const\s+interactiveEvents\s*=\s*detectInteractiveEventsFromText\(/, 'streaming completion should not infer popup questions from text heuristics');
 });
 
+test('structured question outputs dispatch popup interactive state', () => {
+  assert.match(
+    handlerSource,
+    /const interactiveEvents = toInteractiveEvents\(structuredOutput\);[\s\S]*dispatch\(\{ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents \}\);/s,
+    'message completion path should dispatch interactive popup events from structured output',
+  );
+  assert.match(
+    handlerSource,
+    /type:\s*'question',[\s\S]*question,\s*options,/s,
+    'question responses should preserve question text and options for popup rendering',
+  );
+});
+
 test('input wrapper renders top popup choices and posts batchInteractiveResponse', () => {
   const inputBody = extractFunctionBody(
     panelSource,
@@ -62,6 +75,8 @@ test('input wrapper renders top popup choices and posts batchInteractiveResponse
 
   assert.match(inputBody, /activeInteractiveEvent/, 'input wrapper should compute active interactive event');
   assert.match(inputBody, /Quick Input/, 'input wrapper should render a top prompt popup');
+  assert.match(inputBody, /event\.type === "question"/, 'popup should support question-type interactive events');
+  assert.match(inputBody, /event\.options\.map\(/, 'question popup should render clickable option buttons');
   assert.match(inputBody, /type:\s*"batchInteractiveResponse"/, 'popup choice clicks should post batchInteractiveResponse');
 });
 

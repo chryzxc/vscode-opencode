@@ -276,7 +276,7 @@ function DiffItem({
   const expanded = externalExpanded !== undefined ? externalExpanded : internalExpanded;
   const setExpanded = setExternalExpanded ?? setInternalExpanded;
   const [decided, setDecided] = useState<'approved' | 'rejected' | null>(null);
-  const itemRef = useRef<HTMLButtonElement>(null);
+  const itemRef = useRef<HTMLDivElement>(null);
 
   const { label: typeLabel, badgeVariant, Icon: TypeIcon } = getFileTypeConfig(file.type);
   const filename = file.path.split(/[\\/]/).pop() ?? file.path;
@@ -302,10 +302,8 @@ function DiffItem({
   }, [isActive]);
 
   return (
-    <button
+    <div
       ref={itemRef}
-      onClick={onActivate}
-      type="button"
       className={cn(
         'w-full text-left rounded-lg border transition-all duration-150',
         decided === 'approved' && 'border-oc-green/30 bg-emerald-950/15',
@@ -316,11 +314,17 @@ function DiffItem({
       )}
     >
       {/* File header */}
-      <div className="flex items-center gap-2 px-3 py-2.5">
+      <div
+        className="flex items-center gap-2 px-3 py-2.5 cursor-pointer"
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest('button')) return;
+          onActivate();
+        }}
+      >
         <button
           type="button"
           className="flex items-center gap-2 text-left flex-1 min-w-0"
-          onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+          onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); onActivate(); }}
         >
           {expanded
             ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-oc-text-muted transition-transform" />
@@ -438,7 +442,7 @@ function DiffItem({
           )}
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 

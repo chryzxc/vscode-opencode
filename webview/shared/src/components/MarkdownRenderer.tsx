@@ -134,10 +134,11 @@ function injectFileIcons(container: HTMLElement): void {
         const fileName = (filePath.split(/[/\\]/).pop() || '').toLowerCase();
         const iconColor = EXT_COLORS[ext] ?? DEFAULT_ICON_COLOR;
 
-        // Sanitize key for CSS class — same logic as FileIcon in MessageComponents.tsx
+        // Sanitize key for CSS class — MUST match the library's cleanFileIconKey exactly:
+        // dots → dashes, slashes → dashes, + → p, # → h. Do NOT use underscores for dots.
         const cleanKey = (s: string) =>
-          s.replace(/\./g, '_').replace(/\//g, '-').replace(/\+/g, 'p')
-            .replace(/#/g, 'h').replace(/[^a-z0-9_-]/g, '_');
+          s.replace(/\./g, '-').replace(/\//g, '-').replace(/\+/g, 'p')
+            .replace(/#/g, 'h').replace(/[^a-z0-9-]/g, '-');
 
         // Clickable button.
         // NOTE: display:inline-block + vertical-align:middle correctly places the

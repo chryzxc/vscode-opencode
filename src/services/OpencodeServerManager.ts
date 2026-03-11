@@ -133,6 +133,9 @@ export class OpencodeServerManager {
   /** Prevents reconnect scheduling during intentional shutdown */
   private isDisposed = false;
 
+  /** OpenCode server version */
+  private serverVersion: string | undefined;
+
   /** Current server status (for state machine) */
   private _status: ServerStatus = "idle";
 
@@ -151,6 +154,14 @@ export class OpencodeServerManager {
    * @param context - VSCode extension context (used for storage if needed in future)
    */
   constructor(private context: vscode.ExtensionContext) {}
+
+  private getWorkspaceDirectory(): string | undefined {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (workspaceFolder && workspaceFolder.uri.scheme === "file") {
+      return workspaceFolder.uri.fsPath.replace(/\\/g, "/").replace(/\/+$/, "");
+    }
+    return undefined;
+  }
 
   /**
    * Ensures the OpenCode server is running and returns a connected client.
@@ -223,16 +234,30 @@ export class OpencodeServerManager {
         }
 
         // Try to create client with configured port
+        const workspaceDirectory = this.getWorkspaceDirectory();
+        if (workspaceDirectory) {
+          console.log(
+            `[OpencodeServerManager] Creating client with directory header: ${workspaceDirectory}`,
+          );
+        }
         this.client = createOpencodeClient({
           baseUrl: `http://localhost:${configuredPort}`,
+          directory: workspaceDirectory,
         });
 
         this.port = configuredPort;
         log.serverEvent("connect", { port: configuredPort });
+
+        // Fetch server version
+        await this.fetchVersion();
+
         this.setStatus("running");
         return this.client;
       } catch (error) {
-        log.warn("Failed to connect to configured port", { port: configuredPort, error });
+        log.warn("Failed to connect to configured port", {
+          port: configuredPort,
+          error,
+        });
       }
     }
 
@@ -401,11 +426,13 @@ export class OpencodeServerManager {
           if (!serverReady) {
             serverReady = true;
             // Server is ready - connect and resolve promise
-            this.connectToServer().then(settleResolve).catch((error) => {
-              settleReject(
-                error instanceof Error ? error : new Error(String(error)),
-              );
-            });
+            this.connectToServer()
+              .then(settleResolve)
+              .catch((error) => {
+                settleReject(
+                  error instanceof Error ? error : new Error(String(error)),
+                );
+              });
           }
         }
       });
@@ -441,11 +468,11 @@ export class OpencodeServerManager {
 
         if (!serverReady) {
           const recentTail = recentServerOutput.trim().slice(-800);
-          const details = recentTail
-            ? ` Recent output: ${recentTail}`
-            : "";
+          const details = recentTail ? ` Recent output: ${recentTail}` : "";
           settleReject(
-            new Error(`OpenCode server exited before ready (code ${code}).${details}`),
+            new Error(
+              `OpenCode server exited before ready (code ${code}).${details}`,
+            ),
           );
         }
 
@@ -465,9 +492,7 @@ export class OpencodeServerManager {
         if (!serverReady) {
           this.setStatus("error");
           const recentTail = recentServerOutput.trim().slice(-800);
-          const details = recentTail
-            ? ` Recent output: ${recentTail}`
-            : "";
+          const details = recentTail ? ` Recent output: ${recentTail}` : "";
           settleReject(new Error(`Server startup timeout.${details}`));
         }
       }, 10000);
@@ -499,14 +524,55 @@ export class OpencodeServerManager {
    * @see createOpencodeClient from SDK for client options
    */
   private async connectToServer(): Promise<OpencodeClient> {
+    const workspaceDirectory = this.getWorkspaceDirectory();
+    if (workspaceDirectory) {
+      console.log(
+        `[OpencodeServerManager] Creating client with directory header: ${workspaceDirectory}`,
+      );
+    }
     this.client = createOpencodeClient({
       baseUrl: `http://localhost:${this.port}`,
+      directory: workspaceDirectory,
     });
 
     console.log(`Connected to OpenCode server on port ${this.port}`);
     log.serverEvent("connect", { port: this.port });
+
+    // Fetch server version
+    await this.fetchVersion();
+
     this.setStatus("running");
     return this.client;
+  }
+
+  /**
+   * Fetches the server version using the global health API.
+   *
+   * @private
+   */
+  private async fetchVersion(): Promise<void> {
+    if (!this.client) {
+      return;
+    }
+
+    try {
+      const health = await this.client.global.health();
+      if (health.data && typeof health.data.version === "string") {
+        this.serverVersion = health.data.version;
+        log.info(`Server version: ${this.serverVersion}`);
+      }
+    } catch (error) {
+      log.warn("Failed to fetch server version", { error });
+    }
+  }
+
+  /**
+   * Gets the current server version.
+   *
+   * @returns The server version, or undefined if unknown
+   */
+  getVersion(): string | undefined {
+    return this.serverVersion;
   }
 
   /**

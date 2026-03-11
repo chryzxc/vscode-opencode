@@ -31,7 +31,7 @@ import { Badge } from "@/components/ui/badge";
 
 import { useAppDispatch, useAppState } from "./lib/store";
 import vscode from "./lib/vscode";
-import type { Message, ThinkingLevel, TodoItem } from "./lib/types";
+import type { Message, MessagePart, ThinkingLevel, TodoItem } from "./lib/types";
 
 import { FileIcon } from "./MessageComponents";
 
@@ -438,6 +438,7 @@ export function ActiveTaskPanel() {
     currentSessionId,
     sessionsList,
     todoItems,
+    serverVersion,
   } = useAppState();
   const progressListRef = useRef<HTMLDivElement>(null);
 
@@ -475,7 +476,7 @@ export function ActiveTaskPanel() {
     const seen = new Set<string>();
     return source.filter((step) => {
       const type = (step.type ?? "").toLowerCase();
-      if (type === "reasoning") return false;
+      if (type === "reasoning" || type === "thinking") return false;
       const title = step.title.trim().toLowerCase();
       if (title === "thinking..." || title === "thinking") return false;
       const key = `${step.title}-${step.status ?? "pending"}`;
@@ -509,6 +510,58 @@ export function ActiveTaskPanel() {
     if (!currentSessionId || !Array.isArray(todoItems)) return [] as TodoItem[];
     return todoItems.filter((t) => t.sessionId === currentSessionId);
   }, [todoItems, currentSessionId]);
+
+  // Session-scoped patched files from assistant patch parts, normalized history edits, and live streaming edits.
+  const sessionPatchedFiles = useMemo(() => {
+    if (!currentSessionId) {
+      return [] as Array<{ file: string; patchType: "PATCH" }>;
+    }
+
+    const latestByKey = new Map<
+      string,
+      { file: string; patchType: "PATCH"; order: number }
+    >();
+    let order = 0;
+
+    const addFile = (value: unknown) => {
+      if (typeof value !== "string") return;
+      const file = value.trim();
+      if (!file) return;
+      const dedupeKey = file.replace(/\\/g, "/").toLowerCase();
+      order += 1;
+      latestByKey.set(dedupeKey, {
+        file,
+        patchType: "PATCH",
+        order,
+      });
+    };
+
+    for (const message of messages) {
+      const role = message.role ?? message.info?.role ?? "assistant";
+      if (role !== "assistant") continue;
+
+      const parts = Array.isArray(message.parts) ? message.parts : [];
+      for (const part of parts) {
+        const typedPart = part as MessagePart;
+        const partType = (typedPart.type ?? "").toLowerCase();
+        if (partType !== "patch") continue;
+        const files = Array.isArray(typedPart.files) ? typedPart.files : [];
+        files.forEach(addFile);
+      }
+
+      if (Array.isArray(message.edits)) {
+        message.edits.forEach((edit) => addFile(edit?.file));
+      }
+    }
+
+    if (Array.isArray(streaming?.edits)) {
+      streaming.edits.forEach(addFile);
+    }
+
+    return Array.from(latestByKey.values())
+      .sort((a, b) => b.order - a.order)
+      .map(({ file, patchType }) => ({ file, patchType }));
+  }, [messages, streaming?.edits, currentSessionId]);
 
   const todoStatusIcon = (status?: string) => {
     switch (status) {
@@ -616,6 +669,46 @@ export function ActiveTaskPanel() {
           </MiniSection>
         )}
 
+        {sessionPatchedFiles.length > 0 && (
+          <MiniSection title="Patched Files">
+            <div className="space-y-1.5">
+              {sessionPatchedFiles.map((entry) => {
+                const fileName = entry.file.split(/[\\/]/).pop() || entry.file;
+                return (
+                  <div
+                    key={`patched-${entry.file}`}
+                    className="flex items-center gap-2 rounded-md border border-oc-border bg-oc-panel-soft px-2 py-1.5"
+                  >
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 inline-flex items-center gap-1.5 text-left text-xs text-[var(--oc-text-soft)] hover:text-oc-accent"
+                      onClick={() =>
+                        vscode.postMessage({ type: "openFile", file: entry.file })
+                      }
+                      title={entry.file}
+                    >
+                      <FileIcon filePath={entry.file} />
+                      <span className="truncate">{fileName}</span>
+                    </button>
+                    <span className="shrink-0 rounded-md border border-oc-accent/30 bg-oc-accent/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-oc-accent">
+                      {entry.patchType}
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 text-[10px] uppercase font-semibold tracking-wider text-oc-accent hover:underline"
+                      onClick={() =>
+                        vscode.postMessage({ type: "openDiff", file: entry.file })
+                      }
+                    >
+                      Diff
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </MiniSection>
+        )}
+
         <MiniSection title="Context">
           {/* Token usage bar */}
           <div className="mb-3">
@@ -683,6 +776,16 @@ export function ActiveTaskPanel() {
                 {currentSessionId ? currentSessionId.slice(0, 16) : "—"}
               </span>
             </div>
+            {serverVersion && (
+              <div className="flex items-center justify-between col-span-2">
+                <span className="text-[var(--oc-text-soft)] opacity-80">
+                  OpenCode Version
+                </span>
+                <span className="font-mono text-xs text-[var(--oc-text-soft)] opacity-70">
+                  {serverVersion}
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <span className="text-[var(--oc-text-soft)] opacity-80">
                 Messages

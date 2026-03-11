@@ -38,7 +38,7 @@ test('Google platform normalization: both "google" and "google-gemini-cli" shoul
   const openaiIdx = dropdownBody.indexOf('key === "openai"');
   const googleIdx = dropdownBody.indexOf('google-gemini-cli');
   const opencodeFallIdx = dropdownBody.indexOf('key.includes("opencode")');
-  
+
   assert(openaiIdx < googleIdx, 'Google normalization should come after OpenAI check');
   assert(googleIdx < opencodeFallIdx, 'Google normalization should come before opencode skip');
 });
@@ -88,7 +88,7 @@ test('Full visibility of model/agent names on chips by removing truncation const
     /<span[^>]*className="opacity-60">Model<\/span>\s*<span[^>]*>\{label\}<\/span>/,
     'model chip label span should exist'
   );
-  
+
   const modelMatch = dropdownBody.match(/<div className="flex items-center gap-1\.5 min-w-0">\s*<span[^>]*className="opacity-60">Model<\/span>\s*<span[^>]*>\{label\}<\/span>\s*<\/div>/);
   assert(modelMatch, 'model chip structure should be present');
   const modelSection = modelMatch[0];
@@ -102,7 +102,7 @@ test('Full visibility of model/agent names on chips by removing truncation const
     /<span[^>]*className="opacity-60">Agent<\/span>\s*<span[^>]*>\{label\}<\/span>/,
     'agent chip label span should exist'
   );
-  
+
   const agentMatch = agentBody.match(/<div className="flex items-center gap-1\.5 min-w-0">\s*<span[^>]*className="opacity-60">Agent<\/span>\s*<span[^>]*>\{label\}<\/span>\s*<\/div>/);
   assert(agentMatch, 'agent chip structure should be present');
   const agentSection = agentMatch[0];

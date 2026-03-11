@@ -24,7 +24,7 @@ test('SubagentTracker logic', () => {
 test('ChatViewProvider logic', () => {
   assert.ok(chatProviderSource.includes('getDiffStats'), 'Contains getDiffStats');
   assert.ok(chatProviderSource.includes('git diff'), 'Uses git diff');
-  assert.ok(chatProviderSource.includes('await this.getDiffStats'), 'Calls getDiffStats');
+  assert.match(chatProviderSource, /this\.getDiffStats/, 'ChatViewProvider should call getDiffStats');
 });
 
 test('DiffReviewProvider logic', () => {

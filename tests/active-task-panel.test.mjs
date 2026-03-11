@@ -81,3 +81,63 @@ test('ActiveTaskPanel renders Current Tasks section conditionally on sessionTodo
     'Current Tasks MiniSection title must appear in the render output',
   );
 });
+
+test('ActiveTaskPanel derives sessionPatchedFiles from patch parts, history edits, and streaming edits', () => {
+  const body = extractFunctionBody(panelSource, 'export function ActiveTaskPanel()');
+
+  assert.match(
+    body,
+    /sessionPatchedFiles/,
+    'ActiveTaskPanel should define sessionPatchedFiles derived field',
+  );
+  assert.match(
+    body,
+    /partType\s*!==\s*["']patch["']/,
+    'patched-file derivation should filter message parts by type patch',
+  );
+  assert.match(
+    body,
+    /typedPart\.files/,
+    'patched-file derivation should read files from patch parts',
+  );
+  assert.match(
+    body,
+    /message\.edits/,
+    'patched-file derivation should include message edits fallback',
+  );
+  assert.match(
+    body,
+    /streaming\?\.edits/,
+    'patched-file derivation should include live streaming edits',
+  );
+});
+
+test('ActiveTaskPanel renders Patched Files section conditionally and wires file/diff actions', () => {
+  const body = extractFunctionBody(panelSource, 'export function ActiveTaskPanel()');
+
+  assert.match(
+    body,
+    /sessionPatchedFiles\.length\s*>\s*0/,
+    'Patched Files section must be guarded by sessionPatchedFiles.length > 0',
+  );
+  assert.match(
+    body,
+    /Patched Files/,
+    'Patched Files MiniSection title must appear in the render output',
+  );
+  assert.match(
+    body,
+    /type:\s*["']openFile["']/,
+    'Patched file row should dispatch openFile action',
+  );
+  assert.match(
+    body,
+    /type:\s*["']openDiff["']/,
+    'Patched file row should dispatch openDiff action',
+  );
+  assert.match(
+    body,
+    /PATCH/,
+    'Patched file row should display PATCH type badge',
+  );
+});

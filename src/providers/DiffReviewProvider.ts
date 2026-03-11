@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-
+import * as cp from "child_process";
 export interface DiffHunk {
   header: string;
   lines: string[];
@@ -66,12 +66,78 @@ export class DiffReviewProvider {
     this._panel.webview.onDidReceiveMessage(
       (message) => {
         switch (message.type) {
-          case "approveDiff":
-            vscode.window.showInformationMessage(`Approved: ${message.file}`);
+          case "approveDiff": {
+            const filePath = message.file;
+            const fullPath = path.isAbsolute(filePath)
+              ? filePath
+              : path.join(
+                  vscode.workspace.workspaceFolders?.[0].uri.fsPath || "",
+                  filePath,
+                );
+            const cwd = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+            if (cwd) {
+              cp.execFile(
+                "git",
+                ["add", fullPath],
+                { cwd },
+                (err: Error | null) => {
+                  if (err) {
+                    vscode.window.showErrorMessage(
+                      `Failed to approve (git add) ${filePath}: ${err.message}`,
+                    );
+                  } else {
+                    vscode.window.showInformationMessage(
+                      `Approved and staged: ${filePath}`,
+                    );
+                  }
+                },
+              );
+            }
             return;
-          case "rejectDiff":
-            vscode.window.showInformationMessage(`Rejected: ${message.file}`);
+          }
+          case "rejectDiff": {
+            const filePath = message.file;
+            const fullPath = path.isAbsolute(filePath)
+              ? filePath
+              : path.join(
+                  vscode.workspace.workspaceFolders?.[0].uri.fsPath || "",
+                  filePath,
+                );
+            const cwd = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+            if (cwd) {
+              cp.execFile(
+                "git",
+                ["checkout", "--", fullPath],
+                { cwd },
+                (err: Error | null) => {
+                  if (err) {
+                    // Fallback: it might be an untracked file
+                    cp.execFile(
+                      "git",
+                      ["clean", "-f", "--", fullPath],
+                      { cwd },
+                      (err2: Error | null) => {
+                        if (err2) {
+                          vscode.window.showErrorMessage(
+                            `Failed to reject ${filePath}: ${err.message}`,
+                          );
+                        } else {
+                          vscode.window.showInformationMessage(
+                            `Rejected (deleted untracked): ${filePath}`,
+                          );
+                        }
+                      },
+                    );
+                  } else {
+                    vscode.window.showInformationMessage(
+                      `Rejected and reverted: ${filePath}`,
+                    );
+                  }
+                },
+              );
+            }
             return;
+          }
           case "addComment":
             this._addComment(message.comment, data);
             return;

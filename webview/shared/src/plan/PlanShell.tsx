@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
-import { MessageSquare, Play, Shield, X } from 'lucide-react';
+import { useEffect, useRef, useState } from "react";
+import { MessageSquare, Play, Shield, X } from "lucide-react";
 
-import type { PlanComment } from '@/chat/lib/types';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
+import type { PlanComment } from "@/chat/lib/types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
-import { MarkdownRenderer } from '../components/MarkdownRenderer';
-import { renderMarkdown } from './markdownRenderer';
+import { MarkdownRenderer } from "../components/MarkdownRenderer";
+import { renderMarkdown } from "./markdownRenderer";
 
 interface PlanEnvelope {
   raw?: string;
@@ -19,7 +19,7 @@ interface PlanEnvelope {
 declare global {
   interface Window {
     __PLAN_DATA__?: PlanEnvelope;
-    __pendingPlanAnchor?: PlanComment['anchor'] | null;
+    __pendingPlanAnchor?: PlanComment["anchor"] | null;
     acquireVsCodeApi?: () => { postMessage: (msg: unknown) => void };
     postAddComment?: (comment: PlanComment, planId?: string) => void;
     postUpdateComment?: (comment: PlanComment, planId?: string) => void;
@@ -27,54 +27,64 @@ declare global {
   }
 }
 
-import vscode from '@/chat/lib/vscode';
+import vscode from "@/chat/lib/vscode";
 
 export default function PlanShell() {
   const envelope = window.__PLAN_DATA__;
-  const rawPlan = envelope?.raw ?? '';
-  const planTitle = envelope?.title?.trim() || 'Implementation Plan';
+  const rawPlan = envelope?.raw ?? "";
+  const planTitle = envelope?.title?.trim() || "Implementation Plan";
   const planId = envelope?.planId?.trim() || planTitle;
-
 
   const [executing, setExecuting] = useState(false);
   const [proceedError, setProceedError] = useState<string | null>(null);
 
-  const [comments, setComments] = useState<PlanComment[]>(envelope?.comments ?? []);
+  const [comments, setComments] = useState<PlanComment[]>(
+    envelope?.comments ?? [],
+  );
 
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editText, setEditText] = useState('');
+  const [editText, setEditText] = useState("");
 
   const [commentsPanelOpen, setCommentsPanelOpen] = useState(false);
 
   const planContentRef = useRef<HTMLDivElement | null>(null);
-  const [pendingAnchor, setPendingAnchor] = useState<PlanComment['anchor'] | null>(null);
-  const [popoverPos, setPopoverPos] = useState<{ x: number; y: number } | null>(null);
-  const [commentText, setCommentText] = useState('');
+  const [pendingAnchor, setPendingAnchor] = useState<
+    PlanComment["anchor"] | null
+  >(null);
+  const [popoverPos, setPopoverPos] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const [commentText, setCommentText] = useState("");
 
   // Listen for commentsUpdated messages from the extension
   useEffect(() => {
     function handler(e: MessageEvent) {
-      const data = e.data as {
-        type?: string;
-        comments?: PlanComment[];
-        ok?: boolean;
-        message?: string;
-      } | undefined;
-      if (data?.type === 'commentsUpdated') setComments(data.comments ?? []);
-      if (data?.type === 'planProceedStatus' && data.ok === false) {
+      const data = e.data as
+        | {
+            type?: string;
+            comments?: PlanComment[];
+            ok?: boolean;
+            message?: string;
+          }
+        | undefined;
+      if (data?.type === "commentsUpdated") setComments(data.comments ?? []);
+      if (data?.type === "planProceedStatus" && data.ok === false) {
         setExecuting(false);
-        setProceedError(data.message || 'Failed to start plan execution.');
+        setProceedError(data.message || "Failed to start plan execution.");
       }
     }
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
   }, []);
 
   // Expose postAddComment / postUpdateComment / postDeleteComment globals
   useEffect(() => {
-    window.postAddComment = (comment: PlanComment) => vscode?.postMessage({ type: 'addComment', comment, planId });
-    window.postUpdateComment = (comment: PlanComment) => vscode?.postMessage({ type: 'updateComment', comment, planId });
-    window.postDeleteComment = (id: string) => vscode?.postMessage({ type: 'deleteComment', id, planId });
+    window.postAddComment = (comment: PlanComment) =>
+      vscode?.postMessage({ type: "addComment", comment, planId });
+    window.postUpdateComment = (comment: PlanComment) =>
+      vscode?.postMessage({ type: "updateComment", comment, planId });
+    window.postDeleteComment = (id: string) =>
+      vscode?.postMessage({ type: "deleteComment", id, planId });
     return () => {
       try {
         // @ts-ignore
@@ -127,15 +137,20 @@ export default function PlanShell() {
       }
 
       // We capture surrounding text (parent paragraph/div) to disambiguate highlights later.
-      const surroundingText = sel.getRangeAt(0).commonAncestorContainer.textContent || '';
+      const surroundingText =
+        sel.getRangeAt(0).commonAncestorContainer.textContent || "";
 
       // We calculate line numbers relative to the raw markdown for the LLM prompt,
       // but note that this index-search on raw markdown can be brittle if
       // the selection comes from a formatted text block (e.g. bold/italic).
       // We keep it as a best-effort fallback, but the highlight system now uses text context.
       const idx = rawPlan.indexOf(selectedText);
-      const startLine = idx !== -1 ? rawPlan.slice(0, idx).split('\n').length - 1 : 0;
-      const endLine = idx !== -1 ? rawPlan.slice(0, idx + selectedText.length).split('\n').length - 1 : 0;
+      const startLine =
+        idx !== -1 ? rawPlan.slice(0, idx).split("\n").length - 1 : 0;
+      const endLine =
+        idx !== -1
+          ? rawPlan.slice(0, idx + selectedText.length).split("\n").length - 1
+          : 0;
 
       setPendingAnchor({ startLine, endLine, selectedText, surroundingText });
 
@@ -151,9 +166,14 @@ export default function PlanShell() {
 
     function handleSelectionChange() {
       const activeEl = document.activeElement;
-      // If the user is typing/clicking inside the popover (textarea or buttons), 
+      // If the user is typing/clicking inside the popover (textarea or buttons),
       // the selection might collapse, but we shouldn't dismiss the popover.
-      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.closest('.comment-popover'))) {
+      if (
+        activeEl &&
+        (activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          activeEl.closest(".comment-popover"))
+      ) {
         return;
       }
 
@@ -167,17 +187,17 @@ export default function PlanShell() {
 
     const container = planContentRef.current;
     if (container) {
-      container.addEventListener('mouseup', computeAnchorFromSelection);
-      container.addEventListener('keyup', computeAnchorFromSelection);
+      container.addEventListener("mouseup", computeAnchorFromSelection);
+      container.addEventListener("keyup", computeAnchorFromSelection);
     }
-    document.addEventListener('selectionchange', handleSelectionChange);
+    document.addEventListener("selectionchange", handleSelectionChange);
 
     return () => {
       if (container) {
-        container.removeEventListener('mouseup', computeAnchorFromSelection);
-        container.removeEventListener('keyup', computeAnchorFromSelection);
+        container.removeEventListener("mouseup", computeAnchorFromSelection);
+        container.removeEventListener("keyup", computeAnchorFromSelection);
       }
-      document.removeEventListener('selectionchange', handleSelectionChange);
+      document.removeEventListener("selectionchange", handleSelectionChange);
     };
   }, [rawPlan]);
 
@@ -187,14 +207,20 @@ export default function PlanShell() {
     if (!container || !comments.length) return;
 
     // Reset: The markdown renders clean via React, but we might want to be explicit
-    // if we were mutating the same DOM. Since renderedHtml is a dependency of this 
+    // if we were mutating the same DOM. Since renderedHtml is a dependency of this
     // fragment's parent, it's mostly handled.
 
     const walk = (node: Node) => {
       if (node.nodeType === Node.TEXT_NODE) {
-        const text = node.nodeValue || '';
+        const text = node.nodeValue || "";
         const parent = node.parentNode;
-        if (!parent || parent.nodeName === 'MARK' || parent.nodeName === 'SCRIPT' || parent.nodeName === 'STYLE') return;
+        if (
+          !parent ||
+          parent.nodeName === "MARK" ||
+          parent.nodeName === "SCRIPT" ||
+          parent.nodeName === "STYLE"
+        )
+          return;
 
         // Try to find any comment that matches this text node
         // We use a simple approach: if the exact selectedText is present, we wrap it.
@@ -208,7 +234,8 @@ export default function PlanShell() {
             // Disambiguation check: if the comment has surroundingText, verify that
             // this text node's environment matches that context.
             if (comment.anchor.surroundingText) {
-              const context = (parent as HTMLElement).innerText || parent.textContent || '';
+              const context =
+                (parent as HTMLElement).innerText || parent.textContent || "";
               if (!context.includes(comment.anchor.surroundingText)) continue;
             }
 
@@ -219,9 +246,10 @@ export default function PlanShell() {
             const fragment = document.createDocumentFragment();
             if (before) fragment.appendChild(document.createTextNode(before));
 
-            const mark = document.createElement('mark');
+            const mark = document.createElement("mark");
             mark.textContent = match;
-            mark.className = 'bg-amber-500/30 text-inherit cursor-pointer rounded-sm hover:bg-amber-500/50 transition-colors px-0.5 -mx-0.5';
+            mark.className =
+              "bg-amber-500/30 text-inherit cursor-pointer rounded-sm hover:bg-amber-500/50 transition-colors px-0.5 -mx-0.5";
             mark.dataset.commentId = comment.id;
             mark.title = comment.text;
             mark.onclick = (e) => {
@@ -234,7 +262,7 @@ export default function PlanShell() {
             if (after) fragment.appendChild(document.createTextNode(after));
 
             parent.replaceChild(fragment, node);
-            // After replacement, we stop processing this node but the fragment might contain 
+            // After replacement, we stop processing this node but the fragment might contain
             // more text that needs processing (if we had multiple comments in one node).
             // For simplicity, we just process one highlight per node per pass.
             break;
@@ -253,30 +281,30 @@ export default function PlanShell() {
     return () => clearTimeout(timer);
   }, [comments]);
 
-
-
-
-
   function handleProceed() {
     if (executing) return;
     setProceedError(null);
     setExecuting(true);
-    vscode?.postMessage({ type: 'proceedWithPlan', rawPlan, comments });
+    vscode?.postMessage({ type: "proceedWithPlan", rawPlan, comments });
   }
 
   function handleAddComment() {
     const trimmed = commentText.trim();
     if (!trimmed || !pendingAnchor) return;
-    const newComment: PlanComment = { id: crypto.randomUUID(), anchor: pendingAnchor, text: trimmed, createdAt: Date.now() };
+    const newComment: PlanComment = {
+      id: crypto.randomUUID(),
+      anchor: pendingAnchor,
+      text: trimmed,
+      createdAt: Date.now(),
+    };
     window.postAddComment?.(newComment);
-    setCommentText('');
+    setCommentText("");
     setPendingAnchor(null);
     setPopoverPos(null);
   }
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
-
       {/* ─── Header ─────────────────────────────────────────────────────── */}
       <header className="flex-shrink-0 border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background,var(--vscode-editor-background))] px-4 py-3">
         <div className="flex items-center justify-between gap-3">
@@ -300,7 +328,10 @@ export default function PlanShell() {
               <MessageSquare className="h-3.5 w-3.5" />
               <span>Comments</span>
               {comments.length > 0 && (
-                <Badge variant="secondary" className="ml-1 text-[10px] px-1.5 py-0 leading-none">
+                <Badge
+                  variant="secondary"
+                  className="ml-1 text-[10px] px-1.5 py-0 leading-none"
+                >
                   {comments.length}
                 </Badge>
               )}
@@ -314,18 +345,20 @@ export default function PlanShell() {
               aria-label="Proceed on this plan"
             >
               <Play className="h-3.5 w-3.5" />
-              <span>{executing ? 'Submitting…' : 'Proceed on this plan'}</span>
+              <span>{executing ? "Submitting…" : "Proceed on this plan"}</span>
             </Button>
           </div>
         </div>
 
         {proceedError ? (
-          <p className="mt-2 text-xs text-[var(--vscode-errorForeground)]" role="status" aria-live="polite">
+          <p
+            className="mt-2 text-xs text-[var(--vscode-errorForeground)]"
+            role="status"
+            aria-live="polite"
+          >
             {proceedError}
           </p>
         ) : null}
-
-
       </header>
 
       {/* ─── Main scroll area ────────────────────────────────────────────── */}
@@ -338,7 +371,9 @@ export default function PlanShell() {
             className="prose prose-invert max-w-none text-xs leading-relaxed text-[var(--vscode-editor-foreground)] select-text cursor-text mb-6 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mb-3 [&_h2]:text-xs [&_h2]:font-semibold [&_h2]:mb-2 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mb-1.5 [&_pre]:bg-white/5 [&_pre]:rounded [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:bg-white/10 [&_code]:px-1 [&_code]:rounded [&_pre_code]:bg-transparent [&_pre_code]:px-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:mb-0.5 [&_p]:mb-2 [&_strong]:font-semibold [&_em]:italic"
           />
         ) : (
-          <div className="py-8 text-xs text-[var(--vscode-descriptionForeground)]">No plan data available.</div>
+          <div className="py-8 text-xs text-[var(--vscode-descriptionForeground)]">
+            No plan data available.
+          </div>
         )}
       </main>
 
@@ -346,7 +381,7 @@ export default function PlanShell() {
       {popoverPos && pendingAnchor && (
         <div
           style={{
-            position: 'fixed',
+            position: "fixed",
             top: Math.max(8, popoverPos.y - 10),
             left: Math.min(popoverPos.x, window.innerWidth - 320),
             zIndex: 50,
@@ -355,19 +390,23 @@ export default function PlanShell() {
           className="comment-popover rounded-md border border-[var(--vscode-panel-border)] bg-[var(--vscode-editorWidget-background,var(--vscode-editor-background))] p-3 shadow-lg"
         >
           <p className="mb-2 text-xs text-[var(--vscode-descriptionForeground)] italic line-clamp-2">
-            &ldquo;{pendingAnchor.selectedText.length > 60 ? `${pendingAnchor.selectedText.slice(0, 60)}…` : pendingAnchor.selectedText}&rdquo;
+            &ldquo;
+            {pendingAnchor.selectedText.length > 60
+              ? `${pendingAnchor.selectedText.slice(0, 60)}…`
+              : pendingAnchor.selectedText}
+            &rdquo;
           </p>
           <Textarea
             value={commentText}
             onChange={(e) => setCommentText(e.target.value)}
             placeholder="Add a comment…"
             onKeyDown={(e) => {
-              if (e.key === 'Escape') {
+              if (e.key === "Escape") {
                 setPendingAnchor(null);
                 setPopoverPos(null);
-                setCommentText('');
+                setCommentText("");
               }
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                 handleAddComment();
               }
             }}
@@ -375,10 +414,22 @@ export default function PlanShell() {
             rows={3}
           />
           <div className="flex gap-2">
-            <Button size="sm" onClick={handleAddComment} disabled={!commentText.trim()}>
+            <Button
+              size="sm"
+              onClick={handleAddComment}
+              disabled={!commentText.trim()}
+            >
               Add Comment
             </Button>
-            <Button size="sm" variant="outline" onClick={() => { setPendingAnchor(null); setPopoverPos(null); setCommentText(''); }}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setPendingAnchor(null);
+                setPopoverPos(null);
+                setCommentText("");
+              }}
+            >
               Cancel
             </Button>
           </div>
@@ -388,13 +439,13 @@ export default function PlanShell() {
       {/* ─── Comments panel (slide-in overlay) ──────────────────────────── */}
       <div
         style={{
-          position: 'fixed',
+          position: "fixed",
           right: 0,
           top: 0,
           bottom: 0,
           width: 320,
-          transform: commentsPanelOpen ? 'translateX(0)' : 'translateX(100%)',
-          transition: 'transform 0.2s ease',
+          transform: commentsPanelOpen ? "translateX(0)" : "translateX(100%)",
+          transition: "transform 0.2s ease",
           zIndex: 40,
         }}
         className="flex flex-col border-l border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background,var(--vscode-editor-background))] shadow-xl"
@@ -404,7 +455,9 @@ export default function PlanShell() {
           <h2 className="text-xs font-semibold">
             Comments
             {comments.length > 0 && (
-              <span className="ml-2 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-mono">{comments.length}</span>
+              <span className="ml-2 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-mono">
+                {comments.length}
+              </span>
             )}
           </h2>
           <button
@@ -420,23 +473,44 @@ export default function PlanShell() {
         {/* Panel body */}
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
           {comments.length === 0 ? (
-            <p className="text-xs text-[var(--vscode-descriptionForeground)]">No comments yet. Highlight text to add one.</p>
+            <p className="text-xs text-[var(--vscode-descriptionForeground)]">
+              No comments yet. Highlight text to add one.
+            </p>
           ) : (
             comments.map((comment) => {
-              const isStale = !rawPlan.includes(comment.anchor.selectedText || '');
+              const isStale = !rawPlan.includes(
+                comment.anchor.selectedText || "",
+              );
               return (
-                <div key={comment.id} className="rounded border border-[var(--vscode-panel-border)] bg-white/5 p-2 text-xs">
+                <div
+                  key={comment.id}
+                  className="rounded border border-[var(--vscode-panel-border)] bg-white/5 p-2 text-xs"
+                >
                   <div className="flex items-start justify-between gap-2 mb-1">
                     <p className="italic text-[var(--vscode-descriptionForeground)] truncate flex-1">
                       &ldquo;{comment.anchor.selectedText}&rdquo;
                     </p>
-                    {isStale && <Badge variant="secondary" className="text-[10px] flex-shrink-0">Stale</Badge>}
+                    {isStale && (
+                      <Badge
+                        variant="secondary"
+                        className="text-[10px] flex-shrink-0"
+                      >
+                        Stale
+                      </Badge>
+                    )}
                   </div>
-                  <p className="text-[var(--vscode-editor-foreground)] mb-2">{comment.text}</p>
+                  <p className="text-[var(--vscode-editor-foreground)] mb-2">
+                    {comment.text}
+                  </p>
 
                   {editingId === comment.id ? (
                     <>
-                      <label htmlFor={`comment-edit-${comment.id}`} className="sr-only">Edit comment</label>
+                      <label
+                        htmlFor={`comment-edit-${comment.id}`}
+                        className="sr-only"
+                      >
+                        Edit comment
+                      </label>
                       <Textarea
                         id={`comment-edit-${comment.id}`}
                         value={editText}
@@ -445,19 +519,51 @@ export default function PlanShell() {
                         rows={3}
                       />
                       <div className="flex gap-2">
-                        <Button size="sm" onClick={() => {
-                          const trimmed = editText.trim();
-                          window.postUpdateComment?.({ ...comment, text: trimmed });
-                          setEditingId(null);
-                          setEditText('');
-                        }}>Save</Button>
-                        <Button size="sm" variant="outline" onClick={() => { setEditingId(null); setEditText(''); }}>Cancel</Button>
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            const trimmed = editText.trim();
+                            window.postUpdateComment?.({
+                              ...comment,
+                              text: trimmed,
+                            });
+                            setEditingId(null);
+                            setEditText("");
+                          }}
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setEditingId(null);
+                            setEditText("");
+                          }}
+                        >
+                          Cancel
+                        </Button>
                       </div>
                     </>
                   ) : (
                     <div className="flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => { setEditingId(comment.id); setEditText(comment.text); }}>Edit</Button>
-                      <Button size="sm" variant="outline" onClick={() => window.postDeleteComment?.(comment.id)}>Delete</Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setEditingId(comment.id);
+                          setEditText(comment.text);
+                        }}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => window.postDeleteComment?.(comment.id)}
+                      >
+                        Delete
+                      </Button>
                     </div>
                   )}
                 </div>

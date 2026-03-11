@@ -70,6 +70,18 @@ function getFileColor(ext: string): string {
   return FILE_COLOR_MAP[ext] || "var(--oc-text-muted)";
 }
 
+function isReasoningPart(part: MessagePart): boolean {
+  const type = (part.type ?? "").toLowerCase();
+  return (
+    type === "reasoning" ||
+    type === "thinking" ||
+    type === "thought" ||
+    !!part.reasoning ||
+    !!part.thought ||
+    !!part.thinking
+  );
+}
+
 // Deterministic colors for subagents
 const SUBAGENT_COLORS = [
   "text-oc-orange",
@@ -102,7 +114,7 @@ export function FileIcon({
     const fileName = (filePath.split(/[\\/]/).pop() || "").toLowerCase();
     const cleanKey = (key: string) =>
       key
-        .replace(/\./g, "_")
+        .replace(/\./g, "-")
         .replace(/\//g, "-")
         .replace(/\+/g, "p")
         .replace(/#/g, "h")
@@ -171,12 +183,7 @@ function messageBodyFromParts(parts?: MessagePart[]): string {
   }
   return parts
     .map((part) => {
-      const isReasoning =
-        part.type === "reasoning" ||
-        !!part.reasoning ||
-        !!part.thought ||
-        !!part.thinking;
-      if (isReasoning) {
+      if (isReasoningPart(part)) {
         return "";
       }
       return part.text ?? part.content ?? "";
@@ -196,7 +203,7 @@ function reasoningFromParts(parts?: MessagePart[]): string {
         if (explicit) {
           return explicit;
         }
-        if (part.type === "reasoning") {
+        if (isReasoningPart(part)) {
           return part.text ?? part.content ?? "";
         }
         if (part.type === "text" || part.text) {
@@ -315,7 +322,7 @@ function seqFromThoughtKey(key: string): number {
 
 function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
   if (message?.reasoningEvents && message.reasoningEvents.length > 0) {
-    return message.reasoningEvents
+    const fromEvents = message.reasoningEvents
       .filter((event: ReasoningEvent) => {
         const text = event.text;
         return typeof text === "string" && text.length > 0;
@@ -324,6 +331,9 @@ function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
         key: `evt-${event.createdAt}`,
         text: event.text.trim(),
       }));
+    if (fromEvents.length > 0) {
+      return fromEvents;
+    }
   }
 
   return (message?.parts ?? [])
@@ -332,7 +342,7 @@ function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
         part.reasoning ??
         part.thought ??
         part.thinking ??
-        (part.type === "reasoning" ? (part.text ?? part.content ?? "") : "");
+        (isReasoningPart(part) ? (part.text ?? part.content ?? "") : "");
       return { key: `part-${index}`, text: text.trim() };
     })
     .filter((item: ThoughtItem) => item.text.length > 0);
@@ -343,7 +353,7 @@ function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
     return [];
   }
   if (streaming.reasoningEvents && streaming.reasoningEvents.length > 0) {
-    return streaming.reasoningEvents
+    const fromEvents = streaming.reasoningEvents
       .filter((event: ReasoningEvent) => {
         return event.text && event.text.length > 0;
       })
@@ -351,6 +361,9 @@ function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
         key: `stream-${idx}-${event.createdAt}`,
         text: event.text.trim(),
       }));
+    if (fromEvents.length > 0) {
+      return fromEvents;
+    }
   }
 
   const fallback = (streaming?.reasoning || "").trim();
@@ -370,7 +383,7 @@ function normalizeProgressStatus(value?: string | null): "pending" | "done" | "e
 
 function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
   const type = (step.type ?? "").toLowerCase();
-  if (type === "reasoning") {
+  if (type === "reasoning" || type === "thinking") {
     return false;
   }
 
@@ -582,18 +595,12 @@ function buildMessageTimeline(
     const blocks: TimelineBlock[] = [];
 
     for (const part of parts) {
-      const isReasoning =
-        part.type === "reasoning" ||
-        !!part.reasoning ||
-        !!part.thought ||
-        !!part.thinking;
-
-      if (isReasoning) {
+      if (isReasoningPart(part)) {
         const text = (
           part.reasoning ??
           part.thought ??
           part.thinking ??
-          (part.type === "reasoning" ? (part.text ?? part.content ?? "") : "")
+          (isReasoningPart(part) ? (part.text ?? part.content ?? "") : "")
         ).trim();
         if (!text) continue;
         const last = blocks[blocks.length - 1];
@@ -769,7 +776,12 @@ function getAgentName(
  */
 function getTokenInfo(
   message: Message | undefined,
-): { input?: number; output?: number; cache?: { read?: number; write?: number } } | undefined {
+): {
+  input?: number;
+  output?: number;
+  reasoning?: number;
+  cache?: { read?: number; write?: number };
+} | undefined {
   if (!message) {
     return undefined;
   }
@@ -784,6 +796,7 @@ function getTokenInfo(
       return tokens as {
         input?: number;
         output?: number;
+        reasoning?: number;
         cache?: { read?: number; write?: number };
       };
     }
@@ -1024,7 +1037,8 @@ export function AssistantMessage({
         streaming.reasoningEvents.length > 0) ||
       (Array.isArray(streaming.progressEvents) &&
         streaming.progressEvents.length > 0) ||
-      (Array.isArray(streaming.steps) && streaming.steps.length > 0))
+      (Array.isArray(streaming.steps) && streaming.steps.length > 0) ||
+      subagents.length > 0)
   );
 
   const showStreamingLoading = !message && !!streaming?.isActive && !hasStreamingActivity;
@@ -1042,11 +1056,16 @@ export function AssistantMessage({
   const tokens = getTokenInfo(message);
   const inputTok = tokens?.input ?? 0;
   const outputTok = tokens?.output ?? 0;
+  const reasoningTok = tokens?.reasoning ?? 0;
   const cache = tokens?.cache;
   const cacheRead = cache?.read ?? 0;
   const cacheWrite = cache?.write ?? 0;
   const duration = getDuration(message, streaming);
-  const hasTokens = inputTok > 0 || outputTok > 0;
+  const hasTokens = inputTok > 0 || outputTok > 0 || reasoningTok > 0;
+  const showThinkingPlaceholder =
+    !streaming && thoughtItems.length === 0 && reasoningTok > 0;
+  const thinkingPlaceholderText =
+    "Reasoning tokens were used, but this provider did not expose reasoning text.";
   const handleCopy = async () => {
     await navigator.clipboard.writeText(content);
     setCopied(true);
@@ -1098,11 +1117,15 @@ export function AssistantMessage({
     return () => root.removeEventListener("click", onClick);
   }, []);
 
+  const responseEnterClass = streaming
+    ? "oc-assistant-streaming-enter"
+    : "oc-assistant-response-enter";
+
   return (
     <div
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
-      className={`oc-message-enter ${isContiguous ? 'mb-4 mt-[-12px]' : 'mb-5'} px-4`}
+      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? 'mb-4 mt-[-12px]' : 'mb-5'} px-4`}
     >
       <div className="oc-msg-assistant" ref={messageBodyRef}>
         {!isContiguous && (
@@ -1148,9 +1171,16 @@ export function AssistantMessage({
                   <div className="oc-msg-token-chips flex shrink-0 items-center gap-1">
                         <span title="Tokens in system prompt + conversation history + your message" className="cursor-help decoration-dotted underline underline-offset-2">prompt</span>
                         <span className="tabular-nums cursor-help" title="Tokens in system prompt + conversation history + your message">{inputTok.toLocaleString()}</span>
-                    <span className="opacity-30">-</span>
+                        <span className="opacity-30">-</span>
                         <span title="Tokens generated in this reply" className="cursor-help decoration-dotted underline underline-offset-2">response</span>
                         <span className="tabular-nums cursor-help" title="Tokens generated in this reply">{outputTok.toLocaleString()}</span>
+                    {reasoningTok > 0 && (
+                      <>
+                        <span className="opacity-30">-</span>
+                        <span title="Internal reasoning tokens reported by provider/model" className="cursor-help decoration-dotted underline underline-offset-2">reasoning</span>
+                        <span className="tabular-nums cursor-help" title="Internal reasoning tokens reported by provider/model">{reasoningTok.toLocaleString()}</span>
+                      </>
+                    )}
                     {cacheRead > 0 && (
                       <>
                         <span className="opacity-30">-</span>
@@ -1204,23 +1234,36 @@ export function AssistantMessage({
         )}
 
         {/* Unified timeline: blocks rendered in arrival order (thinking → steps → content → ...) */}
+        {showThinkingPlaceholder && (
+          <details className="group mb-3" open>
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors mt-1 relative z-10 overflow-hidden">
+              <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90 shrink-0">
+                &gt;
+              </span>
+              <span className="opacity-70 whitespace-nowrap shrink-0 italic">
+                Thinking
+              </span>
+            </summary>
+            <div className="mt-1.5 ml-[6px] border-l border-oc-border/30 pl-3.5">
+              <div className="py-0.5 text-xs leading-relaxed text-oc-text-soft opacity-70 whitespace-pre-wrap">
+                {thinkingPlaceholderText}
+              </div>
+            </div>
+          </details>
+        )}
         {timelineBlocks.map((block, blockIdx) => {
           if (block.kind === "thinking") {
             return (
               <details
                 // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
                 key={`block-thinking-${blockIdx}`}
-                className="group mb-3"
+                className="oc-thinking-block group mb-2"
               >
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors mt-1 relative z-10 overflow-hidden">
-                  <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90 shrink-0">
-                    ›
-                  </span>
-                  <span className="opacity-70 whitespace-nowrap shrink-0 italic">
-                    Thinking
-                  </span>
+                <summary className="oc-thinking-summary">
+                  <span className="oc-thinking-chevron">›</span>
+                  <span className="oc-thinking-label">Thinking</span>
                   {block.items.length > 0 && (
-                    <span className="truncate opacity-80 ml-0.5 group-open:hidden text-oc-accent">
+                    <span className="oc-thinking-preview group-open:hidden">
                       <MarkdownRenderer
                         content={block.items[block.items.length - 1].text.trim() || "\u2026"}
                         isInline={true}
@@ -1228,11 +1271,11 @@ export function AssistantMessage({
                     </span>
                   )}
                 </summary>
-                <div className="mt-1.5 ml-[6px] border-l border-oc-border/30 pl-3.5 space-y-0.5 max-h-[300px] overflow-y-auto pr-2">
+                <div className="oc-thinking-content">
                   {block.items.map((thought) => (
                     <div
                       key={thought.key}
-                      className="py-0.5 text-xs leading-relaxed text-oc-text-soft opacity-70 whitespace-pre-wrap markdown-inline-overrides"
+                      className="oc-thinking-text"
                     >
                       <MarkdownRenderer content={thought.text} isInline={true} />
                     </div>
@@ -1247,45 +1290,76 @@ export function AssistantMessage({
               <div
                 // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
                 key={`block-steps-${blockIdx}`}
-                className="mb-3 space-y-0 px-0.5"
+                className="oc-steps-block mb-3"
               >
-                {block.items.map((event, eventIdx) => (
-                  <div
-                    key={event.key}
-                    className="flex items-start gap-1.5 py-1 text-xs oc-timeline-connector oc-timeline-item"
-                  >
-                    <div className="oc-timeline-line" />
-                    <span className="mt-0.5 shrink-0 relative z-10 bg-oc-bg ring-[3px] ring-oc-bg rounded-full">
-                      {event.status === "pending" ? (
-                        <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
-                      ) : event.status === "error" ? (
-                        <X className="h-3 w-3 text-oc-red" />
-                      ) : (
-                        <Check className="h-3 w-3 text-oc-green opacity-70" />
-                      )}
-                    </span>
-                    <span
-                      className={`min-w-0 flex-1 flex items-center leading-relaxed ${
-                        event.status === "pending"
-                          ? "text-oc-text"
-                          : "text-oc-text-soft opacity-80"
-                      }`}
-                    >
-                      <span className="font-medium shrink-0">{event.title}</span>
-                      <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-hidden">
-                        {(() => {
-                          let displayPath = event.filePath;
-                          // Fallback: If title is "edit" or similar and path is missing, check message edits
-                          if (!displayPath && /edit|writ|modif|updat|patch/i.test(event.title) && message?.edits?.length) {
-                            displayPath = message.edits[0].file;
-                          }
+                {block.items.map((event, eventIdx) => {
+                  // Derive a short tool-type label from the title
+                  const rawTitle = event.title || "";
+                  let toolLabel = rawTitle;
+                  let toolContent = "";
+                  const bashMatch = rawTitle.match(/^bash(?::\s*|\s+)(.*)/is);
+                  const readMatch = rawTitle.match(/^read(?::\s*|\s+)(.*)/is);
+                  const writeMatch = rawTitle.match(/^(?:edit|write|modify|update|patch)(?::\s*|\s+)(.*)/is);
+                  const thinkMatch = rawTitle.match(/^think(?:ing)?(?::\s*|\s+)?(.*)/is);
+                  if (bashMatch) { toolLabel = "bash"; toolContent = bashMatch[1]?.trim() || ""; }
+                  else if (readMatch) { toolLabel = "read"; toolContent = readMatch[1]?.trim() || ""; }
+                  else if (writeMatch) { toolLabel = /edit/i.test(rawTitle) ? "edit" : /write/i.test(rawTitle) ? "write" : /modify/i.test(rawTitle) ? "modify" : "update"; toolContent = writeMatch[1]?.trim() || ""; }
+                  else if (thinkMatch) { toolLabel = "think"; toolContent = thinkMatch[1]?.trim() || ""; }
+                  else {
+                    // Try to split on first space for generic tool:content
+                    const spaceIdx = rawTitle.indexOf(" ");
+                    if (spaceIdx > 0 && spaceIdx <= 12) {
+                      toolLabel = rawTitle.slice(0, spaceIdx).toLowerCase();
+                      toolContent = rawTitle.slice(spaceIdx + 1).trim();
+                    }
+                  }
 
-                          if (!displayPath) return null;
-                          const fileName = displayPath.split(/[/\\]/).pop();
-                          return (
+                  // File path for display
+                  let displayPath = event.filePath;
+                  if (!displayPath && /edit|writ|modif|updat|patch/i.test(event.title) && message?.edits?.length) {
+                    displayPath = message.edits[0].file;
+                  }
+                  const fileName = displayPath ? displayPath.split(/[/\\]/).pop() : undefined;
+
+                  // Tool label color class
+                  const toolColorClass =
+                    toolLabel === "bash" ? "oc-tool-label--bash" :
+                    toolLabel === "read" ? "oc-tool-label--read" :
+                    toolLabel === "edit" || toolLabel === "write" || toolLabel === "modify" || toolLabel === "update" ? "oc-tool-label--edit" :
+                    toolLabel === "think" ? "oc-tool-label--think" :
+                    "oc-tool-label--generic";
+
+                  return (
+                    <div
+                      key={event.key}
+                      className={`oc-step-row ${ event.status === "pending" ? "oc-step-row--pending" : event.status === "error" ? "oc-step-row--error" : "oc-step-row--done" }`}
+                    >
+                      {/* Left: timeline dot + vertical line stacked in one column */}
+                      <span className="oc-step-dot-col">
+                        <span className="oc-step-status">
+                          {event.status === "pending" ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : event.status === "error" ? (
+                            <X className="h-3 w-3" />
+                          ) : (
+                            <Check className="h-3 w-3" />
+                          )}
+                        </span>
+                        {/* Line fills height below the icon */}
+                        <span className="oc-step-line-col" />
+                      </span>
+
+                      {/* Right: everything else in a centered flex row */}
+                      <span className="oc-step-row-body">
+                        {/* Tool type label */}
+                        <span className={`oc-tool-label ${toolColorClass}`}>{toolLabel}</span>
+
+                        {/* Main content: file path or command text */}
+                        <span className="oc-step-content min-w-0 flex-1">
+                          {displayPath ? (
                             <button
                               type="button"
-                              className="inline-flex items-center gap-1 font-mono text-oc-text-muted opacity-70 hover:text-oc-accent hover:opacity-100 transition-colors truncate"
+                              className="oc-step-file-link"
                               title={displayPath}
                               onClick={() =>
                                 vscode.postMessage({
@@ -1297,47 +1371,50 @@ export function AssistantMessage({
                               <FileIcon filePath={displayPath} />
                               <span className="truncate">{fileName}</span>
                             </button>
-                          );
-                        })()}
-                        {event.meta && (
-                          <span
-                            className="truncate text-oc-text-muted opacity-70"
-                            title={event.meta}
-                          >
-                            {event.meta}
-                          </span>
-                        )}
+                          ) : toolContent ? (
+                            <span className="oc-step-command truncate" title={toolContent}>{toolContent}</span>
+                          ) : (
+                            <span className="oc-step-command truncate">{rawTitle}</span>
+                          )}
+                          {event.meta && (
+                            <span className="oc-step-meta" title={event.meta}>{event.meta}</span>
+                          )}
+                        </span>
+
+                        {/* Diff stats */}
                         {event.diffStats && (event.diffStats.added > 0 || event.diffStats.deleted > 0) ? (
-                          <span className="shrink-0 inline-flex items-center gap-1 font-mono text-[10px] bg-oc-bg-active/30 px-1 rounded">
+                          <span className="oc-step-diff-stats">
                             {event.diffStats.added > 0 && (
-                              <span className="text-oc-green">+{event.diffStats.added}</span>
+                              <span className="oc-step-diff-add text-oc-green">+{event.diffStats.added}</span>
                             )}
                             {event.diffStats.deleted > 0 && (
-                              <span className="text-oc-red">-{event.diffStats.deleted}</span>
+                              <span className="oc-step-diff-del text-oc-red">-{event.diffStats.deleted}</span>
                             )}
                           </span>
                         ) : null}
-                      </div>
-                    </span>
-                    {event.status === "done" && (event.diffStats || /edit|writ|modif|updat|patch/i.test(event.title)) && (
-                      <button
-                        type="button"
-                        className="ml-2 shrink-0 text-[10px] uppercase font-semibold tracking-wider text-oc-accent hover:underline opacity-80 hover:opacity-100"
-                        onClick={() => {
-                          const fileToOpen = event.filePath || message?.edits?.[0]?.file;
-                          if (fileToOpen) {
-                            vscode.postMessage({
-                              type: "openDiff",
-                              file: fileToOpen,
-                            });
-                          }
-                        }}
-                      >
-                        View diff
-                      </button>
-                    )}
-                  </div>
-                ))}
+
+                        {/* View diff button */}
+                        {event.status === "done" && (event.diffStats || /edit|writ|modif|updat|patch/i.test(event.title)) && (
+                          <button
+                            type="button"
+                            className="oc-step-view-diff"
+                            onClick={() => {
+                              const fileToOpen = event.filePath || message?.edits?.[0]?.file;
+                              if (fileToOpen) {
+                                vscode.postMessage({
+                                  type: "openDiff",
+                                  file: fileToOpen,
+                                });
+                              }
+                            }}
+                          >
+                            View diff
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             );
           }
@@ -1618,24 +1695,38 @@ export function ErrorBanner({
   message: string;
   onRetry?: () => void;
 }) {
+  const errorDetails =
+    typeof message === "string" && message.trim().length > 0
+      ? message.trim()
+      : "Unknown error";
+
   return (
     <div className="mb-4 px-4">
-      <div className="flex flex-col gap-2 rounded-lg border border-oc-red/30 bg-oc-red/5 p-3 text-oc-sm text-oc-red shadow-sm transition-all duration-200">
-        <div className="flex items-center gap-2">
-          <AlertCircle className="h-4 w-4 shrink-0 text-oc-red/80" />
-          <span className="text-xs font-semibold tracking-tight">
-            Generation failed
+      <div className="flex flex-col gap-2.5 rounded-xl border border-[#dc262680] bg-[#7f1d1d26] p-3.5 text-oc-sm text-[#fee2e2] shadow-[0_8px_24px_rgba(127,29,29,0.22)] transition-all duration-200">
+        <div className="flex items-center gap-2.5">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[#ef444480] bg-[#ef444426]">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-[#fca5a5]" />
+          </span>
+          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#fca5a5]">
+            Request failed
           </span>
         </div>
-        <div className="overflow-hidden py-0.5 text-oc-xs leading-relaxed text-oc-red/80 opacity-90 whitespace-pre-wrap break-words">
-          {message}
+
+        <div className="rounded-md border border-[#ef444440] bg-[#450a0a59] px-2.5 py-2">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#fca5a5]">
+            Error message
+          </div>
+          <div className="overflow-hidden text-oc-xs leading-relaxed text-[#fee2e2] whitespace-pre-wrap break-words">
+            {errorDetails}
+          </div>
         </div>
+
         {onRetry && (
           <div className="flex justify-start">
             <button
               type="button"
               onClick={onRetry}
-              className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-oc-red/20 bg-oc-red/10 px-3 py-1.5 text-oc-xs font-medium text-oc-red transition-all hover:bg-oc-red/20 active:scale-95"
+              className="mt-0.5 inline-flex items-center gap-1.5 rounded-md border border-[#ef444480] bg-[#ef444426] px-3 py-1.5 text-oc-xs font-medium text-[#fecaca] transition-all hover:bg-[#ef444440] active:scale-95"
             >
               <RotateCw className="h-3.5 w-3.5" />
               <span>Retry</span>

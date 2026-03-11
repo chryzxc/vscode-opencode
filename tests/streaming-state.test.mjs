@@ -212,7 +212,7 @@ test('getAgentName helper provides type-safe agent name extraction', () => {
 
   assert.match(
     functionBody,
-    /'agent'\s+in\s+message/,
+    /["']agent["']\s+in\s+message/,
     'Should check message.agent property existence (backwards compatibility)'
   );
 
@@ -247,7 +247,7 @@ test('getTokenInfo helper provides type-safe token extraction', () => {
   // Check that the function has the right return type
   assert.match(
     messageComponentsSource,
-    /function getTokenInfo\([^)]*\)[^{]*:\s*{\s*input\?\s*:\s*number/,
+    /function getTokenInfo\([^)]*\)[\s\S]*?\{\s*input\?\s*:\s*number/,
     'getTokenInfo should have correct return type'
   );
 
@@ -268,7 +268,7 @@ test('getTokenInfo helper provides type-safe token extraction', () => {
   // Check for backwards compatibility using 'in' operator
   assert.match(
     messageComponentsSource,
-    /'tokens'\s+in\s+message/,
+    /["']tokens["']\s+in\s+message/,
     'Should check for tokens property existence (backwards compatibility)'
   );
 });
@@ -312,14 +312,14 @@ test('getDuration helper provides type-safe duration extraction', () => {
   // Check for property existence before accessing
   assert.match(
     functionBody,
-    /'duration'\s+in\s+\w+/,
+    /["']duration["']\s+in\s+\w+/,
     'Should use "in" operator to check property existence'
   );
 
   // Check for defensive timing.duration access
   assert.match(
     functionBody,
-    /message\.timing\s*&&\s*['"]duration['"]\s+in\s+message\.timing/,
+    /message\.timing\s*&&\s*["']duration["']\s+in\s+message\.timing/,
     'Should check timing exists before accessing timing.duration'
   );
 });

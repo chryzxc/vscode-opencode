@@ -91,3 +91,31 @@ test('Assistant responses include dedicated enter transition classes', () => {
   assert.match(chatCssSource, /\.oc-assistant-response-enter\s*\{[\s\S]*assistant-response-in/, 'chat css should define animation for completed assistant responses');
   assert.match(chatCssSource, /\.oc-assistant-streaming-enter\s*\{[\s\S]*assistant-streaming-in/, 'chat css should define animation for streaming assistant responses');
 });
+
+test('normalizeMessage extracts edits from patch parts when edits are missing', () => {
+  const normalizeBody = extractFunctionBody(
+    messageHandlerSource,
+    'function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined',
+  );
+
+  assert.match(
+    normalizeBody,
+    /if\s*\(!Array\.isArray\(normalized\.edits\)\s*\|\|\s*normalized\.edits\.length\s*===\s*0\)/,
+    'normalizeMessage should only derive edits from patch parts when edits are missing',
+  );
+  assert.match(
+    normalizeBody,
+    /asString\(rec\.type\)\.toLowerCase\(\)\s*!==\s*['"]patch['"]/,
+    'normalizeMessage should filter parts by patch type when deriving edits',
+  );
+  assert.match(
+    normalizeBody,
+    /Array\.isArray\(rec\.files\)\s*\?\s*rec\.files\s*:\s*\[\]/,
+    'normalizeMessage should read files from patch part files array',
+  );
+  assert.match(
+    normalizeBody,
+    /normalized\.edits\s*=\s*fromParts/,
+    'normalizeMessage should assign derived patch files into normalized.edits',
+  );
+});

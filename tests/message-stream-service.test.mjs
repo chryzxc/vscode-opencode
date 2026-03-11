@@ -12,35 +12,24 @@ const chatProviderSource = readSource(
   'ChatViewProvider.ts',
 );
 
-test('MessageStreamService implements SSE streaming with fetch-based approach', () => {
-  // Verify the service uses fetch API instead of EventSource for custom headers support
+test('MessageStreamService implements SSE streaming using SDK', () => {
+  // Verify the service subscribes to primary and fallback SDK event channels.
   assert.match(messageStreamSource, /async startListening\(\): Promise<void>/, 'MessageStreamService should expose startListening method');
-  assert.match(messageStreamSource, /const response = await fetch\(eventUrl/, 'startListening should use fetch API for SSE connection');
-  assert.match(messageStreamSource, /headers:\s*\{[\s\S]*Accept:\s*"text\/event-stream"/, 'fetch should set Accept header for event-stream');
-});
-
-test('MessageStreamService parses SSE protocol with buffer management', () => {
-  // Verify SSE protocol parsing: data: prefix extraction and JSON parsing
   const listenBody = extractFunctionBody(messageStreamSource, 'async startListening(): Promise<void>');
 
-  assert.match(listenBody, /const decoder = new TextDecoder\(\)/, 'startListening should use TextDecoder for binary stream decoding');
-  assert.match(listenBody, /let buffer = ""/, 'startListening should maintain buffer for incomplete chunks');
-  assert.match(listenBody, /buffer \+= decoder\.decode\(value,\s*\{\s*stream:\s*true\s*\}\)/, 'startListening should append decoded chunks to buffer');
-  assert.match(listenBody, /const lines = buffer\.split\("\\n"\)/, 'startListening should split buffer by newlines');
-  assert.match(listenBody, /buffer = lines\.pop\(\)/, 'startListening should keep last incomplete line in buffer');
-  assert.match(listenBody, /if\s*\(line\.startsWith\("data: "\)\)/, 'startListening should check for data: prefix');
-  assert.match(listenBody, /const data = JSON\.parse\(line\.substring\(6\)\)/, 'startListening should parse JSON after data: prefix');
-  assert.match(listenBody, /this\.notifyCallbacks\(data\)/, 'startListening should dispatch parsed events to callbacks');
-});
-
-test('MessageStreamService implements buffer overflow protection', () => {
-  // Verify protection against unbounded buffer growth from malformed SSE
-  const listenBody = extractFunctionBody(messageStreamSource, 'async startListening(): Promise<void>');
-
-  assert.match(listenBody, /if\s*\(buffer\.length > 1_000_000\)/, 'startListening should check buffer size exceeds 1MB');
-  assert.match(listenBody, /buffer = buffer\.slice\(-500_000\)/, 'startListening should trim buffer to 500KB when oversized');
-  assert.match(listenBody, /oversizedBufferWarned/, 'startListening should track warning state to avoid duplicate logs');
-  assert.match(listenBody, /console\.warn\(\s*"\[MessageStreamService\] SSE buffer exceeded 1MB/, 'startListening should warn about oversized buffer');
+  assert.match(listenBody, /const client = await this\.serverManager\.ensureRunning\(\)/, 'startListening should get client from server manager');
+  assert.match(listenBody, /vscode\.workspace\.workspaceFolders/, 'startListening should read workspace directory for event subscription');
+  assert.match(listenBody, /replace\(\/\\\\\/g,\s*["']\/["']\)\s*\.replace\(\/\\\/\+\$\/,\s*["']['"]\)/, 'startListening should normalize workspace path before stream query');
+  assert.match(listenBody, /client\.event\.subscribe\(eventSubscribeOptions\)/, 'startListening should subscribe to /event channel with scoped query options');
+  assert.match(listenBody, /query:\s*\{\s*directory:\s*workspaceDirectory\s*\}/, 'startListening should scope /event subscription to workspace directory when available');
+  assert.match(listenBody, /onSseEvent:\s*\(sseEvent:\s*unknown\)\s*=>/, 'startListening should attach SSE frame logging callback');
+  assert.match(listenBody, /\/event SSE frame/, 'startListening should log raw \/event frames for diagnostics');
+  assert.match(listenBody, /Scoped \/event subscription failed, retrying without directory query/, 'startListening should fall back to unscoped /event subscription for compatibility');
+  assert.match(listenBody, /client\.global\.event\(/, 'startListening should subscribe to /global/event fallback when available');
+  assert.match(listenBody, /\/global\/event SSE frame/, 'startListening should log raw \/global\/event frames for diagnostics');
+  assert.match(listenBody, /this\.consumeEventStream\(\s*events\.stream,\s*"\/event"/, 'startListening should consume the /event stream');
+  assert.match(listenBody, /this\.consumeEventStream\(\s*globalEvents\.stream,\s*"\/global\/event"/, 'startListening should consume the /global/event stream');
+  assert.match(listenBody, /Promise\.allSettled\(streamTasks\)/, 'startListening should keep both stream loops active together');
 });
 
 test('MessageStreamService implements subscriber pattern with auto-lifecycle', () => {
@@ -60,7 +49,7 @@ test('MessageStreamService handles abort and auto-reconnect on errors', () => {
   // Verify proper handling of AbortError and network errors with reconnection
   const listenBody = extractFunctionBody(messageStreamSource, 'async startListening(): Promise<void>');
 
-  assert.match(listenBody, /if\s*\(error\.name === "AbortError"\)/, 'startListening should detect AbortError');
+  assert.match(listenBody, /if\s*\(error\.name === "AbortError" \|\| abortSignal\.aborted\)/, 'startListening should detect AbortError');
   assert.match(listenBody, /console\.log\("\[MessageStreamService\] Listening aborted"\)/, 'startListening should log aborts without error');
   assert.match(listenBody, /catch\s*\(error: any\)/, 'startListening should catch general errors');
   assert.match(listenBody, /console\.error\("\[MessageStreamService\] SSE stream error:"/, 'startListening should log stream errors');
@@ -86,8 +75,8 @@ test('MessageStreamService uses AbortController for proper cancellation', () => 
   const stopBody = extractFunctionBody(messageStreamSource, 'stopListening(): void');
 
   assert.match(startBody, /this\.abortController = new AbortController\(\)/, 'startListening should create new AbortController');
-  assert.match(startBody, /signal:\s*this\.abortController\.signal/, 'fetch should use AbortController signal');
-  assert.match(stopBody, /this\.abortController\.abort\(\)/, 'stopListening should abort the fetch request');
+  assert.match(startBody, /abortSignal\.aborted/, 'startListening should check abortSignal.aborted within loop');
+  assert.match(stopBody, /this\.abortController\.abort\(\)/, 'stopListening should abort the controller');
   assert.match(stopBody, /this\.abortController = null/, 'stopListening should clear abortController reference');
 });
 
@@ -100,6 +89,79 @@ test('MessageStreamService notifies all callbacks with error isolation', () => {
   assert.match(notifyBody, /try\s*\{[\s\S]*callback\(event\)/, 'notifyCallbacks should call callback in try block');
   assert.match(notifyBody, /catch\s*\(error\)/, 'notifyCallbacks should catch callback errors');
   assert.match(notifyBody, /console\.error\("Callback error:"/, 'notifyCallbacks should log but continue on error');
+});
+
+test('MessageStreamService normalizes GlobalEvent wrappers from SDK', () => {
+  const normalizeBody = extractFunctionBody(
+    messageStreamSource,
+    'private normalizeIncomingEvent(rawEvent: unknown): StreamEvent | null',
+  );
+
+  assert.match(
+    normalizeBody,
+    /const payload = this\.asRecord\(eventRecord\.payload\)/,
+    'normalizeIncomingEvent should inspect GlobalEvent payload wrappers',
+  );
+  assert.match(
+    normalizeBody,
+    /const data = this\.asRecord\(eventRecord\.data\)/,
+    'normalizeIncomingEvent should inspect direct data wrappers',
+  );
+  assert.match(
+    normalizeBody,
+    /const nestedPayload = this\.asRecord\(payload\?\.payload\)/,
+    'normalizeIncomingEvent should inspect nested payload wrappers',
+  );
+  assert.match(
+    normalizeBody,
+    /const nestedData = this\.asRecord\(payload\?\.data\)/,
+    'normalizeIncomingEvent should inspect nested data wrappers',
+  );
+});
+
+test('MessageStreamService filters global events to active workspace and dedupes mirrored events', () => {
+  const source = messageStreamSource;
+
+  assert.match(
+    source,
+    /private isEventInWorkspaceDirectory\(/,
+    'service should include workspace-aware directory filtering',
+  );
+  assert.match(
+    source,
+    /private isDuplicateEvent\(/,
+    'service should include duplicate suppression for mirrored streams',
+  );
+  assert.match(
+    source,
+    /private getEventSignature\(/,
+    'service should compute event signatures for dedupe checks',
+  );
+  assert.match(
+    source,
+    /Ignoring event from .* directory mismatch/,
+    'service should log when events are dropped by workspace directory filtering',
+  );
+  assert.match(
+    source,
+    /Dropped duplicate event/,
+    'service should log duplicate suppression decisions for non-heartbeat events',
+  );
+  assert.match(
+    source,
+    /source\?: string/,
+    'dedupe cache entries should retain stream source metadata',
+  );
+  assert.match(
+    source,
+    /return previousSeen\.source !== source;/,
+    'dedupe should only collapse mirrored events coming from different stream sources',
+  );
+  assert.match(
+    source,
+    /source,\s*\n\s*\}\s*as StreamEvent/,
+    'service should annotate events with stream source before callback notification',
+  );
 });
 
 test('ChatViewProvider integrates MessageStreamService for event streaming', () => {

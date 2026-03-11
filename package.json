@@ -143,8 +143,8 @@
     "watch": "node esbuild.config.js --watch",
     "webview:build": "npm --prefix webview/shared run build",
     "webview:watch": "npm --prefix webview/shared run build -- --watch",
-    "test": "node --test tests/*.test.mjs tests/webview/*.test.mjs",
-    "test:webview-regression": "node --test tests/*.test.mjs tests/webview/*.test.mjs",
+    "test": "node --test tests/**/*.test.mjs",
+    "test:webview-regression": "node --test tests/**/*.test.mjs",
     "lint": "eslint src --ext ts"
   },
   "devDependencies": {

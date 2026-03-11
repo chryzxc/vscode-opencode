@@ -4,6 +4,7 @@ import type {
   Agent,
   AppState,
   AttachmentItem,
+  BudgetInfo,
   InteractiveEvent,
   LspServerInfo,
   McpServerInfo,
@@ -20,18 +21,18 @@ import type {
   SubagentDetail,
   SubagentSummary,
   StreamingState,
-  StreamingStep
-} from './types';
+  StreamingStep,
+} from "./types";
 
 export const initialState: AppState = {
   selectedFiles: [],
   selectedContexts: [],
   availableModels: [],
   selectedModel: null,
-  modelSearchQuery: '',
+  modelSearchQuery: "",
   availableAgents: [],
-  selectedAgent: '',
-  agentSearchQuery: '',
+  selectedAgent: "",
+  agentSearchQuery: "",
   isProcessing: false,
   currentSessionId: null,
   messages: [],
@@ -46,33 +47,33 @@ export const initialState: AppState = {
     output: 0,
     read: 0,
     write: 0,
-    duration: 0
+    duration: 0,
   },
   sessionsStatsById: {},
   streaming: null,
-  inputValue: '',
+  inputValue: "",
   fileSuggestions: [],
   showFileSuggestions: false,
   selectedSuggestionIndex: 0,
   receivedInitState: false,
-  serverStatus: 'connecting',
+  serverStatus: "connecting",
   modelDropdownOpen: false,
   agentDropdownOpen: false,
   thinkingDropdownOpen: false,
   errorMessages: [],
-  quotaData: null,
+  quotaData: undefined,
   quotaIsRefreshing: false,
   attachments: [],
-  thinkingLevel: 'medium',
+  thinkingLevel: "medium",
   todoItems: [],
   subagentsByParentMessageId: {},
   subagentDetailsById: {},
   selectedSubagentId: null,
   subagentsPanelOpen: true,
   interactiveEvents: [],
-  budgetInfo: null,
+  budgetInfo: undefined,
   mcpServers: [],
-  lspServers: []
+  lspServers: [],
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
@@ -89,9 +90,9 @@ export type AppAction =
   | { type: "SET_SESSION_ID"; payload: string | null }
   | { type: "SET_SERVER_STATUS"; payload: string }
   | {
-    type: "SET_SELECTED_MODEL";
-    payload: { providerID: string; modelID: string } | null;
-  }
+      type: "SET_SELECTED_MODEL";
+      payload: { providerID: string; modelID: string } | null;
+    }
   | { type: "SET_MODELS_LIST"; payload: Model[] }
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
@@ -111,9 +112,9 @@ export type AppAction =
   | { type: "UPDATE_STREAMING_STEP"; payload: StreamingStepUpdatePayload }
   | { type: "ADD_STREAMING_EDIT"; payload: string }
   | {
-    type: "FINISH_STREAMING";
-    payload?: { usage?: { total: number; duration?: number } };
-  }
+      type: "FINISH_STREAMING";
+      payload?: { usage?: { total: number; duration?: number } };
+    }
   | { type: "SET_INPUT_VALUE"; payload: string }
   | { type: "SET_FILE_SUGGESTIONS"; payload: FileResult[] }
   | { type: "SET_SHOW_FILE_SUGGESTIONS"; payload: boolean }
@@ -139,14 +140,14 @@ export type AppAction =
   | { type: "SET_THINKING_LEVEL"; payload: ThinkingLevel }
   | { type: "SET_TODO_ITEMS"; payload: TodoItem[] }
   | {
-    type: "UPDATE_TODO_ITEM";
-    payload: { id: string; patch: Partial<TodoItem> };
-  }
+      type: "UPDATE_TODO_ITEM";
+      payload: { id: string; patch: Partial<TodoItem> };
+    }
   | { type: "ADD_TODO_ITEM"; payload: TodoItem }
   | {
-    type: "UPSERT_SUBAGENT_SUMMARIES";
-    payload: Record<string, SubagentSummary[]>;
-  }
+      type: "UPSERT_SUBAGENT_SUMMARIES";
+      payload: Record<string, SubagentSummary[]>;
+    }
   | { type: "UPSERT_SUBAGENT_DETAIL"; payload: Record<string, SubagentDetail> }
   | { type: "SELECT_SUBAGENT"; payload: string | null }
   | { type: "SET_SUBAGENTS_PANEL_OPEN"; payload: boolean }
@@ -155,7 +156,8 @@ export type AppAction =
   | { type: "DISMISS_INTERACTIVE_EVENT"; payload: string }
   | { type: "SET_BUDGET_INFO"; payload: import("./types").BudgetInfo | null }
   | { type: "SET_MCP_SERVERS"; payload: McpServerInfo[] }
-  | { type: "SET_LSP_SERVERS"; payload: LspServerInfo[] };
+  | { type: "SET_LSP_SERVERS"; payload: LspServerInfo[] }
+  | { type: "SET_SERVER_VERSION"; payload: string | undefined };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   return {
@@ -165,6 +167,18 @@ function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
     write: current.write + next.write,
     duration: current.duration + next.duration
   };
+}
+
+const MAX_STREAMING_REASONING_EVENTS = 300;
+const MAX_STREAMING_STEPS = 400;
+const MAX_STREAMING_PROGRESS_EVENTS = 1000;
+const MAX_STREAMING_EDITS = 300;
+
+function appendWithCap<T>(items: T[], next: T, maxItems: number): T[] {
+  if (items.length >= maxItems) {
+    return [...items.slice(items.length - maxItems + 1), next];
+  }
+  return [...items, next];
 }
 
 export function appReducer(state: AppState, action: AppAction): AppState {
@@ -185,6 +199,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "SET_SERVER_STATUS":
       return { ...state, serverStatus: action.payload };
+    case "SET_SERVER_VERSION":
+      return { ...state, serverVersion: action.payload };
     case "SET_SELECTED_MODEL":
       return { ...state, selectedModel: action.payload };
     case "SET_MODELS_LIST":
@@ -288,13 +304,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_STREAMING":
       return action.payload
         ? {
-          ...state,
-          streaming: {
-            ...action.payload,
-            reasoningEvents: action.payload.reasoningEvents ?? [],
-            progressEvents: action.payload.progressEvents ?? [],
-          },
-        }
+            ...state,
+            streaming: {
+              ...action.payload,
+              reasoningEvents: action.payload.reasoningEvents ?? [],
+              progressEvents: action.payload.progressEvents ?? [],
+            },
+          }
         : { ...state, streaming: null };
     case "UPDATE_STREAMING_CONTENT": {
       if (!state.streaming) {
@@ -325,10 +341,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const chunk = action.payload.reasoning.trim();
       const reasoningEvents =
         chunk.length > 0
-          ? [
-            ...state.streaming.reasoningEvents,
-            { text: chunk, createdAt: Date.now() },
-          ]
+          ? appendWithCap(
+              state.streaming.reasoningEvents,
+              { text: chunk, createdAt: Date.now() },
+              MAX_STREAMING_REASONING_EVENTS,
+            )
           : state.streaming.reasoningEvents;
       return {
         ...state,
@@ -344,11 +361,16 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         streaming: {
           ...state.streaming,
-          steps: [...state.streaming.steps, stampedStep],
-          progressEvents: [
-            ...state.streaming.progressEvents,
+          steps: appendWithCap(
+            state.streaming.steps,
+            stampedStep,
+            MAX_STREAMING_STEPS,
+          ),
+          progressEvents: appendWithCap(
+            state.streaming.progressEvents,
             { ...stampedStep },
-          ],
+            MAX_STREAMING_PROGRESS_EVENTS,
+          ),
         },
       };
     }
@@ -360,11 +382,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         typeof action.payload.index === "number"
           ? action.payload.index
           : state.streaming.steps.findIndex(
-            (step) =>
-              (action.payload.id && step.id === action.payload.id) ||
-              (action.payload.callID &&
-                step.callID === action.payload.callID),
-          );
+              (step) =>
+                (action.payload.id && step.id === action.payload.id) ||
+                (action.payload.callID &&
+                  step.callID === action.payload.callID),
+            );
       if (idx < 0) {
         return state;
       }
@@ -375,10 +397,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         streaming: {
           ...state.streaming,
           steps,
-          progressEvents: [
-            ...state.streaming.progressEvents,
+          progressEvents: appendWithCap(
+            state.streaming.progressEvents,
             { ...steps[idx] },
-          ],
+            MAX_STREAMING_PROGRESS_EVENTS,
+          ),
         },
       };
     }
@@ -386,11 +409,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (!state.streaming) {
         return state;
       }
+      if (state.streaming.edits.includes(action.payload)) {
+        return state;
+      }
       return {
         ...state,
         streaming: {
           ...state.streaming,
-          edits: [...state.streaming.edits, action.payload],
+          edits: appendWithCap(
+            state.streaming.edits,
+            action.payload,
+            MAX_STREAMING_EDITS,
+          ),
         },
       };
     }

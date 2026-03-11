@@ -36,26 +36,26 @@ test('AssistantMessage renders diff stats when present', () => {
   // Verify rendering of added lines
   assert.match(
     messageComponentsSource,
-    /event\.diffStats\.added\s*>\s*0\s*&&\s*\([\s\S]*?\s*<span.*>\+{event\.diffStats\.added}<\/span>[\s\S]*?\)/,
+    /event\.diffStats\.added\s*>\s*0\s*&&\s*\([\s\S]*?<span[^>]*>[\s\S]*?\+{event\.diffStats\.added}[\s\S]*?<\/span>[\s\S]*?\)/,
     'Should render +N for added lines'
   );
 
   // Verify rendering of deleted lines
   assert.match(
     messageComponentsSource,
-    /event\.diffStats\.deleted\s*>\s*0\s*&&\s*\([\s\S]*?\s*<span.*>-{event\.diffStats\.deleted}<\/span>[\s\S]*?\)/,
+    /event\.diffStats\.deleted\s*>\s*0\s*&&\s*\([\s\S]*?<span[^>]*>[\s\S]*?-{event\.diffStats\.deleted}[\s\S]*?<\/span>[\s\S]*?\)/,
     'Should render -M for deleted lines'
   );
 
   assert.match(
     messageComponentsSource,
-    /text-oc-green.*event\.diffStats\.added/,
+    /text-oc-green[\s\S]*?event\.diffStats\.added/,
     'Added lines should use green text'
   );
 
   assert.match(
     messageComponentsSource,
-    /text-oc-red.*event\.diffStats\.deleted/,
+    /text-oc-red[\s\S]*?event\.diffStats\.deleted/,
     'Deleted lines should use red text'
   );
 });

@@ -32,7 +32,7 @@ test('diffStats are rendered in progress events', () => {
 });
 
 test('AssistantMessage component types subagent data to SubagentDetail', () => {
-  assert.match(messageSource, /const\s+detailData\s*=\s*\(subagentDetailsById\[selected\.id\]\s+as\s+SubagentDetail\s*\|\s*undefined\)\s*\|\|/, 'Should normalize selected detailData to SubagentDetail shape');
+  assert.match(messageSource, /const\s+detailData\s*=\s*\(subagentDetailsById\[selected\.id\]\s+as\s*\|?\s*SubagentDetail\s*\|\s*undefined\)\s*\|\|/, 'Should normalize selected detailData to SubagentDetail shape');
   const modalSource = readSource(
     [joinFromRoot('webview', 'shared', 'src', 'chat', 'SubagentDetailModal.tsx')],
     'SubagentDetailModal.tsx',

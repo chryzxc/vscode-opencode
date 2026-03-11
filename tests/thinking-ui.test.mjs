@@ -47,10 +47,16 @@ test("MessageComponents declares hasStreamingActivity and guards 'Thinking...' U
         'Expected hasStreamingActivity to check streaming.steps',
     );
 
+    assert.match(
+        messageComponentsSource,
+        /subagents\.length > 0/,
+        'Expected hasStreamingActivity to check streaming subagent activity',
+    );
+
     // Ensure showStreamingLoading uses the negation of the guard
     assert.match(
         messageComponentsSource,
-        /const showStreamingLoading = !message && !!streaming\?\.isActive && !hasStreamingActivity;/,
+        /const showStreamingLoading\s*=\s*!message && !!streaming\?\.isActive && !hasStreamingActivity;/,
         "Expected showStreamingLoading to hide 'Thinking...' when streaming has activity",
     );
 });

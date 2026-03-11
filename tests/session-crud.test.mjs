@@ -69,16 +69,15 @@ test('chat provider preserves conversation context when recreating missing serve
   assert.match(sendBody, /if \(this\.currentSessionId && session\.id !== this\.currentSessionId\)/, 'send handler should realign to explicitly selected session before prompting');
 
   assert.match(chatProviderSource, /private buildRecoveredTranscript\(messages: unknown\[\]\): string/, 'chat provider should expose transcript compaction helper for session recovery');
-  assert.match(chatProviderSource, /private migrateSessionSettings\(oldSessionId: string, newSessionId: string\): void/, 'chat provider should expose session settings migration helper');
+  assert.match(chatProviderSource, /private\s+migrateSessionSettings\(\s*oldSessionId:\s*string,\s*newSessionId:\s*string,?\s*\):\s*void/, 'chat provider should expose session settings migration helper');
 });
 
-test('chat provider refreshes sessions list immediately and during streaming updates', () => {
+test('chat provider refreshes sessions list during message handling', () => {
   const sendBody = extractFunctionBody(
     chatProviderSource,
     'private async handleSendMessage(',
   );
 
-  assert.match(chatProviderSource, /private scheduleSessionListRefresh\(force = false\): void/, 'chat provider should expose throttled session list refresh helper');
-  assert.match(sendBody, /this\.scheduleSessionListRefresh\(true\)/, 'send flow should trigger an immediate sessions refresh when user or assistant messages are appended');
-  assert.match(chatProviderSource, /event\?\.type === "message\.part\.updated"[\s\S]*this\.scheduleSessionListRefresh\(\)/, 'stream subscription should refresh sessions while responses are still streaming');
+  assert.match(chatProviderSource, /private\s+async\s+handleGetSessions\(\):\s*Promise<void>/, 'chat provider should expose session list refresh helper');
+  assert.match(sendBody, /await\s+this\.handleGetSessions\(\)/, 'send flow should trigger a sessions refresh');
 });

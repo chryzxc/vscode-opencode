@@ -29,6 +29,17 @@ import {
   validateStructuredOutput,
 } from "./structuredOutputValidator";
 
+const STREAM_DEBUG_ENABLED =
+  typeof window !== "undefined" &&
+  (window as unknown as { __OPENCODE_STREAM_DEBUG__?: boolean })
+    .__OPENCODE_STREAM_DEBUG__ === true;
+
+function streamDebug(...args: unknown[]): void {
+  if (STREAM_DEBUG_ENABLED) {
+    console.debug(...args);
+  }
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -99,6 +110,26 @@ function sanitizeReasoningChunk(value: string): string {
     return '';
   }
   return value;
+}
+
+function normalizePartType(value: unknown): string {
+  const raw = asString(value).trim().toLowerCase();
+  if (!raw) {
+    return "";
+  }
+  if (raw === "thinking" || raw === "thought") {
+    return "reasoning";
+  }
+  if (raw === "stepstart" || raw === "step_start") {
+    return "step-start";
+  }
+  if (raw === "stepfinish" || raw === "step_finish") {
+    return "step-finish";
+  }
+  if (raw === "toolcall" || raw === "tool_call" || raw === "tool-call") {
+    return "tool";
+  }
+  return raw;
 }
 
 type StructuredProgressUpdate = {
@@ -500,6 +531,11 @@ function inferredStepTitle(part: UnknownRecord): string {
     return title;
   }
 
+  const description = asString(part.description).trim();
+  if (description && !isOpaqueIdLike(description)) {
+    return description;
+  }
+
   const snapshot = asString(part.snapshot).trim();
   if (
     snapshot &&
@@ -515,7 +551,30 @@ function inferredStepTitle(part: UnknownRecord): string {
     return meta;
   }
 
-  return 'Thinking...';
+  const partType = normalizePartType(part.type);
+  if (partType === "subtask") {
+    return "Starting subtask";
+  }
+  if (partType === "agent") {
+    return "Assigning agent";
+  }
+  if (partType === "step-start") {
+    return "Starting step";
+  }
+  if (partType === "step-finish") {
+    return "Finishing step";
+  }
+  if (partType === "patch") {
+    return "Applying patch";
+  }
+  if (partType === "tool") {
+    return "Running tool";
+  }
+  if (partType) {
+    return `Processing ${partType}`;
+  }
+
+  return "Working...";
 }
 
 function shouldBootstrapStreamingFromPart(part: UnknownRecord | null): boolean {
@@ -523,14 +582,16 @@ function shouldBootstrapStreamingFromPart(part: UnknownRecord | null): boolean {
     return false;
   }
 
-  const partType = asString(part.type).toLowerCase();
+  const partType = normalizePartType(part.type);
   // Include text parts to bootstrap streaming for regular content chunks
   if (
     partType === "reasoning" ||
     partType === "step-start" ||
     partType === "tool" ||
     partType === "patch" ||
-    partType === "text"
+    partType === "text" ||
+    partType === "subtask" ||
+    partType === "agent"
   ) {
     return true;
   }
@@ -543,13 +604,81 @@ function shouldBootstrapStreamingFromPart(part: UnknownRecord | null): boolean {
 }
 
 function isReasoningPart(part: UnknownRecord): boolean {
-  const type = asString(part.type).toLowerCase();
+  const type = normalizePartType(part.type);
   return (
     type === 'reasoning' ||
     typeof part.reasoning !== 'undefined' ||
     typeof part.thought !== 'undefined' ||
     typeof part.thinking !== 'undefined'
   );
+}
+
+function upsertStreamingStep(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  step: StreamingStep,
+): void {
+  const title = step.title.trim();
+  if (!title) {
+    return;
+  }
+
+  const streaming = getState().streaming;
+  if (!streaming) {
+    dispatch({
+      type: "ADD_STREAMING_STEP",
+      payload: {
+        ...step,
+        title,
+      },
+    });
+    return;
+  }
+
+  const titleKey = title.toLowerCase();
+  const idx = streaming.steps.findIndex(
+    (candidate) =>
+      (step.id && candidate.id === step.id) ||
+      (step.callID && candidate.callID === step.callID) ||
+      candidate.title.trim().toLowerCase() === titleKey,
+  );
+
+  if (idx < 0) {
+    dispatch({
+      type: "ADD_STREAMING_STEP",
+      payload: {
+        ...step,
+        title,
+      },
+    });
+    return;
+  }
+
+  const current = streaming.steps[idx];
+  let nextStatus = step.status;
+  if (
+    (current.status === "done" || current.status === "error") &&
+    step.status === "pending"
+  ) {
+    nextStatus = current.status;
+  }
+
+  dispatch({
+    type: "UPDATE_STREAMING_STEP",
+    payload: {
+      index: idx,
+      patch: {
+        title,
+        type: step.type || current.type,
+        status: nextStatus || current.status,
+        meta: step.meta || current.meta,
+        filePath: step.filePath || current.filePath,
+        diffStats: step.diffStats || current.diffStats,
+        duration:
+          typeof step.duration === "number" ? step.duration : current.duration,
+      },
+    },
+  });
 }
 
 function contentFromParts(parts: unknown[]): string {
@@ -683,7 +812,24 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   const parts = Array.isArray(rec.parts) ? rec.parts : [];
   const mergedParts = [...parts];
   const currentReasoning = reasoningFromParts(mergedParts);
-  if (streaming?.reasoning && !currentReasoning) {
+  const directReasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
+  const directReasoningChunks = Array.isArray(directReasoningRaw)
+    ? directReasoningRaw
+        .map((item) => asRichString(item).trim())
+        .filter((item) => item.length > 0)
+    : typeof directReasoningRaw !== "undefined"
+      ? [asRichString(directReasoningRaw).trim()].filter((item) => item.length > 0)
+      : [];
+  if (directReasoningChunks.length > 0 && !currentReasoning) {
+    for (const chunk of directReasoningChunks) {
+      mergedParts.push({
+        type: "reasoning",
+        reasoning: chunk,
+      });
+    }
+  }
+  const hasReasoningAfterDirect = reasoningFromParts(mergedParts);
+  if (streaming?.reasoning && !hasReasoningAfterDirect) {
     mergedParts.push({
       type: 'reasoning',
       reasoning: streaming.reasoning
@@ -738,12 +884,18 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     for (const part of mergedParts) {
       const rec = asRecord(part);
       if (!rec || asString(rec.type).toLowerCase() !== 'tool') continue;
+      const tool = asString(rec.tool);
+      if (
+        tool.toLowerCase().includes("structuredoutput") ||
+        tool.toLowerCase().includes("structured_output")
+      )
+        continue;
+      
       const callID = asString(rec.callID);
       if (callID) {
         if (seenCallIds.has(callID)) continue;
         seenCallIds.add(callID);
       }
-      const tool = asString(rec.tool);
       const stateRec = asRecord(rec.state);
       const inputRec = asRecord(stateRec?.['input']);
       const filePath =
@@ -1458,12 +1610,17 @@ function handleStreamEvent(
   payload: UnknownRecord
 ): void {
   const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
+  const isPartUpdateEvent = eventType.startsWith("message.part.");
+  const normalizedEventType = isPartUpdateEvent ? "message.part.updated" : eventType;
   const state = getState();
   const current = state.streaming;
   const properties = asRecord(payload.properties);
   const partRecord = asRecord(properties?.part);
   const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
-  const eventPart = asRecord(payload.part) ?? partRecord ?? (eventType === 'message.part.updated' ? asRecord(properties) : null);
+  const eventPart =
+    asRecord(payload.part) ??
+    partRecord ??
+    (isPartUpdateEvent ? asRecord(properties) : null);
   const structuredRecord = asRecord(payload.structured);
   const structuredKind = asString(structuredRecord?.kind).toLowerCase();
   const structuredText = asString(structuredRecord?.text);
@@ -1495,13 +1652,24 @@ function handleStreamEvent(
     return;
   }
 
-  const messageId = asString(payload.messageId) || asString(payload.id) || current?.messageId || null;
+  const messageId =
+    asString(payload.messageId) ||
+    asString((payload as UnknownRecord).messageID) ||
+    asString(payload.id) ||
+    asString(properties?.messageId) ||
+    asString(properties?.messageID) ||
+    asString(partRecord?.messageId) ||
+    asString(partRecord?.messageID) ||
+    asString(infoRecord?.id) ||
+    current?.messageId ||
+    null;
   const isExplicitStart = eventType === 'start' || eventType === 'streamStart';
   const isAssistantUpdateStart =
     eventType === 'message.updated' &&
     asString(infoRecord?.role) === 'assistant' &&
     !asBoolean(infoRecord?.finish, false);
-  const canBootstrapFromPart = eventType === 'message.part.updated' && shouldBootstrapStreamingFromPart(eventPart);
+  const canBootstrapFromPart =
+    isPartUpdateEvent && shouldBootstrapStreamingFromPart(eventPart);
 
   // Ignore stray global stream events when neither a request is in progress nor the
   // event carries an explicit lifecycle signal. This prevents phantom "Thinking..." /
@@ -1562,8 +1730,10 @@ function handleStreamEvent(
     });
   }
 
-  switch (eventType) {
-    case 'message.part.updated': {
+  switch (normalizedEventType) {
+    case 'message.part.updated':
+    case 'message.part.added':
+    case 'message.part.created': {
       const properties = asRecord(payload.properties);
       const part = asRecord(payload.part) ?? asRecord(properties?.part) ?? properties;
       if (!part) {
@@ -1571,7 +1741,7 @@ function handleStreamEvent(
         break;
       }
 
-      const partType = asString(part.type).toLowerCase();
+      const partType = normalizePartType(part.type);
       const deltaChunk =
         asRichString(properties?.delta) ||
         asRichString(payload.delta) ||
@@ -1579,7 +1749,13 @@ function handleStreamEvent(
       const reasoningChunk =
         asRichString(part.reasoning) ||
         asRichString(part.thought) ||
-        asRichString(part.thinking);
+        asRichString(part.thinking) ||
+        asRichString(properties?.reasoning) ||
+        asRichString(properties?.thought) ||
+        asRichString(properties?.thinking) ||
+        asRichString(payload.reasoning) ||
+        asRichString(payload.thought) ||
+        asRichString(payload.thinking);
       const textChunk =
         structuredText ||
         deltaChunk ||
@@ -1591,7 +1767,38 @@ function handleStreamEvent(
         partType === "tool" ||
         partType === "step-start" ||
         partType === "step-finish" ||
-        partType === "patch";
+        partType === "patch" ||
+        partType === "subtask" ||
+        partType === "agent";
+
+      if (structuredOutput?.reasoning) {
+        const reasoningEvents = getState().streaming?.reasoningEvents;
+        const latestReasoning =
+          reasoningEvents && reasoningEvents.length > 0
+            ? reasoningEvents[reasoningEvents.length - 1].text
+            : undefined;
+        structuredOutput.reasoning.forEach((chunk) => {
+          const sanitized = sanitizeReasoningChunk(chunk);
+          if (sanitized && sanitized !== latestReasoning) {
+            dispatch({
+              type: "UPDATE_STREAMING_REASONING",
+              payload: { reasoning: sanitized, append: true },
+            });
+          }
+        });
+      }
+
+      if (structuredOutput?.progressUpdates) {
+        structuredOutput.progressUpdates.forEach((update) => {
+          upsertStreamingStep(dispatch, getState, {
+            title: update.title,
+            type: "step",
+            status: update.status ?? "pending",
+            meta: update.meta,
+            filePath: update.filePath,
+          });
+        });
+      }
 
       const isReasoning = structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk;
       if (isReasoning) {
@@ -1621,7 +1828,7 @@ function handleStreamEvent(
           ? stripLeadingUserEcho(textChunk, getState())
           : textChunk;
         if (cleanedChunk) {
-          console.debug("[OpenCode][stream] message.part.updated chunk", {
+          streamDebug("[OpenCode][stream] message.part.updated chunk", {
             messageId,
             eventType,
             partType,
@@ -1636,16 +1843,13 @@ function handleStreamEvent(
       }
 
       if (partType === 'step-start' && structuredKind !== 'thinking') {
-        dispatch({
-          type: 'ADD_STREAMING_STEP',
-          payload: {
-            id: asString(part.id) || undefined,
-            callID: asString(part.callID) || undefined,
-            title: inferredStepTitle(part),
-            type: 'step',
-            status: 'pending',
-            startTime: Date.now()
-          }
+        upsertStreamingStep(dispatch, getState, {
+          id: asString(part.id) || undefined,
+          callID: asString(part.callID) || undefined,
+          title: inferredStepTitle(part),
+          type: 'step',
+          status: 'pending',
+          startTime: Date.now()
         });
       }
 
@@ -1658,17 +1862,14 @@ function handleStreamEvent(
           }
           : undefined;
 
-        dispatch({
-          type: "UPDATE_STREAMING_STEP",
-          payload: {
-            id: asString(part.id) || undefined,
-            callID: asString(part.callID) || undefined,
-            patch: {
-              status: "done",
-              duration: asOptionalNumber(asRecord(part.timing)?.duration),
-              diffStats,
-            },
-          },
+        upsertStreamingStep(dispatch, getState, {
+          id: asString(part.id) || undefined,
+          callID: asString(part.callID) || undefined,
+          title: inferredStepTitle(part),
+          type: "step",
+          status: "done",
+          duration: asOptionalNumber(asRecord(part.timing)?.duration),
+          diffStats,
         });
       }
 
@@ -1706,18 +1907,15 @@ function handleStreamEvent(
           (step) => !!callID && step.callID === callID
         );
         if (!existing) {
-          dispatch({
-            type: "ADD_STREAMING_STEP",
-            payload: {
-              id: asString(part.id) || undefined,
-              callID,
-              title,
-              type: "tool",
-              status: asString(part.status) === "error" ? "error" : "pending",
-              meta: asString(part.meta) || metaValues[0] || undefined,
-              filePath,
-              startTime: Date.now(),
-            },
+          upsertStreamingStep(dispatch, getState, {
+            id: asString(part.id) || undefined,
+            callID,
+            title,
+            type: "tool",
+            status: asString(part.status) === "error" ? "error" : "pending",
+            meta: asString(part.meta) || metaValues[0] || undefined,
+            filePath,
+            startTime: Date.now(),
           });
         } else {
           // Determine the final status for this tool step.
@@ -1736,23 +1934,35 @@ function handleStreamEvent(
                 ? "error"
                 : existing.status; // keep current status if no new info
 
-          dispatch({
-            type: "UPDATE_STREAMING_STEP",
-            payload: {
-              callID,
-              patch: {
-                title,
-                status: resolvedStatus,
-                meta: asString(part.meta) || metaValues[0] || existing.meta,
-                filePath: filePath || existing.filePath,
-              },
-            },
+          upsertStreamingStep(dispatch, getState, {
+            id: asString(part.id) || existing.id,
+            callID,
+            title,
+            type: "tool",
+            status: resolvedStatus,
+            meta: asString(part.meta) || metaValues[0] || existing.meta,
+            filePath: filePath || existing.filePath,
           });
         }
 
         if (filePath) {
           dispatch({ type: 'ADD_STREAMING_EDIT', payload: filePath });
         }
+      }
+
+      if (
+        (partType === "subtask" || partType === "agent") &&
+        structuredKind !== "thinking"
+      ) {
+        upsertStreamingStep(dispatch, getState, {
+          id: asString(part.id) || undefined,
+          callID: asString(part.callID) || undefined,
+          title: inferredStepTitle(part),
+          type: "step",
+          status: normalizeProgressStatus(asString(part.status)),
+          meta: asString(part.meta) || undefined,
+          startTime: Date.now(),
+        });
       }
 
       if (partType === 'patch') {
@@ -1762,6 +1972,23 @@ function handleStreamEvent(
           if (path) {
             dispatch({ type: 'ADD_STREAMING_EDIT', payload: path });
           }
+        });
+      }
+
+      if (
+        structuredKind === "progress" &&
+        !isProgressPartType &&
+        !isReasoning &&
+        partType
+      ) {
+        upsertStreamingStep(dispatch, getState, {
+          id: asString(part.id) || undefined,
+          callID: asString(part.callID) || undefined,
+          title: inferredStepTitle(part),
+          type: "step",
+          status: normalizeProgressStatus(asString(part.status)),
+          meta: asString(part.meta) || undefined,
+          startTime: Date.now(),
         });
       }
 
@@ -1787,15 +2014,12 @@ function handleStreamEvent(
 
         if (structuredOutput.progressUpdates) {
           structuredOutput.progressUpdates.forEach((step) => {
-            dispatch({
-              type: 'ADD_STREAMING_STEP',
-              payload: {
-                title: step.title,
-                type: 'step',
-                status: step.status ?? 'pending',
-                meta: step.meta,
-                filePath: step.filePath
-              }
+            upsertStreamingStep(dispatch, getState, {
+              title: step.title,
+              type: 'step',
+              status: step.status ?? 'pending',
+              meta: step.meta,
+              filePath: step.filePath
             });
           });
         }
@@ -1982,7 +2206,7 @@ function handleStreamEvent(
         if (!cleanedChunk) {
           break;
         }
-        console.debug("[OpenCode][stream] content delta chunk", {
+        streamDebug("[OpenCode][stream] content delta chunk", {
           messageId,
           eventType,
           length: cleanedChunk.length,
@@ -2004,13 +2228,16 @@ function handleStreamEvent(
       break;
     }
     case 'stepStart': {
+      const stepTypeRaw = asString(payload.stepType).toLowerCase();
       const step: StreamingStep = {
         id: asString(payload.id) || undefined,
         callID: asString(payload.callID) || undefined,
         title: asString(payload.title, 'Working'),
         type:
-          asString(payload.stepType) === 'tool' || asString(payload.stepType) === 'reasoning'
-            ? (asString(payload.stepType) as 'tool' | 'reasoning')
+          stepTypeRaw === 'tool' ||
+          stepTypeRaw === 'reasoning' ||
+          stepTypeRaw === 'thinking'
+            ? (stepTypeRaw === "thinking" ? "reasoning" : stepTypeRaw)
             : 'step',
         status: 'pending',
         meta: asString(payload.meta) || undefined,
@@ -2085,12 +2312,102 @@ function handleStreamEvent(
       dispatch({ type: 'SET_PROCESSING', payload: false });
       break;
     }
-    default:
+    default: {
+      let consumed = false;
+      if (structuredOutput?.reasoning) {
+        structuredOutput.reasoning.forEach((chunk) => {
+          const sanitized = sanitizeReasoningChunk(chunk);
+          if (!sanitized) {
+            return;
+          }
+          dispatch({
+            type: "UPDATE_STREAMING_REASONING",
+            payload: { reasoning: sanitized, append: true },
+          });
+          consumed = true;
+        });
+      }
+
+      if (structuredOutput?.progressUpdates) {
+        structuredOutput.progressUpdates.forEach((step) => {
+          upsertStreamingStep(dispatch, getState, {
+            title: step.title,
+            type: "step",
+            status: step.status ?? "pending",
+            meta: step.meta,
+            filePath: step.filePath,
+          });
+          consumed = true;
+        });
+      }
+
+      if (structuredKind === "thinking" && structuredText) {
+        const chunk = sanitizeReasoningChunk(structuredText);
+        if (chunk) {
+          dispatch({
+            type: "UPDATE_STREAMING_REASONING",
+            payload: { reasoning: chunk, append: true },
+          });
+          consumed = true;
+        }
+      } else if (structuredKind === "message" && structuredText) {
+        dispatch({
+          type: "UPDATE_STREAMING_CONTENT",
+          payload: { content: structuredText, append: true },
+        });
+        consumed = true;
+      } else if (structuredKind === "progress") {
+        const fallbackPart = eventPart ?? properties ?? payload;
+        const title = structuredText || inferredStepTitle(fallbackPart);
+        if (title) {
+          upsertStreamingStep(dispatch, getState, {
+            id: asString(fallbackPart.id) || undefined,
+            callID: asString(fallbackPart.callID) || undefined,
+            title,
+            type: "step",
+            status: normalizeProgressStatus(asString(fallbackPart.status)),
+            meta: asString(fallbackPart.meta) || undefined,
+            startTime: Date.now(),
+          });
+          consumed = true;
+        }
+      }
+
+      if (consumed) {
+        dispatch({ type: "SET_PROCESSING", payload: true });
+      }
       break;
+    }
   }
 }
 
+function bindStreamingToParentMessageIdFromSubagents(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  summariesByParentMessageId: Record<string, SubagentSummary[]>,
+): void {
+  const parentMessageIds = Object.keys(summariesByParentMessageId).filter(Boolean);
+  if (parentMessageIds.length === 0) {
+    return;
+  }
+
+  const streaming = getState().streaming;
+  if (!streaming || !streaming.isActive || streaming.messageId) {
+    return;
+  }
+
+  dispatch({
+    type: "SET_STREAMING",
+    payload: {
+      ...streaming,
+      messageId: parentMessageIds[0],
+    },
+  });
+}
+
 export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState) {
+  let latestStreamingSnapshot: StreamingState | null = null;
+
   return (event: MessageEvent) => {
     const data = asRecord(event.data);
     if (!data) {
@@ -2134,6 +2451,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         dispatch({
           type: "SET_SELECTED_AGENT",
           payload: asString(state.selectedAgent),
+        });
+        dispatch({
+          type: "SET_SERVER_VERSION",
+          payload: asString(state.serverVersion) || undefined,
         });
         dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
         break;
@@ -2197,7 +2518,17 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           },
         });
 
-        const streaming = getState().streaming;
+        const responseMessageId =
+          asString(msg.id) || asString(asRecord(msg.info)?.id);
+        const currentStreaming = getState().streaming;
+        const snapshotMatchesResponse =
+          !!latestStreamingSnapshot &&
+          (!responseMessageId ||
+            !latestStreamingSnapshot.messageId ||
+            latestStreamingSnapshot.messageId === responseMessageId);
+        const streaming =
+          currentStreaming ??
+          (snapshotMatchesResponse ? latestStreamingSnapshot : null);
         const normalizedMessage = isMessage(msg)
           ? normalizeMessage(msg, streaming)
           : streaming
@@ -2231,6 +2562,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           }
         }
+        latestStreamingSnapshot = null;
         dispatch({ type: "SET_PROCESSING", payload: false });
         dispatch({ type: "SET_STREAMING", payload: null });
         break;
@@ -2239,6 +2571,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const messages = asArray(data.messages, isMessage)
           .map((msg) => normalizeMessage(msg, null))
           .filter((msg): msg is Message => !!msg);
+
+        latestStreamingSnapshot = null;
 
         // Clear any stale streaming state and in-progress flag when history is
         // loaded (extension open or session switch) so the UI starts clean.
@@ -2318,6 +2652,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         if (Object.keys(detailsById).length > 0) {
           dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
         }
+        bindStreamingToParentMessageIdFromSubagents(
+          dispatch,
+          getState,
+          summariesByParentMessageId,
+        );
         break;
       }
       case "subagentUpdate": {
@@ -2336,14 +2675,55 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         if (Object.keys(detailsById).length > 0) {
           dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
         }
+        bindStreamingToParentMessageIdFromSubagents(
+          dispatch,
+          getState,
+          summariesByParentMessageId,
+        );
         break;
       }
       case "streamEvent": {
+        const streamingBefore = getState().streaming;
+        if (streamingBefore) {
+          latestStreamingSnapshot = streamingBefore;
+        }
         const payload = asRecord(data.event) ?? data;
+        streamDebug("[OpenCode][webview] streamEvent received", {
+          type: asString(payload.type) || "unknown",
+          hasProperties: !!asRecord(payload.properties),
+          hasPart: !!asRecord(asRecord(payload.properties)?.part),
+          structuredKind:
+            asString(asRecord(payload.structured)?.kind) || "unknown",
+        });
         handleStreamEvent(dispatch, getState, payload);
+        const streamingAfter = getState().streaming;
+        if (streamingAfter) {
+          latestStreamingSnapshot = streamingAfter;
+        }
+        break;
+      }
+      case "streamEventEnrich": {
+        const callID = asString(data.callID);
+        const diffStatsRec = asRecord(data.diffStats);
+        if (!callID || !diffStatsRec) {
+          break;
+        }
+        dispatch({
+          type: "UPDATE_STREAMING_STEP",
+          payload: {
+            callID,
+            patch: {
+              diffStats: {
+                added: asNumber(diffStatsRec.added) || 0,
+                deleted: asNumber(diffStatsRec.deleted) || 0,
+              },
+            },
+          },
+        });
         break;
       }
       case "error": {
+        latestStreamingSnapshot = null;
         const errorMsg = asString(data.message, "Unknown error");
 
         // If we were in the middle of a stream, preserve it as a message so the user

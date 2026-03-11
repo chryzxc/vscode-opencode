@@ -197,6 +197,197 @@ function compactMessageForPersistence(message: unknown): unknown {
   return compact;
 }
 
+function normalizeSessionId(id: unknown): string | null {
+  if (typeof id !== "string") {
+    return null;
+  }
+
+  const normalized = id.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function getSessionCreatedTime(session: Session | null | undefined): number {
+  const created = session?.time?.created;
+  return typeof created === "number" && Number.isFinite(created) ? created : 0;
+}
+
+function mergeSessionRecords(existing: Session, incoming: Session): Session {
+  const existingCreated = getSessionCreatedTime(existing);
+  const incomingCreated = getSessionCreatedTime(incoming);
+  const preferred = incomingCreated >= existingCreated ? incoming : existing;
+  const fallback = preferred === incoming ? existing : incoming;
+
+  return {
+    ...fallback,
+    ...preferred,
+    id: preferred.id || fallback.id,
+    title: preferred.title || fallback.title,
+    time: preferred.time ?? fallback.time,
+  };
+}
+
+function getMessageCreatedTime(message: unknown): number {
+  if (!message || typeof message !== "object") {
+    return 0;
+  }
+
+  const rec = message as Record<string, unknown>;
+  const messageTime = rec.time;
+  if (messageTime && typeof messageTime === "object") {
+    const created = (messageTime as Record<string, unknown>).created;
+    if (typeof created === "number" && Number.isFinite(created)) {
+      return created;
+    }
+  }
+
+  const info = rec.info;
+  if (info && typeof info === "object") {
+    const infoTime = (info as Record<string, unknown>).time;
+    if (infoTime && typeof infoTime === "object") {
+      const created = (infoTime as Record<string, unknown>).created;
+      if (typeof created === "number" && Number.isFinite(created)) {
+        return created;
+      }
+    }
+  }
+
+  return 0;
+}
+
+function getMessageSignature(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return `primitive:${String(message)}`;
+  }
+
+  const rec = message as Record<string, unknown>;
+  const info = rec.info;
+  if (info && typeof info === "object") {
+    const infoId = (info as Record<string, unknown>).id;
+    if (typeof infoId === "string" && infoId.length > 0) {
+      return `id:${infoId}`;
+    }
+  }
+
+  const rootId = rec.id;
+  if (typeof rootId === "string" && rootId.length > 0) {
+    return `id:${rootId}`;
+  }
+
+  const role = typeof rec.role === "string" ? rec.role : "";
+  const content =
+    typeof rec.content === "string" ? rec.content.slice(0, 200) : "";
+  const text = typeof rec.text === "string" ? rec.text.slice(0, 200) : "";
+  const created = getMessageCreatedTime(message);
+  return `fallback:${role}|${created}|${content}|${text}`;
+}
+
+function mergeConversationMessages(messageGroups: unknown[][]): unknown[] {
+  const flattened: Array<{ message: unknown; created: number; order: number }> =
+    [];
+  let order = 0;
+
+  for (const group of messageGroups) {
+    for (const message of group) {
+      flattened.push({
+        message,
+        created: getMessageCreatedTime(message),
+        order: order++,
+      });
+    }
+  }
+
+  flattened.sort((a, b) =>
+    a.created === b.created ? a.order - b.order : a.created - b.created,
+  );
+
+  const merged: unknown[] = [];
+  const seen = new Set<string>();
+  for (const item of flattened) {
+    const signature = getMessageSignature(item.message);
+    if (seen.has(signature)) {
+      continue;
+    }
+    seen.add(signature);
+    merged.push(item.message);
+  }
+
+  return merged;
+}
+
+function hasSessionAliasConflicts(
+  aliasesByCanonicalId: Map<string, string[]>,
+): boolean {
+  for (const [canonicalId, aliases] of aliasesByCanonicalId.entries()) {
+    if (aliases.some((alias) => alias !== canonicalId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function coalesceSessionsById(sessions: Session[]): {
+  sessions: Session[];
+  aliasesByCanonicalId: Map<string, string[]>;
+  hadChanges: boolean;
+} {
+  const byCanonicalId = new Map<string, Session>();
+  const aliasSets = new Map<string, Set<string>>();
+  let hadChanges = false;
+
+  for (const session of sessions) {
+    const rawId = typeof session?.id === "string" ? session.id : "";
+    const canonicalId = normalizeSessionId(rawId);
+    if (!canonicalId) {
+      hadChanges = true;
+      continue;
+    }
+
+    const aliases = aliasSets.get(canonicalId) ?? new Set<string>();
+    aliases.add(canonicalId);
+    if (rawId) {
+      aliases.add(rawId);
+    }
+    aliasSets.set(canonicalId, aliases);
+
+    const normalizedSession =
+      canonicalId === rawId ? session : { ...session, id: canonicalId };
+    if (canonicalId !== rawId) {
+      hadChanges = true;
+    }
+
+    const existing = byCanonicalId.get(canonicalId);
+    if (!existing) {
+      byCanonicalId.set(canonicalId, normalizedSession);
+      continue;
+    }
+
+    byCanonicalId.set(
+      canonicalId,
+      mergeSessionRecords(existing, normalizedSession),
+    );
+    hadChanges = true;
+  }
+
+  const dedupedSessions = Array.from(byCanonicalId.values()).sort((a, b) => {
+    return getSessionCreatedTime(b) - getSessionCreatedTime(a);
+  });
+
+  if (dedupedSessions.length !== sessions.length) {
+    hadChanges = true;
+  }
+
+  const aliasesByCanonicalId = new Map<string, string[]>();
+  for (const [canonicalId, aliasSet] of aliasSets.entries()) {
+    aliasesByCanonicalId.set(canonicalId, Array.from(aliasSet));
+  }
+
+  return {
+    sessions: dedupedSessions,
+    aliasesByCanonicalId,
+    hadChanges,
+  };
+}
+
 /**
  * Manages chat sessions with persistence and server synchronization.
  *
@@ -492,12 +683,15 @@ export class SessionService {
           mergedMap.set(s.id, s);
         });
 
-        this.sessionHistory = Array.from(mergedMap.values()).sort((a, b) => {
-          // Sort by creation time (descending)
-          const timeA = a.time?.created || 0;
-          const timeB = b.time?.created || 0;
-          return timeB - timeA;
-        });
+        const mergedSessions = Array.from(mergedMap.values());
+        const normalized = coalesceSessionsById(mergedSessions);
+        if (hasSessionAliasConflicts(normalized.aliasesByCanonicalId)) {
+          await this.mergeMessagesForSessionAliases(
+            normalized.aliasesByCanonicalId,
+          );
+        }
+
+        this.sessionHistory = normalized.sessions;
 
         this.persistState();
       }
@@ -507,6 +701,16 @@ export class SessionService {
         error,
       );
       // Fallback to local history
+      const normalizedLocal = coalesceSessionsById(this.sessionHistory);
+      if (hasSessionAliasConflicts(normalizedLocal.aliasesByCanonicalId)) {
+        await this.mergeMessagesForSessionAliases(
+          normalizedLocal.aliasesByCanonicalId,
+        );
+      }
+      if (normalizedLocal.hadChanges) {
+        this.sessionHistory = normalizedLocal.sessions;
+        this.persistState();
+      }
     }
 
     return this.sessionHistory;
@@ -921,6 +1125,57 @@ export class SessionService {
     await this.saveSessionMessages(sessionId, messages);
   }
 
+  private async mergeMessagesForSessionAliases(
+    aliasesByCanonicalId: Map<string, string[]>,
+  ): Promise<void> {
+    for (const [canonicalId, aliases] of aliasesByCanonicalId.entries()) {
+      const normalizedCanonicalId = normalizeSessionId(canonicalId);
+      if (!normalizedCanonicalId) {
+        continue;
+      }
+
+      const uniqueAliases = Array.from(
+        new Set(
+          aliases.filter(
+            (alias): alias is string =>
+              typeof alias === "string" && alias.length > 0,
+          ),
+        ),
+      );
+
+      if (!uniqueAliases.includes(normalizedCanonicalId)) {
+        uniqueAliases.push(normalizedCanonicalId);
+      }
+
+      if (uniqueAliases.every((alias) => alias === normalizedCanonicalId)) {
+        continue;
+      }
+
+      const messageGroups: unknown[][] = [];
+      for (const alias of uniqueAliases) {
+        const cached = await this.loadSessionMessages(alias);
+        if (cached.length > 0) {
+          messageGroups.push(cached);
+        }
+      }
+
+      if (messageGroups.length > 0) {
+        const merged = mergeConversationMessages(messageGroups);
+        await this.saveSessionMessages(normalizedCanonicalId, merged);
+      }
+
+      for (const alias of uniqueAliases) {
+        if (alias === normalizedCanonicalId) {
+          continue;
+        }
+        await this.context.workspaceState.update(
+          `${SessionService.MESSAGES_PREFIX}${alias}`,
+          undefined,
+        );
+      }
+    }
+  }
+
   /**
    * Loads persisted state from workspace storage.
    *
@@ -955,15 +1210,35 @@ export class SessionService {
       return;
     }
 
-    // Load session list
-    this.sessionHistory = this.context.workspaceState.get<Session[]>(
+    // Load and normalize session list
+    const persistedSessions = this.context.workspaceState.get<Session[]>(
       SessionService.SESSIONS_KEY,
       [],
     );
+    const normalizedSessions = coalesceSessionsById(persistedSessions);
+    this.sessionHistory = normalizedSessions.sessions;
 
-    const sessionId = this.context.workspaceState.get<string>(
+    if (hasSessionAliasConflicts(normalizedSessions.aliasesByCanonicalId)) {
+      await this.mergeMessagesForSessionAliases(
+        normalizedSessions.aliasesByCanonicalId,
+      );
+    }
+
+    if (normalizedSessions.hadChanges) {
+      this.persistState();
+    }
+
+    const persistedSessionId = this.context.workspaceState.get<string>(
       SessionService.SESSION_ID_KEY,
     );
+    const sessionId = normalizeSessionId(persistedSessionId);
+
+    if (sessionId && persistedSessionId !== sessionId) {
+      await this.context.workspaceState.update(
+        SessionService.SESSION_ID_KEY,
+        sessionId,
+      );
+    }
 
     if (sessionId) {
       try {

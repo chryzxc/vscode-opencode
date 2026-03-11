@@ -14,7 +14,12 @@ const RESPONSE_TYPES = new Set(
     ?.responseType?.enum ?? [],
 );
 
-const VALID_INTERACTIVE_TYPES = new Set(["question", "confirm", "quick_actions"]);
+const VALID_INTERACTIVE_TYPES = new Set([
+  "question",
+  "confirm",
+  "quick_actions",
+  "message",
+]);
 
 export function validateStructuredOutput(
   value: unknown,
@@ -40,6 +45,20 @@ export function validateStructuredOutput(
     typeof record.message !== "string"
   ) {
     errors.push("message must be a string");
+  }
+
+  if (!Array.isArray(record.reasoning)) {
+    errors.push("reasoning must be an array of strings");
+  } else {
+    const invalidReasoningItem = record.reasoning.some(
+      (item) => typeof item !== "string" || item.trim().length === 0,
+    );
+    if (invalidReasoningItem) {
+      errors.push("reasoning must only contain non-empty strings");
+    }
+    if (record.reasoning.length === 0) {
+      errors.push("reasoning must contain at least one item");
+    }
   }
 
   if (

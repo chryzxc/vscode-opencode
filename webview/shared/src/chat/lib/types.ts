@@ -62,6 +62,7 @@ export interface StreamingStep {
   tokens?: {
     input?: number;
     output?: number;
+    reasoning?: number;
     cache?: { read?: number; write?: number };
   };
   diffStats?: { added: number; deleted: number };
@@ -105,6 +106,7 @@ export interface MessageInfo {
   tokens?: {
     input?: number;
     output?: number;
+    reasoning?: number;
     cache?: { read?: number; write?: number };
   };
   duration?: number;
@@ -120,6 +122,8 @@ export interface MessagePart {
   thinking?: string;
   url?: string;
   filename?: string;
+  files?: string[];
+  hash?: string;
   source?: { path?: string };
 }
 
@@ -376,11 +380,12 @@ export interface AppState {
   selectedSuggestionIndex: number;
   receivedInitState: boolean;
   serverStatus: string;
+  serverVersion?: string;
   modelDropdownOpen: boolean;
   agentDropdownOpen: boolean;
   thinkingDropdownOpen: boolean;
   errorMessages: string[];
-  quotaData: QuotaData | null;
+  quotaData: QuotaData | null | undefined;
   quotaIsRefreshing: boolean;
   attachments?: AttachmentItem[];
   thinkingLevel?: ThinkingLevel;
@@ -390,7 +395,7 @@ export interface AppState {
   selectedSubagentId: string | null;
   subagentsPanelOpen: boolean;
   interactiveEvents: InteractiveEvent[];
-  budgetInfo: BudgetInfo | null;
+  budgetInfo: BudgetInfo | null | undefined;
   mcpServers: McpServerInfo[];
   lspServers: LspServerInfo[];
 }

@@ -60,6 +60,7 @@
  */
 
 import { OpencodeServerManager } from './OpencodeServerManager';
+import * as vscode from "vscode";
 
 /**
  * Represents a server-sent event from the OpenCode server.
@@ -135,6 +136,10 @@ export type StreamCallback = (event: StreamEvent) => void;
  * @see StreamCallback for subscription interface
  */
 export class MessageStreamService {
+  private static readonly HEARTBEAT_EVENT_TYPES = new Set([
+    "server.heartbeat",
+  ]);
+
   /** AbortController for cancelling fetch requests (clean shutdown) */
   private abortController: AbortController | null = null;
 
@@ -143,6 +148,73 @@ export class MessageStreamService {
 
   /** Reconnect timer (prevents stacked retries after repeated failures) */
   private reconnectTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * Dedupes mirrored events when both /event and /global/event are active.
+   * Stores source metadata so we only collapse cross-stream mirrors and keep
+   * same-stream incremental updates.
+   */
+  private recentEventSignatures: Map<
+    string,
+    { timestamp: number; source?: string }
+  > = new Map();
+
+  private isHeartbeatEvent(eventType: unknown): boolean {
+    return (
+      typeof eventType === "string" &&
+      MessageStreamService.HEARTBEAT_EVENT_TYPES.has(eventType)
+    );
+  }
+
+  private shouldVerboseStreamDebug(): boolean {
+    const level = vscode.workspace
+      .getConfiguration("opencode.logging")
+      .get<string>("level", "info");
+    return typeof level === "string" && level.toLowerCase() === "debug";
+  }
+
+  private asPreview(value: unknown, max = 240): string | undefined {
+    if (typeof value !== "string") {
+      return undefined;
+    }
+    if (value.length <= max) {
+      return value;
+    }
+    return `${value.slice(0, max)}...`;
+  }
+
+  private extractEventTypeHints(rawEvent: unknown): string[] {
+    const hints = new Set<string>();
+    const seen = new WeakSet<object>();
+
+    const visit = (value: unknown, depth = 0) => {
+      if (depth > 4) {
+        return;
+      }
+      const rec = this.asRecord(value);
+      if (!rec) {
+        return;
+      }
+      if (seen.has(rec)) {
+        return;
+      }
+      seen.add(rec);
+
+      if (typeof rec.type === "string" && rec.type.trim()) {
+        hints.add(rec.type.trim());
+      }
+      if (typeof rec.event === "string" && rec.event.trim()) {
+        hints.add(rec.event.trim());
+      }
+
+      visit(rec.payload, depth + 1);
+      visit(rec.data, depth + 1);
+      visit(rec.properties, depth + 1);
+    };
+
+    visit(rawEvent);
+    return [...hints];
+  }
 
   /**
    * Creates a new message stream service instance.
@@ -206,92 +278,195 @@ export class MessageStreamService {
    */
   async startListening(): Promise<void> {
     this.clearReconnectTimer();
-
-    const port = this.serverManager.getPort();
-    if (!port) {
-      throw new Error("Server not running");
-    }
+    this.recentEventSignatures.clear();
 
     // Close existing connection if any
     this.stopListening();
 
     this.abortController = new AbortController();
-    const eventUrl = `http://localhost:${port}/event`;
+    const abortSignal = this.abortController.signal;
     const startTime = Date.now();
 
     console.log(
-      `[MessageStreamService] Starting fetch-based SSE listener: ${eventUrl}`,
+      `[MessageStreamService] Starting SDK-based SSE listener`,
     );
 
     try {
-      const response = await fetch(eventUrl, {
-        signal: this.abortController.signal,
-        headers: {
-          Accept: "text/event-stream",
-        },
+      const client = await this.serverManager.ensureRunning();
+      const workspaceDirectory =
+        vscode.workspace.workspaceFolders?.[0]?.uri.scheme === "file"
+          ? vscode.workspace.workspaceFolders[0].uri.fsPath
+              .replace(/\\/g, "/")
+              .replace(/\/+$/, "")
+          : undefined;
+      if (workspaceDirectory) {
+        console.log(
+          `[MessageStreamService] Workspace directory for stream filtering: ${workspaceDirectory}`,
+        );
+      }
+      const eventSubscribeOptions = workspaceDirectory
+        ? {
+          query: { directory: workspaceDirectory },
+          onSseEvent: (sseEvent: unknown) => {
+            const rec = this.asRecord(sseEvent);
+            const data = rec?.data;
+            const eventHints = this.extractEventTypeHints(data);
+            const eventType = eventHints[0];
+            if (!this.isHeartbeatEvent(eventType) && this.shouldVerboseStreamDebug()) {
+              console.log("[MessageStreamService] /event SSE frame", {
+                eventType: eventType || "unknown",
+                eventName:
+                  typeof rec?.event === "string" ? rec.event : undefined,
+                lastEventId:
+                  typeof rec?.id === "string" ? rec.id : undefined,
+                preview: this.asPreview(
+                  typeof data === "string"
+                    ? data
+                    : JSON.stringify(this.sanitizeForLogging(data)),
+                ),
+              });
+            }
+          },
+          onSseError: (error: unknown) => {
+            console.error("[MessageStreamService] /event SSE callback error:", error);
+          },
+        }
+        : {
+          onSseEvent: (sseEvent: unknown) => {
+            const rec = this.asRecord(sseEvent);
+            const data = rec?.data;
+            const eventHints = this.extractEventTypeHints(data);
+            const eventType = eventHints[0];
+            if (!this.isHeartbeatEvent(eventType) && this.shouldVerboseStreamDebug()) {
+              console.log("[MessageStreamService] /event SSE frame", {
+                eventType: eventType || "unknown",
+                eventName:
+                  typeof rec?.event === "string" ? rec.event : undefined,
+                lastEventId:
+                  typeof rec?.id === "string" ? rec.id : undefined,
+                preview: this.asPreview(
+                  typeof data === "string"
+                    ? data
+                    : JSON.stringify(this.sanitizeForLogging(data)),
+                ),
+              });
+            }
+          },
+          onSseError: (error: unknown) => {
+            console.error("[MessageStreamService] /event SSE callback error:", error);
+          },
+        };
+      console.log("[MessageStreamService] Subscribing to /event", {
+        directory: workspaceDirectory,
       });
+      let events;
+      try {
+        events = await client.event.subscribe(eventSubscribeOptions);
+      } catch (subscribeError) {
+        // if (!workspaceDirectory) {
+        //   throw subscribeError;
+        // }
+        // console.warn(
+        //   "[MessageStreamService] Scoped /event subscription failed, retrying without directory query:",
+        //   subscribeError,
+        // );
+        // events = await client.event.subscribe({
+        //   onSseEvent: (sseEvent: unknown) => {
+        //     const rec = this.asRecord(sseEvent);
+        //     const data = rec?.data;
+        //     const eventHints = this.extractEventTypeHints(data);
+        //     const eventType = eventHints[0];
+        //     if (!this.isHeartbeatEvent(eventType)) {
+        //       console.log("[MessageStreamService] /event SSE frame", {
+        //         eventType: eventType || "unknown",
+        //         eventName: typeof rec?.event === "string" ? rec.event : undefined,
+        //         lastEventId: typeof rec?.id === "string" ? rec.id : undefined,
+        //         preview: this.asPreview(
+        //           typeof data === "string"
+        //             ? data
+        //             : JSON.stringify(this.sanitizeForLogging(data)),
+        //         ),
+        //       });
+        //     }
+        //   },
+        //   onSseError: (error: unknown) => {
+        //     console.error("[MessageStreamService] /event SSE callback error:", error);
+        //   },
+        // });
+      }
 
       console.log(
-        `[MessageStreamService] Response received in ${Date.now() - startTime}ms`,
+        `[MessageStreamService] Connection established in ${Date.now() - startTime}ms`,
       );
 
-      if (!response.ok) {
-        throw new Error(`SSE fetch failed with status ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error("Response body is null");
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let firstChunkLogged = false;
-      let oversizedBufferWarned = false;
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (!firstChunkLogged && value) {
+      const streamTasks: Array<Promise<void>> = [
+        this.consumeEventStream(
+          events.stream,
+          "/event",
+          abortSignal,
+          workspaceDirectory,
+          startTime,
+        ),
+      ];
+      if (client.global && typeof client.global.event === "function") {
+        try {
           console.log(
-            `[MessageStreamService] First chunk received in ${Date.now() - startTime}ms`,
+            "[MessageStreamService] Subscribing to /global/event (fallback channel)",
           );
-          firstChunkLogged = true;
-        }
-
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        if (buffer.length > 1_000_000) {
-          // If the server sends malformed SSE without newlines, avoid unbounded memory growth.
-          buffer = buffer.slice(-500_000);
-          if (!oversizedBufferWarned) {
-            oversizedBufferWarned = true;
-            console.warn(
-              "[MessageStreamService] SSE buffer exceeded 1MB; trimming buffered data to prevent memory growth",
-            );
-          }
-        }
-
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.substring(6));
-              this.notifyCallbacks(data);
-            } catch (error) {
+          const globalEvents = await client.global.event({
+            onSseEvent: (sseEvent: unknown) => {
+              const rec = this.asRecord(sseEvent);
+              const data = rec?.data;
+              const eventHints = this.extractEventTypeHints(data);
+              const eventType = eventHints[0];
+              if (!this.isHeartbeatEvent(eventType) && this.shouldVerboseStreamDebug()) {
+                console.log("[MessageStreamService] /global/event SSE frame", {
+                  eventType: eventType || "unknown",
+                  eventName:
+                    typeof rec?.event === "string" ? rec.event : undefined,
+                  lastEventId:
+                    typeof rec?.id === "string" ? rec.id : undefined,
+                  preview: this.asPreview(
+                    typeof data === "string"
+                      ? data
+                      : JSON.stringify(this.sanitizeForLogging(data)),
+                  ),
+                });
+              }
+            },
+            onSseError: (error: unknown) => {
               console.error(
-                "[MessageStreamService] Failed to parse event:",
+                "[MessageStreamService] /global/event SSE callback error:",
                 error,
               );
-            }
-          }
+            },
+          });
+          streamTasks.push(
+            this.consumeEventStream(
+              globalEvents.stream,
+              "/global/event",
+              abortSignal,
+              workspaceDirectory,
+              startTime,
+            ),
+          );
+        } catch (globalEventError) {
+          console.warn(
+            "[MessageStreamService] Failed to subscribe to /global/event fallback:",
+            globalEventError,
+          );
         }
       }
+
+      const streamResults = await Promise.allSettled(streamTasks);
+      const rejectedStream = streamResults.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (rejectedStream && !abortSignal.aborted) {
+        throw rejectedStream.reason;
+      }
     } catch (error: any) {
-      if (error.name === "AbortError") {
+      if (error.name === "AbortError" || abortSignal.aborted) {
         console.log("[MessageStreamService] Listening aborted");
         return;
       }
@@ -343,9 +518,133 @@ export class MessageStreamService {
    */
   stopListening(): void {
     this.clearReconnectTimer();
+    this.recentEventSignatures.clear();
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
+    }
+  }
+
+  private async consumeEventStream(
+    stream: AsyncIterable<unknown>,
+    source: string,
+    abortSignal: AbortSignal,
+    workspaceDirectory: string | undefined,
+    startTime: number,
+  ): Promise<void> {
+    let firstChunkLogged = false;
+    const verboseDebug = this.shouldVerboseStreamDebug();
+
+    for await (const rawEvent of stream) {
+      if (abortSignal.aborted) {
+        if (verboseDebug) {
+          console.log(`[MessageStreamService] ${source} listener aborted via signal`);
+        }
+        break;
+      }
+
+      if (!firstChunkLogged && verboseDebug) {
+        console.log(
+          `[MessageStreamService] First event (${source}) received in ${Date.now() - startTime}ms`,
+        );
+        firstChunkLogged = true;
+      }
+
+      try {
+        const normalizedEvent = this.normalizeIncomingEvent(rawEvent);
+        if (!normalizedEvent) {
+          const eventTypeHints = this.extractEventTypeHints(rawEvent);
+          console.warn(
+            `[MessageStreamService] Skipping unknown event shape from ${source}:`,
+            {
+              eventTypeHints,
+              rawEvent: verboseDebug
+                ? this.sanitizeForLogging(rawEvent)
+                : undefined,
+            },
+          );
+          continue;
+        }
+
+        if (!this.isHeartbeatEvent(normalizedEvent.type) && verboseDebug) {
+          const properties = this.asRecord(normalizedEvent.properties);
+          const part = this.asRecord(properties?.part);
+          const info = this.asRecord(properties?.info);
+          console.log("[MessageStreamService] Incoming stream event", {
+            source,
+            type: normalizedEvent.type,
+            directory:
+              typeof (normalizedEvent as Record<string, unknown>).directory ===
+                "string"
+                ? (normalizedEvent as Record<string, unknown>).directory
+                : undefined,
+            sessionID:
+              (typeof properties?.sessionID === "string" &&
+                properties.sessionID) ||
+              (typeof properties?.sessionId === "string" &&
+                properties.sessionId) ||
+              (typeof part?.sessionID === "string" && part.sessionID) ||
+              (typeof part?.sessionId === "string" && part.sessionId) ||
+              (typeof info?.sessionID === "string" && info.sessionID) ||
+              (typeof info?.sessionId === "string" && info.sessionId) ||
+              undefined,
+            messageID:
+              (typeof properties?.messageID === "string" &&
+                properties.messageID) ||
+              (typeof properties?.messageId === "string" &&
+                properties.messageId) ||
+              (typeof part?.messageID === "string" && part.messageID) ||
+              (typeof part?.messageId === "string" && part.messageId) ||
+              (typeof info?.id === "string" && info.id) ||
+              undefined,
+            partType:
+              typeof part?.type === "string" ? part.type : undefined,
+          });
+        }
+
+        if (
+          !this.isEventInWorkspaceDirectory(normalizedEvent, workspaceDirectory)
+        ) {
+          const eventDirectory =
+            typeof (normalizedEvent as Record<string, unknown>).directory ===
+              "string"
+              ? ((normalizedEvent as Record<string, unknown>).directory as string)
+              : undefined;
+          if (verboseDebug) {
+            console.log(
+              `[MessageStreamService] Ignoring event from ${source} due to directory mismatch`,
+              {
+                type: normalizedEvent.type,
+                eventDirectory,
+                workspaceDirectory,
+              },
+            );
+          }
+          continue;
+        }
+
+        const eventWithSource = {
+          ...normalizedEvent,
+          source,
+        } as StreamEvent;
+
+        if (this.isDuplicateEvent(eventWithSource)) {
+          if (!this.isHeartbeatEvent(eventWithSource.type) && verboseDebug) {
+            console.log("[MessageStreamService] Dropped duplicate event", {
+              source,
+              type: eventWithSource.type,
+            });
+          }
+          continue;
+        }
+
+        this.notifyCallbacks(eventWithSource);
+      } catch (error) {
+        console.error(
+          `[MessageStreamService] Failed to process event from ${source}:`,
+          error,
+        );
+      }
     }
   }
 
@@ -457,50 +756,388 @@ export class MessageStreamService {
    * @see subscribe for adding callbacks
    * @see startListening for where events come from
    */
-  private notifyCallbacks(event: StreamEvent): void {
-    // Log stream event details for debugging response types
-    const logContext: Record<string, unknown> = {
-      eventType: event.type,
-    };
+  /**
+   * Sanitizes an object for logging by removing circular references, methods, and limiting depth.
+   * Only includes primitive fields and nested objects/arrays.
+   */
+  private sanitizeForLogging(
+    value: unknown,
+    depth = 0,
+    seen = new WeakSet<object>(),
+    maxDepth = 4
+  ): unknown {
+    // Handle primitives
+    if (value === null || value === undefined) {
+      return value;
+    }
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return value;
+    }
 
-    const properties = event.properties as Record<string, unknown> || {};
-    const part = properties.part as Record<string, unknown> || {};
-    const delta = properties.delta as string | undefined;
+    // Handle arrays
+    if (Array.isArray(value)) {
+      if (depth >= maxDepth) {
+        return `[Array(${value.length})]`;
+      }
+      return value.map((item) => this.sanitizeForLogging(item, depth + 1, seen, maxDepth));
+    }
 
-    // Log relevant content based on event type
-    if (event.type === "message.part.updated") {
-      if (delta) {
-        logContext.textLength = delta.length;
-        logContext.textPreview = delta.substring(0, 100);
+    // Handle objects
+    if (typeof value === "object") {
+      // Check for circular references
+      if (seen.has(value as object)) {
+        return "[Circular]";
       }
-      const partType = (part.type as string || "").toLowerCase();
-      if (partType) {
-        logContext.partType = partType;
+      seen.add(value as object);
+
+      // Limit depth
+      if (depth >= maxDepth) {
+        return "[Object]";
       }
-      if (part.reasoning || part.thought || part.thinking) {
-        logContext.isThinking = true;
+
+      const result: Record<string, unknown> = {};
+      for (const key in value) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+          // Skip methods and private properties
+          if (typeof (value as Record<string, unknown>)[key] === "function") {
+            continue;
+          }
+          if (key.startsWith("_")) {
+            continue;
+          }
+          result[key] = this.sanitizeForLogging((value as Record<string, unknown>)[key], depth + 1, seen, maxDepth);
+        }
       }
-    } else if (event.type === "message.updated") {
-      logContext.messageComplete = true;
-      const info = properties.info as Record<string, unknown>;
-      if (info?.agent) {
-        logContext.agent = info.agent;
-      }
-      if (info?.duration) {
-        logContext.duration = info.duration;
-      }
-    } else if (event.type === "session.error" || event.type === "error") {
-      logContext.hasError = true;
-      if (properties.error) {
-        logContext.errorMessage = properties.error;
+      return result;
+    }
+
+    return String(value);
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return typeof value === "object" && value !== null
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private normalizeDirectory(value: string): string {
+    const normalized = value.replace(/\\/g, "/").replace(/\/+$/, "");
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  }
+
+  private isEventInWorkspaceDirectory(
+    event: StreamEvent,
+    workspaceDirectory: string | undefined,
+  ): boolean {
+    if (!workspaceDirectory) {
+      return true;
+    }
+
+    const eventDirectory =
+      typeof (event as Record<string, unknown>).directory === "string"
+        ? ((event as Record<string, unknown>).directory as string)
+        : undefined;
+
+    if (!eventDirectory) {
+      return true;
+    }
+
+    return (
+      this.normalizeDirectory(eventDirectory) ===
+      this.normalizeDirectory(workspaceDirectory)
+    );
+  }
+
+  private getEventSignature(event: StreamEvent): string {
+    const properties = this.asRecord(event.properties) ?? {};
+    const part = this.asRecord(properties.part);
+    const info = this.asRecord(properties.info);
+
+    return JSON.stringify({
+      type: event.type,
+      messageID:
+        (typeof properties.messageID === "string" && properties.messageID) ||
+        (typeof info?.id === "string" && info.id) ||
+        undefined,
+      partID: typeof part?.id === "string" ? part.id : undefined,
+      partType: typeof part?.type === "string" ? part.type : undefined,
+      delta:
+        (typeof part?.delta === "string" && part.delta) ||
+        (typeof properties.delta === "string" && properties.delta) ||
+        undefined,
+      text:
+        (typeof part?.text === "string" && part.text) ||
+        (typeof properties.text === "string" && properties.text) ||
+        undefined,
+      directory:
+        typeof (event as Record<string, unknown>).directory === "string"
+          ? (event as Record<string, unknown>).directory
+          : undefined,
+    });
+  }
+
+  private isDuplicateEvent(event: StreamEvent): boolean {
+    const now = Date.now();
+    const signature = this.getEventSignature(event);
+    const duplicateWindowMs = 350;
+    const staleEntryWindowMs = 10_000;
+    const source =
+      typeof (event as Record<string, unknown>).source === "string"
+        ? ((event as Record<string, unknown>).source as string)
+        : undefined;
+
+    const previousSeen = this.recentEventSignatures.get(signature);
+    this.recentEventSignatures.set(signature, { timestamp: now, source });
+
+    if (this.recentEventSignatures.size > 500) {
+      for (const [existingSignature, timestamp] of this.recentEventSignatures) {
+        if (now - timestamp.timestamp > staleEntryWindowMs) {
+          this.recentEventSignatures.delete(existingSignature);
+        }
       }
     }
 
-    // Log the event
-    console.log(
-      `[MessageStreamService] Stream Event: ${event.type}`,
-      logContext
-    );
+    if (
+      !previousSeen ||
+      typeof previousSeen.timestamp !== "number" ||
+      now - previousSeen.timestamp > duplicateWindowMs
+    ) {
+      return false;
+    }
+
+    if (!source || !previousSeen.source) {
+      return true;
+    }
+
+    return previousSeen.source !== source;
+  }
+
+  /**
+   * SDK event.subscribe() may emit either:
+   * - Event: { type, properties }
+   * - GlobalEvent: { directory, payload: { type, properties } }
+   * Normalize both to the Event shape expected by downstream handlers.
+   */
+  private normalizeIncomingEvent(rawEvent: unknown): StreamEvent | null {
+    const eventRecord = this.asRecord(rawEvent);
+    if (!eventRecord) {
+      return null;
+    }
+
+    if (typeof eventRecord.type === "string") {
+      return eventRecord as StreamEvent;
+    }
+
+    const payload = this.asRecord(eventRecord.payload);
+    if (payload && typeof payload.type === "string") {
+      const normalizedFromPayload: Record<string, unknown> = { ...payload };
+      if (
+        typeof eventRecord.directory === "string" &&
+        typeof normalizedFromPayload.directory === "undefined"
+      ) {
+        normalizedFromPayload.directory = eventRecord.directory;
+      }
+      return normalizedFromPayload as StreamEvent;
+    }
+
+    const data = this.asRecord(eventRecord.data);
+    if (data && typeof data.type === "string") {
+      const normalizedFromData: Record<string, unknown> = { ...data };
+      if (
+        typeof eventRecord.directory === "string" &&
+        typeof normalizedFromData.directory === "undefined"
+      ) {
+        normalizedFromData.directory = eventRecord.directory;
+      }
+      return normalizedFromData as StreamEvent;
+    }
+
+    const nestedPayload = this.asRecord(payload?.payload);
+    if (nestedPayload && typeof nestedPayload.type === "string") {
+      const normalizedFromNestedPayload: Record<string, unknown> = {
+        ...nestedPayload,
+      };
+      if (
+        typeof eventRecord.directory === "string" &&
+        typeof normalizedFromNestedPayload.directory === "undefined"
+      ) {
+        normalizedFromNestedPayload.directory = eventRecord.directory;
+      }
+      return normalizedFromNestedPayload as StreamEvent;
+    }
+
+    const nestedData = this.asRecord(payload?.data);
+    if (nestedData && typeof nestedData.type === "string") {
+      const normalizedFromNestedData: Record<string, unknown> = {
+        ...nestedData,
+      };
+      if (
+        typeof eventRecord.directory === "string" &&
+        typeof normalizedFromNestedData.directory === "undefined"
+      ) {
+        normalizedFromNestedData.directory = eventRecord.directory;
+      }
+      return normalizedFromNestedData as StreamEvent;
+    }
+
+    if (!payload || typeof payload.type !== "string") {
+      return null;
+    }
+
+    const normalized: Record<string, unknown> = { ...payload };
+    if (
+      typeof eventRecord.directory === "string" &&
+      typeof normalized.directory === "undefined"
+    ) {
+      normalized.directory = eventRecord.directory;
+    }
+
+    return normalized as StreamEvent;
+  }
+
+  private notifyCallbacks(event: StreamEvent): void {
+    if (this.shouldVerboseStreamDebug()) {
+      // Log all stream event properties for debugging
+      const sanitizedProperties = this.sanitizeForLogging(event.properties);
+
+      // Extract commonly interesting fields for clearer logging
+      const properties = (event.properties as Record<string, unknown>) || {};
+      const part = (properties.part as Record<string, unknown>) || {};
+      const info = (properties.info as Record<string, unknown>) || {};
+
+      // Build enriched log context with message content prominently displayed
+      const logContext: Record<string, unknown> = {
+        eventType: event.type,
+      };
+      const streamSource =
+        typeof (event as Record<string, unknown>).source === "string"
+          ? ((event as Record<string, unknown>).source as string)
+          : undefined;
+      if (streamSource) {
+        logContext.source = streamSource;
+      }
+      const directory =
+        typeof (event as Record<string, unknown>).directory === "string"
+          ? ((event as Record<string, unknown>).directory as string)
+          : undefined;
+      if (directory) {
+        logContext.directory = directory;
+      }
+
+      // Helper function to extract text content from a value
+      const extractText = (value: unknown): string | undefined => {
+        if (typeof value === "string") {
+          return value;
+        }
+        if (Array.isArray(value)) {
+          return value.map((v) => (typeof v === "string" ? v : "")).join("");
+        }
+        return undefined;
+      };
+
+      // Check ALL possible locations for AI message content
+      // Priority order: delta (streaming), then text, then content, then output/answer/response
+
+      // 1. Check part level fields (most common for message.part.updated)
+      const partDelta = extractText(part.delta);
+      const partText = extractText(part.text);
+      const partContent = extractText(part.content);
+      const partValue = extractText(part.value);
+      const partOutput = extractText(part.output);
+      const partAnswer = extractText(part.answer);
+      const partResponse = extractText(part.response);
+      const partMessage = extractText(part.message);
+
+      // 2. Check properties level fields
+      const propDelta = extractText(properties.delta);
+      const propText = extractText(properties.text);
+      const propContent = extractText(properties.content);
+      const propValue = extractText(properties.value);
+      const propOutput = extractText(properties.output);
+      const propAnswer = extractText(properties.answer);
+      const propResponse = extractText(properties.response);
+      const propMessage = extractText(properties.message);
+
+      // Add the first non-empty message content we find
+      const messageContent =
+        partDelta ||
+        partText ||
+        partContent ||
+        partValue ||
+        partOutput ||
+        partAnswer ||
+        partResponse ||
+        partMessage ||
+        propDelta ||
+        propText ||
+        propContent ||
+        propValue ||
+        propOutput ||
+        propAnswer ||
+        propResponse ||
+        propMessage;
+
+      if (messageContent) {
+        logContext.aiMessage = messageContent;
+      }
+
+      // Add reasoning/thinking content if present.
+      // SDK ReasoningPart uses { type: "reasoning", text: "..." }.
+      if (part.reasoning) {
+        logContext.reasoning = extractText(part.reasoning);
+      }
+      if (part.thought) {
+        logContext.thought = extractText(part.thought);
+      }
+      if (part.thinking) {
+        logContext.thinking = extractText(part.thinking);
+      }
+      const partType =
+        typeof part.type === "string" ? part.type.toLowerCase() : "";
+      if (
+        partType === "reasoning" &&
+        !logContext.reasoning &&
+        !logContext.thinking &&
+        !logContext.thought
+      ) {
+        const reasoningText =
+          partText || partDelta || extractText(properties.delta) || propText;
+        if (reasoningText) {
+          logContext.reasoning = reasoningText;
+        }
+      }
+
+      // Add part type
+      if (part.type) {
+        logContext.partType = part.type;
+      }
+
+      // Add message completion info
+      if (event.type === "message.updated") {
+        logContext.messageComplete = true;
+        if (info.agent) logContext.agent = info.agent;
+        if (info.duration) logContext.duration = info.duration;
+        if (info.tokens) logContext.tokens = info.tokens;
+        if (info.modelID) logContext.modelID = info.modelID;
+        if (info.providerID) logContext.providerID = info.providerID;
+      }
+
+      // Add error info
+      if (event.type === "session.error" || event.type === "error") {
+        logContext.hasError = true;
+        if (properties.error)
+          logContext.errorMessage = extractText(properties.error);
+      }
+
+      // Include all other properties for complete debugging
+      logContext.allProperties = sanitizedProperties;
+
+      // Log the event with enriched context - AI message now prominently displayed
+      console.log(
+        `[MessageStreamService] Stream Event: ${event.type}`,
+        logContext,
+      );
+    }
 
     this.callbacks.forEach((callback) => {
       try {

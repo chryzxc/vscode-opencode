@@ -67,7 +67,7 @@ test('proceed flow forwards plan payload, returns status feedback, and sends exp
   assert.match(chatProviderSource, /const\s+planFilename\s*=\s*this\.createPlanFilename\(artifactId\)/, 'plan proceed handler should generate unique implementation plan filenames');
   assert.match(chatProviderSource, /const\s+commentsFilename\s*=\s*this\.createPlanCommentsFilename\(artifactId\)/, 'plan proceed handler should generate unique comments filenames');
   assert.match(chatProviderSource, /PlanViewProvider\.closeCurrentPanel\(\)/, 'plan proceed handler should close plan viewer immediately after triggering proceed');
-  assert.match(chatProviderSource, /void this\.handleSendMessage\(proceedMessage, attachedFiles\)/, 'plan proceed handler should dispatch send asynchronously to avoid blocking the plan tab');
+  assert.match(chatProviderSource, /void this\.handleSendMessage\([\s\S]*proceedMessage,\s*attachedFiles[\s\S]*\)/, 'plan proceed handler should dispatch send asynchronously to avoid blocking the plan tab');
   assert.match(planShellSource, /Proceed on this plan/, 'plan shell should present explicit proceed-on-plan action label');
 });
 

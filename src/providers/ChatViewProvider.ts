@@ -204,6 +204,12 @@ type StructuredInteractiveEvent =
     id?: string;
     title?: string;
     actions: StructuredInteractiveChoice[];
+  }
+  | {
+    type: "message";
+    id?: string;
+    title?: string;
+    message: string;
   };
 
 type StructuredAssistantOutput = {
@@ -370,8 +376,8 @@ export class ChatViewProvider
     images?: any[];
     agent?: string;
   };
-  private structuredOutputMode: "outputFormat" | "format" | "disabled" =
-    "outputFormat";
+  private structuredOutputMode: "format" | "disabled" = "format";
+  private readonly promptDebugBySession = new Map<string, Record<string, unknown>>();
   private modelsFetchPromise: Promise<
     Array<{
       providerID: string;
@@ -470,6 +476,7 @@ export class ChatViewProvider
               serverStatus: this.serverManager.getStatus(),
               selectedModel: this.selectedModel,
               selectedAgent: this.selectedAgent,
+              serverVersion: this.serverManager.getVersion(),
             });
             this.hasInitializedWebview = true;
           }
@@ -502,6 +509,7 @@ export class ChatViewProvider
               serverStatus: this.serverManager.getStatus(),
               selectedModel: this.selectedModel,
               selectedAgent: this.selectedAgent,
+              serverVersion: this.serverManager.getVersion(),
             });
 
             // Restore the session-specific thinking level (separate message type)
@@ -526,11 +534,7 @@ export class ChatViewProvider
               const rawMessages = await this.sessionService.getMessages(
                 currentSession.id,
               );
-              const messages = rawMessages.map((m: any) =>
-                this.enrichMessageWithPlan(
-                  this.applyStructuredOutputToMessage(m),
-                ),
-              );
+              const messages = this.processHistoryMessages(rawMessages);
               this.view?.webview.postMessage({
                 type: "chatHistory",
                 messages: messages,
@@ -556,7 +560,7 @@ export class ChatViewProvider
 
             // Send quota data or trigger initial fetch
             const quotaData = this.quotaService.cachedData;
-            if (quotaData) {
+            if (quotaData !== undefined) {
               this.view?.webview.postMessage({
                 type: "quotaData",
                 data: quotaData,
@@ -885,11 +889,7 @@ export class ChatViewProvider
                 const rawMessages = await this.sessionService.getMessages(
                   this.currentSessionId,
                 );
-                const messages = rawMessages.map((m: any) =>
-                  this.enrichMessageWithPlan(
-                    this.applyStructuredOutputToMessage(m),
-                  ),
-                );
+                const messages = this.processHistoryMessages(rawMessages);
                 this.view?.webview.postMessage({
                   type: "chatHistory",
                   sessionId: this.currentSessionId,
@@ -917,13 +917,21 @@ export class ChatViewProvider
         }
         case "getMcpStatus": {
           this.handleGetMcpStatus().catch((err) =>
-            log.error("handleGetMcpStatus error", {}, err instanceof Error ? err : undefined),
+            log.error(
+              "handleGetMcpStatus error",
+              {},
+              err instanceof Error ? err : undefined,
+            ),
           );
           break;
         }
         case "getLspStatus": {
           this.handleGetLspStatus().catch((err) =>
-            log.error("handleGetLspStatus error", {}, err instanceof Error ? err : undefined),
+            log.error(
+              "handleGetLspStatus error",
+              {},
+              err instanceof Error ? err : undefined,
+            ),
           );
           break;
         }
@@ -945,6 +953,8 @@ export class ChatViewProvider
 
     // Subscribe to stream events
     this.unsubscribe = this.streamService.subscribe(async (event) => {
+      this.logStreamEventDiagnostics(event);
+
       const subagentUpdate = this.subagentTracker.consumeStreamEvent(event);
       if (subagentUpdate) {
         this.view?.webview.postMessage({
@@ -973,40 +983,6 @@ export class ChatViewProvider
 
       // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
-
-      // If this is a step-finish or tool completion for an edit, calculate diff stats
-      if (enrichedEvent?.structured?.kind === "progress") {
-        const props = (event.properties || {}) as any;
-        const part = props.part || {};
-        const partType = (part.type || "").toLowerCase();
-
-        // Check if it's a tool that modified a file or a step-finish for an edit
-        const isToolDone = partType === "tool" && part.state?.status === "done";
-        const isStepFinish = partType === "step-finish";
-
-        if (isToolDone || isStepFinish) {
-          const toolName = (part.tool || "").toLowerCase();
-          const filePath =
-            part.state?.input?.file || part.state?.input?.path || part.filePath;
-
-          if (
-            filePath &&
-            (toolName.includes("write") ||
-              toolName.includes("replace") ||
-              toolName.includes("edit") ||
-              isStepFinish)
-          ) {
-            const stats = await this.getDiffStats(filePath);
-            if (stats) {
-              if (!enrichedEvent.diffStats) enrichedEvent.diffStats = stats;
-              // Also update the structured part if it exists
-              if (enrichedEvent.structured) {
-                (enrichedEvent.structured as any).diffStats = stats;
-              }
-            }
-          }
-        }
-      }
 
       // Log stream event for debugging response types (with error handling)
       try {
@@ -1045,6 +1021,62 @@ export class ChatViewProvider
         type: "streamEvent",
         event: enrichedEvent,
       });
+      if (this.shouldVerboseStreamDebug()) {
+        console.log("[ChatViewProvider] streamEvent forwarded", {
+          type: (enrichedEvent as any)?.type || event.type,
+          kind: (enrichedEvent as any)?.structured?.kind || "unknown",
+        });
+      }
+
+      // If this is a step-finish or tool completion for an edit, calculate diff stats asynchronously
+      // Fire-and-forget follow-up message so we don't block the stream rendering
+      if (enrichedEvent?.structured?.kind === "progress") {
+        const props = (event.properties || {}) as any;
+        const part = props.part || {};
+        const partType = (part.type || "").toLowerCase();
+
+        // Check if it's a tool that modified a file or a step-finish for an edit
+        const isToolDone = partType === "tool" && part.state?.status === "done";
+        const isStepFinish = partType === "step-finish";
+
+        if (isToolDone || isStepFinish) {
+          const toolName = (part.tool || "").toLowerCase();
+          const filePath =
+            part.state?.input?.file || part.state?.input?.path || part.filePath;
+
+          if (
+            filePath &&
+            (toolName.includes("write") ||
+              toolName.includes("replace") ||
+              toolName.includes("edit") ||
+              isStepFinish)
+          ) {
+            const callID =
+              part.callId ||
+              part.callID ||
+              enrichedEvent?.structured?.callID ||
+              enrichedEvent.id;
+            if (callID) {
+              this.getDiffStats(filePath)
+                .then((stats) => {
+                  if (stats && this.view) {
+                    this.view.webview.postMessage({
+                      type: "streamEventEnrich",
+                      callID,
+                      diffStats: stats,
+                    });
+                  }
+                })
+                .catch((err) => {
+                  console.error(
+                    "[ChatViewProvider] Failed to get diff stats async:",
+                    err,
+                  );
+                });
+            }
+          }
+        }
+      }
     });
 
     webviewView.webview.html = this.getHtmlContent(webviewView.webview);
@@ -1082,15 +1114,55 @@ export class ChatViewProvider
 
       // Transform Session objects to match webview expectations
       // SDK Session has nested `time.created`, webview expects `createdAt`
-      const transformedSessions = sessions.map((s) => ({
+      const transformedSessions = sessions.map((s: any) => ({
         id: s.id,
         title: s.title,
         createdAt: s.time?.created,
+        parentSessionId:
+          s.parentID || s.parentId || s.parentSessionId || undefined,
       }));
+      const sessionsById = new Map<string, (typeof transformedSessions)[number]>();
+      for (const session of transformedSessions) {
+        if (!session?.id || typeof session.id !== "string") {
+          continue;
+        }
+        const id = session.id.trim();
+        if (!id) {
+          continue;
+        }
+
+        const normalizedSession =
+          id === session.id ? session : { ...session, id };
+        const existing = sessionsById.get(id);
+        if (!existing) {
+          sessionsById.set(id, normalizedSession);
+          continue;
+        }
+
+        const existingCreatedAt = existing.createdAt ?? 0;
+        const incomingCreatedAt = normalizedSession.createdAt ?? 0;
+        const preferred =
+          incomingCreatedAt >= existingCreatedAt
+            ? normalizedSession
+            : existing;
+        const fallback = preferred === normalizedSession ? existing : normalizedSession;
+
+        sessionsById.set(id, {
+          ...fallback,
+          ...preferred,
+          id,
+          title: preferred.title || fallback.title,
+          parentSessionId:
+            preferred.parentSessionId || fallback.parentSessionId || undefined,
+        });
+      }
+      const dedupedSessions = Array.from(sessionsById.values()).sort(
+        (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
+      );
 
       this.view?.webview.postMessage({
         type: "sessionsList",
-        sessions: transformedSessions,
+        sessions: dedupedSessions,
         currentSessionId: currentSession?.id,
       });
     } catch (error) {
@@ -1129,9 +1201,7 @@ export class ChatViewProvider
 
       // Reload history for the new session
       const rawMessages = await this.sessionService.getMessages(sessionId);
-      const messages = rawMessages.map((m: any) =>
-        this.enrichMessageWithPlan(this.applyStructuredOutputToMessage(m)),
-      );
+      const messages = this.processHistoryMessages(rawMessages);
 
       this.view?.webview.postMessage({
         type: "chatHistory",
@@ -1202,9 +1272,44 @@ export class ChatViewProvider
   }
 
   /**
+   * Processes raw history messages by stripping legacy system instructions,
+   * applying structured outputs, and enriching with plans.
+   */
+  private processHistoryMessages(rawMessages: any[]): any[] {
+    return rawMessages.map((m: any) => {
+      if (m.role === "user" && Array.isArray(m.parts)) {
+        m.parts = m.parts.map((p: any) => {
+          if (p.type === "text" && typeof p.text === "string") {
+            const stripped = this.stripLegacyInstruction(p.text);
+            if (stripped !== p.text) {
+              return { ...p, text: stripped };
+            }
+          }
+          return p;
+        });
+      }
+      return this.enrichMessageWithPlan(this.applyStructuredOutputToMessage(m));
+    });
+  }
+
+  private stripLegacyInstruction(text: string): string {
+    if (!text) return "";
+    const legacyInstruction = this.getLegacySystemInstruction();
+    const legacyWithNewline = legacyInstruction + "\n";
+
+    if (text.startsWith(legacyWithNewline)) {
+      return text.substring(legacyWithNewline.length);
+    }
+    if (text.startsWith(legacyInstruction)) {
+      return text.substring(legacyInstruction.length);
+    }
+    return text;
+  }
+
+  /**
    * Gets the unified system instruction
    */
-  private getSystemInstruction(): string {
+  private getLegacySystemInstruction(): string {
     return [
       "You are an assistant integrated in a VS Code extension UI that expects structured JSON output.",
       "Always produce a JSON object matching the provided json_schema when structured output format is enabled.",
@@ -1220,6 +1325,14 @@ export class ChatViewProvider
 
   private getStructuredOutputFormat(): Record<string, unknown> {
     return structuredOutputSchema as Record<string, unknown>;
+  }
+
+  private getWorkspaceDirectory(): string | undefined {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder || workspaceFolder.uri.scheme !== "file") {
+      return undefined;
+    }
+    return workspaceFolder.uri.fsPath.replace(/\\/g, "/").replace(/\/+$/, "");
   }
 
   private isStructuredFormatUnsupportedError(error: unknown): boolean {
@@ -1241,44 +1354,46 @@ export class ChatViewProvider
     client: any,
     sessionID: string,
     body: NonNullable<SessionPromptData["body"]>,
+    useStructuredOutput = true,
   ) {
+    const workspaceDirectory = this.getWorkspaceDirectory();
     const callPrompt = (requestBody: Record<string, unknown>) =>
       client.session.prompt({
         path: { id: sessionID },
+        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
         body: requestBody as SessionPromptData["body"],
       });
 
     const schema = this.getStructuredOutputFormat();
 
-    if (this.structuredOutputMode === "disabled") {
+    if (!useStructuredOutput || this.structuredOutputMode === "disabled") {
       return callPrompt(body as Record<string, unknown>);
     }
 
-    const requestWithFormat: Record<string, unknown> =
-      this.structuredOutputMode === "format"
-        ? { ...(body as Record<string, unknown>), format: schema }
-        : { ...(body as Record<string, unknown>), outputFormat: schema };
-    const firstAttempt = await callPrompt(requestWithFormat);
-    if (!firstAttempt.error) {
-      return firstAttempt;
-    }
+    // Prefer documented `format` field (SDK docs), then fall back to
+    // `outputFormat` for server versions that still expect it.
+    let attempt = await callPrompt({
+      ...(body as Record<string, unknown>),
+      format: schema,
+    });
 
-    if (!this.isStructuredFormatUnsupportedError(firstAttempt.error)) {
-      return firstAttempt;
-    }
-
-    if (this.structuredOutputMode === "outputFormat") {
-      this.structuredOutputMode = "format";
-      const secondAttempt = await callPrompt({
+    if (
+      attempt.error &&
+      this.isStructuredFormatUnsupportedError(attempt.error)
+    ) {
+      // Backward-compat fallback
+      attempt = await callPrompt({
         ...(body as Record<string, unknown>),
-        format: schema,
+        outputFormat: schema,
       });
-      if (!secondAttempt.error) {
-        return secondAttempt;
-      }
-      if (!this.isStructuredFormatUnsupportedError(secondAttempt.error)) {
-        return secondAttempt;
-      }
+    }
+
+    if (!attempt.error) {
+      return attempt;
+    }
+
+    if (!this.isStructuredFormatUnsupportedError(attempt.error)) {
+      return attempt;
     }
 
     this.structuredOutputMode = "disabled";
@@ -1286,6 +1401,44 @@ export class ChatViewProvider
       "Structured output format is not supported by this OpenCode server version. Falling back to plain prompts.",
     );
     return callPrompt(body as Record<string, unknown>);
+  }
+
+  private shouldUseStructuredOutput(
+    parts: Array<Record<string, unknown>>,
+    agent?: string,
+  ): boolean {
+    // Structured output should be on for all prompts so responseType-driven UI
+    // (question popups, implementation plan cards, progress updates, etc.)
+    // is consistently available.
+    void parts;
+    void agent;
+    return this.structuredOutputMode !== "disabled";
+  }
+
+  private resolvePromptVariant(sessionId: string): string | undefined {
+    const savedLevel =
+      this.getSessionSettings(sessionId).thinkingLevel ??
+      this.context.globalState.get<string>("thinkingLevel");
+    if (!savedLevel) {
+      return undefined;
+    }
+
+    const normalizedLevel = savedLevel.toLowerCase().trim();
+    if (!normalizedLevel) {
+      return undefined;
+    }
+
+    // Claude "thinking" model families commonly expose "max" rather than "high".
+    const modelID = (this.selectedModel.modelID || "").toLowerCase();
+    if (
+      normalizedLevel === "high" &&
+      modelID.includes("claude") &&
+      modelID.includes("thinking")
+    ) {
+      return "max";
+    }
+
+    return normalizedLevel;
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {
@@ -1303,11 +1456,314 @@ export class ChatViewProvider
     return undefined;
   }
 
+  private shouldVerboseStreamDebug(): boolean {
+    const level = vscode.workspace
+      .getConfiguration("opencode.logging")
+      .get<string>("level", "info");
+    return typeof level === "string" && level.toLowerCase() === "debug";
+  }
+
+  private isReasoningPartLike(part: unknown): boolean {
+    const rec = this.asRecord(part);
+    if (!rec) return false;
+    const type = this.firstNonEmptyString(rec.type)?.toLowerCase();
+    return (
+      type === "reasoning" ||
+      type === "thinking" ||
+      type === "thought" ||
+      typeof rec.reasoning !== "undefined" ||
+      typeof rec.thinking !== "undefined" ||
+      typeof rec.thought !== "undefined"
+    );
+  }
+
+  private isRenderableTextPart(part: unknown): boolean {
+    const rec = this.asRecord(part);
+    if (!rec || this.isReasoningPartLike(rec)) return false;
+    return (
+      rec.type === "text" ||
+      typeof rec.text === "string" ||
+      typeof rec.content === "string"
+    );
+  }
+
   private extractMessageId(message: any): string | undefined {
     if (!message || typeof message !== "object") {
       return undefined;
     }
     return this.firstNonEmptyString(message?.info?.id, message?.id);
+  }
+
+  private logStreamEventDiagnostics(event: any): void {
+    if (!this.shouldVerboseStreamDebug()) {
+      return;
+    }
+
+    const eventType =
+      typeof event?.type === "string" ? event.type : "unknown";
+    const properties = this.asRecord(event?.properties) || {};
+    const part = this.asRecord(properties?.part);
+    const info = this.asRecord(properties?.info);
+
+    const sessionID =
+      this.firstNonEmptyString(
+        properties?.sessionID,
+        properties?.sessionId,
+        part?.sessionID,
+        part?.sessionId,
+        info?.sessionID,
+        info?.sessionId,
+      ) || undefined;
+    const messageID =
+      this.firstNonEmptyString(
+        properties?.messageID,
+        properties?.messageId,
+        part?.messageID,
+        part?.messageId,
+        info?.id,
+      ) || undefined;
+
+    if (eventType === "server.heartbeat") {
+      console.log("[ChatViewProvider] stream heartbeat", {
+        source: this.firstNonEmptyString(event?.source),
+        directory: this.firstNonEmptyString(event?.directory),
+      });
+      return;
+    }
+
+    console.log("[ChatViewProvider] stream event received", {
+      type: eventType,
+      source: this.firstNonEmptyString(event?.source),
+      directory: this.firstNonEmptyString(event?.directory),
+      sessionID,
+      messageID,
+      partType: this.firstNonEmptyString(part?.type),
+      hasProperties: Object.keys(properties).length > 0,
+    });
+  }
+
+  private logPromptResponseDiagnostics(
+    sessionId: string,
+    responseData: any,
+  ): void {
+    if (!this.shouldVerboseStreamDebug()) {
+      return;
+    }
+
+    if (!responseData || typeof responseData !== "object") {
+      return;
+    }
+
+    const info = this.asRecord(responseData.info);
+    const messageId = this.firstNonEmptyString(info?.id, responseData.id);
+    const parts = Array.isArray(responseData.parts) ? responseData.parts : [];
+
+    console.log("[ChatViewProvider] Final response diagnostics", {
+      sessionId,
+      messageId,
+      partCount: parts.length,
+      partTypes: parts.map((part: any) =>
+        typeof part?.type === "string" ? part.type : "unknown",
+      ),
+      role: this.firstNonEmptyString(info?.role, responseData.role),
+      modelID: this.firstNonEmptyString(info?.modelID, responseData.modelID),
+      providerID: this.firstNonEmptyString(
+        info?.providerID,
+        responseData.providerID,
+      ),
+    });
+
+    parts.forEach((part: any, index: number) => {
+      const partRec = this.asRecord(part) || {};
+      const preview = this.firstNonEmptyString(
+        partRec.delta,
+        partRec.text,
+        partRec.content,
+        partRec.reasoning,
+        partRec.message,
+      );
+      console.log("[ChatViewProvider] Final response part", {
+        sessionId,
+        messageId,
+        index,
+        type: this.firstNonEmptyString(partRec.type) || "unknown",
+        preview:
+          typeof preview === "string" ? preview.slice(0, 220) : undefined,
+      });
+    });
+  }
+
+  private sanitizeDebugPayload(value: unknown): unknown {
+    const maxDepth = 6;
+    const maxArrayItems = 30;
+    const maxObjectKeys = 80;
+    const maxStringLength = 4000;
+    const seen = new WeakSet<object>();
+
+    const walk = (input: unknown, depth: number): unknown => {
+      if (input === null || typeof input === "boolean" || typeof input === "number") {
+        return input;
+      }
+      if (typeof input === "string") {
+        if (input.startsWith("data:")) {
+          return `<data-url omitted; length=${input.length}>`;
+        }
+        if (input.length > maxStringLength) {
+          const truncatedBy = input.length - maxStringLength;
+          return `${input.slice(0, maxStringLength)} ...<truncated ${truncatedBy} chars>`;
+        }
+        return input;
+      }
+      if (typeof input === "bigint") {
+        return input.toString();
+      }
+      if (typeof input === "undefined") {
+        return undefined;
+      }
+      if (typeof input === "function") {
+        return "<function>";
+      }
+      if (typeof input !== "object") {
+        return String(input);
+      }
+
+      if (seen.has(input as object)) {
+        return "<circular>";
+      }
+      seen.add(input as object);
+
+      if (depth >= maxDepth) {
+        return "<max-depth>";
+      }
+
+      if (Array.isArray(input)) {
+        const items = input
+          .slice(0, maxArrayItems)
+          .map((item) => walk(item, depth + 1));
+        if (input.length > maxArrayItems) {
+          items.push(
+            `<truncated array; omitted ${input.length - maxArrayItems} item(s)>`,
+          );
+        }
+        return items;
+      }
+
+      const rec = this.asRecord(input) || {};
+      const entries = Object.entries(rec).slice(0, maxObjectKeys);
+      const out: Record<string, unknown> = {};
+      entries.forEach(([key, val]) => {
+        const next = walk(val, depth + 1);
+        if (typeof next !== "undefined") {
+          out[key] = next;
+        }
+      });
+      if (Object.keys(rec).length > maxObjectKeys) {
+        out.__truncatedKeys = `<omitted ${Object.keys(rec).length - maxObjectKeys} key(s)>`;
+      }
+      return out;
+    };
+
+    return walk(value, 0);
+  }
+
+  private getDebugFilePath(): string | undefined {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder || workspaceFolder.uri.scheme !== "file") {
+      return undefined;
+    }
+    return path.join(
+      workspaceFolder.uri.fsPath,
+      ".opencode-debug",
+      "last-ai-exchange.json",
+    );
+  }
+
+  private async persistAiDebugSnapshot(
+    snapshot: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const filePath = this.getDebugFilePath();
+      if (!filePath) return;
+
+      const dirPath = path.dirname(filePath);
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirPath));
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(filePath),
+        new TextEncoder().encode(`${JSON.stringify(snapshot, null, 2)}\n`),
+      );
+      this.logger.info("AI debug snapshot written", { filePath });
+    } catch (error) {
+      this.logger.warn("Failed to persist AI debug snapshot", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async logPromptRequestPayload(
+    sessionId: string,
+    promptBody: NonNullable<SessionPromptData["body"]>,
+    useStructuredOutput: boolean,
+  ): Promise<void> {
+    const requestRecord: Record<string, unknown> = {
+      timestamp: new Date().toISOString(),
+      sessionId,
+      useStructuredOutput,
+      prompt: this.sanitizeDebugPayload(promptBody),
+    };
+    this.promptDebugBySession.set(sessionId, requestRecord);
+
+    this.logger.info("AI DEBUG request payload", {
+      sessionId,
+      useStructuredOutput,
+      prompt: requestRecord.prompt,
+    });
+    console.log(
+      "[ChatViewProvider][AI_DEBUG][request]",
+      JSON.stringify(requestRecord, null, 2),
+    );
+    await this.persistAiDebugSnapshot({
+      phase: "request",
+      ...requestRecord,
+    });
+  }
+
+  private async logPromptResponsePayload(
+    sessionId: string,
+    response: any,
+    durationSeconds: number,
+    useStructuredOutput: boolean,
+  ): Promise<void> {
+    const requestRecord = this.promptDebugBySession.get(sessionId);
+    const responseRecord: Record<string, unknown> = {
+      timestamp: new Date().toISOString(),
+      sessionId,
+      useStructuredOutput,
+      durationSeconds,
+      status: response?.response?.status,
+      hasData: Boolean(response?.data),
+      hasError: Boolean(response?.error),
+      error: this.sanitizeDebugPayload(response?.error),
+      data: this.sanitizeDebugPayload(response?.data),
+    };
+
+    const combined: Record<string, unknown> = {
+      phase: "response",
+      request: requestRecord,
+      response: responseRecord,
+    };
+    this.logger.info("AI DEBUG response payload", {
+      sessionId,
+      useStructuredOutput,
+      status: responseRecord.status,
+      hasData: responseRecord.hasData,
+      hasError: responseRecord.hasError,
+    });
+    console.log(
+      "[ChatViewProvider][AI_DEBUG][response]",
+      JSON.stringify(combined, null, 2),
+    );
+    await this.persistAiDebugSnapshot(combined);
+    this.promptDebugBySession.delete(sessionId);
   }
 
   private syncSubagentSnapshotForSession(
@@ -1341,10 +1797,9 @@ export class ChatViewProvider
 
     const validation = validateStructuredOutput(rec);
     if (!validation.valid) {
-      this.logger.warn(
-        "Structured output validation failed",
-        { errors: validation.errors },
-      );
+      this.logger.warn("Structured output validation failed", {
+        errors: validation.errors,
+      });
     }
     const sanitizedRec = sanitizeStructuredOutput(rec);
 
@@ -1362,8 +1817,7 @@ export class ChatViewProvider
       rec.text,
     );
 
-    const reasoningRaw =
-      sanitizedRec.reasoning ?? rec.thinking ?? rec.thoughts;
+    const reasoningRaw = sanitizedRec.reasoning ?? rec.thinking ?? rec.thoughts;
     const reasoning = Array.isArray(reasoningRaw)
       ? reasoningRaw
         .filter((item): item is string => typeof item === "string")
@@ -1494,6 +1948,21 @@ export class ChatViewProvider
         };
       }
 
+      if (eventType === "message") {
+        const message = this.firstNonEmptyString(
+          event.message,
+          event.content,
+          event.text,
+        );
+        if (!message) return null;
+        return {
+          type: "message",
+          id,
+          title: this.firstNonEmptyString(event.title),
+          message,
+        };
+      }
+
       return null;
     };
 
@@ -1534,31 +2003,50 @@ export class ChatViewProvider
       sanitizedRec.subagentsDelta ?? rec.subagents_delta,
     );
     const subagentsDeltaItems = Array.isArray(subagentsDeltaRaw?.items)
-      ? subagentsDeltaRaw?.items
-          .map((entry) => {
-            const item = this.asRecord(entry);
-            if (!item) return null;
-            const id = this.firstNonEmptyString(item.id);
-            if (!id) return null;
-            return {
-              id,
-              name: this.firstNonEmptyString(item.name, item.agentId),
-              status: this.firstNonEmptyString(item.status),
-              progress:
-                typeof item.progress === "number" && Number.isFinite(item.progress)
-                  ? item.progress
-                  : undefined,
-              description: this.firstNonEmptyString(item.description),
-              latestActivity: this.firstNonEmptyString(
-                item.latestActivity,
-                item.description,
-              ),
-              childSessionId: this.firstNonEmptyString(item.childSessionId),
-              parentSessionId: this.firstNonEmptyString(item.parentSessionId),
-              parentMessageId: this.firstNonEmptyString(item.parentMessageId),
-            };
-          })
-          .filter(Boolean) as Array<{
+      ? (subagentsDeltaRaw?.items
+        .map((entry) => {
+          const item = this.asRecord(entry);
+          if (!item) return null;
+          const id = this.firstNonEmptyString(item.id);
+          if (!id) return null;
+          return {
+            id,
+            name: this.firstNonEmptyString(item.name, item.agentId),
+            status: this.firstNonEmptyString(item.status),
+            progress:
+              typeof item.progress === "number" &&
+                Number.isFinite(item.progress)
+                ? item.progress
+                : undefined,
+            description: this.firstNonEmptyString(item.description),
+            latestActivity: this.firstNonEmptyString(
+              item.latestActivity,
+              item.description,
+            ),
+            childSessionId: this.firstNonEmptyString(item.childSessionId),
+            parentSessionId: this.firstNonEmptyString(item.parentSessionId),
+            parentMessageId: this.firstNonEmptyString(item.parentMessageId),
+          };
+        })
+        .filter(Boolean) as Array<{
+          id: string;
+          name?: string;
+          status?: string;
+          progress?: number;
+          description?: string;
+          latestActivity?: string;
+          childSessionId?: string;
+          parentSessionId?: string;
+          parentMessageId?: string;
+        }>)
+      : undefined;
+    const subagentsDelta =
+      subagentsDeltaItems && subagentsDeltaItems.length > 0
+        ? {
+          parentMessageId: this.firstNonEmptyString(
+            subagentsDeltaRaw?.parentMessageId,
+          ),
+          items: subagentsDeltaItems as Array<{
             id: string;
             name?: string;
             status?: string;
@@ -1568,77 +2056,66 @@ export class ChatViewProvider
             childSessionId?: string;
             parentSessionId?: string;
             parentMessageId?: string;
-          }>
-      : undefined;
-    const subagentsDelta =
-      subagentsDeltaItems && subagentsDeltaItems.length > 0
-        ? {
-            parentMessageId: this.firstNonEmptyString(
-              subagentsDeltaRaw?.parentMessageId,
-            ),
-            items: subagentsDeltaItems as Array<{
-              id: string;
-              name?: string;
-              status?: string;
-              progress?: number;
-              description?: string;
-              latestActivity?: string;
-              childSessionId?: string;
-              parentSessionId?: string;
-              parentMessageId?: string;
-            }>,
-          }
+          }>,
+        }
         : undefined;
 
     const subagentsRaw =
       sanitizedRec.subagents ?? (rec.spawnedSubagents as unknown);
     const subagents = Array.isArray(subagentsRaw)
-      ? subagentsRaw
-          .map((item, index) => {
-            const subagent = this.asRecord(item);
-            if (!subagent) return null;
-            const id = this.firstNonEmptyString(subagent.id);
-            if (!id) return null;
-            const status = this.firstNonEmptyString(subagent.status)?.toLowerCase();
-            const normalizedStatus =
-              status === "pending" ||
+      ? (subagentsRaw
+        .map((item, index) => {
+          const subagent = this.asRecord(item);
+          if (!subagent) return null;
+          const id = this.firstNonEmptyString(subagent.id);
+          if (!id) return null;
+          const status = this.firstNonEmptyString(
+            subagent.status,
+          )?.toLowerCase();
+          const normalizedStatus =
+            status === "pending" ||
               status === "running" ||
               status === "done" ||
               status === "error" ||
               status === "orphaned"
-                ? status
-                : undefined;
-            const progressValue = subagent.progress;
-            const progress =
-              typeof progressValue === "number" && Number.isFinite(progressValue)
-                ? progressValue
-                : undefined;
-            const normalizeProgressEvents = (value: unknown) => {
-              if (!Array.isArray(value)) return undefined;
-              const events = value
-                .map((entry, eventIndex) => {
-                  const evt = this.asRecord(entry);
-                  if (!evt) return null;
-                  const title = this.firstNonEmptyString(evt.title);
-                  if (!title) return null;
-                  return {
-                    id:
-                      this.firstNonEmptyString(evt.id) ||
-                      `${id}:progress:${eventIndex}`,
-                    title,
-                    status: this.firstNonEmptyString(evt.status),
-                    meta: this.firstNonEmptyString(evt.meta),
-                    filePath: this.firstNonEmptyString(evt.filePath, evt.file, evt.path),
-                    createdAt:
-                      typeof evt.createdAt === "number"
-                        ? evt.createdAt
-                        : undefined,
-                    messageID: this.firstNonEmptyString(evt.messageID),
-                    partID: this.firstNonEmptyString(evt.partID),
-                    callID: this.firstNonEmptyString(evt.callID),
-                  };
-                })
-                .filter(Boolean) as Array<{
+              ? status
+              : undefined;
+          const progressValue = subagent.progress;
+          const progress =
+            typeof progressValue === "number" &&
+              Number.isFinite(progressValue)
+              ? progressValue
+              : undefined;
+          const normalizeProgressEvents = (value: unknown) => {
+            if (!Array.isArray(value)) return undefined;
+            const events = value
+              .map((entry, eventIndex) => {
+                const evt = this.asRecord(entry);
+                if (!evt) return null;
+                const title = this.firstNonEmptyString(evt.title);
+                if (!title) return null;
+                return {
+                  id:
+                    this.firstNonEmptyString(evt.id) ||
+                    `${id}:progress:${eventIndex}`,
+                  title,
+                  status: this.firstNonEmptyString(evt.status),
+                  meta: this.firstNonEmptyString(evt.meta),
+                  filePath: this.firstNonEmptyString(
+                    evt.filePath,
+                    evt.file,
+                    evt.path,
+                  ),
+                  createdAt:
+                    typeof evt.createdAt === "number"
+                      ? evt.createdAt
+                      : undefined,
+                  messageID: this.firstNonEmptyString(evt.messageID),
+                  partID: this.firstNonEmptyString(evt.partID),
+                  callID: this.firstNonEmptyString(evt.callID),
+                };
+              })
+              .filter(Boolean) as Array<{
                 id: string;
                 title: string;
                 status?: string;
@@ -1649,61 +2126,62 @@ export class ChatViewProvider
                 partID?: string;
                 callID?: string;
               }>;
-              return events.length > 0 ? events : undefined;
-            };
-            const normalizeThinkingEvents = (value: unknown) => {
-              if (!Array.isArray(value)) return undefined;
-              const events = value
-                .map((entry, eventIndex) => {
-                  const evt = this.asRecord(entry);
-                  if (!evt) return null;
-                  const text = this.firstNonEmptyString(evt.text);
-                  if (!text) return null;
-                  return {
-                    id:
-                      this.firstNonEmptyString(evt.id) ||
-                      `${id}:thinking:${eventIndex}`,
-                    text,
-                    createdAt:
-                      typeof evt.createdAt === "number"
-                        ? evt.createdAt
-                        : undefined,
-                    messageID: this.firstNonEmptyString(evt.messageID),
-                    partID: this.firstNonEmptyString(evt.partID),
-                  };
-                })
-                .filter(Boolean) as Array<{
+            return events.length > 0 ? events : undefined;
+          };
+          const normalizeThinkingEvents = (value: unknown) => {
+            if (!Array.isArray(value)) return undefined;
+            const events = value
+              .map((entry, eventIndex) => {
+                const evt = this.asRecord(entry);
+                if (!evt) return null;
+                const text = this.firstNonEmptyString(evt.text);
+                if (!text) return null;
+                return {
+                  id:
+                    this.firstNonEmptyString(evt.id) ||
+                    `${id}:thinking:${eventIndex}`,
+                  text,
+                  createdAt:
+                    typeof evt.createdAt === "number"
+                      ? evt.createdAt
+                      : undefined,
+                  messageID: this.firstNonEmptyString(evt.messageID),
+                  partID: this.firstNonEmptyString(evt.partID),
+                };
+              })
+              .filter(Boolean) as Array<{
                 id: string;
                 text: string;
                 createdAt?: number;
                 messageID?: string;
                 partID?: string;
               }>;
-              return events.length > 0 ? events : undefined;
-            };
-            const normalizeTimelineEvents = (value: unknown) => {
-              if (!Array.isArray(value)) return undefined;
-              const events = value
-                .map((entry, eventIndex) => {
-                  const evt = this.asRecord(entry);
-                  if (!evt) return null;
-                  const label = this.firstNonEmptyString(evt.label);
-                  if (!label) return null;
-                  return {
-                    key:
-                      this.firstNonEmptyString(evt.key) || `${id}:timeline:${eventIndex}`,
-                    type: this.firstNonEmptyString(evt.type) || "event",
-                    label,
-                    createdAt:
-                      typeof evt.createdAt === "number"
-                        ? evt.createdAt
-                        : undefined,
-                    messageID: this.firstNonEmptyString(evt.messageID),
-                    partID: this.firstNonEmptyString(evt.partID),
-                    callID: this.firstNonEmptyString(evt.callID),
-                  };
-                })
-                .filter(Boolean) as Array<{
+            return events.length > 0 ? events : undefined;
+          };
+          const normalizeTimelineEvents = (value: unknown) => {
+            if (!Array.isArray(value)) return undefined;
+            const events = value
+              .map((entry, eventIndex) => {
+                const evt = this.asRecord(entry);
+                if (!evt) return null;
+                const label = this.firstNonEmptyString(evt.label);
+                if (!label) return null;
+                return {
+                  key:
+                    this.firstNonEmptyString(evt.key) ||
+                    `${id}:timeline:${eventIndex}`,
+                  type: this.firstNonEmptyString(evt.type) || "event",
+                  label,
+                  createdAt:
+                    typeof evt.createdAt === "number"
+                      ? evt.createdAt
+                      : undefined,
+                  messageID: this.firstNonEmptyString(evt.messageID),
+                  partID: this.firstNonEmptyString(evt.partID),
+                  callID: this.firstNonEmptyString(evt.callID),
+                };
+              })
+              .filter(Boolean) as Array<{
                 key: string;
                 type: string;
                 label: string;
@@ -1712,29 +2190,38 @@ export class ChatViewProvider
                 partID?: string;
                 callID?: string;
               }>;
-              return events.length > 0 ? events : undefined;
-            };
-            return {
-              id,
-              name:
-                this.firstNonEmptyString(subagent.name, subagent.agentId, subagent.id) ||
-                id,
-              status: normalizedStatus,
-              progress,
-              description: this.firstNonEmptyString(subagent.description),
-              latestActivity: this.firstNonEmptyString(
-                subagent.latestActivity,
-                subagent.description,
-              ),
-              childSessionId: this.firstNonEmptyString(subagent.childSessionId),
-              parentSessionId: this.firstNonEmptyString(subagent.parentSessionId),
-              parentMessageId: this.firstNonEmptyString(subagent.parentMessageId),
-              progressEvents: normalizeProgressEvents(subagent.progressEvents),
-              thinkingEvents: normalizeThinkingEvents(subagent.thinkingEvents),
-              timelineEvents: normalizeTimelineEvents(subagent.timelineEvents),
-            };
-          })
-          .filter((item) => !!item) as NonNullable<StructuredAssistantOutput["subagents"]>
+            return events.length > 0 ? events : undefined;
+          };
+          return {
+            id,
+            name:
+              this.firstNonEmptyString(
+                subagent.name,
+                subagent.agentId,
+                subagent.id,
+              ) || id,
+            status: normalizedStatus,
+            progress,
+            description: this.firstNonEmptyString(subagent.description),
+            latestActivity: this.firstNonEmptyString(
+              subagent.latestActivity,
+              subagent.description,
+            ),
+            childSessionId: this.firstNonEmptyString(subagent.childSessionId),
+            parentSessionId: this.firstNonEmptyString(
+              subagent.parentSessionId,
+            ),
+            parentMessageId: this.firstNonEmptyString(
+              subagent.parentMessageId,
+            ),
+            progressEvents: normalizeProgressEvents(subagent.progressEvents),
+            thinkingEvents: normalizeThinkingEvents(subagent.thinkingEvents),
+            timelineEvents: normalizeTimelineEvents(subagent.timelineEvents),
+          };
+        })
+        .filter((item) => !!item) as NonNullable<
+          StructuredAssistantOutput["subagents"]
+        >)
       : undefined;
 
     const planRec = this.asRecord(sanitizedRec.plan ?? rec.plan);
@@ -1779,20 +2266,62 @@ export class ChatViewProvider
     };
   }
 
+  private createFallbackMessage(
+    structured: StructuredAssistantOutput,
+  ): string | undefined {
+    if (!structured.responseType) return undefined;
+
+    const { responseType, progressUpdates, interactiveEvents, plan } =
+      structured;
+
+    switch (responseType) {
+      case "implementation_plan":
+        return plan?.title ? `📋 ${plan.title}` : "📋 Implementation Plan";
+      case "progress_update":
+        if (progressUpdates && progressUpdates.length > 0) {
+          const titles = progressUpdates.map((p) => p.title).join(", ");
+          return `Progress: ${titles}`;
+        }
+        return "📊 Working on tasks...";
+      case "question":
+      case "interactive":
+        if (interactiveEvents && interactiveEvents.length > 0) {
+          const firstEvent = interactiveEvents[0];
+          if (firstEvent.type === "question" && firstEvent.question) {
+            return firstEvent.question;
+          } else if (firstEvent.type === "confirm" && firstEvent.question) {
+            return firstEvent.question;
+          } else if (firstEvent.type === "message" && firstEvent.message) {
+            return firstEvent.message;
+          }
+        }
+        return "❓ Question for you";
+      case "subagents":
+        return "🤖 Spawned subagents...";
+      case "error":
+        return "⚠️ An error occurred";
+      case "message":
+      default:
+        return undefined;
+    }
+  }
+
   private extractMessageBodyText(message: any): string {
     if (!message) return "";
+
+    let rawText = "";
     if (typeof message.content === "string" && message.content.trim()) {
-      return message.content.trim();
-    }
-    if (typeof message.text === "string" && message.text.trim()) {
-      return message.text.trim();
-    }
-    if (Array.isArray(message.parts)) {
-      return message.parts
+      rawText = message.content.trim();
+    } else if (typeof message.text === "string" && message.text.trim()) {
+      rawText = message.text.trim();
+    } else if (Array.isArray(message.parts)) {
+      rawText = message.parts
         .map((part: any) => {
           if (!part || typeof part !== "object") return "";
           if (
             part.type === "reasoning" ||
+            part.type === "thinking" ||
+            part.type === "thought" ||
             typeof part.reasoning !== "undefined" ||
             typeof part.thought !== "undefined" ||
             typeof part.thinking !== "undefined"
@@ -1804,7 +2333,8 @@ export class ChatViewProvider
         .join("")
         .trim();
     }
-    return "";
+
+    return this.stripLegacyInstruction(rawText);
   }
 
   private extractStructuredOutput(
@@ -1822,6 +2352,27 @@ export class ChatViewProvider
       messageLike.properties?.structured_output,
       messageLike.properties?.output,
     ];
+
+    if (Array.isArray(messageLike.parts)) {
+      for (const part of messageLike.parts) {
+        if (
+          part &&
+          typeof part === "object" &&
+          part.type === "tool" &&
+          part.state
+        ) {
+          const toolName = (part.tool || "").toLowerCase();
+          if (
+            toolName.includes("structuredoutput") ||
+            toolName.includes("structured_output")
+          ) {
+            if (part.state.result) candidates.push(part.state.result);
+            if (part.state.input) candidates.push(part.state.input);
+          }
+        }
+      }
+    }
+
     for (const candidate of candidates) {
       const parsed = this.normalizeStructuredOutput(candidate);
       if (parsed) {
@@ -1842,30 +2393,54 @@ export class ChatViewProvider
       return message;
     }
 
-    const next = {
+    const next: any = {
       ...message,
       structuredOutput: structured,
     };
 
-    if (structured.message) {
-      next.content = structured.message;
+    if (Array.isArray(next.parts)) {
+      next.parts = next.parts.filter((part: any) => {
+        if (part && part.type === "tool") {
+          const toolName = (part.tool || "").toString().toLowerCase();
+          if (
+            toolName.includes("structuredoutput") ||
+            toolName.includes("structured_output")
+          ) {
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+
+    const bodyText = this.extractMessageBodyText(message);
+    const hasJsonOnlyBody = bodyText.startsWith("{") && bodyText.endsWith("}");
+    if (hasJsonOnlyBody) {
+      next.content = "";
+      if (Array.isArray(next.parts)) {
+        next.parts = next.parts.filter((p: any) => p?.type !== "text");
+      }
+    }
+
+    // Preserve the default OpenCode response body whenever it exists.
+    // Only inject structured text as a fallback when body text is missing or JSON-only.
+    const messageContent =
+      structured.message || this.createFallbackMessage(structured);
+    const shouldUseStructuredMessage = !bodyText || hasJsonOnlyBody;
+    if (messageContent && shouldUseStructuredMessage) {
+      next.content = messageContent;
       const parts = Array.isArray(next.parts) ? [...next.parts] : [];
       const textIndex = parts.findIndex(
-        (part: any) =>
-          part &&
-          typeof part === "object" &&
-          (part.type === "text" ||
-            typeof part.text === "string" ||
-            typeof part.content === "string"),
+        (part: any) => this.isRenderableTextPart(part),
       );
       if (textIndex >= 0) {
         parts[textIndex] = {
           ...parts[textIndex],
           type: "text",
-          text: structured.message,
+          text: messageContent,
         };
       } else {
-        parts.push({ type: "text", text: structured.message });
+        parts.push({ type: "text", text: messageContent });
       }
       next.parts = parts;
     }
@@ -1873,7 +2448,10 @@ export class ChatViewProvider
     if (structured.reasoning && structured.reasoning.length > 0) {
       const parts = Array.isArray(next.parts) ? [...next.parts] : [];
       const hasReasoningPart = parts.some(
-        (part: any) => part?.type === "reasoning",
+        (part: any) =>
+          part?.type === "reasoning" ||
+          part?.type === "thinking" ||
+          part?.type === "thought",
       );
       if (!hasReasoningPart) {
         structured.reasoning.forEach((chunk) => {
@@ -1916,6 +2494,11 @@ export class ChatViewProvider
           const parts = Array.isArray(next.parts) ? [...next.parts] : [];
           parts.push({ type: "text", text: firstEvent.question });
           next.parts = parts;
+        } else if (firstEvent.type === "message") {
+          next.content = firstEvent.message;
+          const parts = Array.isArray(next.parts) ? [...next.parts] : [];
+          parts.push({ type: "text", text: firstEvent.message });
+          next.parts = parts;
         }
       }
     }
@@ -1928,10 +2511,9 @@ export class ChatViewProvider
         const normalized = {
           ...sa,
           agentId: this.firstNonEmptyString(sa.agentId, sa.name) || sa.id,
-          latestActivity: this.firstNonEmptyString(
-            sa.latestActivity,
-            sa.description,
-          ) || "Subagent update",
+          latestActivity:
+            this.firstNonEmptyString(sa.latestActivity, sa.description) ||
+            "Subagent update",
         };
         const existing = next.subagents.find((item: any) => item.id === sa.id);
         if (existing) {
@@ -1953,15 +2535,15 @@ export class ChatViewProvider
       if (
         !hasTextContent &&
         (structured.responseType === "subagents" ||
-          (structured.subagentsDelta && structured.subagentsDelta.items.length > 0))
+          (structured.subagentsDelta &&
+            structured.subagentsDelta.items.length > 0))
       ) {
         const subagentCount =
           structured.subagents?.length ??
           structured.subagentsDelta?.items.length ??
           0;
-        const summaryText = `Spawned ${subagentCount} subagent${
-          subagentCount === 1 ? "" : "s"
-        }.`;
+        const summaryText = `Spawned ${subagentCount} subagent${subagentCount === 1 ? "" : "s"
+          }.`;
         next.content = summaryText;
         const parts = Array.isArray(next.parts) ? [...next.parts] : [];
         parts.push({ type: "text", text: summaryText });
@@ -1997,7 +2579,10 @@ export class ChatViewProvider
       next.parts = parts;
     }
 
-    if (structured.responseType === "implementation_plan" || structured.plan?.content) {
+    if (
+      structured.responseType === "implementation_plan" ||
+      structured.plan?.content
+    ) {
       const planContent = structured.plan?.content || "";
       if (typeof planContent === "string" && planContent.trim().length >= 80) {
         next.plan = {
@@ -2018,7 +2603,12 @@ export class ChatViewProvider
     }
 
     const properties = this.asRecord(event.properties) || {};
-    const part = this.asRecord(properties.part);
+    const isMessagePartEvent =
+      typeof event.type === "string" && event.type.startsWith("message.part.");
+    const part =
+      this.asRecord(properties.part) ||
+      this.asRecord(event.part) ||
+      (isMessagePartEvent ? this.asRecord(properties) : null);
     const next: Record<string, unknown> = { ...event };
     let kind:
       | "thinking"
@@ -2029,8 +2619,13 @@ export class ChatViewProvider
       | "other" = "other";
     let text: string | undefined;
 
-    if (event.type === "message.part.updated" && part) {
-      const partType = this.firstNonEmptyString(part.type)?.toLowerCase() || "";
+    if (isMessagePartEvent && part) {
+      const rawPartType =
+        this.firstNonEmptyString(part.type)?.toLowerCase() || "";
+      const partType =
+        rawPartType === "thinking" || rawPartType === "thought"
+          ? "reasoning"
+          : rawPartType;
       if (
         partType === "reasoning" ||
         typeof part.reasoning !== "undefined" ||
@@ -2043,6 +2638,10 @@ export class ChatViewProvider
           part.reasoning,
           part.thought,
           part.thinking,
+          properties.reasoning,
+          properties.thought,
+          properties.thinking,
+          part.delta,
           part.text,
         );
       } else if (
@@ -2051,7 +2650,15 @@ export class ChatViewProvider
         partType === "step-finish" ||
         partType === "patch"
       ) {
-        kind = "progress";
+        const toolName = (part.tool || "").toString().toLowerCase();
+        if (
+          toolName.includes("structuredoutput") ||
+          toolName.includes("structured_output")
+        ) {
+          kind = "other";
+        } else {
+          kind = "progress";
+        }
       } else if (partType === "text" || !partType) {
         kind = "message";
         text = this.firstNonEmptyString(
@@ -2102,6 +2709,8 @@ export class ChatViewProvider
     // Cache for retry
     this.lastSendMessageArgs = { text, files, contexts, images, agent };
     this.isProcessingRequest = true;
+    const capturePromptDebug = this.shouldVerboseStreamDebug();
+    let debugSessionId: string | undefined;
     try {
       const normalizedImages = (images || [])
         .map((img) => {
@@ -2123,7 +2732,9 @@ export class ChatViewProvider
       const client = await this.serverManager.ensureRunning();
       let session = await this.sessionService.getCurrentSession();
       if (this.currentSessionId && session.id !== this.currentSessionId) {
-        session = await this.sessionService.switchSession(this.currentSessionId);
+        session = await this.sessionService.switchSession(
+          this.currentSessionId,
+        );
       }
       this.subagentTracker.setActiveSession(session.id);
 
@@ -2145,8 +2756,8 @@ export class ChatViewProvider
 
       // Save user message to local history immediately, unless this is a retry
       if (!isRetry) {
-        await this.sessionService.appendMessage(session.id, {
-          role: "user",
+        const userMessage = {
+          role: "user" as const,
           parts: [
             {
               type: "text",
@@ -2157,7 +2768,14 @@ export class ChatViewProvider
           time: {
             created: Date.now(),
           },
+        };
+        await this.sessionService.appendMessage(session.id, userMessage);
+
+        this.view?.webview.postMessage({
+          type: "userMessageAppended",
+          message: userMessage,
         });
+
         await this.handleGetSessions();
       }
 
@@ -2169,7 +2787,7 @@ export class ChatViewProvider
       const parts: NonNullable<SessionPromptData["body"]>["parts"] = [
         {
           type: "text",
-          text: (isNewSession ? this.getSystemInstruction() : "") + text,
+          text: text,
         },
       ];
 
@@ -2259,16 +2877,42 @@ export class ChatViewProvider
 
       // Send the message using the SDK
       const startTime = Date.now();
+      const useStructuredOutput = this.shouldUseStructuredOutput(
+        parts as Array<Record<string, unknown>>,
+        agent || this.selectedAgent,
+      );
+      const promptBody: NonNullable<SessionPromptData["body"]> = {
+        model: this.selectedModel,
+        agent: agent || this.selectedAgent,
+        parts: parts,
+      };
+      const promptVariant = this.resolvePromptVariant(session.id);
+      if (promptVariant) {
+        (promptBody as Record<string, unknown>).variant = promptVariant;
+      }
+      if (capturePromptDebug) {
+        debugSessionId = session.id;
+        await this.logPromptRequestPayload(
+          session.id,
+          promptBody,
+          useStructuredOutput,
+        );
+      }
       const response = await this.promptWithStructuredOutput(
         client,
         session.id,
-        {
-          model: this.selectedModel,
-          agent: agent || this.selectedAgent,
-          parts: parts,
-        },
+        promptBody,
+        useStructuredOutput,
       );
       const duration = (Date.now() - startTime) / 1000;
+      if (capturePromptDebug) {
+        await this.logPromptResponsePayload(
+          session.id,
+          response,
+          duration,
+          useStructuredOutput,
+        );
+      }
 
       console.log(`[ChatViewProvider] Response received in ${duration}s`, {
         hasData: Boolean(response.data),
@@ -2276,6 +2920,9 @@ export class ChatViewProvider
         status: response.response?.status,
         messageId: (response.data as any)?.info?.id,
       });
+      if (response.data && capturePromptDebug) {
+        this.logPromptResponseDiagnostics(session.id, response.data);
+      }
 
       // Update budget info after successful send
       // Note: recordRequest() temporarily disabled - budget now reads from actual Copilot quota data
@@ -2337,9 +2984,8 @@ export class ChatViewProvider
             // Notify UI of the ID change if possible, or just refresh sessions
             await this.handleGetSessions();
 
-            const recoveryTranscript = this.buildRecoveredTranscript(
-              localMessages,
-            );
+            const recoveryTranscript =
+              this.buildRecoveredTranscript(localMessages);
             if (recoveryTranscript) {
               await this.saveSessionRecoveryMap(session.id, newSession.id);
             }
@@ -2356,9 +3002,9 @@ export class ChatViewProvider
               true,
               recoveryTranscript
                 ? {
-                    previousSessionId: session.id,
-                    transcript: recoveryTranscript,
-                  }
+                  previousSessionId: session.id,
+                  transcript: recoveryTranscript,
+                }
                 : undefined,
             );
           } catch (recreateError) {
@@ -2466,6 +3112,9 @@ export class ChatViewProvider
         message: errorMessage,
       });
     } finally {
+      if (debugSessionId) {
+        this.promptDebugBySession.delete(debugSessionId);
+      }
       this.isProcessingRequest = false;
       if (!this.isExecutingQueue && this.queue.length > 0) {
         void this.handleExecuteQueue();
@@ -2523,9 +3172,7 @@ export class ChatViewProvider
 
     // 1. Check for explicit filename in edits/parts
     const hasPlanFile =
-      edits.some(
-        (e: any) => e.file && planFilePattern.test(e.file),
-      ) ||
+      edits.some((e: any) => e.file && planFilePattern.test(e.file)) ||
       parts.some(
         (p: any) =>
           p.type === "patch" &&
@@ -2535,7 +3182,7 @@ export class ChatViewProvider
 
     // 2. Fallback: Check for plan-like content in message summary, parts, or plain content
     const partsContent = parts
-      .filter((p: any) => p.type === "text" || p.text || p.content) // ignore reasoning parts directly
+      .filter((p: any) => this.isRenderableTextPart(p)) // ignore reasoning parts directly
       .map((p: any) => {
         let c = p.text || p.content || "";
         if (p.files && Array.isArray(p.files)) c += " " + p.files.join(" ");
@@ -2615,12 +3262,7 @@ export class ChatViewProvider
           ? [...nextMessage.parts]
           : [];
         const textIndex = parts.findIndex(
-          (part: any) =>
-            part &&
-            typeof part === "object" &&
-            (part.type === "text" ||
-              typeof part.text === "string" ||
-              typeof part.content === "string"),
+          (part: any) => this.isRenderableTextPart(part),
         );
         if (textIndex >= 0) {
           parts[textIndex] = {
@@ -2686,8 +3328,10 @@ export class ChatViewProvider
         `[ChatViewProvider] Stopping request for session ${sessionId}`,
       );
 
+      const workspaceDirectory = this.getWorkspaceDirectory();
       await client.session.abort({
         path: { id: sessionId },
+        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
       });
     } catch (error) {
       console.error("Failed to stop request:", error);
@@ -2794,19 +3438,19 @@ export class ChatViewProvider
 
     const proceedMessage = hasChangeRequests
       ? [
-          "Proceed on this plan.",
-          `The attached file \`${planFilename}\` is the source of truth.`,
-          `Apply all reviewer comments from \`${commentsFilename}\`, then execute the resulting plan.`,
-          "Begin making real edits now and continue until the implementation is complete.",
-          "Do not return only a status update.",
-        ].join("\n")
+        "Proceed on this plan.",
+        `The attached file \`${planFilename}\` is the source of truth.`,
+        `Apply all reviewer comments from \`${commentsFilename}\`, then execute the resulting plan.`,
+        "Begin making real edits now and continue until the implementation is complete.",
+        "Do not return only a status update.",
+      ].join("\n")
       : [
-          "Proceed on this plan.",
-          `The attached file \`${planFilename}\` is the source of truth.`,
-          "Execute the plan step-by-step and implement the described changes now.",
-          "Begin making real edits now and continue until the implementation is complete.",
-          "Do not return only a status update.",
-        ].join("\n");
+        "Proceed on this plan.",
+        `The attached file \`${planFilename}\` is the source of truth.`,
+        "Execute the plan step-by-step and implement the described changes now.",
+        "Begin making real edits now and continue until the implementation is complete.",
+        "Do not return only a status update.",
+      ].join("\n");
 
     const attachedFiles = hasChangeRequests
       ? [planFilePath, commentsFilePath]
@@ -2877,8 +3521,10 @@ export class ChatViewProvider
         continue;
       }
       const role =
-        this.firstNonEmptyString(rec.role, rec.info && this.asRecord(rec.info)?.role) ||
-        "assistant";
+        this.firstNonEmptyString(
+          rec.role,
+          rec.info && this.asRecord(rec.info)?.role,
+        ) || "assistant";
       const content = this.extractMessageBodyText(rec);
       if (!content) {
         continue;
@@ -2894,7 +3540,10 @@ export class ChatViewProvider
     return lines.join("\n");
   }
 
-  private migrateSessionSettings(oldSessionId: string, newSessionId: string): void {
+  private migrateSessionSettings(
+    oldSessionId: string,
+    newSessionId: string,
+  ): void {
     if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) {
       return;
     }
@@ -2911,7 +3560,11 @@ export class ChatViewProvider
     previousSessionId: string,
     newSessionId: string,
   ): Promise<void> {
-    if (!previousSessionId || !newSessionId || previousSessionId === newSessionId) {
+    if (
+      !previousSessionId ||
+      !newSessionId ||
+      previousSessionId === newSessionId
+    ) {
       return;
     }
     const existing =
@@ -3305,6 +3958,17 @@ export class ChatViewProvider
                 (m.modelID === modelRef || m.name === modelRef),
             );
           }
+        }
+
+        if (match) {
+          this.selectedModel = {
+            modelID: match.modelID,
+            providerID: match.providerID,
+            providerName: match.providerName || match.providerID,
+          };
+          console.log(
+            `[ChatViewProvider] Synced default model to: ${match.modelID} (${match.providerID})`,
+          );
         } else {
           // Backward-compatible fallback: allow model-only identifiers only when unique
           const byModelId = models.filter((m) => m.modelID === defaultId);
@@ -3324,6 +3988,10 @@ export class ChatViewProvider
             modelID: match.modelID,
             providerName: match.providerName || match.providerID,
           };
+          await this.context.globalState.update(
+            "selectedModel",
+            this.selectedModel,
+          );
           console.log(
             `[ChatViewProvider] Synced default model to: ${match.modelID} (${match.providerID})`,
           );
@@ -3614,7 +4282,11 @@ export class ChatViewProvider
         `MCP status sent: ${Object.keys(servers).length} server(s), ${toolIds.length} tool(s)`,
       );
     } catch (err) {
-      log.error("handleGetMcpStatus failed", {}, err instanceof Error ? err : undefined);
+      log.error(
+        "handleGetMcpStatus failed",
+        {},
+        err instanceof Error ? err : undefined,
+      );
     }
   }
 
@@ -3636,7 +4308,11 @@ export class ChatViewProvider
 
       log.info(`LSP status sent: ${servers.length} server(s)`);
     } catch (err) {
-      log.error("handleGetLspStatus failed", {}, err instanceof Error ? err : undefined);
+      log.error(
+        "handleGetLspStatus failed",
+        {},
+        err instanceof Error ? err : undefined,
+      );
     }
   }
 
@@ -3963,7 +4639,9 @@ export class ChatViewProvider
       const usedTotalMatch =
         copilotQuota.usedTotalDisplay?.match(/(\d+)\s*\/\s*(\d+)/);
       const totalUsed = usedTotalMatch ? parseInt(usedTotalMatch[1], 10) : 0;
-      const monthlyQuota = usedTotalMatch ? parseInt(usedTotalMatch[2], 10) : 300;
+      const monthlyQuota = usedTotalMatch
+        ? parseInt(usedTotalMatch[2], 10)
+        : 300;
 
       // Calculate daily allowance
       const today = new Date();
@@ -4044,7 +4722,6 @@ export class ChatViewProvider
         advice: advice,
       };
 
-
       this.view?.webview.postMessage({
         type: "budgetInfo",
         data: budgetInfo,
@@ -4062,6 +4739,19 @@ export class ChatViewProvider
       type: "queueUpdate",
       queue: this.queue,
     });
+  }
+
+  public dispose(): void {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = undefined;
+    }
+    this.streamService.dispose();
+    this.quotaService.dispose();
+    this.fileThemeProcessor.unsubscribe(this);
+    this.isBootstrappingWebview = false;
+    this.hasInitializedWebview = false;
+    this.view = undefined;
   }
 
   // --- File Icon Theme Sync Methods ---

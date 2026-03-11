@@ -58,4 +58,8 @@ test('FileIcon component applies correct theme CSS classes', () => {
   assert.match(messageComponentsSource, /"file-icon"/, 'FileIcon should always have base file-icon class');
   assert.match(messageComponentsSource, /cleanKey\(fileName\)/, 'FileIcon should use fileName for matching');
   assert.match(messageComponentsSource, /cleanKey\(ext\)/, 'FileIcon should use extension for matching');
+  // Verify cleanKey uses dashes for dots (must match library cleanFileIconKey)
+  assert.match(messageComponentsSource, /\.replace\(\/\\\.\/g,\s*['"-]-['"-]\)/, 'FileIcon cleanKey should replace dots with dashes (not underscores) to match library CSS class names');
+  // Verify there is an SVG fallback for missing theme icons
+  assert.match(messageComponentsSource, /file-icon-svg/, 'FileIcon should have an SVG fallback for when theme CSS provides no icon');
 });

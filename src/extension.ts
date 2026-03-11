@@ -31,7 +31,7 @@ import { ChatViewProvider } from "./providers/ChatViewProvider";
 import { StatusBarProvider } from "./providers/StatusBarProvider";
 import { PlanViewProvider } from "./providers/PlanViewProvider";
 import { DiffReviewProvider } from "./providers/DiffReviewProvider";
-import { createLogger } from "./utils/Logger";
+import { createLogger, logger } from "./utils/Logger";
 
 const log = createLogger("Extension");
 //  * Global service instances.
@@ -112,6 +112,11 @@ export async function activate(context: vscode.ExtensionContext) {
     serverManager = new OpencodeServerManager(context);
     sessionService = new SessionService(context, serverManager);
     statusBarProvider = new StatusBarProvider(serverManager);
+    context.subscriptions.push(
+      serverManager.onStatusChange(() => {
+        statusBarProvider.updateStatus();
+      }),
+    );
 
     // ============================================================================
     // PHASE 2: Register WebView Providers
@@ -444,9 +449,34 @@ export async function activate(context: vscode.ExtensionContext) {
  * @see activate for the corresponding initialization function
  * @see OpencodeServerManager.dispose for server cleanup details
  */
-export function deactivate() {
+export async function deactivate(): Promise<void> {
   log.info("Extension deactivating");
+
+  try {
+    if (chatViewProvider) {
+      chatViewProvider.dispose();
+    }
+  } catch (error) {
+    log.warn("Failed to dispose ChatViewProvider", { error });
+  }
+
+  try {
+    if (statusBarProvider) {
+      statusBarProvider.dispose();
+    }
+  } catch (error) {
+    log.warn("Failed to dispose StatusBarProvider", { error });
+  }
+
+  try {
+    if (serverManager) {
+      serverManager.dispose();
+    }
+  } catch (error) {
+    log.warn("Failed to dispose ServerManager", { error });
+  }
 
   console.log("OpenCode extension deactivated");
   log.info("Extension deactivated successfully");
+  await logger.dispose();
 }

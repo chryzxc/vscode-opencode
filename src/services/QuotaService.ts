@@ -17,7 +17,7 @@ import type {
   CopilotTier,
 } from "../types/QuotaTypes";
 
-// ── Constants ──────────────────────────────────────────────────────────────────
+// â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const DEFAULT_REFRESH_INTERVAL = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -33,17 +33,11 @@ const ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const GITHUB_API_BASE_URL = "https://api.github.com";
 const GOOGLE_QUOTA_API_URL =
   "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
-const GEMINI_CLI_QUOTA_API_URL =
-  "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 const GOOGLE_TOKEN_REFRESH_URL = "https://oauth2.googleapis.com/token";
 
 const GOOGLE_CLIENT_ID =
   "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const GOOGLE_CLIENT_SECRET = "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";
-
-const GEMINI_CLI_OAUTH_CLIENT_ID =
-  "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
-const GEMINI_CLI_OAUTH_CLIENT_SECRET = "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";
 
 const GOOGLE_MODELS = [
   { key: "gemini-3-pro-high", altKey: "gemini-3-pro-low", display: "G3 Pro" },
@@ -64,7 +58,7 @@ const COPILOT_PLAN_LIMITS: Record<string, number> = {
   enterprise: 1000,
 };
 
-// ── File paths ─────────────────────────────────────────────────────────────────
+// â”€â”€ File paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const authPath = path.join(
   os.homedir(),
@@ -85,44 +79,8 @@ const copilotConfigPath = path.join(
   "opencode",
   "copilot-quota-token.json",
 );
-const geminiOAuthPath = path.join(os.homedir(), ".gemini", "oauth_creds.json");
-const geminiProjectsPath = path.join(os.homedir(), ".gemini", "projects.json");
-const geminiAccountsPath = path.join(
-  os.homedir(),
-  ".gemini",
-  "google_accounts.json",
-);
 
-interface GeminiCliOAuthCredentials {
-  access_token?: string;
-  refresh_token?: string;
-  expiry_date?: number;
-  token_type?: string;
-  scope?: string;
-}
-
-interface GeminiCliProjectsFile {
-  projects?: Record<string, string>;
-}
-
-interface GeminiCliAccountsFile {
-  active?: string;
-  old?: string[];
-}
-
-interface GeminiQuotaBucket {
-  modelId?: string;
-  tokenType?: string;
-  remainingAmount?: string;
-  remainingFraction?: number;
-  resetTime?: string;
-}
-
-interface GeminiQuotaResponse {
-  buckets?: GeminiQuotaBucket[];
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function readJsonFile<T>(filePath: string): T | null {
   try {
@@ -250,11 +208,7 @@ function percentBar(pct: number): number {
   return Math.max(0, Math.min(100, Math.round(pct)));
 }
 
-function normalizePathForLookup(value: string): string {
-  return value.replace(/\\/g, "/").toLowerCase();
-}
-
-// ── QuotaService ───────────────────────────────────────────────────────────────
+// â”€â”€ QuotaService â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export class QuotaService extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
@@ -285,12 +239,6 @@ export class QuotaService extends EventEmitter {
 
   public async refreshQuota(): Promise<QuotaData> {
     const auth = readJsonFile<AuthData>(authPath);
-    const geminiOauth =
-      readJsonFile<GeminiCliOAuthCredentials>(geminiOAuthPath);
-    const geminiProjects =
-      readJsonFile<GeminiCliProjectsFile>(geminiProjectsPath);
-    const geminiAccounts =
-      readJsonFile<GeminiCliAccountsFile>(geminiAccountsPath);
     const platforms: PlatformQuota[] = [];
 
     const tasks: Promise<void>[] = [];
@@ -362,20 +310,6 @@ export class QuotaService extends EventEmitter {
       }
     }
 
-    if (geminiOauth?.access_token || geminiOauth?.refresh_token) {
-      tasks.push(
-        this.fetchGeminiCliQuota(
-          geminiOauth,
-          geminiProjects ?? undefined,
-          geminiAccounts ?? undefined,
-        )
-          .then((p) => {
-            if (p) platforms.push(p);
-          })
-          .catch(() => {}),
-      );
-    }
-
     await Promise.allSettled(tasks);
 
     // If no auth file, surface an OpenCode card in error state so UI still shows a provider
@@ -384,8 +318,6 @@ export class QuotaService extends EventEmitter {
       auth?.["zhipuai-coding-plan"] ||
       auth?.["zai-coding-plan"] ||
       auth?.["github-copilot"] ||
-      geminiOauth?.access_token ||
-      geminiOauth?.refresh_token ||
       (antigravityFile &&
         antigravityFile.accounts &&
         antigravityFile.accounts.length > 0),
@@ -420,7 +352,7 @@ export class QuotaService extends EventEmitter {
     return data;
   }
 
-  // ── Platform fetchers ────────────────────────────────────────────────────────
+  // â”€â”€ Platform fetchers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private async fetchOpenAI(
     auth: OpenAIAuthData,
@@ -543,7 +475,7 @@ export class QuotaService extends EventEmitter {
           {
             label: "Error",
             remainPercent: 0,
-            percentLabel: "—",
+            percentLabel: "â€”",
             note: "Check auth.json token or rate limits.",
           },
         ],
@@ -875,7 +807,7 @@ export class QuotaService extends EventEmitter {
 
         // Add separator
         quotas.push({
-          label: "─────────────────────────",
+          label: "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€",
           remainPercent: 0,
         });
 
@@ -924,257 +856,7 @@ export class QuotaService extends EventEmitter {
     }
   }
 
-  private resolveGeminiCliProjectId(
-    projectsFile?: GeminiCliProjectsFile,
-  ): string | undefined {
-    const envProject =
-      process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT_ID;
-    if (envProject) {
-      return envProject;
-    }
-
-    const projects = projectsFile?.projects;
-    if (!projects || typeof projects !== "object") {
-      return undefined;
-    }
-
-    const entries = Object.entries(projects).filter(
-      ([key, value]) => typeof key === "string" && typeof value === "string",
-    );
-
-    if (entries.length === 0) {
-      return undefined;
-    }
-
-    const cwd = normalizePathForLookup(process.cwd());
-    const exactMatch = entries.find(
-      ([projectPath]) => normalizePathForLookup(projectPath) === cwd,
-    );
-    if (exactMatch) {
-      return exactMatch[1];
-    }
-
-    const cwdBase = path.basename(cwd);
-    const suffixMatch = entries.find(([projectPath]) =>
-      normalizePathForLookup(projectPath).endsWith(`/${cwdBase}`),
-    );
-    if (suffixMatch) {
-      return suffixMatch[1];
-    }
-
-    if (entries.length === 1) {
-      return entries[0][1];
-    }
-
-    return undefined;
-  }
-
-  private async refreshGeminiCliAccessToken(
-    creds: GeminiCliOAuthCredentials,
-  ): Promise<GeminiCliOAuthCredentials | null> {
-    if (!creds.refresh_token) {
-      return null;
-    }
-
-    try {
-      const refreshRaw = await httpsPost(
-        GOOGLE_TOKEN_REFRESH_URL,
-        { "Content-Type": "application/x-www-form-urlencoded" },
-        new URLSearchParams({
-          client_id: GEMINI_CLI_OAUTH_CLIENT_ID,
-          client_secret: GEMINI_CLI_OAUTH_CLIENT_SECRET,
-          refresh_token: creds.refresh_token,
-          grant_type: "refresh_token",
-        }).toString(),
-      );
-
-      const refreshed = JSON.parse(refreshRaw);
-      if (!refreshed?.access_token) {
-        return null;
-      }
-
-      const next: GeminiCliOAuthCredentials = {
-        ...creds,
-        access_token: refreshed.access_token,
-        token_type: refreshed.token_type ?? creds.token_type,
-        scope: refreshed.scope ?? creds.scope,
-        expiry_date:
-          typeof refreshed.expires_in === "number"
-            ? Date.now() + refreshed.expires_in * 1000
-            : creds.expiry_date,
-      };
-
-      try {
-        fs.writeFileSync(
-          geminiOAuthPath,
-          JSON.stringify(next, null, 2),
-          "utf8",
-        );
-      } catch {}
-
-      return next;
-    } catch {
-      return null;
-    }
-  }
-
-  private async requestGeminiCliQuota(
-    accessToken: string,
-    projectId: string,
-  ): Promise<GeminiQuotaResponse> {
-    const raw = await httpsPost(
-      GEMINI_CLI_QUOTA_API_URL,
-      {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT,
-      },
-      JSON.stringify({ project: projectId }),
-    );
-
-    return JSON.parse(raw) as GeminiQuotaResponse;
-  }
-
-  private async fetchGeminiCliQuota(
-    creds: GeminiCliOAuthCredentials,
-    projectsFile?: GeminiCliProjectsFile,
-    accountsFile?: GeminiCliAccountsFile,
-  ): Promise<PlatformQuota | null> {
-    let activeCreds = creds;
-
-    if (
-      (!activeCreds.access_token ||
-        (typeof activeCreds.expiry_date === "number" &&
-          activeCreds.expiry_date <= Date.now() + 60_000)) &&
-      activeCreds.refresh_token
-    ) {
-      const refreshed = await this.refreshGeminiCliAccessToken(activeCreds);
-      if (refreshed) {
-        activeCreds = refreshed;
-      }
-    }
-
-    if (!activeCreds.access_token) {
-      return {
-        platform: "google-gemini-cli",
-        account: accountsFile?.active ?? "Gemini CLI",
-        title: "Google / Gemini CLI",
-        status: "error",
-        error: "No Gemini CLI access token available",
-        quotas: [],
-      };
-    }
-
-    const initialAccessToken = activeCreds.access_token;
-
-    const projectId = this.resolveGeminiCliProjectId(projectsFile);
-    if (!projectId) {
-      return {
-        platform: "google-gemini-cli",
-        account: accountsFile?.active ?? "Gemini CLI",
-        title: "Google / Gemini CLI",
-        status: "warning",
-        error:
-          "No Gemini CLI project mapping found. Set GOOGLE_CLOUD_PROJECT or open from a mapped workspace.",
-        quotas: [{ label: "No quota data", remainPercent: 0 }],
-      };
-    }
-
-    let quotaResponse: GeminiQuotaResponse | null = null;
-
-    try {
-      quotaResponse = await this.requestGeminiCliQuota(
-        initialAccessToken,
-        projectId,
-      );
-    } catch {
-      if (activeCreds.refresh_token) {
-        const refreshed = await this.refreshGeminiCliAccessToken(activeCreds);
-        const refreshedToken = refreshed?.access_token;
-        if (refreshedToken) {
-          activeCreds = refreshed;
-          try {
-            quotaResponse = await this.requestGeminiCliQuota(
-              refreshedToken,
-              projectId,
-            );
-          } catch {
-            quotaResponse = null;
-          }
-        }
-      }
-    }
-
-    if (!quotaResponse) {
-      return {
-        platform: "google-gemini-cli",
-        account: accountsFile?.active ?? "Gemini CLI",
-        title: "Google / Gemini CLI",
-        status: "error",
-        error: "Failed to retrieve Gemini CLI quota",
-        quotas: [],
-      };
-    }
-
-    const buckets = Array.isArray(quotaResponse.buckets)
-      ? quotaResponse.buckets
-      : [];
-    const quotas: QuotaItem[] = [];
-
-    for (const bucket of buckets) {
-      if (!bucket?.modelId) {
-        continue;
-      }
-
-      const fraction = Number(bucket.remainingFraction ?? 0);
-      if (!Number.isFinite(fraction)) {
-        continue;
-      }
-
-      const remainPercentRaw = Math.max(0, Math.min(100, fraction * 100));
-      const remaining = Number(bucket.remainingAmount ?? 0);
-      let usedTotalDisplay: string | undefined;
-
-      if (remaining > 0 && fraction > 0) {
-        const limit = Math.round(remaining / fraction);
-        if (limit > 0 && Number.isFinite(limit)) {
-          const used = Math.max(0, limit - remaining);
-          usedTotalDisplay = `${formatNumber(used)} / ${formatNumber(limit)}`;
-        }
-      }
-
-      const resetAtMs = bucket.resetTime ? Date.parse(bucket.resetTime) : NaN;
-
-      quotas.push({
-        label: bucket.tokenType
-          ? `${bucket.modelId} (${bucket.tokenType.toLowerCase()})`
-          : bucket.modelId,
-        remainPercent: percentBar(remainPercentRaw),
-        usedTotalDisplay,
-        percentLabel: `${remainPercentRaw.toFixed(1)}% remaining`,
-        resetLabel: Number.isFinite(resetAtMs)
-          ? formatResetFromTimestampMs(resetAtMs)
-          : undefined,
-      });
-    }
-
-    if (quotas.length === 0) {
-      quotas.push({ label: "No quota data", remainPercent: 0 });
-    }
-
-    const hasLowQuota = quotas.some((q) => q.remainPercent <= 10);
-
-    return {
-      platform: "google-gemini-cli",
-      account: accountsFile?.active ?? "Gemini CLI",
-      accountLabel: projectId,
-      title: "Google / Gemini CLI",
-      status: hasLowQuota ? "warning" : "ok",
-      quotas,
-    };
-  }
-
-  // ── Dispose ──────────────────────────────────────────────────────────────────
+  // â”€â”€ Dispose â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   public dispose(): void {
     this.isDisposed = true;

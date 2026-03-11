@@ -56,6 +56,20 @@ export function validateStructuredOutput(
     errors.push("message must be a string");
   }
 
+  if (!Array.isArray(record.reasoning)) {
+    errors.push("reasoning must be an array of strings");
+  } else {
+    const invalidReasoningItem = record.reasoning.some(
+      (item) => typeof item !== "string" || item.trim().length === 0,
+    );
+    if (invalidReasoningItem) {
+      errors.push("reasoning must only contain non-empty strings");
+    }
+    if (record.reasoning.length === 0) {
+      errors.push("reasoning must contain at least one item");
+    }
+  }
+
   if (
     typeof record.plan !== "undefined" &&
     (!record.plan || typeof record.plan !== "object")

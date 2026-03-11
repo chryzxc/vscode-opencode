@@ -9,22 +9,22 @@ export type StructuredResponseType =
 
 export type StructuredOutputSchema = {
   type: "json_schema";
-  name: "opencode_assistant_response";
-  strict: boolean;
+  retryCount?: number;
   schema: {
     type: "object";
     additionalProperties: boolean;
+    required?: string[];
     properties: Record<string, unknown>;
   };
 };
 
 export const structuredOutputSchema: StructuredOutputSchema = {
   type: "json_schema",
-  name: "opencode_assistant_response",
-  strict: false,
+  retryCount: 2,
   schema: {
     type: "object",
     additionalProperties: true,
+    required: ["responseType", "reasoning"],
     properties: {
       responseType: {
         type: "string",
@@ -37,9 +37,20 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "interactive",
           "error",
         ],
+        description:
+          "Structured response category for UI rendering.",
       },
-      message: { type: "string" },
-      reasoning: { type: "array", items: { type: "string" } },
+      message: {
+        type: "string",
+        description: "User-facing response text for chat rendering.",
+      },
+      reasoning: {
+        type: "array",
+        minItems: 1,
+        items: { type: "string" },
+        description:
+          "Concise thinking trace for the UI thinking timeline. Include at least one item.",
+      },
       progressUpdates: {
         type: "array",
         items: {
@@ -61,11 +72,13 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           properties: {
             type: {
               type: "string",
-              enum: ["question", "confirm", "quick_actions"],
+              enum: ["question", "confirm", "quick_actions", "message"],
             },
             id: { type: "string" },
             title: { type: "string" },
             question: { type: "string" },
+            message: { type: "string" },
+            content: { type: "string" },
             multiSelect: { type: "boolean" },
             allowCustomInput: { type: "boolean" },
             confirmLabel: { type: "string" },

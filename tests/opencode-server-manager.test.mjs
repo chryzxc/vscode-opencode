@@ -58,7 +58,9 @@ test('OpencodeServerManager connects to configured port if available', () => {
   assert.match(ensureBody, /const configuredPort = config\.get<number>\("serverPort",\s*0\)/, 'ensureRunning should read serverPort from config');
   assert.match(ensureBody, /if\s*\(configuredPort > 0\)/, 'ensureRunning should check if configured port is set');
   assert.match(ensureBody, /const reachable = await this\.isPortReachable\(configuredPort\)/, 'ensureRunning should verify configured port is reachable');
+  assert.match(ensureBody, /const workspaceDirectory = this\.getWorkspaceDirectory\(\)/, 'ensureRunning should resolve workspace directory for client scoping');
   assert.match(ensureBody, /createOpencodeClient\(\{\s*baseUrl:\s*`http:\/\/localhost:\${configuredPort}`/, 'ensureRunning should create client for configured port');
+  assert.match(ensureBody, /directory:\s*workspaceDirectory/, 'ensureRunning should pass directory header to SDK client');
   assert.match(ensureBody, /this\.port = configuredPort/, 'ensureRunning should store configured port');
   assert.match(ensureBody, /this\.setStatus\("running"\)/, 'ensureRunning should set status to running on successful connect');
 });
@@ -83,7 +85,7 @@ test('OpencodeServerManager detects server readiness via stdout parsing', () => 
   assert.match(startBody, /if\s*\(output\.includes\("Server running"\)\s*\|\|\s*output\.includes\("listening"\)\)/, 'startServer should detect ready keyword in output');
   assert.match(startBody, /let serverReady = false/, 'startServer should track server ready flag');
   assert.match(startBody, /if\s*\(!serverReady\)\s*\{[\s\S]*serverReady = true/, 'startServer should prevent duplicate client creation');
-  assert.match(startBody, /this\.connectToServer\(\)\.then\(settleResolve\)/, 'startServer should connect to server when ready');
+  assert.match(startBody, /this\.connectToServer\(\)\s*\.then\(settleResolve\)/, 'startServer should connect to server when ready');
 });
 
 test('OpencodeServerManager implements port reachability check', () => {
@@ -176,6 +178,33 @@ test('OpencodeServerManager exposes client and port getters', () => {
   assert.match(serverManagerSource, /return this\.client/, 'getClient should return client field');
   assert.match(serverManagerSource, /getPort\(\): number/, 'OpencodeServerManager should expose getPort method');
   assert.match(serverManagerSource, /return this\.port/, 'getPort should return port field');
+});
+
+test('OpencodeServerManager derives workspace directory for SDK client header', () => {
+  assert.match(
+    serverManagerSource,
+    /private getWorkspaceDirectory\(\): string \| undefined/,
+    'OpencodeServerManager should expose workspace-directory helper',
+  );
+  const helperBody = extractFunctionBody(
+    serverManagerSource,
+    'private getWorkspaceDirectory(): string | undefined',
+  );
+  assert.match(
+    helperBody,
+    /vscode\.workspace\.workspaceFolders\?\.\[0\]/,
+    'workspace helper should read first workspace folder',
+  );
+  assert.match(
+    helperBody,
+    /workspaceFolder\.uri\.fsPath/,
+    'workspace helper should return fsPath for file scheme',
+  );
+  assert.match(
+    helperBody,
+    /replace\(\/\\\\\/g,\s*["']\/["']\)\.replace\(\/\\\/\+\$\/,\s*["']['"]\)/,
+    'workspace helper should normalize Windows backslashes and trailing slashes',
+  );
 });
 
 test('extension registers OpencodeServerManager for proper lifecycle', () => {
