@@ -33,56 +33,98 @@ test('progressItemsFromSteps extracts diffStats from steps', () => {
 });
 
 test('AssistantMessage renders diff stats when present', () => {
-  // Verify rendering of added lines
   assert.match(
     messageComponentsSource,
-    /event\.diffStats\.added\s*>\s*0\s*&&\s*\([\s\S]*?<span[^>]*>[\s\S]*?\+{event\.diffStats\.added}[\s\S]*?<\/span>[\s\S]*?\)/,
+    /resolvedDiffStats\s*&&\s*\(resolvedDiffStats\.added\s*>\s*0\s*\|\|\s*resolvedDiffStats\.deleted\s*>\s*0\)/,
+    'Should gate diff badges behind resolvedDiffStats presence'
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /\+{resolvedDiffStats\.added}/,
     'Should render +N for added lines'
   );
 
-  // Verify rendering of deleted lines
   assert.match(
     messageComponentsSource,
-    /event\.diffStats\.deleted\s*>\s*0\s*&&\s*\([\s\S]*?<span[^>]*>[\s\S]*?-{event\.diffStats\.deleted}[\s\S]*?<\/span>[\s\S]*?\)/,
+    /-{resolvedDiffStats\.deleted}/,
     'Should render -M for deleted lines'
   );
 
   assert.match(
     messageComponentsSource,
-    /text-oc-green[\s\S]*?event\.diffStats\.added/,
+    /text-green-500[\s\S]*resolvedDiffStats\.added/,
     'Added lines should use green text'
   );
 
   assert.match(
     messageComponentsSource,
-    /text-oc-red[\s\S]*?event\.diffStats\.deleted/,
+    /text-destructive[\s\S]*resolvedDiffStats\.deleted/,
     'Deleted lines should use red text'
   );
 });
 
-test('SubagentProgressPopover component is declared and uses Radix UI', () => {
+test('AssistantMessage falls back to message edits diff stats for edit steps', () => {
   assert.match(
     messageComponentsSource,
-    /export\s+function\s+SubagentProgressPopover/,
-    'SubagentProgressPopover should be declared'
+    /const\s+fallbackEdit\s*=\s*Array\.isArray\(message\?\.edits\)/,
+    'Should resolve a fallback edit record from message.edits'
   );
-
   assert.match(
     messageComponentsSource,
-    /import\s+\*\s+as\s+Popover\s+from\s+["']@radix-ui\/react-popover["']/,
-    'Should import Radix UI Popover'
+    /const\s+resolvedDiffStats\s*=\s*item\.diffStats\s*\|\|\s*fallbackDiffStats/,
+    'Should use fallback diff stats when step diff stats are missing'
   );
-
-  assert.match(messageComponentsSource, /<Popover\.Root>/, 'Should use Popover.Root');
-  assert.match(messageComponentsSource, /<Popover\.Trigger/, 'Should use Popover.Trigger');
-  assert.match(messageComponentsSource, /<Popover\.Content/, 'Should use Popover.Content');
+  assert.match(
+    messageComponentsSource,
+    /resolvedDiffStats\.added\s*>\s*0[\s\S]*\+{resolvedDiffStats\.added}/,
+    'Should render fallback +N added count'
+  );
+  assert.match(
+    messageComponentsSource,
+    /resolvedDiffStats\.deleted\s*>\s*0[\s\S]*-{resolvedDiffStats\.deleted}/,
+    'Should render fallback -M deleted count'
+  );
 });
 
-test('AssistantMessage utilizes SubagentProgressPopover for agent rendering', () => {
+test('Subagent detail rendering uses inline rows and modal (not popovers)', () => {
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /SubagentProgressPopover/,
+    'Legacy SubagentProgressPopover should no longer be used'
+  );
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /@radix-ui\/react-popover/,
+    'Subagent rendering should no longer depend on Radix Popover'
+  );
   assert.match(
     messageComponentsSource,
-    /<SubagentProgressPopover[\s\S]*?subagent=\{subagent\}[\s\S]*?subagentDetail=\{subagentDetailsById\?\.\[subagent\.id\]\}/,
-    'AssistantMessage should use SubagentProgressPopover with subagent and detail props'
+    /import\s+\{\s*SubagentDetailModal\s*\}\s+from\s+["']\.\/SubagentDetailModal["']/,
+    'AssistantMessage should import SubagentDetailModal'
+  );
+  assert.match(
+    messageComponentsSource,
+    /<SubagentDetailModal[\s\S]*detail=\{detailData\}/,
+    'AssistantMessage should render SubagentDetailModal with normalized detail data'
+  );
+});
+
+test('AssistantMessage subagent rows render activity and open detail modal', () => {
+  assert.match(
+    messageComponentsSource,
+    /Spawned Subagents/,
+    'AssistantMessage should render a spawned-subagents section'
+  );
+  assert.match(
+    messageComponentsSource,
+    /onClick=\{\(\)\s*=>\s*openSubagentModal\(subagent\.id\)\}/,
+    'Subagent rows should open the detail modal'
+  );
+  assert.match(
+    messageComponentsSource,
+    /formatDurationMs\(subagent\.durationMs\)/,
+    'Subagent rows should render per-agent duration'
   );
 
   assert.match(

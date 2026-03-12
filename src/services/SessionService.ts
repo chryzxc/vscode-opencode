@@ -61,6 +61,12 @@ const MAX_PERSISTED_STRING_LENGTH = 120_000;
 const MAX_PERSISTED_ARRAY_LENGTH = 256;
 const MAX_PERSISTED_OBJECT_KEYS = 200;
 const MAX_PERSISTED_DEPTH = 8;
+const MAX_COMPACT_REASONING_EVENTS = 120;
+const MAX_COMPACT_PROGRESS_EVENTS = 200;
+const MAX_COMPACT_STEPS = 200;
+const MAX_COMPACT_SUBAGENTS = 64;
+const MAX_COMPACT_SUBAGENT_EVENTS = 120;
+const MAX_COMPACT_INTERACTIVE_EVENTS = 40;
 
 function isDataUrl(value: string): boolean {
   return /^data:[^;]+;base64,/i.test(value);
@@ -151,6 +157,138 @@ function estimateSerializedBytes(value: unknown): number {
   }
 }
 
+function compactReasoningEventForPersistence(event: unknown): unknown {
+  if (!event || typeof event !== "object") {
+    return sanitizeForPersistence(event);
+  }
+
+  const rec = event as Record<string, unknown>;
+  const compact: Record<string, unknown> = {};
+
+  if (typeof rec.id === "string") compact.id = rec.id;
+  if (typeof rec.text === "string") compact.text = truncateString(rec.text);
+  if (typeof rec.createdAt === "number") compact.createdAt = rec.createdAt;
+  if (typeof rec.messageID === "string") compact.messageID = rec.messageID;
+  if (typeof rec.partID === "string") compact.partID = rec.partID;
+
+  if (Object.keys(compact).length === 0) {
+    return sanitizeForPersistence(event);
+  }
+  return compact;
+}
+
+function compactProgressEventForPersistence(event: unknown): unknown {
+  if (!event || typeof event !== "object") {
+    return sanitizeForPersistence(event);
+  }
+
+  const rec = event as Record<string, unknown>;
+  const compact: Record<string, unknown> = {};
+
+  if (typeof rec.id === "string") compact.id = rec.id;
+  if (typeof rec.type === "string") compact.type = rec.type;
+  if (typeof rec.title === "string") compact.title = truncateString(rec.title);
+  if (typeof rec.content === "string") compact.content = truncateString(rec.content);
+  if (typeof rec.status === "string") compact.status = rec.status;
+  if (typeof rec.meta === "string") compact.meta = truncateString(rec.meta);
+  if (typeof rec.filePath === "string") compact.filePath = rec.filePath;
+  if (typeof rec.callID === "string") compact.callID = rec.callID;
+  if (typeof rec.createdAt === "number") compact.createdAt = rec.createdAt;
+  if (typeof rec.messageID === "string") compact.messageID = rec.messageID;
+  if (typeof rec.partID === "string") compact.partID = rec.partID;
+
+  const diffStats =
+    rec.diffStats && typeof rec.diffStats === "object"
+      ? (rec.diffStats as Record<string, unknown>)
+      : null;
+  if (diffStats) {
+    compact.diffStats = {
+      added:
+        typeof diffStats.added === "number" ? Math.max(0, diffStats.added) : 0,
+      deleted:
+        typeof diffStats.deleted === "number"
+          ? Math.max(0, diffStats.deleted)
+          : 0,
+    };
+  }
+
+  if (Object.keys(compact).length === 0) {
+    return sanitizeForPersistence(event);
+  }
+  return compact;
+}
+
+function compactSubagentForPersistence(subagent: unknown): unknown {
+  if (!subagent || typeof subagent !== "object") {
+    return sanitizeForPersistence(subagent);
+  }
+
+  const rec = subagent as Record<string, unknown>;
+  const compact: Record<string, unknown> = {};
+
+  if (typeof rec.id === "string") compact.id = rec.id;
+  if (typeof rec.parentSessionId === "string") {
+    compact.parentSessionId = rec.parentSessionId;
+  }
+  if (typeof rec.parentMessageId === "string") {
+    compact.parentMessageId = rec.parentMessageId;
+  }
+  if (typeof rec.childSessionId === "string") {
+    compact.childSessionId = rec.childSessionId;
+  }
+  if (typeof rec.agentId === "string") compact.agentId = rec.agentId;
+  if (typeof rec.name === "string") compact.name = rec.name;
+  if (typeof rec.providerID === "string") compact.providerID = rec.providerID;
+  if (typeof rec.modelID === "string") compact.modelID = rec.modelID;
+  if (typeof rec.status === "string") compact.status = rec.status;
+  if (typeof rec.latestActivity === "string") {
+    compact.latestActivity = truncateString(rec.latestActivity);
+  }
+  if (typeof rec.description === "string") {
+    compact.description = truncateString(rec.description);
+  }
+  if (typeof rec.progress === "number") compact.progress = rec.progress;
+  if (typeof rec.startedAt === "number") compact.startedAt = rec.startedAt;
+  if (typeof rec.endedAt === "number") compact.endedAt = rec.endedAt;
+  if (typeof rec.durationMs === "number") compact.durationMs = rec.durationMs;
+  if (typeof rec.errorText === "string") {
+    compact.errorText = truncateString(rec.errorText);
+  }
+  if (typeof rec.hydrationUnavailable === "boolean") {
+    compact.hydrationUnavailable = rec.hydrationUnavailable;
+  }
+
+  if (Array.isArray(rec.references)) {
+    compact.references = rec.references
+      .slice(-MAX_COMPACT_SUBAGENT_EVENTS)
+      .map((item) => sanitizeForPersistence(item));
+  }
+  if (Array.isArray(rec.thinkingEvents)) {
+    compact.thinkingEvents = rec.thinkingEvents
+      .slice(-MAX_COMPACT_SUBAGENT_EVENTS)
+      .map((item) => compactReasoningEventForPersistence(item));
+  }
+  if (Array.isArray(rec.progressEvents)) {
+    compact.progressEvents = rec.progressEvents
+      .slice(-MAX_COMPACT_SUBAGENT_EVENTS)
+      .map((item) => compactProgressEventForPersistence(item));
+  }
+  if (Array.isArray(rec.timelineEvents)) {
+    compact.timelineEvents = rec.timelineEvents
+      .slice(-MAX_COMPACT_SUBAGENT_EVENTS)
+      .map((item) => sanitizeForPersistence(item));
+  }
+  if (rec.tokenUsage && typeof rec.tokenUsage === "object") {
+    compact.tokenUsage = sanitizeForPersistence(rec.tokenUsage);
+  }
+
+  if (Object.keys(compact).length === 0) {
+    return sanitizeForPersistence(subagent);
+  }
+
+  return compact;
+}
+
 function compactMessageForPersistence(message: unknown): unknown {
   if (!message || typeof message !== "object") {
     return sanitizeForPersistence(message);
@@ -159,6 +297,8 @@ function compactMessageForPersistence(message: unknown): unknown {
   const rec = message as Record<string, unknown>;
   const compact: Record<string, unknown> = {};
 
+  if (typeof rec.id === "string") compact.id = rec.id;
+  if (typeof rec.messageID === "string") compact.messageID = rec.messageID;
   if (typeof rec.role === "string") compact.role = rec.role;
   if (typeof rec.content === "string") compact.content = truncateString(rec.content);
   if (typeof rec.text === "string") compact.text = truncateString(rec.text);
@@ -169,6 +309,24 @@ function compactMessageForPersistence(message: unknown): unknown {
     compact.parts = (rec.parts as unknown[])
       .slice(0, 16)
       .map((part) => sanitizeForPersistence(part));
+  }
+
+  if (Array.isArray(rec.reasoningEvents)) {
+    compact.reasoningEvents = (rec.reasoningEvents as unknown[])
+      .slice(-MAX_COMPACT_REASONING_EVENTS)
+      .map((event) => compactReasoningEventForPersistence(event));
+  }
+
+  if (Array.isArray(rec.progressEvents)) {
+    compact.progressEvents = (rec.progressEvents as unknown[])
+      .slice(-MAX_COMPACT_PROGRESS_EVENTS)
+      .map((event) => compactProgressEventForPersistence(event));
+  }
+
+  if (Array.isArray(rec.steps)) {
+    compact.steps = (rec.steps as unknown[])
+      .slice(-MAX_COMPACT_STEPS)
+      .map((step) => compactProgressEventForPersistence(step));
   }
 
   if (Array.isArray(rec.edits)) {
@@ -188,6 +346,26 @@ function compactMessageForPersistence(message: unknown): unknown {
     compact.images = (rec.images as unknown[]).map((img) =>
       typeof img === "string" ? redactDataUrl(img) : sanitizeForPersistence(img),
     );
+  }
+
+  if (Array.isArray(rec.subagents)) {
+    compact.subagents = (rec.subagents as unknown[])
+      .slice(0, MAX_COMPACT_SUBAGENTS)
+      .map((subagent) => compactSubagentForPersistence(subagent));
+  }
+
+  if (Array.isArray(rec.interactiveEvents)) {
+    compact.interactiveEvents = (rec.interactiveEvents as unknown[])
+      .slice(-MAX_COMPACT_INTERACTIVE_EVENTS)
+      .map((event) => sanitizeForPersistence(event));
+  }
+
+  if (rec.plan && typeof rec.plan === "object") {
+    compact.plan = sanitizeForPersistence(rec.plan);
+  }
+
+  if (rec.structuredOutput && typeof rec.structuredOutput === "object") {
+    compact.structuredOutput = sanitizeForPersistence(rec.structuredOutput);
   }
 
   if (Object.keys(compact).length === 0) {
@@ -281,6 +459,194 @@ function getMessageSignature(message: unknown): string {
   return `fallback:${role}|${created}|${content}|${text}`;
 }
 
+function messageRichnessScore(message: unknown): number {
+  if (!message || typeof message !== "object") {
+    return 0;
+  }
+
+  const rec = message as Record<string, unknown>;
+  let score = 0;
+
+  const content =
+    typeof rec.content === "string"
+      ? rec.content
+      : typeof rec.text === "string"
+        ? rec.text
+        : "";
+  score += Math.min(400, Math.floor(content.length / 20));
+
+  const partsCount = Array.isArray(rec.parts) ? rec.parts.length : 0;
+  const reasoningEventsCount = Array.isArray(rec.reasoningEvents)
+    ? rec.reasoningEvents.length
+    : 0;
+  const progressEventsCount = Array.isArray(rec.progressEvents)
+    ? rec.progressEvents.length
+    : 0;
+  const stepsCount = Array.isArray(rec.steps) ? rec.steps.length : 0;
+  const editsCount = Array.isArray(rec.edits) ? rec.edits.length : 0;
+  const subagentsCount = Array.isArray(rec.subagents) ? rec.subagents.length : 0;
+
+  score += partsCount * 2;
+  score += reasoningEventsCount * 12;
+  score += progressEventsCount * 10;
+  score += stepsCount * 8;
+  score += editsCount * 4;
+  score += subagentsCount * 16;
+
+  const planRec =
+    rec.plan && typeof rec.plan === "object"
+      ? (rec.plan as Record<string, unknown>)
+      : null;
+  const planContent = planRec?.content;
+  if (typeof planContent === "string" && planContent.trim().length > 0) {
+    score += Math.min(180, Math.floor(planContent.length / 120));
+  }
+
+  if (rec.structuredOutput && typeof rec.structuredOutput === "object") {
+    score += 20;
+  }
+
+  return score;
+}
+
+function mergeSubagentArray(
+  preferred: unknown[] | undefined,
+  fallback: unknown[] | undefined,
+): unknown[] | undefined {
+  const preferredList = Array.isArray(preferred) ? preferred : [];
+  const fallbackList = Array.isArray(fallback) ? fallback : [];
+  if (preferredList.length === 0 && fallbackList.length === 0) {
+    return undefined;
+  }
+  if (preferredList.length === 0) {
+    return [...fallbackList];
+  }
+  if (fallbackList.length === 0) {
+    return [...preferredList];
+  }
+
+  const byId = new Map<string, unknown>();
+  const pushEntry = (entry: unknown) => {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+    const rec = entry as Record<string, unknown>;
+    const id = typeof rec.id === "string" ? rec.id : "";
+    if (!id) {
+      return;
+    }
+    const existing = byId.get(id);
+    if (!existing || typeof existing !== "object") {
+      byId.set(id, entry);
+      return;
+    }
+    byId.set(id, {
+      ...(existing as Record<string, unknown>),
+      ...rec,
+    });
+  };
+
+  preferredList.forEach(pushEntry);
+  fallbackList.forEach(pushEntry);
+
+  const merged = Array.from(byId.values());
+  if (merged.length > 0) {
+    return merged;
+  }
+
+  return [...preferredList, ...fallbackList];
+}
+
+function mergeRicherMessageFields(
+  preferred: unknown,
+  fallback: unknown,
+): unknown {
+  if (!preferred || typeof preferred !== "object") {
+    return preferred;
+  }
+  if (!fallback || typeof fallback !== "object") {
+    return preferred;
+  }
+
+  const preferredRec = preferred as Record<string, unknown>;
+  const fallbackRec = fallback as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...preferredRec };
+
+  const backfillArrayField = (field: string, mergeSubagents = false) => {
+    const preferredArray = Array.isArray(preferredRec[field])
+      ? (preferredRec[field] as unknown[])
+      : undefined;
+    const fallbackArray = Array.isArray(fallbackRec[field])
+      ? (fallbackRec[field] as unknown[])
+      : undefined;
+
+    if (mergeSubagents) {
+      const mergedSubagents = mergeSubagentArray(preferredArray, fallbackArray);
+      if (mergedSubagents && mergedSubagents.length > 0) {
+        merged[field] = mergedSubagents;
+      }
+      return;
+    }
+
+    if ((!preferredArray || preferredArray.length === 0) && fallbackArray) {
+      merged[field] = fallbackArray;
+    }
+  };
+
+  backfillArrayField("reasoningEvents");
+  backfillArrayField("progressEvents");
+  backfillArrayField("steps");
+  backfillArrayField("edits");
+  backfillArrayField("interactiveEvents");
+  backfillArrayField("parts");
+  backfillArrayField("subagents", true);
+
+  if (!merged.plan && fallbackRec.plan) {
+    merged.plan = fallbackRec.plan;
+  }
+  if (!merged.structuredOutput && fallbackRec.structuredOutput) {
+    merged.structuredOutput = fallbackRec.structuredOutput;
+  }
+  if (!merged.info && fallbackRec.info) {
+    merged.info = fallbackRec.info;
+  }
+  if (
+    (typeof merged.content !== "string" || merged.content.length === 0) &&
+    typeof fallbackRec.content === "string" &&
+    fallbackRec.content.length > 0
+  ) {
+    merged.content = fallbackRec.content;
+  }
+  if (
+    (typeof merged.text !== "string" || merged.text.length === 0) &&
+    typeof fallbackRec.text === "string" &&
+    fallbackRec.text.length > 0
+  ) {
+    merged.text = fallbackRec.text;
+  }
+
+  return merged;
+}
+
+function pickRicherMessage(existing: unknown, incoming: unknown): unknown {
+  const existingScore = messageRichnessScore(existing);
+  const incomingScore = messageRichnessScore(incoming);
+  const preferred = incomingScore > existingScore ? incoming : existing;
+  const fallback = preferred === incoming ? existing : incoming;
+  if (incomingScore > existingScore) {
+    return mergeRicherMessageFields(preferred, fallback);
+  }
+  if (incomingScore < existingScore) {
+    return mergeRicherMessageFields(preferred, fallback);
+  }
+
+  const existingBytes = estimateSerializedBytes(existing);
+  const incomingBytes = estimateSerializedBytes(incoming);
+  const bytePreferred = incomingBytes > existingBytes ? incoming : existing;
+  const byteFallback = bytePreferred === incoming ? existing : incoming;
+  return mergeRicherMessageFields(bytePreferred, byteFallback);
+}
+
 function mergeConversationMessages(messageGroups: unknown[][]): unknown[] {
   const flattened: Array<{ message: unknown; created: number; order: number }> =
     [];
@@ -301,14 +667,19 @@ function mergeConversationMessages(messageGroups: unknown[][]): unknown[] {
   );
 
   const merged: unknown[] = [];
-  const seen = new Set<string>();
+  const indexBySignature = new Map<string, number>();
   for (const item of flattened) {
     const signature = getMessageSignature(item.message);
-    if (seen.has(signature)) {
+    const existingIndex = indexBySignature.get(signature);
+    if (existingIndex === undefined) {
+      indexBySignature.set(signature, merged.length);
+      merged.push(item.message);
       continue;
     }
-    seen.add(signature);
-    merged.push(item.message);
+    merged[existingIndex] = pickRicherMessage(
+      merged[existingIndex],
+      item.message,
+    );
   }
 
   return merged;
@@ -665,6 +1036,12 @@ export class SessionService {
    * @see persistState for how data is saved
    */
   async listSessions(): Promise<Session[]> {
+    // Ensure persisted local history is loaded before we merge with server data.
+    // Without this wait, early startup calls can clobber workspace history.
+    if (this.initializationPromise) {
+      await this.initializationPromise;
+    }
+
     try {
       const client = await this.serverManager.ensureRunning();
       const response = await client.session.list();
@@ -951,6 +1328,7 @@ export class SessionService {
    */
   async getMessages(sessionId: string): Promise<unknown[]> {
     console.log(`[SessionService] Fetching messages for session ${sessionId}`);
+    const localMessages = await this.loadSessionMessages(sessionId);
 
     try {
       const client = await this.serverManager.ensureRunning();
@@ -964,10 +1342,14 @@ export class SessionService {
         console.log(
           `[SessionService] Fetched ${response.data.length} messages from server`,
         );
+        const mergedMessages =
+          localMessages.length > 0
+            ? mergeConversationMessages([localMessages, response.data])
+            : response.data;
         // Keep the nested info structure from server for proper type compatibility
         // Server returns: { info: {...}, parts: [...] } which matches Message interface
-        await this.saveSessionMessages(sessionId, response.data);
-        return response.data;
+        await this.saveSessionMessages(sessionId, mergedMessages);
+        return mergedMessages;
       }
     } catch (error) {
       console.warn(
@@ -977,7 +1359,6 @@ export class SessionService {
     }
 
     // Fallback to local storage
-    const localMessages = await this.loadSessionMessages(sessionId);
     console.log(
       `[SessionService] Returning ${localMessages.length} local messages for ${sessionId}`,
     );
@@ -1122,6 +1503,23 @@ export class SessionService {
   async appendMessage(sessionId: string, message: unknown): Promise<void> {
     const messages = await this.loadSessionMessages(sessionId);
     messages.push(message);
+    await this.saveSessionMessages(sessionId, messages);
+  }
+
+  async upsertMessage(sessionId: string, message: unknown): Promise<void> {
+    const messages = await this.loadSessionMessages(sessionId);
+    const incomingSignature = getMessageSignature(message);
+    const existingIndex = messages.findIndex(
+      (candidate) => getMessageSignature(candidate) === incomingSignature,
+    );
+    if (existingIndex >= 0) {
+      messages[existingIndex] = pickRicherMessage(
+        messages[existingIndex],
+        message,
+      );
+    } else {
+      messages.push(message);
+    }
     await this.saveSessionMessages(sessionId, messages);
   }
 

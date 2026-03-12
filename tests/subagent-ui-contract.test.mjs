@@ -42,7 +42,11 @@ test('subagents inline list shows row details and timeline drilldown', () => {
     [joinFromRoot('webview', 'shared', 'src', 'chat', 'SubagentDetailModal.tsx')],
     'SubagentDetailModal.tsx',
   );
-  assert.match(modalSource, /Timeline \(\{detail\.timelineEvents\.length\}\)/, 'subagent modal details should include timeline events');
+  assert.match(
+    modalSource,
+    /Timeline \(\{detail\.timelineEvents\?\.length \|\| 0\}\)/,
+    'subagent modal details should include timeline events'
+  );
 });
 
 test('structured output supports explicit subagents response type and extraction', () => {
@@ -56,6 +60,9 @@ test('structured output supports explicit subagents response type and extraction
   assert.match(providerSource, /Spawned \$\{subagentCount\} subagent/, 'provider should emit compact summary text for subagents');
   assert.match(handlerSource, /subagentsRaw\s*=\s*sanitizedRec\.subagents\s*\?\?\s*\(rec\.spawnedSubagents/, 'frontend handler should normalize structured subagents payload');
   assert.match(handlerSource, /rec\.subagentsDelta\s*\?\?\s*rec\.subagents_delta/, 'frontend handler should normalize subagentsDelta payload');
+  assert.match(handlerSource, /normalizeSubagentProgressEvents/, 'frontend handler should normalize structured subagent progress events');
+  assert.match(handlerSource, /normalizeSubagentThinkingEvents/, 'frontend handler should normalize structured subagent thinking events');
+  assert.match(handlerSource, /normalizeSubagentTimelineEvents/, 'frontend handler should normalize structured subagent timeline events');
   assert.match(handlerSource, /UPSERT_SUBAGENT_SUMMARIES/, 'handler should push structured subagents into subagent summary store');
   assert.match(handlerSource, /structuredOutput\.subagentsDelta\.parentMessageId\s*\|\|\s*messageId/, 'handler should fall back to current messageId for subagent delta updates');
   assert.match(handlerSource, /subagentsDelta/, 'handler should support subagentsDelta payloads');

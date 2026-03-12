@@ -17,6 +17,11 @@ test('structured subagents delta updates are merged into UI state', () => {
   assert.match(handlerSource, /subagentsDelta/, 'message handler should parse subagentsDelta payload');
   assert.match(handlerSource, /UPSERT_SUBAGENT_SUMMARIES/, 'subagentsDelta should upsert summary store');
   assert.match(handlerSource, /UPSERT_SUBAGENT_DETAIL/, 'subagentsDelta should upsert detail store');
+  assert.match(
+    handlerSource,
+    /interactiveEvents\.length === 0[\s\S]*subagents\.length === 0[\s\S]*!subagentsDelta/,
+    'normalizeStructuredOutput should not drop subagentsDelta-only payloads',
+  );
 });
 
 test('subagent structured output falls back to compact summary text', () => {

@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "prebuild": "node ../../scripts/sync-structured-output-contract.mjs",
     "build": "vite build",
     "dev": "vite"
   },

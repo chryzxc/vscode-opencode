@@ -74,6 +74,7 @@ export type ServerStatus = "idle" | "starting" | "running" | "error";
 
 const SERVER_OUTPUT_LOG_BUDGET_CHARS = 16_384;
 const SERVER_OUTPUT_RECENT_BUFFER_CHARS = 8_192;
+const MANAGED_PORT_STATE_KEY = "opencode.server.lastManagedPort";
 
 /**
  * Manages the OpenCode CLI server lifecycle and connection.
@@ -130,6 +131,9 @@ export class OpencodeServerManager {
   /** Timer for auto-reconnect delay (null when not reconnecting) */
   private reconnectTimer: NodeJS.Timeout | null = null;
 
+  /** Promise for in-flight startup to prevent concurrent process spawns */
+  private startupPromise: Promise<OpencodeClient> | null = null;
+
   /** Prevents reconnect scheduling during intentional shutdown */
   private isDisposed = false;
 
@@ -154,6 +158,56 @@ export class OpencodeServerManager {
    * @param context - VSCode extension context (used for storage if needed in future)
    */
   constructor(private context: vscode.ExtensionContext) {}
+
+  private getPersistedManagedPort(): number {
+    const persistedPort = this.context.globalState.get<number>(
+      MANAGED_PORT_STATE_KEY,
+      0,
+    );
+    if (
+      typeof persistedPort !== "number" ||
+      !Number.isFinite(persistedPort) ||
+      persistedPort <= 0
+    ) {
+      return 0;
+    }
+    return Math.floor(persistedPort);
+  }
+
+  private async persistManagedPort(port: number): Promise<void> {
+    const normalized = port > 0 ? Math.floor(port) : undefined;
+    try {
+      await this.context.globalState.update(MANAGED_PORT_STATE_KEY, normalized);
+    } catch (error) {
+      log.debug("Failed to persist managed server port", {
+        port: normalized,
+        error,
+      });
+    }
+  }
+
+  private terminateProcessTree(serverProcess: cp.ChildProcess): void {
+    if (process.platform === "win32" && serverProcess.pid) {
+      try {
+        cp.execSync(`taskkill /pid ${serverProcess.pid} /T /F`);
+      } catch (error) {
+        log.debug("Failed to kill Windows process tree", {
+          pid: serverProcess.pid,
+          error,
+        });
+      }
+      return;
+    }
+
+    try {
+      serverProcess.kill();
+    } catch (error) {
+      log.debug("Failed to kill server process", {
+        pid: serverProcess.pid,
+        error,
+      });
+    }
+  }
 
   private getWorkspaceDirectory(): string | undefined {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -202,6 +256,20 @@ export class OpencodeServerManager {
    */
   async ensureRunning(): Promise<OpencodeClient> {
     this.isDisposed = false;
+
+    if (this.startupPromise) {
+      return this.startupPromise;
+    }
+
+    this.startupPromise = this.ensureRunningInternal();
+    try {
+      return await this.startupPromise;
+    } finally {
+      this.startupPromise = null;
+    }
+  }
+
+  private async ensureRunningInternal(): Promise<OpencodeClient> {
 
     // Fast path: Return existing client if already connected
     // Note: We assume the client is still valid. In the future, we might
@@ -258,6 +326,47 @@ export class OpencodeServerManager {
           port: configuredPort,
           error,
         });
+      }
+    }
+
+    // If previous extension host instance crashed, reconnect to the
+    // previously managed dynamic port before spawning another server.
+    const persistedPort = this.getPersistedManagedPort();
+    if (persistedPort > 0) {
+      try {
+        const reachable = await this.isPortReachable(persistedPort);
+        if (!reachable) {
+          throw new Error(`Persisted port ${persistedPort} is not reachable`);
+        }
+
+        const workspaceDirectory = this.getWorkspaceDirectory();
+        if (workspaceDirectory) {
+          console.log(
+            `[OpencodeServerManager] Reconnecting to persisted managed server port ${persistedPort} with directory header: ${workspaceDirectory}`,
+          );
+        }
+
+        this.client = createOpencodeClient({
+          baseUrl: `http://localhost:${persistedPort}`,
+          directory: workspaceDirectory,
+        });
+        this.port = persistedPort;
+        log.serverEvent("connect", {
+          port: persistedPort,
+          source: "persisted-port",
+        });
+
+        await this.fetchVersion();
+        this.setStatus("running");
+        return this.client;
+      } catch (error) {
+        log.warn("Failed to reconnect to persisted managed port", {
+          port: persistedPort,
+          error,
+        });
+        this.client = null;
+        this.port = 0;
+        await this.persistManagedPort(0);
       }
     }
 
@@ -326,6 +435,7 @@ export class OpencodeServerManager {
       const stderrLogState = { loggedChars: 0, suppressed: false };
       let settled = false;
       let startupTimeout: NodeJS.Timeout | null = null;
+      let serverReady = false;
 
       const appendRecentOutput = (chunk: string) => {
         if (!chunk) return;
@@ -387,6 +497,13 @@ export class OpencodeServerManager {
           clearTimeout(startupTimeout);
           startupTimeout = null;
         }
+        if (!serverReady && this.serverProcess === spawnedProcess) {
+          this.terminateProcessTree(spawnedProcess);
+          this.serverProcess = null;
+          this.client = null;
+          this.port = 0;
+          void this.persistManagedPort(0);
+        }
         reject(error);
       };
 
@@ -405,18 +522,19 @@ export class OpencodeServerManager {
       }
 
       // Step 3: Spawn the OpenCode CLI server process
-      this.serverProcess = cp.spawn(
+      const spawnedProcess = cp.spawn(
         "opencode",
         ["serve", "--port", this.port.toString()],
         spawnOptions,
       );
-
-      // Flag to prevent duplicate client creation
-      let serverReady = false;
+      this.serverProcess = spawnedProcess;
 
       // Step 4: Monitor stdout for server ready indicator
       // The server prints "Server running" or "listening" when ready
-      this.serverProcess.stdout?.on("data", (data) => {
+      spawnedProcess.stdout?.on("data", (data) => {
+        if (this.serverProcess !== spawnedProcess) {
+          return;
+        }
         const output = data.toString();
         appendRecentOutput(output);
         logServerChunk("stdout", output, stdoutLogState);
@@ -438,14 +556,17 @@ export class OpencodeServerManager {
       });
 
       // Log stderr for debugging (server errors/warnings)
-      this.serverProcess.stderr?.on("data", (data) => {
+      spawnedProcess.stderr?.on("data", (data) => {
+        if (this.serverProcess !== spawnedProcess) {
+          return;
+        }
         const output = data.toString();
         appendRecentOutput(output);
         logServerChunk("stderr", output, stderrLogState);
       });
 
       // Handle spawn errors (e.g., opencode CLI not found)
-      this.serverProcess.on("error", (error) => {
+      spawnedProcess.on("error", (error) => {
         log.error("Failed to start server", { port: this.port, error });
         this.setStatus("error");
 
@@ -459,11 +580,18 @@ export class OpencodeServerManager {
       });
 
       // Handle server process exit (normal or abnormal)
-      this.serverProcess.on("exit", (code) => {
+      spawnedProcess.on("exit", (code) => {
+        if (this.serverProcess !== spawnedProcess) {
+          return;
+        }
+        const exitedPort = this.port;
         log.info("Server process exited", { exitCode: code, port: this.port });
         this.serverProcess = null;
         this.client = null;
         this.port = 0;
+        if (exitedPort > 0) {
+          void this.persistManagedPort(0);
+        }
         this.setStatus(code === 0 ? "idle" : "error");
 
         if (!serverReady) {
@@ -542,6 +670,7 @@ export class OpencodeServerManager {
     await this.fetchVersion();
 
     this.setStatus("running");
+    void this.persistManagedPort(this.port);
     return this.client;
   }
 
@@ -689,6 +818,7 @@ export class OpencodeServerManager {
    */
   dispose() {
     this.isDisposed = true;
+    this.startupPromise = null;
 
     // Cancel any pending reconnect timer
     if (this.reconnectTimer) {
@@ -699,29 +829,16 @@ export class OpencodeServerManager {
     // Stop the server process if running
     if (this.serverProcess) {
       console.log("Stopping OpenCode server...");
-
-      if (process.platform === "win32" && this.serverProcess.pid) {
-        try {
-          cp.execSync(`taskkill /pid ${this.serverProcess.pid} /T /F`);
-        } catch (e) {
-          log.debug("Failed to kill Windows process tree", {
-            pid: this.serverProcess.pid,
-            error: e,
-          });
-        }
-      } else {
-        // On Unix systems, process.kill() sends SIGTERM
-        // This is sufficient as Unix processes typically clean up children
-        this.serverProcess.kill();
-      }
-
+      this.terminateProcessTree(this.serverProcess);
       this.serverProcess = null;
     }
 
     // Clear client reference and reset status
     this.client = null;
     this.port = 0;
+    void this.persistManagedPort(0);
     this.setStatus("idle");
+    this._onStatusChange.dispose();
   }
 
   /**

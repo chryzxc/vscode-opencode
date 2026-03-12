@@ -23,6 +23,7 @@ test('session service implements core CRUD operations and active-session fallbac
   assert.match(sessionServiceSource, /async\s+switchSession\(sessionId:\s*string\):\s*Promise<Session>/, 'SessionService should expose switchSession');
   assert.match(sessionServiceSource, /async\s+deleteSession\(sessionId:\s*string\):\s*Promise<void>/, 'SessionService should expose deleteSession');
   assert.match(sessionServiceSource, /async\s+getCurrentSession\(\):\s*Promise<Session>/, 'SessionService should expose getCurrentSession');
+  assert.match(sessionServiceSource, /async\s+upsertMessage\(sessionId:\s*string,\s*message:\s*unknown\):\s*Promise<void>/, 'SessionService should expose upsertMessage for richer local message persistence');
 
   const getCurrentBody = extractFunctionBody(sessionServiceSource, 'async getCurrentSession(): Promise<Session>');
   assert.match(getCurrentBody, /if\s*\(this\.currentSession\)\s*\{[\s\S]*return\s+this\.currentSession;/, 'getCurrentSession should return existing active session when available');
@@ -33,6 +34,132 @@ test('session service implements core CRUD operations and active-session fallbac
   assert.match(listBody, /localSessions\.forEach\(\(s\)\s*=>\s*\{[\s\S]*mergedMap\.set\(s\.id,\s*s\)/, 'listSessions should include local sessions in merge');
   assert.match(listBody, /serverSessions\.forEach\(\(s\)\s*=>\s*\{[\s\S]*mergedMap\.set\(s\.id,\s*s\)/, 'listSessions should include server sessions in merge');
   assert.match(listBody, /catch\s*\(error\)\s*\{[\s\S]*Fallback to local history/, 'listSessions should keep local fallback on server errors');
+});
+
+test('session service merges server/local messages and keeps richer duplicates', () => {
+  const getMessagesBody = extractFunctionBody(
+    sessionServiceSource,
+    'async getMessages(sessionId: string): Promise<unknown[]>',
+  );
+  assert.match(
+    getMessagesBody,
+    /const localMessages = await this\.loadSessionMessages\(sessionId\);/,
+    'getMessages should load local cache before server fetch',
+  );
+  assert.match(
+    getMessagesBody,
+    /mergeConversationMessages\(\[localMessages,\s*response\.data\]\)/,
+    'getMessages should merge local and server histories to preserve richer local metadata',
+  );
+
+  assert.match(
+    sessionServiceSource,
+    /function pickRicherMessage\(/,
+    'SessionService should define a richer-message selector for duplicate signatures',
+  );
+
+  const mergeConversationBody = extractFunctionBody(
+    sessionServiceSource,
+    'function mergeConversationMessages(messageGroups: unknown[][]): unknown[]',
+  );
+  assert.match(
+    mergeConversationBody,
+    /pickRicherMessage\(/,
+    'mergeConversationMessages should keep the richer duplicate instead of first-write-wins',
+  );
+
+  const upsertBody = extractFunctionBody(
+    sessionServiceSource,
+    'async upsertMessage(sessionId: string, message: unknown): Promise<void>',
+  );
+  assert.match(
+    upsertBody,
+    /getMessageSignature\(candidate\)\s*===\s*incomingSignature/,
+    'upsertMessage should match existing cached messages by stable signature',
+  );
+  assert.match(
+    upsertBody,
+    /pickRicherMessage\(/,
+    'upsertMessage should replace with richer content when an existing signature is found',
+  );
+
+  assert.match(
+    sessionServiceSource,
+    /function mergeRicherMessageFields\(/,
+    'SessionService should merge richer metadata from duplicate messages',
+  );
+  const mergeFieldsBody = extractFunctionBody(
+    sessionServiceSource,
+    'function mergeRicherMessageFields(',
+  );
+  assert.match(
+    mergeFieldsBody,
+    /backfillArrayField\("subagents",\s*true\)/,
+    'duplicate merge should preserve subagents from either message copy',
+  );
+  assert.match(
+    mergeFieldsBody,
+    /backfillArrayField\("reasoningEvents"\)/,
+    'duplicate merge should preserve reasoning events from either copy',
+  );
+  assert.match(
+    mergeFieldsBody,
+    /backfillArrayField\("progressEvents"\)/,
+    'duplicate merge should preserve progress events from either copy',
+  );
+});
+
+test('session service compaction preserves rich assistant metadata used by history UI', () => {
+  assert.match(
+    sessionServiceSource,
+    /function compactSubagentForPersistence\(/,
+    'SessionService should define subagent compaction helper',
+  );
+
+  const compactMessageBody = extractFunctionBody(
+    sessionServiceSource,
+    'function compactMessageForPersistence(message: unknown): unknown',
+  );
+  assert.match(
+    compactMessageBody,
+    /compact\.reasoningEvents =/,
+    'compactMessageForPersistence should retain reasoningEvents',
+  );
+  assert.match(
+    compactMessageBody,
+    /compact\.progressEvents =/,
+    'compactMessageForPersistence should retain progressEvents',
+  );
+  assert.match(
+    compactMessageBody,
+    /compact\.steps =/,
+    'compactMessageForPersistence should retain steps',
+  );
+  assert.match(
+    compactMessageBody,
+    /compact\.subagents =/,
+    'compactMessageForPersistence should retain subagents',
+  );
+
+  const compactSubagentBody = extractFunctionBody(
+    sessionServiceSource,
+    'function compactSubagentForPersistence(subagent: unknown): unknown',
+  );
+  assert.match(
+    compactSubagentBody,
+    /compact\.thinkingEvents =/,
+    'compactSubagentForPersistence should retain thinking events',
+  );
+  assert.match(
+    compactSubagentBody,
+    /compact\.progressEvents =/,
+    'compactSubagentForPersistence should retain progress events',
+  );
+  assert.match(
+    compactSubagentBody,
+    /compact\.timelineEvents =/,
+    'compactSubagentForPersistence should retain timeline events',
+  );
 });
 
 test('history sidebar emits session create/switch/delete events to extension', () => {
@@ -49,6 +176,8 @@ test('chat provider routes session CRUD messages and handles delete edge cases',
   assert.match(chatProviderSource, /case\s+"newSession"[\s\S]*case\s+"createSession"/, 'chat provider should support create session message aliases');
   assert.match(chatProviderSource, /case\s+"loadSession"[\s\S]*case\s+"openSession"[\s\S]*case\s+"switchSession"/, 'chat provider should support switch session message aliases');
   assert.match(chatProviderSource, /case\s+"deleteSession"/, 'chat provider should support delete session message');
+  assert.match(chatProviderSource, /case\s+"persistAssistantMessage"/, 'chat provider should accept assistant snapshot persistence messages from webview');
+  assert.match(chatProviderSource, /this\.sessionService\.upsertMessage\(/, 'chat provider should upsert persisted assistant snapshots into local session cache');
 
   const deleteBody = extractFunctionBody(chatProviderSource, 'private async handleDeleteSession(sessionId: string): Promise<void>');
   assert.match(deleteBody, /await\s+this\.sessionService\.deleteSession\(sessionId\)/, 'delete handler should call SessionService.deleteSession');

@@ -75,4 +75,53 @@ test('ChatViewProvider records streaming token usage during message.updated even
     /this\.geminiTokenTracker\.recordUsage/,
     'ChatViewProvider should securely record token usage through geminiTokenTracker'
   );
+  assert.match(
+    registerHandlersBody,
+    /if \(tokens\.input > 0 \|\| tokens\.output > 0 \|\| tokens\.reasoning > 0\)/,
+    'ChatViewProvider should avoid recording empty token frames',
+  );
+});
+
+test('ChatViewProvider emits subagent updates and async stream enrich payloads', () => {
+  const registerHandlersBody = extractFunctionBody(
+    chatProviderSource,
+    'resolveWebviewView(',
+  );
+
+  assert.match(
+    registerHandlersBody,
+    /const subagentUpdate = this\.subagentTracker\.consumeStreamEvent\(event\)/,
+    'stream callback should feed events through subagent tracker',
+  );
+  assert.match(
+    registerHandlersBody,
+    /if \(subagentUpdate\) \{[\s\S]*type: "subagentUpdate"/s,
+    'stream callback should post subagentUpdate messages when tracker emits updates',
+  );
+
+  assert.match(
+    registerHandlersBody,
+    /if \(enrichedEvent\?\.structured\?\.kind === "progress"\)/,
+    'diff enrichment should only run for progress-like stream events',
+  );
+  assert.match(
+    registerHandlersBody,
+    /const isToolDone = partType === "tool" && part\.state\?\.status === "done";/,
+    'diff enrichment should detect completed tool events',
+  );
+  assert.match(
+    registerHandlersBody,
+    /const isStepFinish = partType === "step-finish";/,
+    'diff enrichment should detect step-finish events',
+  );
+  assert.match(
+    registerHandlersBody,
+    /toolName\.includes\("write"\)[\s\S]*toolName\.includes\("replace"\)[\s\S]*toolName\.includes\("edit"\)[\s\S]*isStepFinish/s,
+    'diff enrichment should be constrained to file-mutating tools or step-finish events',
+  );
+  assert.match(
+    registerHandlersBody,
+    /this\.view\.webview\.postMessage\(\{\s*type: "streamEventEnrich",[\s\S]*callID,[\s\S]*diffStats: stats/s,
+    'provider should post streamEventEnrich updates containing callID and computed diff stats',
+  );
 });

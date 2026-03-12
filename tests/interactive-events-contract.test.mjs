@@ -30,6 +30,7 @@ test('structured output schema supports interactive event types', () => {
   assert.match(schemaText, /"question"/, 'schema should allow question response type');
   assert.match(schemaText, /"quick_actions"/, 'schema should allow quick_actions interactive event type');
   assert.match(schemaText, /"confirm"/, 'schema should allow confirm interactive event type');
+  assert.match(schemaText, /"message"/, 'schema should allow message interactive event type');
   assert.match(schemaText, /options/, 'schema should declare question options payload');
 });
 
@@ -50,6 +51,8 @@ test('frontend normalizes and stores interactive events', () => {
   assert.match(handlerSource, /toInteractiveEvents\(/, 'message handler should map structured output to interactive events');
   assert.match(handlerSource, /SET_INTERACTIVE_EVENTS/, 'message handler should update interactive event state');
   assert.match(handlerSource, /typeRaw\s*===\s*'question'\s*\|\|\s*typeRaw\s*===\s*'interactive'/, 'interactive payloads should be gated by typed responseType');
+  assert.match(handlerSource, /typeRaw\s*===\s*'message'/, 'message handler should normalize message interactive event type');
+  assert.match(handlerSource, /options\.length < 2/, 'question interactive events should require at least two options');
   assert.doesNotMatch(handlerSource, /return\s+detectInteractiveEventsFromText\(/, 'plain assistant text should not auto-generate interactive popups');
   assert.doesNotMatch(handlerSource, /const\s+interactiveEvents\s*=\s*detectInteractiveEventsFromText\(/, 'streaming completion should not infer popup questions from text heuristics');
 });
@@ -65,6 +68,11 @@ test('structured question outputs dispatch popup interactive state', () => {
     /type:\s*'question',[\s\S]*question,\s*options,/s,
     'question responses should preserve question text and options for popup rendering',
   );
+  assert.match(
+    providerSource,
+    /Coerced interactive response into fallback question event/,
+    'provider should coerce malformed interactive responses into picker-safe question events',
+  );
 });
 
 test('input wrapper renders top popup choices and posts batchInteractiveResponse', () => {
@@ -76,6 +84,7 @@ test('input wrapper renders top popup choices and posts batchInteractiveResponse
   assert.match(inputBody, /activeInteractiveEvent/, 'input wrapper should compute active interactive event');
   assert.match(inputBody, /Quick Input/, 'input wrapper should render a top prompt popup');
   assert.match(inputBody, /event\.type === "question"/, 'popup should support question-type interactive events');
+  assert.match(inputBody, /event\.type === "message"/, 'popup should support message-type interactive events');
   assert.match(inputBody, /event\.options\.map\(/, 'question popup should render clickable option buttons');
   assert.match(inputBody, /type:\s*"batchInteractiveResponse"/, 'popup choice clicks should post batchInteractiveResponse');
 });
@@ -84,4 +93,5 @@ test('interactive event domain types are defined', () => {
   assert.match(typesSource, /export interface InteractiveQuestionEvent/, 'types should define InteractiveQuestionEvent');
   assert.match(typesSource, /export interface InteractiveConfirmEvent/, 'types should define InteractiveConfirmEvent');
   assert.match(typesSource, /export interface InteractiveQuickActionsEvent/, 'types should define InteractiveQuickActionsEvent');
+  assert.match(typesSource, /export interface InteractiveMessageEvent/, 'types should define InteractiveMessageEvent');
 });

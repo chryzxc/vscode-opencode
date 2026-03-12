@@ -34,9 +34,11 @@ export const initialState: AppState = {
   selectedAgent: "",
   agentSearchQuery: "",
   isProcessing: false,
+  isSteering: false,
   currentSessionId: null,
   messages: [],
   promptQueue: [],
+  queueBySessionId: {},
   isExecutingQueue: false,
   isQueueOpen: false,
   isSidebarOpen: false,
@@ -55,6 +57,8 @@ export const initialState: AppState = {
   fileSuggestions: [],
   showFileSuggestions: false,
   selectedSuggestionIndex: 0,
+  availableCommands: [],
+  commandsLoaded: false,
   receivedInitState: false,
   serverStatus: "connecting",
   modelDropdownOpen: false,
@@ -99,6 +103,7 @@ export type AppAction =
   | { type: "SET_MESSAGES"; payload: Message[] }
   | { type: "CLEAR_MESSAGES" }
   | { type: "SET_PROCESSING"; payload: boolean }
+  | { type: "SET_STEERING"; payload: boolean }
   | { type: "SET_SESSIONS_LIST"; payload: Session[] }
   | { type: "ADD_SESSION_EDIT"; payload: string }
   | { type: "CLEAR_SESSION_EDITS" }
@@ -119,9 +124,16 @@ export type AppAction =
   | { type: "SET_FILE_SUGGESTIONS"; payload: FileResult[] }
   | { type: "SET_SHOW_FILE_SUGGESTIONS"; payload: boolean }
   | { type: "SET_SUGGESTION_INDEX"; payload: number }
+  | {
+      type: "SET_COMMANDS_LIST";
+      payload: AppState["availableCommands"];
+    }
   | { type: "SET_SELECTED_FILES"; payload: string[] }
   | { type: "SET_SELECTED_CONTEXTS"; payload: ContextItem[] }
-  | { type: "SET_QUEUE"; payload: QueueItem[] }
+  | {
+      type: "SET_QUEUE";
+      payload: { sessionId: string | null; queue: QueueItem[] };
+    }
   | { type: "SET_EXECUTING_QUEUE"; payload: boolean }
   | { type: "SET_QUEUE_OPEN"; payload: boolean }
   | { type: "SET_SIDEBAR_OPEN"; payload: boolean }
@@ -191,10 +203,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const statsForNew = newId
         ? (state.sessionsStatsById?.[newId] ?? zeroStats)
         : zeroStats;
+      const queueForNew = newId ? (state.queueBySessionId[newId] ?? []) : [];
       return {
         ...state,
         currentSessionId: action.payload,
         sessionStats: statsForNew,
+        promptQueue: queueForNew,
       };
     }
     case "SET_SERVER_STATUS":
@@ -216,7 +230,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_PROCESSING":
       // When processing starts, create an empty streaming state so the StreamingCard is visible immediately
       // instead of showing the "Thinking..." bubble
-      if (action.payload && !state.streaming) {
+      if (action.payload && (!state.streaming || !state.streaming.isActive)) {
         try {
           // Only create streaming state if we have valid model selection
           // Otherwise just set isProcessing and let stream events create the state
@@ -256,11 +270,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           return { ...state, isProcessing: true };
         }
       }
-      // When processing ends, clear the streaming state
+      // When processing ends, keep the latest streaming snapshot visible until
+      // messageResponse/chatHistory explicitly clears it. This prevents the
+      // streamed assistant content from disappearing between finish and finalize.
       if (!action.payload) {
-        return { ...state, isProcessing: false, streaming: null };
+        return { ...state, isProcessing: false, isSteering: false };
       }
       return { ...state, isProcessing: action.payload };
+    case "SET_STEERING":
+      return { ...state, isSteering: action.payload };
     case "SET_SESSIONS_LIST":
       return { ...state, sessionsList: action.payload };
     case "ADD_SESSION_EDIT": {
@@ -445,12 +463,38 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, showFileSuggestions: action.payload };
     case "SET_SUGGESTION_INDEX":
       return { ...state, selectedSuggestionIndex: action.payload };
+    case "SET_COMMANDS_LIST":
+      return {
+        ...state,
+        availableCommands: action.payload,
+        commandsLoaded: true,
+      };
     case "SET_SELECTED_FILES":
       return { ...state, selectedFiles: action.payload };
     case "SET_SELECTED_CONTEXTS":
       return { ...state, selectedContexts: action.payload };
-    case "SET_QUEUE":
-      return { ...state, promptQueue: action.payload };
+    case "SET_QUEUE": {
+      const targetSessionId = action.payload.sessionId ?? state.currentSessionId;
+      if (!targetSessionId) {
+        return { ...state, promptQueue: action.payload.queue };
+      }
+
+      const nextBySession = { ...state.queueBySessionId };
+      if (action.payload.queue.length > 0) {
+        nextBySession[targetSessionId] = action.payload.queue;
+      } else {
+        delete nextBySession[targetSessionId];
+      }
+
+      return {
+        ...state,
+        queueBySessionId: nextBySession,
+        promptQueue:
+          state.currentSessionId === targetSessionId
+            ? action.payload.queue
+            : state.promptQueue,
+      };
+    }
     case "SET_EXECUTING_QUEUE":
       return { ...state, isExecutingQueue: action.payload };
     case "SET_QUEUE_OPEN":

@@ -304,7 +304,7 @@ export default function PlanShell() {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
+    <div className="plan-view-shell flex h-screen flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
       {/* ─── Header ─────────────────────────────────────────────────────── */}
       <header className="flex-shrink-0 border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background,var(--vscode-editor-background))] px-4 py-3">
         <div className="flex items-center justify-between gap-3">

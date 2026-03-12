@@ -1,19 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   FileText as FileTextIcon,
   Loader2,
   X,
   Sparkles,
   RotateCw,
-  User,
   Zap,
   AlertCircle,
 } from "lucide-react";
-import * as Popover from "@radix-ui/react-popover";
 
 import { Badge } from "@/components/ui/badge";
+import { Stepper, StepperItem } from "@/components/ui/stepper";
 import { cn } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
@@ -249,10 +250,7 @@ function modelLabel(message?: Message): string {
     if (typeof modelID === "string" && modelID) return modelID;
   }
   // Check top-level model object (from persisted messages)
-  if (
-    typeof message.model === "object" &&
-    message.model !== null
-  ) {
+  if (typeof message.model === "object" && message.model !== null) {
     const name = (message.model as Record<string, unknown>).name;
     const modelID = (message.model as Record<string, unknown>).modelID;
     if (typeof name === "string" && name) return name;
@@ -299,6 +297,9 @@ function getMessageContent(
 type ThoughtItem = { key: string; text: string };
 type ProgressItem = {
   key: string;
+  mergeKey: string;
+  id?: string;
+  callID?: string;
   title: string;
   status: "pending" | "done" | "error";
   meta?: string;
@@ -370,9 +371,17 @@ function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
   return fallback ? [{ key: "stream-reasoning-fallback", text: fallback }] : [];
 }
 
-function normalizeProgressStatus(value?: string | null): "pending" | "done" | "error" {
+function normalizeProgressStatus(
+  value?: string | null,
+): "pending" | "done" | "error" {
   const v = value?.toLowerCase();
-  if (v === "done" || v === "completed" || v === "success" || v === "finished" || v === "complete") {
+  if (
+    v === "done" ||
+    v === "completed" ||
+    v === "success" ||
+    v === "finished" ||
+    v === "complete"
+  ) {
     return "done";
   }
   if (v === "error" || v === "failed") {
@@ -391,6 +400,9 @@ function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
   if (title === "thinking..." || title === "thinking") {
     return false;
   }
+  if (title === "starting step" || title === "finishing step") {
+    return false;
+  }
 
   return true;
 }
@@ -407,25 +419,56 @@ function progressItemsFromSteps(
       const title = step.title;
       const status = normalizeProgressStatus(step.status);
       const meta = step.meta;
+      const stepId =
+        "id" in step && typeof step.id === "string" ? step.id : undefined;
+      const stepCallId =
+        "callID" in step && typeof step.callID === "string"
+          ? step.callID
+          : undefined;
+      const mergeKey = stepCallId
+        ? `call:${stepCallId}`
+        : stepId
+          ? `id:${stepId}`
+          : `title:${title.trim().toLowerCase()}`;
       const stepFilePath =
         "filePath" in step
           ? (step as StreamingStep).filePath
           : ((step as MessageStep).content ?? undefined);
 
-      if (stepMap.has(title)) {
-        const existing = stepMap.get(title)!;
-        existing.status = status;
+      if (stepMap.has(mergeKey)) {
+        const existing = stepMap.get(mergeKey)!;
+        // Do not regress terminal statuses back to pending on noisy updates.
+        if (
+          status === "error" ||
+          status === "done" ||
+          existing.status === "pending"
+        ) {
+          existing.status = status;
+        }
+        if (title) existing.title = title;
         if (meta) existing.meta = meta;
         if (stepFilePath) existing.filePath = stepFilePath;
-        if ("diffStats" in step) existing.diffStats = step.diffStats as { added: number; deleted: number };
+        if (!existing.id && stepId) existing.id = stepId;
+        if (!existing.callID && stepCallId) existing.callID = stepCallId;
+        if ("diffStats" in step)
+          existing.diffStats = step.diffStats as {
+            added: number;
+            deleted: number;
+          };
       } else {
-        stepMap.set(title, {
+        stepMap.set(mergeKey, {
           key: `${prefix}-${index}-${title}`,
+          mergeKey,
+          id: stepId,
+          callID: stepCallId,
           title,
           status,
           meta,
           filePath: stepFilePath,
-          diffStats: "diffStats" in step ? (step.diffStats as { added: number; deleted: number }) : undefined,
+          diffStats:
+            "diffStats" in step
+              ? (step.diffStats as { added: number; deleted: number })
+              : undefined,
         });
       }
     });
@@ -491,14 +534,6 @@ function formatDurationMs(ms?: number): string {
   return `${Math.round(ms)}ms`;
 }
 
-function statusBadgeClass(status: string): string {
-  if (status === "done") return "text-oc-green border-oc-border";
-  if (status === "error") return "text-oc-red border-oc-border";
-  if (status === "running") return "text-oc-accent border-oc-border";
-  if (status === "orphaned") return "text-oc-yellow border-oc-border";
-  return "text-oc-text-muted border-oc-border";
-}
-
 function sanitizeUserContent(raw: string): string {
   return raw
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
@@ -532,7 +567,12 @@ function buildStreamingTimeline(
   for (const item of progressItems) {
     // Match back to the original step to read its streamSeq timestamp.
     // Use the first occurrence so we get the arrival time, not a later update.
-    const step = streaming.steps.find((s) => s.title === item.title);
+    const step = streaming.steps.find(
+      (s) =>
+        (!!item.callID && !!s.callID && s.callID === item.callID) ||
+        (!!item.id && !!s.id && s.id === item.id) ||
+        s.title === item.title,
+    );
     // NOTE: Fall back to MAX_SAFE_INTEGER (not 0) so that steps with
     // no timestamp always sort AFTER thinking/content, never before.
     const rawSeq = step?.streamSeq ?? step?.startTime;
@@ -639,7 +679,7 @@ function buildMessageTimeline(
     }
 
     // If parts had no reasoning entries but the message has reasoningEvents,
-    // they won't have been added above — insert them before the first content block.
+    // they won't have been added above â€” insert them before the first content block.
     const hasThinkingBlock = blocks.some((b) => b.kind === "thinking");
     if (!hasThinkingBlock && thoughtItems.length > 0) {
       const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
@@ -660,7 +700,7 @@ function buildMessageTimeline(
     });
   }
 
-  // Fallback for messages that have no parts array — thinking always precedes content
+  // Fallback for messages that have no parts array â€” thinking always precedes content
   const blocks: TimelineBlock[] = [];
   if (thoughtItems.length > 0)
     blocks.push({ kind: "thinking", items: thoughtItems });
@@ -668,6 +708,276 @@ function buildMessageTimeline(
     blocks.push({ kind: "steps", items: progressItems });
   if (html) blocks.push({ kind: "content", html });
   return blocks;
+}
+
+const MAX_VISIBLE_COMPLETED_ACTIVITY = 5;
+
+type MessageViewState = {
+  activityExpanded: boolean;
+  showActivityDetails: boolean;
+  showThinkingDetails: boolean;
+  showAllCompletedActivity: boolean;
+};
+
+type DisplayEvent = {
+  key: string;
+  kind: "thinking" | "activity";
+  label: string;
+  summary: string;
+  description?: string;
+  detail?: string;
+  status: "pending" | "done" | "error";
+  filePath?: string;
+  diffStats?: { added: number; deleted: number };
+  viewDiffFile?: string;
+  updateCount: number;
+};
+
+function subagentStatusLabel(status: SubagentSummary["status"]): string {
+  switch (status) {
+    case "done":
+      return "Completed";
+    case "running":
+      return "Running";
+    case "error":
+      return "Error";
+    case "orphaned":
+      return "Orphaned";
+    case "pending":
+    default:
+      return "Pending";
+  }
+}
+
+function FadeSwapText({
+  text,
+  className,
+  durationMs = 180,
+}: {
+  text: string;
+  className?: string;
+  durationMs?: number;
+}) {
+  const [displayText, setDisplayText] = useState(text);
+  const [isFadingOut, setIsFadingOut] = useState(false);
+
+  useEffect(() => {
+    if (text === displayText) {
+      return;
+    }
+
+    setIsFadingOut(true);
+    const outDuration = Math.max(60, Math.round(durationMs * 0.45));
+    const outTimer = window.setTimeout(() => {
+      setDisplayText(text);
+      requestAnimationFrame(() => setIsFadingOut(false));
+    }, outDuration);
+
+    return () => window.clearTimeout(outTimer);
+  }, [text, displayText, durationMs]);
+
+  return (
+    <span
+      className={cn(
+        "transition-all will-change-[opacity,transform]",
+        isFadingOut ? "opacity-0 translate-y-0.5" : "opacity-100 translate-y-0",
+        className,
+      )}
+      style={{ transitionDuration: `${durationMs}ms` }}
+    >
+      {displayText}
+    </span>
+  );
+}
+
+function latestNonEmptyLine(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ?? ""
+  );
+}
+
+function parseTimelineStepTitle(rawTitle: string): {
+  label: string;
+  summary: string;
+} {
+  const trimOptional = (value?: string) => value?.trim() || "";
+  const title = rawTitle.trim();
+  if (!title) {
+    return { label: "event", summary: "Activity update" };
+  }
+
+  const runningMatch = title.match(
+    /^running(?::\s*|\s+)([a-z0-9_.-]+)(?:\s+(.*))?$/is,
+  );
+  if (runningMatch) {
+    const label = runningMatch[1]?.toLowerCase() || "tool";
+    const summary = trimOptional(runningMatch[2]);
+    return { label, summary };
+  }
+
+  const bashMatch = title.match(/^bash(?::\s*|\s+)(.*)/is);
+  if (bashMatch) {
+    return { label: "bash", summary: trimOptional(bashMatch[1]) };
+  }
+
+  const readMatch = title.match(/^read(?::\s*|\s+)(.*)/is);
+  if (readMatch) {
+    return { label: "read", summary: trimOptional(readMatch[1]) };
+  }
+
+  const writeMatch = title.match(
+    /^(edit|write|modify|update|patch)(?::\s*|\s+)(.*)/is,
+  );
+  if (writeMatch) {
+    const label = writeMatch[1]?.toLowerCase() || "edit";
+    const summary = trimOptional(writeMatch[2]);
+    return { label, summary };
+  }
+
+  const thinkMatch = title.match(/^think(?:ing)?(?::\s*|\s+)?(.*)/is);
+  if (thinkMatch) {
+    return {
+      label: "thinking",
+      summary: trimOptional(thinkMatch[1]),
+    };
+  }
+
+  const spaceIdx = title.indexOf(" ");
+  if (spaceIdx > 0 && spaceIdx <= 12) {
+    const label = title.slice(0, spaceIdx).toLowerCase();
+    const summary = trimOptional(title.slice(spaceIdx + 1));
+    return { label, summary };
+  }
+
+  return { label: "event", summary: title };
+}
+
+function buildDisplayEvents(
+  timelineBlocks: TimelineBlock[],
+  message: Message | undefined,
+  isStreamingActive: boolean,
+): DisplayEvent[] {
+  const normalizePathForMatch = (value?: string) =>
+    (value || "").replace(/\\/g, "/").toLowerCase();
+  const rawEvents: DisplayEvent[] = [];
+
+  for (const block of timelineBlocks) {
+    if (block.kind === "content") {
+      continue;
+    }
+
+    if (block.kind === "thinking") {
+      for (const item of block.items) {
+        const text = item.text.trim();
+        if (!text) continue;
+        rawEvents.push({
+          key: item.key,
+          kind: "thinking",
+          label: "thinking",
+          summary: latestNonEmptyLine(text) || "Thinking...",
+          detail: text,
+          status: isStreamingActive ? "pending" : "done",
+          updateCount: 1,
+        });
+      }
+      continue;
+    }
+
+    for (const event of block.items) {
+      const rawTitle = event.title || "";
+      const parsed = parseTimelineStepTitle(rawTitle);
+      let filePath = event.filePath;
+      if (
+        !filePath &&
+        /edit|writ|modif|updat|patch/i.test(rawTitle) &&
+        message?.edits?.length
+      ) {
+        filePath = message.edits[0].file;
+      }
+
+      const fileName = filePath ? filePath.split(/[/\\]/).pop() : undefined;
+      const fallbackEdit = Array.isArray(message?.edits)
+        ? filePath
+          ? message.edits.find(
+              (edit) =>
+                normalizePathForMatch(edit?.file) ===
+                normalizePathForMatch(filePath),
+            )
+          : message.edits[0]
+        : undefined;
+      const fallbackDiffStats =
+        fallbackEdit &&
+        (typeof fallbackEdit.added === "number" ||
+          typeof fallbackEdit.deleted === "number")
+          ? {
+              added: Math.max(0, Number(fallbackEdit.added) || 0),
+              deleted: Math.max(0, Number(fallbackEdit.deleted) || 0),
+            }
+          : undefined;
+      const diffStats = event.diffStats || fallbackDiffStats;
+
+      const metaText = event.meta?.trim();
+      const summary = filePath
+        ? fileName || filePath
+        : parsed.summary || metaText || (parsed.label === "event" ? rawTitle : "");
+      const description =
+        filePath || parsed.summary
+          ? metaText
+          : metaText && metaText !== summary
+            ? metaText
+            : undefined;
+      const detail =
+        filePath && fileName && filePath !== fileName ? filePath : undefined;
+      const viewDiffFile =
+        event.status === "done" &&
+        (diffStats || /edit|writ|modif|updat|patch/i.test(rawTitle))
+          ? filePath || message?.edits?.[0]?.file
+          : undefined;
+
+      rawEvents.push({
+        key: event.key,
+        kind: "activity",
+        label: parsed.label,
+        summary: summary || rawTitle || "Activity update",
+        description,
+        detail: detail || undefined,
+        status: event.status,
+        filePath,
+        diffStats,
+        viewDiffFile,
+        updateCount: 1,
+      });
+    }
+  }
+
+  const collapsed: DisplayEvent[] = [];
+  for (const event of rawEvents) {
+    const previous = collapsed[collapsed.length - 1];
+    const isDuplicate =
+      !!previous &&
+      previous.kind === event.kind &&
+      previous.label === event.label &&
+      previous.summary === event.summary &&
+      previous.status === event.status &&
+      (previous.filePath ?? "") === (event.filePath ?? "");
+
+    if (!isDuplicate || !previous) {
+      collapsed.push({ ...event });
+      continue;
+    }
+
+    previous.updateCount += 1;
+    if (event.description) previous.description = event.description;
+    if (event.detail) previous.detail = event.detail;
+    if (event.diffStats) previous.diffStats = event.diffStats;
+    if (event.viewDiffFile) previous.viewDiffFile = event.viewDiffFile;
+  }
+
+  return collapsed;
 }
 
 export function UserMessage({ message }: { message?: Message }) {
@@ -679,6 +989,7 @@ export function UserMessage({ message }: { message?: Message }) {
   const fileChips = (message?.parts ?? [])
     .map((part) => part.filename ?? part.source?.path)
     .filter((value): value is string => !!value);
+  const hasImages = Array.isArray(message?.images) && message.images.length > 0;
 
   useEffect(() => {
     const root = userMessageRef.current;
@@ -698,6 +1009,9 @@ export function UserMessage({ message }: { message?: Message }) {
   }, []);
 
   if (!message) return null;
+  if (!content && fileChips.length === 0 && !hasImages) {
+    return null;
+  }
 
   return (
     <div className="oc-message-enter mb-5 flex items-end justify-end gap-2.5 px-4">
@@ -756,7 +1070,7 @@ function getAgentName(
     return message.info.agent;
   }
 
-  if (message && 'agent' in message) {
+  if (message && "agent" in message) {
     const agent = (message as Record<string, unknown>).agent;
     if (typeof agent === "string" && agent) {
       return agent;
@@ -774,14 +1088,14 @@ function getAgentName(
  * Type-safe helper to get token usage info from message.
  * Returns undefined for streaming state since tokens aren't available until completion.
  */
-function getTokenInfo(
-  message: Message | undefined,
-): {
-  input?: number;
-  output?: number;
-  reasoning?: number;
-  cache?: { read?: number; write?: number };
-} | undefined {
+function getTokenInfo(message: Message | undefined):
+  | {
+      input?: number;
+      output?: number;
+      reasoning?: number;
+      cache?: { read?: number; write?: number };
+    }
+  | undefined {
   if (!message) {
     return undefined;
   }
@@ -790,7 +1104,7 @@ function getTokenInfo(
     return message.info.tokens;
   }
 
-  if ('tokens' in message) {
+  if ("tokens" in message) {
     const tokens = (message as Record<string, unknown>).tokens;
     if (tokens && typeof tokens === "object") {
       return tokens as {
@@ -830,7 +1144,7 @@ function getDuration(
     return message.info.duration;
   }
 
-  if ('duration' in message) {
+  if ("duration" in message) {
     const duration = (message as Record<string, unknown>).duration;
     if (typeof duration === "number") {
       return duration;
@@ -847,89 +1161,6 @@ function getDuration(
   return undefined;
 }
 
-export function SubagentProgressPopover({
-  subagent,
-  subagentDetail,
-  colorClass,
-  children,
-}: {
-  subagent: SubagentSummary;
-  subagentDetail?: SubagentDetail;
-  colorClass: string;
-  children: React.ReactNode;
-}) {
-  const agentName = subagent.agentId || `Agent ${subagent.id.slice(0, 4)}`;
-
-  return (
-    <Popover.Root>
-      <Popover.Trigger asChild>{children}</Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          className="z-50 w-72 rounded-md border border-oc-border bg-oc-panel p-4 shadow-md outline-none animate-in fade-in zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out data-[state=closed]:zoom-out-95"
-          sideOffset={5}
-        >
-          <div className="flex flex-col gap-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className={cn("oc-agent-icon shrink-0", colorClass)}>
-                  <Sparkles className="h-3 w-3" />
-                </div>
-                <span className={cn("text-xs font-semibold truncate", colorClass)}>
-                  {agentName}
-                </span>
-              </div>
-              <Badge
-                variant="outline"
-                className={cn(
-                  "h-5 text-[10px] font-mono",
-                  subagent.status === "done"
-                    ? "border-oc-green/30 text-oc-green bg-oc-green/5"
-                    : subagent.status === "error"
-                      ? "border-oc-red/30 text-oc-red bg-oc-red/5"
-                      : "border-oc-accent/30 text-oc-accent bg-oc-accent/5",
-                )}
-              >
-                {subagent.status.toUpperCase()}
-              </Badge>
-            </div>
-
-            {subagentDetail && (
-              <div className="space-y-2.5">
-                <div className="flex flex-col gap-1">
-                  <span className="text-[10px] font-medium text-oc-text-muted uppercase tracking-wider">
-                    Latest activity
-                  </span>
-                  <div className="text-xs text-oc-text-soft line-clamp-2 italic">
-                    {subagent.latestActivity || "Initializing..."}
-                  </div>
-                </div>
-
-                {subagentDetail.progressEvents && subagentDetail.progressEvents.length > 0 && (
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-[10px] font-medium text-oc-text-muted uppercase tracking-wider">
-                      Recent Steps
-                    </span>
-                    <div className="max-h-32 overflow-y-auto pr-1 space-y-2">
-                      {subagentDetail.progressEvents.slice(-3).reverse().map((event) => (
-                        <div key={event.id} className="flex flex-col gap-1 border-l-2 border-oc-border pl-2 py-0.5">
-                          <span className="text-[10px] text-oc-text-soft leading-tight">
-                            {event.title}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          <Popover.Arrow className="fill-oc-border" />
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
-  );
-}
-
 export function AssistantMessage({
   message,
   streaming,
@@ -937,16 +1168,19 @@ export function AssistantMessage({
 }: {
   message?: Message;
   streaming?: StreamingState;
-    isContiguous?: boolean;
+  isContiguous?: boolean;
 }) {
   const dispatch = useAppDispatch();
   const { subagentsByParentMessageId, subagentDetailsById } = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
-  const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(null);
+  const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
+    null,
+  );
   const [copied, setCopied] = useState(false);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const messageBodyRef = useRef<HTMLDivElement>(null);
+  const progressTimelineRef = useRef<HTMLDivElement>(null);
   const content = getMessageContent(message, streaming);
   const thoughtItems = useMemo(
     () =>
@@ -975,10 +1209,45 @@ export function AssistantMessage({
     }
     return buildMessageTimeline(message, thoughtItems, progressItems, content);
   }, [streaming, message, thoughtItems, progressItems, content]);
+  const isStreamingActive = !!streaming?.isActive;
+  const displayEvents = useMemo(
+    () => buildDisplayEvents(timelineBlocks, message, isStreamingActive),
+    [timelineBlocks, message, isStreamingActive],
+  );
+  const [viewState, setViewState] = useState<MessageViewState>({
+    activityExpanded: true,
+    showActivityDetails: false,
+    showThinkingDetails: false,
+    showAllCompletedActivity: false,
+  });
+  const hasCompletedCondensedActivity =
+    !isStreamingActive &&
+    displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY &&
+    !viewState.showAllCompletedActivity;
+  const visibleDisplayEvents = hasCompletedCondensedActivity
+    ? displayEvents.slice(-MAX_VISIBLE_COMPLETED_ACTIVITY)
+    : displayEvents;
+  const hiddenActivityEventCount = Math.max(
+    0,
+    displayEvents.length - visibleDisplayEvents.length,
+  );
+  const activityStatusCounts = useMemo(
+    () =>
+      visibleDisplayEvents.reduce(
+        (acc, event) => {
+          if (event.status === "error") acc.error += 1;
+          else if (event.status === "done") acc.done += 1;
+          else acc.pending += 1;
+          return acc;
+        },
+        { pending: 0, done: 0, error: 0 },
+      ),
+    [visibleDisplayEvents],
+  );
 
   const info = message?.info;
   const plan = message?.plan;
-  const messageId = info?.id || streaming?.messageId;
+  const messageId = info?.id || message?.id || streaming?.messageId;
   // Merge subagents from message data and from the store lookup by parent message ID
   const subagents = useMemo(() => {
     const fromMessage = Array.isArray(message?.subagents)
@@ -1041,14 +1310,16 @@ export function AssistantMessage({
       subagents.length > 0)
   );
 
-  const showStreamingLoading = !message && !!streaming?.isActive && !hasStreamingActivity;
+  const showStreamingLoading =
+    !message && !!streaming?.isActive && !hasStreamingActivity;
 
   // Use type-safe helpers instead of type assertions
   const agentName = getAgentName(message, streaming);
   const modelName = useMemo(() => {
     if (streaming?.isActive) {
       if (streaming.model?.name) return streaming.model.name;
-      if (streaming.providerID && streaming.modelID) return `${streaming.providerID}/${streaming.modelID}`;
+      if (streaming.providerID && streaming.modelID)
+        return `${streaming.providerID}/${streaming.modelID}`;
       if (streaming.modelID) return streaming.modelID;
     }
     return modelLabel(message ?? ({} as Message));
@@ -1066,6 +1337,18 @@ export function AssistantMessage({
     !streaming && thoughtItems.length === 0 && reasoningTok > 0;
   const thinkingPlaceholderText =
     "Reasoning tokens were used, but this provider did not expose reasoning text.";
+  const hasResponseContent = content.trim().length > 0;
+  const isLiveStreamingCard = !message && !!streaming;
+  const responseBodyClass = isLiveStreamingCard
+    ? "w-full max-h-[340px] overflow-y-auto pr-1"
+    : "w-full";
+  const markdownBodyClass = isLiveStreamingCard
+    ? "w-full max-w-none"
+    : "w-full";
+  const hasThinkingEvents = useMemo(
+    () => displayEvents.some((event) => event.kind === "thinking"),
+    [displayEvents],
+  );
   const handleCopy = async () => {
     await navigator.clipboard.writeText(content);
     setCopied(true);
@@ -1091,11 +1374,11 @@ export function AssistantMessage({
           ref.partID ? `partID=${ref.partID}` : null,
           ref.callID ? `callID=${ref.callID}` : null,
         ].filter(Boolean);
-        return parts.length > 0 ? `ref${index + 1}: ${parts.join(' ')}` : null;
+        return parts.length > 0 ? `ref${index + 1}: ${parts.join(" ")}` : null;
       }),
     ]
       .filter((item): item is string => !!item)
-      .join('\n');
+      .join("\n");
     await navigator.clipboard.writeText(refs);
   };
 
@@ -1117,6 +1400,13 @@ export function AssistantMessage({
     return () => root.removeEventListener("click", onClick);
   }, []);
 
+  useEffect(() => {
+    if (!isStreamingActive) return;
+    const root = progressTimelineRef.current;
+    if (!root) return;
+    root.scrollTop = root.scrollHeight;
+  }, [isStreamingActive, visibleDisplayEvents.length]);
+
   const responseEnterClass = streaming
     ? "oc-assistant-streaming-enter"
     : "oc-assistant-response-enter";
@@ -1125,312 +1415,439 @@ export function AssistantMessage({
     <div
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
-      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? 'mb-4 mt-[-12px]' : 'mb-5'} px-4`}
+      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-4 mt-[-12px]" : "mb-5"} px-4`}
     >
-      <div className="oc-msg-assistant" ref={messageBodyRef}>
+      <div
+        className={cn(
+          "oc-msg-assistant",
+          isLiveStreamingCard && "max-h-[72vh] overflow-hidden",
+        )}
+        ref={messageBodyRef}
+      >
         {!isContiguous && (
-          <div className="mb-2.5 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            {showStreamingLoading ? (
-              <div className="inline-flex items-center gap-1.5 oc-msg-agent-label font-mono">
-                <span
-                  className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: "0ms" }}
-                />
-                <span
-                  className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: "150ms" }}
-                />
-                <span
-                  className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
-                  style={{ animationDelay: "300ms" }}
-                />
-                  <span className="ml-1 oc-msg-model-label italic">Thinking...</span>
-              </div>
-            ) : (
-              <>
-                    <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
-                      <div className="oc-agent-icon flex items-center justify-center rounded-md bg-oc-accent-soft p-1">
-                        <Zap className="h-4 w-4 text-oc-accent" />
-                      </div>
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="oc-msg-agent-name px-2 py-0.5 rounded-md font-semibold text-oc-sm text-oc-agent-custom bg-oc-agent-custom truncate shrink-0">
-                          {agentName !== "assistant" ? agentName : "AI"}
-                        </span>
-                        {modelName && modelName !== "assistant" && (
-                          <div className="flex items-center gap-1.5 opacity-60 min-w-0 truncate">
-                            <span className="text-oc-xs font-mono shrink-0">•</span>
-                            <span className="oc-msg-model-label truncate text-oc-xs">
-                              {modelName}
-                            </span>
-                          </div>
-                        )}
-                      </div>
+          <div className="mb-2.5 flex flex-wrap items-start justify-between gap-2">
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+              {showStreamingLoading ? (
+                <div className="inline-flex items-center font-mono text-[13px] text-[#4e648c]">
+                  {[0, 1, 2].map((index) => (
+                    <span
+                      key={index}
+                      className={cn(
+                        "inline-block rounded-full bg-current h-1.5 w-1.5",
+                        index > 0 ? "ml-1.5" : "",
+                      )}
+                      style={{
+                        animation: `thinking-pulse 1.3s ${index * 0.16}s infinite`,
+                      }}
+                    />
+                  ))}
+                  <span className="ml-3 italic opacity-85 tracking-wide">
+                    Thinking ...
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
+                    <div className="oc-agent-icon flex items-center justify-center rounded-md bg-oc-accent-soft p-1">
+                      <Zap className="h-4 w-4 text-oc-accent" />
                     </div>
-                {hasTokens && (
-                  <div className="oc-msg-token-chips flex shrink-0 items-center gap-1">
-                        <span title="Tokens in system prompt + conversation history + your message" className="cursor-help decoration-dotted underline underline-offset-2">prompt</span>
-                        <span className="tabular-nums cursor-help" title="Tokens in system prompt + conversation history + your message">{inputTok.toLocaleString()}</span>
-                        <span className="opacity-30">-</span>
-                        <span title="Tokens generated in this reply" className="cursor-help decoration-dotted underline underline-offset-2">response</span>
-                        <span className="tabular-nums cursor-help" title="Tokens generated in this reply">{outputTok.toLocaleString()}</span>
-                    {reasoningTok > 0 && (
-                      <>
-                        <span className="opacity-30">-</span>
-                        <span title="Internal reasoning tokens reported by provider/model" className="cursor-help decoration-dotted underline underline-offset-2">reasoning</span>
-                        <span className="tabular-nums cursor-help" title="Internal reasoning tokens reported by provider/model">{reasoningTok.toLocaleString()}</span>
-                      </>
-                    )}
-                    {cacheRead > 0 && (
-                      <>
-                        <span className="opacity-30">-</span>
-                            <span title="Tokens retrieved from prompt cache" className="cursor-help decoration-dotted underline underline-offset-2">cache read</span>
-                            <span className="tabular-nums cursor-help" title="Tokens retrieved from prompt cache">{cacheRead.toLocaleString()}</span>
-                      </>
-                    )}
-                    {cacheWrite > 0 && (
-                      <>
-                        <span className="opacity-30">-</span>
-                            <span title="New tokens written to prompt cache" className="cursor-help decoration-dotted underline underline-offset-2">cache write</span>
-                            <span className="tabular-nums cursor-help" title="New tokens written to prompt cache">{cacheWrite.toLocaleString()}</span>
-                      </>
-                    )}
-                        {typeof duration === "number" && (
-                      <>
-                        <span className="opacity-30">-</span>
-                            <span className="tabular-nums">{duration.toFixed(1)}s</span>
-                      </>
-                    )}
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="oc-msg-agent-name px-2 py-0.5 rounded-md font-semibold text-oc-sm text-oc-agent-custom bg-oc-agent-custom truncate shrink-0">
+                        {agentName !== "assistant" ? agentName : "AI"}
+                      </span>
+                      {modelName && modelName !== "assistant" && (
+                        <div className="flex items-center gap-1.5 opacity-60 min-w-0 truncate">
+                          <span className="text-oc-xs font-mono shrink-0">
+                            â€¢
+                          </span>
+                          <span className="oc-msg-model-label truncate text-oc-xs">
+                            {modelName}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                )}
-              </>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {plan ? (
+                  {hasTokens && (
+                    <div className="oc-msg-token-chips flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] sm:ml-auto sm:text-[12px]">
+                      <span
+                        title="Tokens in system prompt + conversation history + your message"
+                        className="cursor-help decoration-dotted underline underline-offset-2"
+                      >
+                        prompt
+                      </span>
+                      <span
+                        className="tabular-nums cursor-help"
+                        title="Tokens in system prompt + conversation history + your message"
+                      >
+                        {inputTok.toLocaleString()}
+                      </span>
+                      <span className="opacity-30">-</span>
+                      <span
+                        title="Tokens generated in this reply"
+                        className="cursor-help decoration-dotted underline underline-offset-2"
+                      >
+                        response
+                      </span>
+                      <span
+                        className="tabular-nums cursor-help"
+                        title="Tokens generated in this reply"
+                      >
+                        {outputTok.toLocaleString()}
+                      </span>
+                      {reasoningTok > 0 && (
+                        <>
+                          <span className="opacity-30">-</span>
+                          <span
+                            title="Internal reasoning tokens reported by provider/model"
+                            className="cursor-help decoration-dotted underline underline-offset-2"
+                          >
+                            reasoning
+                          </span>
+                          <span
+                            className="tabular-nums cursor-help"
+                            title="Internal reasoning tokens reported by provider/model"
+                          >
+                            {reasoningTok.toLocaleString()}
+                          </span>
+                        </>
+                      )}
+                      {cacheRead > 0 && (
+                        <>
+                          <span className="opacity-30">-</span>
+                          <span
+                            title="Tokens retrieved from prompt cache"
+                            className="cursor-help decoration-dotted underline underline-offset-2"
+                          >
+                            cache read
+                          </span>
+                          <span
+                            className="tabular-nums cursor-help"
+                            title="Tokens retrieved from prompt cache"
+                          >
+                            {cacheRead.toLocaleString()}
+                          </span>
+                        </>
+                      )}
+                      {cacheWrite > 0 && (
+                        <>
+                          <span className="opacity-30">-</span>
+                          <span
+                            title="New tokens written to prompt cache"
+                            className="cursor-help decoration-dotted underline underline-offset-2"
+                          >
+                            cache write
+                          </span>
+                          <span
+                            className="tabular-nums cursor-help"
+                            title="New tokens written to prompt cache"
+                          >
+                            {cacheWrite.toLocaleString()}
+                          </span>
+                        </>
+                      )}
+                      {typeof duration === "number" && (
+                        <>
+                          <span className="opacity-30">-</span>
+                          <span className="tabular-nums">
+                            {duration.toFixed(1)}s
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
               <button
                 type="button"
-                title="Core Feature: View Implementation Plan"
-                onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
-                className="oc-plan-btn"
+                className="oc-msg-copy-btn h-6 w-6"
+                onClick={handleCopy}
+                title="Copy message"
               >
-                <FileTextIcon className="h-3 w-3" /> View Plan
+                {copied ? (
+                  <Check className="h-3 w-3 text-oc-green" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="oc-msg-copy-btn h-6 w-6"
-              onClick={handleCopy}
-              title="Copy message"
-            >
-              {copied ? (
-                <Check className="h-3 w-3 text-oc-green" />
-              ) : (
-                <Copy className="h-3 w-3" />
-              )}
-            </button>
+            </div>
           </div>
-        </div>
         )}
 
-        {/* Unified timeline: blocks rendered in arrival order (thinking → steps → content → ...) */}
-        {showThinkingPlaceholder && (
-          <details className="group mb-3" open>
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors mt-1 relative z-10 overflow-hidden">
-              <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90 shrink-0">
-                &gt;
+        <div className="space-y-3">
+          <section
+            data-assistant-section="response"
+            className="rounded-md border border-oc-border bg-background p-3.5 shadow-sm"
+          >
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-muted">
+                Response
               </span>
-              <span className="opacity-70 whitespace-nowrap shrink-0 italic">
-                Thinking
-              </span>
-            </summary>
-            <div className="mt-1.5 ml-[6px] border-l border-oc-border/30 pl-3.5">
-              <div className="py-0.5 text-xs leading-relaxed text-oc-text-soft opacity-70 whitespace-pre-wrap">
-                {thinkingPlaceholderText}
-              </div>
+              {isStreamingActive && (
+                <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-accent">
+                  streaming
+                </span>
+              )}
             </div>
-          </details>
-        )}
-        {timelineBlocks.map((block, blockIdx) => {
-          if (block.kind === "thinking") {
-            return (
-              <details
-                // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
-                key={`block-thinking-${blockIdx}`}
-                className="oc-thinking-block group mb-2"
-              >
-                <summary className="oc-thinking-summary">
-                  <span className="oc-thinking-chevron">›</span>
-                  <span className="oc-thinking-label">Thinking</span>
-                  {block.items.length > 0 && (
-                    <span className="oc-thinking-preview group-open:hidden">
-                      <MarkdownRenderer
-                        content={block.items[block.items.length - 1].text.trim() || "\u2026"}
-                        isInline={true}
-                      />
+            {hasResponseContent ? (
+              <div className={responseBodyClass}>
+                <MarkdownRenderer
+                  content={content}
+                  className={markdownBodyClass}
+                />
+              </div>
+            ) : (
+              <div className="text-xs text-oc-text-muted">
+                {isStreamingActive
+                  ? "Waiting for response content..."
+                  : "No response content."}
+              </div>
+            )}
+          </section>
+
+          {(displayEvents.length > 0 || showThinkingPlaceholder) && (
+            <section
+              data-assistant-section="activity"
+              className="rounded-md border border-oc-border bg-oc-panel-soft/40"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 text-left"
+                  onClick={() =>
+                    setViewState((prev) => ({
+                      ...prev,
+                      activityExpanded: !prev.activityExpanded,
+                    }))
+                  }
+                  title="Toggle activity panel"
+                >
+                  {viewState.activityExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5 text-oc-text-muted" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 text-oc-text-muted" />
+                  )}
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                    Activity
+                  </span>
+                  <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
+                    {displayEvents.length}
+                  </span>
+                </button>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {activityStatusCounts.pending > 0 && (
+                    <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-accent">
+                      pending {activityStatusCounts.pending}
                     </span>
                   )}
-                </summary>
-                <div className="oc-thinking-content">
-                  {block.items.map((thought) => (
-                    <div
-                      key={thought.key}
-                      className="oc-thinking-text"
-                    >
-                      <MarkdownRenderer content={thought.text} isInline={true} />
-                    </div>
-                  ))}
-                </div>
-              </details>
-            );
-          }
-
-          if (block.kind === "steps") {
-            return (
-              <div
-                // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
-                key={`block-steps-${blockIdx}`}
-                className="oc-steps-block mb-3"
-              >
-                {block.items.map((event, eventIdx) => {
-                  // Derive a short tool-type label from the title
-                  const rawTitle = event.title || "";
-                  let toolLabel = rawTitle;
-                  let toolContent = "";
-                  const bashMatch = rawTitle.match(/^bash(?::\s*|\s+)(.*)/is);
-                  const readMatch = rawTitle.match(/^read(?::\s*|\s+)(.*)/is);
-                  const writeMatch = rawTitle.match(/^(?:edit|write|modify|update|patch)(?::\s*|\s+)(.*)/is);
-                  const thinkMatch = rawTitle.match(/^think(?:ing)?(?::\s*|\s+)?(.*)/is);
-                  if (bashMatch) { toolLabel = "bash"; toolContent = bashMatch[1]?.trim() || ""; }
-                  else if (readMatch) { toolLabel = "read"; toolContent = readMatch[1]?.trim() || ""; }
-                  else if (writeMatch) { toolLabel = /edit/i.test(rawTitle) ? "edit" : /write/i.test(rawTitle) ? "write" : /modify/i.test(rawTitle) ? "modify" : "update"; toolContent = writeMatch[1]?.trim() || ""; }
-                  else if (thinkMatch) { toolLabel = "think"; toolContent = thinkMatch[1]?.trim() || ""; }
-                  else {
-                    // Try to split on first space for generic tool:content
-                    const spaceIdx = rawTitle.indexOf(" ");
-                    if (spaceIdx > 0 && spaceIdx <= 12) {
-                      toolLabel = rawTitle.slice(0, spaceIdx).toLowerCase();
-                      toolContent = rawTitle.slice(spaceIdx + 1).trim();
+                  {activityStatusCounts.done > 0 && (
+                    <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-green">
+                      done {activityStatusCounts.done}
+                    </span>
+                  )}
+                  {activityStatusCounts.error > 0 && (
+                    <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-red">
+                      error {activityStatusCounts.error}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted hover:text-oc-text-soft"
+                    onClick={() =>
+                      setViewState((prev) => ({
+                        ...prev,
+                        showActivityDetails: !prev.showActivityDetails,
+                      }))
                     }
-                  }
-
-                  // File path for display
-                  let displayPath = event.filePath;
-                  if (!displayPath && /edit|writ|modif|updat|patch/i.test(event.title) && message?.edits?.length) {
-                    displayPath = message.edits[0].file;
-                  }
-                  const fileName = displayPath ? displayPath.split(/[/\\]/).pop() : undefined;
-
-                  // Tool label color class
-                  const toolColorClass =
-                    toolLabel === "bash" ? "oc-tool-label--bash" :
-                    toolLabel === "read" ? "oc-tool-label--read" :
-                    toolLabel === "edit" || toolLabel === "write" || toolLabel === "modify" || toolLabel === "update" ? "oc-tool-label--edit" :
-                    toolLabel === "think" ? "oc-tool-label--think" :
-                    "oc-tool-label--generic";
-
-                  return (
-                    <div
-                      key={event.key}
-                      className={`oc-step-row ${ event.status === "pending" ? "oc-step-row--pending" : event.status === "error" ? "oc-step-row--error" : "oc-step-row--done" }`}
+                    title="Toggle activity metadata"
+                  >
+                    details {viewState.showActivityDetails ? "on" : "off"}
+                  </button>
+                  {hasThinkingEvents && (
+                    <button
+                      type="button"
+                      className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted hover:text-oc-text-soft"
+                      onClick={() =>
+                        setViewState((prev) => ({
+                          ...prev,
+                          showThinkingDetails: !prev.showThinkingDetails,
+                        }))
+                      }
+                      title="Toggle full thinking text"
                     >
-                      {/* Left: timeline dot + vertical line stacked in one column */}
-                      <span className="oc-step-dot-col">
-                        <span className="oc-step-status">
-                          {event.status === "pending" ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : event.status === "error" ? (
-                            <X className="h-3 w-3" />
-                          ) : (
-                            <Check className="h-3 w-3" />
-                          )}
-                        </span>
-                        {/* Line fills height below the icon */}
-                        <span className="oc-step-line-col" />
-                      </span>
+                      thinking{" "}
+                      {viewState.showThinkingDetails ? "full" : "preview"}
+                    </button>
+                  )}
+                </div>
+              </div>
 
-                      {/* Right: everything else in a centered flex row */}
-                      <span className="oc-step-row-body">
-                        {/* Tool type label */}
-                        <span className={`oc-tool-label ${toolColorClass}`}>{toolLabel}</span>
+              {viewState.activityExpanded && (
+                <div className="border-t border-oc-border px-3 py-2.5">
+                  {showThinkingPlaceholder && (
+                    <div className="mb-2 rounded-md border border-oc-border bg-oc-bg-soft px-2.5 py-2 text-xs text-oc-text-muted whitespace-pre-wrap">
+                      {thinkingPlaceholderText}
+                    </div>
+                  )}
 
-                        {/* Main content: file path or command text */}
-                        <span className="oc-step-content min-w-0 flex-1">
-                          {displayPath ? (
-                            <button
-                              type="button"
-                              className="oc-step-file-link"
-                              title={displayPath}
-                              onClick={() =>
-                                vscode.postMessage({
-                                  type: "openFile",
-                                  file: displayPath!,
-                                })
-                              }
+                  {displayEvents.length > 0 && (
+                    <>
+                      <Stepper
+                        className="max-h-[320px] overflow-y-auto pl-1 font-sans text-[12px]"
+                        ref={progressTimelineRef}
+                      >
+                        {visibleDisplayEvents.map((event, index) => {
+                          const isLast =
+                            index === visibleDisplayEvents.length - 1;
+                          const isLatestStreamingEvent =
+                            isStreamingActive && isLast;
+                          const indicatorNode =
+                            event.status === "pending" ? (
+                              <div className="h-2 w-2 rounded-full border border-oc-accent/70 bg-oc-accent/30 animate-pulse" />
+                            ) : event.status === "error" ? (
+                              <X className="h-[10px] w-[10px] text-[var(--vscode-terminal-ansiRed,#ef4444)]" />
+                            ) : (
+                              <div className="h-2 w-2 rounded-full bg-oc-green" />
+                            );
+                          const fileName = event.filePath
+                            ? event.filePath.split(/[/\\]/).pop()
+                            : undefined;
+                          const shouldShowDetail =
+                            event.kind === "thinking"
+                              ? viewState.showThinkingDetails
+                              : viewState.showActivityDetails;
+
+                          return (
+                            <StepperItem
+                              key={event.key}
+                              isLast={isLast}
+                              indicator={indicatorNode}
+                              className={cn(
+                                "group rounded-md pr-3 transition-colors",
+                                isLatestStreamingEvent
+                                  ? "bg-oc-accent/10"
+                                  : "hover:bg-foreground/5",
+                              )}
                             >
-                              <FileIcon filePath={displayPath} />
-                              <span className="truncate">{fileName}</span>
-                            </button>
-                          ) : toolContent ? (
-                            <span className="oc-step-command truncate" title={toolContent}>{toolContent}</span>
-                          ) : (
-                            <span className="oc-step-command truncate">{rawTitle}</span>
-                          )}
-                          {event.meta && (
-                            <span className="oc-step-meta" title={event.meta}>{event.meta}</span>
-                          )}
-                        </span>
+                              <div className="flex min-w-0 items-start gap-2.5 pt-[3px]">
+                                <span className="inline-block min-w-[64px] shrink-0 rounded border border-oc-border px-1.5 py-[3px] text-center font-mono text-[10px] font-semibold uppercase text-oc-text-muted">
+                                  {event.kind === "thinking"
+                                    ? "thinking"
+                                    : event.label}
+                                </span>
 
-                        {/* Diff stats */}
-                        {event.diffStats && (event.diffStats.added > 0 || event.diffStats.deleted > 0) ? (
-                          <span className="oc-step-diff-stats">
-                            {event.diffStats.added > 0 && (
-                              <span className="oc-step-diff-add text-oc-green">+{event.diffStats.added}</span>
-                            )}
-                            {event.diffStats.deleted > 0 && (
-                              <span className="oc-step-diff-del text-oc-red">-{event.diffStats.deleted}</span>
-                            )}
-                          </span>
-                        ) : null}
+                                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                                  {event.filePath ? (
+                                    <button
+                                      type="button"
+                                      className="inline-flex min-w-0 items-center gap-1 text-left font-mono text-[12px] text-oc-text-soft hover:text-oc-accent"
+                                      title={event.filePath}
+                                      onClick={() =>
+                                        vscode.postMessage({
+                                          type: "openFile",
+                                          file: event.filePath!,
+                                        })
+                                      }
+                                    >
+                                      <FileIcon filePath={event.filePath} />
+                                      <span className="break-words whitespace-pre-wrap">
+                                        {fileName || event.summary}
+                                      </span>
+                                    </button>
+                                  ) : (
+                                    event.summary && (
+                                      <span className="block break-words whitespace-pre-wrap text-[12.5px] text-oc-text-muted">
+                                        {event.summary}
+                                      </span>
+                                    )
+                                  )}
 
-                        {/* View diff button */}
-                        {event.status === "done" && (event.diffStats || /edit|writ|modif|updat|patch/i.test(event.title)) && (
+                                  {event.description && (
+                                    <span className="block whitespace-pre-wrap break-words text-[11px] text-oc-text-muted">
+                                      {event.description}
+                                    </span>
+                                  )}
+
+                                  {event.updateCount > 1 && (
+                                    <span className="text-[10px] font-mono text-oc-text-muted">
+                                      x{event.updateCount} updates
+                                    </span>
+                                  )}
+
+                                  {shouldShowDetail && event.detail && (
+                                    <span className="block whitespace-pre-wrap break-words text-[11px] text-oc-text-muted">
+                                      {event.detail}
+                                    </span>
+                                  )}
+                                </span>
+
+                                {event.diffStats &&
+                                  (event.diffStats.added > 0 ||
+                                    event.diffStats.deleted > 0) && (
+                                    <span className="flex shrink-0 items-center gap-1 text-[10px] font-mono">
+                                      {event.diffStats.added > 0 && (
+                                        <span className="text-oc-green">
+                                          +{event.diffStats.added}
+                                        </span>
+                                      )}
+                                      {event.diffStats.deleted > 0 && (
+                                        <span className="text-oc-red">
+                                          -{event.diffStats.deleted}
+                                        </span>
+                                      )}
+                                    </span>
+                                  )}
+
+                                {event.viewDiffFile && (
+                                  <button
+                                    type="button"
+                                    className="shrink-0 rounded border border-oc-border px-2 py-0.5 text-[10px] font-medium text-oc-text-muted hover:text-oc-text-soft"
+                                    onClick={() =>
+                                      vscode.postMessage({
+                                        type: "openDiff",
+                                        file: event.viewDiffFile,
+                                      })
+                                    }
+                                  >
+                                    View diff
+                                  </button>
+                                )}
+                              </div>
+                            </StepperItem>
+                          );
+                        })}
+                      </Stepper>
+
+                      {!isStreamingActive &&
+                        displayEvents.length >
+                          MAX_VISIBLE_COMPLETED_ACTIVITY && (
                           <button
                             type="button"
-                            className="oc-step-view-diff"
-                            onClick={() => {
-                              const fileToOpen = event.filePath || message?.edits?.[0]?.file;
-                              if (fileToOpen) {
-                                vscode.postMessage({
-                                  type: "openDiff",
-                                  file: fileToOpen,
-                                });
-                              }
-                            }}
+                            className="mt-2 text-[11px] font-mono text-oc-accent hover:underline"
+                            onClick={() =>
+                              setViewState((prev) => ({
+                                ...prev,
+                                showAllCompletedActivity:
+                                  !prev.showAllCompletedActivity,
+                              }))
+                            }
                           >
-                            View diff
+                            {hasCompletedCondensedActivity
+                              ? "Show " +
+                                hiddenActivityEventCount +
+                                " older events"
+                              : "Show fewer events"}
                           </button>
                         )}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          }
-
-          // block.kind === "content"
-          return (
-            <div
-              // biome-ignore lint/suspicious/noArrayIndexKey: blocks are position-stable within a message
-              key={`block-content-${blockIdx}`}
-              className="mb-3"
-            >
-              {/* biome-ignore lint/security/noDangerouslySetInnerHtml: markdown rendering requires HTML injection */}
-              <MarkdownRenderer content={block.html} />
-            </div>
-          );
-        })}
+                    </>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
 
         {message?.error && (
           <div className="mt-2">
@@ -1453,44 +1870,45 @@ export function AssistantMessage({
           onClose={() => setPreviewImageSrc(null)}
         />
 
-        {selectedSubagentId && (() => {
-          const selected = subagents.find(
-            (subagent) => subagent.id === selectedSubagentId,
-          );
-          if (!selected) return null;
+        {selectedSubagentId &&
+          (() => {
+            const selected = subagents.find(
+              (subagent) => subagent.id === selectedSubagentId,
+            );
+            if (!selected) return null;
 
-          const detailData =
-            (subagentDetailsById[selected.id] as SubagentDetail | undefined) ||
-            ({
-              ...selected,
-              thinkingEvents: [],
-              progressEvents: [],
-              timelineEvents: [],
-            } as SubagentDetail);
-          const providerLabel =
-            selected.providerID && selected.modelID
-              ? `${selected.providerID}/${selected.modelID}`
-              : selected.providerID || selected.modelID || "Unknown provider";
-          const displayTitle =
-            selected.agentId || `Agent ${selected.id.slice(0, 4)}`;
+            const detailData =
+              (subagentDetailsById[selected.id] as
+                | SubagentDetail
+                | undefined) ||
+              ({
+                ...selected,
+                thinkingEvents: [],
+                progressEvents: [],
+                timelineEvents: [],
+              } as SubagentDetail);
+            const providerLabel =
+              selected.providerID && selected.modelID
+                ? `${selected.providerID}/${selected.modelID}`
+                : selected.providerID || selected.modelID || "Unknown provider";
+            const displayTitle =
+              selected.agentId || `Agent ${selected.id.slice(0, 4)}`;
 
-          return (
-            <SubagentDetailModal
-              isOpen={Boolean(selectedSubagentId)}
-              title={displayTitle}
-              providerLabel={providerLabel}
-              detail={detailData}
-              colorClass={getSubagentColor(selected.id)}
-              onClose={closeSubagentModal}
-              onCopyRefs={copyRefs}
-              onJumpToParent={() =>
-                jumpToMessage(
-                  selected.parentMessageId || messageId || "",
-                )
-              }
-            />
-          );
-        })()}
+            return (
+              <SubagentDetailModal
+                isOpen={Boolean(selectedSubagentId)}
+                title={displayTitle}
+                providerLabel={providerLabel}
+                detail={detailData}
+                colorClass={getSubagentColor(selected.id)}
+                onClose={closeSubagentModal}
+                onCopyRefs={copyRefs}
+                onJumpToParent={() =>
+                  jumpToMessage(selected.parentMessageId || messageId || "")
+                }
+              />
+            );
+          })()}
 
         {subagents.length > 0 && (
           <div className="mt-3 mb-3 overflow-hidden rounded-md border border-oc-border bg-oc-panel-soft">
@@ -1511,17 +1929,17 @@ export function AssistantMessage({
                 </div>
                 <div className="flex items-center gap-1.5">
                   {subagentStatusCounts.running > 0 && (
-                    <Badge className="h-5 border-oc-accent/30 bg-oc-accent/10 px-1.5 text-[10px] text-oc-accent">
+                    <Badge className="h-5 bg-oc-accent/10 px-1.5 text-[10px] text-oc-accent">
                       {subagentStatusCounts.running} running
                     </Badge>
                   )}
                   {subagentStatusCounts.done > 0 && (
-                    <Badge className="h-5 border-oc-green/30 bg-oc-green/10 px-1.5 text-[10px] text-oc-green">
+                    <Badge className="h-5 bg-oc-green/10 px-1.5 text-[10px] text-oc-green">
                       {subagentStatusCounts.done} done
                     </Badge>
                   )}
                   {subagentStatusCounts.error > 0 && (
-                    <Badge className="h-5 border-oc-red/30 bg-oc-red/10 px-1.5 text-[10px] text-oc-red">
+                    <Badge className="h-5 bg-oc-red/10 px-1.5 text-[10px] text-oc-red">
                       {subagentStatusCounts.error} error
                     </Badge>
                   )}
@@ -1531,49 +1949,62 @@ export function AssistantMessage({
 
             {showSubagents && (
               <div className="space-y-2 p-2.5">
-                <div className="space-y-1.5">
+                <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
                   {visibleSubagents.map((subagent: SubagentSummary) => {
                     const statusClass = getSubagentColor(subagent.id);
 
                     return (
-                      <SubagentProgressPopover
+                      <button
                         key={subagent.id}
-                        subagent={subagent}
-                        subagentDetail={subagentDetailsById?.[subagent.id]}
-                        colorClass={statusClass}
+                        type="button"
+                        className={cn(
+                          "w-full rounded-md border px-2 py-1.5 text-left transition-colors",
+                          "border-oc-border bg-oc-bg-soft hover:bg-oc-panel",
+                        )}
+                        onClick={() => openSubagentModal(subagent.id)}
                       >
-                        <button
-                          type="button"
-                          className={cn(
-                            "w-full rounded-md border px-2 py-1.5 text-left transition-colors",
-                            "border-oc-border bg-oc-bg-soft hover:bg-oc-panel",
-                          )}
-                          onClick={() => openSubagentModal(subagent.id)}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <div className={cn("oc-agent-icon shrink-0", statusClass)}>
-                                {subagent.status === "running" ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : subagent.status === "error" ? (
-                                  <X className="h-3 w-3 text-oc-red" />
-                                ) : (
-                                  <Check className="h-3 w-3" />
-                                )}
-                              </div>
-                              <span className={cn("truncate text-oc-xs font-semibold", statusClass)}>
-                                {subagent.agentId || `Agent ${subagent.id.slice(0, 4)}`}
-                              </span>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <div
+                              className={cn(
+                                "oc-agent-icon shrink-0",
+                                statusClass,
+                              )}
+                            >
+                              {subagent.status === "running" ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : subagent.status === "error" ? (
+                                <X className="h-3 w-3 text-oc-red" />
+                              ) : (
+                                <Check className="h-3 w-3" />
+                              )}
                             </div>
-                            <span className="font-mono text-oc-2xs text-oc-text-muted">
-                              {formatDurationMs(subagent.durationMs)}
+                            <span
+                              className={cn(
+                                "truncate text-oc-xs font-semibold",
+                                statusClass,
+                              )}
+                            >
+                              {subagent.agentId ||
+                                `Agent ${subagent.id.slice(0, 4)}`}
                             </span>
                           </div>
-                          <div className="mt-0.5 truncate font-mono text-[10px] text-oc-text-muted">
-                            {subagent.latestActivity || "Initializing..."}
-                          </div>
-                        </button>
-                      </SubagentProgressPopover>
+                          <span className="font-mono text-oc-2xs text-oc-text-muted">
+                            {formatDurationMs(subagent.durationMs)}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 min-h-[14px] font-mono text-[10px] text-oc-text-muted">
+                          <FadeSwapText
+                            text={
+                              subagent.latestActivity ||
+                              subagentStatusLabel(subagent.status) ||
+                              "Initializing..."
+                            }
+                            className="block truncate"
+                            durationMs={220}
+                          />
+                        </div>
+                      </button>
                     );
                   })}
                   {subagents.length > 10 ? (
@@ -1592,12 +2023,12 @@ export function AssistantMessage({
             )}
           </div>
         )}
-        {/* Raw Data — moved last so it doesn't interrupt the reading flow */}
+        {/* Raw Data â€” moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (
           <details className="group mb-3">
             <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">
               <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
-                ›
+                â€º
               </span>
               <span className="opacity-50">Raw Data</span>
             </summary>
@@ -1649,18 +2080,20 @@ export function AssistantMessage({
         {/* FORBIDDEN TO REMOVE: Plan card rendering - core UI element for viewing implementation plans */}
         {plan ? (
           <div className="plan-card mt-3 p-3">
-            <div className="mb-2 text-oc-xs font-semibold text-oc-text-soft uppercase tracking-widest font-mono">
-              Implementation Plan
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-oc-xs font-semibold text-oc-text-soft uppercase tracking-widest font-mono">
+                Implementation Plan
+              </div>
+              <button
+                type="button"
+                title="Core Feature: View Implementation Plan"
+                onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
+                className="oc-plan-btn shrink-0"
+              >
+                <FileTextIcon className="h-3 w-3" />
+                View Plan
+              </button>
             </div>
-            <button
-              type="button"
-              title="Core Feature: Do not remove"
-              onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
-              className="oc-plan-btn"
-            >
-              <FileTextIcon className="h-3 w-3" />
-              View Implementation Plan
-            </button>
           </div>
         ) : null}
       </div>
@@ -1674,7 +2107,7 @@ export function PermissionCard({ perm }: { perm: unknown }) {
       <div className="rounded-xl border oc-warning-border oc-warning-bg p-3.5">
         <div className="mb-1.5 flex items-center gap-2">
           <div className="h-4 w-4 rounded-sm bg-[rgba(210,153,34,0.2)] flex items-center justify-center">
-            <span className="text-oc-2xs">⚠</span>
+            <span className="text-oc-2xs">âš </span>
           </div>
           <div className="text-oc-sm font-semibold text-oc-yellow">
             Permission Required
@@ -1701,22 +2134,22 @@ export function ErrorBanner({
       : "Unknown error";
 
   return (
-    <div className="mb-4 px-4">
-      <div className="flex flex-col gap-2.5 rounded-xl border border-[#dc262680] bg-[#7f1d1d26] p-3.5 text-oc-sm text-[#fee2e2] shadow-[0_8px_24px_rgba(127,29,29,0.22)] transition-all duration-200">
-        <div className="flex items-center gap-2.5">
-          <span className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[#ef444480] bg-[#ef444426]">
-            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-[#fca5a5]" />
+    <div className="mb-2 px-4">
+      <div className="flex flex-col gap-2 rounded-lg border border-[#dc262680] bg-[#7f1d1d26] p-2.5 text-oc-xs text-[#fee2e2] shadow-[0_4px_14px_rgba(127,29,29,0.18)] transition-all duration-200">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-[#ef444480] bg-[#ef444426]">
+            <AlertCircle className="h-3 w-3 shrink-0 text-[#fca5a5]" />
           </span>
-          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#fca5a5]">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.07em] text-[#fca5a5]">
             Request failed
           </span>
         </div>
 
-        <div className="rounded-md border border-[#ef444440] bg-[#450a0a59] px-2.5 py-2">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#fca5a5]">
+        <div className="rounded-md border border-[#ef444440] bg-[#450a0a59] px-2 py-1.5">
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#fca5a5]">
             Error message
           </div>
-          <div className="overflow-hidden text-oc-xs leading-relaxed text-[#fee2e2] whitespace-pre-wrap break-words">
+          <div className="overflow-hidden text-[11px] leading-snug text-[#fee2e2] whitespace-pre-wrap break-words">
             {errorDetails}
           </div>
         </div>
@@ -1726,9 +2159,9 @@ export function ErrorBanner({
             <button
               type="button"
               onClick={onRetry}
-              className="mt-0.5 inline-flex items-center gap-1.5 rounded-md border border-[#ef444480] bg-[#ef444426] px-3 py-1.5 text-oc-xs font-medium text-[#fecaca] transition-all hover:bg-[#ef444440] active:scale-95"
+              className="inline-flex items-center gap-1.5 rounded-md border border-[#ef444480] bg-[#ef444426] px-2.5 py-1 text-[11px] font-medium text-[#fecaca] transition-all hover:bg-[#ef444440] active:scale-95"
             >
-              <RotateCw className="h-3.5 w-3.5" />
+              <RotateCw className="h-3 w-3" />
               <span>Retry</span>
             </button>
           </div>
@@ -1741,22 +2174,21 @@ export function ErrorBanner({
 export function ThinkingBubble() {
   return (
     <div className="mb-4 px-4">
-      <div className="inline-flex items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel px-3 py-2">
+      <div className="inline-flex items-center pl-1 font-mono text-[13px] text-[#4e648c]">
         {[0, 1, 2].map((index) => (
           <span
             key={index}
             className={cn(
-              "h-1.5 w-1.5 rounded-full bg-oc-accent",
-              index > 0 ? "ml-0.5" : "",
+              "inline-block rounded-full bg-current h-1.5 w-1.5",
+              index > 0 ? "ml-1.5" : "",
             )}
             style={{
               animation: `thinking-pulse 1.3s ${index * 0.16}s infinite`,
             }}
           />
         ))}
-        <Loader2 className="ml-1.5 h-3 w-3 animate-spin text-oc-text-soft opacity-70" />
-        <span className="ml-1 text-oc-xs text-oc-text-soft opacity-70 font-mono italic">
-          Thinking…
+        <span className="ml-3 italic opacity-85 tracking-wide">
+          Thinking ...
         </span>
       </div>
     </div>
@@ -1821,3 +2253,4 @@ export function MessageStatus({
     </div>
   );
 }
+

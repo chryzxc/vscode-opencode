@@ -7,6 +7,14 @@ const messageHandlerSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'messageHandler.ts')],
   'messageHandler.ts',
 );
+const messageComponentsSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
+  'MessageComponents.tsx',
+);
+const panelComponentsSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
+  'PanelComponents.tsx',
+);
 
 test('stream handler upserts structured progress updates during message.part.updated', () => {
   const streamBody = extractFunctionBody(
@@ -36,6 +44,45 @@ test('stream handler supports message.part.added aliases', () => {
     streamBody,
     /case 'message\.part\.updated'[\s\S]*case 'message\.part\.added'[\s\S]*case 'message\.part\.created'/s,
     'switch should handle added/created aliases in the part-update branch',
+  );
+});
+
+test('stream handler ignores events from other sessions', () => {
+  const streamBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent(',
+  );
+
+  assert.match(
+    streamBody,
+    /if \(eventSessionId && state\.currentSessionId && eventSessionId !== state\.currentSessionId\) \{\s*return;\s*\}/,
+    'stream handler should drop events that belong to a different session',
+  );
+});
+
+test('stream handler ignores non-assistant role events', () => {
+  const streamBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent(',
+  );
+
+  assert.match(
+    streamBody,
+    /if \(eventRole && eventRole !== 'assistant'\) \{\s*return;\s*\}/,
+    'stream handler should only process assistant stream events',
+  );
+});
+
+test('stream handler suppresses stray global events before a request starts', () => {
+  const streamBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent(',
+  );
+
+  assert.match(
+    streamBody,
+    /if \(!current && !state\.isProcessing && !isExplicitStart && !isAssistantUpdateStart && !canBootstrapFromPart\) \{\s*return;\s*\}/,
+    'stream handler should avoid creating phantom streaming state from unrelated global events',
   );
 });
 
@@ -73,6 +120,117 @@ test('part type normalization supports SDK naming variants', () => {
   assert.match(normalizeBody, /tool_call|tool-call/, 'should normalize tool call aliases');
 });
 
+test('rich string extraction preserves spacing for tokenized array chunks', () => {
+  assert.match(
+    messageHandlerSource,
+    /function joinRichStringSegments\(/,
+    'message handler should define a spacing-aware segment join helper',
+  );
+
+  const richBody = extractFunctionBody(
+    messageHandlerSource,
+    'function asRichString(value: unknown): string',
+  );
+
+  assert.match(
+    richBody,
+    /joinRichStringSegments\(value\.map\(\(item\) => asRichString\(item\)\)\)/,
+    'asRichString should use spacing-aware joining for array payloads',
+  );
+  assert.doesNotMatch(
+    richBody,
+    /\.join\(''\)/,
+    'asRichString should not concatenate token arrays without spacing',
+  );
+});
+
+test('stream content updater distinguishes deltas from snapshots', () => {
+  assert.match(
+    messageHandlerSource,
+    /function resolveStreamingContentUpdate\(/,
+    'message handler should define a resolver for streaming content updates',
+  );
+  const streamBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent(',
+  );
+  assert.match(
+    streamBody,
+    /resolveStreamingContentUpdate\(\s*streamingState\?\.content \|\| '',\s*cleanedChunk,\s*!!deltaChunk,\s*\)/s,
+    'message.part.updated should resolve append vs replace using delta awareness',
+  );
+  assert.match(
+    streamBody,
+    /eventType === 'contentDelta'[\s\S]*resolveStreamingContentUpdate\(/s,
+    'content/text event branch should resolve append vs replace for non-uniform providers',
+  );
+  assert.match(
+    streamBody,
+    /case 'contentDelta'[\s\S]*case 'content'[\s\S]*case 'text'[\s\S]*case 'text-delta'/s,
+    'content branch should normalize content/text alias event names including text-delta',
+  );
+  assert.match(
+    streamBody,
+    /eventType === 'contentDelta'[\s\S]*eventType === 'text-delta'[\s\S]*!!asString\(payload\.delta\)/s,
+    'content branch should treat text-delta and delta payloads as append-style updates',
+  );
+  assert.match(
+    streamBody,
+    /structuredKind === "message"[\s\S]*resolveStreamingContentUpdate\(/s,
+    'structured message fallback should use the same merge resolver',
+  );
+});
+
+test('stream handler reclassifies reasoning-like leaked text chunks into reasoning lane', () => {
+  assert.match(
+    messageHandlerSource,
+    /function looksLikeReasoningTrace\(/,
+    'message handler should define a heuristic for reasoning-like leaked stream text',
+  );
+  const streamBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent(',
+  );
+  assert.match(
+    streamBody,
+    /looksLikeReasoningTrace\(textChunk,\s*streamingState\?\.content \|\| ""\)[\s\S]*UPDATE_STREAMING_REASONING/s,
+    'message.part.updated content branch should redirect reasoning-like text chunks to reasoning events',
+  );
+  assert.match(
+    streamBody,
+    /looksLikeReasoningTrace\(cleanedChunk,\s*streamingState\?\.content \|\| ""\)[\s\S]*UPDATE_STREAMING_REASONING/s,
+    'content/text alias branch should redirect reasoning-like chunks to reasoning events',
+  );
+  assert.match(
+    streamBody,
+    /structuredKind === "message"[\s\S]*looksLikeReasoningTrace\(structuredText,\s*streamingState\?\.content \|\| ""\)[\s\S]*UPDATE_STREAMING_REASONING/s,
+    'structured message fallback should reclassify reasoning-like text into reasoning lane',
+  );
+});
+
+test('message.updated finish toggles streaming lifecycle correctly', () => {
+  const streamBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent(',
+  );
+
+  assert.match(
+    streamBody,
+    /if \(finish\) \{[\s\S]*type:\s*'FINISH_STREAMING'[\s\S]*type:\s*'SET_PROCESSING', payload: false[\s\S]*\} else \{[\s\S]*type:\s*'SET_PROCESSING', payload: true/s,
+    'message.updated should finish streaming on completion and keep processing true while still streaming',
+  );
+  assert.match(
+    streamBody,
+    /if \(structuredOutput\.message\) \{[\s\S]*resolveStreamingContentUpdate\([\s\S]*structuredOutput\.message,\s*false,\s*\)[\s\S]*UPDATE_STREAMING_CONTENT/s,
+    'message.updated finish should merge structuredOutput.message with existing stream content instead of blindly replacing it',
+  );
+  assert.match(
+    streamBody,
+    /if \(structuredOutput\.message\) \{[\s\S]*looksLikeReasoningTrace\(structuredOutput\.message,\s*streamingState\?\.content \|\| ""\)[\s\S]*UPDATE_STREAMING_REASONING/s,
+    'message.updated finish should route reasoning-like structured message payloads into reasoning events',
+  );
+});
+
 test('streamEventEnrich applies async diff stats to active streaming step', () => {
   const createHandlerBody = extractFunctionBody(
     messageHandlerSource,
@@ -83,6 +241,114 @@ test('streamEventEnrich applies async diff stats to active streaming step', () =
     createHandlerBody,
     /case "streamEventEnrich"[\s\S]*UPDATE_STREAMING_STEP[\s\S]*diffStats/s,
     'streamEventEnrich should update diff stats on the matching streaming step',
+  );
+});
+
+test('messageResponse finalization preserves latest streaming snapshot even when IDs differ', () => {
+  const createHandlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+
+  assert.match(
+    createHandlerBody,
+    /const streaming = currentStreaming \?\? latestStreamingSnapshot;/,
+    'messageResponse should always fall back to latest streaming snapshot for normalization',
+  );
+  assert.match(
+    createHandlerBody,
+    /messageResponse id mismatch; preserving latest streaming snapshot/,
+    'messageResponse should emit a debug breadcrumb when response and snapshot IDs differ',
+  );
+  assert.doesNotMatch(
+    createHandlerBody,
+    /snapshotMatchesResponse/,
+    'messageResponse should not drop snapshots solely because IDs differ',
+  );
+});
+
+test('messageResponse remaps subagent parent message ids when stream and final ids differ', () => {
+  assert.match(
+    messageHandlerSource,
+    /function remapSubagentsToFinalMessageId\(/,
+    'message handler should define subagent id remapping helper for stream/final id mismatches',
+  );
+
+  const createHandlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+  assert.match(
+    createHandlerBody,
+    /const streamingMessageId =\s*currentStreaming\?\.messageId \|\| snapshotMessageId;/,
+    'messageResponse should compute source subagent key from streaming/snapshot message id',
+  );
+  assert.match(
+    createHandlerBody,
+    /remapSubagentsToFinalMessageId\(\s*dispatch,\s*getState,\s*streamingMessageId,\s*finalMessageId,\s*\)/s,
+    'messageResponse should rebind subagent summaries/details to the finalized assistant message id',
+  );
+  assert.match(
+    createHandlerBody,
+    /vscode\.postMessage\(\{\s*type:\s*"persistAssistantMessage",\s*sessionId,\s*message:\s*sanitized,\s*\}\)/s,
+    'messageResponse should request extension-side persistence of the merged assistant message snapshot',
+  );
+});
+
+test('normalizeMessage picks the richest available final content candidate', () => {
+  assert.match(
+    messageHandlerSource,
+    /function pickBestContentCandidate\(/,
+    'message handler should define a helper to pick richer content candidates',
+  );
+  assert.match(
+    messageHandlerSource,
+    /const content = pickBestContentCandidate\(\[\s*asRichString\(rec\.content\),[\s\S]*contentFromParts\(mergedParts\)/s,
+    'normalizeMessage should evaluate content from content/text/parts before finalizing',
+  );
+});
+
+test('stream-final merge falls back to token overlap when final payload is condensed', () => {
+  const preferBody = extractFunctionBody(
+    messageHandlerSource,
+    'function shouldPreferStreamingContent(',
+  );
+  assert.match(
+    preferBody,
+    /const finalTokens = comparableTokens\(finalNorm\);/,
+    'shouldPreferStreamingContent should tokenize final content for overlap checks',
+  );
+  assert.match(
+    preferBody,
+    /const overlapRatio = matchedFinalTokens \/ finalTokens\.length;/,
+    'shouldPreferStreamingContent should compute overlap ratio between final and stream content',
+  );
+  assert.match(
+    preferBody,
+    /overlapRatio >= 0\.65/,
+    'shouldPreferStreamingContent should keep richer stream content when overlap remains high',
+  );
+});
+
+test('partsWithStreamingContent preserves non-text parts while replacing text payload', () => {
+  const partsBody = extractFunctionBody(
+    messageHandlerSource,
+    'function partsWithStreamingContent(',
+  );
+  assert.match(
+    partsBody,
+    /const updated = parts\.map\(/,
+    'partsWithStreamingContent should update existing parts in-place order rather than dropping them',
+  );
+  assert.match(
+    partsBody,
+    /const hasTextLike =[\s\S]*partType === "text"/s,
+    'partsWithStreamingContent should only replace the first text-like part content',
+  );
+  assert.match(
+    partsBody,
+    /return \[\s*\{\s*type: "text",\s*text: streamingContent,\s*\} as MessagePart,\s*\.\.\.parts,\s*\];/s,
+    'partsWithStreamingContent should prepend a text part when no text-like part exists',
   );
 });
 
@@ -138,6 +404,256 @@ test('default stream handler branch applies structured fallback updates', () => 
     streamBody,
     /default:\s*\{[\s\S]*structuredKind === "progress"[\s\S]*upsertStreamingStep/s,
     'default branch should apply structured progress updates',
+  );
+  assert.match(
+    streamBody,
+    /default:\s*\{[\s\S]*if \(consumed\) \{[\s\S]*type:\s*"SET_PROCESSING", payload: true[\s\S]*\}/s,
+    'default branch should only keep processing active when it consumed structured fallback data',
+  );
+});
+
+test('empty subagentSnapshot does not clobber cards restored from chatHistory messages', () => {
+  const createHandlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "subagentSnapshot"[\s\S]*const hasSnapshotSubagents =[\s\S]*extractSubagentsFromMessages\(getState\(\)\.messages\)/s,
+    'subagentSnapshot handler should rebuild from loaded messages when snapshot payload is empty',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "subagentSnapshot"[\s\S]*if \(!hasSnapshotSubagents\)[\s\S]*UPSERT_SUBAGENT_SUMMARIES[\s\S]*UPSERT_SUBAGENT_DETAIL[\s\S]*break;/s,
+    'subagentSnapshot handler should avoid clearing restored subagent cards on empty payloads',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "subagentSnapshot"[\s\S]*syncSubagentMapsIntoMessages\([\s\S]*"replace"[\s\S]*\);/s,
+    'subagentSnapshot handler should synchronize subagent maps back into message snapshots',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "subagentUpdate"[\s\S]*syncSubagentMapsIntoMessages\([\s\S]*"merge"[\s\S]*\);/s,
+    'subagentUpdate handler should synchronize incremental subagent state into message snapshots',
+  );
+});
+
+test('subagent map synchronization persists updated assistant message snapshots', () => {
+  assert.match(
+    messageHandlerSource,
+    /function syncSubagentMapsIntoMessages\(/,
+    'message handler should define helper for syncing subagent maps into message snapshots',
+  );
+  const syncBody = extractFunctionBody(
+    messageHandlerSource,
+    'function syncSubagentMapsIntoMessages(',
+  );
+  assert.match(
+    syncBody,
+    /dispatch\(\{\s*type: "SET_MESSAGES",\s*payload: nextMessages\s*\}\)/,
+    'subagent sync helper should update assistant messages with hydrated subagent payloads',
+  );
+  assert.match(
+    syncBody,
+    /vscode\.postMessage\(\{\s*type: "persistAssistantMessage",\s*sessionId,\s*message,\s*\}\)/s,
+    'subagent sync helper should persist updated assistant message snapshots to extension storage',
+  );
+  assert.match(
+    syncBody,
+    /deriveSessionIdFromMessage\(message,\s*fallbackSessionId\)/,
+    'subagent sync helper should derive target session id from message payload to avoid cross-session persistence drift',
+  );
+});
+
+test('chatHistory message guard keeps assistant entries that only carry structured UI fields', () => {
+  const isMessageBody = extractFunctionBody(
+    messageHandlerSource,
+    'function isMessage(value: unknown): value is Message',
+  );
+  assert.match(
+    isMessageBody,
+    /Array\.isArray\(rec\.subagents\)/,
+    'isMessage should accept messages that only carry subagents payload for persisted UI rendering',
+  );
+  assert.match(
+    isMessageBody,
+    /typeof asRecord\(rec\.info\)\?\.role === 'string'/,
+    'isMessage should accept nested info.role-only assistant records from persisted history',
+  );
+});
+
+test('messageResponse hydrates missing subagents from streaming store state before persisting', () => {
+  assert.match(
+    messageHandlerSource,
+    /function collectHydratedSubagentsFromState\(/,
+    'message handler should collect subagent details from state maps',
+  );
+  assert.match(
+    messageHandlerSource,
+    /function mergeSubagentsIntoMessage\(/,
+    'message handler should merge hydrated subagent details into final message payload',
+  );
+  const createHandlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "messageResponse"[\s\S]*collectHydratedSubagentsFromState\(\s*getState\(\),\s*\[provisionalFinalMessageId,\s*streamingMessageId\],\s*\)/s,
+    'messageResponse should hydrate subagents from either final message id or streaming message id',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "messageResponse"[\s\S]*if \([\s\S]*!asString\(asRecord\(sanitized\.info\)\?\.id\)[\s\S]*!asString\(sanitized\.id\)[\s\S]*streamingMessageId[\s\S]*\)[\s\S]*id: streamingMessageId/s,
+    'messageResponse should backfill top-level message id from streaming id when provider omits final id',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "messageResponse"[\s\S]*const sessionId = deriveSessionIdFromMessage\(\s*sanitized,\s*getState\(\)\.currentSessionId,\s*\)/s,
+    'messageResponse persistence should derive session id from message metadata/subagent parent session id',
+  );
+});
+
+test('message timeline filters placeholder starting/finishing steps', () => {
+  const filterBody = extractFunctionBody(
+    messageComponentsSource,
+    'function isActionProgressStep(step: MessageStep | StreamingStep): boolean',
+  );
+
+  assert.match(
+    filterBody,
+    /title === "starting step" \|\| title === "finishing step"/,
+    'timeline progress filter should hide placeholder starting/finishing rows',
+  );
+});
+
+test('active task panel filters placeholder starting/finishing steps', () => {
+  assert.match(
+    panelComponentsSource,
+    /title === "starting step" \|\| title === "finishing step"/,
+    'Active Task progress list should hide placeholder starting/finishing rows',
+  );
+});
+
+test('progress updates render extended details on a wrapped line under the title', () => {
+  assert.match(
+    messageComponentsSource,
+    /const detailText = \[[\s\S]*item\.meta\?\.trim\(\)[\s\S]*displayPath[\s\S]*\]\s*\.filter[\s\S]*\.join\(" • "\)/s,
+    'assistant timeline should compose extended details from meta/path data',
+  );
+  assert.match(
+    messageComponentsSource,
+    /detailText &&[\s\S]*text-\[11px\][\s\S]*break-words whitespace-pre-wrap/s,
+    'assistant timeline should render extended details below title with wrapped text',
+  );
+  assert.match(
+    panelComponentsSource,
+    /step\.meta[\s\S]*mt-0\.5 block text-oc-text-muted opacity-60 break-words whitespace-pre-wrap/s,
+    'Active Task progress list should render step metadata as wrapped detail text below title',
+  );
+});
+
+test('assistant message resolves subagent parent key from info.id, message.id, or streaming.messageId', () => {
+  assert.match(
+    messageComponentsSource,
+    /const messageId = info\?\.id \|\| message\?\.id \|\| streaming\?\.messageId;/,
+    'assistant message should keep subagent card visible after streaming by falling back to top-level message.id',
+  );
+});
+
+test('thinking timeline groups preserve all reasoning chunks instead of only the last chunk', () => {
+  assert.match(
+    messageComponentsSource,
+    /const chunks:\s*string\[\]\s*=\s*\[\];[\s\S]*block\.items\.forEach\([\s\S]*chunks\.join\("\\n\\n"\)\.trim\(\)/s,
+    'assistant timeline should aggregate all thinking chunk texts when building grouped timeline items',
+  );
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /block\.items\[block\.items\.length - 1\]\.text/,
+    'assistant timeline should not collapse each thinking group to only the final chunk',
+  );
+});
+
+test('thinking stepper renders a one-line latest-thought ticker with fade transition', () => {
+  const messageComponentBody = extractFunctionBody(
+    messageComponentsSource,
+    'function ThinkingStepperItem(',
+  );
+  assert.match(
+    messageComponentBody,
+    /const latestLine = useMemo\([\s\S]*\.split\(\/\\r\?\\n\/\)[\s\S]*\.at\(-1\)/s,
+    'ThinkingStepperItem should derive and show only the latest thought line',
+  );
+  assert.match(
+    messageComponentBody,
+    /const \[displayLine,\s*setDisplayLine\] = useState\(latestLine\);/,
+    'ThinkingStepperItem should keep a displayed ticker line state',
+  );
+  assert.match(
+    messageComponentBody,
+    /setIsFading\(true\)[\s\S]*setDisplayLine\(latestLine\)[\s\S]*setIsFading\(false\)/s,
+    'ThinkingStepperItem should fade line changes when newer thought lines arrive',
+  );
+  assert.doesNotMatch(
+    messageComponentBody,
+    /isExpanded|Expand/,
+    'ThinkingStepperItem should no longer use expandable multi-line thinking blocks',
+  );
+});
+
+test('streaming content uses a compact one-line ticker with fade transitions', () => {
+  assert.match(
+    messageComponentsSource,
+    /function StreamingTextTicker\(/,
+    'AssistantMessage should define a dedicated compact ticker for streaming content lines',
+  );
+  const tickerBody = extractFunctionBody(
+    messageComponentsSource,
+    'function StreamingTextTicker(',
+  );
+  assert.match(
+    tickerBody,
+    /const latestLine = useMemo\([\s\S]*\.split\("\\n"\)[\s\S]*lines\[lines\.length - 1\]/s,
+    'StreamingTextTicker should derive the latest line from streaming text',
+  );
+  assert.match(
+    tickerBody,
+    /setIsFading\(true\)[\s\S]*setDisplayLine\(latestLine\)[\s\S]*setIsFading\(false\)/s,
+    'StreamingTextTicker should fade when new streaming lines arrive',
+  );
+  assert.match(
+    messageComponentsSource,
+    /renderStreamingAsPlainText \? \([\s\S]*<StreamingTextTicker text=\{group\.html\} \/>\s*[\s\S]*\) : \([\s\S]*<MarkdownRenderer/s,
+    'content group rendering should use StreamingTextTicker while stream is active',
+  );
+  assert.match(
+    tickerBody,
+    /<div className="[^"]*rounded-md[^"]*bg-oc-panel-soft\/50[^"]*">/,
+    'StreamingTextTicker should render a borderless soft-background container',
+  );
+  assert.doesNotMatch(
+    tickerBody,
+    /border-[a-z-]+|border\s/,
+    'StreamingTextTicker should not use border styling',
+  );
+});
+
+test('normalizeMessage persists reasoning-like stream-only content as reasoning events', () => {
+  assert.match(
+    messageHandlerSource,
+    /const streamingReasoningLeak = asString\(streaming\?\.content\)\.trim\(\);/,
+    'normalizeMessage should inspect streaming content for leaked reasoning traces',
+  );
+  assert.match(
+    messageHandlerSource,
+    /looksLikeReasoningTrace\(streamingReasoningLeak,\s*""\)/,
+    'normalizeMessage should classify leaked stream content with reasoning heuristic',
+  );
+  assert.match(
+    messageHandlerSource,
+    /mergedReasoningEvents\.push\(\{\s*text:\s*streamingReasoningLeak,\s*createdAt:\s*Date\.now\(\),\s*\}\)/s,
+    'normalizeMessage should persist stream-only reasoning content into reasoningEvents on finalize',
   );
 });
 

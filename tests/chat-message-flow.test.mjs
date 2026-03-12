@@ -40,14 +40,25 @@ test('chat flow handles paste attachments and queued sends while processing', ()
   const inputBody = extractFunctionBody(panelSource, 'export function InputWrapper()');
 
   assert.match(inputBody, /if\s*\(isProcessing\)\s*\{[\s\S]*type:\s*["']addToQueue["']/, 'when processing, prompt should be queued instead of directly sent');
+  assert.match(inputBody, /type:\s*["']steerMessage["']/, 'InputWrapper should provide a steerMessage action while processing');
+  assert.match(inputBody, /type:\s*["']SET_STEERING["']\s*,\s*payload:\s*true/, 'steer action should set steering state true immediately');
   assert.match(inputBody, /type:\s*["']ADD_ATTACHMENT["']/, 'paste handler should add image attachments to state');
   assert.match(inputBody, /item\.type\.startsWith\(["']image\/["']\)/, 'paste handler must filter clipboard items by image MIME type');
   assert.match(inputBody, /type:\s*["']REMOVE_ATTACHMENT["']/, 'attachment chips must support removing individual attachments');
 });
 
+test('queue row actions switch between steer and send-now based on processing state', () => {
+  const queueBody = extractFunctionBody(panelSource, 'export function QueueContainer()');
+
+  assert.match(queueBody, /type:\s*["']steerQueuedItem["']/, 'Queue row action should steer queued item when processing');
+  assert.match(queueBody, /type:\s*["']sendQueuedItemNow["']/, 'Queue row action should send queued item immediately when idle');
+  assert.match(queueBody, /type:\s*["']removeFromQueue["']/, 'Queue row should still support removing queued item');
+});
+
 test('message thread renders user and assistant content including image thumbnails', () => {
   // Verify thread-level rendering and image output in user bubbles.
   assert.match(messageSource, /export function UserMessage\(/, 'UserMessage component should exist');
+  assert.match(messageSource, /if\s*\(!content\s*&&\s*fileChips\.length\s*===\s*0\s*&&\s*!hasImages\)\s*\{\s*return null;\s*\}/, 'UserMessage should skip rendering fully empty history entries');
   assert.match(messageSource, /message\.images\s*&&\s*message\.images\.length\s*>\s*0/, 'UserMessage should guard image rendering with a non-empty images check');
   assert.match(messageSource, /<img\s+key=\{src\}\s+src=\{src\}\s+alt="attachment"/, 'UserMessage should render image thumbnails for attachments');
 
@@ -90,6 +101,19 @@ test('Assistant responses include dedicated enter transition classes', () => {
   assert.match(messageSource, /className=\{`oc-message-enter \$\{responseEnterClass\}/, 'AssistantMessage container should include response enter class');
   assert.match(chatCssSource, /\.oc-assistant-response-enter\s*\{[\s\S]*assistant-response-in/, 'chat css should define animation for completed assistant responses');
   assert.match(chatCssSource, /\.oc-assistant-streaming-enter\s*\{[\s\S]*assistant-streaming-in/, 'chat css should define animation for streaming assistant responses');
+});
+
+test('assistant header is responsive on small screens for agent/model/tokens row', () => {
+  assert.match(
+    messageSource,
+    /mb-2\.5 flex flex-wrap items-start justify-between gap-2/,
+    'assistant header container should wrap and align from top on narrow widths',
+  );
+  assert.match(
+    messageSource,
+    /oc-msg-token-chips flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0\.5 text-\[11px\] sm:ml-auto sm:text-\[12px\]/,
+    'token row should wrap with compact typography and shift right on larger screens',
+  );
 });
 
 test('normalizeMessage extracts edits from patch parts when edits are missing', () => {

@@ -24,7 +24,9 @@ export function extractFunctionBody(source, signature) {
   // If the signature passed in is just a prefix, find the actual end
   if (signature.includes('(') && !signature.includes(')')) {
     let parenDepth = 0;
-    for (let i = source.indexOf('(', fnStart); i < source.length; i++) {
+    // Find the position of '(' within the signature itself, so we start from the correct '('
+    const signatureParenPos = signature.indexOf('(');
+    for (let i = fnStart + signatureParenPos; i < source.length; i++) {
       if (source[i] === '(') parenDepth++;
       if (source[i] === ')') {
         parenDepth--;

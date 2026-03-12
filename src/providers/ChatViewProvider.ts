@@ -107,10 +107,13 @@ import {
 import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { SessionService } from "../services/SessionService";
 import { MessageStreamService } from "../services/MessageStreamService";
-import type { SessionPromptData } from "@opencode-ai/sdk";
+import type { Command as SdkCommand, SessionPromptData } from "@opencode-ai/sdk";
 import { QuotaService } from "../services/QuotaService";
 import { RequestBudgeter } from "../services/RequestBudgeter";
-import { SubagentTracker } from "../services/SubagentTracker";
+import {
+  SubagentTracker,
+  type SubagentUpdatePayload,
+} from "../services/SubagentTracker";
 import { GeminiTokenUsageTracker } from "../services/GeminiTokenUsageTracker";
 import type { TokenUsage } from "../services/GeminiTokenUsageTracker";
 import { PlanViewProvider } from "./PlanViewProvider";
@@ -127,6 +130,9 @@ import { createLogger } from "../utils/Logger";
 
 const log = createLogger("ChatViewProvider");
 type QueuedPrompt = {
+  id: string;
+  sessionId: string;
+  createdAt: number;
   text: string;
   files?: string[];
   contexts?: {
@@ -141,6 +147,8 @@ type QueuedPrompt = {
   }[];
   agent?: string;
 };
+
+type PromptDispatchMode = "queue" | "steer" | "send-now";
 
 type PlanProceedComment = {
   id: string;
@@ -166,6 +174,16 @@ type RecoveredSessionContext = {
 };
 
 type StructuredResponseType = StructuredResponseTypeDefinition;
+
+type ChatSlashCommand = {
+  name: string;
+  description?: string;
+  agent?: string;
+  model?: string;
+  template?: string;
+  source?: string;
+  subtask?: boolean;
+};
 
 type StructuredProgressUpdate = {
   title: string;
@@ -210,6 +228,7 @@ type StructuredInteractiveEvent =
     id?: string;
     title?: string;
     message: string;
+    dismissLabel?: string;
   };
 
 type StructuredAssistantOutput = {
@@ -306,6 +325,8 @@ type StructuredAssistantOutput = {
  */
 export class ChatViewProvider
   implements vscode.WebviewViewProvider, FileThemeProcessorObserver {
+  private static readonly SUBAGENT_SNAPSHOT_PREFIX =
+    "opencode.session.subagents.";
   /** The webview instance (undefined before initialization) */
   private view?: vscode.WebviewView;
 
@@ -359,8 +380,9 @@ export class ChatViewProvider
   /** ID of the session currently active in the webview (undefined until first bootstrap) */
   private currentSessionId: string | undefined;
 
-  /** Queue of prompts awaiting execution */
-  private queue: QueuedPrompt[] = [];
+  /** Session-scoped queue of prompts awaiting execution */
+  private queueBySessionId = new Map<string, QueuedPrompt[]>();
+  private queueItemSequence = 0;
 
   /** Flag indicating if queue is currently being executed */
   private isExecutingQueue: boolean = false;
@@ -368,6 +390,8 @@ export class ChatViewProvider
   private isProcessingRequest: boolean = false;
   private isBootstrappingWebview: boolean = false;
   private hasInitializedWebview: boolean = false;
+  private sessionsListRequestVersion = 0;
+  private lastSessionsPayloadFingerprint: string | undefined;
   /** Cache last message args for retry functionality */
   private lastSendMessageArgs?: {
     text: string;
@@ -378,6 +402,7 @@ export class ChatViewProvider
   };
   private structuredOutputMode: "format" | "disabled" = "format";
   private readonly promptDebugBySession = new Map<string, Record<string, unknown>>();
+  private readonly structuredValidationFailureCounters = new Map<string, number>();
   private modelsFetchPromise: Promise<
     Array<{
       providerID: string;
@@ -386,6 +411,10 @@ export class ChatViewProvider
       providerName: string;
     }>
   > | null = null;
+  private commandCatalog: ChatSlashCommand[] = [];
+  private commandCatalogFetchedAt = 0;
+  private commandCatalogFetchPromise: Promise<ChatSlashCommand[]> | null = null;
+  private readonly COMMAND_CATALOG_TTL_MS = 5 * 60 * 1000;
 
   /**
    * Creates a new ChatViewProvider instance.
@@ -453,6 +482,8 @@ export class ChatViewProvider
     this.view = webviewView;
     this.isBootstrappingWebview = false;
     this.hasInitializedWebview = false;
+    this.sessionsListRequestVersion = 0;
+    this.lastSessionsPayloadFingerprint = undefined;
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -477,6 +508,7 @@ export class ChatViewProvider
               selectedModel: this.selectedModel,
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
+              currentSessionId: this.currentSessionId,
             });
             this.hasInitializedWebview = true;
           }
@@ -510,6 +542,7 @@ export class ChatViewProvider
               selectedModel: this.selectedModel,
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
+              currentSessionId: this.currentSessionId,
             });
 
             // Restore the session-specific thinking level (separate message type)
@@ -539,10 +572,11 @@ export class ChatViewProvider
                 type: "chatHistory",
                 messages: messages,
               });
-              this.syncSubagentSnapshotForSession(
+              await this.syncSubagentSnapshotForSession(
                 currentSession.id,
                 messages as any[],
               );
+              this.sendQueueUpdate(currentSession.id);
             } else {
               this.subagentTracker.resetForSession(null);
               this.view?.webview.postMessage({
@@ -577,13 +611,32 @@ export class ChatViewProvider
         }
         case "sendMessage":
         case "sendPrompt": {
-          await this.handleSendMessage(
-            message.text,
-            message.files,
-            message.contexts,
-            message.images,
-            message.agent,
+          await this.schedulePromptDispatch("send-now", {
+            sessionId: message.sessionId,
+            text: message.text,
+            files: message.files,
+            contexts: message.contexts,
+            images: message.images,
+            agent: message.agent,
+          });
+          break;
+        }
+        case "persistAssistantMessage": {
+          const sessionId = this.firstNonEmptyString(
+            message.sessionId,
+            this.currentSessionId,
           );
+          if (!sessionId || !message.message) {
+            break;
+          }
+          await this.sessionService.upsertMessage(sessionId, message.message);
+          const snapshotFromMessage = this.buildSubagentPayloadFromMessage(
+            message.message,
+            sessionId,
+          );
+          if (snapshotFromMessage) {
+            await this.persistSubagentLiveState(sessionId, snapshotFromMessage);
+          }
           break;
         }
         case "interactiveResponse": {
@@ -608,24 +661,13 @@ export class ChatViewProvider
             : "";
           const composedPrompt = `${contextPrefix}${choiceText}`;
 
-          if (this.isProcessingRequest) {
-            this.handleAddToQueue(
-              composedPrompt,
-              undefined,
-              undefined,
-              undefined,
-              message?.agent,
-            );
-            this.sendQueueUpdate();
-            break;
-          }
-
-          await this.handleSendMessage(
-            composedPrompt,
-            undefined,
-            undefined,
-            undefined,
-            message?.agent,
+          await this.schedulePromptDispatch(
+            this.isProcessingRequest ? "queue" : "send-now",
+            {
+              sessionId: message?.sessionId,
+              text: composedPrompt,
+              agent: message?.agent,
+            },
           );
           break;
         }
@@ -646,24 +688,13 @@ export class ChatViewProvider
             })
             .join("\n");
 
-          if (this.isProcessingRequest) {
-            this.handleAddToQueue(
-              composedPrompt,
-              undefined,
-              undefined,
-              undefined,
-              message?.agent,
-            );
-            this.sendQueueUpdate();
-            break;
-          }
-
-          await this.handleSendMessage(
-            composedPrompt,
-            undefined,
-            undefined,
-            undefined,
-            message?.agent,
+          await this.schedulePromptDispatch(
+            this.isProcessingRequest ? "queue" : "send-now",
+            {
+              sessionId: message?.sessionId,
+              text: composedPrompt,
+              agent: message?.agent,
+            },
           );
           break;
         }
@@ -672,6 +703,8 @@ export class ChatViewProvider
           const createdSession = await this.sessionService.createNewSession();
           this.currentSessionId = createdSession.id;
           this.subagentTracker.resetForSession(createdSession.id);
+          await this.clearPersistedSubagentSnapshot(createdSession.id);
+          this.sendQueueUpdate(createdSession.id);
           await this.handleGetSessions(); // Update list
           this.refreshView();
 
@@ -770,6 +803,10 @@ export class ChatViewProvider
           this.handleGetAgents();
           break;
         }
+        case "getCommands": {
+          await this.handleGetCommands();
+          break;
+        }
         case "getModels": {
           await this.handleGetModels();
           break;
@@ -797,12 +834,42 @@ export class ChatViewProvider
           break;
         }
         case "addToQueue": {
-          this.handleAddToQueue(
-            message.text,
-            message.files,
-            message.contexts,
-            message.images,
-            message.agent,
+          await this.schedulePromptDispatch("queue", {
+            sessionId: message.sessionId,
+            text: message.text,
+            files: message.files,
+            contexts: message.contexts,
+            images: message.images,
+            agent: message.agent,
+          });
+          break;
+        }
+        case "steerMessage": {
+          await this.schedulePromptDispatch("steer", {
+            sessionId: message.sessionId,
+            text: message.text,
+            files: message.files,
+            contexts: message.contexts,
+            images: message.images,
+            agent: message.agent,
+          });
+          break;
+        }
+        case "sendQueuedItemNow": {
+          await this.handleDispatchQueuedItem(
+            "send-now",
+            message.sessionId,
+            message.id,
+            message.index,
+          );
+          break;
+        }
+        case "steerQueuedItem": {
+          await this.handleDispatchQueuedItem(
+            "steer",
+            message.sessionId,
+            message.id,
+            message.index,
           );
           break;
         }
@@ -815,15 +882,19 @@ export class ChatViewProvider
           break;
         }
         case "removeFromQueue": {
-          this.handleRemoveFromQueue(message.index);
+          await this.handleRemoveFromQueue(
+            message.sessionId,
+            message.id,
+            message.index,
+          );
           break;
         }
         case "clearQueue": {
-          this.handleClearQueue();
+          await this.handleClearQueue(message.sessionId);
           break;
         }
         case "executeQueue": {
-          this.handleExecuteQueue();
+          await this.handleExecuteQueue(message.sessionId);
           break;
         }
         case "log": {
@@ -961,6 +1032,14 @@ export class ChatViewProvider
           type: "subagentUpdate",
           ...subagentUpdate,
         });
+        void this.persistSubagentUpdateSnapshot(subagentUpdate).catch(
+          (persistError) => {
+            console.warn(
+              "[ChatViewProvider] Failed to persist subagent stream snapshot:",
+              persistError,
+            );
+          },
+        );
       }
 
       // Track token usage from message.updated events
@@ -1097,6 +1176,8 @@ export class ChatViewProvider
       }
       this.isBootstrappingWebview = false;
       this.hasInitializedWebview = false;
+      this.sessionsListRequestVersion = 0;
+      this.lastSessionsPayloadFingerprint = undefined;
       statusSubscription.dispose();
       this.quotaService.dispose();
       // Don't dispose the singleton tracker - it's shared
@@ -1108,6 +1189,8 @@ export class ChatViewProvider
    * Handles getting the sessions list
    */
   private async handleGetSessions(): Promise<void> {
+    const requestVersion = ++this.sessionsListRequestVersion;
+
     try {
       const sessions = await this.sessionService.listSessions();
       const currentSession = await this.sessionService.getCurrentSession();
@@ -1159,11 +1242,31 @@ export class ChatViewProvider
       const dedupedSessions = Array.from(sessionsById.values()).sort(
         (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
       );
+      const currentSessionId = currentSession?.id;
+
+      // Ignore stale async results so an older list response cannot clobber a newer one.
+      if (requestVersion !== this.sessionsListRequestVersion) {
+        return;
+      }
+
+      const payloadFingerprint = JSON.stringify({
+        currentSessionId,
+        sessions: dedupedSessions.map((session) => ({
+          id: session.id,
+          title: session.title ?? "",
+          createdAt: session.createdAt ?? null,
+          parentSessionId: session.parentSessionId ?? null,
+        })),
+      });
+      if (payloadFingerprint === this.lastSessionsPayloadFingerprint) {
+        return;
+      }
+      this.lastSessionsPayloadFingerprint = payloadFingerprint;
 
       this.view?.webview.postMessage({
         type: "sessionsList",
         sessions: dedupedSessions,
-        currentSessionId: currentSession?.id,
+        currentSessionId,
       });
     } catch (error) {
       console.error("Failed to get sessions:", error);
@@ -1188,6 +1291,7 @@ export class ChatViewProvider
         serverStatus: this.serverManager.getStatus(),
         selectedModel: this.selectedModel,
         selectedAgent: this.selectedAgent,
+        currentSessionId: this.currentSessionId,
       });
       const sessionThinkingLevel =
         this.getSessionSettings(sessionId).thinkingLevel ??
@@ -1208,7 +1312,8 @@ export class ChatViewProvider
         sessionId: sessionId,
         messages: messages,
       });
-      this.syncSubagentSnapshotForSession(sessionId, messages as any[]);
+      await this.syncSubagentSnapshotForSession(sessionId, messages as any[]);
+      this.sendQueueUpdate(sessionId);
 
       // Update the list selection
       await this.handleGetSessions();
@@ -1227,14 +1332,17 @@ export class ChatViewProvider
         (await this.sessionService.getCurrentSession())?.id === sessionId;
 
       await this.sessionService.deleteSession(sessionId);
+      this.queueBySessionId.delete(sessionId);
+      await this.clearPersistedSubagentSnapshot(sessionId);
       await this.handleGetSessions();
 
       // If we deleted the current session, create a new one and clear messages
       if (wasCurrentSession) {
-        const currentSession = await this.sessionService.getCurrentSession();
+        let currentSession = await this.sessionService.getCurrentSession();
         if (!currentSession) {
-          await this.sessionService.createNewSession();
+          currentSession = await this.sessionService.createNewSession();
         }
+        this.currentSessionId = currentSession?.id;
         this.subagentTracker.resetForSession(currentSession?.id || null);
         this.view?.webview.postMessage({
           type: "chatHistory",
@@ -1244,7 +1352,12 @@ export class ChatViewProvider
           type: "subagentSnapshot",
           ...this.subagentTracker.getSnapshotPayload(),
         });
+        if (this.currentSessionId) {
+          this.sendQueueUpdate(this.currentSessionId);
+        }
         await this.handleGetSessions();
+      } else {
+        this.sendQueueUpdate(this.currentSessionId);
       }
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to delete session: ${error}`);
@@ -1317,6 +1430,7 @@ export class ChatViewProvider
       "responseType rules:",
       "- implementation_plan: put full markdown only in plan.content, include plan.title, keep message short.",
       "- question/interactive: use interactiveEvents only; do not infer or mix with plain prose questions.",
+      "- If you need clarifications before planning, use responseType question/interactive with interactiveEvents and do not emit implementation_plan.",
       "- progress_update: use progressUpdates for machine-readable steps.",
       "- subagents: include subagents[] with id/name/status/latestActivity and optional progress/thinking/timeline events.",
       "For subagent updates, prioritize structured fields over narrative text so the UI can render clickable subagent cards.",
@@ -1407,12 +1521,65 @@ export class ChatViewProvider
     parts: Array<Record<string, unknown>>,
     agent?: string,
   ): boolean {
-    // Structured output should be on for all prompts so responseType-driven UI
-    // (question popups, implementation plan cards, progress updates, etc.)
-    // is consistently available.
-    void parts;
-    void agent;
-    return this.structuredOutputMode !== "disabled";
+    if (this.structuredOutputMode === "disabled") {
+      return false;
+    }
+
+    // Prefer normal text-mode prompts for best incremental streaming.
+    // Enable schema mode for explicit structured workflows and
+    // implementation/planning prompts where interactive clarifications are likely.
+    const activeAgent = (agent || this.selectedAgent || "").toLowerCase();
+    if (activeAgent === "plan" || activeAgent === "planner") {
+      return true;
+    }
+
+    const promptText = parts
+      .map((part) => {
+        const type = this.firstNonEmptyString(part.type)?.toLowerCase();
+        if (type && type !== "text") {
+          return "";
+        }
+        return this.firstNonEmptyString(part.text, part.content) || "";
+      })
+      .filter((chunk) => chunk.length > 0)
+      .join("\n")
+      .toLowerCase();
+
+    if (!promptText) {
+      return false;
+    }
+
+    const hasExplicitStructuredIntent =
+      /\[interactive:[^\]]+\]/i.test(promptText) ||
+      /\b(response\s*type|json[_\s-]?schema|structured\s*output)\b/i.test(
+        promptText,
+      );
+    if (hasExplicitStructuredIntent) {
+      return true;
+    }
+
+    const hasExecutionIntent =
+      /\b(implement|build|create|add|update|modify|refactor|fix|integrate|wire|migrate|setup|set up)\b/i.test(
+        promptText,
+      );
+    const hasPlanningIntent =
+      /\b(plan|planning|implementation|roadmap|approach|design|architecture|spec|proposal)\b/i.test(
+        promptText,
+      );
+    const hasRepoScopedSignal =
+      /\b(codebase|repo|repository|project|workspace|extension|file|files|function|module|component)\b/i.test(
+        promptText,
+      ) ||
+      parts.some((part) => {
+        const type = this.firstNonEmptyString(part.type)?.toLowerCase();
+        return Boolean(type && type !== "text");
+      });
+
+    if (hasRepoScopedSignal && (hasExecutionIntent || hasPlanningIntent)) {
+      return true;
+    }
+
+    return false;
   }
 
   private resolvePromptVariant(sessionId: string): string | undefined {
@@ -1456,6 +1623,123 @@ export class ChatViewProvider
     return undefined;
   }
 
+  private normalizeErrorCandidate(value: unknown): string | undefined {
+    if (typeof value !== "string") {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  private isGenericErrorMessage(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return (
+      normalized === "fetch failed" ||
+      normalized === "failed to fetch" ||
+      normalized === "request failed" ||
+      normalized === "network error" ||
+      normalized === "network request failed" ||
+      normalized === "unknown error"
+    );
+  }
+
+  private collectErrorMessageCandidates(
+    value: unknown,
+    seen: WeakSet<object> = new WeakSet<object>(),
+    depth = 0,
+  ): string[] {
+    if (value == null || depth > 5) {
+      return [];
+    }
+    if (typeof value === "string") {
+      return [value];
+    }
+    if (value instanceof Error) {
+      const withCause = value as Error & { cause?: unknown };
+      return [
+        value.message,
+        ...this.collectErrorMessageCandidates(withCause.cause, seen, depth + 1),
+      ];
+    }
+    if (typeof value !== "object") {
+      return [String(value)];
+    }
+    if (seen.has(value)) {
+      return [];
+    }
+    seen.add(value);
+
+    const rec = value as Record<string, unknown>;
+    const messages: string[] = [];
+    const pushIfString = (candidate: unknown) => {
+      const message = this.normalizeErrorCandidate(candidate);
+      if (message) {
+        messages.push(message);
+      }
+    };
+
+    pushIfString(rec.message);
+    pushIfString(rec.error);
+    pushIfString(rec.detail);
+    pushIfString(rec.reason);
+
+    if (Array.isArray(rec.errors)) {
+      for (const entry of rec.errors) {
+        messages.push(
+          ...this.collectErrorMessageCandidates(entry, seen, depth + 1),
+        );
+      }
+    }
+
+    messages.push(...this.collectErrorMessageCandidates(rec.data, seen, depth + 1));
+    messages.push(...this.collectErrorMessageCandidates(rec.cause, seen, depth + 1));
+    messages.push(
+      ...this.collectErrorMessageCandidates(rec.response, seen, depth + 1),
+    );
+    messages.push(...this.collectErrorMessageCandidates(rec.body, seen, depth + 1));
+
+    const code = this.firstNonEmptyString(rec.code, rec.errno);
+    const syscall = this.firstNonEmptyString(rec.syscall);
+    const address = this.firstNonEmptyString(rec.address);
+    const port =
+      typeof rec.port === "number"
+        ? String(rec.port)
+        : this.firstNonEmptyString(rec.port);
+    if (code || syscall || address || port) {
+      const endpoint = address && port ? `${address}:${port}` : address || port;
+      const signature = [code, syscall, endpoint]
+        .filter((part): part is string => Boolean(part))
+        .join(" ");
+      if (signature) {
+        messages.push(signature);
+      }
+    }
+
+    return messages;
+  }
+
+  private extractErrorMessage(error: unknown, fallback: string): string {
+    const candidates = this.collectErrorMessageCandidates(error)
+      .map((candidate) => this.normalizeErrorCandidate(candidate))
+      .filter((candidate): candidate is string => Boolean(candidate));
+
+    if (candidates.length === 0) {
+      return fallback;
+    }
+
+    const deduped: string[] = [];
+    for (const candidate of candidates) {
+      if (!deduped.includes(candidate)) {
+        deduped.push(candidate);
+      }
+    }
+
+    const specific = deduped.find(
+      (candidate) => !this.isGenericErrorMessage(candidate),
+    );
+    return specific || deduped[0];
+  }
+
   private shouldVerboseStreamDebug(): boolean {
     const level = vscode.workspace
       .getConfiguration("opencode.logging")
@@ -1487,11 +1771,512 @@ export class ChatViewProvider
     );
   }
 
+  private isInteractiveResponseType(value: unknown): boolean {
+    const responseType = this.firstNonEmptyString(value)?.toLowerCase();
+    return responseType === "question" || responseType === "interactive";
+  }
+
+  private isClarificationQuestionnaire(content: unknown): boolean {
+    if (typeof content !== "string") {
+      return false;
+    }
+
+    const text = content.trim();
+    if (!text || text.length < 40) {
+      return false;
+    }
+
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length < 2) {
+      return false;
+    }
+
+    const questionLines = lines.filter((line) => line.includes("?"));
+    if (questionLines.length < 2) {
+      return false;
+    }
+
+    const clarificationHintCount = questionLines.filter((line) =>
+      /\b(what|which|who|where|when|why|how|do you|would you|could you|provider|scope|payment|stack|type)\b/i.test(
+        line,
+      ),
+    ).length;
+    if (clarificationHintCount < 2) {
+      return false;
+    }
+
+    const hasExplicitPlanSections =
+      /(?:^|\n)\s*##\s*(proposed changes|verification plan)\b/i.test(text) ||
+      /\[(MODIFY|NEW|DELETE)\]/i.test(text) ||
+      /(?:^|\n)\s*-\s*\[[ xX]\]\s+/m.test(text);
+
+    return !hasExplicitPlanSections;
+  }
+
   private extractMessageId(message: any): string | undefined {
     if (!message || typeof message !== "object") {
       return undefined;
     }
     return this.firstNonEmptyString(message?.info?.id, message?.id);
+  }
+
+  private normalizeSubagentStatus(
+    value: unknown,
+  ): "pending" | "running" | "done" | "error" | "orphaned" {
+    const status = this.firstNonEmptyString(value)?.toLowerCase();
+    if (
+      status === "pending" ||
+      status === "running" ||
+      status === "done" ||
+      status === "error" ||
+      status === "orphaned"
+    ) {
+      return status;
+    }
+    if (
+      status === "completed" ||
+      status === "complete" ||
+      status === "success" ||
+      status === "finished"
+    ) {
+      return "done";
+    }
+    if (status === "failed") {
+      return "error";
+    }
+    return "pending";
+  }
+
+  private mergeSubagentEntries(
+    existingRaw: unknown,
+    incoming: Array<Record<string, unknown>>,
+  ): Array<Record<string, unknown>> {
+    const byId = new Map<string, Record<string, unknown>>();
+
+    const upsert = (value: unknown, preferIncoming = false) => {
+      const rec = this.asRecord(value);
+      if (!rec) {
+        return;
+      }
+      const id = this.firstNonEmptyString(rec.id);
+      if (!id) {
+        return;
+      }
+      const current = byId.get(id);
+      if (!current) {
+        byId.set(id, { ...rec, id });
+        return;
+      }
+      byId.set(
+        id,
+        preferIncoming
+          ? { ...current, ...rec, id }
+          : { ...rec, ...current, id },
+      );
+    };
+
+    if (Array.isArray(existingRaw)) {
+      existingRaw.forEach((entry) => upsert(entry, false));
+    }
+    incoming.forEach((entry) => upsert(entry, true));
+
+    return Array.from(byId.values());
+  }
+
+  private hydrateSubagentsFromPayload(
+    parentMessageId: string,
+    payload: {
+      summariesByParentMessageId?: Record<string, unknown>;
+      detailsById?: Record<string, unknown>;
+    },
+    fallbackSessionId?: string,
+  ): Array<Record<string, unknown>> {
+    const summariesMap = this.asRecord(payload.summariesByParentMessageId) || {};
+    const detailsMap = this.asRecord(payload.detailsById) || {};
+    const summariesRaw = summariesMap[parentMessageId];
+    const summaries = Array.isArray(summariesRaw) ? summariesRaw : [];
+    if (summaries.length === 0) {
+      return [];
+    }
+
+    return summaries
+      .map((summaryRaw) => {
+        const summary = this.asRecord(summaryRaw);
+        if (!summary) {
+          return null;
+        }
+        const id = this.firstNonEmptyString(summary.id);
+        if (!id) {
+          return null;
+        }
+        const detail = this.asRecord(detailsMap[id]) || {};
+        const merged: Record<string, unknown> = {
+          ...summary,
+          ...detail,
+          id,
+        };
+        merged.parentMessageId = this.firstNonEmptyString(
+          merged.parentMessageId,
+          parentMessageId,
+        );
+        merged.parentSessionId = this.firstNonEmptyString(
+          merged.parentSessionId,
+          fallbackSessionId,
+        );
+        merged.status = this.normalizeSubagentStatus(merged.status);
+        merged.latestActivity =
+          this.firstNonEmptyString(
+            merged.latestActivity,
+            merged.description,
+            summary.latestActivity,
+          ) || "Subagent update";
+        if (!Array.isArray(merged.references)) {
+          merged.references = [];
+        }
+        if (!Array.isArray(merged.progressEvents)) {
+          merged.progressEvents = [];
+        }
+        if (!Array.isArray(merged.thinkingEvents)) {
+          merged.thinkingEvents = [];
+        }
+        if (!Array.isArray(merged.timelineEvents)) {
+          merged.timelineEvents = [];
+        }
+        return merged;
+      })
+      .filter((entry): entry is Record<string, unknown> => !!entry);
+  }
+
+  private resolveSubagentPayloadSessionId(payload: {
+    summariesByParentMessageId?: Record<string, unknown>;
+  }): string | undefined {
+    const summariesMap = this.asRecord(payload.summariesByParentMessageId) || {};
+    for (const summariesRaw of Object.values(summariesMap)) {
+      if (!Array.isArray(summariesRaw)) {
+        continue;
+      }
+      for (const summaryRaw of summariesRaw) {
+        const summary = this.asRecord(summaryRaw);
+        const sessionId = this.firstNonEmptyString(summary?.parentSessionId);
+        if (sessionId) {
+          return sessionId;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private findLatestSubagentParentMessageIdForSession(
+    payload: {
+      summariesByParentMessageId?: Record<string, unknown>;
+    },
+    sessionId: string,
+  ): string | undefined {
+    const summariesMap = this.asRecord(payload.summariesByParentMessageId) || {};
+    const entries = Object.entries(summariesMap);
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const [parentMessageId, summariesRaw] = entries[i];
+      if (!Array.isArray(summariesRaw) || summariesRaw.length === 0) {
+        continue;
+      }
+      const matchesSession = summariesRaw.some((summaryRaw) => {
+        const summary = this.asRecord(summaryRaw);
+        const parentSessionId = this.firstNonEmptyString(summary?.parentSessionId);
+        return parentSessionId === sessionId;
+      });
+      if (matchesSession) {
+        return parentMessageId;
+      }
+    }
+    return undefined;
+  }
+
+  private getSubagentSnapshotStorageKey(sessionId: string): string {
+    return `${ChatViewProvider.SUBAGENT_SNAPSHOT_PREFIX}${sessionId}`;
+  }
+
+  private normalizeSubagentPayload(
+    payload: unknown,
+  ): SubagentUpdatePayload {
+    const rec = this.asRecord(payload) || {};
+    const summariesByParentMessageId =
+      this.asRecord(rec.summariesByParentMessageId) || {};
+    const detailsById = this.asRecord(rec.detailsById) || {};
+    return {
+      summariesByParentMessageId:
+        summariesByParentMessageId as SubagentUpdatePayload["summariesByParentMessageId"],
+      detailsById: detailsById as SubagentUpdatePayload["detailsById"],
+    };
+  }
+
+  private mergeSubagentPayloads(
+    existing: SubagentUpdatePayload,
+    incoming: SubagentUpdatePayload,
+  ): SubagentUpdatePayload {
+    const mergedSummaries: Record<string, unknown[]> = {};
+    const existingSummaries =
+      this.asRecord(existing.summariesByParentMessageId) || {};
+    const incomingSummaries =
+      this.asRecord(incoming.summariesByParentMessageId) || {};
+    const parentMessageIds = new Set<string>([
+      ...Object.keys(existingSummaries),
+      ...Object.keys(incomingSummaries),
+    ]);
+    for (const parentMessageId of parentMessageIds) {
+      const merged = this.mergeSubagentEntries(
+        existingSummaries[parentMessageId],
+        Array.isArray(incomingSummaries[parentMessageId])
+          ? (incomingSummaries[parentMessageId] as Array<Record<string, unknown>>)
+          : [],
+      );
+      if (merged.length > 0) {
+        mergedSummaries[parentMessageId] = merged;
+      }
+    }
+
+    const mergedDetails: Record<string, unknown> = {};
+    const existingDetails = this.asRecord(existing.detailsById) || {};
+    const incomingDetails = this.asRecord(incoming.detailsById) || {};
+    const detailIds = new Set<string>([
+      ...Object.keys(existingDetails),
+      ...Object.keys(incomingDetails),
+    ]);
+    for (const detailId of detailIds) {
+      const prev = this.asRecord(existingDetails[detailId]) || {};
+      const next = this.asRecord(incomingDetails[detailId]) || {};
+      mergedDetails[detailId] = {
+        ...prev,
+        ...next,
+        id: this.firstNonEmptyString(next.id, prev.id, detailId) || detailId,
+      };
+    }
+
+    return {
+      summariesByParentMessageId:
+        mergedSummaries as SubagentUpdatePayload["summariesByParentMessageId"],
+      detailsById: mergedDetails as SubagentUpdatePayload["detailsById"],
+    };
+  }
+
+  private async loadPersistedSubagentSnapshot(
+    sessionId: string,
+  ): Promise<SubagentUpdatePayload | null> {
+    const raw = this.context.workspaceState.get<unknown>(
+      this.getSubagentSnapshotStorageKey(sessionId),
+    );
+    if (!raw) {
+      return null;
+    }
+    const normalized = this.normalizeSubagentPayload(raw);
+    const hasEntries =
+      Object.keys(normalized.summariesByParentMessageId || {}).length > 0 ||
+      Object.keys(normalized.detailsById || {}).length > 0;
+    return hasEntries ? normalized : null;
+  }
+
+  private async savePersistedSubagentSnapshot(
+    sessionId: string,
+    payload: SubagentUpdatePayload,
+  ): Promise<void> {
+    await this.context.workspaceState.update(
+      this.getSubagentSnapshotStorageKey(sessionId),
+      payload,
+    );
+  }
+
+  private async clearPersistedSubagentSnapshot(
+    sessionId: string,
+  ): Promise<void> {
+    await this.context.workspaceState.update(
+      this.getSubagentSnapshotStorageKey(sessionId),
+      undefined,
+    );
+  }
+
+  private async persistSubagentLiveState(
+    sessionId: string,
+    payload: SubagentUpdatePayload,
+  ): Promise<SubagentUpdatePayload> {
+    const existing = await this.loadPersistedSubagentSnapshot(sessionId);
+    const merged = existing
+      ? this.mergeSubagentPayloads(existing, payload)
+      : payload;
+    await this.savePersistedSubagentSnapshot(sessionId, merged);
+    return merged;
+  }
+
+  private buildSubagentPayloadFromMessage(
+    messageRaw: unknown,
+    fallbackSessionId: string,
+  ): SubagentUpdatePayload | null {
+    const message = this.asRecord(messageRaw);
+    if (!message) {
+      return null;
+    }
+    const info = this.asRecord(message.info);
+    const messageId = this.firstNonEmptyString(
+      info?.id,
+      message.id,
+      message.messageID,
+    );
+    const subagentsRaw = Array.isArray(message.subagents)
+      ? message.subagents
+      : [];
+    if (!messageId || subagentsRaw.length === 0) {
+      return null;
+    }
+
+    const summaries: Array<Record<string, unknown>> = [];
+    const detailsById: Record<string, unknown> = {};
+
+    for (const subagentRaw of subagentsRaw) {
+      const subagent = this.asRecord(subagentRaw);
+      if (!subagent) {
+        continue;
+      }
+      const id = this.firstNonEmptyString(subagent.id);
+      if (!id) {
+        continue;
+      }
+      const parentSessionId = this.firstNonEmptyString(
+        subagent.parentSessionId,
+        fallbackSessionId,
+      );
+      const parentMessageId = this.firstNonEmptyString(
+        subagent.parentMessageId,
+        messageId,
+      );
+      if (!parentSessionId || !parentMessageId) {
+        continue;
+      }
+
+      const normalized: Record<string, unknown> = {
+        ...subagent,
+        id,
+        parentSessionId,
+        parentMessageId,
+        status: this.normalizeSubagentStatus(subagent.status),
+        latestActivity:
+          this.firstNonEmptyString(
+            subagent.latestActivity,
+            subagent.description,
+          ) || "Subagent update",
+      };
+      if (!Array.isArray(normalized.references)) {
+        normalized.references = [];
+      }
+      if (!Array.isArray(normalized.progressEvents)) {
+        normalized.progressEvents = [];
+      }
+      if (!Array.isArray(normalized.thinkingEvents)) {
+        normalized.thinkingEvents = [];
+      }
+      if (!Array.isArray(normalized.timelineEvents)) {
+        normalized.timelineEvents = [];
+      }
+
+      summaries.push({
+        id,
+        parentSessionId,
+        parentMessageId,
+        childSessionId: normalized.childSessionId,
+        agentId: normalized.agentId,
+        providerID: normalized.providerID,
+        modelID: normalized.modelID,
+        startedAt: normalized.startedAt,
+        endedAt: normalized.endedAt,
+        durationMs: normalized.durationMs,
+        status: normalized.status,
+        latestActivity: normalized.latestActivity,
+        references: normalized.references,
+      });
+      detailsById[id] = normalized;
+    }
+
+    if (summaries.length === 0) {
+      return null;
+    }
+
+    return {
+      summariesByParentMessageId: {
+        [messageId]: summaries as SubagentUpdatePayload["summariesByParentMessageId"][string],
+      } as SubagentUpdatePayload["summariesByParentMessageId"],
+      detailsById: detailsById as SubagentUpdatePayload["detailsById"],
+    };
+  }
+
+  private async persistSubagentUpdateSnapshot(payload: {
+    summariesByParentMessageId?: Record<string, unknown>;
+    detailsById?: Record<string, unknown>;
+  }): Promise<void> {
+    const summariesMap = this.asRecord(payload.summariesByParentMessageId) || {};
+    const parentMessageIds = Object.keys(summariesMap).filter(Boolean);
+    if (parentMessageIds.length === 0) {
+      return;
+    }
+
+    const sessionId =
+      this.currentSessionId || this.resolveSubagentPayloadSessionId(payload);
+    if (!sessionId) {
+      return;
+    }
+
+    const normalizedPayload = this.normalizeSubagentPayload(payload);
+    await this.persistSubagentLiveState(sessionId, normalizedPayload);
+
+    const cachedMessages = await this.sessionService.loadSessionMessages(
+      sessionId,
+    );
+    if (!Array.isArray(cachedMessages) || cachedMessages.length === 0) {
+      return;
+    }
+
+    let hasChanges = false;
+    const nextMessages = cachedMessages.map((rawMessage) => {
+      const message = this.asRecord(rawMessage);
+      if (!message) {
+        return rawMessage;
+      }
+
+      const info = this.asRecord(message.info);
+      const messageId = this.firstNonEmptyString(
+        info?.id,
+        message.id,
+        message.messageID,
+      );
+      if (!messageId || !parentMessageIds.includes(messageId)) {
+        return rawMessage;
+      }
+
+      const incomingSubagents = this.hydrateSubagentsFromPayload(
+        messageId,
+        normalizedPayload,
+        sessionId,
+      );
+      if (incomingSubagents.length === 0) {
+        return rawMessage;
+      }
+
+      const mergedSubagents = this.mergeSubagentEntries(
+        message.subagents,
+        incomingSubagents,
+      );
+      const nextMessage: Record<string, unknown> = {
+        ...message,
+        subagents: mergedSubagents,
+      };
+      hasChanges = true;
+      return nextMessage;
+    });
+
+    if (!hasChanges) {
+      return;
+    }
+
+    await this.sessionService.saveSessionMessages(sessionId, nextMessages);
   }
 
   private logStreamEventDiagnostics(event: any): void {
@@ -1766,20 +2551,82 @@ export class ChatViewProvider
     this.promptDebugBySession.delete(sessionId);
   }
 
-  private syncSubagentSnapshotForSession(
+  private async syncSubagentSnapshotForSession(
     sessionId: string,
     messages: any[],
-  ): void {
+  ): Promise<void> {
     this.subagentTracker.resetForSession(sessionId);
     this.subagentTracker.seedFromMessages(messages);
+    const trackerSnapshot = this.subagentTracker.getSnapshotPayload();
+    const persistedSnapshot =
+      await this.loadPersistedSubagentSnapshot(sessionId);
+    const mergedSnapshot = persistedSnapshot
+      ? this.mergeSubagentPayloads(persistedSnapshot, trackerSnapshot)
+      : trackerSnapshot;
     this.view?.webview.postMessage({
       type: "subagentSnapshot",
-      ...this.subagentTracker.getSnapshotPayload(),
+      ...mergedSnapshot,
     });
+    await this.savePersistedSubagentSnapshot(sessionId, mergedSnapshot);
+  }
+
+  private recordStructuredValidationFailure(
+    record: Record<string, unknown>,
+    errors: string[],
+    diagnostics?: {
+      source?: string;
+      providerID?: string;
+      modelID?: string;
+    },
+  ): void {
+    const responseType =
+      this.firstNonEmptyString(
+        record.responseType,
+        record.type,
+        record.kind,
+        record.category,
+      ) || "unknown";
+    const providerID =
+      this.firstNonEmptyString(diagnostics?.providerID) ||
+      this.firstNonEmptyString(this.selectedModel.providerID) ||
+      "unknown";
+    const modelID =
+      this.firstNonEmptyString(diagnostics?.modelID) ||
+      this.firstNonEmptyString(this.selectedModel.modelID) ||
+      "unknown";
+    const source = this.firstNonEmptyString(diagnostics?.source) || "unknown";
+
+    const key = `${responseType}|${providerID}/${modelID}`;
+    const nextCount =
+      (this.structuredValidationFailureCounters.get(key) || 0) + 1;
+    this.structuredValidationFailureCounters.set(key, nextCount);
+
+    const shouldLogAggregate =
+      nextCount === 1 ||
+      nextCount === 5 ||
+      nextCount === 10 ||
+      nextCount % 25 === 0;
+
+    if (shouldLogAggregate) {
+      this.logger.warn("Structured output validation failure aggregate", {
+        key,
+        count: nextCount,
+        responseType,
+        providerID,
+        modelID,
+        source,
+        errors,
+      });
+    }
   }
 
   private normalizeStructuredOutput(
     raw: unknown,
+    diagnostics?: {
+      source?: string;
+      providerID?: string;
+      modelID?: string;
+    },
   ): StructuredAssistantOutput | undefined {
     let value: unknown = raw;
     if (typeof value === "string") {
@@ -1799,7 +2646,11 @@ export class ChatViewProvider
     if (!validation.valid) {
       this.logger.warn("Structured output validation failed", {
         errors: validation.errors,
+        source: diagnostics?.source,
+        providerID: diagnostics?.providerID,
+        modelID: diagnostics?.modelID,
       });
+      this.recordStructuredValidationFailure(rec, validation.errors, diagnostics);
     }
     const sanitizedRec = sanitizeStructuredOutput(rec);
 
@@ -1936,7 +2787,7 @@ export class ChatViewProvider
           event.title,
         );
         const options = normalizeChoices(event.options ?? event.choices);
-        if (!question || options.length === 0) return null;
+        if (!question || options.length < 2) return null;
         return {
           type: "question",
           id,
@@ -1960,6 +2811,10 @@ export class ChatViewProvider
           id,
           title: this.firstNonEmptyString(event.title),
           message,
+          dismissLabel: this.firstNonEmptyString(
+            event.dismissLabel,
+            event.dismiss_label,
+          ),
         };
       }
 
@@ -1984,7 +2839,7 @@ export class ChatViewProvider
     if (interactiveEvents.length === 0) {
       const rootQuestion = this.firstNonEmptyString(rec.question, rec.prompt);
       const rootOptions = normalizeChoices(rec.options ?? rec.choices);
-      if (rootQuestion && rootOptions.length > 0) {
+      if (rootQuestion && rootOptions.length >= 2) {
         interactiveEvents = [
           {
             type: "question",
@@ -1997,6 +2852,37 @@ export class ChatViewProvider
           },
         ];
       }
+    }
+
+    if (
+      interactiveEvents.length === 0 &&
+      this.isInteractiveResponseType(responseType)
+    ) {
+      const fallbackQuestion =
+        this.firstNonEmptyString(rec.question, rec.prompt, message) ||
+        "I need a quick clarification before I continue.";
+      interactiveEvents = [
+        {
+          type: "question",
+          id: `interactive-${Date.now()}-fallback`,
+          title: this.firstNonEmptyString(rec.title) || "Question",
+          question: fallbackQuestion,
+          options: [
+            { id: "yes", label: "Yes", value: "yes" },
+            { id: "no", label: "No", value: "no" },
+          ],
+          allowCustomInput: true,
+        },
+      ];
+      this.logger.warn(
+        "Coerced interactive response into fallback question event",
+        {
+          source: diagnostics?.source,
+          providerID: diagnostics?.providerID,
+          modelID: diagnostics?.modelID,
+          responseType,
+        },
+      );
     }
 
     const subagentsDeltaRaw = this.asRecord(
@@ -2224,9 +3110,21 @@ export class ChatViewProvider
         >)
       : undefined;
 
+    const isInteractiveResponse =
+      this.isInteractiveResponseType(responseType) &&
+      interactiveEvents.length > 0;
+
     const planRec = this.asRecord(sanitizedRec.plan ?? rec.plan);
+    if (isInteractiveResponse && planRec) {
+      this.logger.warn("Ignoring plan payload for interactive response", {
+        source: diagnostics?.source,
+        providerID: diagnostics?.providerID,
+        modelID: diagnostics?.modelID,
+      });
+    }
     const plan =
-      planRec || responseType === "implementation_plan"
+      !isInteractiveResponse &&
+        (planRec || responseType === "implementation_plan")
         ? {
           file:
             this.firstNonEmptyString(planRec?.file) ||
@@ -2341,16 +3239,28 @@ export class ChatViewProvider
     messageLike: any,
   ): StructuredAssistantOutput | undefined {
     if (!messageLike) return undefined;
-    const candidates: unknown[] = [
-      messageLike.structuredOutput,
-      messageLike.structured_output,
-      messageLike.output,
-      messageLike.info?.structuredOutput,
-      messageLike.info?.structured_output,
-      messageLike.info?.output,
-      messageLike.properties?.structuredOutput,
-      messageLike.properties?.structured_output,
-      messageLike.properties?.output,
+    const providerID = this.firstNonEmptyString(
+      messageLike.info?.providerID,
+      messageLike.providerID,
+      messageLike.properties?.providerID,
+    );
+    const modelID = this.firstNonEmptyString(
+      messageLike.info?.modelID,
+      messageLike.modelID,
+      messageLike.properties?.modelID,
+      messageLike.info?.model?.modelID,
+      messageLike.model?.modelID,
+    );
+    const candidates: Array<{ value: unknown; source: string }> = [
+      { value: messageLike.structuredOutput, source: "messageLike.structuredOutput" },
+      { value: messageLike.structured_output, source: "messageLike.structured_output" },
+      { value: messageLike.output, source: "messageLike.output" },
+      { value: messageLike.info?.structuredOutput, source: "messageLike.info.structuredOutput" },
+      { value: messageLike.info?.structured_output, source: "messageLike.info.structured_output" },
+      { value: messageLike.info?.output, source: "messageLike.info.output" },
+      { value: messageLike.properties?.structuredOutput, source: "messageLike.properties.structuredOutput" },
+      { value: messageLike.properties?.structured_output, source: "messageLike.properties.structured_output" },
+      { value: messageLike.properties?.output, source: "messageLike.properties.output" },
     ];
 
     if (Array.isArray(messageLike.parts)) {
@@ -2366,15 +3276,29 @@ export class ChatViewProvider
             toolName.includes("structuredoutput") ||
             toolName.includes("structured_output")
           ) {
-            if (part.state.result) candidates.push(part.state.result);
-            if (part.state.input) candidates.push(part.state.input);
+            if (part.state.result) {
+              candidates.push({
+                value: part.state.result,
+                source: "messageLike.parts[].state.result",
+              });
+            }
+            if (part.state.input) {
+              candidates.push({
+                value: part.state.input,
+                source: "messageLike.parts[].state.input",
+              });
+            }
           }
         }
       }
     }
 
     for (const candidate of candidates) {
-      const parsed = this.normalizeStructuredOutput(candidate);
+      const parsed = this.normalizeStructuredOutput(candidate.value, {
+        source: candidate.source,
+        providerID,
+        modelID,
+      });
       if (parsed) {
         return parsed;
       }
@@ -2382,7 +3306,11 @@ export class ChatViewProvider
 
     const bodyText = this.extractMessageBodyText(messageLike);
     if (bodyText.startsWith("{") && bodyText.endsWith("}")) {
-      return this.normalizeStructuredOutput(bodyText);
+      return this.normalizeStructuredOutput(bodyText, {
+        source: "messageLike.bodyText.json",
+        providerID,
+        modelID,
+      });
     }
     return undefined;
   }
@@ -2392,6 +3320,15 @@ export class ChatViewProvider
     if (!structured) {
       return message;
     }
+
+    const isInteractiveStructuredResponse =
+      this.isInteractiveResponseType(structured.responseType) &&
+      Array.isArray(structured.interactiveEvents) &&
+      structured.interactiveEvents.length > 0;
+    const structuredPlanContent =
+      this.firstNonEmptyString(structured.plan?.content) || "";
+    const shouldSuppressStructuredPlan =
+      this.isClarificationQuestionnaire(structuredPlanContent);
 
     const next: any = {
       ...message,
@@ -2551,7 +3488,10 @@ export class ChatViewProvider
       }
     }
 
-    if (structured.responseType === "implementation_plan") {
+    if (
+      structured.responseType === "implementation_plan" &&
+      !shouldSuppressStructuredPlan
+    ) {
       const summaryMessage = this.firstNonEmptyString(structured.message);
       const safeMessage =
         summaryMessage && summaryMessage.length <= 280
@@ -2580,8 +3520,10 @@ export class ChatViewProvider
     }
 
     if (
-      structured.responseType === "implementation_plan" ||
-      structured.plan?.content
+      !isInteractiveStructuredResponse &&
+      !shouldSuppressStructuredPlan &&
+      (structured.responseType === "implementation_plan" ||
+        structured.plan?.content)
     ) {
       const planContent = structured.plan?.content || "";
       if (typeof planContent === "string" && planContent.trim().length >= 80) {
@@ -2591,6 +3533,32 @@ export class ChatViewProvider
           title: structured.plan?.title,
           summary: structured.plan?.summary,
         };
+      }
+    }
+
+    if (shouldSuppressStructuredPlan) {
+      if (next.plan) {
+        delete next.plan;
+      }
+      if (structured.responseType === "implementation_plan") {
+        const clarificationMessage =
+          this.firstNonEmptyString(structured.message) ||
+          "I need a few clarifications before drafting the implementation plan.";
+        next.content = clarificationMessage;
+        const parts = Array.isArray(next.parts) ? [...next.parts] : [];
+        const textIndex = parts.findIndex(
+          (part: any) => this.isRenderableTextPart(part),
+        );
+        if (textIndex >= 0) {
+          parts[textIndex] = {
+            ...parts[textIndex],
+            type: "text",
+            text: clarificationMessage,
+          };
+        } else {
+          parts.push({ type: "text", text: clarificationMessage });
+        }
+        next.parts = parts;
       }
     }
 
@@ -2709,6 +3677,7 @@ export class ChatViewProvider
     // Cache for retry
     this.lastSendMessageArgs = { text, files, contexts, images, agent };
     this.isProcessingRequest = true;
+    let drainSessionId: string | undefined;
     const capturePromptDebug = this.shouldVerboseStreamDebug();
     let debugSessionId: string | undefined;
     try {
@@ -2736,6 +3705,8 @@ export class ChatViewProvider
           this.currentSessionId,
         );
       }
+      this.currentSessionId = session.id;
+      drainSessionId = session.id;
       this.subagentTracker.setActiveSession(session.id);
 
       // Check budget before sending
@@ -2938,17 +3909,10 @@ export class ChatViewProvider
           status: response.response?.status,
         });
 
-        // Safely extract error message
-        let errorMessage = "Failed to send message";
-        const err = response.error as any;
-
-        if (Array.isArray(err.errors) && err.errors.length > 0) {
-          errorMessage = err.errors[0].message || JSON.stringify(err.errors[0]);
-        } else if (err.data && err.data.message) {
-          errorMessage = err.data.message;
-        } else if (err.message) {
-          errorMessage = err.message;
-        }
+        let errorMessage = this.extractErrorMessage(
+          response.error,
+          "Failed to send message",
+        );
 
         // Handle Session Not Found error (likely server restart)
         if (
@@ -3061,7 +4025,25 @@ export class ChatViewProvider
           response.data,
         );
         const enrichedMessage = this.enrichMessageWithPlan(structuredMessage);
-        const assistantMessageId = this.extractMessageId(enrichedMessage);
+        const trackerSnapshotPayload = this.subagentTracker.getSnapshotPayload();
+        let assistantMessageId = this.extractMessageId(enrichedMessage);
+        if (!assistantMessageId) {
+          assistantMessageId = this.subagentTracker.getLatestParentMessageId(
+            session.id,
+          );
+          if (assistantMessageId) {
+            enrichedMessage.id = assistantMessageId;
+          }
+        }
+        if (!assistantMessageId) {
+          assistantMessageId = this.findLatestSubagentParentMessageIdForSession(
+            trackerSnapshotPayload,
+            session.id,
+          );
+          if (assistantMessageId) {
+            enrichedMessage.id = assistantMessageId;
+          }
+        }
         if (assistantMessageId) {
           const hydratedSubagents =
             await this.subagentTracker.finalizeParentMessage({
@@ -3077,6 +4059,76 @@ export class ChatViewProvider
                 assistantMessageId,
               ),
             });
+          } else {
+            let snapshotPayload = this.subagentTracker.getPayloadForParentMessage(
+              assistantMessageId,
+            );
+            const hydratedFromSnapshot = this.hydrateSubagentsFromPayload(
+              assistantMessageId,
+              snapshotPayload,
+              session.id,
+            );
+            if (hydratedFromSnapshot.length > 0) {
+              enrichedMessage.subagents = this.mergeSubagentEntries(
+                enrichedMessage.subagents,
+                hydratedFromSnapshot,
+              );
+            } else {
+              const fallbackParentMessageId =
+                this.findLatestSubagentParentMessageIdForSession(
+                  trackerSnapshotPayload,
+                  session.id,
+                );
+              if (
+                fallbackParentMessageId &&
+                fallbackParentMessageId !== assistantMessageId
+              ) {
+                snapshotPayload =
+                  this.subagentTracker.getPayloadForParentMessage(
+                    fallbackParentMessageId,
+                  );
+                const hydratedFallback = this.hydrateSubagentsFromPayload(
+                  fallbackParentMessageId,
+                  snapshotPayload,
+                  session.id,
+                );
+                if (hydratedFallback.length > 0) {
+                  enrichedMessage.subagents = this.mergeSubagentEntries(
+                    enrichedMessage.subagents,
+                    hydratedFallback,
+                  );
+                  if (!this.extractMessageId(enrichedMessage)) {
+                    enrichedMessage.id = fallbackParentMessageId;
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          const fallbackParentMessageId =
+            this.findLatestSubagentParentMessageIdForSession(
+              trackerSnapshotPayload,
+              session.id,
+            );
+          if (fallbackParentMessageId) {
+            const snapshotPayload =
+              this.subagentTracker.getPayloadForParentMessage(
+                fallbackParentMessageId,
+              );
+            const hydratedFallback = this.hydrateSubagentsFromPayload(
+              fallbackParentMessageId,
+              snapshotPayload,
+              session.id,
+            );
+            if (hydratedFallback.length > 0) {
+              enrichedMessage.subagents = this.mergeSubagentEntries(
+                enrichedMessage.subagents,
+                hydratedFallback,
+              );
+              if (!this.extractMessageId(enrichedMessage)) {
+                enrichedMessage.id = fallbackParentMessageId;
+              }
+            }
           }
         }
 
@@ -3087,6 +4139,16 @@ export class ChatViewProvider
             duration: duration,
           },
         });
+        const snapshotFromFinalMessage = this.buildSubagentPayloadFromMessage(
+          enrichedMessage,
+          session.id,
+        );
+        if (snapshotFromFinalMessage) {
+          await this.persistSubagentLiveState(
+            session.id,
+            snapshotFromFinalMessage,
+          );
+        }
 
         this.view?.webview.postMessage({
           type: "messageResponse",
@@ -3101,8 +4163,10 @@ export class ChatViewProvider
         console.warn("No response data received from OpenCode");
       }
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = this.extractErrorMessage(
+        error,
+        "Failed to send message",
+      );
       vscode.window.showErrorMessage(`Failed to send message: ${errorMessage}`);
       console.error("Send message error:", error);
 
@@ -3116,9 +4180,7 @@ export class ChatViewProvider
         this.promptDebugBySession.delete(debugSessionId);
       }
       this.isProcessingRequest = false;
-      if (!this.isExecutingQueue && this.queue.length > 0) {
-        void this.handleExecuteQueue();
-      }
+      this.maybeAutoDrainQueue(drainSessionId);
     }
   }
 
@@ -3139,6 +4201,28 @@ export class ChatViewProvider
     const planFilePattern = /implementation_plan(?:_[a-z0-9-]+)?\.md/i;
 
     const structured = this.extractStructuredOutput(message);
+    const structuredResponseType = this.firstNonEmptyString(
+      structured?.responseType,
+      message?.structuredOutput?.responseType,
+    );
+    const hasInteractiveEvents =
+      (Array.isArray(structured?.interactiveEvents) &&
+        structured.interactiveEvents.length > 0) ||
+      (Array.isArray(message?.interactiveEvents) &&
+        message.interactiveEvents.length > 0);
+    const isInteractiveClarificationResponse =
+      this.isInteractiveResponseType(structuredResponseType) &&
+      hasInteractiveEvents;
+
+    if (isInteractiveClarificationResponse) {
+      if (message.plan) {
+        const nextMessage = { ...message };
+        delete nextMessage.plan;
+        return nextMessage;
+      }
+      return message;
+    }
+
     if (structured) {
       const structuredPlanContent = structured.plan?.content;
       if (
@@ -3146,6 +4230,9 @@ export class ChatViewProvider
         typeof structuredPlanContent === "string" &&
         structuredPlanContent.length >= 200
       ) {
+        if (this.isClarificationQuestionnaire(structuredPlanContent)) {
+          return message;
+        }
         this.persistPlan(structuredPlanContent).catch((err) => {
           console.error(
             "[ChatViewProvider] Failed to auto-persist structured plan:",
@@ -3216,6 +4303,12 @@ export class ChatViewProvider
       fullContent.length > 500;
 
     const hasPlanKeywords = basicPlanKeywordMatch && hasStructuralMarkers;
+    const looksLikeClarificationQuestions =
+      this.isClarificationQuestionnaire(fullContent);
+
+    if (!hasPlanFile && looksLikeClarificationQuestions) {
+      return message;
+    }
 
     if (hasPlanFile || hasPlanKeywords) {
       // Extract and clean the plan content using the PlanParser
@@ -3313,28 +4406,76 @@ export class ChatViewProvider
     }
   }
 
+  private async resolveStopSessionId(
+    requestedSessionId?: string,
+  ): Promise<string | undefined> {
+    const explicitSessionId = this.firstNonEmptyString(requestedSessionId);
+    if (explicitSessionId) {
+      return explicitSessionId;
+    }
+
+    const activeSessionId = this.firstNonEmptyString(this.currentSessionId);
+    if (activeSessionId) {
+      return activeSessionId;
+    }
+
+    if (!this.isProcessingRequest) {
+      return undefined;
+    }
+
+    try {
+      const currentSession = await this.sessionService.getCurrentSession();
+      return this.firstNonEmptyString(currentSession?.id);
+    } catch (error) {
+      console.warn(
+        "[ChatViewProvider] Failed to resolve stop session from SessionService:",
+        error,
+      );
+      return undefined;
+    }
+  }
+
   /**
    * Handles stopping a request
    */
   // FORBIDDEN TO REMOVE: Stop Request Button - backend handler required by webview to abort streaming requests
-  private async handleStopRequest(sessionId: string): Promise<void> {
+  private async handleStopRequest(sessionId?: string): Promise<void> {
+    let resolvedSessionId: string | undefined;
     try {
+      resolvedSessionId = await this.resolveStopSessionId(sessionId);
+      if (!resolvedSessionId) {
+        console.warn(
+          "[ChatViewProvider] stopRequest ignored: no active session ID could be resolved.",
+        );
+        return;
+      }
+
       const client = this.serverManager.getClient();
       if (!client) {
+        console.warn(
+          `[ChatViewProvider] stopRequest skipped: no server client available for session ${resolvedSessionId}.`,
+        );
         return;
       }
 
       console.log(
-        `[ChatViewProvider] Stopping request for session ${sessionId}`,
+        `[ChatViewProvider] Stopping request for session ${resolvedSessionId}`,
       );
 
       const workspaceDirectory = this.getWorkspaceDirectory();
       await client.session.abort({
-        path: { id: sessionId },
+        path: { id: resolvedSessionId },
         query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
       });
     } catch (error) {
       console.error("Failed to stop request:", error);
+    } finally {
+      this.isProcessingRequest = false;
+      this.view?.webview.postMessage({
+        type: "stopRequestHandled",
+        sessionId: resolvedSessionId,
+      });
+      this.maybeAutoDrainQueue(resolvedSessionId);
     }
   }
 
@@ -3720,6 +4861,7 @@ export class ChatViewProvider
       serverStatus: this.serverManager.getStatus(),
       selectedModel: this.selectedModel,
       selectedAgent: this.selectedAgent,
+      currentSessionId: this.currentSessionId,
     });
   }
 
@@ -4096,6 +5238,87 @@ export class ChatViewProvider
     } finally {
       this.modelsFetchPromise = null;
     }
+  }
+
+  /**
+   * Fetches slash commands from OpenCode SDK and sends them to the webview.
+   * Uses a short-lived cache because commands are mostly static during a session.
+   */
+  private async handleGetCommands(): Promise<void> {
+    try {
+      const commands = await this.loadCommandCatalog();
+      this.view?.webview.postMessage({
+        type: "commandsList",
+        commands,
+      });
+    } catch (error) {
+      console.error("[ChatViewProvider] Failed to fetch command catalog:", error);
+      this.view?.webview.postMessage({
+        type: "commandsList",
+        commands: [],
+      });
+    }
+  }
+
+  private async loadCommandCatalog(forceRefresh = false): Promise<ChatSlashCommand[]> {
+    const cacheIsFresh =
+      !forceRefresh &&
+      this.commandCatalog.length > 0 &&
+      Date.now() - this.commandCatalogFetchedAt < this.COMMAND_CATALOG_TTL_MS;
+    if (cacheIsFresh) {
+      return this.commandCatalog;
+    }
+
+    if (this.commandCatalogFetchPromise) {
+      return this.commandCatalogFetchPromise;
+    }
+
+    this.commandCatalogFetchPromise = (async () => {
+      const client = await this.serverManager.ensureRunning();
+      const response = await client.command.list();
+      const rawItems = Array.isArray(response.data) ? response.data : [];
+      const commands: ChatSlashCommand[] = rawItems
+        .map((item) => this.normalizeSlashCommand(item))
+        .filter((item): item is ChatSlashCommand => !!item)
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      this.commandCatalog = commands;
+      this.commandCatalogFetchedAt = Date.now();
+      return commands;
+    })();
+
+    try {
+      return await this.commandCatalogFetchPromise;
+    } finally {
+      this.commandCatalogFetchPromise = null;
+    }
+  }
+
+  private normalizeSlashCommand(item: SdkCommand | unknown): ChatSlashCommand | null {
+    const rec = this.asRecord(item);
+    if (!rec) {
+      return null;
+    }
+
+    const rawName = this.firstNonEmptyString(rec.name);
+    if (!rawName) {
+      return null;
+    }
+
+    const name = rawName.replace(/^\//, "");
+    if (!name) {
+      return null;
+    }
+
+    return {
+      name,
+      description: this.firstNonEmptyString(rec.description),
+      agent: this.firstNonEmptyString(rec.agent),
+      model: this.firstNonEmptyString(rec.model),
+      template: this.firstNonEmptyString(rec.template),
+      source: this.firstNonEmptyString(rec.source),
+      subtask: typeof rec.subtask === "boolean" ? rec.subtask : undefined,
+    };
   }
 
   /**
@@ -4542,76 +5765,283 @@ export class ChatViewProvider
     }
   }
 
-  /**
-   * Adds a message to the prompt queue
-   */
-  private handleAddToQueue(
+  private getSessionQueue(sessionId: string): QueuedPrompt[] {
+    return this.queueBySessionId.get(sessionId) ?? [];
+  }
+
+  private setSessionQueue(sessionId: string, queue: QueuedPrompt[]): void {
+    if (queue.length > 0) {
+      this.queueBySessionId.set(sessionId, queue);
+      return;
+    }
+    this.queueBySessionId.delete(sessionId);
+  }
+
+  private createQueuedPrompt(
+    sessionId: string,
     text: string,
     files?: string[],
     contexts?: any[],
     images?: any[],
     agent?: string,
-  ) {
-    this.queue.push({ text, files, contexts, images, agent });
-    this.sendQueueUpdate();
+  ): QueuedPrompt {
+    this.queueItemSequence += 1;
+    return {
+      id: `q-${Date.now()}-${this.queueItemSequence}`,
+      sessionId,
+      createdAt: Date.now(),
+      text,
+      files,
+      contexts,
+      images,
+      agent,
+    };
   }
 
-  /**
-   * Removes a message from the prompt queue
-   */
-  private handleRemoveFromQueue(index: number) {
-    if (index >= 0 && index < this.queue.length) {
-      this.queue.splice(index, 1);
-      this.sendQueueUpdate();
+  private async resolveQueueSessionId(
+    requestedSessionId?: string,
+  ): Promise<string | undefined> {
+    const explicitSessionId = this.firstNonEmptyString(requestedSessionId);
+    if (explicitSessionId) {
+      if (!this.currentSessionId) {
+        this.currentSessionId = explicitSessionId;
+      }
+      return explicitSessionId;
+    }
+
+    const currentId = this.firstNonEmptyString(this.currentSessionId);
+    if (currentId) {
+      return currentId;
+    }
+
+    try {
+      const session = await this.sessionService.getCurrentSession();
+      const sessionId = this.firstNonEmptyString(session?.id);
+      if (sessionId) {
+        this.currentSessionId = sessionId;
+      }
+      return sessionId;
+    } catch (error) {
+      console.error(
+        "[ChatViewProvider] Failed to resolve queue session ID:",
+        error,
+      );
+      return undefined;
     }
   }
 
-  /**
-   * Clears the prompt queue
-   */
-  private handleClearQueue() {
-    this.queue = [];
-    this.sendQueueUpdate();
+  private enqueuePrompt(
+    sessionId: string,
+    prompt: QueuedPrompt,
+    atFront: boolean,
+  ): void {
+    const queue = this.getSessionQueue(sessionId);
+    const nextQueue = atFront ? [prompt, ...queue] : [...queue, prompt];
+    this.setSessionQueue(sessionId, nextQueue);
+    this.sendQueueUpdate(sessionId);
+  }
+
+  private takeQueuedPrompt(
+    sessionId: string,
+    itemId?: string,
+    index?: number,
+  ): QueuedPrompt | undefined {
+    const queue = this.getSessionQueue(sessionId);
+    if (queue.length === 0) {
+      return undefined;
+    }
+
+    const byIdIndex =
+      typeof itemId === "string" && itemId.length > 0
+        ? queue.findIndex((item) => item.id === itemId)
+        : -1;
+    const targetIndex =
+      byIdIndex >= 0
+        ? byIdIndex
+        : typeof index === "number" && index >= 0 && index < queue.length
+          ? index
+          : -1;
+    if (targetIndex < 0) {
+      return undefined;
+    }
+
+    const [item] = queue.splice(targetIndex, 1);
+    this.setSessionQueue(sessionId, queue);
+    this.sendQueueUpdate(sessionId);
+    return item;
+  }
+
+  private async schedulePromptDispatch(
+    mode: PromptDispatchMode,
+    payload: {
+      sessionId?: string;
+      text?: string;
+      files?: string[];
+      contexts?: any[];
+      images?: any[];
+      agent?: string;
+    },
+  ): Promise<void> {
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    if (!text) {
+      return;
+    }
+
+    const sessionId = await this.resolveQueueSessionId(payload.sessionId);
+    if (!sessionId) {
+      return;
+    }
+
+    const effectiveMode =
+      mode === "send-now" && this.isProcessingRequest ? "steer" : mode;
+    const prompt = this.createQueuedPrompt(
+      sessionId,
+      text,
+      payload.files,
+      payload.contexts,
+      payload.images,
+      payload.agent,
+    );
+    const atFront = effectiveMode !== "queue";
+    this.enqueuePrompt(sessionId, prompt, atFront);
+
+    if (effectiveMode === "queue") {
+      return;
+    }
+
+    if (this.isProcessingRequest) {
+      if (sessionId === this.currentSessionId) {
+        await this.handleStopRequest(sessionId);
+      }
+      return;
+    }
+
+    await this.handleExecuteQueue(sessionId);
+  }
+
+  private async handleDispatchQueuedItem(
+    mode: PromptDispatchMode,
+    requestedSessionId?: string,
+    itemId?: string,
+    index?: number,
+  ): Promise<void> {
+    const sessionId = await this.resolveQueueSessionId(requestedSessionId);
+    if (!sessionId) {
+      return;
+    }
+
+    const queuedItem = this.takeQueuedPrompt(sessionId, itemId, index);
+    if (!queuedItem) {
+      return;
+    }
+
+    await this.schedulePromptDispatch(mode, {
+      sessionId,
+      text: queuedItem.text,
+      files: queuedItem.files,
+      contexts: queuedItem.contexts,
+      images: queuedItem.images,
+      agent: queuedItem.agent,
+    });
   }
 
   /**
-   * Executes the prompt queue sequentially
+   * Removes a message from a session queue
    */
-  private async handleExecuteQueue() {
-    if (this.isExecutingQueue || this.queue.length === 0) {
+  private async handleRemoveFromQueue(
+    requestedSessionId?: string,
+    itemId?: string,
+    index?: number,
+  ): Promise<void> {
+    const sessionId = await this.resolveQueueSessionId(requestedSessionId);
+    if (!sessionId) {
+      return;
+    }
+    this.takeQueuedPrompt(sessionId, itemId, index);
+  }
+
+  /**
+   * Clears the prompt queue for a given session
+   */
+  private async handleClearQueue(requestedSessionId?: string): Promise<void> {
+    const sessionId = await this.resolveQueueSessionId(requestedSessionId);
+    if (!sessionId) {
+      return;
+    }
+    this.setSessionQueue(sessionId, []);
+    this.sendQueueUpdate(sessionId);
+  }
+
+  /**
+   * Executes a session queue sequentially. Only one queue drain can run at a time.
+   */
+  private async handleExecuteQueue(requestedSessionId?: string): Promise<void> {
+    const sessionId = await this.resolveQueueSessionId(requestedSessionId);
+    if (!sessionId) {
+      return;
+    }
+
+    if (this.isExecutingQueue || this.isProcessingRequest) {
+      return;
+    }
+
+    if (sessionId !== this.currentSessionId) {
+      return;
+    }
+
+    if (this.getSessionQueue(sessionId).length === 0) {
       return;
     }
 
     this.isExecutingQueue = true;
-    this.view?.webview.postMessage({ type: "queueExecutionStarted" });
+    this.view?.webview.postMessage({
+      type: "queueExecutionStarted",
+      sessionId,
+    });
 
     try {
-      while (this.queue.length > 0) {
-        const item = this.queue[0];
-        // We await handleSendMessage to ensure sequential processing
-        // Note: For streaming, we might need more complex sync, but this is a solid start.
+      while (sessionId === this.currentSessionId && !this.isProcessingRequest) {
+        const nextItem = this.takeQueuedPrompt(sessionId, undefined, 0);
+        if (!nextItem) {
+          break;
+        }
+
         await this.handleSendMessage(
-          item.text,
-          item.files,
-          item.contexts,
-          item.images,
-          item.agent,
+          nextItem.text,
+          nextItem.files,
+          nextItem.contexts,
+          nextItem.images,
+          nextItem.agent,
         );
-
-        // Remove the processed item
-        this.queue.shift();
-        this.sendQueueUpdate();
-
-        // Small delay to allow UI/Server to settle
-        await new Promise((resolve) => setTimeout(resolve, 500));
       }
     } catch (error) {
       console.error("[ChatViewProvider] Queue execution failed:", error);
       vscode.window.showErrorMessage(`Queue execution error: ${error}`);
     } finally {
       this.isExecutingQueue = false;
-      this.view?.webview.postMessage({ type: "queueExecutionFinished" });
+      this.view?.webview.postMessage({
+        type: "queueExecutionFinished",
+        sessionId,
+      });
+      this.sendQueueUpdate(sessionId);
     }
+  }
+
+  private maybeAutoDrainQueue(sessionId?: string): void {
+    const targetSessionId = this.firstNonEmptyString(sessionId);
+    if (!targetSessionId) {
+      return;
+    }
+    if (this.isExecutingQueue || this.isProcessingRequest) {
+      return;
+    }
+    if (targetSessionId !== this.currentSessionId) {
+      return;
+    }
+    if (this.getSessionQueue(targetSessionId).length === 0) {
+      return;
+    }
+    void this.handleExecuteQueue(targetSessionId);
   }
 
   /**
@@ -4734,10 +6164,18 @@ export class ChatViewProvider
   /**
    * Sends the current queue state to the webview
    */
-  private sendQueueUpdate() {
+  private sendQueueUpdate(sessionId?: string) {
+    const targetSessionId = this.firstNonEmptyString(
+      sessionId,
+      this.currentSessionId,
+    );
+    if (!targetSessionId) {
+      return;
+    }
     this.view?.webview.postMessage({
       type: "queueUpdate",
-      queue: this.queue,
+      sessionId: targetSessionId,
+      queue: this.getSessionQueue(targetSessionId),
     });
   }
 
@@ -4751,6 +6189,9 @@ export class ChatViewProvider
     this.fileThemeProcessor.unsubscribe(this);
     this.isBootstrappingWebview = false;
     this.hasInitializedWebview = false;
+    this.sessionsListRequestVersion = 0;
+    this.lastSessionsPayloadFingerprint = undefined;
+    this.queueBySessionId.clear();
     this.view = undefined;
   }
 

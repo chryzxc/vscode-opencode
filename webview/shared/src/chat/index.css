@@ -977,7 +977,7 @@ body {
 .markdown-body {
   color: var(--oc-text);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.7;
 }
 
@@ -996,10 +996,7 @@ body {
 
 .markdown-body h1 {
   font-size: 1.5em;
-  background: linear-gradient(to right, var(--oc-accent), var(--oc-orange));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  width: fit-content;
+  color: var(--oc-text);
 }
 .markdown-body h2 {
   font-size: 1.3em;

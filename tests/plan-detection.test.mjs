@@ -53,6 +53,34 @@ test('plan detection preserves safety guards and persistence behavior', () => {
   assert.match(enrichBody, /return\s+message;/, 'plan detection should return the original message when no valid plan is found');
 });
 
+test('plan detection avoids classifying clarification questionnaires as implementation plans', () => {
+  assert.match(
+    chatProviderSource,
+    /private isClarificationQuestionnaire\(content: unknown\): boolean/,
+    'provider should define clarification-questionnaire guard helper',
+  );
+
+  const enrichBody = extractFunctionBody(
+    chatProviderSource,
+    'private enrichMessageWithPlan(message: any): any',
+  );
+  assert.match(
+    enrichBody,
+    /isInteractiveClarificationResponse/,
+    'plan enrichment should short-circuit for interactive clarification responses',
+  );
+  assert.match(
+    enrichBody,
+    /looksLikeClarificationQuestions/,
+    'plan enrichment should compute clarification-questionnaire heuristics for fallback text',
+  );
+  assert.match(
+    enrichBody,
+    /if \(!hasPlanFile && looksLikeClarificationQuestions\)\s*\{\s*return message;/,
+    'plan enrichment should skip plan card when content is just clarification questions',
+  );
+});
+
 test('assistant message UI renders plan buttons and core plan card affordances', () => {
   // Verify the two plan entry points in message UI are present.
   assert.match(messageSource, /title="Core Feature: View Implementation Plan"/, 'header-level plan button must keep core-feature tooltip');

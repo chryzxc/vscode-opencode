@@ -26,9 +26,9 @@ test('token usage tooltips are descriptive', () => {
 });
 
 test('diffStats are rendered in progress events', () => {
-  assert.match(messageSource, /event\.diffStats\s*&&\s*\(event\.diffStats\.added\s*>\s*0\s*\|\|\s*event\.diffStats\.deleted\s*>\s*0\)/, 'Should check for diffStats');
-  assert.match(messageSource, /text-oc-green">\s*\+{event\.diffStats\.added}\s*<\/span>/, 'Should render added lines');
-  assert.match(messageSource, /text-oc-red">\s*-{event\.diffStats\.deleted}\s*<\/span>/, 'Should render deleted lines');
+  assert.match(messageSource, /resolvedDiffStats\s*&&\s*\(resolvedDiffStats\.added\s*>\s*0\s*\|\|\s*resolvedDiffStats\.deleted\s*>\s*0\)/, 'Should check for resolvedDiffStats');
+  assert.match(messageSource, /\+\{resolvedDiffStats\.added\}/, 'Should render added lines');
+  assert.match(messageSource, /-\{resolvedDiffStats\.deleted\}/, 'Should render deleted lines');
 });
 
 test('AssistantMessage component types subagent data to SubagentDetail', () => {
@@ -38,20 +38,18 @@ test('AssistantMessage component types subagent data to SubagentDetail', () => {
     'SubagentDetailModal.tsx',
   );
   assert.match(modalSource, /detail\.childSessionId/, 'Should use typed detailData childSessionId');
-  assert.match(modalSource, /detail\.thinkingEvents\?\.length/, 'Should use typed detailData thinkingEvents');
+  assert.match(modalSource, /detail\.thinkingEvents\s*&&\s*detail\.thinkingEvents\.length\s*>\s*0/, 'Should use typed detailData thinkingEvents');
   assert.match(modalSource, /detail\.progressEvents\?\.length/, 'Should use typed detailData progressEvents');
   assert.match(modalSource, /detail\.timelineEvents\?\.length/, 'Should use typed detailData timelineEvents');
 });
 
-test('SubagentProgressPopover is integrated into the subagent item loop', () => {
-  assert.match(messageSource, /<SubagentProgressPopover/, 'AssistantMessage should use SubagentProgressPopover');
-  assert.match(messageSource, /subagentDetail=\{subagentDetailsById\?\.\[subagent\.id\]\}/, 'Should pass subagent detail to the popover');
-  
-  // Verify popover component structure
-  assert.match(messageSource, /export\s+function\s+SubagentProgressPopover/, 'SubagentProgressPopover should be an exported component');
-  assert.match(messageSource, /<Popover\.Root>/, 'Popover should use Radix Popover.Root');
-  assert.match(messageSource, /Latest activity/, 'Popover should show "Latest activity" header');
-  assert.match(messageSource, /Recent Steps/, 'Popover should show "Recent Steps" header');
+test('inline subagent rows are integrated into the assistant item loop', () => {
+  assert.doesNotMatch(messageSource, /SubagentProgressPopover/, 'Legacy SubagentProgressPopover should not be present');
+  assert.match(messageSource, /visibleSubagents\.map\(\(subagent:\s*SubagentSummary\)\s*=>/, 'AssistantMessage should map inline subagent rows');
+  assert.match(messageSource, /onClick=\{\(\)\s*=>\s*openSubagentModal\(subagent\.id\)\}/, 'Inline subagent rows should open modal details');
+  assert.match(messageSource, /subagent\.latestActivity\s*\|\|\s*"Initializing\.\.\."/,
+    'Inline subagent rows should show latest activity with fallback'
+  );
 });
 
 test('subagent detail modal is wired for selected subagents', () => {
@@ -62,7 +60,7 @@ test('subagent detail modal is wired for selected subagents', () => {
 test('subagent color differentiation is applied deterministically', () => {
   assert.match(messageSource, /function\s+getSubagentColor/, 'Should have getSubagentColor helper');
   assert.match(messageSource, /const\s+statusClass\s*=\s*getSubagentColor\(subagent\.id\)/, 'Should derive deterministic subagent status color once per row');
-  assert.match(messageSource, /colorClass=\{statusClass\}/, 'Should pass derived subagent color to the popover');
+  assert.match(messageSource, /<SubagentDetailModal[\s\S]*colorClass=\{getSubagentColor\(selected\.id\)\}/, 'Should pass deterministic subagent color to detail modal');
   const modalSource = readSource(
     [joinFromRoot('webview', 'shared', 'src', 'chat', 'SubagentDetailModal.tsx')],
     'SubagentDetailModal.tsx',
@@ -72,4 +70,32 @@ test('subagent color differentiation is applied deterministically', () => {
 
 test('subagent sessions are filtered out of History Sidebar', () => {
   assert.match(panelSource, /sessionsList\.filter\(\(?s\)?\s*=>\s*!s\.parentSessionId\)/, 'Should filter sessionsList by !parentSessionId');
+});
+
+test('subagent detail modal is responsive and visually aligned with chat surfaces', () => {
+  const modalSource = readSource(
+    [joinFromRoot('webview', 'shared', 'src', 'chat', 'SubagentDetailModal.tsx')],
+    'SubagentDetailModal.tsx',
+  );
+
+  assert.match(
+    modalSource,
+    /className="relative z-50 flex h-\[min\(92vh,860px\)\] min-h-0 w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-oc-border bg-oc-panel/,
+    'Modal container should use responsive constrained height and shared oc surface tokens',
+  );
+  assert.match(
+    modalSource,
+    /className="flex min-h-0 flex-1 flex-col lg:flex-row"/,
+    'Modal content should stack on mobile and switch to columns on large screens',
+  );
+  assert.match(
+    modalSource,
+    /className="order-1 w-full shrink-0 max-h-\[38vh\][\s\S]*lg:order-2[\s\S]*lg:w-80[\s\S]*lg:border-l/,
+    'Timeline pane should be mobile-first (top section) and move to right column on desktop',
+  );
+  assert.match(
+    modalSource,
+    /className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-oc-border bg-oc-bg-soft[\s\S]*sm:w-auto"/,
+    'Header actions should be full-width on mobile and auto-width on larger screens',
+  );
 });

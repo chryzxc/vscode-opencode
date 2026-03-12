@@ -31,19 +31,23 @@ test('OpencodeServerManager broadcasts status changes via EventEmitter', () => {
 });
 
 test('OpencodeServerManager implements lazy connection with fast path for existing client', () => {
-  // Verify ensureRunning returns existing client if available
+  // Verify ensureRunning serializes startup and delegates to ensureRunningInternal
   assert.match(serverManagerSource, /async ensureRunning\(\): Promise<OpencodeClient>/, 'OpencodeServerManager should expose ensureRunning method');
   const ensureBody = extractFunctionBody(serverManagerSource, 'async ensureRunning(): Promise<OpencodeClient>');
+  const ensureInternalBody = extractFunctionBody(serverManagerSource, 'private async ensureRunningInternal(): Promise<OpencodeClient>');
 
-  assert.match(ensureBody, /if\s*\(this\.client && this\.port > 0\)/, 'ensureRunning should check if client exists');
-  assert.match(ensureBody, /const reachable = await this\.isPortReachable\(this\.port\)/, 'ensureRunning should verify existing client is reachable');
-  assert.match(ensureBody, /if\s*\(reachable\)\s*\{[\s\S]*return this\.client/, 'ensureRunning should return existing client if reachable');
-  assert.match(ensureBody, /this\.setStatus\("starting"\)/, 'ensureRunning should set status to starting when connecting');
+  assert.match(ensureBody, /if\s*\(this\.startupPromise\)\s*\{\s*return this\.startupPromise;\s*\}/, 'ensureRunning should reuse in-flight startup promise');
+  assert.match(ensureBody, /this\.startupPromise = this\.ensureRunningInternal\(\)/, 'ensureRunning should delegate startup work to ensureRunningInternal');
+  assert.match(ensureBody, /finally\s*\{\s*this\.startupPromise = null;\s*\}/, 'ensureRunning should clear startupPromise after completion');
+  assert.match(ensureInternalBody, /if\s*\(this\.client && this\.port > 0\)/, 'ensureRunningInternal should check if client exists');
+  assert.match(ensureInternalBody, /const reachable = await this\.isPortReachable\(this\.port\)/, 'ensureRunningInternal should verify existing client is reachable');
+  assert.match(ensureInternalBody, /if\s*\(reachable\)\s*\{[\s\S]*return this\.client/, 'ensureRunningInternal should return existing client if reachable');
+  assert.match(ensureInternalBody, /this\.setStatus\("starting"\)/, 'ensureRunningInternal should set status to starting when connecting');
 });
 
 test('OpencodeServerManager handles stale client connections', () => {
   // Verify detection and handling of dead client connections
-  const ensureBody = extractFunctionBody(serverManagerSource, 'async ensureRunning(): Promise<OpencodeClient>');
+  const ensureBody = extractFunctionBody(serverManagerSource, 'private async ensureRunningInternal(): Promise<OpencodeClient>');
 
   assert.match(ensureBody, /log\.warn\("Detected stale client connection; restarting server client"/, 'ensureRunning should warn about stale connections');
   assert.match(ensureBody, /this\.client = null/, 'ensureRunning should clear stale client');
@@ -53,7 +57,7 @@ test('OpencodeServerManager handles stale client connections', () => {
 
 test('OpencodeServerManager connects to configured port if available', () => {
   // Verify connection to user-configured port before starting new server
-  const ensureBody = extractFunctionBody(serverManagerSource, 'async ensureRunning(): Promise<OpencodeClient>');
+  const ensureBody = extractFunctionBody(serverManagerSource, 'private async ensureRunningInternal(): Promise<OpencodeClient>');
 
   assert.match(ensureBody, /const configuredPort = config\.get<number>\("serverPort",\s*0\)/, 'ensureRunning should read serverPort from config');
   assert.match(ensureBody, /if\s*\(configuredPort > 0\)/, 'ensureRunning should check if configured port is set');
@@ -81,7 +85,7 @@ test('OpencodeServerManager detects server readiness via stdout parsing', () => 
   // Verify server ready detection from stdout
   const startBody = extractFunctionBody(serverManagerSource, 'private async startServer(): Promise<OpencodeClient>');
 
-  assert.match(startBody, /this\.serverProcess\.stdout\?\.on\("data",\s*\(data\)\s*=>/, 'startServer should listen to stdout');
+  assert.match(startBody, /spawnedProcess\.stdout\?\.on\("data",\s*\(data\)\s*=>/, 'startServer should listen to stdout');
   assert.match(startBody, /if\s*\(output\.includes\("Server running"\)\s*\|\|\s*output\.includes\("listening"\)\)/, 'startServer should detect ready keyword in output');
   assert.match(startBody, /let serverReady = false/, 'startServer should track server ready flag');
   assert.match(startBody, /if\s*\(!serverReady\)\s*\{[\s\S]*serverReady = true/, 'startServer should prevent duplicate client creation');
@@ -105,7 +109,7 @@ test('OpencodeServerManager implements auto-reconnect on unexpected exit', () =>
   // Verify auto-reconnect scheduling after server crash
   const startBody = extractFunctionBody(serverManagerSource, 'private async startServer(): Promise<OpencodeClient>');
 
-  assert.match(startBody, /this\.serverProcess\.on\("exit",\s*\(code\)\s*=>/, 'startServer should handle process exit');
+  assert.match(startBody, /spawnedProcess\.on\("exit",\s*\(code\)\s*=>/, 'startServer should handle process exit');
   assert.match(startBody, /if\s*\(!this\.isDisposed && code !== 0 && !this\.reconnectTimer\)/, 'startServer should schedule reconnect if unexpected exit');
   assert.match(startBody, /this\.reconnectTimer = setTimeout/, 'startServer should schedule reconnect timer');
   assert.match(startBody, /this\.ensureRunning\(\)\.catch\(console\.error\)/, 'startServer should call ensureRunning in reconnect');
@@ -128,7 +132,7 @@ test('OpencodeServerManager handles missing CLI with user-friendly message', () 
   // Verify ENOENT error handling
   const startBody = extractFunctionBody(serverManagerSource, 'private async startServer(): Promise<OpencodeClient>');
 
-  assert.match(startBody, /this\.serverProcess\.on\("error",\s*\(error\)\s*=>/, 'startServer should handle spawn errors');
+  assert.match(startBody, /spawnedProcess\.on\("error",\s*\(error\)\s*=>/, 'startServer should handle spawn errors');
   assert.match(startBody, /if\s*\(error\.message\.includes\("ENOENT"\)\)/, 'startServer should detect ENOENT error');
   assert.match(startBody, /vscode\.window\.showErrorMessage\(/, 'startServer should show error message to user');
   assert.match(startBody, /"OpenCode CLI not found/, 'error message should mention missing CLI');
@@ -136,16 +140,21 @@ test('OpencodeServerManager handles missing CLI with user-friendly message', () 
 });
 
 test('OpencodeServerManager implements cross-platform process cleanup', () => {
-  // Verify Windows-specific process tree killing
+  // Verify Windows-specific process tree killing in helper + dispose wiring
+  const terminateBody = extractFunctionBody(
+    serverManagerSource,
+    'private terminateProcessTree(serverProcess: cp.ChildProcess): void',
+  );
   const disposeBody = extractFunctionBody(serverManagerSource, 'dispose()');
 
+  assert.match(terminateBody, /if\s*\(process\.platform === "win32" && serverProcess\.pid\)/, 'terminateProcessTree should check Windows platform');
+  assert.match(terminateBody, /cp\.execSync\(`taskkill \/pid \${serverProcess\.pid} \/T \/F`\)/, 'terminateProcessTree should use taskkill on Windows');
+  assert.match(terminateBody, /serverProcess\.kill\(\)/, 'terminateProcessTree should use process.kill on Unix');
   assert.match(disposeBody, /this\.isDisposed = true/, 'dispose should set isDisposed flag');
   assert.match(disposeBody, /if\s*\(this\.reconnectTimer\)/, 'dispose should cancel reconnect timer');
   assert.match(disposeBody, /clearTimeout\(this\.reconnectTimer\)/, 'dispose should clear reconnect timer');
   assert.match(disposeBody, /if\s*\(this\.serverProcess\)/, 'dispose should check if server process exists');
-  assert.match(disposeBody, /if\s*\(process\.platform === "win32" && this\.serverProcess\.pid\)/, 'dispose should check Windows platform');
-  assert.match(disposeBody, /cp\.execSync\(`taskkill \/pid \${this\.serverProcess\.pid} \/T \/F`\)/, 'dispose should use taskkill on Windows');
-  assert.match(disposeBody, /this\.serverProcess\.kill\(\)/, 'dispose should use process.kill on Unix');
+  assert.match(disposeBody, /this\.terminateProcessTree\(this\.serverProcess\)/, 'dispose should delegate process cleanup to terminateProcessTree helper');
   assert.match(disposeBody, /this\.setStatus\("idle"\)/, 'dispose should reset status to idle');
 });
 

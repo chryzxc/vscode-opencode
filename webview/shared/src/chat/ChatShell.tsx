@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { AppProvider, useAppDispatch, useAppState } from './lib/store';
 import { createMessageHandler } from './lib/messageHandler';
@@ -26,16 +26,32 @@ import {
 } from './MessageComponents';
 import type { Message } from './lib/types';
 
+type StreamViewportState = {
+  isFollowing: boolean;
+  unseenUpdateCount: number;
+};
+
+const AUTO_FOLLOW_THRESHOLD_PX = 96;
+
 function ChatContent() {
   const state = useAppState();
   const dispatch = useAppDispatch();
   const stateRef = useRef(state);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const [streamViewport, setStreamViewport] = useState<StreamViewportState>({
+    isFollowing: true,
+    unseenUpdateCount: 0,
+  });
+  const streamViewportRef = useRef(streamViewport);
 
   // Keep ref current so message handler closure always reads latest state
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+  useEffect(() => {
+    streamViewportRef.current = streamViewport;
+  }, [streamViewport]);
 
   // Register message listener
   useEffect(() => {
@@ -57,9 +73,51 @@ function ChatContent() {
     return () => clearInterval(interval);
   }, []);
 
-  // Auto-scroll only when conversation content changes (not on every render).
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const root = messagesScrollRef.current;
+    if (!root) return;
+
+    const onScroll = () => {
+      const nearBottom =
+        root.scrollHeight - root.scrollTop - root.clientHeight <=
+        AUTO_FOLLOW_THRESHOLD_PX;
+      setStreamViewport((prev) => {
+        if (nearBottom) {
+          if (prev.isFollowing && prev.unseenUpdateCount === 0) {
+            return prev;
+          }
+          return { isFollowing: true, unseenUpdateCount: 0 };
+        }
+        if (!prev.isFollowing) {
+          return prev;
+        }
+        return { ...prev, isFollowing: false };
+      });
+    };
+
+    root.addEventListener('scroll', onScroll, { passive: true });
+    return () => root.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (streamViewportRef.current.isFollowing) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      if (streamViewportRef.current.unseenUpdateCount > 0) {
+        setStreamViewport((prev) =>
+          prev.unseenUpdateCount === 0
+            ? prev
+            : { ...prev, unseenUpdateCount: 0 },
+        );
+      }
+      return;
+    }
+
+    if (state.streaming?.isActive) {
+      setStreamViewport((prev) => ({
+        ...prev,
+        unseenUpdateCount: prev.unseenUpdateCount + 1,
+      }));
+    }
   }, [
     state.messages.length,
     state.streaming?.messageId,
@@ -71,6 +129,10 @@ function ChatContent() {
   ]);
 
   const showThinking = state.isProcessing && !state.streaming;
+  const jumpToLatest = () => {
+    setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   return (
     <div className="oc-shell relative flex h-screen overflow-hidden bg-oc-bg text-oc-text">
@@ -86,7 +148,11 @@ function ChatContent() {
         <div className="block [@media(min-width:1100px)]:hidden">
           <MobileRightSummary />
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto py-4" style={{ background: 'var(--oc-chat-bg)' }}>
+        <div
+          ref={messagesScrollRef}
+          className="flex-1 min-h-0 overflow-y-auto py-4"
+          style={{ background: 'var(--oc-chat-bg)' }}
+        >
           {state.messages.length === 0 &&
           !state.streaming &&
           !state.isProcessing ? (
@@ -132,6 +198,18 @@ function ChatContent() {
 
           {/* "Thinking…" dots when waiting for first streaming event */}
           {showThinking ? <ThinkingBubble /> : null}
+
+          {!streamViewport.isFollowing && streamViewport.unseenUpdateCount > 0 ? (
+            <div className="sticky bottom-3 z-20 flex justify-end pr-4">
+              <button
+                type="button"
+                onClick={jumpToLatest}
+                className="rounded-md border border-oc-border bg-oc-panel px-2.5 py-1.5 text-[11px] font-mono text-oc-accent shadow-sm hover:bg-oc-panel-soft"
+              >
+                Jump to latest ({streamViewport.unseenUpdateCount})
+              </button>
+            </div>
+          ) : null}
 
           <div ref={messagesEndRef} />
         </div>

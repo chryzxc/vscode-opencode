@@ -246,6 +246,11 @@ export class SubagentTracker {
     this.activeSessionId = sessionId;
   }
 
+  getLatestParentMessageId(parentSessionId: string): string | undefined {
+    const id = this.latestParentMessageBySessionId.get(parentSessionId);
+    return id || undefined;
+  }
+
   seedFromMessages(messages: unknown[]): void {
     this.detailsById.clear();
     this.idsByParentMessageId.clear();

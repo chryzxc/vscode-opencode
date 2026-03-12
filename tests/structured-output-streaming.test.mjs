@@ -105,6 +105,16 @@ test('chat provider keeps default response text when structured output is presen
     /if \(messageContent && shouldUseStructuredMessage\)/,
     'structured message should not overwrite normal assistant prose by default',
   );
+  assert.match(
+    applyBody,
+    /const isInteractiveStructuredResponse =/,
+    'applyStructuredOutputToMessage should detect interactive response payloads',
+  );
+  assert.match(
+    applyBody,
+    /!isInteractiveStructuredResponse[\s\S]*structured\.responseType === "implementation_plan" \|\|[\s\S]*structured\.plan\?\.content/s,
+    'plan metadata should not be attached when the response is interactive',
+  );
 });
 
 test('chat provider selects structured output only for structured-response intents', () => {
@@ -158,7 +168,7 @@ test('chat provider logs request and response payload diagnostics', () => {
   );
 });
 
-test('chat provider keeps structured output enabled by default for UI-driven response types', () => {
+test('chat provider prefers streaming and enables structured output for explicit and planning intents', () => {
   assert.match(
     chatProviderSource,
     /private structuredOutputMode:\s*"format"\s*\|\s*"disabled"\s*=\s*"format"/,
@@ -171,12 +181,70 @@ test('chat provider keeps structured output enabled by default for UI-driven res
   );
   assert.match(
     shouldUseBody,
-    /return this\.structuredOutputMode !== "disabled";/,
-    'structured output helper should keep schema mode on unless explicitly disabled',
+    /if \(this\.structuredOutputMode === "disabled"\)/,
+    'structured output helper should short-circuit when schema mode is disabled',
   );
-  assert.doesNotMatch(
+  assert.match(
     shouldUseBody,
-    /const activeAgent =|const promptText =|implementation\[_\\s-]\?plan/,
-    'structured output helper should not rely on previous prompt keyword heuristics',
+    /const activeAgent =/,
+    'structured output helper should evaluate agent intent',
+  );
+  assert.match(
+    shouldUseBody,
+    /const promptText =/,
+    'structured output helper should inspect prompt text for explicit structured intent markers',
+  );
+  assert.match(
+    shouldUseBody,
+    /\\\[interactive:/,
+    'structured output helper should enable schema mode for interactive marker prompts',
+  );
+  assert.match(
+    shouldUseBody,
+    /response\\s\*type\|json\[_\\s-\]\?schema\|structured\\s\*output/,
+    'structured output helper should enable schema mode for explicit structured-output prompts',
+  );
+  assert.match(
+    shouldUseBody,
+    /const hasExecutionIntent =/,
+    'structured output helper should detect implementation intent prompts',
+  );
+  assert.match(
+    shouldUseBody,
+    /const hasPlanningIntent =/,
+    'structured output helper should detect planning intent prompts',
+  );
+  assert.match(
+    shouldUseBody,
+    /const hasRepoScopedSignal =/,
+    'structured output helper should detect repo-scoped context cues',
+  );
+  assert.match(
+    shouldUseBody,
+    /if \(!promptText\)\s*\{\s*return false;/,
+    'structured output helper should default to plain streaming when no explicit schema intent is present',
+  );
+});
+
+test('chat provider coerces malformed interactive responses into fallback questions', () => {
+  const normalizeBody = extractFunctionBody(
+    chatProviderSource,
+    'private normalizeStructuredOutput(',
+  );
+
+  assert.match(
+    normalizeBody,
+    /if \(\s*interactiveEvents\.length === 0[\s\S]*this\.isInteractiveResponseType\(responseType\)/s,
+    'normalizeStructuredOutput should detect malformed interactive payloads',
+  );
+  assert.match(
+    normalizeBody,
+    /Coerced interactive response into fallback question event/,
+    'normalizeStructuredOutput should emit diagnostics when fallback coercion is used',
+  );
+  assert.match(
+    normalizeBody,
+    /options:\s*\[[\s\S]*label:\s*"Yes"[\s\S]*label:\s*"No"/s,
+    'fallback question coercion should provide at least two picker options',
   );
 });

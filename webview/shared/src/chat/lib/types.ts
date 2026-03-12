@@ -1,3 +1,5 @@
+import type { StructuredResponseType as SharedStructuredResponseType } from "./generated/structuredOutputSchema";
+
 export interface SessionStats {
   input: number;
   output: number;
@@ -39,7 +41,20 @@ export interface FileResult {
   name: string;
 }
 
+export interface SlashCommand {
+  name: string;
+  description?: string;
+  agent?: string;
+  model?: string;
+  template?: string;
+  source?: string;
+  subtask?: boolean;
+}
+
 export interface QueueItem {
+  id: string;
+  sessionId: string;
+  createdAt: number;
   text: string;
   files?: string[];
   contexts?: ContextItem[];
@@ -175,10 +190,19 @@ export interface InteractiveQuickActionsEvent {
   actions: InteractiveChoice[];
 }
 
+export interface InteractiveMessageEvent {
+  type: 'message';
+  id: string;
+  title?: string;
+  message: string;
+  dismissLabel?: string;
+}
+
 export type InteractiveEvent =
   | InteractiveQuestionEvent
   | InteractiveConfirmEvent
-  | InteractiveQuickActionsEvent;
+  | InteractiveQuickActionsEvent
+  | InteractiveMessageEvent;
 
 export type SubagentStatus = 'pending' | 'running' | 'done' | 'error' | 'orphaned';
 
@@ -287,6 +311,8 @@ export interface Message {
   error?: string;
 }
 
+export type StructuredResponseType = SharedStructuredResponseType;
+
 export interface QuotaItem {
   label: string;
   remainPercent: number;
@@ -363,9 +389,11 @@ export interface AppState {
   selectedAgent: string;
   agentSearchQuery: string;
   isProcessing: boolean;
+  isSteering: boolean;
   currentSessionId: string | null;
   messages: Message[];
   promptQueue: QueueItem[];
+  queueBySessionId: Record<string, QueueItem[]>;
   isExecutingQueue: boolean;
   isQueueOpen: boolean;
   isSidebarOpen: boolean;
@@ -378,6 +406,8 @@ export interface AppState {
   fileSuggestions: FileResult[];
   showFileSuggestions: boolean;
   selectedSuggestionIndex: number;
+  availableCommands: SlashCommand[];
+  commandsLoaded: boolean;
   receivedInitState: boolean;
   serverStatus: string;
   serverVersion?: string;

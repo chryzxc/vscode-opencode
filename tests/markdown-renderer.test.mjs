@@ -18,8 +18,22 @@ test('AssistantMessage uses MarkdownRenderer without isPreParsed flag', () => {
   const assistantBody = extractFunctionBody(messageComponentsSource, 'export function AssistantMessage(');
   assert.match(
     assistantBody,
-    /<MarkdownRenderer\s+content=\{block\.html\}\s*\/>/,
+    /<MarkdownRenderer\s+content=\{group\.html\}\s*\/>/,
     'AssistantMessage must pass raw markdown content to MarkdownRenderer without forcing isPreParsed.',
+  );
+});
+
+test('AssistantMessage renders plain text while stream is active and markdown after completion', () => {
+  const assistantBody = extractFunctionBody(messageComponentsSource, 'export function AssistantMessage(');
+  assert.match(
+    assistantBody,
+    /const renderStreamingAsPlainText = !message && !!streaming\?\.isActive;/,
+    'AssistantMessage should enable plain-text rendering only for active streaming cards',
+  );
+  assert.match(
+    assistantBody,
+    /renderStreamingAsPlainText \? \([\s\S]*<StreamingTextTicker text=\{group\.html\} \/>\s*[\s\S]*\) : \([\s\S]*<MarkdownRenderer\s+content=\{group\.html\}\s*\/>/s,
+    'AssistantMessage should use a compact streaming ticker mid-stream and switch back to MarkdownRenderer after completion',
   );
 });
 

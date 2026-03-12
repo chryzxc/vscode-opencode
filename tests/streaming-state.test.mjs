@@ -49,8 +49,8 @@ test('SET_PROCESSING reducer creates streaming state when processing starts', ()
   // Check for streaming state creation when processing becomes true
   assert.match(
     processingLogic,
-    /if\s*\(\s*action\.payload\s*&&\s*!state\.streaming\s*\)/,
-    'Should check if processing is true and streaming is null'
+    /if\s*\(\s*action\.payload\s*&&\s*\(!state\.streaming\s*\|\|\s*!state\.streaming\.isActive\)\s*\)/,
+    'Should create a fresh stream when processing starts and no active stream exists'
   );
 
   assert.match(
@@ -98,7 +98,7 @@ test('SET_PROCESSING reducer creates streaming state when processing starts', ()
   );
 });
 
-test('SET_PROCESSING clears streaming state when processing ends', () => {
+test('SET_PROCESSING keeps completed streaming state when processing ends', () => {
   const setProcessingCase = storeSource.match(
     /case ['"]SET_PROCESSING['"]:[\s\S]*?case ['"][\w]+['"]:|case ['"]SET_PROCESSING['"]:[\s\S]*?\n\s{2}\}/
   );
@@ -107,17 +107,23 @@ test('SET_PROCESSING clears streaming state when processing ends', () => {
 
   const processingLogic = setProcessingCase[0];
 
-  // Check for streaming state cleanup when processing becomes false
+  // Check that processing=false branch no longer wipes streaming immediately.
   assert.match(
     processingLogic,
     /if\s*\(\s*!action\.payload\s*\)/,
     'Should check if processing is false'
   );
 
+  assert.doesNotMatch(
+    processingLogic,
+    /if\s*\(\s*!action\.payload\s*\)\s*\{[\s\S]*streaming:\s*null/s,
+    'Should not clear streaming in SET_PROCESSING(false); explicit lifecycle handlers clear it'
+  );
+
   assert.match(
     processingLogic,
-    /streaming:\s*null/,
-    'Should set streaming to null when processing ends'
+    /return\s*\{\s*\.\.\.state,\s*isProcessing:\s*false(?:\s*,\s*isSteering:\s*false)?\s*\}/,
+    'Should end processing while preserving the latest streaming snapshot'
   );
 });
 
@@ -174,6 +180,33 @@ test('createMessageHandler sets processing before handling message types', () =>
     createMessageHandlerBody,
     /type:\s*"SET_PROCESSING",\s*payload:\s*true/,
     'Should dispatch SET_PROCESSING with true when data.processing is true'
+  );
+});
+
+test('createMessageHandler handles stopRequestHandled by finalizing streaming', () => {
+  const createMessageHandlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler'
+  );
+
+  assert.ok(createMessageHandlerBody, 'createMessageHandler function should exist');
+
+  assert.match(
+    createMessageHandlerBody,
+    /case\s*["']stopRequestHandled["']\s*:/,
+    'Should handle stopRequestHandled messages from the provider'
+  );
+
+  assert.match(
+    createMessageHandlerBody,
+    /case\s*["']stopRequestHandled["']\s*:[\s\S]*type:\s*["']SET_PROCESSING["']\s*,\s*payload:\s*false/s,
+    'stopRequestHandled should clear processing state'
+  );
+
+  assert.match(
+    createMessageHandlerBody,
+    /case\s*["']stopRequestHandled["']\s*:[\s\S]*type:\s*["']FINISH_STREAMING["']/s,
+    'stopRequestHandled should finalize the streaming snapshot'
   );
 });
 

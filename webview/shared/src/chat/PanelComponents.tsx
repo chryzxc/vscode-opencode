@@ -31,12 +31,52 @@ import { Badge } from "@/components/ui/badge";
 
 import { useAppDispatch, useAppState } from "./lib/store";
 import vscode from "./lib/vscode";
-import type { Message, MessagePart, ThinkingLevel, TodoItem } from "./lib/types";
+import type {
+  Message,
+  MessagePart,
+  SlashCommand,
+  ThinkingLevel,
+  TodoItem,
+} from "./lib/types";
 
 import { FileIcon } from "./MessageComponents";
 
 function totalTokens(i: number, o: number, r: number, w: number): number {
   return (i || 0) + (o || 0) + (r || 0) + (w || 0);
+}
+
+type SlashTrigger = {
+  query: string;
+  replaceFrom: number;
+  replaceTo: number;
+};
+
+function getSlashTrigger(input: string, cursor: number): SlashTrigger | null {
+  if (cursor < 0 || cursor > input.length) {
+    return null;
+  }
+
+  const beforeCursor = input.slice(0, cursor);
+  const slashIndex = beforeCursor.lastIndexOf("/");
+  if (slashIndex < 0) {
+    return null;
+  }
+
+  // Trigger slash commands only when "/" starts a token (start or whitespace).
+  if (slashIndex > 0 && !/\s/.test(beforeCursor[slashIndex - 1])) {
+    return null;
+  }
+
+  const token = beforeCursor.slice(slashIndex + 1);
+  if (/\s/.test(token)) {
+    return null;
+  }
+
+  return {
+    query: token,
+    replaceFrom: slashIndex,
+    replaceTo: cursor,
+  };
 }
 
 export function StickyHeader() {
@@ -479,6 +519,7 @@ export function ActiveTaskPanel() {
       if (type === "reasoning" || type === "thinking") return false;
       const title = step.title.trim().toLowerCase();
       if (title === "thinking..." || title === "thinking") return false;
+      if (title === "starting step" || title === "finishing step") return false;
       const key = `${step.title}-${step.status ?? "pending"}`;
       if (seen.has(key)) return false;
       seen.add(key);
@@ -629,14 +670,16 @@ export function ActiveTaskPanel() {
                       )}
                     </span>
                     <span
-                      className={`min-w-0 flex-1 leading-relaxed truncate ${step.status === "pending"
+                      className={`min-w-0 flex-1 leading-relaxed ${step.status === "pending"
                           ? "text-oc-text"
                           : "text-[var(--oc-text-soft)] opacity-80"
                         }`}
                     >
-                      {step.title}
+                      <span className="block break-words whitespace-pre-wrap">
+                        {step.title}
+                      </span>
                       {step.meta ? (
-                        <span className="ml-1 text-oc-text-muted opacity-60">
+                        <span className="mt-0.5 block text-oc-text-muted opacity-60 break-words whitespace-pre-wrap">
                           {step.meta}
                         </span>
                       ) : null}
@@ -1192,7 +1235,14 @@ export function AgentDropdown() {
 }
 
 export function QueueContainer() {
-  const { promptQueue, isQueueOpen, isExecutingQueue } = useAppState();
+  const {
+    promptQueue,
+    isQueueOpen,
+    isExecutingQueue,
+    isProcessing,
+    isSteering,
+    currentSessionId,
+  } = useAppState();
   const dispatch = useAppDispatch();
 
   // Only render when there are queued items
@@ -1226,8 +1276,8 @@ export function QueueContainer() {
               title="Clear all queued prompts"
               onClick={(e) => {
                 e.stopPropagation();
-                dispatch({ type: "SET_QUEUE", payload: [] });
-                vscode.postMessage({ type: "clearQueue" });
+                if (!currentSessionId) return;
+                vscode.postMessage({ type: "clearQueue", sessionId: currentSessionId });
               }}
             >
               Clear all
@@ -1247,7 +1297,7 @@ export function QueueContainer() {
           <div className="max-h-40 divide-y divide-oc-border overflow-y-auto">
             {promptQueue.map((item, index) => (
               <div
-                key={`${item.text}-${index}`}
+                key={item.id || `${item.text}-${index}`}
                 className="flex items-start gap-2 px-3 py-2"
               >
                 <span className="mt-0.5 shrink-0 font-mono text-[10px] text-oc-text-muted">
@@ -1259,34 +1309,54 @@ export function QueueContainer() {
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                  {(() => {
+                    const itemSessionId = item.sessionId || currentSessionId;
+                    const busy = isProcessing;
+                    const isDisabled = !itemSessionId || isSteering;
+                    return (
+                      <button
+                        type="button"
+                        className="rounded p-1 text-oc-accent transition-colors hover:bg-oc-accent-soft disabled:cursor-not-allowed disabled:opacity-50"
+                        title={busy ? "Steer now" : "Send now"}
+                        disabled={isDisabled}
+                        onClick={() => {
+                          if (!itemSessionId) return;
+                          if (busy) {
+                            dispatch({ type: "SET_STEERING", payload: true });
+                            vscode.postMessage({
+                              type: "steerQueuedItem",
+                              sessionId: itemSessionId,
+                              id: item.id,
+                              index,
+                            });
+                            return;
+                          }
+                          vscode.postMessage({
+                            type: "sendQueuedItemNow",
+                            sessionId: itemSessionId,
+                            id: item.id,
+                            index,
+                          });
+                        }}
+                      >
+                        {busy ? <Zap className="h-3 w-3" /> : <Send className="h-3 w-3" />}
+                      </button>
+                    );
+                  })()}
                   <button
                     type="button"
-                    className="rounded p-1 text-oc-accent transition-colors hover:bg-oc-accent-soft"
-                    title="Send immediately"
-                    onClick={() => {
-                      const next = promptQueue.filter((_, i) => i !== index);
-                      dispatch({ type: "SET_QUEUE", payload: next });
-                      vscode.postMessage({ type: "removeFromQueue", index });
-                      vscode.postMessage({
-                        type: "sendMessage",
-                        text: item.text,
-                        files: item.files ?? [],
-                        contexts: item.contexts ?? [],
-                        agent: item.agent ?? null,
-                        images: item.images ?? [],
-                      });
-                    }}
-                  >
-                    <Send className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded p-1 text-oc-text-muted transition-colors hover:bg-[rgba(248,81,73,0.12)] hover:text-oc-red"
+                    className="rounded p-1 text-oc-text-muted transition-colors hover:bg-[rgba(248,81,73,0.12)] hover:text-oc-red disabled:cursor-not-allowed disabled:opacity-50"
                     title="Remove from queue"
+                    disabled={isSteering}
                     onClick={() => {
-                      const next = promptQueue.filter((_, i) => i !== index);
-                      dispatch({ type: "SET_QUEUE", payload: next });
-                      vscode.postMessage({ type: "removeFromQueue", index });
+                      const itemSessionId = item.sessionId || currentSessionId;
+                      if (!itemSessionId) return;
+                      vscode.postMessage({
+                        type: "removeFromQueue",
+                        sessionId: itemSessionId,
+                        id: item.id,
+                        index,
+                      });
                     }}
                   >
                     <X className="h-3 w-3" />
@@ -1300,8 +1370,10 @@ export function QueueContainer() {
               className="oc-queue-btn h-6 text-[10px]"
               variant="secondary"
               size="sm"
-              disabled={isExecutingQueue}
-              onClick={() => vscode.postMessage({ type: "executeQueue" })}
+              disabled={isExecutingQueue || isSteering || !currentSessionId}
+              onClick={() =>
+                vscode.postMessage({ type: "executeQueue", sessionId: currentSessionId })
+              }
             >
               <Play className="mr-1 h-3 w-3" /> Execute All
             </Button>
@@ -1316,6 +1388,7 @@ export function InputWrapper() {
   const {
     inputValue,
     isProcessing,
+    isSteering,
     currentSessionId,
     messages,
     promptQueue,
@@ -1325,10 +1398,13 @@ export function InputWrapper() {
     showFileSuggestions,
     fileSuggestions,
     selectedSuggestionIndex,
+    availableCommands,
+    commandsLoaded,
     attachments = [],
     interactiveEvents,
   } = useAppState();
   const dispatch = useAppDispatch();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
   const [isCustomMode, setIsCustomMode] = useState(false);
@@ -1340,6 +1416,54 @@ export function InputWrapper() {
   const [pendingAnswers, setPendingAnswers] = useState<
     Record<string, { text: string; eventType: string }>
   >({});
+  const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const commandsRequestedRef = useRef(false);
+  const suggestionsContainerRef = useRef<HTMLDivElement>(null);
+
+  const filteredCommands = useMemo(() => {
+    if (!slashTrigger) {
+      return [] as SlashCommand[];
+    }
+
+    const query = slashTrigger.query.trim().toLowerCase();
+    const base = availableCommands || [];
+    if (!query) {
+      return base;
+    }
+
+    return base.filter((command) => {
+      const name = command.name.toLowerCase();
+      const description = (command.description || "").toLowerCase();
+      return name.includes(query) || description.includes(query);
+    });
+  }, [slashTrigger, availableCommands]);
+
+  useEffect(() => {
+    if (slashTrigger && !commandsLoaded && !commandsRequestedRef.current) {
+      commandsRequestedRef.current = true;
+      vscode.postMessage({ type: "getCommands" });
+    }
+  }, [slashTrigger, commandsLoaded]);
+
+  useEffect(() => {
+    setSelectedCommandIndex(0);
+  }, [slashTrigger?.query]);
+
+  useEffect(() => {
+    if (selectedCommandIndex >= filteredCommands.length) {
+      setSelectedCommandIndex(Math.max(0, filteredCommands.length - 1));
+    }
+  }, [filteredCommands.length, selectedCommandIndex]);
+
+  useEffect(() => {
+    if (suggestionsContainerRef.current) {
+      const activeEl = suggestionsContainerRef.current.querySelector(".active");
+      if (activeEl) {
+        activeEl.scrollIntoView({ block: "nearest" });
+      }
+    }
+  }, [selectedCommandIndex, selectedSuggestionIndex, slashTrigger, showFileSuggestions]);
 
   // Centralized Interactive Event Handler
   // By design, ALL interactive choices (whether explicitly sent by the server or
@@ -1376,12 +1500,35 @@ export function InputWrapper() {
     return str.charAt(0).toUpperCase() + str.slice(1);
   };
 
+  const applyCommandSuggestion = (command: SlashCommand) => {
+    if (!slashTrigger) return;
+    const normalizedName = command.name.replace(/^\//, "");
+    if (!normalizedName) return;
+
+    const before = inputValue.slice(0, slashTrigger.replaceFrom);
+    const after = inputValue.slice(slashTrigger.replaceTo);
+    const insertion = `/${normalizedName} `;
+    const nextValue = `${before}${insertion}${after}`;
+    const cursor = before.length + insertion.length;
+
+    dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
+    setSlashTrigger(null);
+    setSelectedCommandIndex(0);
+
+    requestAnimationFrame(() => {
+      if (!textareaRef.current) return;
+      textareaRef.current.focus();
+      textareaRef.current.setSelectionRange(cursor, cursor);
+    });
+  };
+
   const sendPrompt = () => {
     const text = inputValue.trim();
     if (!text) return;
     if (isProcessing) {
       vscode.postMessage({
         type: "addToQueue",
+        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
         text,
         files: selectedFiles,
         contexts: selectedContexts,
@@ -1390,10 +1537,13 @@ export function InputWrapper() {
       });
       dispatch({ type: "SET_QUEUE_OPEN", payload: true });
       dispatch({ type: "SET_INPUT_VALUE", payload: "" });
+      dispatch({ type: "CLEAR_ATTACHMENTS" });
+      setSlashTrigger(null);
       return;
     }
     vscode.postMessage({
       type: "sendMessage",
+      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
       text,
       files: selectedFiles,
       contexts: selectedContexts,
@@ -1415,6 +1565,27 @@ export function InputWrapper() {
     dispatch({ type: "SET_PROCESSING", payload: true });
     dispatch({ type: "SET_INPUT_VALUE", payload: "" });
     dispatch({ type: "CLEAR_ATTACHMENTS" });
+    setSlashTrigger(null);
+  };
+
+  const steerPrompt = () => {
+    const text = inputValue.trim();
+    if (!text || !isProcessing || isSteering) return;
+
+    dispatch({ type: "SET_STEERING", payload: true });
+    vscode.postMessage({
+      type: "steerMessage",
+      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+      text,
+      files: selectedFiles,
+      contexts: selectedContexts,
+      agent: selectedAgent || null,
+      images: attachments || [],
+    });
+    dispatch({ type: "SET_QUEUE_OPEN", payload: true });
+    dispatch({ type: "SET_INPUT_VALUE", payload: "" });
+    dispatch({ type: "CLEAR_ATTACHMENTS" });
+    setSlashTrigger(null);
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1532,7 +1703,10 @@ export function InputWrapper() {
   };
 
   const stopRequest = () =>
-    vscode.postMessage({ type: "stopRequest", sessionId: currentSessionId });
+    vscode.postMessage({
+      type: "stopRequest",
+      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+    });
 
   const isImageAttachment = (mimeType?: string, dataUrl?: string) => {
     if (typeof mimeType === "string" && mimeType.startsWith("image/")) {
@@ -1620,7 +1794,9 @@ export function InputWrapper() {
                   content={
                     event.type === "quick_actions"
                       ? event.title || "Select an action"
-                      : event.question
+                      : event.type === "message"
+                        ? event.message
+                        : event.question
                   }
                 />
               </div>
@@ -1756,6 +1932,24 @@ export function InputWrapper() {
                         ))}
                       </div>
                     ) : null}
+
+                    {event.type === "message" ? (
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                          onClick={() =>
+                            submitInteractiveResponse(
+                              event.dismissLabel || "OK",
+                              event.id,
+                              event.type,
+                            )
+                          }
+                        >
+                          {capitalizeFirst(event.dismissLabel || "OK")}
+                        </button>
+                      </div>
+                    ) : null}
                 </>
               )}
             </div>
@@ -1769,7 +1963,7 @@ export function InputWrapper() {
               <Badge
                 key={file}
                 variant="secondary"
-                className="flex items-center gap-1 font-mono text-[10px] bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
+                className="flex items-center gap-1 font-mono text-[10px] hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
               >
                 <FileIcon filePath={file} />
                 {file}
@@ -1779,7 +1973,7 @@ export function InputWrapper() {
               <Badge
                 key={`${context.file}:${context.lineInfo}`}
                 variant="secondary"
-                className="flex items-center gap-1 font-mono text-[10px] pr-1.5 bg-oc-panel border-oc-border hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
+                className="flex items-center gap-1 font-mono text-[10px] pr-1.5 hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
               >
                 <FileIcon filePath={context.file} />
                 <span>
@@ -1854,24 +2048,108 @@ export function InputWrapper() {
         {/* Main input box */}
         <div className="oc-input-box">
           <Textarea
+            ref={textareaRef}
             value={inputValue}
             placeholder="Ask anything (Enter to send, Shift+Enter for newline), @ to mention, / for commands"
             className="oc-textarea"
-            onChange={(e) =>
-              dispatch({ type: "SET_INPUT_VALUE", payload: e.target.value })
-            }
+            onChange={(e) => {
+              const nextValue = e.target.value;
+              dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
+              const cursor = e.target.selectionStart ?? nextValue.length;
+              setSlashTrigger(getSlashTrigger(nextValue, cursor));
+            }}
             onKeyDown={(e) => {
+              if (slashTrigger) {
+                if (e.key === "ArrowDown" && filteredCommands.length > 0) {
+                  e.preventDefault();
+                  setSelectedCommandIndex((prev) =>
+                    Math.min(prev + 1, filteredCommands.length - 1),
+                  );
+                  return;
+                }
+                if (e.key === "ArrowUp" && filteredCommands.length > 0) {
+                  e.preventDefault();
+                  setSelectedCommandIndex((prev) => Math.max(prev - 1, 0));
+                  return;
+                }
+                if (
+                  (e.key === "Enter" || e.key === "Tab") &&
+                  filteredCommands.length > 0
+                ) {
+                  e.preventDefault();
+                  applyCommandSuggestion(
+                    filteredCommands[selectedCommandIndex] ||
+                      filteredCommands[0],
+                  );
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSlashTrigger(null);
+                  return;
+                }
+              }
+
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 sendPrompt();
               }
             }}
+            onSelect={(e) => {
+              const target = e.target as HTMLTextAreaElement;
+              const cursor = target.selectionStart ?? target.value.length;
+              setSlashTrigger(getSlashTrigger(target.value, cursor));
+            }}
             onPaste={handlePaste}
           />
 
+          {/* Slash command suggestions */}
+          {slashTrigger && (
+            <div className="oc-suggestions" ref={suggestionsContainerRef}>
+              {!commandsLoaded ? (
+                <div className="px-3 py-2 text-[11px] font-mono text-oc-text-muted">
+                  Loading commands...
+                </div>
+              ) : filteredCommands.length > 0 ? (
+                filteredCommands.map((command, index) => (
+                  <button
+                    key={command.name}
+                    type="button"
+                    className={`oc-suggestion-item ${
+                      index === selectedCommandIndex ? "active" : ""
+                    }`}
+                    onMouseEnter={() => setSelectedCommandIndex(index)}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => applyCommandSuggestion(command)}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-oc-text">
+                        /{command.name.replace(/^\//, "")}
+                      </span>
+                      {command.source ? (
+                        <span className="text-[9px] uppercase tracking-wider opacity-70">
+                          {command.source}
+                        </span>
+                      ) : null}
+                    </div>
+                    {command.description ? (
+                      <div className="mt-0.5 truncate text-[10px] text-oc-text-muted">
+                        {command.description}
+                      </div>
+                    ) : null}
+                  </button>
+                ))
+              ) : (
+                <div className="px-3 py-2 text-[11px] font-mono text-oc-text-muted">
+                  No matching commands.
+                </div>
+              )}
+            </div>
+          )}
+
           {/* File suggestions */}
           {showFileSuggestions && fileSuggestions.length > 0 && (
-            <div className="oc-suggestions">
+            <div className="oc-suggestions" ref={suggestionsContainerRef}>
               {fileSuggestions.map((suggestion, index) => (
                 <button
                   key={suggestion.path}
@@ -1908,12 +2186,33 @@ export function InputWrapper() {
             {/* Right: action buttons */}
             <div className="oc-toolbar-right">
               {isProcessing ? (
-                <Button variant="destructive" size="chip" onClick={stopRequest}>
+                <Button
+                  variant="destructive"
+                  size="chip"
+                  onClick={stopRequest}
+                  disabled={isSteering}
+                >
                   <Square className="h-3 w-3" />
                   Stop
                 </Button>
               ) : null}
-              <Button variant="send" size="chip" onClick={sendPrompt}>
+              {isProcessing ? (
+                <Button
+                  variant="secondary"
+                  size="chip"
+                  onClick={steerPrompt}
+                  disabled={!inputValue.trim() || isSteering}
+                >
+                  <Zap className="h-3 w-3" />
+                  {isSteering ? "Steering..." : "Steer now"}
+                </Button>
+              ) : null}
+              <Button
+                variant="send"
+                size="chip"
+                onClick={sendPrompt}
+                disabled={isSteering}
+              >
                 {isProcessing ? (
                   <AlertCircle className="h-3.5 w-3.5" />
                 ) : (

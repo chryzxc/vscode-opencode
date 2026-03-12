@@ -43,12 +43,12 @@ export function ProgressStep({ step }: { step: StreamingStep }) {
   return (
     <div
       className={[
-        'flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-xs transition-colors',
+        'flex items-start gap-2 px-2 py-1 text-xs transition-colors',
         isPending
-          ? 'border-oc-accent/20 bg-oc-accent-soft'
+          ? 'bg-oc-accent-soft text-oc-accent'
           : isError
-            ? 'border-oc-red/20 bg-oc-red/5'
-            : 'border-oc-border bg-oc-panel-soft',
+            ? 'bg-oc-red/5'
+            : 'bg-transparent',
       ].join(' ')}
     >
       <span className="mt-0.5 shrink-0">{statusIcon}</span>
