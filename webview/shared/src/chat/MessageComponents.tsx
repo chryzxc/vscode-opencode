@@ -116,24 +116,24 @@ function getSubagentHue(id: string): number {
 function getSubagentCardStyle(id: string): CSSProperties {
   const hue = getSubagentHue(id);
   return {
-    borderColor: `hsla(${hue}, 75%, 62%, 0.38)`,
-    backgroundColor: `hsla(${hue}, 58%, 48%, 0.12)`,
-    boxShadow: `inset 2px 0 0 hsla(${hue}, 88%, 68%, 0.95)`,
+    borderLeftWidth: "3px",
+    borderLeftColor: `hsl(${hue}, 78%, 68%)`,
+    backgroundImage: `linear-gradient(90deg, hsla(${hue}, 72%, 58%, 0.09) 0%, hsla(${hue}, 72%, 58%, 0.02) 38%, transparent 62%)`,
   };
 }
 
 function getSubagentAccentTextStyle(id: string): CSSProperties {
   const hue = getSubagentHue(id);
   return {
-    color: `hsl(${hue}, 88%, 74%)`,
+    color: `hsl(${hue}, 80%, 70%)`,
   };
 }
 
 function getSubagentMetaStyle(id: string): CSSProperties {
   const hue = getSubagentHue(id);
   return {
-    borderColor: `hsla(${hue}, 80%, 70%, 0.36)`,
-    backgroundColor: `hsla(${hue}, 76%, 56%, 0.12)`,
+    borderColor: `hsla(${hue}, 75%, 68%, 0.3)`,
+    backgroundColor: `hsla(${hue}, 72%, 56%, 0.08)`,
   };
 }
 
@@ -316,9 +316,9 @@ function getMessageContent(
     return "";
   }
   const candidates = [
+    messageBodyFromParts(message.parts),
     message.content,
     message.text,
-    messageBodyFromParts(message.parts),
     summaryText(message),
   ];
   return (
@@ -1242,7 +1242,7 @@ export function AssistantMessage({
   isContiguous?: boolean;
 }) {
   const dispatch = useAppDispatch();
-  const { subagentsByParentMessageId, subagentDetailsById } = useAppState();
+  const { subagentsByParentMessageId, subagentDetailsById, availableAgents } = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
@@ -1386,6 +1386,15 @@ export function AssistantMessage({
 
   // Use type-safe helpers instead of type assertions
   const agentName = getAgentName(message, streaming);
+  const agentColor = useMemo(() => {
+    if (!agentName || agentName === "assistant") return undefined;
+    const match = availableAgents.find(
+      (a) =>
+        a.id === agentName ||
+        a.name.toLowerCase() === agentName.toLowerCase(),
+    );
+    return match?.color ?? undefined;
+  }, [agentName, availableAgents]);
   const modelName = useMemo(() => {
     if (streaming?.isActive) {
       if (streaming.model?.name) return streaming.model.name;
@@ -1519,17 +1528,35 @@ export function AssistantMessage({
               ) : (
                 <>
                   <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
-                    <div className="oc-agent-icon flex items-center justify-center rounded-md bg-oc-accent-soft p-1">
-                      <Zap className="h-4 w-4 text-oc-accent" />
+                    <div
+                      className="oc-agent-icon flex items-center justify-center rounded-md p-1"
+                      style={agentColor
+                        ? { backgroundColor: `${agentColor}26` }
+                        : { backgroundColor: "var(--oc-accent-soft)" }
+                      }
+                    >
+                      <Zap
+                        className="h-4 w-4"
+                        style={agentColor
+                          ? { color: agentColor }
+                          : { color: "var(--oc-accent)" }
+                        }
+                      />
                     </div>
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span className="oc-msg-agent-name px-2 py-0.5 rounded-md font-semibold text-oc-sm text-oc-agent-custom bg-oc-agent-custom truncate shrink-0">
+                      <span
+                        className="oc-msg-agent-name px-2 py-0.5 rounded-md font-semibold text-oc-sm truncate shrink-0"
+                        style={agentColor
+                          ? { color: agentColor, backgroundColor: `${agentColor}1a` }
+                          : undefined
+                        }
+                      >
                         {agentName !== "assistant" ? agentName : "AI"}
                       </span>
                       {modelName && modelName !== "assistant" && (
                         <div className="flex items-center gap-1.5 opacity-60 min-w-0 truncate">
                           <span className="text-oc-xs font-mono shrink-0">
-                            â€¢
+                            •
                           </span>
                           <span className="oc-msg-model-label truncate text-oc-xs">
                             {modelName}
@@ -2019,7 +2046,6 @@ export function AssistantMessage({
               <div className="space-y-2 p-2.5">
                 <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
                   {visibleSubagents.map((subagent: SubagentSummary) => {
-                    const statusClass = getSubagentColor(subagent.id);
                     const detail = subagentDetailsById[subagent.id] as
                       | SubagentDetail
                       | undefined;
@@ -2030,21 +2056,28 @@ export function AssistantMessage({
                       subagent.id,
                     );
                     const metaStyle = getSubagentMetaStyle(subagent.id);
+                    const statusText =
+                      subagentStatusLabel(subagent.status) || "Pending";
+                    const activityText =
+                      subagent.latestActivity || statusText || "Initializing...";
+                    const shouldShowActivity =
+                      activityText.trim().toLowerCase() !==
+                      statusText.trim().toLowerCase();
 
                     return (
                       <button
                         key={subagent.id}
                         type="button"
                         className={cn(
-                          "w-full rounded-md border px-2 py-1.5 text-left transition-all",
-                          "bg-oc-bg-soft hover:brightness-110",
+                          "w-full rounded-md border border-oc-border bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
+                          "hover:bg-oc-panel",
                         )}
                         style={cardStyle}
                         onClick={() => openSubagentModal(subagent.id)}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex min-w-0 items-center gap-2">
-                            <div className={cn("oc-agent-icon shrink-0", statusClass)} style={accentTextStyle}>
+                            <div className="oc-agent-icon shrink-0" style={accentTextStyle}>
                               {subagent.status === "running" ? (
                                 <Loader2 className="h-3 w-3 animate-spin" />
                               ) : subagent.status === "error" ? (
@@ -2054,10 +2087,9 @@ export function AssistantMessage({
                               )}
                             </div>
                             <span
-                              className={cn("truncate text-oc-xs font-semibold", statusClass)}
-                              style={accentTextStyle}
+                              className="truncate text-oc-xs font-semibold text-oc-text-soft"
                             >
-                              Agent: {agentLabel}
+                              {agentLabel}
                             </span>
                           </div>
                           <span className="font-mono text-oc-2xs text-oc-text-muted">
@@ -2072,18 +2104,19 @@ export function AssistantMessage({
                           >
                             {modelInfo}
                           </span>
+                          <span className="text-[10px] font-medium text-oc-text-muted">
+                            {statusText}
+                          </span>
                         </div>
-                        <div className="mt-0.5 min-h-[14px] font-mono text-[10px] text-oc-text-muted">
-                          <FadeSwapText
-                            text={
-                              subagent.latestActivity ||
-                              subagentStatusLabel(subagent.status) ||
-                              "Initializing..."
-                            }
-                            className="block truncate"
-                            durationMs={220}
-                          />
-                        </div>
+                        {shouldShowActivity ? (
+                          <div className="mt-0.5 min-h-[14px] font-mono text-[10px] text-oc-text-muted">
+                            <FadeSwapText
+                              text={activityText}
+                              className="block truncate"
+                              durationMs={220}
+                            />
+                          </div>
+                        ) : null}
                       </button>
                     );
                   })}
@@ -2333,4 +2366,3 @@ export function MessageStatus({
     </div>
   );
 }
-

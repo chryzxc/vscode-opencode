@@ -20,6 +20,9 @@ export interface Agent {
   id: string;
   name: string;
   description: string;
+  mode?: "subagent" | "primary" | "all";
+  builtIn?: boolean;
+  color?: string;
 }
 
 export interface Session {

@@ -5909,18 +5909,24 @@ export class ChatViewProvider
       id: string;
       name: string;
       description: string;
+      mode: "primary" | "subagent" | "all";
+      builtIn: boolean;
     }> = [
         {
           id: "build",
           name: "Build",
           description:
             "Default agent for development work with all tools enabled",
+          mode: "primary",
+          builtIn: true,
         },
         {
           id: "plan",
           name: "Plan",
           description:
             "Restricted agent for planning and analysis without making changes",
+          mode: "primary",
+          builtIn: true,
         },
       ];
 
@@ -5951,6 +5957,9 @@ export class ChatViewProvider
               description:
                 (agent.description as string | undefined) ??
                 `OpenCode ${displayName} agent`,
+              mode: agent.mode as "subagent" | "primary" | "all",
+              builtIn: agent.builtIn as boolean,
+              color: agent.color as string | undefined,
             };
           });
 

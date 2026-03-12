@@ -303,8 +303,13 @@ test('normalizeMessage picks the richest available final content candidate', () 
   );
   assert.match(
     messageHandlerSource,
-    /const content = pickBestContentCandidate\(\[\s*asRichString\(rec\.content\),[\s\S]*contentFromParts\(mergedParts\)/s,
+    /const content = pickBestContentCandidate\(\[\s*splitReasoningFromCandidate\(asRichString\(rec\.content\)\),[\s\S]*contentFromParts\(sanitizedMergedParts\)/s,
     'normalizeMessage should evaluate content from content/text/parts before finalizing',
+  );
+  assert.doesNotMatch(
+    messageHandlerSource,
+    /pickBestContentCandidate\([\s\S]*typeof message\.content === "string" \? message\.content : ""/s,
+    'normalizeMessage should not re-introduce raw message.content fallback after splitting mixed reasoning',
   );
 });
 
@@ -312,6 +317,11 @@ test('stream-final merge falls back to token overlap when final payload is conde
   const preferBody = extractFunctionBody(
     messageHandlerSource,
     'function shouldPreferStreamingContent(',
+  );
+  assert.match(
+    preferBody,
+    /if \(splitMixedReasoningFromContent\(streamingContent\)\)\s*\{\s*return false;\s*\}/,
+    'shouldPreferStreamingContent should reject mixed response+reasoning stream snapshots',
   );
   assert.match(
     preferBody,
@@ -680,12 +690,12 @@ test('streaming content uses a compact one-line ticker with fade transitions', (
 test('normalizeMessage persists reasoning-like stream-only content as reasoning events', () => {
   assert.match(
     messageHandlerSource,
-    /const streamingReasoningLeak = asString\(streaming\?\.content\)\.trim\(\);/,
+    /const streamingReasoningLeak = sanitizeReasoningChunk\(/,
     'normalizeMessage should inspect streaming content for leaked reasoning traces',
   );
   assert.match(
     messageHandlerSource,
-    /looksLikeReasoningTrace\(streamingReasoningLeak,\s*""\)/,
+    /\(looksLikeReasoningTrace\(streamingReasoningLeak,\s*""\)\s*\|\|\s*!!streamingMixed\)/,
     'normalizeMessage should classify leaked stream content with reasoning heuristic',
   );
   assert.match(

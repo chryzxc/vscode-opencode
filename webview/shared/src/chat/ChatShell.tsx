@@ -13,6 +13,8 @@ import {
   TodoPanel,
   McpPanel,
   LspPanel,
+  AgentsPanel,
+  SkillsPanel,
   MobileRightSummary,
 } from './PanelComponents';
 import { StreamingCard } from './StreamingComponents';
@@ -324,6 +326,8 @@ function ChatContent() {
         <TodoPanel />
         <McpPanel />
         <LspPanel />
+        <SkillsPanel />
+        <AgentsPanel />
       </aside>
     </div>
   );

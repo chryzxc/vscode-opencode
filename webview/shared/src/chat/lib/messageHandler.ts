@@ -231,6 +231,89 @@ function looksLikeReasoningTrace(value: string, currentContent: string): boolean
   return score >= 3;
 }
 
+function splitMixedReasoningFromContent(
+  value: string,
+): { content: string; reasoning: string } | null {
+  const text = value.trim();
+  if (!text || text.length < 40) {
+    return null;
+  }
+
+  const markers = [
+    /the\s*user\s*(?:is\s*asking|just\s*said)/i,
+    /the\s*user\s*keeps?\s*saying/i,
+    /let\s*me\s*check/i,
+    /behavior\s*instructions?/i,
+    /tone[_\s-]*and[_\s-]*style/i,
+    /start\s*work\s*immediately/i,
+    /\bi\s*should\b/i,
+    /no\s*tools?\s*are\s*needed/i,
+    /without\s*flattery/i,
+  ];
+
+  let splitIndex = -1;
+  for (const marker of markers) {
+    const match = marker.exec(text);
+    if (!match) continue;
+    if (match.index <= 8) continue;
+    if (splitIndex < 0 || match.index < splitIndex) {
+      splitIndex = match.index;
+    }
+  }
+
+  // Fallback for leaked text where spaces/punctuation are stripped
+  // (e.g. "Theuserkeepssaying...Ishouldrespond...").
+  const compactChars: string[] = [];
+  const compactToRaw: number[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index].toLowerCase();
+    if (/[a-z0-9]/.test(char)) {
+      compactChars.push(char);
+      compactToRaw.push(index);
+    }
+  }
+  const compact = compactChars.join("");
+  const compactMarkers = [
+    "theuserisasking",
+    "theuserjustsaid",
+    "theuserkeepssaying",
+    "letmecheck",
+    "behaviorinstructions",
+    "toneandstyle",
+    "startworkimmediately",
+    "ishouldrespond",
+    "ishouldacknowledge",
+    "ishouldreply",
+    "notoolsareneeded",
+    "withoutflattery",
+  ];
+  for (const marker of compactMarkers) {
+    const compactIndex = compact.indexOf(marker);
+    if (compactIndex <= 0 || compactIndex >= compactToRaw.length) {
+      continue;
+    }
+    const rawIndex = compactToRaw[compactIndex];
+    if (rawIndex <= 8) {
+      continue;
+    }
+    if (splitIndex < 0 || rawIndex < splitIndex) {
+      splitIndex = rawIndex;
+    }
+  }
+
+  if (splitIndex < 0) {
+    return null;
+  }
+
+  const content = text.slice(0, splitIndex).trim();
+  const reasoning = text.slice(splitIndex).trim();
+  if (content.length < 8 || reasoning.length < 20) {
+    return null;
+  }
+
+  return { content, reasoning };
+}
+
 function needsBoundarySpace(previous: string, next: string): boolean {
   if (!previous || !next) {
     return false;
@@ -1130,6 +1213,13 @@ function shouldPreferStreamingContent(
   finalContent: string,
   streamingContent: string,
 ): boolean {
+  if (splitMixedReasoningFromContent(streamingContent)) {
+    return false;
+  }
+  if (looksLikeReasoningTrace(streamingContent, "")) {
+    return false;
+  }
+
   const finalNorm = normalizeComparableText(finalContent);
   const streamNorm = normalizeComparableText(streamingContent);
   if (!streamNorm) {
@@ -1327,16 +1417,68 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
       reasoning: streaming.reasoning
     });
   }
+  const detachedReasoningChunks: string[] = [];
+  const sanitizedMergedParts = mergedParts.map((part) => {
+    const rec = asRecord(part);
+    if (!rec || isReasoningPart(rec)) {
+      return part;
+    }
+    const partType = normalizePartType(rec.type);
+    const textLike =
+      asRichString(rec.text) || asRichString(rec.content) || asRichString(rec.delta);
+    if (!textLike) {
+      return part;
+    }
+    const mixed = splitMixedReasoningFromContent(textLike);
+    if (!mixed) {
+      return part;
+    }
+    const detached = sanitizeReasoningChunk(mixed.reasoning).trim();
+    if (detached) {
+      detachedReasoningChunks.push(detached);
+    }
+
+    const nextPart: Record<string, unknown> = { ...(part as Record<string, unknown>) };
+    if (typeof rec.text === "string" || partType === "text") {
+      nextPart.type = partType || "text";
+      nextPart.text = mixed.content;
+    } else if (typeof rec.content === "string") {
+      nextPart.content = mixed.content;
+    } else if (typeof rec.delta === "string") {
+      nextPart.delta = mixed.content;
+    }
+    return nextPart as MessagePart;
+  });
+
+  const splitReasoningFromCandidate = (raw: string): string => {
+    const mixed = splitMixedReasoningFromContent(raw);
+    if (!mixed) {
+      return raw;
+    }
+    const detached = sanitizeReasoningChunk(mixed.reasoning).trim();
+    if (detached) {
+      detachedReasoningChunks.push(detached);
+    }
+    return mixed.content;
+  };
+
   const role = asString(rec.role) || asString(asRecord(rec.info)?.role);
   const content = pickBestContentCandidate([
-    asRichString(rec.content),
-    asRichString(rec.text),
-    contentFromParts(mergedParts),
+    splitReasoningFromCandidate(asRichString(rec.content)),
+    splitReasoningFromCandidate(asRichString(rec.text)),
+    contentFromParts(sanitizedMergedParts),
     summaryText(rec.info),
-    typeof message.content === "string" ? message.content : "",
   ]);
 
-  const streamingContent = asString(streaming?.content);
+  const streamingRawContent = asString(streaming?.content);
+  const streamingMixed = splitMixedReasoningFromContent(streamingRawContent);
+  if (streamingMixed) {
+    const detached = sanitizeReasoningChunk(streamingMixed.reasoning).trim();
+    if (detached) {
+      detachedReasoningChunks.push(detached);
+    }
+  }
+  const streamingContent = streamingMixed ? streamingMixed.content : streamingRawContent;
   const preferStreamingContent = shouldPreferStreamingContent(
     content || "",
     streamingContent,
@@ -1346,9 +1488,9 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     role: role || (parts.length > 0 ? 'assistant' : message.role),
     content: preferStreamingContent ? streamingContent : content || message.content,
     parts: preferStreamingContent
-      ? partsWithStreamingContent(mergedParts as MessagePart[], streamingContent)
-      : mergedParts.length > 0
-        ? (mergedParts as Message['parts'])
+      ? partsWithStreamingContent(sanitizedMergedParts as MessagePart[], streamingContent)
+      : sanitizedMergedParts.length > 0
+        ? (sanitizedMergedParts as Message['parts'])
         : message.parts
   };
 
@@ -1359,10 +1501,12 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     ...existingReasoningEvents,
     ...(streaming?.reasoningEvents ?? [])
   ];
-  const streamingReasoningLeak = asString(streaming?.content).trim();
+  const streamingReasoningLeak = sanitizeReasoningChunk(
+    streamingMixed ? streamingMixed.reasoning : asString(streaming?.content),
+  ).trim();
   if (
     streamingReasoningLeak &&
-    looksLikeReasoningTrace(streamingReasoningLeak, "") &&
+    (looksLikeReasoningTrace(streamingReasoningLeak, "") || !!streamingMixed) &&
     !shouldPreferStreamingContent(content || "", streamingReasoningLeak)
   ) {
     const leakNorm = normalizeComparableText(streamingReasoningLeak);
@@ -1380,6 +1524,18 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
         createdAt: Date.now(),
       });
     }
+  }
+  if (detachedReasoningChunks.length > 0) {
+    detachedReasoningChunks.forEach((chunk) => {
+      const norm = normalizeComparableText(chunk);
+      if (!norm) return;
+      const alreadyTracked = mergedReasoningEvents.some(
+        (event) => normalizeComparableText(asString(event.text)) === norm,
+      );
+      if (!alreadyTracked) {
+        mergedReasoningEvents.push({ text: chunk, createdAt: Date.now() });
+      }
+    });
   }
   if (mergedReasoningEvents.length > 0) {
     normalized.reasoningEvents = mergedReasoningEvents;
@@ -1405,7 +1561,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     // extract tool-call steps directly from message parts for persistent display.
     const seenCallIds = new Set<string>();
     const fromParts: Array<{ type: string; title: string; content?: string; status?: string; meta?: string }> = [];
-    for (const part of mergedParts) {
+    for (const part of sanitizedMergedParts) {
       const rec = asRecord(part);
       if (!rec || asString(rec.type).toLowerCase() !== 'tool') continue;
       const tool = asString(rec.tool);
@@ -1485,7 +1641,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   // Extract file edits from patch-type parts when edits are not already populated.
   if (!Array.isArray(normalized.edits) || normalized.edits.length === 0) {
     const fromParts: Array<{ file: string }> = [];
-    for (const part of mergedParts) {
+    for (const part of sanitizedMergedParts) {
       const rec = asRecord(part);
       if (!rec || asString(rec.type).toLowerCase() !== 'patch') continue;
       const files = Array.isArray(rec.files) ? rec.files : [];
@@ -2702,9 +2858,11 @@ function handleStreamEvent(
           partType === "text" ||
           (!!textChunk && !isProgressPartType) ||
           (!partType && structuredKind !== "progress")
-      ) {
+        ) {
         const streamingState = getState().streaming;
-        if (looksLikeReasoningTrace(textChunk, streamingState?.content || "")) {
+        const rawReasoningLike = looksLikeReasoningTrace(textChunk, streamingState?.content || "");
+        const mixedChunk = splitMixedReasoningFromContent(textChunk);
+        if (rawReasoningLike && !mixedChunk) {
           const reasoningLeak = sanitizeReasoningChunk(textChunk);
           if (reasoningLeak) {
             dispatch({
@@ -2715,15 +2873,39 @@ function handleStreamEvent(
           dispatch({ type: "SET_PROCESSING", payload: true });
           break;
         }
+
+        let candidateChunk = textChunk;
+        if (mixedChunk) {
+          const reasoningLeak = sanitizeReasoningChunk(mixedChunk.reasoning);
+          if (reasoningLeak) {
+            dispatch({
+              type: "UPDATE_STREAMING_REASONING",
+              payload: { reasoning: reasoningLeak, append: true },
+            });
+          }
+          candidateChunk = mixedChunk.content;
+        }
+
+        if (looksLikeReasoningTrace(candidateChunk, streamingState?.content || "")) {
+          const reasoningLeak = sanitizeReasoningChunk(candidateChunk);
+          if (reasoningLeak) {
+            dispatch({
+              type: "UPDATE_STREAMING_REASONING",
+              payload: { reasoning: reasoningLeak, append: true },
+            });
+          }
+          dispatch({ type: "SET_PROCESSING", payload: true });
+          break;
+        }
         // Ignore id-like echoes that can appear before assistant output begins.
-        if (isOpaqueIdLike(textChunk.trim())) {
+        if (isOpaqueIdLike(candidateChunk.trim())) {
           dispatch({ type: "SET_PROCESSING", payload: true });
           break;
         }
         const contentEmpty = !streamingState || !streamingState.content.trim();
         const cleanedChunk = contentEmpty
-          ? stripLeadingUserEcho(textChunk, getState())
-          : textChunk;
+          ? stripLeadingUserEcho(candidateChunk, getState())
+          : candidateChunk;
           if (cleanedChunk) {
             const contentPatch = resolveStreamingContentUpdate(
               streamingState?.content || '',
@@ -2933,7 +3115,23 @@ function handleStreamEvent(
 
         if (structuredOutput.message) {
           const streamingState = getState().streaming;
-          if (looksLikeReasoningTrace(structuredOutput.message, streamingState?.content || "")) {
+          const rawReasoningLike = looksLikeReasoningTrace(structuredOutput.message, streamingState?.content || "");
+          const mixedMessage = splitMixedReasoningFromContent(
+            structuredOutput.message,
+          );
+          let messageText = structuredOutput.message;
+          if (mixedMessage) {
+            const mixedReasoning = sanitizeReasoningChunk(mixedMessage.reasoning);
+            if (mixedReasoning) {
+              dispatch({
+                type: 'UPDATE_STREAMING_REASONING',
+                payload: { reasoning: mixedReasoning, append: true }
+              });
+            }
+            messageText = mixedMessage.content;
+          }
+
+          if (rawReasoningLike && !mixedMessage) {
             const reasoningLeak = sanitizeReasoningChunk(structuredOutput.message);
             if (reasoningLeak) {
               dispatch({
@@ -2941,17 +3139,39 @@ function handleStreamEvent(
                 payload: { reasoning: reasoningLeak, append: true }
               });
             }
-          } else {
-            const contentPatch = resolveStreamingContentUpdate(
-              streamingState?.content || '',
-              structuredOutput.message,
-              false,
-            );
-            if (contentPatch) {
+          } else if (looksLikeReasoningTrace(messageText, streamingState?.content || "")) {
+            const reasoningLeak = sanitizeReasoningChunk(messageText);
+            if (reasoningLeak) {
               dispatch({
-                type: 'UPDATE_STREAMING_CONTENT',
-                payload: { content: contentPatch.content, append: contentPatch.append }
+                type: 'UPDATE_STREAMING_REASONING',
+                payload: { reasoning: reasoningLeak, append: true }
               });
+            }
+          } else {
+            if (mixedMessage) {
+              const contentPatch = resolveStreamingContentUpdate(
+                streamingState?.content || '',
+                messageText,
+                false,
+              );
+              if (contentPatch) {
+                dispatch({
+                  type: 'UPDATE_STREAMING_CONTENT',
+                  payload: { content: contentPatch.content, append: contentPatch.append }
+                });
+              }
+            } else {
+              const contentPatch = resolveStreamingContentUpdate(
+                streamingState?.content || '',
+                structuredOutput.message,
+                false,
+              );
+              if (contentPatch) {
+                dispatch({
+                  type: 'UPDATE_STREAMING_CONTENT',
+                  payload: { content: contentPatch.content, append: contentPatch.append }
+                });
+              }
             }
           }
         }
@@ -3127,7 +3347,21 @@ function handleStreamEvent(
         if (chunk) {
           const streamingState = getState().streaming;
           const contentEmpty = !streamingState || !streamingState.content.trim();
-          const cleanedChunk = contentEmpty ? stripLeadingUserEcho(chunk, getState()) : chunk;
+          let candidateChunk = contentEmpty
+            ? stripLeadingUserEcho(chunk, getState())
+            : chunk;
+          const mixedChunk = splitMixedReasoningFromContent(candidateChunk);
+          if (mixedChunk) {
+            const mixedReasoning = sanitizeReasoningChunk(mixedChunk.reasoning);
+            if (mixedReasoning) {
+              dispatch({
+                type: "UPDATE_STREAMING_REASONING",
+                payload: { reasoning: mixedReasoning, append: true },
+              });
+            }
+            candidateChunk = mixedChunk.content;
+          }
+          const cleanedChunk = candidateChunk;
           if (!cleanedChunk) {
             break;
           }
@@ -3303,8 +3537,33 @@ function handleStreamEvent(
         }
         } else if (structuredKind === "message" && structuredText) {
           const streamingState = getState().streaming;
-          if (looksLikeReasoningTrace(structuredText, streamingState?.content || "")) {
+          const rawReasoningLike = looksLikeReasoningTrace(structuredText, streamingState?.content || "");
+          let messageText = structuredText;
+          const mixedMessage = splitMixedReasoningFromContent(messageText);
+          if (mixedMessage) {
+            const mixedReasoning = sanitizeReasoningChunk(mixedMessage.reasoning);
+            if (mixedReasoning) {
+              dispatch({
+                type: "UPDATE_STREAMING_REASONING",
+                payload: { reasoning: mixedReasoning, append: true },
+              });
+              consumed = true;
+            }
+            messageText = mixedMessage.content;
+          }
+          if (rawReasoningLike && !mixedMessage) {
             const reasoningLeak = sanitizeReasoningChunk(structuredText);
+            if (reasoningLeak) {
+              dispatch({
+                type: "UPDATE_STREAMING_REASONING",
+                payload: { reasoning: reasoningLeak, append: true },
+              });
+              consumed = true;
+            }
+            break;
+          }
+          if (looksLikeReasoningTrace(messageText, streamingState?.content || "")) {
+            const reasoningLeak = sanitizeReasoningChunk(messageText);
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
@@ -3316,7 +3575,7 @@ function handleStreamEvent(
           }
           const contentPatch = resolveStreamingContentUpdate(
             streamingState?.content || '',
-            structuredText,
+            messageText,
             false,
           );
           if (!contentPatch) {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -3228,6 +3229,272 @@ export function LspPanel() {
           {hasServers && (
             <div className="mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
               {activeCount} / {lspServers.length} language servers active
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// SkillsPanel - displays slash command skills from the OpenCode SDK command catalog
+export function SkillsPanel() {
+  const [open, setOpen] = useState(true);
+  const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
+  const { availableCommands } = useAppState();
+
+  const hasSkills = availableCommands.length > 0;
+
+  function toggleSkill(name: string) {
+    setExpandedSkills((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  }
+
+  return (
+    <div className="oc-skills-panel border-t border-oc-border p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="oc-panel-title flex items-center gap-1.5">
+          <Zap className="h-3 w-3 text-[var(--oc-text-soft)]" aria-hidden="true" />
+          <span>Skills</span>
+        </div>
+        <Button
+          type="button"
+          aria-label={open ? "Collapse Skills" : "Expand Skills"}
+          onClick={() => setOpen((v) => !v)}
+          variant="ghost"
+          size="icon"
+          className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+        >
+          {open ? (
+            <ChevronDown className="h-3 w-3" />
+          ) : (
+            <ChevronUp className="h-3 w-3" />
+          )}
+        </Button>
+      </div>
+
+      {open ? (
+        <div className="space-y-1.5">
+          {!hasSkills ? (
+            <div className="py-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+              No skills configured
+            </div>
+          ) : (
+            availableCommands.map((skill) => {
+              const isExpanded = expandedSkills.has(skill.name);
+              const hasDetail = !!(skill.description || skill.agent || skill.model);
+              return (
+                <div
+                  key={skill.name}
+                  className="rounded-md border border-oc-border bg-oc-panel-soft"
+                >
+                  <div className="flex items-center gap-2 p-2">
+                    <span className="font-mono text-xs font-medium text-oc-accent shrink-0">/</span>
+                    <span className="flex-1 truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
+                      {skill.name}
+                    </span>
+                    {skill.subtask && (
+                      <span
+                        className="shrink-0 rounded px-1 py-0.5 text-[10px] text-[var(--oc-text-soft)] opacity-50"
+                        title="Runs as a subtask"
+                      >
+                        subtask
+                      </span>
+                    )}
+                    {hasDetail && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={isExpanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
+                        aria-expanded={isExpanded}
+                        onClick={() => toggleSkill(skill.name)}
+                        className="h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-3 w-3" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3" />
+                        )}
+                      </Button>
+                    )}
+                  </div>
+
+                  {isExpanded && hasDetail && (
+                    <div className="border-t border-oc-border px-2 pb-2 pt-1 space-y-0.5">
+                      {skill.description && (
+                        <div className="text-[10px] text-[var(--oc-text-soft)] opacity-70 leading-relaxed">
+                          {skill.description}
+                        </div>
+                      )}
+                      {skill.agent && (
+                        <div className="flex items-center gap-1 text-[10px] text-[var(--oc-text-soft)] opacity-60">
+                          <Bot className="h-2.5 w-2.5" />
+                          <span>{skill.agent}</span>
+                        </div>
+                      )}
+                      {skill.model && (
+                        <div className="flex items-center gap-1 text-[10px] text-[var(--oc-text-soft)] opacity-60">
+                          <Wrench className="h-2.5 w-2.5" />
+                          <span className="font-mono">{skill.model}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+          {hasSkills && (
+            <div className="mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+              {availableCommands.length} skill{availableCommands.length !== 1 ? "s" : ""}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// AgentsPanel - displays installed agents/skills with live data from OpenCode SDK
+export function AgentsPanel() {
+  const [open, setOpen] = useState(true);
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const { availableAgents } = useAppState();
+
+  const hasAgents = availableAgents.length > 0;
+  const builtInCount = availableAgents.filter((a) => a.builtIn).length;
+  const customCount = availableAgents.length - builtInCount;
+
+  function toggleAgent(id: string) {
+    setExpandedAgents((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function modeBadgeClass(mode: string | undefined) {
+    if (mode === "subagent") return "bg-[var(--oc-yellow,#f59e0b)]/20 text-[var(--oc-yellow,#f59e0b)]";
+    if (mode === "all") return "bg-[var(--oc-accent)]/20 text-oc-accent";
+    // primary (default)
+    return "bg-[var(--oc-green)]/20 text-[var(--oc-green)]";
+  }
+
+  return (
+    <div className="oc-agents-panel border-t border-oc-border p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="oc-panel-title flex items-center gap-1.5">
+          <Bot className="h-3 w-3 text-[var(--oc-text-soft)]" aria-hidden="true" />
+          <span>Agents</span>
+        </div>
+        <Button
+          type="button"
+          aria-label={open ? "Collapse Agents" : "Expand Agents"}
+          onClick={() => setOpen((v) => !v)}
+          variant="ghost"
+          size="icon"
+          className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+        >
+          {open ? (
+            <ChevronDown className="h-3 w-3" />
+          ) : (
+            <ChevronUp className="h-3 w-3" />
+          )}
+        </Button>
+      </div>
+
+      {open ? (
+        <div className="space-y-1.5">
+          {!hasAgents ? (
+            <div className="py-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+              No agents available
+            </div>
+          ) : (
+            availableAgents.map((agent) => {
+              const isExpanded = expandedAgents.has(agent.id);
+              const hasDescription = !!agent.description;
+              return (
+                <div
+                  key={agent.id}
+                  className="rounded-md border border-oc-border bg-oc-panel-soft"
+                >
+                  <div className="flex items-center gap-2 p-2">
+                    {/* Color dot — uses agent's color if set, else accent */}
+                    <span
+                      className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{
+                        backgroundColor: agent.color ?? "var(--oc-accent)",
+                      }}
+                      aria-hidden="true"
+                    />
+                    <span className="flex-1 truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
+                      {agent.name}
+                    </span>
+                    {agent.mode && (
+                      <span
+                        className={`shrink-0 rounded px-1 py-0.5 text-[10px] font-medium tabular-nums ${modeBadgeClass(agent.mode)}`}
+                        title={`Mode: ${agent.mode}`}
+                      >
+                        {agent.mode}
+                      </span>
+                    )}
+                    {agent.builtIn && (
+                      <span
+                        className="shrink-0 rounded px-1 py-0.5 text-[10px] text-[var(--oc-text-soft)] opacity-50"
+                        title="Built-in agent"
+                      >
+                        built-in
+                      </span>
+                    )}
+                    {hasDescription && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={
+                          isExpanded
+                            ? `Collapse ${agent.name} details`
+                            : `Expand ${agent.name} details`
+                        }
+                        aria-expanded={isExpanded}
+                        onClick={() => toggleAgent(agent.id)}
+                        className="h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-3 w-3" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3" />
+                        )}
+                      </Button>
+                    )}
+                  </div>
+
+                  {isExpanded && hasDescription && (
+                    <div className="border-t border-oc-border px-2 pb-2 pt-1 text-[10px] text-[var(--oc-text-soft)] opacity-70 leading-relaxed">
+                      {agent.description}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+          {hasAgents && (
+            <div className="mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+              {customCount > 0
+                ? `${customCount} custom · ${builtInCount} built-in`
+                : `${builtInCount} built-in`}
             </div>
           )}
         </div>

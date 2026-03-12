@@ -33,6 +33,13 @@ The following features are considered "Core" to the OpenCode experience. They mu
 3.  **UI revamps must be additive:** If revamping a UI section, ensure all existing core metrics and buttons are ported to the new design.
 4.  **No Silent Removal:** Do not silently remove features to "clean up" the UI. OpenCode values information density for power users.
 
+## Prompt Ownership (Critical)
+
+- The VS Code wrapper must **not inject system prompts/instructions** into user prompts.
+- Prompt policy and behavioral instructions belong to OpenCode agents/server, not the wrapper.
+- Wrapper request payloads should stay transport-focused (`model`, `agent`, `parts`, optional `format`/`outputFormat`).
+- You may strip legacy injected instruction text from persisted history for display hygiene, but do not prepend/re-add it to outgoing prompts.
+
 ## React Chat Asset Contract (Critical)
 
 The active chat webview is React-based and must keep provider HTML wiring aligned with built assets.

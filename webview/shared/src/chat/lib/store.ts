@@ -226,6 +226,38 @@ function appendWithCap<T>(items: T[], next: T, maxItems: number): T[] {
   return [...items, next];
 }
 
+function needsReasoningBoundary(previous: string, next: string): boolean {
+  if (!previous || !next) {
+    return false;
+  }
+
+  const prevChar = previous[previous.length - 1];
+  const nextChar = next[0];
+  if (/\s/.test(prevChar) || /\s/.test(nextChar)) {
+    return false;
+  }
+  if (/^[,.;:!?)}\]]/.test(next)) {
+    return false;
+  }
+  if (/[(\[{]$/.test(prevChar)) {
+    return false;
+  }
+
+  return /[A-Za-z0-9]/.test(prevChar) && /[A-Za-z0-9]/.test(nextChar);
+}
+
+function appendStreamingReasoning(current: string, incoming: string): string {
+  if (!current) {
+    return incoming;
+  }
+  if (!incoming) {
+    return current;
+  }
+  return needsReasoningBoundary(current, incoming)
+    ? `${current} ${incoming}`
+    : `${current}${incoming}`;
+}
+
 function getQueueForSession(queue: QueueItem[] | undefined, sessionId: string): QueueItem[] {
   if (!Array.isArray(queue) || !sessionId) {
     return [];
@@ -543,7 +575,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         return state;
       }
       const reasoning = action.payload.append
-        ? `${state.streaming.reasoning}${action.payload.reasoning}`
+        ? appendStreamingReasoning(
+            state.streaming.reasoning,
+            action.payload.reasoning,
+          )
         : action.payload.reasoning;
       const chunk = action.payload.reasoning.trim();
       const reasoningEvents =
