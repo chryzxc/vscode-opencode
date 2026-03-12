@@ -13,6 +13,7 @@ export interface Model {
   providerID: string;
   name: string;
   providerName?: string;
+  contextLimit?: number;
 }
 
 export interface Agent {
@@ -414,6 +415,14 @@ export interface AppState {
   modelDropdownOpen: boolean;
   agentDropdownOpen: boolean;
   thinkingDropdownOpen: boolean;
+  isCompacting: boolean;
+  lastCompactedAt?: number;
+  compactionError?: string;
+  compactionBaselineStats?: SessionStats;
+  compactionDividerIndex?: number;
+  compactionDividerBeforeMessageId?: string;
+  compactionDividerAfterMessageId?: string;
+  compactedMessagesCollapsed: boolean;
   errorMessages: string[];
   quotaData: QuotaData | null | undefined;
   quotaIsRefreshing: boolean;

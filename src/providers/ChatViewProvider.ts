@@ -185,6 +185,31 @@ type ChatSlashCommand = {
   subtask?: boolean;
 };
 
+type ChatModelOption = {
+  providerID: string;
+  modelID: string;
+  name: string;
+  providerName: string;
+  contextLimit?: number;
+};
+
+type CompactionBaselineStats = {
+  input: number;
+  output: number;
+  read: number;
+  write: number;
+  duration: number;
+};
+
+type PersistedCompactionViewState = {
+  lastCompactedAt?: number;
+  baselineStats?: CompactionBaselineStats;
+  compactionDividerIndex?: number;
+  compactionDividerBeforeMessageId?: string;
+  compactionDividerAfterMessageId?: string;
+  collapsed?: boolean;
+};
+
 type StructuredProgressUpdate = {
   title: string;
   status?: "pending" | "done" | "error";
@@ -327,6 +352,8 @@ export class ChatViewProvider
   implements vscode.WebviewViewProvider, FileThemeProcessorObserver {
   private static readonly SUBAGENT_SNAPSHOT_PREFIX =
     "opencode.session.subagents.";
+  private static readonly COMPACTION_VIEW_STATE_PREFIX =
+    "opencode.session.compaction-view.";
   /** The webview instance (undefined before initialization) */
   private view?: vscode.WebviewView;
 
@@ -367,12 +394,7 @@ export class ChatViewProvider
   // Cache of available models returned from the server (used to resolve providerName)
   // This cached list allows the extension to enrich selections sent from the webview
   // when the webview omits providerName.
-  private availableModels?: Array<{
-    providerID: string;
-    modelID: string;
-    name: string;
-    providerName: string;
-  }>;
+  private availableModels?: ChatModelOption[];
 
   /** Currently selected agent (primary agent used for new sessions) */
   private selectedAgent: string = "build";
@@ -403,18 +425,12 @@ export class ChatViewProvider
   private structuredOutputMode: "format" | "disabled" = "format";
   private readonly promptDebugBySession = new Map<string, Record<string, unknown>>();
   private readonly structuredValidationFailureCounters = new Map<string, number>();
-  private modelsFetchPromise: Promise<
-    Array<{
-      providerID: string;
-      modelID: string;
-      name: string;
-      providerName: string;
-    }>
-  > | null = null;
+  private modelsFetchPromise: Promise<ChatModelOption[]> | null = null;
   private commandCatalog: ChatSlashCommand[] = [];
   private commandCatalogFetchedAt = 0;
   private commandCatalogFetchPromise: Promise<ChatSlashCommand[]> | null = null;
   private readonly COMMAND_CATALOG_TTL_MS = 5 * 60 * 1000;
+  private readonly compactingSessions = new Set<string>();
 
   /**
    * Creates a new ChatViewProvider instance.
@@ -499,6 +515,9 @@ export class ChatViewProvider
           }
 
           this.isBootstrappingWebview = true;
+          // A reloaded webview starts with empty client state. Force a fresh
+          // sessions payload even if the underlying list fingerprint is unchanged.
+          this.lastSessionsPayloadFingerprint = undefined;
           if (!this.hasInitializedWebview) {
             // Reply immediately so the webview stops retrying `ready` while
             // slower bootstrap tasks (models/sessions) are still loading.
@@ -572,6 +591,7 @@ export class ChatViewProvider
                 type: "chatHistory",
                 messages: messages,
               });
+              await this.sendPersistedCompactionViewState(currentSession.id);
               await this.syncSubagentSnapshotForSession(
                 currentSession.id,
                 messages as any[],
@@ -833,6 +853,17 @@ export class ChatViewProvider
           await this.handleStopRequest(message.sessionId);
           break;
         }
+        case "compactSession": {
+          await this.handleCompactSession(
+            message.sessionId,
+            this.normalizeCompactionBaselineStats(message.baselineStats),
+          );
+          break;
+        }
+        case "setCompactionViewState": {
+          await this.handleSetCompactionViewState(message);
+          break;
+        }
         case "addToQueue": {
           await this.schedulePromptDispatch("queue", {
             sessionId: message.sessionId,
@@ -1059,6 +1090,8 @@ export class ChatViewProvider
           }
         }
       }
+
+      this.forwardCompactionStatusFromStreamEvent(event);
 
       // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
@@ -1312,6 +1345,7 @@ export class ChatViewProvider
         sessionId: sessionId,
         messages: messages,
       });
+      await this.sendPersistedCompactionViewState(sessionId);
       await this.syncSubagentSnapshotForSession(sessionId, messages as any[]);
       this.sendQueueUpdate(sessionId);
 
@@ -1334,6 +1368,7 @@ export class ChatViewProvider
       await this.sessionService.deleteSession(sessionId);
       this.queueBySessionId.delete(sessionId);
       await this.clearPersistedSubagentSnapshot(sessionId);
+      await this.clearPersistedCompactionViewState(sessionId);
       await this.handleGetSessions();
 
       // If we deleted the current session, create a new one and clear messages
@@ -2094,6 +2129,180 @@ export class ChatViewProvider
       this.getSubagentSnapshotStorageKey(sessionId),
       undefined,
     );
+  }
+
+  private getCompactionViewStateStorageKey(sessionId: string): string {
+    return `${ChatViewProvider.COMPACTION_VIEW_STATE_PREFIX}${sessionId}`;
+  }
+
+  private normalizeCompactionBaselineStats(
+    value: unknown,
+  ): CompactionBaselineStats | undefined {
+    const rec = this.asRecord(value);
+    if (!rec) {
+      return undefined;
+    }
+
+    const normalize = (raw: unknown): number | undefined =>
+      typeof raw === "number" && Number.isFinite(raw) && raw >= 0
+        ? Math.floor(raw)
+        : undefined;
+
+    const input = normalize(rec.input);
+    const output = normalize(rec.output);
+    const read = normalize(rec.read);
+    const write = normalize(rec.write);
+    const duration = normalize(rec.duration);
+
+    if (
+      input === undefined &&
+      output === undefined &&
+      read === undefined &&
+      write === undefined &&
+      duration === undefined
+    ) {
+      return undefined;
+    }
+
+    return {
+      input: input ?? 0,
+      output: output ?? 0,
+      read: read ?? 0,
+      write: write ?? 0,
+      duration: duration ?? 0,
+    };
+  }
+
+  private normalizeCompactionViewState(
+    value: unknown,
+  ): PersistedCompactionViewState | null {
+    const rec = this.asRecord(value);
+    if (!rec) {
+      return null;
+    }
+
+    const next: PersistedCompactionViewState = {};
+    if (
+      typeof rec.lastCompactedAt === "number" &&
+      Number.isFinite(rec.lastCompactedAt) &&
+      rec.lastCompactedAt > 0
+    ) {
+      next.lastCompactedAt = Math.floor(rec.lastCompactedAt);
+    }
+    const baselineStats = this.normalizeCompactionBaselineStats(
+      rec.baselineStats,
+    );
+    if (baselineStats) {
+      next.baselineStats = baselineStats;
+    }
+    if (
+      typeof rec.compactionDividerIndex === "number" &&
+      Number.isFinite(rec.compactionDividerIndex) &&
+      rec.compactionDividerIndex >= 0
+    ) {
+      next.compactionDividerIndex = Math.floor(rec.compactionDividerIndex);
+    }
+    const dividerBeforeMessageId = this.firstNonEmptyString(
+      rec.compactionDividerBeforeMessageId,
+    );
+    if (dividerBeforeMessageId) {
+      next.compactionDividerBeforeMessageId = dividerBeforeMessageId;
+    }
+    const dividerAfterMessageId = this.firstNonEmptyString(
+      rec.compactionDividerAfterMessageId,
+    );
+    if (dividerAfterMessageId) {
+      next.compactionDividerAfterMessageId = dividerAfterMessageId;
+    }
+    if (typeof rec.collapsed === "boolean") {
+      next.collapsed = rec.collapsed;
+    }
+
+    return Object.keys(next).length > 0 ? next : null;
+  }
+
+  private async loadPersistedCompactionViewState(
+    sessionId: string,
+  ): Promise<PersistedCompactionViewState | null> {
+    const raw = this.context.workspaceState.get<unknown>(
+      this.getCompactionViewStateStorageKey(sessionId),
+    );
+    return this.normalizeCompactionViewState(raw);
+  }
+
+  private async savePersistedCompactionViewState(
+    sessionId: string,
+    state: PersistedCompactionViewState,
+  ): Promise<void> {
+    await this.context.workspaceState.update(
+      this.getCompactionViewStateStorageKey(sessionId),
+      state,
+    );
+  }
+
+  private async clearPersistedCompactionViewState(
+    sessionId: string,
+  ): Promise<void> {
+    await this.context.workspaceState.update(
+      this.getCompactionViewStateStorageKey(sessionId),
+      undefined,
+    );
+  }
+
+  private postCompactionViewState(
+    sessionId: string,
+    state: PersistedCompactionViewState,
+  ): void {
+    this.view?.webview.postMessage({
+      type: "compactionViewState",
+      sessionId,
+      ...state,
+    });
+  }
+
+  private async sendPersistedCompactionViewState(
+    sessionId: string,
+  ): Promise<void> {
+    const state = await this.loadPersistedCompactionViewState(sessionId);
+    if (!state) {
+      return;
+    }
+    this.postCompactionViewState(sessionId, state);
+  }
+
+  private async resolveSessionCompactionDividerState(
+    sessionId: string,
+  ): Promise<{
+    compactionDividerIndex?: number;
+    compactionDividerBeforeMessageId?: string;
+    compactionDividerAfterMessageId?: string;
+  }> {
+    try {
+      const rawMessages = await this.sessionService.getMessages(sessionId);
+      const messages = Array.isArray(rawMessages)
+        ? this.processHistoryMessages(rawMessages)
+        : [];
+      const compactionDividerIndex = messages.length;
+      const compactionDividerBeforeMessageId =
+        compactionDividerIndex > 0
+          ? this.extractMessageId(messages[compactionDividerIndex - 1])
+          : undefined;
+      const compactionDividerAfterMessageId =
+        compactionDividerIndex < messages.length
+          ? this.extractMessageId(messages[compactionDividerIndex])
+          : undefined;
+      return {
+        compactionDividerIndex,
+        compactionDividerBeforeMessageId,
+        compactionDividerAfterMessageId,
+      };
+    } catch (error) {
+      console.warn(
+        `[ChatViewProvider] Failed to resolve compaction divider state for session ${sessionId}:`,
+        error,
+      );
+      return {};
+    }
   }
 
   private async persistSubagentLiveState(
@@ -4479,6 +4688,318 @@ export class ChatViewProvider
     }
   }
 
+  private postCompactionStatus(payload: {
+    status: "running" | "done" | "error";
+    sessionId?: string;
+    at?: number;
+    error?: string;
+    baselineStats?: CompactionBaselineStats;
+    compactionDividerIndex?: number;
+    compactionDividerBeforeMessageId?: string;
+    compactionDividerAfterMessageId?: string;
+    collapsed?: boolean;
+  }): void {
+    this.view?.webview.postMessage({
+      type: "compactionStatus",
+      ...payload,
+    });
+  }
+
+  private async persistAndPublishCompactionViewState(
+    sessionId: string,
+    patch: PersistedCompactionViewState,
+  ): Promise<PersistedCompactionViewState | null> {
+    const existing = await this.loadPersistedCompactionViewState(sessionId);
+    const mergedRaw: PersistedCompactionViewState = {
+      ...(existing || {}),
+      ...patch,
+    };
+    const normalized = this.normalizeCompactionViewState(mergedRaw);
+    if (!normalized) {
+      await this.clearPersistedCompactionViewState(sessionId);
+      return null;
+    }
+    await this.savePersistedCompactionViewState(sessionId, normalized);
+    this.postCompactionViewState(sessionId, normalized);
+    return normalized;
+  }
+
+  private async handleSetCompactionViewState(
+    message: Record<string, unknown>,
+  ): Promise<void> {
+    const sessionId = await this.resolveCompactionSessionId(
+      this.firstNonEmptyString(message.sessionId),
+    );
+    if (!sessionId) {
+      return;
+    }
+
+    const patch: PersistedCompactionViewState = {};
+    if (typeof message.lastCompactedAt === "number") {
+      patch.lastCompactedAt = message.lastCompactedAt;
+    }
+    if (typeof message.compactionDividerIndex === "number") {
+      patch.compactionDividerIndex = message.compactionDividerIndex;
+    }
+    const dividerBeforeMessageId = this.firstNonEmptyString(
+      message.compactionDividerBeforeMessageId,
+    );
+    if (dividerBeforeMessageId) {
+      patch.compactionDividerBeforeMessageId = dividerBeforeMessageId;
+    }
+    const dividerAfterMessageId = this.firstNonEmptyString(
+      message.compactionDividerAfterMessageId,
+    );
+    if (dividerAfterMessageId) {
+      patch.compactionDividerAfterMessageId = dividerAfterMessageId;
+    }
+    const baselineStats = this.normalizeCompactionBaselineStats(
+      message.baselineStats,
+    );
+    if (baselineStats) {
+      patch.baselineStats = baselineStats;
+    }
+    if (typeof message.collapsed === "boolean") {
+      patch.collapsed = message.collapsed;
+    }
+    if (Object.keys(patch).length === 0) {
+      return;
+    }
+
+    await this.persistAndPublishCompactionViewState(sessionId, patch);
+  }
+
+  private async resolveCompactionSessionId(
+    requestedSessionId?: string,
+  ): Promise<string | undefined> {
+    const explicitSessionId = this.firstNonEmptyString(requestedSessionId);
+    if (explicitSessionId) {
+      return explicitSessionId;
+    }
+
+    const activeSessionId = this.firstNonEmptyString(this.currentSessionId);
+    if (activeSessionId) {
+      return activeSessionId;
+    }
+
+    try {
+      const currentSession = await this.sessionService.getCurrentSession();
+      return this.firstNonEmptyString(currentSession?.id);
+    } catch (error) {
+      console.warn(
+        "[ChatViewProvider] Failed to resolve compaction session from SessionService:",
+        error,
+      );
+      return undefined;
+    }
+  }
+
+  private async handleCompactSession(
+    requestedSessionId?: string,
+    baselineStats?: CompactionBaselineStats,
+  ): Promise<void> {
+    const sessionId = await this.resolveCompactionSessionId(requestedSessionId);
+    if (!sessionId) {
+      this.postCompactionStatus({
+        status: "error",
+        error: "No active session available for compaction.",
+      });
+      return;
+    }
+
+    const providerID = this.firstNonEmptyString(this.selectedModel.providerID);
+    const modelID = this.firstNonEmptyString(this.selectedModel.modelID);
+    if (!providerID || !modelID) {
+      this.postCompactionStatus({
+        status: "error",
+        sessionId,
+        error: "No model selected for compaction.",
+      });
+      return;
+    }
+
+    const dividerState = await this.resolveSessionCompactionDividerState(
+      sessionId,
+    );
+    this.compactingSessions.add(sessionId);
+    this.postCompactionStatus({ status: "running", sessionId });
+
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const workspaceDirectory = this.getWorkspaceDirectory();
+      await client.session.summarize({
+        path: { id: sessionId },
+        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
+        body: {
+          providerID,
+          modelID,
+        },
+      });
+      const compactedAt = Date.now();
+      const persistedState = await this.persistAndPublishCompactionViewState(
+        sessionId,
+        {
+          lastCompactedAt: compactedAt,
+          baselineStats,
+          compactionDividerIndex: dividerState.compactionDividerIndex,
+          compactionDividerBeforeMessageId:
+            dividerState.compactionDividerBeforeMessageId,
+          compactionDividerAfterMessageId:
+            dividerState.compactionDividerAfterMessageId,
+          collapsed: true,
+        },
+      );
+      this.compactingSessions.delete(sessionId);
+      this.postCompactionStatus({
+        status: "done",
+        sessionId,
+        at: compactedAt,
+        baselineStats: persistedState?.baselineStats,
+        compactionDividerIndex: persistedState?.compactionDividerIndex,
+        compactionDividerBeforeMessageId:
+          persistedState?.compactionDividerBeforeMessageId,
+        compactionDividerAfterMessageId:
+          persistedState?.compactionDividerAfterMessageId,
+        collapsed: true,
+      });
+    } catch (error) {
+      this.compactingSessions.delete(sessionId);
+      const msg =
+        error instanceof Error
+          ? error.message
+          : "Failed to compact the current session.";
+      this.postCompactionStatus({
+        status: "error",
+        sessionId,
+        error: msg,
+      });
+    }
+  }
+
+  private forwardCompactionStatusFromStreamEvent(event: unknown): void {
+    const eventRec = this.asRecord(event);
+    if (!eventRec) {
+      return;
+    }
+
+    const eventType = this.firstNonEmptyString(eventRec.type);
+    if (!eventType) {
+      return;
+    }
+
+    if (eventType !== "session.updated" && eventType !== "session.compacted") {
+      return;
+    }
+
+    const propertiesRec = this.asRecord(eventRec.properties) || {};
+    const infoRec = this.asRecord(propertiesRec.info);
+    const timeRec = this.asRecord(infoRec?.time);
+    const sessionId = this.firstNonEmptyString(
+      propertiesRec.sessionID,
+      propertiesRec.sessionId,
+      infoRec?.id,
+    );
+    const activeSessionId = this.firstNonEmptyString(this.currentSessionId);
+
+    if (activeSessionId && sessionId && sessionId !== activeSessionId) {
+      return;
+    }
+
+    const targetSessionId = sessionId || activeSessionId;
+    if (!targetSessionId) {
+      return;
+    }
+
+    if (eventType === "session.compacted") {
+      this.compactingSessions.delete(targetSessionId);
+      const compactedAt = Date.now();
+      void this.persistAndPublishCompactionViewState(targetSessionId, {
+        lastCompactedAt: compactedAt,
+        collapsed: true,
+      })
+        .then((persistedState) => {
+          this.postCompactionStatus({
+            status: "done",
+            sessionId: targetSessionId,
+            at: compactedAt,
+            baselineStats: persistedState?.baselineStats,
+            compactionDividerIndex: persistedState?.compactionDividerIndex,
+            compactionDividerBeforeMessageId:
+              persistedState?.compactionDividerBeforeMessageId,
+            compactionDividerAfterMessageId:
+              persistedState?.compactionDividerAfterMessageId,
+            collapsed: true,
+          });
+        })
+        .catch(() => {
+          this.postCompactionStatus({
+            status: "done",
+            sessionId: targetSessionId,
+            at: compactedAt,
+            collapsed: true,
+          });
+        });
+      return;
+    }
+
+    const compactingAtRaw = timeRec?.compacting;
+    const compactingAt =
+      typeof compactingAtRaw === "number" &&
+      Number.isFinite(compactingAtRaw) &&
+      compactingAtRaw > 0
+        ? Math.floor(compactingAtRaw)
+        : undefined;
+
+    if (compactingAt) {
+      if (!this.compactingSessions.has(targetSessionId)) {
+        this.compactingSessions.add(targetSessionId);
+        this.postCompactionStatus({
+          status: "running",
+          sessionId: targetSessionId,
+          at: compactingAt,
+        });
+      }
+      return;
+    }
+
+    if (this.compactingSessions.has(targetSessionId)) {
+      this.compactingSessions.delete(targetSessionId);
+      const updatedAtRaw = timeRec?.updated;
+      const updatedAt =
+        typeof updatedAtRaw === "number" &&
+        Number.isFinite(updatedAtRaw) &&
+        updatedAtRaw > 0
+          ? Math.floor(updatedAtRaw)
+          : Date.now();
+      void this.persistAndPublishCompactionViewState(targetSessionId, {
+        lastCompactedAt: updatedAt,
+        collapsed: true,
+      })
+        .then((persistedState) => {
+          this.postCompactionStatus({
+            status: "done",
+            sessionId: targetSessionId,
+            at: updatedAt,
+            baselineStats: persistedState?.baselineStats,
+            compactionDividerIndex: persistedState?.compactionDividerIndex,
+            compactionDividerBeforeMessageId:
+              persistedState?.compactionDividerBeforeMessageId,
+            compactionDividerAfterMessageId:
+              persistedState?.compactionDividerAfterMessageId,
+            collapsed: true,
+          });
+        })
+        .catch(() => {
+          this.postCompactionStatus({
+            status: "done",
+            sessionId: targetSessionId,
+            at: updatedAt,
+            collapsed: true,
+          });
+        });
+    }
+  }
+
   /**
    * Appends text to the prompt input
    */
@@ -5154,14 +5675,7 @@ export class ChatViewProvider
   /**
    * Handles fetching available models from OpenCode
    */
-  private async handleGetModels(): Promise<
-    Array<{
-      providerID: string;
-      modelID: string;
-      name: string;
-      providerName: string;
-    }>
-  > {
+  private async handleGetModels(): Promise<ChatModelOption[]> {
     if (this.modelsFetchPromise) {
       return this.modelsFetchPromise;
     }
@@ -5182,23 +5696,27 @@ export class ChatViewProvider
         ])) as any; // Type assertion since race result type is union
 
         if (response.data && response.data.all) {
-          const models: Array<{
-            providerID: string;
-            modelID: string;
-            name: string;
-            providerName: string;
-          }> = [];
+          const models: ChatModelOption[] = [];
 
           for (const provider of response.data.all) {
             if (provider.models) {
               for (const [modelID, modelConfig] of Object.entries(
                 provider.models,
               )) {
+                const limitRec = this.asRecord((modelConfig as any).limit);
+                const contextLimitRaw = limitRec?.context;
+                const contextLimit =
+                  typeof contextLimitRaw === "number" &&
+                  Number.isFinite(contextLimitRaw) &&
+                  contextLimitRaw > 0
+                    ? Math.floor(contextLimitRaw)
+                    : undefined;
                 models.push({
                   providerID: provider.id,
                   modelID: modelID,
                   name: (modelConfig as any).name || modelID,
                   providerName: provider.name || provider.id,
+                  contextLimit,
                 });
               }
             }

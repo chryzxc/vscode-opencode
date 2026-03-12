@@ -31,6 +31,11 @@ test('session service implements core CRUD operations and active-session fallbac
 
   const listBody = extractFunctionBody(sessionServiceSource, 'async listSessions(): Promise<Session[]>');
   assert.match(listBody, /new\s+Map<string,\s*Session>\(\)/, 'listSessions should merge server and local sessions via keyed map');
+  assert.match(
+    listBody,
+    /if\s*\(this\.initializationPromise\)\s*\{[\s\S]*await\s+this\.initializationPromise;[\s\S]*\}/,
+    'listSessions should wait for persisted-state initialization before merging and persisting',
+  );
   assert.match(listBody, /localSessions\.forEach\(\(s\)\s*=>\s*\{[\s\S]*mergedMap\.set\(s\.id,\s*s\)/, 'listSessions should include local sessions in merge');
   assert.match(listBody, /serverSessions\.forEach\(\(s\)\s*=>\s*\{[\s\S]*mergedMap\.set\(s\.id,\s*s\)/, 'listSessions should include server sessions in merge');
   assert.match(listBody, /catch\s*\(error\)\s*\{[\s\S]*Fallback to local history/, 'listSessions should keep local fallback on server errors');

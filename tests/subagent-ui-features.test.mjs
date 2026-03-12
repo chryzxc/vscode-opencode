@@ -52,6 +52,14 @@ test('inline subagent rows are integrated into the assistant item loop', () => {
   );
 });
 
+test('subagent list container is scrollable for large agent batches', () => {
+  assert.match(
+    messageSource,
+    /max-h-\[320px\]\s+space-y-1\.5\s+overflow-y-auto\s+pr-1/,
+    'Inline spawned subagents list should cap height and scroll instead of expanding indefinitely',
+  );
+});
+
 test('subagent detail modal is wired for selected subagents', () => {
   assert.match(messageSource, /<SubagentDetailModal/, 'AssistantMessage should render SubagentDetailModal');
   assert.match(messageSource, /providerLabel/, 'SubagentDetailModal should receive provider/model label');

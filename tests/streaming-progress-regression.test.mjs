@@ -461,8 +461,46 @@ test('subagent map synchronization persists updated assistant message snapshots'
   );
   assert.match(
     syncBody,
-    /deriveSessionIdFromMessage\(message,\s*fallbackSessionId\)/,
+    /deriveSessionIdFromMessage\(message,\s*(fallbackSessionId|currentSessionId)\)/,
     'subagent sync helper should derive target session id from message payload to avoid cross-session persistence drift',
+  );
+});
+
+test('subagent map synchronization rebinds orphaned parent message ids from streaming snapshots', () => {
+  assert.match(
+    messageHandlerSource,
+    /function getMessageId\(/,
+    'message handler should expose helper to normalize message ids across info.id and message.id',
+  );
+  assert.match(
+    messageHandlerSource,
+    /function findLatestAssistantMessageIdForSession\(/,
+    'message handler should expose helper for selecting a fallback assistant message id per session',
+  );
+
+  const syncBody = extractFunctionBody(
+    messageHandlerSource,
+    'function syncSubagentMapsIntoMessages(',
+  );
+  assert.match(
+    syncBody,
+    /if \(messageIds\.has\(parentMessageId\)\) \{\s*continue;\s*\}/,
+    'subagent sync should skip rebinding when parent message id already matches a hydrated message',
+  );
+  assert.match(
+    syncBody,
+    /findLatestAssistantMessageIdForSession\(\s*state\.messages,\s*fallbackSessionId,\s*targetSessionId,\s*\)/s,
+    'subagent sync should rebind orphaned groups to the latest assistant message in the target session',
+  );
+  assert.match(
+    syncBody,
+    /effectiveSummariesByParentMessageId\[reboundParentMessageId\]\s*=\s*mergeSubagentSummaries\(/,
+    'subagent sync should merge rebound summaries under the resolved hydrated parent message id',
+  );
+  assert.match(
+    syncBody,
+    /allDetailsById\[summary\.id\]\s*=\s*\{[\s\S]*parentMessageId:\s*reboundParentMessageId/s,
+    'subagent sync should realign detail.parentMessageId to the rebound hydrated message id',
   );
 });
 

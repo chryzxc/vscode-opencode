@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   Check,
   ChevronDown,
@@ -83,7 +83,7 @@ function isReasoningPart(part: MessagePart): boolean {
   );
 }
 
-// Deterministic colors for subagents
+// Deterministic accent colors for subagents
 const SUBAGENT_COLORS = [
   "text-oc-orange",
   "text-oc-green",
@@ -92,13 +92,49 @@ const SUBAGENT_COLORS = [
   "text-oc-accent",
 ];
 
+const SUBAGENT_HUES = [12, 36, 58, 92, 128, 166, 198, 228, 264, 312, 338];
+
+function getStableHash(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = value.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return Math.abs(hash);
+}
+
 function getSubagentColor(id: string): string {
   if (!id) return "text-oc-accent";
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = id.charCodeAt(i) + ((hash << 5) - hash);
-  }
+  const hash = getStableHash(id);
   return SUBAGENT_COLORS[Math.abs(hash) % SUBAGENT_COLORS.length];
+}
+
+function getSubagentHue(id: string): number {
+  if (!id) return 210;
+  return SUBAGENT_HUES[getStableHash(id) % SUBAGENT_HUES.length];
+}
+
+function getSubagentCardStyle(id: string): CSSProperties {
+  const hue = getSubagentHue(id);
+  return {
+    borderColor: `hsla(${hue}, 75%, 62%, 0.38)`,
+    backgroundColor: `hsla(${hue}, 58%, 48%, 0.12)`,
+    boxShadow: `inset 2px 0 0 hsla(${hue}, 88%, 68%, 0.95)`,
+  };
+}
+
+function getSubagentAccentTextStyle(id: string): CSSProperties {
+  const hue = getSubagentHue(id);
+  return {
+    color: `hsl(${hue}, 88%, 74%)`,
+  };
+}
+
+function getSubagentMetaStyle(id: string): CSSProperties {
+  const hue = getSubagentHue(id);
+  return {
+    borderColor: `hsla(${hue}, 80%, 70%, 0.36)`,
+    backgroundColor: `hsla(${hue}, 76%, 56%, 0.12)`,
+  };
 }
 
 // SVG file icon
@@ -274,7 +310,7 @@ function getMessageContent(
   streaming?: StreamingState,
 ): string {
   if (streaming) {
-    return streaming.content || streaming.reasoning;
+    return streaming.content;
   }
   if (!message) {
     return "";
@@ -284,7 +320,6 @@ function getMessageContent(
     message.text,
     messageBodyFromParts(message.parts),
     summaryText(message),
-    reasoningFromParts(message.parts),
   ];
   return (
     candidates.find(
@@ -749,6 +784,27 @@ function subagentStatusLabel(status: SubagentSummary["status"]): string {
   }
 }
 
+function subagentAgentLabel(
+  subagent: SubagentSummary,
+  detail?: SubagentDetail,
+): string {
+  return (
+    subagent.agentId || detail?.agentId || `Agent ${subagent.id.slice(0, 4)}`
+  );
+}
+
+function subagentModelLabel(
+  subagent: SubagentSummary,
+  detail?: SubagentDetail,
+): string {
+  const provider = subagent.providerID || detail?.providerID;
+  const model = subagent.modelID || detail?.modelID;
+  if (provider && model) {
+    return `${provider}/${model}`;
+  }
+  return model || provider || "model pending";
+}
+
 function FadeSwapText({
   text,
   className,
@@ -804,6 +860,8 @@ function parseTimelineStepTitle(rawTitle: string): {
   label: string;
   summary: string;
 } {
+  const stripTrailingEllipsis = (value: string) =>
+    value.replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
   const trimOptional = (value?: string) => value?.trim() || "";
   const title = rawTitle.trim();
   if (!title) {
@@ -814,27 +872,35 @@ function parseTimelineStepTitle(rawTitle: string): {
     /^running(?::\s*|\s+)([a-z0-9_.-]+)(?:\s+(.*))?$/is,
   );
   if (runningMatch) {
-    const label = runningMatch[1]?.toLowerCase() || "tool";
-    const summary = trimOptional(runningMatch[2]);
+    const label = stripTrailingEllipsis(
+      runningMatch[1]?.toLowerCase() || "tool",
+    );
+    const summary = stripTrailingEllipsis(trimOptional(runningMatch[2]));
     return { label, summary };
   }
 
   const bashMatch = title.match(/^bash(?::\s*|\s+)(.*)/is);
   if (bashMatch) {
-    return { label: "bash", summary: trimOptional(bashMatch[1]) };
+    return {
+      label: "bash",
+      summary: stripTrailingEllipsis(trimOptional(bashMatch[1])),
+    };
   }
 
   const readMatch = title.match(/^read(?::\s*|\s+)(.*)/is);
   if (readMatch) {
-    return { label: "read", summary: trimOptional(readMatch[1]) };
+    return {
+      label: "read",
+      summary: stripTrailingEllipsis(trimOptional(readMatch[1])),
+    };
   }
 
   const writeMatch = title.match(
     /^(edit|write|modify|update|patch)(?::\s*|\s+)(.*)/is,
   );
   if (writeMatch) {
-    const label = writeMatch[1]?.toLowerCase() || "edit";
-    const summary = trimOptional(writeMatch[2]);
+    const label = stripTrailingEllipsis(writeMatch[1]?.toLowerCase() || "edit");
+    const summary = stripTrailingEllipsis(trimOptional(writeMatch[2]));
     return { label, summary };
   }
 
@@ -842,18 +908,18 @@ function parseTimelineStepTitle(rawTitle: string): {
   if (thinkMatch) {
     return {
       label: "thinking",
-      summary: trimOptional(thinkMatch[1]),
+      summary: stripTrailingEllipsis(trimOptional(thinkMatch[1])),
     };
   }
 
   const spaceIdx = title.indexOf(" ");
   if (spaceIdx > 0 && spaceIdx <= 12) {
-    const label = title.slice(0, spaceIdx).toLowerCase();
-    const summary = trimOptional(title.slice(spaceIdx + 1));
+    const label = stripTrailingEllipsis(title.slice(0, spaceIdx).toLowerCase());
+    const summary = stripTrailingEllipsis(trimOptional(title.slice(spaceIdx + 1)));
     return { label, summary };
   }
 
-  return { label: "event", summary: title };
+  return { label: "event", summary: stripTrailingEllipsis(title) };
 }
 
 function buildDisplayEvents(
@@ -861,6 +927,8 @@ function buildDisplayEvents(
   message: Message | undefined,
   isStreamingActive: boolean,
 ): DisplayEvent[] {
+  const stripTrailingEllipsis = (value?: string) =>
+    (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
   const normalizePathForMatch = (value?: string) =>
     (value || "").replace(/\\/g, "/").toLowerCase();
   const rawEvents: DisplayEvent[] = [];
@@ -890,6 +958,7 @@ function buildDisplayEvents(
     for (const event of block.items) {
       const rawTitle = event.title || "";
       const parsed = parseTimelineStepTitle(rawTitle);
+      const cleanedRawTitle = stripTrailingEllipsis(rawTitle);
       let filePath = event.filePath;
       if (
         !filePath &&
@@ -920,10 +989,12 @@ function buildDisplayEvents(
           : undefined;
       const diffStats = event.diffStats || fallbackDiffStats;
 
-      const metaText = event.meta?.trim();
+      const metaText = stripTrailingEllipsis(event.meta);
       const summary = filePath
         ? fileName || filePath
-        : parsed.summary || metaText || (parsed.label === "event" ? rawTitle : "");
+        : parsed.summary ||
+          metaText ||
+          (parsed.label === "event" ? cleanedRawTitle : "");
       const description =
         filePath || parsed.summary
           ? metaText
@@ -942,7 +1013,7 @@ function buildDisplayEvents(
         key: event.key,
         kind: "activity",
         label: parsed.label,
-        summary: summary || rawTitle || "Activity update",
+        summary: summary || cleanedRawTitle || "Activity update",
         description,
         detail: detail || undefined,
         status: event.status,
@@ -1576,36 +1647,6 @@ export function AssistantMessage({
         )}
 
         <div className="space-y-3">
-          <section
-            data-assistant-section="response"
-            className="rounded-md border border-oc-border bg-background p-3.5 shadow-sm"
-          >
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-muted">
-                Response
-              </span>
-              {isStreamingActive && (
-                <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-accent">
-                  streaming
-                </span>
-              )}
-            </div>
-            {hasResponseContent ? (
-              <div className={responseBodyClass}>
-                <MarkdownRenderer
-                  content={content}
-                  className={markdownBodyClass}
-                />
-              </div>
-            ) : (
-              <div className="text-xs text-oc-text-muted">
-                {isStreamingActive
-                  ? "Waiting for response content..."
-                  : "No response content."}
-              </div>
-            )}
-          </section>
-
           {(displayEvents.length > 0 || showThinkingPlaceholder) && (
             <section
               data-assistant-section="activity"
@@ -1847,6 +1888,36 @@ export function AssistantMessage({
               )}
             </section>
           )}
+
+          <section
+            data-assistant-section="response"
+            className="rounded-md border border-oc-border bg-background p-3.5 shadow-sm"
+          >
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-muted">
+                Response
+              </span>
+              {isStreamingActive && (
+                <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-accent">
+                  streaming
+                </span>
+              )}
+            </div>
+            {hasResponseContent ? (
+              <div className={responseBodyClass}>
+                <MarkdownRenderer
+                  content={content}
+                  className={markdownBodyClass}
+                />
+              </div>
+            ) : (
+              <div className="text-xs text-oc-text-muted">
+                {isStreamingActive
+                  ? "Waiting for response content..."
+                  : "No response content."}
+              </div>
+            )}
+          </section>
         </div>
 
         {message?.error && (
@@ -1888,11 +1959,8 @@ export function AssistantMessage({
                 timelineEvents: [],
               } as SubagentDetail);
             const providerLabel =
-              selected.providerID && selected.modelID
-                ? `${selected.providerID}/${selected.modelID}`
-                : selected.providerID || selected.modelID || "Unknown provider";
-            const displayTitle =
-              selected.agentId || `Agent ${selected.id.slice(0, 4)}`;
+              subagentModelLabel(selected, detailData);
+            const displayTitle = subagentAgentLabel(selected, detailData);
 
             return (
               <SubagentDetailModal
@@ -1952,25 +2020,31 @@ export function AssistantMessage({
                 <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
                   {visibleSubagents.map((subagent: SubagentSummary) => {
                     const statusClass = getSubagentColor(subagent.id);
+                    const detail = subagentDetailsById[subagent.id] as
+                      | SubagentDetail
+                      | undefined;
+                    const agentLabel = subagentAgentLabel(subagent, detail);
+                    const modelInfo = subagentModelLabel(subagent, detail);
+                    const cardStyle = getSubagentCardStyle(subagent.id);
+                    const accentTextStyle = getSubagentAccentTextStyle(
+                      subagent.id,
+                    );
+                    const metaStyle = getSubagentMetaStyle(subagent.id);
 
                     return (
                       <button
                         key={subagent.id}
                         type="button"
                         className={cn(
-                          "w-full rounded-md border px-2 py-1.5 text-left transition-colors",
-                          "border-oc-border bg-oc-bg-soft hover:bg-oc-panel",
+                          "w-full rounded-md border px-2 py-1.5 text-left transition-all",
+                          "bg-oc-bg-soft hover:brightness-110",
                         )}
+                        style={cardStyle}
                         onClick={() => openSubagentModal(subagent.id)}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex min-w-0 items-center gap-2">
-                            <div
-                              className={cn(
-                                "oc-agent-icon shrink-0",
-                                statusClass,
-                              )}
-                            >
+                            <div className={cn("oc-agent-icon shrink-0", statusClass)} style={accentTextStyle}>
                               {subagent.status === "running" ? (
                                 <Loader2 className="h-3 w-3 animate-spin" />
                               ) : subagent.status === "error" ? (
@@ -1980,17 +2054,23 @@ export function AssistantMessage({
                               )}
                             </div>
                             <span
-                              className={cn(
-                                "truncate text-oc-xs font-semibold",
-                                statusClass,
-                              )}
+                              className={cn("truncate text-oc-xs font-semibold", statusClass)}
+                              style={accentTextStyle}
                             >
-                              {subagent.agentId ||
-                                `Agent ${subagent.id.slice(0, 4)}`}
+                              Agent: {agentLabel}
                             </span>
                           </div>
                           <span className="font-mono text-oc-2xs text-oc-text-muted">
                             {formatDurationMs(subagent.durationMs)}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex min-w-0 items-center gap-1.5">
+                          <span
+                            className="truncate rounded-sm border px-1 py-0.5 font-mono text-[10px] leading-none text-oc-text-soft"
+                            style={metaStyle}
+                            title={modelInfo}
+                          >
+                            {modelInfo}
                           </span>
                         </div>
                         <div className="mt-0.5 min-h-[14px] font-mono text-[10px] text-oc-text-muted">

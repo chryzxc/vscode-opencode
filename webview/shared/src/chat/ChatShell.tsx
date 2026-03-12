@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 
 import { AppProvider, useAppDispatch, useAppState } from './lib/store';
 import { createMessageHandler } from './lib/messageHandler';
@@ -32,6 +32,21 @@ type StreamViewportState = {
 };
 
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
+
+function CompactionDivider({ at }: { at?: number }) {
+  const label =
+    typeof at === "number" ? `Compacted at ${new Date(at).toLocaleTimeString()}` : "Compacted";
+
+  return (
+    <div className="-mx-4 py-2">
+      <div className="flex w-full items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-oc-text-muted">
+        <span className="h-px flex-1 bg-current opacity-50" />
+        <span className="shrink-0 text-center opacity-80">{label}</span>
+        <span className="h-px flex-1 bg-current opacity-50" />
+      </div>
+    </div>
+  );
+}
 
 function ChatContent() {
   const state = useAppState();
@@ -128,7 +143,20 @@ function ChatContent() {
     state.streaming?.isActive,
   ]);
 
-  const showThinking = state.isProcessing && !state.streaming;
+  const showThinking =
+    state.isProcessing && !state.streaming && !state.isCompacting;
+  const compactionDividerIndex =
+    typeof state.compactionDividerIndex === "number"
+      ? Math.max(0, Math.min(state.compactionDividerIndex, state.messages.length))
+      : undefined;
+  const hasCompactedSegment =
+    typeof compactionDividerIndex === "number" && compactionDividerIndex > 0;
+  const isCompressed =
+    hasCompactedSegment && state.compactedMessagesCollapsed;
+  const hiddenMessageCount = isCompressed ? compactionDividerIndex : 0;
+  const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
+  const visibleMessages = state.messages.slice(visibleStartIndex);
+
   const jumpToLatest = () => {
     setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -150,7 +178,7 @@ function ChatContent() {
         </div>
         <div
           ref={messagesScrollRef}
-          className="flex-1 min-h-0 overflow-y-auto py-4"
+          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden py-4"
           style={{ background: 'var(--oc-chat-bg)' }}
         >
           {state.messages.length === 0 &&
@@ -163,41 +191,112 @@ function ChatContent() {
             <ErrorBanner key={`err-${msg}`} message={msg} />
           ))}
 
-          {state.messages.map((msg: Message, idx: number) => {
+          {hasCompactedSegment ? (
+            <div className="-mx-4 py-2">
+              <div className="flex w-full items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-oc-text-muted">
+                <span className="h-px flex-1 bg-current opacity-50" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextCollapsed = !state.compactedMessagesCollapsed;
+                    dispatch({
+                      type: "SET_COMPACTED_MESSAGES_COLLAPSED",
+                      payload: nextCollapsed,
+                    });
+                    if (state.currentSessionId) {
+                      vscode.postMessage({
+                        type: "setCompactionViewState",
+                        sessionId: state.currentSessionId,
+                        collapsed: nextCollapsed,
+                        compactionDividerIndex: state.compactionDividerIndex,
+                        compactionDividerBeforeMessageId:
+                          state.compactionDividerBeforeMessageId,
+                        compactionDividerAfterMessageId:
+                          state.compactionDividerAfterMessageId,
+                        lastCompactedAt: state.lastCompactedAt,
+                        baselineStats: state.compactionBaselineStats,
+                      });
+                    }
+                  }}
+                  className="shrink-0 px-1 py-0 text-[10px] font-mono uppercase tracking-wider text-oc-text-muted opacity-80 hover:opacity-100 hover:underline transition-colors"
+                  title={
+                    isCompressed
+                      ? "Show compacted messages"
+                      : "Hide compacted messages"
+                  }
+                >
+                  {isCompressed
+                    ? `Compacted messages (${hiddenMessageCount} hidden)`
+                    : "Compacted messages (expanded)"}
+                </button>
+                <span className="h-px flex-1 bg-current opacity-50" />
+              </div>
+            </div>
+          ) : null}
+
+          {visibleMessages.map((msg: Message, visibleIdx: number) => {
+            const idx = visibleStartIndex + visibleIdx;
             const role = msg.role ?? msg.info?.role ?? 'user';
             const key =
               msg.info?.id ??
-              `${role}-${(msg.content ?? msg.text ?? '').slice(0, 32)}-${
+              `${idx}-${role}-${(msg.content ?? msg.text ?? '').slice(0, 32)}-${
                 msg.parts?.length ?? 0
               }-${msg.steps?.length ?? 0}`;
 
-            const prevMsg = state.messages[idx - 1];
+            const prevIdx = idx - 1;
+            const prevMsg =
+              prevIdx >= visibleStartIndex ? state.messages[prevIdx] : undefined;
             const isContiguous = role === 'assistant' &&
               prevMsg?.role === 'assistant' &&
               (prevMsg.info?.agent === msg.info?.agent ||
                 (!prevMsg.info?.agent && !msg.info?.agent));
 
+            let messageNode: JSX.Element;
             if (role === 'user') {
-              return <UserMessage key={key} message={msg} />;
+              messageNode = <UserMessage message={msg} />;
+            } else if ((msg as Record<string, unknown>).type === 'permission') {
+              messageNode = <PermissionCard perm={msg} />;
+            } else {
+              messageNode = (
+                <AssistantMessage
+                  message={msg}
+                  isContiguous={isContiguous}
+                />
+              );
             }
-            if ((msg as Record<string, unknown>).type === 'permission') {
-              return <PermissionCard key={key} perm={msg} />;
-            }
+
             return (
-              <AssistantMessage
-                key={key}
-                message={msg}
-                isContiguous={isContiguous}
-              />
+              <Fragment key={key}>
+                {!isCompressed && compactionDividerIndex === idx ? (
+                  <CompactionDivider at={state.lastCompactedAt} />
+                ) : null}
+                {messageNode}
+              </Fragment>
             );
           })}
 
+          {!isCompressed && compactionDividerIndex === state.messages.length ? (
+            <CompactionDivider at={state.lastCompactedAt} />
+          ) : null}
+
           {/* Live streaming card */}
-          <StreamingCard isContiguous={state.messages.length > 0 &&
-            state.messages[state.messages.length - 1].role === 'assistant'} />
+          <StreamingCard
+            isContiguous={
+              visibleMessages.length > 0 &&
+              visibleMessages[visibleMessages.length - 1].role === 'assistant'
+            }
+          />
 
           {/* "Thinking…" dots when waiting for first streaming event */}
           {showThinking ? <ThinkingBubble /> : null}
+
+          {state.isCompacting ? (
+            <div className="sticky bottom-3 z-20 mb-2 flex justify-center px-4 pointer-events-none">
+              <div className="rounded-full border border-oc-accent bg-oc-panel px-3 py-1 text-[11px] font-mono uppercase tracking-wider text-oc-accent shadow-sm">
+                Compacting conversation...
+              </div>
+            </div>
+          ) : null}
 
           {!streamViewport.isFollowing && streamViewport.unseenUpdateCount > 0 ? (
             <div className="sticky bottom-3 z-20 flex justify-end pr-4">

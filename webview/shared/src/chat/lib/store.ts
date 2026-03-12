@@ -64,6 +64,14 @@ export const initialState: AppState = {
   modelDropdownOpen: false,
   agentDropdownOpen: false,
   thinkingDropdownOpen: false,
+  isCompacting: false,
+  lastCompactedAt: undefined,
+  compactionError: undefined,
+  compactionBaselineStats: undefined,
+  compactionDividerIndex: undefined,
+  compactionDividerBeforeMessageId: undefined,
+  compactionDividerAfterMessageId: undefined,
+  compactedMessagesCollapsed: false,
   errorMessages: [],
   quotaData: undefined,
   quotaIsRefreshing: false,
@@ -140,6 +148,31 @@ export type AppAction =
   | { type: "SET_MODEL_DROPDOWN_OPEN"; payload: boolean }
   | { type: "SET_AGENT_DROPDOWN_OPEN"; payload: boolean }
   | { type: "SET_THINKING_DROPDOWN_OPEN"; payload: boolean }
+  | {
+      type: "SET_COMPACTION_STATUS";
+      payload: {
+        status: "running" | "done" | "error";
+        at?: number;
+        error?: string;
+        baselineStats?: SessionStats;
+        compactionDividerIndex?: number;
+        compactionDividerBeforeMessageId?: string;
+        compactionDividerAfterMessageId?: string;
+        collapsed?: boolean;
+      };
+    }
+  | {
+      type: "SET_COMPACTION_VIEW_STATE";
+      payload: {
+        lastCompactedAt?: number;
+        baselineStats?: SessionStats;
+        compactionDividerIndex?: number;
+        compactionDividerBeforeMessageId?: string;
+        compactionDividerAfterMessageId?: string;
+        collapsed?: boolean;
+      };
+    }
+  | { type: "SET_COMPACTED_MESSAGES_COLLAPSED"; payload: boolean }
   | { type: "SET_MODEL_SEARCH"; payload: string }
   | { type: "SET_AGENT_SEARCH"; payload: string }
   | { type: "ADD_ERROR_MESSAGE"; payload: string }
@@ -193,22 +226,155 @@ function appendWithCap<T>(items: T[], next: T, maxItems: number): T[] {
   return [...items, next];
 }
 
+function getQueueForSession(queue: QueueItem[] | undefined, sessionId: string): QueueItem[] {
+  if (!Array.isArray(queue) || !sessionId) {
+    return [];
+  }
+  return queue.filter((item) => item.sessionId === sessionId);
+}
+
+function getMessageId(message: Message | undefined): string | undefined {
+  if (!message) {
+    return undefined;
+  }
+  const infoId =
+    typeof message.info?.id === "string" && message.info.id.trim().length > 0
+      ? message.info.id
+      : undefined;
+  if (infoId) {
+    return infoId;
+  }
+  return typeof message.id === "string" && message.id.trim().length > 0
+    ? message.id
+    : undefined;
+}
+
+function getMessageCreatedAt(message: Message | undefined): number | undefined {
+  if (!message) {
+    return undefined;
+  }
+  if (typeof message.created === "number" && Number.isFinite(message.created)) {
+    return message.created;
+  }
+  const infoRecord = message.info as Record<string, unknown> | undefined;
+  const infoCreated = infoRecord?.created;
+  return typeof infoCreated === "number" && Number.isFinite(infoCreated)
+    ? infoCreated
+    : undefined;
+}
+
+function clampDividerIndex(index: number, messageCount: number): number {
+  if (index < 0) return 0;
+  if (index > messageCount) return messageCount;
+  return index;
+}
+
+function resolveCompactionDividerAnchors(
+  messages: Message[],
+  dividerIndex: number,
+): {
+  compactionDividerBeforeMessageId?: string;
+  compactionDividerAfterMessageId?: string;
+} {
+  const clamped = clampDividerIndex(dividerIndex, messages.length);
+  return {
+    compactionDividerBeforeMessageId:
+      clamped > 0 ? getMessageId(messages[clamped - 1]) : undefined,
+    compactionDividerAfterMessageId:
+      clamped < messages.length ? getMessageId(messages[clamped]) : undefined,
+  };
+}
+
+function resolveCompactionDividerIndex(
+  messages: Message[],
+  input: {
+    compactionDividerIndex?: number;
+    compactionDividerBeforeMessageId?: string;
+    compactionDividerAfterMessageId?: string;
+    lastCompactedAt?: number;
+  },
+): number | undefined {
+  const { compactionDividerAfterMessageId, compactionDividerBeforeMessageId } =
+    input;
+
+  if (compactionDividerAfterMessageId) {
+    const afterIndex = messages.findIndex(
+      (message) => getMessageId(message) === compactionDividerAfterMessageId,
+    );
+    if (afterIndex >= 0) {
+      return afterIndex;
+    }
+  }
+
+  if (compactionDividerBeforeMessageId) {
+    const beforeIndex = messages.findIndex(
+      (message) => getMessageId(message) === compactionDividerBeforeMessageId,
+    );
+    if (beforeIndex >= 0) {
+      return beforeIndex + 1;
+    }
+  }
+
+  const compactedAt = input.lastCompactedAt;
+  if (
+    typeof compactedAt === "number" &&
+    Number.isFinite(compactedAt) &&
+    compactedAt > 0
+  ) {
+    const firstPostCompactionIndex = messages.findIndex((message) => {
+      const createdAt = getMessageCreatedAt(message);
+      return typeof createdAt === "number" && createdAt >= compactedAt;
+    });
+    if (firstPostCompactionIndex >= 0) {
+      return firstPostCompactionIndex;
+    }
+    if (messages.length > 0) {
+      return messages.length;
+    }
+  }
+
+  if (
+    typeof input.compactionDividerIndex === "number" &&
+    Number.isFinite(input.compactionDividerIndex)
+  ) {
+    return clampDividerIndex(
+      Math.floor(input.compactionDividerIndex),
+      messages.length,
+    );
+  }
+
+  return undefined;
+}
+
 export function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case "SET_RECEIVED_INIT_STATE":
       return { ...state, receivedInitState: action.payload };
     case "SET_SESSION_ID": {
       const newId = action.payload;
+      if (newId === state.currentSessionId) {
+        return state;
+      }
       const zeroStats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
       const statsForNew = newId
         ? (state.sessionsStatsById?.[newId] ?? zeroStats)
         : zeroStats;
-      const queueForNew = newId ? (state.queueBySessionId[newId] ?? []) : [];
+      const queueForNew = newId
+        ? getQueueForSession(state.queueBySessionId[newId], newId)
+        : [];
       return {
         ...state,
         currentSessionId: action.payload,
         sessionStats: statsForNew,
         promptQueue: queueForNew,
+        isCompacting: false,
+        compactionError: undefined,
+        lastCompactedAt: undefined,
+        compactionBaselineStats: undefined,
+        compactionDividerIndex: undefined,
+        compactionDividerBeforeMessageId: undefined,
+        compactionDividerAfterMessageId: undefined,
+        compactedMessagesCollapsed: false,
       };
     }
     case "SET_SERVER_STATUS":
@@ -223,8 +389,31 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, selectedAgent: action.payload };
     case "SET_AGENTS_LIST":
       return { ...state, availableAgents: action.payload };
-    case "SET_MESSAGES":
-      return { ...state, messages: action.payload };
+    case "SET_MESSAGES": {
+      const resolvedDividerIndex = resolveCompactionDividerIndex(action.payload, {
+        compactionDividerIndex: state.compactionDividerIndex,
+        compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
+        compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
+        lastCompactedAt: state.lastCompactedAt,
+      });
+      const resolvedAnchors =
+        typeof resolvedDividerIndex === "number"
+          ? resolveCompactionDividerAnchors(action.payload, resolvedDividerIndex)
+          : {
+              compactionDividerBeforeMessageId:
+                state.compactionDividerBeforeMessageId,
+              compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
+            };
+      return {
+        ...state,
+        messages: action.payload,
+        compactionDividerIndex: resolvedDividerIndex,
+        compactionDividerBeforeMessageId:
+          resolvedAnchors.compactionDividerBeforeMessageId,
+        compactionDividerAfterMessageId:
+          resolvedAnchors.compactionDividerAfterMessageId,
+      };
+    }
     case "CLEAR_MESSAGES":
       return { ...state, messages: [] };
     case "SET_PROCESSING":
@@ -474,14 +663,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_SELECTED_CONTEXTS":
       return { ...state, selectedContexts: action.payload };
     case "SET_QUEUE": {
-      const targetSessionId = action.payload.sessionId ?? state.currentSessionId;
+      const targetSessionId = action.payload.sessionId;
       if (!targetSessionId) {
-        return { ...state, promptQueue: action.payload.queue };
+        return state;
       }
+      const sessionQueue = getQueueForSession(action.payload.queue, targetSessionId);
 
       const nextBySession = { ...state.queueBySessionId };
-      if (action.payload.queue.length > 0) {
-        nextBySession[targetSessionId] = action.payload.queue;
+      if (sessionQueue.length > 0) {
+        nextBySession[targetSessionId] = sessionQueue;
       } else {
         delete nextBySession[targetSessionId];
       }
@@ -491,7 +681,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         queueBySessionId: nextBySession,
         promptQueue:
           state.currentSessionId === targetSessionId
-            ? action.payload.queue
+            ? sessionQueue
             : state.promptQueue,
       };
     }
@@ -507,6 +697,100 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, agentDropdownOpen: action.payload };
     case "SET_THINKING_DROPDOWN_OPEN":
       return { ...state, thinkingDropdownOpen: action.payload };
+    case "SET_COMPACTION_STATUS":
+      if (action.payload.status !== "done") {
+        return {
+          ...state,
+          isCompacting: action.payload.status === "running",
+          compactionError:
+            action.payload.status === "error"
+              ? action.payload.error ?? "Session compaction failed."
+              : undefined,
+        };
+      }
+      {
+        const nextLastCompactedAt = action.payload.at ?? Date.now();
+        const resolvedDividerIndex = resolveCompactionDividerIndex(state.messages, {
+          compactionDividerIndex: action.payload.compactionDividerIndex,
+          compactionDividerBeforeMessageId:
+            action.payload.compactionDividerBeforeMessageId,
+          compactionDividerAfterMessageId:
+            action.payload.compactionDividerAfterMessageId,
+          lastCompactedAt: nextLastCompactedAt,
+        });
+        const derivedAnchors =
+          typeof resolvedDividerIndex === "number"
+            ? resolveCompactionDividerAnchors(state.messages, resolvedDividerIndex)
+            : {
+                compactionDividerBeforeMessageId:
+                  action.payload.compactionDividerBeforeMessageId,
+                compactionDividerAfterMessageId:
+                  action.payload.compactionDividerAfterMessageId,
+              };
+        return {
+          ...state,
+          isCompacting: false,
+          lastCompactedAt: nextLastCompactedAt,
+          compactionError: undefined,
+          compactionBaselineStats:
+            action.payload.baselineStats ?? state.sessionStats,
+          compactionDividerIndex: resolvedDividerIndex,
+          compactionDividerBeforeMessageId:
+            action.payload.compactionDividerBeforeMessageId ??
+            derivedAnchors.compactionDividerBeforeMessageId,
+          compactionDividerAfterMessageId:
+            action.payload.compactionDividerAfterMessageId ??
+            derivedAnchors.compactionDividerAfterMessageId,
+          compactedMessagesCollapsed: action.payload.collapsed ?? true,
+        };
+      }
+    case "SET_COMPACTION_VIEW_STATE": {
+      const nextLastCompactedAt =
+        typeof action.payload.lastCompactedAt === "number"
+          ? action.payload.lastCompactedAt
+          : state.lastCompactedAt;
+      const nextBeforeId =
+        action.payload.compactionDividerBeforeMessageId ??
+        state.compactionDividerBeforeMessageId;
+      const nextAfterId =
+        action.payload.compactionDividerAfterMessageId ??
+        state.compactionDividerAfterMessageId;
+      const resolvedDividerIndex = resolveCompactionDividerIndex(state.messages, {
+        compactionDividerIndex:
+          typeof action.payload.compactionDividerIndex === "number"
+            ? action.payload.compactionDividerIndex
+            : state.compactionDividerIndex,
+        compactionDividerBeforeMessageId: nextBeforeId,
+        compactionDividerAfterMessageId: nextAfterId,
+        lastCompactedAt: nextLastCompactedAt,
+      });
+      const derivedAnchors =
+        typeof resolvedDividerIndex === "number"
+          ? resolveCompactionDividerAnchors(state.messages, resolvedDividerIndex)
+          : {
+              compactionDividerBeforeMessageId: nextBeforeId,
+              compactionDividerAfterMessageId: nextAfterId,
+            };
+      return {
+        ...state,
+        lastCompactedAt: nextLastCompactedAt,
+        compactionBaselineStats:
+          action.payload.baselineStats ?? state.compactionBaselineStats,
+        compactionDividerIndex: resolvedDividerIndex,
+        compactionDividerBeforeMessageId:
+          action.payload.compactionDividerBeforeMessageId ??
+          derivedAnchors.compactionDividerBeforeMessageId,
+        compactionDividerAfterMessageId:
+          action.payload.compactionDividerAfterMessageId ??
+          derivedAnchors.compactionDividerAfterMessageId,
+        compactedMessagesCollapsed:
+          typeof action.payload.collapsed === "boolean"
+            ? action.payload.collapsed
+            : state.compactedMessagesCollapsed,
+      };
+    }
+    case "SET_COMPACTED_MESSAGES_COLLAPSED":
+      return { ...state, compactedMessagesCollapsed: action.payload };
     case "SET_MODEL_SEARCH":
       return { ...state, modelSearchQuery: action.payload };
     case "SET_AGENT_SEARCH":

@@ -61,6 +61,46 @@ function asOptionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' ? value : undefined;
 }
 
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function asSessionStats(value: unknown): AppState["sessionStats"] | undefined {
+  const rec = asRecord(value);
+  if (!rec) {
+    return undefined;
+  }
+  const normalize = (raw: unknown): number | undefined =>
+    typeof raw === "number" && Number.isFinite(raw) && raw >= 0
+      ? Math.floor(raw)
+      : undefined;
+
+  const input = normalize(rec.input);
+  const output = normalize(rec.output);
+  const read = normalize(rec.read);
+  const write = normalize(rec.write);
+  const duration = normalize(rec.duration);
+  if (
+    input === undefined &&
+    output === undefined &&
+    read === undefined &&
+    write === undefined &&
+    duration === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+    read: read ?? 0,
+    write: write ?? 0,
+    duration: duration ?? 0,
+  };
+}
+
 function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
@@ -1293,7 +1333,6 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     asRichString(rec.text),
     contentFromParts(mergedParts),
     summaryText(rec.info),
-    reasoningFromParts(mergedParts),
     typeof message.content === "string" ? message.content : "",
   ]);
 
@@ -2422,7 +2461,7 @@ function buildStreamingMessage(streaming: StreamingState): Message {
 
   return {
     role: "assistant",
-    content: streaming.content || streaming.reasoning,
+    content: streaming.content,
     parts,
     reasoningEvents: streaming.reasoningEvents,
     progressEvents: streaming.progressEvents.map((step) => ({
@@ -3483,8 +3522,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
     const type = asString(data.type);
 
-    // Set processing state BEFORE handling message types to ensure streaming state is created early
-    if (asBoolean(data.processing, false)) {
+    // Set processing state BEFORE handling message types to ensure streaming state is created early.
+    // Never bootstrap "in progress" UI from compaction lifecycle messages.
+    if (
+      asBoolean(data.processing, false) &&
+      type !== "compactionStatus" &&
+      type !== "compactionViewState"
+    ) {
       dispatch({ type: "SET_PROCESSING", payload: true });
     }
 
@@ -3533,11 +3577,17 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           data.models,
           (item): item is AppState["availableModels"][number] => {
             const rec = asRecord(item);
+            const contextLimit =
+              typeof rec?.contextLimit === "number"
+                ? rec.contextLimit
+                : undefined;
             return (
               !!rec &&
               typeof rec.modelID === "string" &&
               typeof rec.providerID === "string" &&
-              typeof rec.name === "string"
+              typeof rec.name === "string" &&
+              (contextLimit === undefined ||
+                (Number.isFinite(contextLimit) && contextLimit > 0))
             );
           },
         );
@@ -3564,6 +3614,89 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         dispatch({
           type: "SET_SERVER_STATUS",
           payload: asString(data.status, "unknown"),
+        });
+        break;
+      }
+      case "compactionStatus": {
+        const sessionId = asString(data.sessionId);
+        const currentSessionId = getState().currentSessionId;
+        if (sessionId && currentSessionId && sessionId !== currentSessionId) {
+          break;
+        }
+        const status = asString(data.status).toLowerCase();
+        if (status !== "running" && status !== "done" && status !== "error") {
+          break;
+        }
+        const normalizedStatus = status as "running" | "done" | "error";
+        dispatch({
+          type: "SET_COMPACTION_STATUS",
+          payload: {
+            status: normalizedStatus,
+            at: asOptionalNumber(data.at),
+            error: asString(data.error) || undefined,
+            compactionDividerIndex: asOptionalNumber(data.compactionDividerIndex),
+            compactionDividerBeforeMessageId: asOptionalString(
+              data.compactionDividerBeforeMessageId,
+            ),
+            compactionDividerAfterMessageId: asOptionalString(
+              data.compactionDividerAfterMessageId,
+            ),
+            collapsed:
+              typeof data.collapsed === "boolean"
+                ? data.collapsed
+                : undefined,
+            baselineStats: asSessionStats(data.baselineStats),
+          },
+        });
+        if (normalizedStatus === "done") {
+          const nextState = getState();
+          if (nextState.currentSessionId) {
+            vscode.postMessage({
+              type: "setCompactionViewState",
+              sessionId: nextState.currentSessionId,
+              lastCompactedAt: nextState.lastCompactedAt,
+              compactionDividerIndex: nextState.compactionDividerIndex,
+              compactionDividerBeforeMessageId:
+                nextState.compactionDividerBeforeMessageId,
+              compactionDividerAfterMessageId:
+                nextState.compactionDividerAfterMessageId,
+              baselineStats: nextState.compactionBaselineStats,
+              collapsed: nextState.compactedMessagesCollapsed,
+            });
+          }
+        }
+        if (normalizedStatus !== "running") {
+          latestStreamingSnapshot = null;
+          dispatch({ type: "SET_STEERING", payload: false });
+          dispatch({ type: "SET_PROCESSING", payload: false });
+          dispatch({ type: "FINISH_STREAMING" });
+          dispatch({ type: "SET_STREAMING", payload: null });
+        }
+        break;
+      }
+      case "compactionViewState": {
+        const sessionId = asString(data.sessionId);
+        const currentSessionId = getState().currentSessionId;
+        if (sessionId && currentSessionId && sessionId !== currentSessionId) {
+          break;
+        }
+        dispatch({
+          type: "SET_COMPACTION_VIEW_STATE",
+          payload: {
+            lastCompactedAt: asOptionalNumber(data.lastCompactedAt),
+            compactionDividerIndex: asOptionalNumber(data.compactionDividerIndex),
+            compactionDividerBeforeMessageId: asOptionalString(
+              data.compactionDividerBeforeMessageId,
+            ),
+            compactionDividerAfterMessageId: asOptionalString(
+              data.compactionDividerAfterMessageId,
+            ),
+            collapsed:
+              typeof data.collapsed === "boolean"
+                ? data.collapsed
+                : undefined,
+            baselineStats: asSessionStats(data.baselineStats),
+          },
         });
         break;
       }

@@ -10,10 +10,12 @@ import {
   History,
   Loader2,
   Lock,
+  MoreHorizontal,
   Play,
   RefreshCw,
   Send,
   Square,
+  Trash2,
   WifiOff,
   Wrench,
   X,
@@ -43,6 +45,21 @@ import { FileIcon } from "./MessageComponents";
 
 function totalTokens(i: number, o: number, r: number, w: number): number {
   return (i || 0) + (o || 0) + (r || 0) + (w || 0);
+}
+
+function messageTokenStats(message: Message): {
+  input: number;
+  output: number;
+  read: number;
+  write: number;
+} {
+  return {
+    input: message.tokens?.input || message.info?.tokens?.input || 0,
+    output: message.tokens?.output || message.info?.tokens?.output || 0,
+    read: message.tokens?.cache?.read || message.info?.tokens?.cache?.read || 0,
+    write:
+      message.tokens?.cache?.write || message.info?.tokens?.cache?.write || 0,
+  };
 }
 
 type SlashTrigger = {
@@ -195,6 +212,25 @@ export function HistorySidebar() {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const visibleSessions = useMemo(() => {
+    if (sessionsList.length === 0) {
+      return [];
+    }
+
+    const sessionIds = new Set(sessionsList.map((session) => session.id));
+    const topLevelSessions = sessionsList.filter((session) => {
+      const parentSessionId = session.parentSessionId?.trim();
+      if (!parentSessionId) {
+        return true;
+      }
+      if (parentSessionId === session.id) {
+        return true;
+      }
+      return !sessionIds.has(parentSessionId);
+    });
+
+    return topLevelSessions.length > 0 ? topLevelSessions : sessionsList;
+  }, [sessionsList]);
 
   // Focus input when editing starts
   useEffect(() => {
@@ -266,15 +302,14 @@ export function HistorySidebar() {
         </Button>
       </div>
       <div className="h-[calc(100%-88px)] overflow-y-auto p-2">
-        {sessionsList.filter((s) => !s.parentSessionId).length === 0 ? (
+        {visibleSessions.length === 0 ? (
           <div className="p-4 text-center text-xs text-oc-text-muted opacity-70">
             No sessions yet.
             <br />
             Start a new chat to get going.
           </div>
         ) : (
-            sessionsList
-              .filter((s) => !s.parentSessionId)
+            visibleSessions
               .map((session) => {
                 const isActive = session.id === currentSessionId;
               const isEditing = editingSessionId === session.id;
@@ -477,20 +512,99 @@ export function ActiveTaskPanel() {
     messages,
     currentSessionId,
     sessionsList,
+    availableModels,
+    selectedModel,
+    isProcessing,
+    isCompacting,
+    lastCompactedAt,
+    compactionError,
+    compactionBaselineStats,
+    compactionDividerIndex,
     todoItems,
     serverVersion,
   } = useAppState();
   const progressListRef = useRef<HTMLDivElement>(null);
 
-  const total = totalTokens(
-    sessionStats.input,
-    sessionStats.output,
-    sessionStats.read,
-    sessionStats.write,
+  const selectedModelContextLimit = useMemo(() => {
+    if (!selectedModel) {
+      return undefined;
+    }
+    const matched = availableModels.find(
+      (model) =>
+        model.providerID === selectedModel.providerID &&
+        model.modelID === selectedModel.modelID,
+    );
+    const limit = matched?.contextLimit;
+    return typeof limit === "number" && Number.isFinite(limit) && limit > 0
+      ? Math.floor(limit)
+      : undefined;
+  }, [availableModels, selectedModel]);
+
+  const safeCompactionDividerIndex =
+    typeof compactionDividerIndex === "number"
+      ? Math.max(0, Math.min(compactionDividerIndex, messages.length))
+      : undefined;
+
+  const derivedCompactionBaselineStats = useMemo(() => {
+    const baseline = { input: 0, output: 0, read: 0, write: 0 };
+    if (
+      safeCompactionDividerIndex === undefined ||
+      safeCompactionDividerIndex <= 0
+    ) {
+      return baseline;
+    }
+    for (let i = 0; i < safeCompactionDividerIndex; i += 1) {
+      const stats = messageTokenStats(messages[i]);
+      baseline.input += stats.input;
+      baseline.output += stats.output;
+      baseline.read += stats.read;
+      baseline.write += stats.write;
+    }
+    return baseline;
+  }, [messages, safeCompactionDividerIndex]);
+
+  const effectiveCompactionBaselineStats = useMemo(
+    () =>
+      compactionBaselineStats
+        ? {
+            input: compactionBaselineStats.input,
+            output: compactionBaselineStats.output,
+            read: compactionBaselineStats.read,
+            write: compactionBaselineStats.write,
+          }
+        : derivedCompactionBaselineStats,
+    [compactionBaselineStats, derivedCompactionBaselineStats],
   );
-  const maxContext = 200_000; // placeholder; no dynamic limit exposed yet
+
+  const contextStats = useMemo(
+    () => ({
+      input: Math.max(0, sessionStats.input - effectiveCompactionBaselineStats.input),
+      output: Math.max(0, sessionStats.output - effectiveCompactionBaselineStats.output),
+      read: Math.max(0, sessionStats.read - effectiveCompactionBaselineStats.read),
+      write: Math.max(0, sessionStats.write - effectiveCompactionBaselineStats.write),
+    }),
+    [sessionStats, effectiveCompactionBaselineStats],
+  );
+
+  const total = totalTokens(
+    contextStats.input,
+    contextStats.output,
+    contextStats.read,
+    contextStats.write,
+  );
+  const maxContext = selectedModelContextLimit ?? 200_000;
+  const usingContextFallback = selectedModelContextLimit === undefined;
   const pct =
     total > 0 ? Math.min(100, Math.round((total / maxContext) * 100)) : 0;
+  const hasCompactionBaseline =
+    !!compactionBaselineStats ||
+    (typeof safeCompactionDividerIndex === "number" &&
+      safeCompactionDividerIndex > 0);
+  const compactDisabled = !currentSessionId || isProcessing || isCompacting;
+  const compactedAtLabel =
+    typeof lastCompactedAt === "number"
+      ? new Date(lastCompactedAt).toLocaleTimeString()
+      : "";
 
   // Session info
   const messageCount = messages.length;
@@ -757,11 +871,18 @@ export function ActiveTaskPanel() {
           <div className="mb-3">
             <div className="mb-1.5 flex items-center justify-between">
               <span className="text-xs text-[var(--oc-text-soft)]">
-                Tokens used
+                Tokens used{hasCompactionBaseline ? " (since compact)" : ""}
               </span>
-              <span className="font-mono tabular-nums text-xs text-[var(--oc-text-soft)]">
-                {total.toLocaleString()} / {maxContext.toLocaleString()}
-              </span>
+              <div className="flex items-center gap-1">
+                <span className="font-mono tabular-nums text-xs text-[var(--oc-text-soft)]">
+                  {total.toLocaleString()} / {maxContext.toLocaleString()}
+                </span>
+                {usingContextFallback ? (
+                  <span className="text-[10px] uppercase tracking-wider text-oc-text-muted opacity-70">
+                    fallback
+                  </span>
+                ) : null}
+              </div>
             </div>
             <div className="h-1 w-full overflow-hidden rounded-full bg-oc-border">
               <div
@@ -778,18 +899,60 @@ export function ActiveTaskPanel() {
               />
             </div>
           </div>
+
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <span className="text-xs text-[var(--oc-text-soft)] opacity-80">
+              Session compaction
+            </span>
+            <Button
+              type="button"
+              variant="chip"
+              size="chip"
+              className="h-5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider"
+              disabled={compactDisabled}
+              onClick={() =>
+                vscode.postMessage({
+                  type: "compactSession",
+                  ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+                  baselineStats: {
+                    input: Math.max(0, Math.floor(sessionStats.input || 0)),
+                    output: Math.max(0, Math.floor(sessionStats.output || 0)),
+                    read: Math.max(0, Math.floor(sessionStats.read || 0)),
+                    write: Math.max(0, Math.floor(sessionStats.write || 0)),
+                    duration: Math.max(0, Math.floor(sessionStats.duration || 0)),
+                  },
+                })
+              }
+            >
+              {isCompacting ? "Compacting..." : "Compact"}
+            </Button>
+          </div>
+          {isCompacting ? (
+            <div className="mb-2 text-[10px] font-mono uppercase tracking-wider text-oc-accent">
+              Compacting...
+            </div>
+          ) : null}
+          {!isCompacting && compactedAtLabel ? (
+            <div className="mb-2 text-[10px] text-[var(--oc-text-soft)] opacity-70">
+              Last compacted: {compactedAtLabel}
+            </div>
+          ) : null}
+          {!isCompacting && compactionError ? (
+            <div className="mb-2 text-[10px] text-oc-red">{compactionError}</div>
+          ) : null}
+
           {/* 2-col token grid */}
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
             <div className="flex items-center justify-between">
               <span className="text-[var(--oc-text-soft)] opacity-80">In</span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
-                {sessionStats.input.toLocaleString()}
+                {contextStats.input.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-[var(--oc-text-soft)] opacity-80">Out</span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
-                {sessionStats.output.toLocaleString()}
+                {contextStats.output.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -797,7 +960,7 @@ export function ActiveTaskPanel() {
                 Cache R
               </span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
-                {sessionStats.read.toLocaleString()}
+                {contextStats.read.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -805,7 +968,7 @@ export function ActiveTaskPanel() {
                 Cache W
               </span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
-                {sessionStats.write.toLocaleString()}
+                {contextStats.write.toLocaleString()}
               </span>
             </div>
           </div>
@@ -1244,128 +1407,182 @@ export function QueueContainer() {
     currentSessionId,
   } = useAppState();
   const dispatch = useAppDispatch();
+  const [expandedQueueItemId, setExpandedQueueItemId] = useState<string | null>(
+    null,
+  );
 
   // Only render when there are queued items
   if (promptQueue.length === 0) return null;
 
+  const runQueuedItem = (item: (typeof promptQueue)[number], index: number) => {
+    const itemSessionId = item.sessionId;
+    if (!itemSessionId) return;
+
+    if (isProcessing) {
+      dispatch({ type: "SET_STEERING", payload: true });
+      vscode.postMessage({
+        type: "steerQueuedItem",
+        sessionId: itemSessionId,
+        id: item.id,
+        index,
+      });
+      return;
+    }
+
+    vscode.postMessage({
+      type: "sendQueuedItemNow",
+      sessionId: itemSessionId,
+      id: item.id,
+      index,
+    });
+  };
+
+  const removeQueuedItem = (
+    item: (typeof promptQueue)[number],
+    index: number,
+  ) => {
+    const itemSessionId = item.sessionId;
+    if (!itemSessionId) return;
+    vscode.postMessage({
+      type: "removeFromQueue",
+      sessionId: itemSessionId,
+      id: item.id,
+      index,
+    });
+  };
+
   return (
     <div className="mx-[0.625rem] overflow-hidden rounded-xl rounded-b-none border border-b-0 border-oc-border bg-oc-panel">
-      {/* Collapsible header — always visible when items exist */}
-      <button
-        type="button"
-        className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-oc-panel-soft"
-        onClick={() =>
-          dispatch({ type: "SET_QUEUE_OPEN", payload: !isQueueOpen })
-        }
-        aria-expanded={isQueueOpen}
-        aria-label={isQueueOpen ? "Collapse queue panel" : "Expand queue panel"}
-      >
-        <div className="flex items-center gap-2">
+      {/* Collapsible header - always visible when items exist */}
+      <div className="flex items-center justify-between px-3 py-2 transition-colors hover:bg-oc-panel-soft">
+        <button
+          type="button"
+          className="flex items-center gap-2"
+          onClick={() =>
+            dispatch({ type: "SET_QUEUE_OPEN", payload: !isQueueOpen })
+          }
+          aria-expanded={isQueueOpen}
+          aria-label={isQueueOpen ? "Collapse queue panel" : "Expand queue panel"}
+        >
           <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-oc-text-muted">
             Queue
           </span>
           <span className="rounded-full bg-oc-accent-soft px-1.5 py-0.5 font-mono text-[9px] font-bold text-oc-accent">
             {promptQueue.length}
           </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {isQueueOpen && (
-            <button
-              type="button"
-              className="rounded px-1.5 py-0.5 font-mono text-[10px] text-oc-red transition-colors hover:bg-[rgba(248,81,73,0.12)]"
-              title="Clear all queued prompts"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!currentSessionId) return;
-                vscode.postMessage({ type: "clearQueue", sessionId: currentSessionId });
-              }}
-            >
-              Clear all
-            </button>
-          )}
           {isQueueOpen ? (
             <ChevronDown className="h-3.5 w-3.5 text-oc-text-muted" />
           ) : (
             <ChevronUp className="h-3.5 w-3.5 text-oc-text-muted" />
           )}
-        </div>
-      </button>
+        </button>
+        {isQueueOpen && (
+          <button
+            type="button"
+            className="rounded px-1.5 py-0.5 font-mono text-[10px] text-oc-red transition-colors hover:bg-[rgba(248,81,73,0.12)]"
+            title="Clear all queued prompts"
+            onClick={() => {
+              if (!currentSessionId) return;
+              vscode.postMessage({ type: "clearQueue", sessionId: currentSessionId });
+            }}
+          >
+            Clear all
+          </button>
+        )}
+      </div>
 
       {/* Expanded list */}
       {isQueueOpen && (
         <div className="border-t border-oc-border">
-          <div className="max-h-40 divide-y divide-oc-border overflow-y-auto">
-            {promptQueue.map((item, index) => (
-              <div
-                key={item.id || `${item.text}-${index}`}
-                className="flex items-start gap-2 px-3 py-2"
-              >
-                <span className="mt-0.5 shrink-0 font-mono text-[10px] text-oc-text-muted">
-                  {index + 1}.
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="line-clamp-2 font-mono text-[11px] text-[var(--oc-text-soft)]">
-                    {item.text || "(empty)"}
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  {(() => {
-                    const itemSessionId = item.sessionId || currentSessionId;
-                    const busy = isProcessing;
-                    const isDisabled = !itemSessionId || isSteering;
-                    return (
+          <div className="max-h-48 space-y-2 overflow-y-auto p-2">
+            {promptQueue.map((item, index) => {
+              const itemSessionId = item.sessionId;
+              const isExpanded = expandedQueueItemId === item.id;
+
+              return (
+                <div
+                  key={item.id || `${item.text}-${index}`}
+                  className="rounded-xl border border-oc-border bg-oc-bg-soft px-2.5 py-2"
+                >
+                  <div className="flex items-start gap-2.5">
+                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-oc-border text-oc-text-muted">
+                      <ChevronRight className="h-3 w-3" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div
+                        className={`${isExpanded ? "whitespace-pre-wrap" : "line-clamp-2"} font-mono text-[11px] text-[var(--oc-text-soft)]`}
+                      >
+                        {item.text || "(empty)"}
+                      </div>
+                      {(item.files?.length || item.contexts?.length) && (
+                        <div className="mt-1.5 flex items-center gap-2 font-mono text-[9px] text-oc-text-muted">
+                          {item.files?.length ? (
+                            <span>
+                              {item.files.length} file
+                              {item.files.length > 1 ? "s" : ""}
+                            </span>
+                          ) : null}
+                          {item.contexts?.length ? (
+                            <span>
+                              {item.contexts.length} context
+                              {item.contexts.length > 1 ? "s" : ""}
+                            </span>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="queue"
+                        size="chip"
+                        className="h-6 px-2 text-[10px]"
+                        title={
+                          isProcessing
+                            ? "Steer this queued prompt now"
+                            : "Send this queued prompt now"
+                        }
+                        disabled={!itemSessionId || isSteering || isExecutingQueue}
+                        onClick={() => runQueuedItem(item, index)}
+                      >
+                        {isProcessing ? (
+                          <Zap className="mr-1 h-3 w-3" />
+                        ) : (
+                          <Send className="mr-1 h-3 w-3" />
+                        )}
+                        {isProcessing ? (isSteering ? "Steering..." : "Steer") : "Send"}
+                      </Button>
                       <button
                         type="button"
-                        className="rounded p-1 text-oc-accent transition-colors hover:bg-oc-accent-soft disabled:cursor-not-allowed disabled:opacity-50"
-                        title={busy ? "Steer now" : "Send now"}
-                        disabled={isDisabled}
-                        onClick={() => {
-                          if (!itemSessionId) return;
-                          if (busy) {
-                            dispatch({ type: "SET_STEERING", payload: true });
-                            vscode.postMessage({
-                              type: "steerQueuedItem",
-                              sessionId: itemSessionId,
-                              id: item.id,
-                              index,
-                            });
-                            return;
-                          }
-                          vscode.postMessage({
-                            type: "sendQueuedItemNow",
-                            sessionId: itemSessionId,
-                            id: item.id,
-                            index,
-                          });
-                        }}
+                        className="rounded-md p-1.5 text-oc-text-muted transition-colors hover:bg-[rgba(248,81,73,0.12)] hover:text-oc-red disabled:cursor-not-allowed disabled:opacity-50"
+                        title="Remove from queue"
+                        disabled={!itemSessionId || isSteering || isExecutingQueue}
+                        onClick={() => removeQueuedItem(item, index)}
                       >
-                        {busy ? <Zap className="h-3 w-3" /> : <Send className="h-3 w-3" />}
+                        <Trash2 className="h-3.5 w-3.5" />
                       </button>
-                    );
-                  })()}
-                  <button
-                    type="button"
-                    className="rounded p-1 text-oc-text-muted transition-colors hover:bg-[rgba(248,81,73,0.12)] hover:text-oc-red disabled:cursor-not-allowed disabled:opacity-50"
-                    title="Remove from queue"
-                    disabled={isSteering}
-                    onClick={() => {
-                      const itemSessionId = item.sessionId || currentSessionId;
-                      if (!itemSessionId) return;
-                      vscode.postMessage({
-                        type: "removeFromQueue",
-                        sessionId: itemSessionId,
-                        id: item.id,
-                        index,
-                      });
-                    }}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                      <button
+                        type="button"
+                        className="rounded-md p-1.5 text-oc-text-muted transition-colors hover:bg-oc-panel-soft hover:text-oc-text-soft"
+                        title={isExpanded ? "Show less" : "Show more"}
+                        onClick={() =>
+                          setExpandedQueueItemId((currentId) =>
+                            currentId === item.id ? null : item.id,
+                          )
+                        }
+                      >
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
-          <div className="flex items-center border-t border-oc-border px-3 py-2">
+          <div className="flex items-center justify-between border-t border-oc-border px-3 py-2">
+            <span className="font-mono text-[10px] text-oc-text-muted">
+              {promptQueue.length} queued
+            </span>
             <Button
               className="oc-queue-btn h-6 text-[10px]"
               variant="secondary"
@@ -1383,7 +1600,6 @@ export function QueueContainer() {
     </div>
   );
 }
-
 export function InputWrapper() {
   const {
     inputValue,
@@ -1688,6 +1904,7 @@ export function InputWrapper() {
 
     vscode.postMessage({
       type: "batchInteractiveResponse",
+      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
       responses: batch,
       agent: selectedAgent || null,
     });
@@ -2050,7 +2267,11 @@ export function InputWrapper() {
           <Textarea
             ref={textareaRef}
             value={inputValue}
-            placeholder="Ask anything (Enter to send, Shift+Enter for newline), @ to mention, / for commands"
+            placeholder={
+              isProcessing
+                ? "Ask for follow-up changes"
+                : "Ask anything (Enter to send, Shift+Enter for newline), @ to mention, / for commands"
+            }
             className="oc-textarea"
             onChange={(e) => {
               const nextValue = e.target.value;
@@ -3014,3 +3235,4 @@ export function LspPanel() {
     </div>
   );
 }
+
