@@ -40,6 +40,7 @@ Key differentiators over a plain terminal-based OpenCode setup:
 ## Features
 
 ### AI Chat
+
 - Full streaming chat with real-time token counting (prompt / response / reasoning / cache read-write)
 - Markdown rendering with syntax highlighting via `highlight.js`
 - Thinking/reasoning bubble display with collapsible sections
@@ -48,35 +49,41 @@ Key differentiators over a plain terminal-based OpenCode setup:
 - Contiguous message grouping for visual clarity
 
 ### Implementation Planning
+
 - Switch to **Plan** agent to generate an `implementation_plan.md` before any code changes
 - "View Implementation Plan" button appears on every AI response that generated a plan
 - Dedicated plan viewer (`PlanViewProvider`) with interactive checklist tracking
 - Plan can be commented on, revised, and then executed
 
 ### Agents & Skills
+
 - Agent selector (Build, Plan, and any plugin agents registered via `app.agents()`)
 - Per-message agent name badge with the agent's configured color
 - **Skills** (`/command`) panel in the right sidebar listing all slash-command skills from the server
 
 ### Subagent Orchestration
+
 - Background tasks ("subagents") are tracked via `SubagentTracker`
 - Active task panel with live status dots and step progress
 - Expandable subagent detail modal with full timeline, thinking events, and tool calls
 - Subagent cards rendered inline inside assistant messages
 
 ### Session Management
+
 - Persistent chat history across VS Code restarts (stored in `globalState`)
 - Session list sidebar with rename, delete, and fork support
 - Session compaction support (large histories are summarized server-side)
 - VCS diff review panel (`DiffReviewProvider`) — inspects changes made in a session
 
 ### Quota & Budget Monitoring
+
 - Real-time quota data fetched from provider APIs (OpenAI, Copilot, Gemini, Zhipu, ZAI)
 - `QuotaMonitor` panel in the right sidebar with usage bars and projected monthly consumption
 - `RequestBudgeter` calculates a daily request allowance to last the full billing month
 - Configurable warning thresholds and optional hard enforcement
 
 ### Extended Right Panel (Desktop ≥ 1100 px)
+
 - **Active Task Panel** — current subagent progress
 - **Quota Monitor** — provider quota and budget
 - **Todo Panel** — session-scoped todo items surfaced from AI
@@ -86,6 +93,7 @@ Key differentiators over a plain terminal-based OpenCode setup:
 - **Agents** — all agents from `client.app.agents()` with mode badge, color dot, and description
 
 ### Streaming & Reliability
+
 - Fetch-based SSE client (not `EventSource`) for full header control
 - Auto-reconnect with 5-second back-off on connection loss
 - AbortController cancellation on stop/new session
@@ -145,6 +153,7 @@ Key differentiators over a plain terminal-based OpenCode setup:
 ```
 
 **Data flow:**
+
 1. User types in the chat input → `vscode.postMessage({ type: "sendPrompt", ... })`
 2. `ChatViewProvider` receives the message, calls `client.session.prompt()`
 3. `MessageStreamService` streams SSE events from the server
@@ -208,6 +217,7 @@ npm run webview:watch          # React webview (in a second terminal)
 ```
 
 After making changes:
+
 - **Extension code** (`src/`): esbuild recompiles automatically; reload the Extension Host with **Ctrl+R** / **Cmd+R** inside the host window, or run the "Developer: Reload Window" command.
 - **Webview code** (`webview/shared/src/`): Vite/esbuild rebuilds automatically; reload the webview by running `opencode.focus` again or reloading the window.
 
@@ -226,12 +236,12 @@ npm run structured-output:check  # verify the generated file is up to date (CI)
 
 ### Opening the Chat Panel
 
-| Action | Shortcut |
-|--------|----------|
-| Focus / open chat | `Ctrl+Esc` / `Cmd+Esc` |
-| New session | `Ctrl+Shift+Esc` / `Cmd+Shift+Esc` |
-| Send selected code | `Ctrl+L` / `Cmd+L` |
-| Insert file reference | `Ctrl+Alt+K` / `Cmd+Alt+K` |
+| Action                | Shortcut                           |
+| --------------------- | ---------------------------------- |
+| Focus / open chat     | `Ctrl+Esc` / `Cmd+Esc`             |
+| New session           | `Ctrl+Shift+Esc` / `Cmd+Shift+Esc` |
+| Send selected code    | `Ctrl+L` / `Cmd+L`                 |
+| Insert file reference | `Ctrl+Alt+K` / `Cmd+Alt+K`         |
 
 You can also open the panel from the Activity Bar (the OpenCode icon) or via the Command Palette (`Ctrl+Shift+P` → `OpenCode: Focus Chat`).
 
@@ -267,12 +277,12 @@ Click the **Stop** button (square icon) in the chat header at any time to abort 
 
 ## Keyboard Shortcuts
 
-| Command | Windows / Linux | macOS |
-|---------|-----------------|-------|
-| Focus chat | `Ctrl+Esc` | `Cmd+Esc` |
-| New session | `Ctrl+Shift+Esc` | `Cmd+Shift+Esc` |
-| Send selection | `Ctrl+L` | `Cmd+L` |
-| Insert file reference | `Ctrl+Alt+K` | `Cmd+Alt+K` |
+| Command               | Windows / Linux  | macOS           |
+| --------------------- | ---------------- | --------------- |
+| Focus chat            | `Ctrl+Esc`       | `Cmd+Esc`       |
+| New session           | `Ctrl+Shift+Esc` | `Cmd+Shift+Esc` |
+| Send selection        | `Ctrl+L`         | `Cmd+L`         |
+| Insert file reference | `Ctrl+Alt+K`     | `Cmd+Alt+K`     |
 
 All shortcuts can be rebound via **File → Preferences → Keyboard Shortcuts**.
 
@@ -284,21 +294,21 @@ Access via **File → Preferences → Settings → OpenCode** or add to `setting
 
 ### Server
 
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `opencode.serverPort` | `number` | `0` | Port for the OpenCode server. `0` = auto-assign a free port. |
-| `opencode.autoStart` | `boolean` | `true` | Start the server automatically when the extension activates. |
-| `opencode.persistSessions` | `boolean` | `true` | Persist chat sessions across VS Code restarts. |
+| Setting                    | Type      | Default | Description                                                  |
+| -------------------------- | --------- | ------- | ------------------------------------------------------------ |
+| `opencode.serverPort`      | `number`  | `0`     | Port for the OpenCode server. `0` = auto-assign a free port. |
+| `opencode.autoStart`       | `boolean` | `true`  | Start the server automatically when the extension activates. |
+| `opencode.persistSessions` | `boolean` | `true`  | Persist chat sessions across VS Code restarts.               |
 
 ### Logging
 
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `opencode.logging.level` | `string` | `"info"` | Minimum log level: `error`, `warn`, `info`, `debug`. |
-| `opencode.logging.enableConsole` | `boolean` | `true` | Write logs to the VS Code Output channel. |
-| `opencode.logging.enableFile` | `boolean` | `false` | Write logs to a rotating file on disk. |
-| `opencode.logging.maxFileSize` | `number` | `5242880` | Max log file size in bytes before rotation (5 MB default). |
-| `opencode.logging.maxFiles` | `number` | `3` | Number of backup log files to keep. |
+| Setting                          | Type      | Default   | Description                                                |
+| -------------------------------- | --------- | --------- | ---------------------------------------------------------- |
+| `opencode.logging.level`         | `string`  | `"info"`  | Minimum log level: `error`, `warn`, `info`, `debug`.       |
+| `opencode.logging.enableConsole` | `boolean` | `true`    | Write logs to the VS Code Output channel.                  |
+| `opencode.logging.enableFile`    | `boolean` | `false`   | Write logs to a rotating file on disk.                     |
+| `opencode.logging.maxFileSize`   | `number`  | `5242880` | Max log file size in bytes before rotation (5 MB default). |
+| `opencode.logging.maxFiles`      | `number`  | `3`       | Number of backup log files to keep.                        |
 
 ### Example `settings.json`
 
@@ -378,6 +388,7 @@ vscode-opencode/
 ### `OpencodeServerManager`
 
 Spawns and manages `opencode serve` as a child process. Handles:
+
 - Dynamic port allocation (default start: 4097)
 - Server readiness detection (stdout scan for `"Server running"` / `"listening"`)
 - Cross-platform process cleanup (Unix `SIGKILL` vs Windows `taskkill /T /F`)
@@ -387,6 +398,7 @@ Spawns and manages `opencode serve` as a child process. Handles:
 ### `MessageStreamService`
 
 Custom fetch-based SSE client connecting to `GET /event`. Features:
+
 - Manual SSE line parsing with chunk-boundary buffering
 - `AbortController`-based cancellation
 - Subscriber count management (starts/stops connection automatically)
@@ -403,6 +415,7 @@ Parses SSE events for `subagent.*` event types, builds a tree of parent → chil
 ### `QuotaService`
 
 Polls provider-specific quota APIs on a configurable interval (default: 5 min):
+
 - **OpenAI** — `chatgpt.com/backend-api/wham/usage`
 - **GitHub Copilot** — `api.github.com` copilot billing endpoints
 - **Google Gemini** — `cloudcode-pa.googleapis.com` + OAuth token refresh
@@ -415,6 +428,7 @@ Calculates a daily request allowance based on `monthlyQuota` and days remaining 
 ### `PlanParser`
 
 Regex-based parser for `implementation_plan.md` files. Extracts:
+
 - Goal (first heading)
 - Description text
 - File operations (`[MODIFY]`, `[CREATE]`, `[DELETE]` annotations)
@@ -431,40 +445,40 @@ The webview is a standalone React application bundled by Vite/esbuild into `webv
 
 `AppState` in `types.ts` holds all UI state:
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `messages` | `Message[]` | Full session message history |
-| `streaming` | `StreamingState \| null` | Live streaming card state |
-| `availableAgents` | `Agent[]` | Agents from `client.app.agents()` |
-| `availableCommands` | `SlashCommand[]` | Skills from `client.command.list()` |
-| `mcpServers` | `McpServerInfo[]` | Live MCP server status |
-| `lspServers` | `LspServerInfo[]` | Live LSP server status |
-| `subagentsByParentMessageId` | `Record<…>` | Subagent summaries per message |
-| `quotaData` | `QuotaData \| null` | Provider quota details |
-| `budgetInfo` | `BudgetInfo \| null` | Daily budget calculations |
-| `todoItems` | `TodoItem[]` | Session-scoped todos from AI |
-| `sessionStats` | `SessionStats` | Token counts and duration |
+| Field                        | Type                     | Purpose                             |
+| ---------------------------- | ------------------------ | ----------------------------------- |
+| `messages`                   | `Message[]`              | Full session message history        |
+| `streaming`                  | `StreamingState \| null` | Live streaming card state           |
+| `availableAgents`            | `Agent[]`                | Agents from `client.app.agents()`   |
+| `availableCommands`          | `SlashCommand[]`         | Skills from `client.command.list()` |
+| `mcpServers`                 | `McpServerInfo[]`        | Live MCP server status              |
+| `lspServers`                 | `LspServerInfo[]`        | Live LSP server status              |
+| `subagentsByParentMessageId` | `Record<…>`              | Subagent summaries per message      |
+| `quotaData`                  | `QuotaData \| null`      | Provider quota details              |
+| `budgetInfo`                 | `BudgetInfo \| null`     | Daily budget calculations           |
+| `todoItems`                  | `TodoItem[]`             | Session-scoped todos from AI        |
+| `sessionStats`               | `SessionStats`           | Token counts and duration           |
 
 ### Message Protocol
 
 The extension host and webview communicate through typed messages. Key types:
 
-| Direction | `type` | Payload |
-|-----------|--------|---------|
-| → webview | `initState` | Full initial state on panel open |
-| → webview | `streamEvent` | SSE event chunk during AI response |
-| → webview | `mcpStatus` | `{ servers, toolIds }` |
-| → webview | `lspStatus` | `{ servers }` |
-| → webview | `agentsList` | `{ agents, selectedAgent }` |
-| → webview | `commandsList` | `{ commands }` |
-| → webview | `quotaData` | Provider quota payload |
-| → webview | `budgetInfo` | Daily budget payload |
-| webview → | `sendPrompt` | `{ text, files, agent, model }` |
-| webview → | `getMcpStatus` | — |
-| webview → | `getLspStatus` | — |
-| webview → | `getAgents` | — |
-| webview → | `stopRequest` | — |
-| webview → | `newSession` | — |
+| Direction | `type`         | Payload                            |
+| --------- | -------------- | ---------------------------------- |
+| → webview | `initState`    | Full initial state on panel open   |
+| → webview | `streamEvent`  | SSE event chunk during AI response |
+| → webview | `mcpStatus`    | `{ servers, toolIds }`             |
+| → webview | `lspStatus`    | `{ servers }`                      |
+| → webview | `agentsList`   | `{ agents, selectedAgent }`        |
+| → webview | `commandsList` | `{ commands }`                     |
+| → webview | `quotaData`    | Provider quota payload             |
+| → webview | `budgetInfo`   | Daily budget payload               |
+| webview → | `sendPrompt`   | `{ text, files, agent, model }`    |
+| webview → | `getMcpStatus` | —                                  |
+| webview → | `getLspStatus` | —                                  |
+| webview → | `getAgents`    | —                                  |
+| webview → | `stopRequest`  | —                                  |
+| webview → | `newSession`   | —                                  |
 
 ### Structured Output
 
@@ -523,6 +537,7 @@ node --test tests/plan-parser.test.mjs
 ```
 
 The test suite covers:
+
 - Unit tests for services (plan parsing, structured output validation, quota logic, subagent tracking)
 - Integration tests for message streaming and session CRUD
 - Regression tests for UI contracts, streaming behaviour, MCP/LSP panels, and model dropdown
@@ -549,28 +564,33 @@ The following must never be silently removed or broken:
 npm run watch
 
 # Run tests
+
 npm test
 
 # Lint
+
 npm run lint
+
 ```
 
 ## Architecture
 
 ```
+
 extension/
 ├── src/
-│   ├── extension.ts              # Entry point
-│   ├── services/
-│   │   ├── OpencodeServerManager.ts  # Server lifecycle
-│   │   └── SessionService.ts         # Session management
-│   └── providers/
-│       ├── ChatViewProvider.ts       # Chat UI
-│       └── StatusBarProvider.ts      # Status indicator
+│ ├── extension.ts # Entry point
+│ ├── services/
+│ │ ├── OpencodeServerManager.ts # Server lifecycle
+│ │ └── SessionService.ts # Session management
+│ └── providers/
+│ ├── ChatViewProvider.ts # Chat UI
+│ └── StatusBarProvider.ts # Status indicator
 └── webview/
-    └── chat/
-        ├── app.js                # Chat logic
-        └── styles.css            # Chat styles
+└── chat/
+├── app.js # Chat logic
+└── styles.css # Chat styles
+
 ```
 
 ## License
@@ -580,3 +600,4 @@ MIT
 ## Credits
 
 Built on top of [OpenCode](https://opencode.ai) by Anomaly.
+```

@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from "react";
 
-import { AppProvider, useAppDispatch, useAppState } from './lib/store';
-import { createMessageHandler } from './lib/messageHandler';
-import vscode from './lib/vscode';
+import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
+import { createMessageHandler } from "./lib/messageHandler";
+import vscode from "./lib/vscode";
 
 import {
   StickyHeader,
@@ -16,8 +16,7 @@ import {
   AgentsPanel,
   SkillsPanel,
   MobileRightSummary,
-} from './PanelComponents';
-import { StreamingCard } from './StreamingComponents';
+} from "./PanelComponents";
 import {
   AssistantMessage,
   EmptyState,
@@ -25,8 +24,8 @@ import {
   PermissionCard,
   ThinkingBubble,
   UserMessage,
-} from './MessageComponents';
-import type { Message } from './lib/types';
+} from "./MessageComponents";
+import type { Message } from "./lib/types";
 
 type StreamViewportState = {
   isFollowing: boolean;
@@ -37,7 +36,9 @@ const AUTO_FOLLOW_THRESHOLD_PX = 96;
 
 function CompactionDivider({ at }: { at?: number }) {
   const label =
-    typeof at === "number" ? `Compacted at ${new Date(at).toLocaleTimeString()}` : "Compacted";
+    typeof at === "number"
+      ? `Compacted at ${new Date(at).toLocaleTimeString()}`
+      : "Compacted";
 
   return (
     <div className="-mx-4 py-2">
@@ -73,16 +74,16 @@ function ChatContent() {
   // Register message listener
   useEffect(() => {
     const handler = createMessageHandler(dispatch, () => stateRef.current);
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
   }, [dispatch]);
 
   // Send ready + retry until initState received
   useEffect(() => {
-    vscode.postMessage({ type: 'ready' });
+    vscode.postMessage({ type: "ready" });
     const interval = setInterval(() => {
       if (!stateRef.current.receivedInitState) {
-        vscode.postMessage({ type: 'ready' });
+        vscode.postMessage({ type: "ready" });
       } else {
         clearInterval(interval);
       }
@@ -112,13 +113,13 @@ function ChatContent() {
       });
     };
 
-    root.addEventListener('scroll', onScroll, { passive: true });
-    return () => root.removeEventListener('scroll', onScroll);
+    root.addEventListener("scroll", onScroll, { passive: true });
+    return () => root.removeEventListener("scroll", onScroll);
   }, []);
 
   useEffect(() => {
     if (streamViewportRef.current.isFollowing) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
       if (streamViewportRef.current.unseenUpdateCount > 0) {
         setStreamViewport((prev) =>
           prev.unseenUpdateCount === 0
@@ -145,23 +146,24 @@ function ChatContent() {
     state.streaming?.isActive,
   ]);
 
-  const showThinking =
-    state.isProcessing && !state.streaming && !state.isCompacting;
+  const showThinking = state.isProcessing && !state.isCompacting;
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
-      ? Math.max(0, Math.min(state.compactionDividerIndex, state.messages.length))
+      ? Math.max(
+          0,
+          Math.min(state.compactionDividerIndex, state.messages.length),
+        )
       : undefined;
   const hasCompactedSegment =
     typeof compactionDividerIndex === "number" && compactionDividerIndex > 0;
-  const isCompressed =
-    hasCompactedSegment && state.compactedMessagesCollapsed;
+  const isCompressed = hasCompactedSegment && state.compactedMessagesCollapsed;
   const hiddenMessageCount = isCompressed ? compactionDividerIndex : 0;
   const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
   const visibleMessages = state.messages.slice(visibleStartIndex);
 
   const jumpToLatest = () => {
     setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
   return (
@@ -181,7 +183,7 @@ function ChatContent() {
         <div
           ref={messagesScrollRef}
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden py-4"
-          style={{ background: 'var(--oc-chat-bg)' }}
+          style={{ background: "var(--oc-chat-bg)" }}
         >
           {state.messages.length === 0 &&
           !state.streaming &&
@@ -238,32 +240,32 @@ function ChatContent() {
 
           {visibleMessages.map((msg: Message, visibleIdx: number) => {
             const idx = visibleStartIndex + visibleIdx;
-            const role = msg.role ?? msg.info?.role ?? 'user';
+            const role = msg.role ?? msg.info?.role ?? "user";
             const key =
               msg.info?.id ??
-              `${idx}-${role}-${(msg.content ?? msg.text ?? '').slice(0, 32)}-${
+              `${idx}-${role}-${(msg.content ?? msg.text ?? "").slice(0, 32)}-${
                 msg.parts?.length ?? 0
               }-${msg.steps?.length ?? 0}`;
 
             const prevIdx = idx - 1;
             const prevMsg =
-              prevIdx >= visibleStartIndex ? state.messages[prevIdx] : undefined;
-            const isContiguous = role === 'assistant' &&
-              prevMsg?.role === 'assistant' &&
+              prevIdx >= visibleStartIndex
+                ? state.messages[prevIdx]
+                : undefined;
+            const isContiguous =
+              role === "assistant" &&
+              prevMsg?.role === "assistant" &&
               (prevMsg.info?.agent === msg.info?.agent ||
                 (!prevMsg.info?.agent && !msg.info?.agent));
 
             let messageNode: JSX.Element;
-            if (role === 'user') {
+            if (role === "user") {
               messageNode = <UserMessage message={msg} />;
-            } else if ((msg as Record<string, unknown>).type === 'permission') {
+            } else if ((msg as Record<string, unknown>).type === "permission") {
               messageNode = <PermissionCard perm={msg} />;
             } else {
               messageNode = (
-                <AssistantMessage
-                  message={msg}
-                  isContiguous={isContiguous}
-                />
+                <AssistantMessage message={msg} isContiguous={isContiguous} />
               );
             }
 
@@ -281,15 +283,7 @@ function ChatContent() {
             <CompactionDivider at={state.lastCompactedAt} />
           ) : null}
 
-          {/* Live streaming card */}
-          <StreamingCard
-            isContiguous={
-              visibleMessages.length > 0 &&
-              visibleMessages[visibleMessages.length - 1].role === 'assistant'
-            }
-          />
-
-          {/* "Thinking…" dots when waiting for first streaming event */}
+          {/* Loading status while processing */}
           {showThinking ? <ThinkingBubble /> : null}
 
           {state.isCompacting ? (
@@ -300,7 +294,8 @@ function ChatContent() {
             </div>
           ) : null}
 
-          {!streamViewport.isFollowing && streamViewport.unseenUpdateCount > 0 ? (
+          {!streamViewport.isFollowing &&
+          streamViewport.unseenUpdateCount > 0 ? (
             <div className="sticky bottom-3 z-20 flex justify-end pr-4">
               <button
                 type="button"

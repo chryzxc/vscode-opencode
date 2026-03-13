@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   Check,
   ChevronDown,
@@ -846,6 +852,60 @@ function FadeSwapText({
   );
 }
 
+const THINKING_LOADING_TEXTS = [
+  "Scanning project context...",
+  "Tracing relevant files...",
+  "Comparing possible fixes...",
+  "Drafting a clean response...",
+  "Validating assumptions...",
+  "Preparing final answer...",
+];
+
+function ThinkingStatusTicker({ className }: { className?: string }) {
+  const [messageIndex, setMessageIndex] = useState(() =>
+    Math.floor(Math.random() * THINKING_LOADING_TEXTS.length),
+  );
+
+  useEffect(() => {
+    if (THINKING_LOADING_TEXTS.length <= 1) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setMessageIndex((current) => {
+        let next = current;
+        while (next === current) {
+          next = Math.floor(Math.random() * THINKING_LOADING_TEXTS.length);
+        }
+        return next;
+      });
+    }, 1800);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <div className={cn("inline-flex items-center font-mono text-[13px]", className)}>
+      {[0, 1, 2].map((index) => (
+        <span
+          key={index}
+          className={cn(
+            "inline-block rounded-full bg-current h-1.5 w-1.5",
+            index > 0 ? "ml-1.5" : "",
+          )}
+          style={{
+            animation: `thinking-pulse 1.3s ${index * 0.16}s infinite`,
+          }}
+        />
+      ))}
+      <FadeSwapText
+        text={THINKING_LOADING_TEXTS[messageIndex]}
+        className="ml-3 italic opacity-85 tracking-wide"
+        durationMs={220}
+      />
+    </div>
+  );
+}
+
 function latestNonEmptyLine(text: string): string {
   return (
     text
@@ -915,7 +975,9 @@ function parseTimelineStepTitle(rawTitle: string): {
   const spaceIdx = title.indexOf(" ");
   if (spaceIdx > 0 && spaceIdx <= 12) {
     const label = stripTrailingEllipsis(title.slice(0, spaceIdx).toLowerCase());
-    const summary = stripTrailingEllipsis(trimOptional(title.slice(spaceIdx + 1)));
+    const summary = stripTrailingEllipsis(
+      trimOptional(title.slice(spaceIdx + 1)),
+    );
     return { label, summary };
   }
 
@@ -1242,7 +1304,8 @@ export function AssistantMessage({
   isContiguous?: boolean;
 }) {
   const dispatch = useAppDispatch();
-  const { subagentsByParentMessageId, subagentDetailsById, availableAgents } = useAppState();
+  const { subagentsByParentMessageId, subagentDetailsById, availableAgents } =
+    useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
@@ -1390,8 +1453,7 @@ export function AssistantMessage({
     if (!agentName || agentName === "assistant") return undefined;
     const match = availableAgents.find(
       (a) =>
-        a.id === agentName ||
-        a.name.toLowerCase() === agentName.toLowerCase(),
+        a.id === agentName || a.name.toLowerCase() === agentName.toLowerCase(),
     );
     return match?.color ?? undefined;
   }, [agentName, availableAgents]);
@@ -1425,6 +1487,7 @@ export function AssistantMessage({
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
+  const showResponseSection = hasResponseContent;
   const hasThinkingEvents = useMemo(
     () => displayEvents.some((event) => event.kind === "thinking"),
     [displayEvents],
@@ -1508,47 +1571,37 @@ export function AssistantMessage({
           <div className="mb-2.5 flex flex-wrap items-start justify-between gap-2">
             <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
               {showStreamingLoading ? (
-                <div className="inline-flex items-center font-mono text-[13px] text-[#4e648c]">
-                  {[0, 1, 2].map((index) => (
-                    <span
-                      key={index}
-                      className={cn(
-                        "inline-block rounded-full bg-current h-1.5 w-1.5",
-                        index > 0 ? "ml-1.5" : "",
-                      )}
-                      style={{
-                        animation: `thinking-pulse 1.3s ${index * 0.16}s infinite`,
-                      }}
-                    />
-                  ))}
-                  <span className="ml-3 italic opacity-85 tracking-wide">
-                    Thinking ...
-                  </span>
-                </div>
+                <ThinkingStatusTicker className="text-[#4e648c]" />
               ) : (
                 <>
                   <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
                     <div
                       className="oc-agent-icon flex items-center justify-center rounded-md p-1"
-                      style={agentColor
-                        ? { backgroundColor: `${agentColor}26` }
-                        : { backgroundColor: "var(--oc-accent-soft)" }
+                      style={
+                        agentColor
+                          ? { backgroundColor: `${agentColor}26` }
+                          : { backgroundColor: "var(--oc-accent-soft)" }
                       }
                     >
                       <Zap
                         className="h-4 w-4"
-                        style={agentColor
-                          ? { color: agentColor }
-                          : { color: "var(--oc-accent)" }
+                        style={
+                          agentColor
+                            ? { color: agentColor }
+                            : { color: "var(--oc-accent)" }
                         }
                       />
                     </div>
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <span
                         className="oc-msg-agent-name px-2 py-0.5 rounded-md font-semibold text-oc-sm truncate shrink-0"
-                        style={agentColor
-                          ? { color: agentColor, backgroundColor: `${agentColor}1a` }
-                          : undefined
+                        style={
+                          agentColor
+                            ? {
+                                color: agentColor,
+                                backgroundColor: `${agentColor}1a`,
+                              }
+                            : undefined
                         }
                       >
                         {agentName !== "assistant" ? agentName : "AI"}
@@ -1916,35 +1969,19 @@ export function AssistantMessage({
             </section>
           )}
 
-          <section
-            data-assistant-section="response"
-            className="rounded-md border border-oc-border bg-background p-3.5 shadow-sm"
-          >
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-muted">
-                Response
-              </span>
-              {isStreamingActive && (
-                <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-accent">
-                  streaming
-                </span>
-              )}
-            </div>
-            {hasResponseContent ? (
+          {showResponseSection && (
+            <section
+              data-assistant-section="response"
+              className="rounded-md border border-oc-border bg-background p-3.5 shadow-sm"
+            >
               <div className={responseBodyClass}>
                 <MarkdownRenderer
                   content={content}
                   className={markdownBodyClass}
                 />
               </div>
-            ) : (
-              <div className="text-xs text-oc-text-muted">
-                {isStreamingActive
-                  ? "Waiting for response content..."
-                  : "No response content."}
-              </div>
-            )}
-          </section>
+            </section>
+          )}
         </div>
 
         {message?.error && (
@@ -1985,8 +2022,7 @@ export function AssistantMessage({
                 progressEvents: [],
                 timelineEvents: [],
               } as SubagentDetail);
-            const providerLabel =
-              subagentModelLabel(selected, detailData);
+            const providerLabel = subagentModelLabel(selected, detailData);
             const displayTitle = subagentAgentLabel(selected, detailData);
 
             return (
@@ -2059,7 +2095,9 @@ export function AssistantMessage({
                     const statusText =
                       subagentStatusLabel(subagent.status) || "Pending";
                     const activityText =
-                      subagent.latestActivity || statusText || "Initializing...";
+                      subagent.latestActivity ||
+                      statusText ||
+                      "Initializing...";
                     const shouldShowActivity =
                       activityText.trim().toLowerCase() !==
                       statusText.trim().toLowerCase();
@@ -2077,7 +2115,10 @@ export function AssistantMessage({
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex min-w-0 items-center gap-2">
-                            <div className="oc-agent-icon shrink-0" style={accentTextStyle}>
+                            <div
+                              className="oc-agent-icon shrink-0"
+                              style={accentTextStyle}
+                            >
                               {subagent.status === "running" ? (
                                 <Loader2 className="h-3 w-3 animate-spin" />
                               ) : subagent.status === "error" ? (
@@ -2086,9 +2127,7 @@ export function AssistantMessage({
                                 <Check className="h-3 w-3" />
                               )}
                             </div>
-                            <span
-                              className="truncate text-oc-xs font-semibold text-oc-text-soft"
-                            >
+                            <span className="truncate text-oc-xs font-semibold text-oc-text-soft">
                               {agentLabel}
                             </span>
                           </div>
@@ -2287,23 +2326,7 @@ export function ErrorBanner({
 export function ThinkingBubble() {
   return (
     <div className="mb-4 px-4">
-      <div className="inline-flex items-center pl-1 font-mono text-[13px] text-[#4e648c]">
-        {[0, 1, 2].map((index) => (
-          <span
-            key={index}
-            className={cn(
-              "inline-block rounded-full bg-current h-1.5 w-1.5",
-              index > 0 ? "ml-1.5" : "",
-            )}
-            style={{
-              animation: `thinking-pulse 1.3s ${index * 0.16}s infinite`,
-            }}
-          />
-        ))}
-        <span className="ml-3 italic opacity-85 tracking-wide">
-          Thinking ...
-        </span>
-      </div>
+      <ThinkingStatusTicker className="pl-1 text-[#4e648c]" />
     </div>
   );
 }

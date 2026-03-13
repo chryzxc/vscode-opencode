@@ -310,140 +310,140 @@ export function HistorySidebar() {
             Start a new chat to get going.
           </div>
         ) : (
-            visibleSessions
-              .map((session) => {
-                const isActive = session.id === currentSessionId;
-              const isEditing = editingSessionId === session.id;
+          visibleSessions.map((session) => {
+            const isActive = session.id === currentSessionId;
+            const isEditing = editingSessionId === session.id;
 
-              const handleStartEdit = () => {
-                setEditingSessionId(session.id);
-                setNewTitle(session.title || "");
-              };
+            const handleStartEdit = () => {
+              setEditingSessionId(session.id);
+              setNewTitle(session.title || "");
+            };
 
-              const handleSaveEdit = () => {
-                if (newTitle.trim()) {
-                  vscode.postMessage({
-                    type: "renameSession",
-                    sessionId: session.id,
-                    newTitle: newTitle.trim(),
-                  });
-                }
-                setEditingSessionId(null);
-                setNewTitle("");
-              };
+            const handleSaveEdit = () => {
+              if (newTitle.trim()) {
+                vscode.postMessage({
+                  type: "renameSession",
+                  sessionId: session.id,
+                  newTitle: newTitle.trim(),
+                });
+              }
+              setEditingSessionId(null);
+              setNewTitle("");
+            };
 
-              const handleCancelEdit = () => {
-                setEditingSessionId(null);
-                setNewTitle("");
-              };
+            const handleCancelEdit = () => {
+              setEditingSessionId(null);
+              setNewTitle("");
+            };
 
-              const handleKeyDown = (e: React.KeyboardEvent) => {
-                if (e.key === "Enter") {
-                  handleSaveEdit();
-                } else if (e.key === "Escape") {
-                  handleCancelEdit();
-                }
-              };
+            const handleKeyDown = (e: React.KeyboardEvent) => {
+              if (e.key === "Enter") {
+                handleSaveEdit();
+              } else if (e.key === "Escape") {
+                handleCancelEdit();
+              }
+            };
 
-              return (
-                <div
-                  key={session.id}
-                  className="group mb-1 flex min-w-0 items-center gap-1"
-                >
-                  {isEditing ? (
-                    <div className="flex-1 flex items-center gap-1 rounded-md border border-oc-accent bg-oc-accent-soft px-2 py-1.5">
-                      <input
-                        ref={inputRef}
-                        type="text"
-                        value={newTitle}
-                        onChange={(e) => setNewTitle(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        onBlur={handleSaveEdit}
-                        className="flex-1 bg-transparent text-xs text-oc-text outline-none"
-                        placeholder="Enter session title..."
-                      />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        title="Cancel"
-                        className="h-5 w-5 rounded-md"
-                        onClick={handleCancelEdit}
-                      >
-                        <X className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            vscode.postMessage({
-                            type: "switchSession",
-                            sessionId: session.id,
-                          });
-                            dispatch({
-                              type: "SET_SIDEBAR_OPEN",
-                              payload: false,
-                            });
-                          }}
-                          className={
-                            `oc-session-item flex-1 min-w-0 overflow-hidden rounded-md px-2.5 py-2 text-left text-xs ` +
-                            (isActive
-                              ? "bg-oc-accent-soft border oc-accent-border-light"
-                              : "border border-transparent")
-                          }
+            return (
+              <div
+                key={session.id}
+                className="group mb-1 flex min-w-0 items-center gap-1"
+              >
+                {isEditing ? (
+                  <div className="flex-1 flex items-center gap-1 rounded-md border border-oc-accent bg-oc-accent-soft px-2 py-1.5">
+                    <input
+                      ref={inputRef}
+                      type="text"
+                      value={newTitle}
+                      onChange={(e) => setNewTitle(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      onBlur={handleSaveEdit}
+                      className="flex-1 bg-transparent text-xs text-oc-text outline-none"
+                      placeholder="Enter session title..."
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="Cancel"
+                      className="h-5 w-5 rounded-md"
+                      onClick={handleCancelEdit}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        vscode.postMessage({
+                          type: "switchSession",
+                          sessionId: session.id,
+                        });
+                        dispatch({
+                          type: "SET_SIDEBAR_OPEN",
+                          payload: false,
+                        });
+                      }}
+                      className={
+                        `oc-session-item flex-1 min-w-0 overflow-hidden rounded-md px-2.5 py-2 text-left text-xs ` +
+                        (isActive
+                          ? "bg-oc-accent-soft border oc-accent-border-light"
+                          : "border border-transparent")
+                      }
+                    >
+                      <div className="flex items-center gap-2">
+                        {isActive ? (
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-accent" />
+                        ) : (
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-border-soft" />
+                        )}
+                        <div
+                          className={`truncate font-medium ${
+                            isActive
+                              ? "text-oc-text"
+                              : "text-[var(--oc-text-soft)]"
+                          }`}
                         >
-                          <div className="flex items-center gap-2">
-                            {isActive ? (
-                              <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-accent" />
-                            ) : (
-                              <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-border-soft" />
-                            )}
-                            <div
-                              className={`truncate font-medium ${isActive
-                                  ? "text-oc-text"
-                                  : "text-[var(--oc-text-soft)]"
-                                }`}
-                            >
-                              {session.title || "Untitled chat"}
-                            </div>
-                          </div>
-                          <div className="truncate text-oc-text-muted text-xs pl-3.5 mt-0.5">
-                            {session.createdAt
-                              ? relativeSessionTime(session.createdAt)
-                              : "Unknown"}
-                          </div>
-                        </button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          title="Rename session"
-                          className="oc-session-rename h-6 w-6 shrink-0 rounded-md opacity-70 group-hover:opacity-100"
-                          aria-label={`Rename session ${session.title ?? session.id}`}
-                          onClick={handleStartEdit}
-                        >
-                          <Edit className="h-3 w-3" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          title="Delete session"
-                          className="oc-session-delete h-6 w-6 shrink-0 rounded-md opacity-70 group-hover:opacity-100"
-                          aria-label={`Delete session ${session.title ?? session.id}`}
-                          onClick={() =>
-                            vscode.postMessage({
-                            type: "deleteSession",
-                            sessionId: session.id,
-                          })
-                        }
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                    </>
-                  )}
-                </div>
-              );
-            })
+                          {session.title || "Untitled chat"}
+                        </div>
+                      </div>
+                      <div className="truncate text-oc-text-muted text-xs pl-3.5 mt-0.5">
+                        {session.createdAt
+                          ? relativeSessionTime(session.createdAt)
+                          : "Unknown"}
+                      </div>
+                    </button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="Rename session"
+                      className="oc-session-rename h-6 w-6 shrink-0 rounded-md opacity-70 group-hover:opacity-100"
+                      aria-label={`Rename session ${session.title ?? session.id}`}
+                      onClick={handleStartEdit}
+                    >
+                      <Edit className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="Delete session"
+                      className="oc-session-delete h-6 w-6 shrink-0 rounded-md opacity-70 group-hover:opacity-100"
+                      aria-label={`Delete session ${session.title ?? session.id}`}
+                      onClick={() =>
+                        vscode.postMessage({
+                          type: "deleteSession",
+                          sessionId: session.id,
+                        })
+                      }
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
     </aside>
@@ -579,10 +579,22 @@ export function ActiveTaskPanel() {
 
   const contextStats = useMemo(
     () => ({
-      input: Math.max(0, sessionStats.input - effectiveCompactionBaselineStats.input),
-      output: Math.max(0, sessionStats.output - effectiveCompactionBaselineStats.output),
-      read: Math.max(0, sessionStats.read - effectiveCompactionBaselineStats.read),
-      write: Math.max(0, sessionStats.write - effectiveCompactionBaselineStats.write),
+      input: Math.max(
+        0,
+        sessionStats.input - effectiveCompactionBaselineStats.input,
+      ),
+      output: Math.max(
+        0,
+        sessionStats.output - effectiveCompactionBaselineStats.output,
+      ),
+      read: Math.max(
+        0,
+        sessionStats.read - effectiveCompactionBaselineStats.read,
+      ),
+      write: Math.max(
+        0,
+        sessionStats.write - effectiveCompactionBaselineStats.write,
+      ),
     }),
     [sessionStats, effectiveCompactionBaselineStats],
   );
@@ -623,7 +635,7 @@ export function ActiveTaskPanel() {
   const liveProgressSteps = useMemo(() => {
     const source =
       Array.isArray(streaming?.progressEvents) &&
-        streaming.progressEvents.length > 0
+      streaming.progressEvents.length > 0
         ? streaming.progressEvents
         : Array.isArray(streaming?.steps)
           ? streaming.steps
@@ -785,10 +797,11 @@ export function ActiveTaskPanel() {
                       )}
                     </span>
                     <span
-                      className={`min-w-0 flex-1 leading-relaxed ${step.status === "pending"
+                      className={`min-w-0 flex-1 leading-relaxed ${
+                        step.status === "pending"
                           ? "text-oc-text"
                           : "text-[var(--oc-text-soft)] opacity-80"
-                        }`}
+                      }`}
                     >
                       <span className="block break-words whitespace-pre-wrap">
                         {step.title}
@@ -841,7 +854,10 @@ export function ActiveTaskPanel() {
                       type="button"
                       className="min-w-0 flex-1 inline-flex items-center gap-1.5 text-left text-xs text-[var(--oc-text-soft)] hover:text-oc-accent"
                       onClick={() =>
-                        vscode.postMessage({ type: "openFile", file: entry.file })
+                        vscode.postMessage({
+                          type: "openFile",
+                          file: entry.file,
+                        })
                       }
                       title={entry.file}
                     >
@@ -855,7 +871,10 @@ export function ActiveTaskPanel() {
                       type="button"
                       className="shrink-0 text-[10px] uppercase font-semibold tracking-wider text-oc-accent hover:underline"
                       onClick={() =>
-                        vscode.postMessage({ type: "openDiff", file: entry.file })
+                        vscode.postMessage({
+                          type: "openDiff",
+                          file: entry.file,
+                        })
                       }
                     >
                       Diff
@@ -920,7 +939,10 @@ export function ActiveTaskPanel() {
                     output: Math.max(0, Math.floor(sessionStats.output || 0)),
                     read: Math.max(0, Math.floor(sessionStats.read || 0)),
                     write: Math.max(0, Math.floor(sessionStats.write || 0)),
-                    duration: Math.max(0, Math.floor(sessionStats.duration || 0)),
+                    duration: Math.max(
+                      0,
+                      Math.floor(sessionStats.duration || 0),
+                    ),
                   },
                 })
               }
@@ -939,7 +961,9 @@ export function ActiveTaskPanel() {
             </div>
           ) : null}
           {!isCompacting && compactionError ? (
-            <div className="mb-2 text-[10px] text-oc-red">{compactionError}</div>
+            <div className="mb-2 text-[10px] text-oc-red">
+              {compactionError}
+            </div>
           ) : null}
 
           {/* 2-col token grid */}
@@ -1204,8 +1228,8 @@ export function ModelDropdown() {
                     onClick={() => setSelectedTab(tab)}
                     className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${
                       selectedTab === tab
-                      ? "bg-oc-accent text-white"
-                      : "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
+                        ? "bg-oc-accent text-white"
+                        : "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
                     }`}
                   >
                     {tab}
@@ -1230,8 +1254,8 @@ export function ModelDropdown() {
                       type="button"
                       className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
                         isCurrent
-                        ? "bg-oc-accent-soft text-oc-accent"
-                        : "hover:bg-oc-panel-soft"
+                          ? "bg-oc-accent-soft text-oc-accent"
+                          : "hover:bg-oc-panel-soft"
                       }`}
                       onClick={() => {
                         dispatch({
@@ -1376,8 +1400,8 @@ export function AgentDropdown() {
                 type="button"
                 className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
                   selectedAgent === agent.id
-                  ? "bg-oc-accent-soft text-oc-accent"
-                  : "hover:bg-oc-panel-soft"
+                    ? "bg-oc-accent-soft text-oc-accent"
+                    : "hover:bg-oc-panel-soft"
                 }`}
                 onClick={() => {
                   dispatch({ type: "SET_SELECTED_AGENT", payload: agent.id });
@@ -1463,7 +1487,9 @@ export function QueueContainer() {
             dispatch({ type: "SET_QUEUE_OPEN", payload: !isQueueOpen })
           }
           aria-expanded={isQueueOpen}
-          aria-label={isQueueOpen ? "Collapse queue panel" : "Expand queue panel"}
+          aria-label={
+            isQueueOpen ? "Collapse queue panel" : "Expand queue panel"
+          }
         >
           <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-oc-text-muted">
             Queue
@@ -1484,7 +1510,10 @@ export function QueueContainer() {
             title="Clear all queued prompts"
             onClick={() => {
               if (!currentSessionId) return;
-              vscode.postMessage({ type: "clearQueue", sessionId: currentSessionId });
+              vscode.postMessage({
+                type: "clearQueue",
+                sessionId: currentSessionId,
+              });
             }}
           >
             Clear all
@@ -1543,7 +1572,9 @@ export function QueueContainer() {
                             ? "Steer this queued prompt now"
                             : "Send this queued prompt now"
                         }
-                        disabled={!itemSessionId || isSteering || isExecutingQueue}
+                        disabled={
+                          !itemSessionId || isSteering || isExecutingQueue
+                        }
                         onClick={() => runQueuedItem(item, index)}
                       >
                         {isProcessing ? (
@@ -1551,13 +1582,19 @@ export function QueueContainer() {
                         ) : (
                           <Send className="mr-1 h-3 w-3" />
                         )}
-                        {isProcessing ? (isSteering ? "Steering..." : "Steer") : "Send"}
+                        {isProcessing
+                          ? isSteering
+                            ? "Steering..."
+                            : "Steer"
+                          : "Send"}
                       </Button>
                       <button
                         type="button"
                         className="rounded-md p-1.5 text-oc-text-muted transition-colors hover:bg-[rgba(248,81,73,0.12)] hover:text-oc-red disabled:cursor-not-allowed disabled:opacity-50"
                         title="Remove from queue"
-                        disabled={!itemSessionId || isSteering || isExecutingQueue}
+                        disabled={
+                          !itemSessionId || isSteering || isExecutingQueue
+                        }
                         onClick={() => removeQueuedItem(item, index)}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -1590,7 +1627,10 @@ export function QueueContainer() {
               size="sm"
               disabled={isExecutingQueue || isSteering || !currentSessionId}
               onClick={() =>
-                vscode.postMessage({ type: "executeQueue", sessionId: currentSessionId })
+                vscode.postMessage({
+                  type: "executeQueue",
+                  sessionId: currentSessionId,
+                })
               }
             >
               <Play className="mr-1 h-3 w-3" /> Execute All
@@ -1680,7 +1720,12 @@ export function InputWrapper() {
         activeEl.scrollIntoView({ block: "nearest" });
       }
     }
-  }, [selectedCommandIndex, selectedSuggestionIndex, slashTrigger, showFileSuggestions]);
+  }, [
+    selectedCommandIndex,
+    selectedSuggestionIndex,
+    slashTrigger,
+    showFileSuggestions,
+  ]);
 
   // Centralized Interactive Event Handler
   // By design, ALL interactive choices (whether explicitly sent by the server or
@@ -2069,7 +2114,7 @@ export function InputWrapper() {
                 </div>
               ) : (
                 <>
-                    {event.type === "question" ? (
+                  {event.type === "question" ? (
                     <div className="flex flex-wrap gap-2">
                       {event.options.map((option, index) => (
                         <button
@@ -2088,86 +2133,86 @@ export function InputWrapper() {
                           {capitalizeFirst(option.label)}
                         </button>
                       ))}
-                        <button
-                          type="button"
-                          className="rounded-md border border-dashed border-[var(--oc-border)] bg-transparent px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-muted)] hover:border-[var(--oc-accent)] hover:text-[var(--oc-accent)] transition-all"
-                          onClick={() => setIsCustomMode(true)}
-                        >
-                          Custom Answer...
-                        </button>
-                      </div>
-                    ) : null}
+                      <button
+                        type="button"
+                        className="rounded-md border border-dashed border-[var(--oc-border)] bg-transparent px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-muted)] hover:border-[var(--oc-accent)] hover:text-[var(--oc-accent)] transition-all"
+                        onClick={() => setIsCustomMode(true)}
+                      >
+                        Custom Answer...
+                      </button>
+                    </div>
+                  ) : null}
 
-                    {event.type === "confirm" ? (
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
-                          onClick={() =>
-                            submitInteractiveResponse(
+                  {event.type === "confirm" ? (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                        onClick={() =>
+                          submitInteractiveResponse(
                             event.confirmLabel || "Yes",
                             event.id,
                             event.type,
                           )
                         }
-                        >
-                          {capitalizeFirst(event.confirmLabel || "Yes")}
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-muted)] hover:border-[var(--oc-border-strong)] hover:text-[var(--oc-text-soft)] transition-all"
-                          onClick={() =>
-                            submitInteractiveResponse(
+                      >
+                        {capitalizeFirst(event.confirmLabel || "Yes")}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-muted)] hover:border-[var(--oc-border-strong)] hover:text-[var(--oc-text-soft)] transition-all"
+                        onClick={() =>
+                          submitInteractiveResponse(
                             event.cancelLabel || "No",
                             event.id,
                             event.type,
                           )
                         }
-                        >
-                          {capitalizeFirst(event.cancelLabel || "No")}
-                        </button>
-                      </div>
-                    ) : null}
+                      >
+                        {capitalizeFirst(event.cancelLabel || "No")}
+                      </button>
+                    </div>
+                  ) : null}
 
-                    {event.type === "quick_actions" ? (
-                      <div className="flex flex-wrap gap-2">
-                        {event.actions.map((action, index) => (
-                          <button
-                            key={`${event.id}-a-${action.id || action.value || index}`}
-                            type="button"
-                            className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
-                            title={action.description || action.label}
-                            onClick={() =>
-                              submitInteractiveResponse(
-                                action.value || action.label,
-                                event.id,
-                                event.type,
-                              )
-                            }
-                          >
-                            {capitalizeFirst(action.label)}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    {event.type === "message" ? (
-                      <div className="flex flex-wrap gap-2">
+                  {event.type === "quick_actions" ? (
+                    <div className="flex flex-wrap gap-2">
+                      {event.actions.map((action, index) => (
                         <button
+                          key={`${event.id}-a-${action.id || action.value || index}`}
                           type="button"
-                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                          title={action.description || action.label}
                           onClick={() =>
                             submitInteractiveResponse(
-                              event.dismissLabel || "OK",
+                              action.value || action.label,
                               event.id,
                               event.type,
                             )
                           }
                         >
-                          {capitalizeFirst(event.dismissLabel || "OK")}
+                          {capitalizeFirst(action.label)}
                         </button>
-                      </div>
-                    ) : null}
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {event.type === "message" ? (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                        onClick={() =>
+                          submitInteractiveResponse(
+                            event.dismissLabel || "OK",
+                            event.id,
+                            event.type,
+                          )
+                        }
+                      >
+                        {capitalizeFirst(event.dismissLabel || "OK")}
+                      </button>
+                    </div>
+                  ) : null}
                 </>
               )}
             </div>
@@ -2526,8 +2571,8 @@ export function ThinkingLevelControl() {
                 type="button"
                 className={`oc-popover-item w-full rounded-lg px-3 py-2 text-left transition-colors ${
                   thinkingLevel === level
-                  ? "bg-oc-accent-soft text-oc-accent"
-                  : "hover:bg-oc-panel-soft"
+                    ? "bg-oc-accent-soft text-oc-accent"
+                    : "hover:bg-oc-panel-soft"
                 }`}
                 onClick={() => setLevel(level)}
               >
@@ -2608,7 +2653,8 @@ export function QuotaMonitor() {
             onClick={handleRefresh}
           >
             <RefreshCw
-              className={`mr-1 h-3.5 w-3.5 ${quotaIsRefreshing ? "animate-spin" : ""
+              className={`mr-1 h-3.5 w-3.5 ${
+                quotaIsRefreshing ? "animate-spin" : ""
               }`}
             />
             Refresh
@@ -2779,12 +2825,13 @@ export function QuotaMonitor() {
                             </div>
                             <Badge
                               variant="accent"
-                              className={`font-mono text-[10px] uppercase h-5 px-1.5 border-none ${budgetInfo.warningLevel === "critical"
+                              className={`font-mono text-[10px] uppercase h-5 px-1.5 border-none ${
+                                budgetInfo.warningLevel === "critical"
                                   ? "bg-oc-red/10 text-oc-red"
                                   : budgetInfo.warningLevel === "warning"
                                     ? "bg-[#d29922]/10 text-[#d29922]"
                                     : "bg-oc-accent/10 text-oc-accent"
-                                }`}
+                              }`}
                             >
                               {budgetInfo.warningLevel}
                             </Badge>
@@ -2809,8 +2856,8 @@ export function QuotaMonitor() {
                                   background: barColor(
                                     budgetInfo.dailyAllowance > 0
                                       ? (budgetInfo.remainingToday /
-                                        budgetInfo.dailyAllowance) *
-                                      100
+                                          budgetInfo.dailyAllowance) *
+                                          100
                                       : 100,
                                   ),
                                 }}
@@ -2825,17 +2872,18 @@ export function QuotaMonitor() {
                                 Available
                               </div>
                               <div
-                                className={`text-sm font-bold leading-tight ${budgetInfo.warningLevel === "critical"
+                                className={`text-sm font-bold leading-tight ${
+                                  budgetInfo.warningLevel === "critical"
                                     ? "text-oc-red"
                                     : budgetInfo.warningLevel === "warning"
                                       ? "text-[#d29922]"
                                       : "text-oc-accent"
-                                  }`}
+                                }`}
                               >
                                 {budgetInfo.availableToday}
                               </div>
                               {budgetInfo.availableToday >
-                                budgetInfo.dailyAllowance ? (
+                              budgetInfo.dailyAllowance ? (
                                 <div className="mt-0.5 text-[9px] font-medium text-oc-accent/70 leading-none">
                                   +
                                   {budgetInfo.availableToday -
@@ -3198,10 +3246,11 @@ export function LspPanel() {
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span
-                      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${server.status === "connected"
+                      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                        server.status === "connected"
                           ? "bg-[var(--oc-green)]"
                           : "bg-[var(--oc-red)]"
-                        }`}
+                      }`}
                       aria-hidden="true"
                     />
                     <span className="truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
@@ -3261,7 +3310,10 @@ export function SkillsPanel() {
     <div className="oc-skills-panel border-t border-oc-border p-3 text-xs">
       <div className="mb-2 flex items-center justify-between">
         <div className="oc-panel-title flex items-center gap-1.5">
-          <Zap className="h-3 w-3 text-[var(--oc-text-soft)]" aria-hidden="true" />
+          <Zap
+            className="h-3 w-3 text-[var(--oc-text-soft)]"
+            aria-hidden="true"
+          />
           <span>Skills</span>
         </div>
         <Button
@@ -3289,14 +3341,20 @@ export function SkillsPanel() {
           ) : (
             availableCommands.map((skill) => {
               const isExpanded = expandedSkills.has(skill.name);
-              const hasDetail = !!(skill.description || skill.agent || skill.model);
+              const hasDetail = !!(
+                skill.description ||
+                skill.agent ||
+                skill.model
+              );
               return (
                 <div
                   key={skill.name}
                   className="rounded-md border border-oc-border bg-oc-panel-soft"
                 >
                   <div className="flex items-center gap-2 p-2">
-                    <span className="font-mono text-xs font-medium text-oc-accent shrink-0">/</span>
+                    <span className="font-mono text-xs font-medium text-oc-accent shrink-0">
+                      /
+                    </span>
                     <span className="flex-1 truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
                       {skill.name}
                     </span>
@@ -3313,7 +3371,11 @@ export function SkillsPanel() {
                         type="button"
                         variant="ghost"
                         size="icon"
-                        aria-label={isExpanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
+                        aria-label={
+                          isExpanded
+                            ? `Collapse ${skill.name}`
+                            : `Expand ${skill.name}`
+                        }
                         aria-expanded={isExpanded}
                         onClick={() => toggleSkill(skill.name)}
                         className="h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
@@ -3354,7 +3416,8 @@ export function SkillsPanel() {
           )}
           {hasSkills && (
             <div className="mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
-              {availableCommands.length} skill{availableCommands.length !== 1 ? "s" : ""}
+              {availableCommands.length} skill
+              {availableCommands.length !== 1 ? "s" : ""}
             </div>
           )}
         </div>
@@ -3386,7 +3449,8 @@ export function AgentsPanel() {
   }
 
   function modeBadgeClass(mode: string | undefined) {
-    if (mode === "subagent") return "bg-[var(--oc-yellow,#f59e0b)]/20 text-[var(--oc-yellow,#f59e0b)]";
+    if (mode === "subagent")
+      return "bg-[var(--oc-yellow,#f59e0b)]/20 text-[var(--oc-yellow,#f59e0b)]";
     if (mode === "all") return "bg-[var(--oc-accent)]/20 text-oc-accent";
     // primary (default)
     return "bg-[var(--oc-green)]/20 text-[var(--oc-green)]";
@@ -3396,7 +3460,10 @@ export function AgentsPanel() {
     <div className="oc-agents-panel border-t border-oc-border p-3 text-xs">
       <div className="mb-2 flex items-center justify-between">
         <div className="oc-panel-title flex items-center gap-1.5">
-          <Bot className="h-3 w-3 text-[var(--oc-text-soft)]" aria-hidden="true" />
+          <Bot
+            className="h-3 w-3 text-[var(--oc-text-soft)]"
+            aria-hidden="true"
+          />
           <span>Agents</span>
         </div>
         <Button
@@ -3502,4 +3569,3 @@ export function AgentsPanel() {
     </div>
   );
 }
-

@@ -60,3 +60,36 @@ test("MessageComponents declares hasStreamingActivity and guards 'Thinking...' U
         "Expected showStreamingLoading to hide 'Thinking...' when streaming has activity",
     );
 });
+
+test("MessageComponents uses rotating thinking status text and hides empty streaming response card", () => {
+    assert.match(
+        messageComponentsSource,
+        /const THINKING_LOADING_TEXTS\s*=\s*\[/,
+        'Expected rotating thinking status messages to be declared',
+    );
+    assert.match(
+        messageComponentsSource,
+        /function ThinkingStatusTicker\(/,
+        'Expected ThinkingStatusTicker component to exist',
+    );
+    assert.match(
+        messageComponentsSource,
+        /<FadeSwapText[\s\S]*THINKING_LOADING_TEXTS\[messageIndex\]/,
+        'Expected ThinkingStatusTicker to animate between loading texts using FadeSwapText',
+    );
+    assert.match(
+        messageComponentsSource,
+        /const showResponseSection\s*=\s*hasResponseContent;/,
+        'Expected response section to render only when response content exists',
+    );
+    assert.match(
+        messageComponentsSource,
+        /{showResponseSection && \(\s*<section[\s\S]*data-assistant-section="response"/,
+        'Expected response panel rendering to be gated by showResponseSection',
+    );
+    assert.doesNotMatch(
+        messageComponentsSource,
+        /Waiting for response content\.\.\./,
+        'Expected redundant waiting placeholder card text to be removed',
+    );
+});
