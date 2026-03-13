@@ -102,9 +102,9 @@ export type AppAction =
   | { type: "SET_SESSION_ID"; payload: string | null }
   | { type: "SET_SERVER_STATUS"; payload: string }
   | {
-      type: "SET_SELECTED_MODEL";
-      payload: { providerID: string; modelID: string } | null;
-    }
+    type: "SET_SELECTED_MODEL";
+    payload: { providerID: string; modelID: string } | null;
+  }
   | { type: "SET_MODELS_LIST"; payload: Model[] }
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
@@ -125,23 +125,23 @@ export type AppAction =
   | { type: "UPDATE_STREAMING_STEP"; payload: StreamingStepUpdatePayload }
   | { type: "ADD_STREAMING_EDIT"; payload: string }
   | {
-      type: "FINISH_STREAMING";
-      payload?: { usage?: { total: number; duration?: number } };
-    }
+    type: "FINISH_STREAMING";
+    payload?: { usage?: { total: number; duration?: number } };
+  }
   | { type: "SET_INPUT_VALUE"; payload: string }
   | { type: "SET_FILE_SUGGESTIONS"; payload: FileResult[] }
   | { type: "SET_SHOW_FILE_SUGGESTIONS"; payload: boolean }
   | { type: "SET_SUGGESTION_INDEX"; payload: number }
   | {
-      type: "SET_COMMANDS_LIST";
-      payload: AppState["availableCommands"];
-    }
+    type: "SET_COMMANDS_LIST";
+    payload: AppState["availableCommands"];
+  }
   | { type: "SET_SELECTED_FILES"; payload: string[] }
   | { type: "SET_SELECTED_CONTEXTS"; payload: ContextItem[] }
   | {
-      type: "SET_QUEUE";
-      payload: { sessionId: string | null; queue: QueueItem[] };
-    }
+    type: "SET_QUEUE";
+    payload: { sessionId: string | null; queue: QueueItem[] };
+  }
   | { type: "SET_EXECUTING_QUEUE"; payload: boolean }
   | { type: "SET_QUEUE_OPEN"; payload: boolean }
   | { type: "SET_SIDEBAR_OPEN"; payload: boolean }
@@ -149,29 +149,29 @@ export type AppAction =
   | { type: "SET_AGENT_DROPDOWN_OPEN"; payload: boolean }
   | { type: "SET_THINKING_DROPDOWN_OPEN"; payload: boolean }
   | {
-      type: "SET_COMPACTION_STATUS";
-      payload: {
-        status: "running" | "done" | "error";
-        at?: number;
-        error?: string;
-        baselineStats?: SessionStats;
-        compactionDividerIndex?: number;
-        compactionDividerBeforeMessageId?: string;
-        compactionDividerAfterMessageId?: string;
-        collapsed?: boolean;
-      };
-    }
+    type: "SET_COMPACTION_STATUS";
+    payload: {
+      status: "running" | "done" | "error";
+      at?: number;
+      error?: string;
+      baselineStats?: SessionStats;
+      compactionDividerIndex?: number;
+      compactionDividerBeforeMessageId?: string;
+      compactionDividerAfterMessageId?: string;
+      collapsed?: boolean;
+    };
+  }
   | {
-      type: "SET_COMPACTION_VIEW_STATE";
-      payload: {
-        lastCompactedAt?: number;
-        baselineStats?: SessionStats;
-        compactionDividerIndex?: number;
-        compactionDividerBeforeMessageId?: string;
-        compactionDividerAfterMessageId?: string;
-        collapsed?: boolean;
-      };
-    }
+    type: "SET_COMPACTION_VIEW_STATE";
+    payload: {
+      lastCompactedAt?: number;
+      baselineStats?: SessionStats;
+      compactionDividerIndex?: number;
+      compactionDividerBeforeMessageId?: string;
+      compactionDividerAfterMessageId?: string;
+      collapsed?: boolean;
+    };
+  }
   | { type: "SET_COMPACTED_MESSAGES_COLLAPSED"; payload: boolean }
   | { type: "SET_MODEL_SEARCH"; payload: string }
   | { type: "SET_AGENT_SEARCH"; payload: string }
@@ -185,14 +185,14 @@ export type AppAction =
   | { type: "SET_THINKING_LEVEL"; payload: ThinkingLevel }
   | { type: "SET_TODO_ITEMS"; payload: TodoItem[] }
   | {
-      type: "UPDATE_TODO_ITEM";
-      payload: { id: string; patch: Partial<TodoItem> };
-    }
+    type: "UPDATE_TODO_ITEM";
+    payload: { id: string; patch: Partial<TodoItem> };
+  }
   | { type: "ADD_TODO_ITEM"; payload: TodoItem }
   | {
-      type: "UPSERT_SUBAGENT_SUMMARIES";
-      payload: Record<string, SubagentSummary[]>;
-    }
+    type: "UPSERT_SUBAGENT_SUMMARIES";
+    payload: Record<string, SubagentSummary[]>;
+  }
   | { type: "UPSERT_SUBAGENT_DETAIL"; payload: Record<string, SubagentDetail> }
   | { type: "SELECT_SUBAGENT"; payload: string | null }
   | { type: "SET_SUBAGENTS_PANEL_OPEN"; payload: boolean }
@@ -432,10 +432,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         typeof resolvedDividerIndex === "number"
           ? resolveCompactionDividerAnchors(action.payload, resolvedDividerIndex)
           : {
-              compactionDividerBeforeMessageId:
-                state.compactionDividerBeforeMessageId,
-              compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
-            };
+            compactionDividerBeforeMessageId:
+              state.compactionDividerBeforeMessageId,
+            compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
+          };
       return {
         ...state,
         messages: action.payload,
@@ -543,13 +543,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_STREAMING":
       return action.payload
         ? {
-            ...state,
-            streaming: {
-              ...action.payload,
-              reasoningEvents: action.payload.reasoningEvents ?? [],
-              progressEvents: action.payload.progressEvents ?? [],
-            },
-          }
+          ...state,
+          streaming: {
+            ...action.payload,
+            reasoningEvents: action.payload.reasoningEvents ?? [],
+            progressEvents: action.payload.progressEvents ?? [],
+          },
+        }
         : { ...state, streaming: null };
     case "UPDATE_STREAMING_CONTENT": {
       if (!state.streaming) {
@@ -576,18 +576,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       const reasoning = action.payload.append
         ? appendStreamingReasoning(
-            state.streaming.reasoning,
-            action.payload.reasoning,
-          )
+          state.streaming.reasoning,
+          action.payload.reasoning,
+        )
         : action.payload.reasoning;
       const chunk = action.payload.reasoning.trim();
       const reasoningEvents =
         chunk.length > 0
           ? appendWithCap(
-              state.streaming.reasoningEvents,
-              { text: chunk, createdAt: Date.now() },
-              MAX_STREAMING_REASONING_EVENTS,
-            )
+            state.streaming.reasoningEvents,
+            { text: chunk, createdAt: Date.now() },
+            MAX_STREAMING_REASONING_EVENTS,
+          )
           : state.streaming.reasoningEvents;
       return {
         ...state,
@@ -624,11 +624,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         typeof action.payload.index === "number"
           ? action.payload.index
           : state.streaming.steps.findIndex(
-              (step) =>
-                (action.payload.id && step.id === action.payload.id) ||
-                (action.payload.callID &&
-                  step.callID === action.payload.callID),
-            );
+            (step) =>
+              (action.payload.id && step.id === action.payload.id) ||
+              (action.payload.callID &&
+                step.callID === action.payload.callID),
+          );
       if (idx < 0) {
         return state;
       }
@@ -757,18 +757,22 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           typeof resolvedDividerIndex === "number"
             ? resolveCompactionDividerAnchors(state.messages, resolvedDividerIndex)
             : {
-                compactionDividerBeforeMessageId:
-                  action.payload.compactionDividerBeforeMessageId,
-                compactionDividerAfterMessageId:
-                  action.payload.compactionDividerAfterMessageId,
-              };
+              compactionDividerBeforeMessageId:
+                action.payload.compactionDividerBeforeMessageId,
+              compactionDividerAfterMessageId:
+                action.payload.compactionDividerAfterMessageId,
+            };
         return {
           ...state,
           isCompacting: false,
           lastCompactedAt: nextLastCompactedAt,
           compactionError: undefined,
+          // Use the explicit baseline supplied by the backend.  Do NOT fall
+          // back to state.sessionStats: after compaction the server replaces
+          // old messages with a summary, so subtracting pre-compact stats
+          // from the (now much smaller) sessionStats would give 0.
           compactionBaselineStats:
-            action.payload.baselineStats ?? state.sessionStats,
+            action.payload.baselineStats ?? undefined,
           compactionDividerIndex: resolvedDividerIndex,
           compactionDividerBeforeMessageId:
             action.payload.compactionDividerBeforeMessageId ??
@@ -803,9 +807,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         typeof resolvedDividerIndex === "number"
           ? resolveCompactionDividerAnchors(state.messages, resolvedDividerIndex)
           : {
-              compactionDividerBeforeMessageId: nextBeforeId,
-              compactionDividerAfterMessageId: nextAfterId,
-            };
+            compactionDividerBeforeMessageId: nextBeforeId,
+            compactionDividerAfterMessageId: nextAfterId,
+          };
       return {
         ...state,
         lastCompactedAt: nextLastCompactedAt,

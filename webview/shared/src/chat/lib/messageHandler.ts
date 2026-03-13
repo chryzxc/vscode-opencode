@@ -460,6 +460,7 @@ type StructuredSubagent = {
 
 type StructuredOutput = {
   responseType?: StructuredResponseType | string;
+  assistantMessage?: string;
   message?: string;
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
@@ -492,16 +493,17 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
 
   const responseType =
     asString(sanitizedRec.responseType) || asString(rec.type) || asString(rec.kind) || undefined;
-  const message =
+  if (!responseType) {
+    return undefined;
+  }
+  const assistantMessage =
+    asString(sanitizedRec.assistantMessage) ||
     asString(sanitizedRec.message) ||
-    asString(rec.output) ||
-    asString(rec.answer) ||
-    asString(rec.content) ||
-    asString(rec.text) ||
     undefined;
+  const message = asString(sanitizedRec.message) || undefined;
 
   const reasoningRaw =
-    sanitizedRec.reasoning ?? rec.thinking ?? rec.thoughts;
+    sanitizedRec.reasoning;
   const reasoning = Array.isArray(reasoningRaw)
     ? reasoningRaw
       .filter((item): item is string => typeof item === 'string')
@@ -510,6 +512,42 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     : typeof reasoningRaw === 'string' && reasoningRaw.trim()
       ? [reasoningRaw.trim()]
       : [];
+  const normalizeComparableText = (value: string): string =>
+    value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
+  const stripAssistantEchoFromReasoning = (
+    chunk: string,
+    replyText?: string,
+  ): string => {
+    const trimmedChunk = chunk.trim();
+    if (!trimmedChunk) {
+      return "";
+    }
+    if (!replyText) {
+      return trimmedChunk;
+    }
+    const trimmedReply = replyText.trim();
+    if (!trimmedReply) {
+      return trimmedChunk;
+    }
+    if (
+      normalizeComparableText(trimmedChunk) ===
+      normalizeComparableText(trimmedReply)
+    ) {
+      return "";
+    }
+    if (trimmedChunk.startsWith(trimmedReply)) {
+      return trimmedChunk
+        .slice(trimmedReply.length)
+        .replace(/^[\s:;,\-.!?]+/, "")
+        .trim();
+    }
+    return trimmedChunk;
+  };
+  const cleanedReasoning = reasoning
+    .map((chunk) =>
+      stripAssistantEchoFromReasoning(chunk, assistantMessage || message),
+    )
+    .filter(Boolean);
 
   const progressRaw =
     sanitizedRec.progressUpdates ?? (rec.progress_updates as unknown);
@@ -869,9 +907,9 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
       : undefined;
 
   if (
-    !responseType &&
+    !assistantMessage &&
     !message &&
-    reasoning.length === 0 &&
+    cleanedReasoning.length === 0 &&
     progressUpdates.length === 0 &&
     interactiveEvents.length === 0 &&
     subagents.length === 0 &&
@@ -882,8 +920,9 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
 
   return {
     responseType,
+    assistantMessage,
     message,
-    reasoning: reasoning.length > 0 ? reasoning : undefined,
+    reasoning: cleanedReasoning.length > 0 ? cleanedReasoning : undefined,
     progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
     interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined,
     subagents: subagents.length > 0 ? subagents : undefined,
@@ -3113,13 +3152,15 @@ function handleStreamEvent(
           });
         }
 
-        if (structuredOutput.message) {
+        const structuredMessage =
+          structuredOutput.assistantMessage || structuredOutput.message;
+        if (structuredMessage) {
           const streamingState = getState().streaming;
-          const rawReasoningLike = looksLikeReasoningTrace(structuredOutput.message, streamingState?.content || "");
+          const rawReasoningLike = looksLikeReasoningTrace(structuredMessage, streamingState?.content || "");
           const mixedMessage = splitMixedReasoningFromContent(
-            structuredOutput.message,
+            structuredMessage,
           );
-          let messageText = structuredOutput.message;
+          let messageText = structuredMessage;
           if (mixedMessage) {
             const mixedReasoning = sanitizeReasoningChunk(mixedMessage.reasoning);
             if (mixedReasoning) {
@@ -3132,7 +3173,7 @@ function handleStreamEvent(
           }
 
           if (rawReasoningLike && !mixedMessage) {
-            const reasoningLeak = sanitizeReasoningChunk(structuredOutput.message);
+            const reasoningLeak = sanitizeReasoningChunk(structuredMessage);
             if (reasoningLeak) {
               dispatch({
                 type: 'UPDATE_STREAMING_REASONING',
@@ -3163,7 +3204,7 @@ function handleStreamEvent(
             } else {
               const contentPatch = resolveStreamingContentUpdate(
                 streamingState?.content || '',
-                structuredOutput.message,
+                structuredMessage,
                 false,
               );
               if (contentPatch) {

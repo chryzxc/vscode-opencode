@@ -258,6 +258,7 @@ type StructuredInteractiveEvent =
 
 type StructuredAssistantOutput = {
   responseType?: StructuredResponseType | string;
+  assistantMessage?: string;
   message?: string;
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
@@ -1858,6 +1859,34 @@ export class ChatViewProvider
     return this.firstNonEmptyString(message?.info?.id, message?.id);
   }
 
+  private hasStructuredSubagentSignal(messageRaw: unknown): boolean {
+    const message = this.asRecord(messageRaw);
+    if (!message) {
+      return false;
+    }
+
+    if (Array.isArray(message.subagents) && message.subagents.length > 0) {
+      return true;
+    }
+
+    const structured = this.asRecord(message.structuredOutput);
+    if (!structured) {
+      return false;
+    }
+
+    if (Array.isArray(structured.subagents) && structured.subagents.length > 0) {
+      return true;
+    }
+
+    const delta = this.asRecord(structured.subagentsDelta);
+    if (Array.isArray(delta?.items) && delta.items.length > 0) {
+      return true;
+    }
+
+    const responseType = this.firstNonEmptyString(structured.responseType);
+    return responseType?.toLowerCase() === "subagents";
+  }
+
   private normalizeSubagentStatus(
     value: unknown,
   ): "pending" | "running" | "done" | "error" | "orphaned" {
@@ -2869,15 +2898,17 @@ export class ChatViewProvider
       rec.kind,
       rec.category,
     );
-    const message = this.firstNonEmptyString(
-      sanitizedRec.message,
-      rec.output,
-      rec.answer,
-      rec.content,
-      rec.text,
-    );
+    if (!responseType) {
+      return undefined;
+    }
 
-    const reasoningRaw = sanitizedRec.reasoning ?? rec.thinking ?? rec.thoughts;
+    const assistantMessage = this.firstNonEmptyString(
+      sanitizedRec.assistantMessage,
+      sanitizedRec.message,
+    );
+    const message = this.firstNonEmptyString(sanitizedRec.message);
+
+    const reasoningRaw = sanitizedRec.reasoning;
     const reasoning = Array.isArray(reasoningRaw)
       ? reasoningRaw
         .filter((item): item is string => typeof item === "string")
@@ -2886,6 +2917,42 @@ export class ChatViewProvider
       : typeof reasoningRaw === "string" && reasoningRaw.trim()
         ? [reasoningRaw.trim()]
         : [];
+    const normalizeComparableText = (value: string): string =>
+      value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
+    const stripAssistantEchoFromReasoning = (
+      chunk: string,
+      replyText?: string,
+    ): string => {
+      const trimmedChunk = chunk.trim();
+      if (!trimmedChunk) {
+        return "";
+      }
+      if (!replyText) {
+        return trimmedChunk;
+      }
+      const trimmedReply = replyText.trim();
+      if (!trimmedReply) {
+        return trimmedChunk;
+      }
+      if (
+        normalizeComparableText(trimmedChunk) ===
+        normalizeComparableText(trimmedReply)
+      ) {
+        return "";
+      }
+      if (trimmedChunk.startsWith(trimmedReply)) {
+        return trimmedChunk
+          .slice(trimmedReply.length)
+          .replace(/^[\s:;,\-.!?]+/, "")
+          .trim();
+      }
+      return trimmedChunk;
+    };
+    const cleanedReasoning = reasoning
+      .map((chunk) =>
+        stripAssistantEchoFromReasoning(chunk, assistantMessage || message),
+      )
+      .filter(Boolean);
 
     const progressRaw =
       sanitizedRec.progressUpdates ?? (rec.progress_updates as unknown);
@@ -3348,9 +3415,9 @@ export class ChatViewProvider
         : undefined;
 
     if (
-      !responseType &&
+      !assistantMessage &&
       !message &&
-      reasoning.length === 0 &&
+      cleanedReasoning.length === 0 &&
       progressUpdates.length === 0 &&
       interactiveEvents.length === 0 &&
       (!subagents || subagents.length === 0) &&
@@ -3362,8 +3429,9 @@ export class ChatViewProvider
 
     return {
       responseType,
+      assistantMessage,
       message,
-      reasoning: reasoning.length > 0 ? reasoning : undefined,
+      reasoning: cleanedReasoning.length > 0 ? cleanedReasoning : undefined,
       progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
       interactiveEvents:
         interactiveEvents.length > 0 ? interactiveEvents : undefined,
@@ -3491,12 +3559,6 @@ export class ChatViewProvider
                 source: "messageLike.parts[].state.result",
               });
             }
-            if (part.state.input) {
-              candidates.push({
-                value: part.state.input,
-                source: "messageLike.parts[].state.input",
-              });
-            }
           }
         }
       }
@@ -3571,7 +3633,9 @@ export class ChatViewProvider
     // Preserve the default OpenCode response body whenever it exists.
     // Only inject structured text as a fallback when body text is missing or JSON-only.
     const messageContent =
-      structured.message || this.createFallbackMessage(structured);
+      structured.assistantMessage ||
+      structured.message ||
+      this.createFallbackMessage(structured);
     const shouldUseStructuredMessage = !bodyText || hasJsonOnlyBody;
     if (messageContent && shouldUseStructuredMessage) {
       next.content = messageContent;
@@ -3701,7 +3765,10 @@ export class ChatViewProvider
       structured.responseType === "implementation_plan" &&
       !shouldSuppressStructuredPlan
     ) {
-      const summaryMessage = this.firstNonEmptyString(structured.message);
+      const summaryMessage = this.firstNonEmptyString(
+        structured.assistantMessage,
+        structured.message,
+      );
       const safeMessage =
         summaryMessage && summaryMessage.length <= 280
           ? summaryMessage
@@ -3751,7 +3818,10 @@ export class ChatViewProvider
       }
       if (structured.responseType === "implementation_plan") {
         const clarificationMessage =
-          this.firstNonEmptyString(structured.message) ||
+          this.firstNonEmptyString(
+            structured.assistantMessage,
+            structured.message,
+          ) ||
           "I need a few clarifications before drafting the implementation plan.";
         next.content = clarificationMessage;
         const parts = Array.isArray(next.parts) ? [...next.parts] : [];
@@ -4235,8 +4305,10 @@ export class ChatViewProvider
         );
         const enrichedMessage = this.enrichMessageWithPlan(structuredMessage);
         const trackerSnapshotPayload = this.subagentTracker.getSnapshotPayload();
+        const hasSubagentSignal =
+          this.hasStructuredSubagentSignal(enrichedMessage);
         let assistantMessageId = this.extractMessageId(enrichedMessage);
-        if (!assistantMessageId) {
+        if (!assistantMessageId && hasSubagentSignal) {
           assistantMessageId = this.subagentTracker.getLatestParentMessageId(
             session.id,
           );
@@ -4244,7 +4316,7 @@ export class ChatViewProvider
             enrichedMessage.id = assistantMessageId;
           }
         }
-        if (!assistantMessageId) {
+        if (!assistantMessageId && hasSubagentSignal) {
           assistantMessageId = this.findLatestSubagentParentMessageIdForSession(
             trackerSnapshotPayload,
             session.id,
@@ -4282,7 +4354,7 @@ export class ChatViewProvider
                 enrichedMessage.subagents,
                 hydratedFromSnapshot,
               );
-            } else {
+            } else if (hasSubagentSignal) {
               const fallbackParentMessageId =
                 this.findLatestSubagentParentMessageIdForSession(
                   trackerSnapshotPayload,
@@ -4313,7 +4385,7 @@ export class ChatViewProvider
               }
             }
           }
-        } else {
+        } else if (hasSubagentSignal) {
           const fallbackParentMessageId =
             this.findLatestSubagentParentMessageIdForSession(
               trackerSnapshotPayload,
@@ -4368,6 +4440,9 @@ export class ChatViewProvider
             },
           },
         });
+
+        // Auto-compact if the context window is getting full.
+        void this.maybeAutoCompact(session.id, response.data);
       } else {
         console.warn("No response data received from OpenCode");
       }
@@ -4794,6 +4869,74 @@ export class ChatViewProvider
     }
   }
 
+  /**
+   * Returns the context token limit for the currently selected model, or
+   * undefined if the model/limit is unknown.
+   */
+  private getSelectedModelContextLimit(): number | undefined {
+    if (!this.availableModels?.length || !this.selectedModel) {
+      return undefined;
+    }
+    const matched = this.availableModels.find(
+      (m) =>
+        m.providerID === this.selectedModel.providerID &&
+        m.modelID === this.selectedModel.modelID,
+    );
+    const limit = matched?.contextLimit;
+    return typeof limit === "number" && Number.isFinite(limit) && limit > 0
+      ? Math.floor(limit)
+      : undefined;
+  }
+
+  /**
+   * Checks whether the context window is at or above the auto-compact
+   * threshold after a completed turn and, if so, triggers compaction
+   * automatically so the next turn does not hit the limit.
+   *
+   * The threshold is intentionally set at 90 % so compaction runs while
+   * there is still room for the summary that the compaction call itself
+   * produces.
+   */
+  private async maybeAutoCompact(
+    sessionId: string,
+    responseData: unknown,
+  ): Promise<void> {
+    if (this.compactingSessions.has(sessionId)) {
+      return; // already compacting
+    }
+
+    const contextLimit = this.getSelectedModelContextLimit();
+    if (!contextLimit) {
+      return; // context limit unknown – can't evaluate threshold
+    }
+
+    // The `info.tokens.input` field carries the number of tokens that were
+    // sent to the model in this turn (i.e. the current context window size).
+    const info = (responseData as any)?.info;
+    const inputTokens: number = info?.tokens?.input ?? 0;
+    if (inputTokens <= 0) {
+      return;
+    }
+
+    const pct = inputTokens / contextLimit;
+    const AUTO_COMPACT_THRESHOLD = 0.9; // 90 %
+    if (pct < AUTO_COMPACT_THRESHOLD) {
+      return;
+    }
+
+    console.log(
+      `[ChatViewProvider] Auto-compacting session ${sessionId}: ${inputTokens.toLocaleString()} / ${contextLimit.toLocaleString()} tokens (${Math.round(pct * 100)}%)`,
+    );
+    vscode.window.showInformationMessage(
+      `Context window is ${Math.round(pct * 100)}% full — auto-compacting session to free space…`,
+    );
+
+    // Fire-and-forget: compaction runs independently from the current turn.
+    this.handleCompactSession(sessionId).catch((err) => {
+      console.error("[ChatViewProvider] Auto-compact failed:", err);
+    });
+  }
+
   private async handleCompactSession(
     requestedSessionId?: string,
     baselineStats?: CompactionBaselineStats,
@@ -4836,16 +4979,26 @@ export class ChatViewProvider
         },
       });
       const compactedAt = Date.now();
-      const persistedState = await this.persistAndPublishCompactionViewState(
+      // Always use a zero baseline after compaction. The old messages are
+      // replaced by a summary on the server, so subtracting pre-compaction
+      // stats would make the context-window meter show 0. Zero baseline means
+      // the meter shows the actual tokens currently in context (summary +
+      // any new messages since the compact).
+      const zeroBaseline: CompactionBaselineStats = {
+        input: 0,
+        output: 0,
+        read: 0,
+        write: 0,
+        duration: 0,
+      };
+      await this.persistAndPublishCompactionViewState(
         sessionId,
         {
           lastCompactedAt: compactedAt,
-          baselineStats,
-          compactionDividerIndex: dividerState.compactionDividerIndex,
-          compactionDividerBeforeMessageId:
-            dividerState.compactionDividerBeforeMessageId,
-          compactionDividerAfterMessageId:
-            dividerState.compactionDividerAfterMessageId,
+          baselineStats: zeroBaseline,
+          // divider at 0 — old messages no longer exist; the summary appears
+          // as a regular message so there is nothing to collapse.
+          compactionDividerIndex: 0,
           collapsed: true,
         },
       );
@@ -4854,14 +5007,30 @@ export class ChatViewProvider
         status: "done",
         sessionId,
         at: compactedAt,
-        baselineStats: persistedState?.baselineStats,
-        compactionDividerIndex: persistedState?.compactionDividerIndex,
-        compactionDividerBeforeMessageId:
-          persistedState?.compactionDividerBeforeMessageId,
-        compactionDividerAfterMessageId:
-          persistedState?.compactionDividerAfterMessageId,
+        baselineStats: zeroBaseline,
+        compactionDividerIndex: 0,
         collapsed: true,
       });
+
+      // Reload the session history so the summary message produced by the
+      // compaction is immediately visible and its token count drives the meter.
+      try {
+        // Discard the stale local cache so getMessages fetches from the server.
+        await this.sessionService.saveSessionMessages(sessionId, []);
+        const freshMessages = await this.sessionService.getMessages(sessionId);
+        const processedMessages = this.processHistoryMessages(freshMessages);
+        this.view?.webview.postMessage({
+          type: "chatHistory",
+          sessionId,
+          messages: processedMessages,
+        });
+        await this.sendPersistedCompactionViewState(sessionId);
+      } catch (reloadError) {
+        console.warn(
+          "[ChatViewProvider] Failed to reload history after compaction:",
+          reloadError,
+        );
+      }
     } catch (error) {
       this.compactingSessions.delete(sessionId);
       const msg =
@@ -4945,8 +5114,8 @@ export class ChatViewProvider
     const compactingAtRaw = timeRec?.compacting;
     const compactingAt =
       typeof compactingAtRaw === "number" &&
-      Number.isFinite(compactingAtRaw) &&
-      compactingAtRaw > 0
+        Number.isFinite(compactingAtRaw) &&
+        compactingAtRaw > 0
         ? Math.floor(compactingAtRaw)
         : undefined;
 
@@ -4967,8 +5136,8 @@ export class ChatViewProvider
       const updatedAtRaw = timeRec?.updated;
       const updatedAt =
         typeof updatedAtRaw === "number" &&
-        Number.isFinite(updatedAtRaw) &&
-        updatedAtRaw > 0
+          Number.isFinite(updatedAtRaw) &&
+          updatedAtRaw > 0
           ? Math.floor(updatedAtRaw)
           : Date.now();
       void this.persistAndPublishCompactionViewState(targetSessionId, {
@@ -5707,8 +5876,8 @@ export class ChatViewProvider
                 const contextLimitRaw = limitRec?.context;
                 const contextLimit =
                   typeof contextLimitRaw === "number" &&
-                  Number.isFinite(contextLimitRaw) &&
-                  contextLimitRaw > 0
+                    Number.isFinite(contextLimitRaw) &&
+                    contextLimitRaw > 0
                     ? Math.floor(contextLimitRaw)
                     : undefined;
                 models.push({

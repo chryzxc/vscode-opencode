@@ -51,15 +51,22 @@ export function validateStructuredOutput(
   }
 
   if (
+    typeof record.assistantMessage !== "undefined" &&
+    typeof record.assistantMessage !== "string"
+  ) {
+    errors.push("assistantMessage must be a string");
+  }
+
+  if (
     typeof record.message !== "undefined" &&
     typeof record.message !== "string"
   ) {
     errors.push("message must be a string");
   }
 
-  if (!Array.isArray(record.reasoning)) {
+  if (typeof record.reasoning !== "undefined" && !Array.isArray(record.reasoning)) {
     errors.push("reasoning must be an array of strings");
-  } else {
+  } else if (Array.isArray(record.reasoning)) {
     const invalidReasoningItem = record.reasoning.some(
       (item) => typeof item !== "string" || item.trim().length === 0,
     );
@@ -188,6 +195,20 @@ export function validateStructuredOutput(
   if (record.responseType === "progress_update") {
     if (!Array.isArray(record.progressUpdates)) {
       errors.push("progress_update responseType requires progressUpdates array");
+    }
+  }
+
+  if (record.responseType === "message") {
+    const assistantMessage =
+      typeof record.assistantMessage === "string" && record.assistantMessage.trim().length > 0
+        ? record.assistantMessage
+        : undefined;
+    const legacyMessage =
+      typeof record.message === "string" && record.message.trim().length > 0
+        ? record.message
+        : undefined;
+    if (!assistantMessage && !legacyMessage) {
+      errors.push("message responseType requires assistantMessage or message string");
     }
   }
 

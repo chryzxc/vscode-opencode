@@ -70,6 +70,53 @@ test('ChatViewProvider unpacks structured output from tool parts', () => {
   assert.match(extractBody, /part\.type === ["']tool["']/, 'extractStructuredOutput should look for tool parts');
   assert.match(extractBody, /structuredoutput/, 'extractStructuredOutput should search for structuredoutput tool name');
   assert.match(extractBody, /part\.state\.result/, 'extractStructuredOutput should check state.result for tool output');
+  assert.doesNotMatch(
+    extractBody,
+    /part\.state\.input/,
+    'extractStructuredOutput should not parse tool input payloads to avoid prompt leakage into UI fields',
+  );
+});
+
+test('structured output normalization requires explicit responseType and assistant message field', () => {
+  const providerNormalizeBody = extractFunctionBody(
+    providerSource,
+    'private normalizeStructuredOutput(',
+  );
+  assert.match(
+    providerNormalizeBody,
+    /if \(!responseType\)\s*\{\s*return undefined;\s*\}/,
+    'provider normalizeStructuredOutput should require responseType before accepting payloads',
+  );
+  assert.match(
+    providerNormalizeBody,
+    /sanitizedRec\.assistantMessage/,
+    'provider normalizeStructuredOutput should read assistantMessage explicitly',
+  );
+  assert.doesNotMatch(
+    providerNormalizeBody,
+    /rec\.content|rec\.text|rec\.thinking|rec\.thoughts/,
+    'provider normalizeStructuredOutput should not infer message/reasoning from generic content or thinking fields',
+  );
+
+  const webviewNormalizeBody = extractFunctionBody(
+    messageHandlerSource,
+    'function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined',
+  );
+  assert.match(
+    webviewNormalizeBody,
+    /if \(!responseType\)\s*\{\s*return undefined;\s*\}/,
+    'webview normalizeStructuredOutput should require responseType before accepting payloads',
+  );
+  assert.match(
+    webviewNormalizeBody,
+    /sanitizedRec\.assistantMessage/,
+    'webview normalizeStructuredOutput should read assistantMessage explicitly',
+  );
+  assert.doesNotMatch(
+    webviewNormalizeBody,
+    /rec\.content|rec\.text|rec\.thinking|rec\.thoughts/,
+    'webview normalizeStructuredOutput should not infer message/reasoning from generic content or thinking fields',
+  );
 });
 
 test('ChatViewProvider suppresses StructuredOutput tool call from UI', () => {

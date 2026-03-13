@@ -853,12 +853,20 @@ function FadeSwapText({
 }
 
 const THINKING_LOADING_TEXTS = [
-  "Scanning project context...",
-  "Tracing relevant files...",
-  "Comparing possible fixes...",
-  "Drafting a clean response...",
-  "Validating assumptions...",
-  "Preparing final answer...",
+  "Analyzing code…",
+  "Processing request…",
+  "Generating solution…",
+  "Building response…",
+  "Refining output…",
+  "Almost ready…",
+  "One moment…",
+  "Still processing…",
+  "Working on it…",
+  "Composing response…",
+  "Running checks…",
+  "Finalizing…",
+  "Nearly done…",
+  "Computing result…",
 ];
 
 function ThinkingStatusTicker({ className }: { className?: string }) {
@@ -884,7 +892,12 @@ function ThinkingStatusTicker({ className }: { className?: string }) {
   }, []);
 
   return (
-    <div className={cn("inline-flex items-center font-mono text-[13px]", className)}>
+    <div
+      className={cn(
+        "inline-flex items-center font-mono text-[11px]",
+        className,
+      )}
+    >
       {[0, 1, 2].map((index) => (
         <span
           key={index}
@@ -1384,12 +1397,23 @@ export function AssistantMessage({
   const messageId = info?.id || message?.id || streaming?.messageId;
   // Merge subagents from message data and from the store lookup by parent message ID
   const subagents = useMemo(() => {
-    const fromMessage = Array.isArray(message?.subagents)
-      ? message.subagents
-      : [];
-    const fromStore = messageId
-      ? (subagentsByParentMessageId[messageId] ?? [])
-      : [];
+    const fromMessage = (
+      Array.isArray(message?.subagents) ? message.subagents : []
+    ).filter((subagent: SubagentSummary) => {
+      if (!messageId) {
+        return true;
+      }
+      const parentMessageId = subagent.parentMessageId;
+      return !parentMessageId || parentMessageId === messageId;
+    });
+    const fromStore = (
+      messageId ? (subagentsByParentMessageId[messageId] ?? []) : []
+    ).filter((subagent: SubagentSummary) => {
+      if (!messageId) {
+        return true;
+      }
+      return subagent.parentMessageId === messageId;
+    });
     if (fromStore.length === 0) return fromMessage;
     if (fromMessage.length === 0) return fromStore;
     // Merge: store entries take precedence (more up-to-date), then append message-only entries
@@ -1487,7 +1511,7 @@ export function AssistantMessage({
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
-  const showResponseSection = hasResponseContent;
+  const showResponseSection = !isLiveStreamingCard && hasResponseContent;
   const hasThinkingEvents = useMemo(
     () => displayEvents.some((event) => event.kind === "thinking"),
     [displayEvents],

@@ -24,7 +24,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     additionalProperties: true,
-    required: ["responseType", "reasoning"],
+    required: ["responseType"],
     properties: {
       responseType: {
         type: "string",
@@ -40,16 +40,21 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         description:
           "Structured response category for UI rendering. Use 'question' when clarification is needed before execution, and include interactiveEvents with selectable options.",
       },
+      assistantMessage: {
+        type: "string",
+        description:
+          "Primary user-facing assistant response text. Keep this separate from reasoning.",
+      },
       message: {
         type: "string",
-        description: "User-facing response text for chat rendering.",
+        description:
+          "Legacy alias for assistantMessage. Prefer assistantMessage for new structured responses.",
       },
       reasoning: {
         type: "array",
-        minItems: 1,
         items: { type: "string" },
         description:
-          "Concise thinking trace for the UI thinking timeline. Include at least one item.",
+          "Optional thinking trace for the UI thinking timeline. Do not repeat assistantMessage text here.",
       },
       progressUpdates: {
         type: "array",

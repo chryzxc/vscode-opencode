@@ -79,8 +79,8 @@ test("MessageComponents uses rotating thinking status text and hides empty strea
     );
     assert.match(
         messageComponentsSource,
-        /const showResponseSection\s*=\s*hasResponseContent;/,
-        'Expected response section to render only when response content exists',
+        /const showResponseSection\s*=\s*!isLiveStreamingCard && hasResponseContent;/,
+        'Expected live streaming card to suppress response section even when partial content exists',
     );
     assert.match(
         messageComponentsSource,

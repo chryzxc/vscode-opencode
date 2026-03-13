@@ -31,6 +31,19 @@ test('structured output validator recognizes subagentsDelta contract', () => {
   assert.match(validatorSource, /subagentsDelta requires items array/, 'validator should enforce subagentsDelta items array');
 });
 
+test('structured output validator enforces assistantMessage typing and message payload requirement', () => {
+  assert.match(
+    validatorSource,
+    /assistantMessage must be a string/,
+    'validator should validate assistantMessage string type',
+  );
+  assert.match(
+    validatorSource,
+    /message responseType requires assistantMessage or message string/,
+    'validator should require an explicit user-facing message for message responseType',
+  );
+});
+
 test('webview validator stays aligned with interactive + subagentsDelta contracts', () => {
   assert.match(
     webviewValidatorWrapperSource,

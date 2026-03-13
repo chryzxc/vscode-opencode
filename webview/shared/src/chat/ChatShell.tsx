@@ -17,6 +17,7 @@ import {
   SkillsPanel,
   MobileRightSummary,
 } from "./PanelComponents";
+import { StreamingCard } from "./StreamingComponents";
 import {
   AssistantMessage,
   EmptyState,
@@ -146,7 +147,8 @@ function ChatContent() {
     state.streaming?.isActive,
   ]);
 
-  const showThinking = state.isProcessing && !state.isCompacting;
+  const showThinking =
+    state.isProcessing && !state.streaming && !state.isCompacting;
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
       ? Math.max(
@@ -283,7 +285,15 @@ function ChatContent() {
             <CompactionDivider at={state.lastCompactedAt} />
           ) : null}
 
-          {/* Loading status while processing */}
+          {/* Live streaming activity card (thinking/progress/subagents) */}
+          <StreamingCard
+            isContiguous={
+              visibleMessages.length > 0 &&
+              visibleMessages[visibleMessages.length - 1].role === "assistant"
+            }
+          />
+
+          {/* Loading status while processing before first stream payload */}
           {showThinking ? <ThinkingBubble /> : null}
 
           {state.isCompacting ? (
