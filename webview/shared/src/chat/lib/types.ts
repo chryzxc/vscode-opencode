@@ -284,7 +284,13 @@ export interface Message {
   reasoningEvents?: ReasoningEvent[];
   progressEvents?: MessageStep[];
   info?: MessageInfo;
-  plan?: unknown;
+  plan?: {
+    file?: string;
+    content?: string;
+    title?: string;
+    summary?: string;
+    fileCount?: number;
+  };
   edits?: MessageEdit[];
   steps?: MessageStep[];
   timing?: { duration?: number };

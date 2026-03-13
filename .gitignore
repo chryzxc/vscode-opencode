@@ -7,3 +7,12 @@ dist/
 .serena
 .claude
 .sisyphus
+# Test coverage
+coverage/
+*.lcov
+
+# Test mocks
+src/__mocks__/
+
+# Temporary/error files
+nul

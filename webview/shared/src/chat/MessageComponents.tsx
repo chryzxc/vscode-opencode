@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Copy,
   FileText as FileTextIcon,
+  Layers,
   Loader2,
   X,
   Sparkles,
@@ -235,36 +236,6 @@ function messageBodyFromParts(parts?: MessagePart[]): string {
     .trim();
 }
 
-function reasoningFromParts(parts?: MessagePart[]): string {
-  if (!parts) {
-    return "";
-  }
-  const fromParts = (parts: MessagePart[]) =>
-    parts
-      .map((part: MessagePart, _index: number) => {
-        const explicit = part.reasoning ?? part.thought ?? part.thinking;
-        if (explicit) {
-          return explicit;
-        }
-        if (isReasoningPart(part)) {
-          return part.text ?? part.content ?? "";
-        }
-        if (part.type === "text" || part.text) {
-          const value = part.text || part.content || "";
-          // If it's a text part, but it's empty, it might be a placeholder for reasoning
-          // that was not explicitly typed as "reasoning".
-          if (value.trim().length === 0) {
-            return "";
-          }
-        }
-        return "";
-      })
-      .filter(Boolean)
-      .join("\n\n")
-      .trim();
-
-  return fromParts(parts);
-}
 
 function summaryText(message?: Message): string {
   // Check both nested info and top-level properties (for persisted messages)
@@ -2255,10 +2226,17 @@ export function AssistantMessage({
         )} */}
         {/* FORBIDDEN TO REMOVE: Plan card rendering - core UI element for viewing implementation plans */}
         {plan ? (
-          <div className="plan-card mt-3 p-3">
+          <div className="plan-card mt-3 p-3 space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-oc-xs font-semibold text-oc-text-soft uppercase tracking-widest font-mono">
-                Implementation Plan
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <div className="text-oc-xs font-semibold text-oc-text-soft uppercase tracking-widest font-mono">
+                  {plan.title || "Implementation Plan"}
+                </div>
+                {plan.summary && (
+                  <div className="text-[11px] text-oc-text-muted line-clamp-2">
+                    {plan.summary}
+                  </div>
+                )}
               </div>
               <button
                 type="button"
@@ -2270,6 +2248,22 @@ export function AssistantMessage({
                 View Plan
               </button>
             </div>
+            {message?.edits && message.edits.length > 0 && (
+              <div className="flex items-center gap-2 pt-1.5 border-t border-oc-border/50">
+                <span className="text-[10px] font-mono text-oc-text-muted">
+                  {message.edits.length} file{message.edits.length !== 1 ? "s" : ""} changed
+                </span>
+                <button
+                  type="button"
+                  title="Review all file changes in diff viewer"
+                  onClick={() => vscode.postMessage({ type: "reviewChanges" })}
+                  className="oc-plan-btn shrink-0"
+                >
+                  <Layers className="h-3 w-3" />
+                  Review All Changes
+                </button>
+              </div>
+            )}
           </div>
         ) : null}
       </div>
@@ -2283,7 +2277,7 @@ export function PermissionCard({ perm }: { perm: unknown }) {
       <div className="rounded-xl border oc-warning-border oc-warning-bg p-3.5">
         <div className="mb-1.5 flex items-center gap-2">
           <div className="h-4 w-4 rounded-sm bg-[rgba(210,153,34,0.2)] flex items-center justify-center">
-            <span className="text-oc-2xs">âš </span>
+            <span className="text-oc-2xs">⚠️</span>
           </div>
           <div className="text-oc-sm font-semibold text-oc-yellow">
             Permission Required

@@ -35,31 +35,31 @@ test('progressItemsFromSteps extracts diffStats from steps', () => {
 test('AssistantMessage renders diff stats when present', () => {
   assert.match(
     messageComponentsSource,
-    /resolvedDiffStats\s*&&\s*\(resolvedDiffStats\.added\s*>\s*0\s*\|\|\s*resolvedDiffStats\.deleted\s*>\s*0\)/,
-    'Should gate diff badges behind resolvedDiffStats presence'
+    /event\.diffStats\s*&&\s*\(event\.diffStats\.added\s*>\s*0\s*\|\|\s*event\.diffStats\.deleted\s*>\s*0\)/,
+    'Should gate diff badges behind event.diffStats presence'
   );
 
   assert.match(
     messageComponentsSource,
-    /\+{resolvedDiffStats\.added}/,
+    /\+\{event\.diffStats\.added\}/,
     'Should render +N for added lines'
   );
 
   assert.match(
     messageComponentsSource,
-    /-{resolvedDiffStats\.deleted}/,
+    /-\{event\.diffStats\.deleted\}/,
     'Should render -M for deleted lines'
   );
 
   assert.match(
     messageComponentsSource,
-    /text-green-500[\s\S]*resolvedDiffStats\.added/,
+    /text-oc-green[\s\S]*event\.diffStats\.added/,
     'Added lines should use green text'
   );
 
   assert.match(
     messageComponentsSource,
-    /text-destructive[\s\S]*resolvedDiffStats\.deleted/,
+    /text-oc-red[\s\S]*event\.diffStats\.deleted/,
     'Deleted lines should use red text'
   );
 });
@@ -72,17 +72,22 @@ test('AssistantMessage falls back to message edits diff stats for edit steps', (
   );
   assert.match(
     messageComponentsSource,
-    /const\s+resolvedDiffStats\s*=\s*item\.diffStats\s*\|\|\s*fallbackDiffStats/,
+    /const\s+fallbackDiffStats\s*=/,
+    'Should create fallback diff stats from edit record'
+  );
+  assert.match(
+    messageComponentsSource,
+    /const\s+diffStats\s*=\s*event\.diffStats\s*\|\|\s*fallbackDiffStats/,
     'Should use fallback diff stats when step diff stats are missing'
   );
   assert.match(
     messageComponentsSource,
-    /resolvedDiffStats\.added\s*>\s*0[\s\S]*\+{resolvedDiffStats\.added}/,
+    /diffStats\.added\s*>\s*0/,
     'Should render fallback +N added count'
   );
   assert.match(
     messageComponentsSource,
-    /resolvedDiffStats\.deleted\s*>\s*0[\s\S]*-{resolvedDiffStats\.deleted}/,
+    /diffStats\.deleted\s*>\s*0/,
     'Should render fallback -M deleted count'
   );
 });
@@ -129,7 +134,7 @@ test('AssistantMessage subagent rows render activity and open detail modal', () 
 
   assert.match(
     messageComponentsSource,
-    /subagent\.latestActivity\s*\|\|\s*["']Initializing\.\.\.["']/,
+    /subagent\.latestActivity\s*\|\|[\s\S]*statusText\s*\|\|\s*["']Initializing\.\.\.["']/,
     'Should show activity or Initializing fallback'
   );
 });

@@ -26,9 +26,9 @@ test('token usage tooltips are descriptive', () => {
 });
 
 test('diffStats are rendered in progress events', () => {
-  assert.match(messageSource, /resolvedDiffStats\s*&&\s*\(resolvedDiffStats\.added\s*>\s*0\s*\|\|\s*resolvedDiffStats\.deleted\s*>\s*0\)/, 'Should check for resolvedDiffStats');
-  assert.match(messageSource, /\+\{resolvedDiffStats\.added\}/, 'Should render added lines');
-  assert.match(messageSource, /-\{resolvedDiffStats\.deleted\}/, 'Should render deleted lines');
+  assert.match(messageSource, /event\.diffStats\s*&&\s*\(event\.diffStats\.added\s*>\s*0\s*\|\|\s*event\.diffStats\.deleted\s*>\s*0\)/, 'Should check for diffStats');
+  assert.match(messageSource, /\+\{event\.diffStats\.added\}/, 'Should render added lines');
+  assert.match(messageSource, /-\{event\.diffStats\.deleted\}/, 'Should render deleted lines');
 });
 
 test('AssistantMessage component types subagent data to SubagentDetail', () => {
@@ -47,7 +47,7 @@ test('inline subagent rows are integrated into the assistant item loop', () => {
   assert.doesNotMatch(messageSource, /SubagentProgressPopover/, 'Legacy SubagentProgressPopover should not be present');
   assert.match(messageSource, /visibleSubagents\.map\(\(subagent:\s*SubagentSummary\)\s*=>/, 'AssistantMessage should map inline subagent rows');
   assert.match(messageSource, /onClick=\{\(\)\s*=>\s*openSubagentModal\(subagent\.id\)\}/, 'Inline subagent rows should open modal details');
-  assert.match(messageSource, /subagent\.latestActivity\s*\|\|\s*"Initializing\.\.\."/,
+  assert.match(messageSource, /subagent\.latestActivity\s*\|\|[\s\S]*statusText\s*\|\|\s*"Initializing\.\.\."/,
     'Inline subagent rows should show latest activity with fallback'
   );
 });
@@ -67,7 +67,8 @@ test('subagent detail modal is wired for selected subagents', () => {
 
 test('subagent color differentiation is applied deterministically', () => {
   assert.match(messageSource, /function\s+getSubagentColor/, 'Should have getSubagentColor helper');
-  assert.match(messageSource, /const\s+statusClass\s*=\s*getSubagentColor\(subagent\.id\)/, 'Should derive deterministic subagent status color once per row');
+  assert.match(messageSource, /const\s+cardStyle\s*=\s*getSubagentCardStyle\(subagent\.id\)/, 'Should derive deterministic subagent card style once per row');
+  assert.match(messageSource, /const\s+accentTextStyle\s*=\s*getSubagentAccentTextStyle\([\s\S]*subagent\.id[\s\S]*\)/, 'Should derive deterministic accent text style once per row');
   assert.match(messageSource, /<SubagentDetailModal[\s\S]*colorClass=\{getSubagentColor\(selected\.id\)\}/, 'Should pass deterministic subagent color to detail modal');
   const modalSource = readSource(
     [joinFromRoot('webview', 'shared', 'src', 'chat', 'SubagentDetailModal.tsx')],
@@ -77,7 +78,9 @@ test('subagent color differentiation is applied deterministically', () => {
 });
 
 test('subagent sessions are filtered out of History Sidebar', () => {
-  assert.match(panelSource, /sessionsList\.filter\(\(?s\)?\s*=>\s*!s\.parentSessionId\)/, 'Should filter sessionsList by !parentSessionId');
+  assert.match(panelSource, /topLevelSessions\s*=\s*sessionsList\.filter\(/, 'Should filter sessionsList to get top-level sessions');
+  assert.match(panelSource, /parentSessionId\s*=\s*session\.parentSessionId/, 'Should check parentSessionId property');
+  assert.match(panelSource, /if\s*\(!parentSessionId\)/, 'Should include sessions without parentSessionId');
 });
 
 test('subagent detail modal is responsive and visually aligned with chat surfaces', () => {

@@ -320,6 +320,8 @@ type StructuredAssistantOutput = {
     content?: string;
     title?: string;
     summary?: string;
+    files?: any[]; // To match ImplementationPlan structure
+    fileCount?: number;
   };
 };
 
@@ -4531,6 +4533,7 @@ export class ChatViewProvider
             content: structuredPlanContent,
             title: structured.plan?.title,
             summary: structured.plan?.summary,
+            fileCount: Array.isArray(structured.plan?.files) ? structured.plan.files.length : 0,
           },
         };
       }
@@ -4626,9 +4629,10 @@ export class ChatViewProvider
         ...message,
         plan: {
           file: fallbackPlanFile,
-          // Note: We also include the clean content in the message so it shows up
-          // immediately without needing to wait for a file read on the first open.
           content: cleanPlanContent,
+          title: parsed.goal,
+          summary: parsed.description,
+          fileCount: parsed.files.length,
         },
       };
       if (message?.structuredOutput?.responseType !== "implementation_plan") {
@@ -5763,7 +5767,7 @@ export class ChatViewProvider
 
       if (defaultId) {
         console.log(`[ChatViewProvider] Found CLI default model: ${defaultId}`);
-        const providerModelMatch = defaultId.match(/^([^\/:\s]+)[\/:](.+)$/);
+        const providerModelMatch = defaultId.match(/^([^/:\s]+)[/:](.+)$/);
         let match:
           | {
             providerID: string;
@@ -6249,7 +6253,75 @@ export class ChatViewProvider
 
   private async handleReviewChanges() {
     try {
-      // In VS Code, the standard way to review changes is the Source Control view
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) {
+        await vscode.commands.executeCommand("workbench.view.scm");
+        return;
+      }
+
+      const cwd = workspaceFolder.uri.fsPath;
+      const runGit = (...args: string[]): Promise<string> =>
+        new Promise((resolve, reject) => {
+          cp.execFile(
+            "git",
+            args,
+            { cwd, maxBuffer: 10 * 1024 * 1024 },
+            (err, stdout) => {
+              if (err && err.code !== 1) {
+                reject(err);
+              } else {
+                resolve(stdout);
+              }
+            },
+          );
+        });
+
+      const diffOutput = await runGit("diff", "HEAD");
+
+      // Include untracked files as pseudo-diffs
+      const untrackedFilesOutput = await runGit(
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+      );
+      const untrackedFiles = untrackedFilesOutput
+        .split("\n")
+        .filter((f) => f.trim());
+
+      let allDiffs = diffOutput;
+      for (const file of untrackedFiles) {
+        try {
+          const fileUri = vscode.Uri.file(path.join(cwd, file));
+          const content = await vscode.workspace.fs.readFile(fileUri);
+          const text = new TextDecoder().decode(content);
+          const lines = text.split("\n");
+          const pseudoDiff = [
+            `--- /dev/null`,
+            `+++ b/${file.replace(/\\/g, "/")}`,
+            `@@ -0,0 +1,${lines.length} @@`,
+            ...lines.map((l) => `+${l}`),
+            "",
+          ].join("\n");
+          allDiffs += (allDiffs ? "\n" : "") + pseudoDiff;
+        } catch (e) {
+          console.warn(
+            `[ChatViewProvider] Failed to read untracked file ${file}:`,
+            e,
+          );
+        }
+      }
+
+      if (allDiffs) {
+        const diffFiles = this.parseUnifiedDiff(allDiffs);
+        if (diffFiles.length > 0) {
+          await vscode.commands.executeCommand("opencode.showDiffReview", {
+            files: diffFiles,
+          });
+          return;
+        }
+      }
+
+      // Fallback to SCM view if no diffs found
       await vscode.commands.executeCommand("workbench.view.scm");
     } catch (error: any) {
       vscode.window.showErrorMessage(

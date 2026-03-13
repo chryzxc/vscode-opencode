@@ -146,6 +146,10 @@
     "structured-output:sync": "node scripts/sync-structured-output-contract.mjs",
     "structured-output:check": "node scripts/sync-structured-output-contract.mjs --check",
     "test": "node --test tests/**/*.test.mjs",
+    "test:unit": "vitest run",
+    "test:unit:coverage": "vitest run --coverage",
+    "test:unit:watch": "vitest",
+    "test:unit:ui": "vitest --ui",
     "test:webview-regression": "node --test tests/**/*.test.mjs",
     "lint": "eslint src --ext ts"
   },
@@ -154,9 +158,12 @@
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "@vitest/ui": "^4.1.0",
     "esbuild": "^0.19.8",
     "eslint": "^8.54.0",
-    "typescript": "^5.3.2"
+    "typescript": "^5.3.2",
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "@opencode-ai/sdk": "latest",
