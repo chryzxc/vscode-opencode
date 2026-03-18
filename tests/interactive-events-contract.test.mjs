@@ -50,7 +50,7 @@ test('provider accepts interactive responses from webview', () => {
 test('frontend normalizes and stores interactive events', () => {
   assert.match(handlerSource, /toInteractiveEvents\(/, 'message handler should map structured output to interactive events');
   assert.match(handlerSource, /SET_INTERACTIVE_EVENTS/, 'message handler should update interactive event state');
-  assert.match(handlerSource, /typeRaw\s*===\s*'question'\s*\|\|\s*typeRaw\s*===\s*'interactive'/, 'interactive payloads should be gated by typed responseType');
+  assert.match(handlerSource, /typeRaw\s*===\s*'question'/, 'question payloads should be gated by typed responseType');
   assert.match(handlerSource, /typeRaw\s*===\s*'message'/, 'message handler should normalize message interactive event type');
   assert.match(handlerSource, /options\.length < 2/, 'question interactive events should require at least two options');
   assert.doesNotMatch(handlerSource, /return\s+detectInteractiveEventsFromText\(/, 'plain assistant text should not auto-generate interactive popups');
@@ -68,10 +68,10 @@ test('structured question outputs dispatch popup interactive state', () => {
     /type:\s*'question',[\s\S]*question,\s*options,/s,
     'question responses should preserve question text and options for popup rendering',
   );
-  assert.match(
+  assert.doesNotMatch(
     providerSource,
-    /Coerced interactive response into fallback question event/,
-    'provider should coerce malformed interactive responses into picker-safe question events',
+    /Coerced question response into fallback question event/,
+    'provider should not coerce malformed question responses into synthetic fallback events',
   );
 });
 

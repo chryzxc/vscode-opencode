@@ -19,13 +19,13 @@ const generatedWebviewValidatorSource = readSource(
 test('structured output validator enforces responseType specific requirements', () => {
   assert.match(validatorSource, /implementation_plan requires plan\.content string/, 'validator should enforce plan.content for implementation_plan');
   assert.match(validatorSource, /subagents responseType requires subagents array/, 'validator should enforce subagents array for subagents responseType');
-  assert.match(validatorSource, /interactive responseType requires question object/, 'validator should enforce question object for interactive responseType');
   assert.match(validatorSource, /question responseType requires question object/, 'validator should enforce question object for question responseType');
-  assert.match(validatorSource, /question responseType requires question\.type to be 'question'/, 'validator should require question payload type for question responseType');
   assert.match(validatorSource, /question requires question text/, 'validator should require question payload to include question text');
   assert.match(validatorSource, /question interactive payload requires at least two options unless allowCustomInput is true/, 'validator should require question payload to include options unless custom input is enabled');
   assert.match(validatorSource, /interactiveEvents is no longer supported; use question object/, 'validator should reject deprecated interactiveEvents key');
   assert.match(validatorSource, /progress_update responseType requires progressUpdates array/, 'validator should enforce progressUpdates array for progress_update responseType');
+  assert.match(validatorSource, /todo_update responseType requires todoItems array/, 'validator should enforce todoItems array for todo_update responseType');
+  assert.match(validatorSource, /data responseType requires data object/, 'validator should enforce data object for data responseType');
 });
 
 test('structured output validator recognizes subagentsDelta contract', () => {
@@ -42,6 +42,11 @@ test('structured output validator enforces assistantMessage typing and message p
     validatorSource,
     /message responseType requires assistantMessage or message string/,
     'validator should require an explicit user-facing message for message responseType',
+  );
+  assert.match(
+    validatorSource,
+    /Unsupported top-level fields:/,
+    'validator should reject unknown top-level fields to keep schema strict',
   );
 });
 

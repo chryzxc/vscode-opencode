@@ -408,13 +408,37 @@ function normalizeProgressStatus(
   return "pending";
 }
 
+function isStructuredOutputActivityText(value?: string): boolean {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.toLowerCase().replace(/\s+/g, "");
+  if (
+    normalized === "invalid" ||
+    normalized === "runninginvalid" ||
+    normalized === "processinginvalid"
+  ) {
+    return true;
+  }
+  return (
+    normalized.includes("structuredoutput") ||
+    normalized.includes("structured_output")
+  );
+}
+
 function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
   const type = (step.type ?? "").toLowerCase();
   if (type === "reasoning" || type === "thinking") {
     return false;
   }
 
-  const title = step.title.trim().toLowerCase();
+  const title = (step.title ?? "").trim().toLowerCase();
+  if (
+    isStructuredOutputActivityText(title) ||
+    isStructuredOutputActivityText(step.meta)
+  ) {
+    return false;
+  }
   if (title === "thinking..." || title === "thinking") {
     return false;
   }
@@ -728,6 +752,29 @@ function buildTimeline(
   if (html) blocks.push({ kind: "content", html });
 
   return blocks;
+}
+
+function buildMessageTimeline(
+  message?: Message,
+  html = "",
+): TimelineBlock[] {
+  return buildTimeline(
+    thoughtItemsFromMessage(message),
+    progressItemsFromMessage(message),
+    html,
+    message?.parts,
+  );
+}
+
+function buildStreamingTimeline(
+  streaming?: StreamingState,
+  html = "",
+): TimelineBlock[] {
+  return buildTimeline(
+    thoughtItemsFromStreaming(streaming),
+    progressItemsFromStreaming(streaming),
+    html,
+  );
 }
 
 
@@ -1458,17 +1505,9 @@ export function AssistantMessage({
     return { planStatus: status, isRevisedPlan: revised };
   }, [plan, message, messageId, state.messages]);
 
-  // Merge subagents from message data and from the store lookup by parent message ID
+  // Merge subagents from message data and from the store lookup by parent message ID.
+  // Prefer store-scoped entries so subagent cards cannot bleed into unrelated messages.
   const subagents = useMemo(() => {
-    const fromMessage = (
-      Array.isArray(message?.subagents) ? message.subagents : []
-    ).filter((subagent: SubagentSummary) => {
-      if (!messageId) {
-        return true;
-      }
-      const parentMessageId = subagent.parentMessageId;
-      return !parentMessageId || parentMessageId === messageId;
-    });
     const fromStore = (
       messageId ? (subagentsByParentMessageId[messageId] ?? []) : []
     ).filter((subagent: SubagentSummary) => {
@@ -1477,9 +1516,20 @@ export function AssistantMessage({
       }
       return subagent.parentMessageId === messageId;
     });
+    const fromMessage = (
+      Array.isArray(message?.subagents) ? message.subagents : []
+    ).filter((subagent: SubagentSummary) => {
+      if (!messageId) {
+        return true;
+      }
+      return subagent.parentMessageId === messageId;
+    });
+
     if (fromStore.length === 0) return fromMessage;
     if (fromMessage.length === 0) return fromStore;
-    // Merge: store entries take precedence (more up-to-date), then append message-only entries
+
+    // Merge: store entries take precedence (more up-to-date), then append
+    // message-scoped entries not yet in the store snapshot.
     const storeIds = new Set(fromStore.map((s: SubagentSummary) => s.id));
     const extra = fromMessage.filter((s) => !storeIds.has(s.id));
     return [...fromStore, ...extra];
@@ -1566,7 +1616,7 @@ export function AssistantMessage({
     !streaming && thoughtItems.length === 0 && reasoningTok > 0;
   const thinkingPlaceholderText =
     "Reasoning tokens were used, but this provider did not expose reasoning text.";
-  const hasResponseContent = content.trim().length > 0;
+  const hasResponseContent = content.trim().length > 0 || !!plan;
   const isLiveStreamingCard = !message && !!streaming;
   const responseBodyClass = isLiveStreamingCard
     ? "w-full max-h-[340px] overflow-y-auto pr-1"
@@ -1574,8 +1624,7 @@ export function AssistantMessage({
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
-  const showResponseSection =
-    !isLiveStreamingCard && (hasResponseContent || !!plan);
+  const showResponseSection = !isLiveStreamingCard && hasResponseContent;
   const hasThinkingEvents = useMemo(
     () => displayEvents.some((event) => event.kind === "thinking"),
     [displayEvents],
@@ -1636,7 +1685,7 @@ export function AssistantMessage({
     const root = progressTimelineRef.current;
     if (!root) return;
     root.scrollTop = root.scrollHeight;
-  }, [isStreamingActive, visibleDisplayEvents.length]);
+  }, [isStreamingActive]);
 
   const responseEnterClass = streaming
     ? "oc-assistant-streaming-enter"
@@ -1682,12 +1731,11 @@ export function AssistantMessage({
                     </div>
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <span
-                        className="oc-msg-agent-name px-2 py-0.5 rounded-md font-semibold text-oc-sm truncate shrink-0"
+                        className="oc-msg-agent-name font-semibold text-oc-sm truncate shrink-0"
                         style={
                           agentColor
                             ? {
                                 color: agentColor,
-                                backgroundColor: `${agentColor}1a`,
                               }
                             : undefined
                         }
@@ -1918,7 +1966,7 @@ export function AssistantMessage({
                             ) : event.status === "error" ? (
                               <X className="h-[10px] w-[10px] text-[var(--vscode-terminal-ansiRed,#ef4444)]" />
                             ) : (
-                              <div className="h-2 w-2 rounded-full bg-oc-green" />
+                              <Check className="h-[10px] w-[10px] text-[var(--oc-green,#22c55e)]" />
                             );
                           const fileName = event.filePath
                             ? event.filePath.split(/[/\\]/).pop()
@@ -2073,16 +2121,17 @@ export function AssistantMessage({
 
               {plan && (
                 <div
-                  className={cn(
-                    "flex items-center justify-between gap-2",
-                    hasResponseContent &&
-                      "mt-3 pt-3 border-t border-oc-border/30",
-                  )}
+                  className={
+                    hasResponseContent
+                      ? "mt-3 pt-3 border-t border-oc-border/30"
+                      : undefined
+                  }
                 >
-                  <div className="flex flex-col gap-0.5 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="text-oc-xs font-semibold text-oc-text-soft uppercase tracking-widest font-mono">
-                        {plan.title || "Implementation Plan"}
+                  <div className="plan-card flex items-center justify-between gap-2">
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-oc-xs font-semibold text-oc-text-soft uppercase tracking-widest font-mono">
+                          {plan.title || "Implementation Plan"}
                       </div>
                       {isRevisedPlan && (
                         <span className="rounded bg-oc-blue/20 text-oc-blue px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
@@ -2109,14 +2158,13 @@ export function AssistantMessage({
                   <button
                     type="button"
                     title="Core Feature: View Implementation Plan"
-                    onClick={() =>
-                      vscode.postMessage({ type: "viewPlan", plan })
-                    }
+                    onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
                     className="oc-plan-btn shrink-0"
                   >
                     <FileTextIcon className="h-3 w-3" />
                     View Plan
                   </button>
+                  </div>
                 </div>
               )}
 
@@ -2226,7 +2274,10 @@ export function AssistantMessage({
 
             {showSubagents && (
               <div className="space-y-2 p-2.5">
-                <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
+                <div
+                  className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1 pb-2"
+                  style={{ scrollPaddingBottom: "0.5rem" }}
+                >
                   {visibleSubagents.map((subagent: SubagentSummary) => {
                     const detail = subagentDetailsById[subagent.id] as
                       | SubagentDetail
@@ -2321,12 +2372,7 @@ export function AssistantMessage({
             )}
           </div>
         )}
-        {isStreamingActive && hasStreamingActivity && (
-          <div className="mt-1 px-1">
-            <ThinkingStatusTicker className="text-[#4e648c]" />
-          </div>
-        )}
-        {/* Raw Data â€” moved last so it doesn't interrupt the reading flow */}
+        {/* Raw Data â€" moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (
           <details className="group mb-3">
             <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-mono text-oc-text-muted hover:text-oc-text-soft transition-colors">

@@ -50,7 +50,8 @@ test('StructuredResponseType includes all required response types', () => {
   assert.ok(typeDefinition.includes('"progress_update"'), 'Should include progress_update type');
   assert.ok(typeDefinition.includes('"subagents"'), 'Should include subagents type');
   assert.ok(typeDefinition.includes('"question"'), 'Should include question type');
-  assert.ok(typeDefinition.includes('"interactive"'), 'Should include interactive type');
+  assert.ok(typeDefinition.includes('"todo_update"'), 'Should include todo_update type');
+  assert.ok(typeDefinition.includes('"data"'), 'Should include data type');
   assert.ok(typeDefinition.includes('"error"'), 'Should include error type');
 });
 
@@ -58,13 +59,13 @@ test('structuredOutputSchema has correct top-level structure', () => {
   const schema = extractSchema();
 
   assert.match(schema, /type:\s*"json_schema"/, 'Should have type: "json_schema"');
-  assert.match(schema, /retryCount:\s*2/, 'Should have retryCount: 2');
+  assert.match(schema, /retryCount:\s*1/, 'Should have retryCount: 1');
   assert.match(schema, /schema:\s*{/, 'Should have schema object');
 });
 
 test('schema object has correct structure', () => {
   assert.match(schemaSource, /schema:\s*{[\s\S]*?type:\s*"object"/, 'Schema should have type: "object"');
-  assert.match(schemaSource, /additionalProperties:\s*true/, 'Schema should have additionalProperties: true');
+  assert.match(schemaSource, /additionalProperties:\s*false/, 'Schema should disallow unknown top-level fields');
   assert.match(schemaSource, /required:\s*\[[\s\S]*?"responseType"[\s\S]*?\]/, 'Schema should require responseType');
 });
 
@@ -84,8 +85,15 @@ test('responseType enum includes all valid types', () => {
   assert.ok(enumValues.includes('"progress_update"'), 'Enum should include progress_update');
   assert.ok(enumValues.includes('"subagents"'), 'Enum should include subagents');
   assert.ok(enumValues.includes('"question"'), 'Enum should include question');
-  assert.ok(enumValues.includes('"interactive"'), 'Enum should include interactive');
+  assert.ok(enumValues.includes('"todo_update"'), 'Enum should include todo_update');
+  assert.ok(enumValues.includes('"data"'), 'Enum should include data');
   assert.ok(enumValues.includes('"error"'), 'Enum should include error');
+});
+
+test('todoItems and data payloads are defined for extended structured types', () => {
+  assert.match(schemaSource, /todoItems:\s*{[\s\S]*?type:\s*"array"/, 'todoItems should be an array payload');
+  assert.match(schemaSource, /todoItems:[\s\S]*?status:[\s\S]*?enum:\s*\[[\s\S]*?"pending"[\s\S]*?"in_progress"[\s\S]*?"completed"[\s\S]*?"cancelled"[\s\S]*?\]/, 'todoItems status should include expected enum values');
+  assert.match(schemaSource, /data:\s*{[\s\S]*?type:\s*"object"/, 'data should be an object payload');
 });
 
 test('assistantMessage property is defined', () => {
@@ -173,8 +181,8 @@ test('subagentsDelta items have correct structure', () => {
 });
 
 test('all schema properties use additionalProperties correctly', () => {
-  // Top-level schema should allow additional properties
-  assert.match(schemaSource, /additionalProperties:\s*true,\s*required:/, 'Top-level schema should allow additional properties');
+  // Top-level schema should disallow additional properties
+  assert.match(schemaSource, /additionalProperties:\s*false,\s*required:/, 'Top-level schema should disallow unknown fields');
 
   // Nested objects should also allow additional properties
   const additionalPropsMatches = schemaSource.match(/additionalProperties:\s*true/g);

@@ -25,6 +25,12 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 export function validateStructuredOutput(
   value: unknown,
 ): StructuredOutputValidationResult {
@@ -34,13 +40,26 @@ export function validateStructuredOutput(
 
   const record = value as Record<string, unknown>;
   const errors: string[] = [];
+  const unknownTopLevelFields = Object.keys(record).filter(
+    (key) => !TOP_LEVEL_FIELDS.includes(key),
+  );
+  if (unknownTopLevelFields.length > 0) {
+    errors.push(
+      `Unsupported top-level fields: ${unknownTopLevelFields.join(", ")}`,
+    );
+  }
+  const responseType =
+    typeof record.responseType === "string" && record.responseType.trim().length > 0
+      ? record.responseType
+      : "";
 
-  if (
-    typeof record.responseType === "string" &&
-    record.responseType.trim().length > 0
-  ) {
-    if (!RESPONSE_TYPES.has(record.responseType)) {
-      errors.push(`Unsupported responseType: ${record.responseType}`);
+  if (!responseType) {
+    errors.push("responseType is required and must be a string");
+  }
+
+  if (responseType) {
+    if (!RESPONSE_TYPES.has(responseType)) {
+      errors.push(`Unsupported responseType: ${responseType}`);
     }
   }
 
@@ -62,13 +81,10 @@ export function validateStructuredOutput(
     errors.push("reasoning must be an array of strings");
   } else if (Array.isArray(record.reasoning)) {
     const invalidReasoningItem = record.reasoning.some(
-      (item) => typeof item !== "string" || item.trim().length === 0,
+      (item) => typeof item !== "string",
     );
     if (invalidReasoningItem) {
-      errors.push("reasoning must only contain non-empty strings");
-    }
-    if (record.reasoning.length === 0) {
-      errors.push("reasoning must contain at least one item");
+      errors.push("reasoning must only contain strings");
     }
   }
 
@@ -77,6 +93,56 @@ export function validateStructuredOutput(
     (!record.plan || typeof record.plan !== "object")
   ) {
     errors.push("plan must be an object");
+  }
+
+  if (typeof record.progressUpdates !== "undefined") {
+    if (!Array.isArray(record.progressUpdates)) {
+      errors.push("progressUpdates must be an array");
+    } else {
+      const invalidProgressUpdate = record.progressUpdates.some((item) => {
+        const update = asRecord(item);
+        if (!update) return true;
+        const title = isNonEmptyString(update.title) || isNonEmptyString(update.message);
+        return !title;
+      });
+      if (invalidProgressUpdate) {
+        errors.push(
+          "progressUpdates must only contain objects with non-empty title/message",
+        );
+      }
+    }
+  }
+
+  if (typeof record.error !== "undefined") {
+    const errorRecord = asRecord(record.error);
+    if (!errorRecord) {
+      errors.push("error must be an object");
+    } else {
+      if (
+        typeof errorRecord.message !== "undefined" &&
+        typeof errorRecord.message !== "string"
+      ) {
+        errors.push("error.message must be a string");
+      }
+      if (
+        typeof errorRecord.code !== "undefined" &&
+        typeof errorRecord.code !== "string"
+      ) {
+        errors.push("error.code must be a string");
+      }
+      if (
+        typeof errorRecord.details !== "undefined" &&
+        typeof errorRecord.details !== "string"
+      ) {
+        errors.push("error.details must be a string");
+      }
+      if (
+        typeof errorRecord.retryable !== "undefined" &&
+        typeof errorRecord.retryable !== "boolean"
+      ) {
+        errors.push("error.retryable must be a boolean");
+      }
+    }
   }
 
   if (typeof record.interactiveEvents !== "undefined") {
@@ -91,7 +157,7 @@ export function validateStructuredOutput(
       const questionType =
         typeof questionRecord.type === "string" && questionRecord.type.trim().length > 0
           ? questionRecord.type
-          : record.responseType === "question"
+          : responseType === "question"
             ? "question"
             : "";
 
@@ -106,6 +172,20 @@ export function validateStructuredOutput(
       if (isQuestionPayload) {
         if (!isNonEmptyString(questionRecord.question)) {
           errors.push("question requires question text");
+        }
+
+        if (
+          typeof questionRecord.answer !== "undefined" &&
+          typeof questionRecord.answer !== "string"
+        ) {
+          errors.push("question.answer must be a string");
+        }
+        if (
+          typeof questionRecord.answers !== "undefined" &&
+          (!Array.isArray(questionRecord.answers) ||
+            questionRecord.answers.some((item) => typeof item !== "string"))
+        ) {
+          errors.push("question.answers must be an array of strings");
         }
 
         const allowCustomInput = questionRecord.allowCustomInput === true;
@@ -175,16 +255,23 @@ export function validateStructuredOutput(
     });
   }
 
-  if (record.responseType === "implementation_plan") {
+  if (responseType === "implementation_plan") {
     const plan = record.plan as Record<string, unknown> | undefined;
     if (!plan || typeof plan.content !== "string") {
       errors.push("implementation_plan requires plan.content string");
     }
   }
 
-  if (record.responseType === "subagents") {
-    if (!Array.isArray(record.subagents) || record.subagents.length === 0) {
-      errors.push("subagents responseType requires subagents array");
+  if (responseType === "subagents") {
+    const hasSubagentsArray =
+      Array.isArray(record.subagents) && record.subagents.length > 0;
+    const deltaRecord = asRecord(record.subagentsDelta);
+    const hasSubagentsDeltaArray =
+      Array.isArray(deltaRecord?.items) && deltaRecord.items.length > 0;
+    if (!hasSubagentsArray && !hasSubagentsDeltaArray) {
+      errors.push(
+        "subagents responseType requires subagents array or subagentsDelta.items",
+      );
     }
   }
 
@@ -195,34 +282,70 @@ export function validateStructuredOutput(
     }
   }
 
-  if (record.responseType === "interactive") {
-    if (!record.question || typeof record.question !== "object") {
-      errors.push("interactive responseType requires question object");
-    }
-  }
-
-  if (record.responseType === "question") {
+  if (responseType === "question") {
     if (!record.question || typeof record.question !== "object") {
       errors.push("question responseType requires question object");
-    } else {
-      const questionRecord = record.question as Record<string, unknown>;
-      const questionType =
-        typeof questionRecord.type === "string" && questionRecord.type.trim().length > 0
-          ? questionRecord.type
-          : "question";
-      if (questionType !== "question") {
-        errors.push("question responseType requires question.type to be 'question'");
-      }
     }
   }
 
-  if (record.responseType === "progress_update") {
+  if (responseType === "progress_update") {
     if (!Array.isArray(record.progressUpdates)) {
       errors.push("progress_update responseType requires progressUpdates array");
+    } else if (record.progressUpdates.length === 0) {
+      errors.push("progress_update responseType requires at least one progress update");
     }
   }
 
-  if (record.responseType === "message") {
+  if (typeof record.todoItems !== "undefined") {
+    if (!Array.isArray(record.todoItems)) {
+      errors.push("todoItems must be an array");
+    } else {
+      record.todoItems.forEach((item, index) => {
+        const todo = asRecord(item);
+        if (!todo) {
+          errors.push(`todoItems[${index}] must be an object`);
+          return;
+        }
+        if (!isNonEmptyString(todo.id)) {
+          errors.push(`todoItems[${index}].id must be a non-empty string`);
+          return;
+        }
+        if (!isNonEmptyString(todo.text)) {
+          errors.push(`todoItems[${index}].text must be a non-empty string`);
+          return;
+        }
+        const status = typeof todo.status === "string" ? todo.status : "";
+        if (
+          status &&
+          status !== "pending" &&
+          status !== "in_progress" &&
+          status !== "completed" &&
+          status !== "cancelled"
+        ) {
+          errors.push(
+            `todoItems[${index}].status must be pending|in_progress|completed|cancelled`,
+          );
+          return;
+        }
+      });
+    }
+  }
+
+  if (responseType === "todo_update") {
+    if (!Array.isArray(record.todoItems)) {
+      errors.push("todo_update responseType requires todoItems array");
+    } else if (record.todoItems.length === 0) {
+      errors.push("todo_update responseType requires at least one todo item");
+    }
+  }
+
+  if (responseType === "data") {
+    if (!record.data || typeof record.data !== "object" || Array.isArray(record.data)) {
+      errors.push("data responseType requires data object");
+    }
+  }
+
+  if (responseType === "message") {
     const assistantMessage =
       typeof record.assistantMessage === "string" && record.assistantMessage.trim().length > 0
         ? record.assistantMessage
@@ -233,6 +356,27 @@ export function validateStructuredOutput(
         : undefined;
     if (!assistantMessage && !legacyMessage) {
       errors.push("message responseType requires assistantMessage or message string");
+    }
+  }
+
+  if (responseType === "error") {
+    const errorRecord = asRecord(record.error);
+    const errorMessage =
+      errorRecord && isNonEmptyString(errorRecord.message)
+        ? errorRecord.message
+        : undefined;
+    const assistantMessage =
+      typeof record.assistantMessage === "string" && record.assistantMessage.trim().length > 0
+        ? record.assistantMessage
+        : undefined;
+    const legacyMessage =
+      typeof record.message === "string" && record.message.trim().length > 0
+        ? record.message
+        : undefined;
+    if (!errorMessage && !assistantMessage && !legacyMessage) {
+      errors.push(
+        "error responseType requires error.message or assistantMessage/message",
+      );
     }
   }
 

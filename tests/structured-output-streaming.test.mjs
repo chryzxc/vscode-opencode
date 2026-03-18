@@ -16,36 +16,71 @@ const structuredSchemaSource = readSource(
   'structuredOutputSchema.ts',
 );
 
-test('chat provider configures json_schema output format with compatibility fallback', () => {
+test('chat provider negotiates structured json transport and caches per model', () => {
   const helperBody = extractFunctionBody(
     chatProviderSource,
     'private async promptWithStructuredOutput(',
   );
 
-  assert.match(structuredSchemaSource, /type:\s*["']json_schema["']/, 'structured output should use json_schema format');
-  assert.match(structuredSchemaSource, /retryCount:\s*2/, 'structured output should include retryCount for schema retries');
-  assert.match(helperBody, /const workspaceDirectory = this\.getWorkspaceDirectory\(\)/, 'prompt helper should resolve workspace directory before sending prompts');
-  assert.match(helperBody, /query:\s*workspaceDirectory \? \{ directory: workspaceDirectory \} : undefined/, 'prompt helper should scope prompt calls using query.directory');
-  assert.match(helperBody, /format:\s*schema/, 'first attempt should use SDK-documented format key');
-  assert.match(helperBody, /outputFormat:\s*schema/, 'fallback attempt should support outputFormat key');
-  assert.match(helperBody, /if \(!useStructuredOutput \|\| this\.structuredOutputMode === "disabled"\)/, 'helper should allow default text-mode prompts when structured output is not needed');
-  assert.match(helperBody, /structuredOutputMode\s*=\s*"disabled"/, 'provider should disable structured mode when unsupported');
+  assert.match(structuredSchemaSource, /type:\s*["']json_schema["']/, 'schema should use json_schema transport');
+  assert.match(helperBody, /const transportKey = this\.getStructuredOutputTransportKey\(body\)/, 'prompt helper should key transport mode by provider/model');
+  assert.match(helperBody, /this\.structuredOutputTransportByModel\.get\(transportKey\) \?\? "unknown"/, 'prompt helper should read cached transport mode');
+  assert.match(helperBody, /\[mode\]: schema/, 'prompt helper should set schema transport field dynamically');
+  assert.match(helperBody, /probeMissingStructuredSignal:\s*true/, 'unknown mode should probe missing structured payload signals');
+  assert.match(helperBody, /if \(cachedMode === "format"\)/, 'cached format mode should be handled');
+  assert.match(helperBody, /if \(cachedMode === "outputFormat"\)/, 'cached outputFormat mode should be handled');
+  assert.match(helperBody, /structuredOutputTransportByModel\.set\(transportKey,\s*"disabled"\)/, 'unsupported transports should be cached as disabled');
+  assert.match(helperBody, /Structured output format is required for this chat/, 'unsupported transport should return explicit structured format error');
 });
 
-test('chat provider derives workspace directory from first file-based folder', () => {
+test('chat provider validates transport by structured payload signal', () => {
   assert.match(
     chatProviderSource,
-    /private getWorkspaceDirectory\(\): string \| undefined/,
-    'ChatViewProvider should define workspace-directory helper',
+    /private hasStructuredOutputTransportSignal\(messageLike: unknown\): boolean/,
+    'provider should detect structured payload transport signals before caching mode',
   );
-  const workspaceHelperBody = extractFunctionBody(
+  const helperBody = extractFunctionBody(
     chatProviderSource,
-    'private getWorkspaceDirectory(): string | undefined',
+    'private async promptWithStructuredOutput(',
   );
-  assert.match(workspaceHelperBody, /vscode\.workspace\.workspaceFolders\?\.\[0\]/, 'workspace helper should read first workspace folder');
-  assert.match(workspaceHelperBody, /workspaceFolder\.uri\.scheme !== "file"/, 'workspace helper should guard non-file workspace schemes');
-  assert.match(workspaceHelperBody, /workspaceFolder\.uri\.fsPath/, 'workspace helper should return fsPath for file workspaces');
-  assert.match(workspaceHelperBody, /replace\(\/\\\\\/g,\s*["']\/["']\)\.replace\(\/\\\/\+\$\/,\s*["']['"]\)/, 'workspace helper should normalize directory separators for SDK queries');
+  assert.match(
+    helperBody,
+    /const hasStructuredSignal = this\.hasStructuredOutputTransportSignal\(\s*response\.data,\s*\)/,
+    'transport helper should verify structured signal from response payload',
+  );
+});
+
+test('chat provider applies strict structured error fallback without hardcoded prose', () => {
+  assert.match(
+    chatProviderSource,
+    /private buildStructuredOutputValidationError\(/,
+    'provider should build typed structured validation errors',
+  );
+  assert.match(
+    chatProviderSource,
+    /code:\s*"structured_output_invalid"/,
+    'structured validation fallback should use structured_output_invalid code',
+  );
+  assert.doesNotMatch(
+    chatProviderSource,
+    /I couldn't produce a valid structured response\. Please retry\./,
+    'legacy hardcoded fallback prose should be removed',
+  );
+  assert.match(
+    chatProviderSource,
+    /private deriveStrictStructuredFallbackAssistantMessage\(/,
+    'provider should derive a safe assistant fallback message from plain body text',
+  );
+  assert.match(
+    chatProviderSource,
+    /assistantMessage\s*=\s*this\.firstNonEmptyString\(fallbackAssistantMessage\)\s*\|\|\s*validationFailureMessage;/,
+    'strict fallback should preserve assistant text when available',
+  );
+  assert.match(
+    chatProviderSource,
+    /message:\s*validationFailureMessage/,
+    'strict fallback should keep structured error metadata message intact',
+  );
 });
 
 test('chat provider enriches streaming events with structured metadata', () => {
@@ -58,12 +93,6 @@ test('chat provider enriches streaming events with structured metadata', () => {
   assert.match(enrichBody, /kind\s*=\s*"progress"/, 'stream enrichment should classify progress events');
   assert.match(enrichBody, /kind\s*=\s*"message"/, 'stream enrichment should classify message events');
   assert.match(enrichBody, /next\.structured\s*=\s*\{/, 'stream enrichment should attach structured metadata');
-});
-
-test('webview stream handler consumes structured metadata and structured outputs', () => {
-  assert.match(messageHandlerSource, /function normalizeStructuredOutput\(/, 'message handler should parse structured outputs');
-  assert.match(messageHandlerSource, /const structuredKind = asString\(structuredRecord\?\.kind\)/, 'message handler should read structured stream kind metadata');
-  assert.match(messageHandlerSource, /if \(finish && structuredOutput\)/, 'message.updated handling should consume structured output on completion');
 });
 
 test('chat provider keeps reasoning parts intact when applying structured output text', () => {
@@ -84,95 +113,39 @@ test('chat provider keeps reasoning parts intact when applying structured output
   );
 });
 
-test('chat provider keeps default response text when structured output is present', () => {
+test('chat provider uses structured assistant message as source of truth', () => {
   const applyBody = extractFunctionBody(
     chatProviderSource,
-    'private applyStructuredOutputToMessage(message: any): any',
+    'private applyStructuredOutputToMessage(',
   );
 
   assert.match(
     applyBody,
-    /const hasJsonOnlyBody = bodyText\.startsWith\("\{"\) && bodyText\.endsWith\("\}"\);/,
-    'applyStructuredOutputToMessage should detect JSON-only body text',
-  );
-  assert.match(
-    applyBody,
-    /const shouldUseStructuredMessage = !bodyText \|\| hasJsonOnlyBody;/,
-    'structured message should only be used as fallback when default text is absent',
+    /const messageContent =\s*\n\s*structured\.assistantMessage \|\|\s*\n\s*structured\.message;/,
+    'structured assistant message/message should be the final response source',
   );
   assert.match(
     applyBody,
     /if \(messageContent && shouldUseStructuredMessage\)/,
-    'structured message should not overwrite normal assistant prose by default',
+    'structured message should drive rendered content when present',
   );
   assert.match(
     applyBody,
-    /const isInteractiveStructuredResponse =/,
-    'applyStructuredOutputToMessage should detect interactive response payloads',
-  );
-  assert.match(
-    applyBody,
-    /!isInteractiveStructuredResponse[\s\S]*structured\.responseType === "implementation_plan" \|\|[\s\S]*structured\.plan\?\.content/s,
-    'plan metadata should not be attached when the response is interactive',
-  );
-});
-
-test('chat provider selects structured output only for structured-response intents', () => {
-  assert.match(
-    chatProviderSource,
-    /private shouldUseStructuredOutput\(/,
-    'provider should define structured-output auto-selection helper',
-  );
-  assert.match(
-    chatProviderSource,
-    /const useStructuredOutput = this\.shouldUseStructuredOutput\(/,
-    'send path should compute whether to request structured output',
-  );
-  assert.match(
-    chatProviderSource,
-    /const promptBody:\s*NonNullable<SessionPromptData\["body"\]>\s*=\s*\{/,
-    'send path should construct a reusable prompt body object',
-  );
-  assert.match(
-    chatProviderSource,
-    /await this\.promptWithStructuredOutput\(\s*client,\s*session\.id,\s*promptBody,\s*useStructuredOutput,\s*\)/s,
-    'prompt call should pass structured-output decision to helper',
-  );
-});
-
-test('chat provider logs request and response payload diagnostics', () => {
-  assert.match(
-    chatProviderSource,
-    /private sanitizeDebugPayload\(value: unknown\): unknown/,
-    'provider should sanitize debug payloads before logging',
-  );
-  assert.match(
-    chatProviderSource,
-    /private async logPromptRequestPayload\(/,
-    'provider should log outgoing prompt payloads',
-  );
-  assert.match(
-    chatProviderSource,
-    /private async logPromptResponsePayload\(/,
-    'provider should log incoming response payloads',
-  );
-  assert.match(
-    chatProviderSource,
-    /await this\.logPromptRequestPayload\(\s*session\.id,\s*promptBody,\s*useStructuredOutput,\s*\)/s,
-    'send path should emit prompt payload debug logs',
-  );
-  assert.match(
-    chatProviderSource,
-    /await this\.logPromptResponsePayload\(\s*session\.id,\s*response,\s*duration,\s*useStructuredOutput,\s*\)/s,
-    'send path should emit response payload debug logs',
+    /const hasJsonOnlyBody = bodyText\.startsWith\("\{"\) && bodyText\.endsWith\("\}"\);/,
+    'json-only body should be stripped from render text',
   );
 });
 
 test('chat provider enables structured output for all prompts when schema mode is available', () => {
   assert.match(
     chatProviderSource,
-    /private structuredOutputMode:\s*"format"\s*\|\s*"disabled"\s*=\s*"format"/,
-    'structured output mode should default to format',
+    /private structuredOutputMode:\s*StructuredOutputTransportMode\s*=\s*"unknown"/,
+    'structured output mode should start in unknown negotiation mode',
+  );
+  assert.match(
+    chatProviderSource,
+    /private readonly structuredOutputTransportByModel = new Map</,
+    'provider should cache transport mode per model',
   );
 
   const shouldUseBody = extractFunctionBody(
@@ -182,34 +155,93 @@ test('chat provider enables structured output for all prompts when schema mode i
   assert.match(
     shouldUseBody,
     /if \(this\.structuredOutputMode === "disabled"\)/,
-    'structured output helper should short-circuit when schema mode is disabled',
+    'structured output helper should short-circuit when disabled globally',
   );
   assert.match(
     shouldUseBody,
     /return true;/,
-    'structured output helper should enable schema mode by default for all prompts',
+    'structured output helper should default to structured mode',
   );
 });
 
-test('chat provider coerces malformed interactive responses into fallback questions', () => {
+test('chat provider does not coerce malformed question payloads into synthetic options', () => {
   const normalizeBody = extractFunctionBody(
     chatProviderSource,
     'private normalizeStructuredOutput(',
   );
 
+  assert.doesNotMatch(
+    normalizeBody,
+    /Coerced question response into fallback question event/,
+    'malformed questions should not be coerced into synthetic events',
+  );
+  assert.doesNotMatch(
+    normalizeBody,
+    /label:\s*"Yes"[\s\S]*label:\s*"No"/s,
+    'normalizer should not auto-inject yes/no fallback options',
+  );
+});
+
+test('webview normalizer only parses structured output from explicit structured channels', () => {
+  const normalizeBody = extractFunctionBody(
+    messageHandlerSource,
+    'function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined',
+  );
+
   assert.match(
     normalizeBody,
-    /if \(\s*!questionEvent[\s\S]*this\.isInteractiveResponseType\(responseType\)/s,
-    'normalizeStructuredOutput should detect malformed interactive payloads',
+    /normalizeStructuredOutput\(rec\.structuredOutput\)/,
+    'webview should parse message structuredOutput field',
   );
   assert.match(
     normalizeBody,
-    /Coerced interactive response into fallback question event/,
-    'normalizeStructuredOutput should emit diagnostics when fallback coercion is used',
+    /normalizeStructuredOutput\(infoRec\?\.structuredOutput\)/,
+    'webview should parse info structuredOutput field',
   );
   assert.match(
     normalizeBody,
-    /options:\s*\[[\s\S]*label:\s*"Yes"[\s\S]*label:\s*"No"/s,
-    'fallback question coercion should provide at least two picker options',
+    /normalizeStructuredOutput\(part\.output\)/,
+    'webview should parse structured tool output payload',
+  );
+  assert.doesNotMatch(
+    normalizeBody,
+    /normalizeStructuredOutput\(rec\.content\)|normalizeStructuredOutput\(rec\.text\)|normalizeStructuredOutput\(rec\.output\)|normalizeStructuredOutput\(\(rec as UnknownRecord\)\.result\)/,
+    'webview should not parse generic text/content/output/result as structured payload',
+  );
+});
+
+test('webview structured content fallback avoids synthetic default prose', () => {
+  const structuredContentBody = extractFunctionBody(
+    messageHandlerSource,
+    'function structuredContentForResponse(structured?: StructuredOutput): string',
+  );
+
+  assert.doesNotMatch(
+    structuredContentBody,
+    /Implementation plan is ready\.|Todo list updated\.|Structured data response ready\.|I'm here to help\./,
+    'structured content helper should avoid synthetic fallback prose',
+  );
+});
+
+test('webview normalizeMessage can prefer streaming content for structured_output_invalid fallback', () => {
+  const normalizeBody = extractFunctionBody(
+    messageHandlerSource,
+    'function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined',
+  );
+
+  assert.match(
+    normalizeBody,
+    /const isStructuredValidationFallbackOnly\s*=\s*[\s\S]*structured_output_invalid/,
+    'normalizeMessage should detect structured_output_invalid fallback responses',
+  );
+  assert.match(
+    normalizeBody,
+    /\(!hasStructuredOutput \|\| isStructuredValidationFallbackOnly\)/,
+    'normalizeMessage should allow streaming fallback when structured output is only validation error',
+  );
+  assert.match(
+    normalizeBody,
+    /hasStructuredOutput && !isStructuredValidationFallbackOnly/,
+    'normalizeMessage should avoid forcing structured text when response is structured_output_invalid',
   );
 });

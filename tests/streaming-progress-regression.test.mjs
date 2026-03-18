@@ -206,6 +206,11 @@ test('stream handler reclassifies reasoning-like leaked text chunks into reasoni
     /structuredKind === "message"[\s\S]*looksLikeReasoningTrace\(structuredText,\s*streamingState\?\.content \|\| ""\)[\s\S]*UPDATE_STREAMING_REASONING/s,
     'structured message fallback should reclassify reasoning-like text into reasoning lane',
   );
+  assert.match(
+    messageHandlerSource,
+    /respond with a structured output|respond with structured output|structured output using the/,
+    'reasoning leak heuristics should detect structured-output self-instruction phrasing',
+  );
 });
 
 test('message.updated finish toggles streaming lifecycle correctly', () => {
@@ -290,7 +295,7 @@ test('messageResponse remaps subagent parent message ids when stream and final i
   );
   assert.match(
     createHandlerBody,
-    /vscode\.postMessage\(\{\s*type:\s*"persistAssistantMessage",\s*sessionId,\s*message:\s*sanitized,\s*\}\)/s,
+    /vscode\.postMessage\(\{\s*type:\s*"persistAssistantMessage",\s*sessionId:\s*(resolvedSessionId|sessionId),\s*message:\s*sanitized,\s*\}\)/s,
     'messageResponse should request extension-side persistence of the merged assistant message snapshot',
   );
 });
@@ -310,6 +315,19 @@ test('normalizeMessage picks the richest available final content candidate', () 
     messageHandlerSource,
     /pickBestContentCandidate\([\s\S]*typeof message\.content === "string" \? message\.content : ""/s,
     'normalizeMessage should not re-introduce raw message.content fallback after splitting mixed reasoning',
+  );
+});
+
+test('structured response helper avoids synthetic message defaults', () => {
+  const structuredContentBody = extractFunctionBody(
+    messageHandlerSource,
+    'function structuredContentForResponse(structured?: StructuredOutput): string',
+  );
+
+  assert.doesNotMatch(
+    structuredContentBody,
+    /I'm here to help\./,
+    'structuredContentForResponse should not inject synthetic message defaults',
   );
 });
 
@@ -574,6 +592,16 @@ test('message timeline filters placeholder starting/finishing steps', () => {
     /title === "starting step" \|\| title === "finishing step"/,
     'timeline progress filter should hide placeholder starting/finishing rows',
   );
+  assert.match(
+    filterBody,
+    /isStructuredOutputActivityText\(/,
+    'timeline progress filter should hide internal structured-output activity rows',
+  );
+  assert.match(
+    messageComponentsSource,
+    /runninginvalid|processinginvalid/,
+    'timeline progress filter should also hide internal invalid structured-output retry rows',
+  );
 });
 
 test('active task panel filters placeholder starting/finishing steps', () => {
@@ -581,6 +609,24 @@ test('active task panel filters placeholder starting/finishing steps', () => {
     panelComponentsSource,
     /title === "starting step" \|\| title === "finishing step"/,
     'Active Task progress list should hide placeholder starting/finishing rows',
+  );
+  assert.match(
+    panelComponentsSource,
+    /structuredoutput|runninginvalid|processinginvalid/,
+    'Active Task progress list should hide internal structured-output retry rows',
+  );
+});
+
+test('stream handler suppresses internal invalid structured-output tool retries', () => {
+  const streamBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent(',
+  );
+
+  assert.match(
+    streamBody,
+    /isStructuredOutputActivityLabel\(tool\)[\s\S]*isStructuredOutputActivityLabel\(asString\(part\.title\)\)[\s\S]*isStructuredOutputActivityLabel\(asString\(part\.meta\)\)/s,
+    'tool step handling should suppress invalid structured-output retry rows by tool/title/meta markers',
   );
 });
 

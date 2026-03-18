@@ -68,6 +68,31 @@ test("splitMixedReasoningFromContent detects compacted no-space reasoning leaks"
   assert.match(result.reasoning, /Theuserjustsaid|The user just said/i);
 });
 
+test("splitMixedReasoningFromContent detaches instruction-check reasoning leaks", () => {
+  const instructionLeak =
+    "I am doing well. Looking at my instructions: Be concise. No flattery. No status updates. Match user's style. I need to use the StructuredOutput tool for my final response.";
+  const result = splitMixedReasoningFromContent(instructionLeak);
+
+  assert.ok(result, "expected instruction-check leak to be split");
+  assert.equal(result.content, "I am doing well.");
+  assert.match(result.reasoning, /looking at my instructions/i);
+});
+
+test("splitMixedReasoningFromContent treats user-analysis preambles as reasoning-only", () => {
+  const userAnalysisLeak =
+    'The user is just saying "hey" again. This is a simple greeting. I should respond briefly and directly.';
+  const result = splitMixedReasoningFromContent(userAnalysisLeak);
+
+  assert.ok(result, "expected user-analysis leak to be split");
+  assert.equal(
+    result.content,
+    "",
+    "user-analysis preamble should not be rendered as assistant response content",
+  );
+  assert.match(result.reasoning, /the user is just saying/i);
+  assert.match(result.reasoning, /\bi should respond\b/i);
+});
+
 test("splitMixedReasoningFromContent does not split clean assistant content", () => {
   const clean =
     "Hey! How can I help you today? I can review your code, explain errors, or propose a plan.";

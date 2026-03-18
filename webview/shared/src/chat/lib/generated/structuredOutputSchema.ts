@@ -10,7 +10,8 @@ export type StructuredResponseType =
   | "progress_update"
   | "subagents"
   | "question"
-  | "interactive"
+  | "todo_update"
+  | "data"
   | "error";
 
 export type StructuredOutputSchema = {
@@ -21,15 +22,16 @@ export type StructuredOutputSchema = {
     additionalProperties: boolean;
     required?: string[];
     properties: Record<string, unknown>;
+    allOf?: Array<Record<string, unknown>>;
   };
 };
 
 export const structuredOutputSchema: StructuredOutputSchema = {
   type: "json_schema",
-  retryCount: 2,
+  retryCount: 1,
   schema: {
     type: "object",
-    additionalProperties: true,
+    additionalProperties: false,
     required: ["responseType"],
     properties: {
       responseType: {
@@ -40,7 +42,8 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "progress_update",
           "subagents",
           "question",
-          "interactive",
+          "todo_update",
+          "data",
           "error",
         ],
         description:
@@ -68,10 +71,13 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           type: "object",
           additionalProperties: true,
           properties: {
+            id: { type: "string" },
+            type: { type: "string" },
             title: { type: "string" },
             status: { type: "string", enum: ["pending", "done", "error"] },
             meta: { type: "string" },
             filePath: { type: "string" },
+            createdAt: { type: "number" },
           },
         },
       },
@@ -79,7 +85,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         description:
-          "Interactive payload for responseType='question' and responseType='interactive'.",
+          "Interactive payload for responseType='question'.",
         properties: {
           type: {
             type: "string",
@@ -93,6 +99,17 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
           multiSelect: { type: "boolean" },
           allowCustomInput: { type: "boolean" },
+          answer: {
+            type: "string",
+            description:
+              "Optional suggested/default answer for the question prompt.",
+          },
+          answers: {
+            type: "array",
+            description:
+              "Optional suggested/default multi-select answers for the question prompt.",
+            items: { type: "string" },
+          },
           options: {
             type: "array",
             description:
@@ -108,6 +125,24 @@ export const structuredOutputSchema: StructuredOutputSchema = {
               },
             },
           },
+          actions: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: true,
+              properties: {
+                id: { type: "string" },
+                label: { type: "string" },
+                value: { type: "string" },
+                description: { type: "string" },
+              },
+            },
+          },
+          confirmLabel: { type: "string" },
+          cancelLabel: { type: "string" },
+          dismissLabel: { type: "string" },
+          message: { type: "string" },
+          content: { type: "string" },
         },
       },
       plan: {
@@ -132,7 +167,10 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           properties: {
             id: { type: "string" },
             name: { type: "string" },
-            status: { type: "string" },
+            status: {
+              type: "string",
+              enum: ["pending", "running", "done", "error", "orphaned"],
+            },
             progress: { type: "number" },
             description: { type: "string" },
             latestActivity: { type: "string" },
@@ -203,7 +241,10 @@ export const structuredOutputSchema: StructuredOutputSchema = {
               properties: {
                 id: { type: "string" },
                 name: { type: "string" },
-                status: { type: "string" },
+                status: {
+                  type: "string",
+                  enum: ["pending", "running", "done", "error", "orphaned"],
+                },
                 progress: { type: "number" },
                 description: { type: "string" },
                 latestActivity: { type: "string" },
@@ -215,6 +256,124 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
         },
       },
+      todoItems: {
+        type: "array",
+        description:
+          "Optional todo/task list payload used by responseType='todo_update'.",
+        items: {
+          type: "object",
+          additionalProperties: true,
+          properties: {
+            id: { type: "string" },
+            text: { type: "string" },
+            status: {
+              type: "string",
+              enum: ["pending", "in_progress", "completed", "cancelled"],
+            },
+            description: { type: "string" },
+          },
+        },
+      },
+      data: {
+        type: "object",
+        additionalProperties: true,
+        description:
+          "Machine-readable payload for UI components that render custom data cards.",
+      },
+      error: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          message: { type: "string" },
+          code: { type: "string" },
+          details: { type: "string" },
+          retryable: { type: "boolean" },
+        },
+      },
     },
+    allOf: [
+      {
+        if: {
+          properties: { responseType: { const: "message" } },
+          required: ["responseType"],
+        },
+        then: {
+          anyOf: [{ required: ["assistantMessage"] }, { required: ["message"] }],
+        },
+      },
+      {
+        if: {
+          properties: { responseType: { const: "implementation_plan" } },
+          required: ["responseType"],
+        },
+        then: {
+          required: ["plan"],
+          properties: {
+            plan: {
+              type: "object",
+              required: ["content"],
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: { responseType: { const: "progress_update" } },
+          required: ["responseType"],
+        },
+        then: {
+          required: ["progressUpdates"],
+        },
+      },
+      {
+        if: {
+          properties: { responseType: { const: "subagents" } },
+          required: ["responseType"],
+        },
+        then: {
+          anyOf: [{ required: ["subagents"] }, { required: ["subagentsDelta"] }],
+        },
+      },
+      {
+        if: {
+          properties: { responseType: { const: "question" } },
+          required: ["responseType"],
+        },
+        then: {
+          required: ["question"],
+        },
+      },
+      {
+        if: {
+          properties: { responseType: { const: "todo_update" } },
+          required: ["responseType"],
+        },
+        then: {
+          required: ["todoItems"],
+        },
+      },
+      {
+        if: {
+          properties: { responseType: { const: "data" } },
+          required: ["responseType"],
+        },
+        then: {
+          required: ["data"],
+        },
+      },
+      {
+        if: {
+          properties: { responseType: { const: "error" } },
+          required: ["responseType"],
+        },
+        then: {
+          anyOf: [
+            { required: ["error"] },
+            { required: ["assistantMessage"] },
+            { required: ["message"] },
+          ],
+        },
+      },
+    ],
   },
 };

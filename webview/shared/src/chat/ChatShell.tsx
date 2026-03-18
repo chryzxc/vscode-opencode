@@ -148,8 +148,14 @@ function ChatContent() {
     state.streaming?.isActive,
   ]);
 
+  const isProcessingInCurrentSession =
+    state.isProcessing &&
+    (!state.currentSessionId ||
+      state.processingSessionIds.length === 0 ||
+      state.processingSessionIds.includes(state.currentSessionId));
+
   const showThinking =
-    state.isProcessing && !state.streaming && !state.isCompacting;
+    isProcessingInCurrentSession && !state.streaming && !state.isCompacting;
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
       ? Math.max(
@@ -190,7 +196,7 @@ function ChatContent() {
         >
           {state.messages.length === 0 &&
           !state.streaming &&
-          !state.isProcessing ? (
+          !isProcessingInCurrentSession ? (
             <EmptyState />
           ) : null}
 

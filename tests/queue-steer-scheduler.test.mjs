@@ -61,13 +61,18 @@ test('scheduler converts send-now to steer while processing and auto-drains with
   );
   assert.match(
     scheduleBody,
-    /mode === "send-now" && this\.isProcessingRequest \? "steer" : mode/,
-    'send-now should convert to steer when processing is active'
+    /mode === "send-now" && this\.isProcessingRequestForSession\(sessionId\)/,
+    'send-now should convert to steer only when the target session is processing'
   );
   assert.match(
     scheduleBody,
-    /if \(this\.isProcessingRequest\)\s*\{[\s\S]*handleStopRequest\(sessionId\)/,
-    'steer path should stop active request before queued dispatch'
+    /if \(this\.isProcessingRequestForSession\(sessionId\)\)\s*\{[\s\S]*handleStopRequest\(sessionId\)/,
+    'steer path should stop active request only for the target session'
+  );
+  assert.match(
+    scheduleBody,
+    /else if \(this\.isProcessingRequest\)\s*\{[\s\S]*handleStopRequest\(activeSessionId\)/,
+    'scheduler should stop a different active session before dispatching another session'
   );
   assert.match(
     scheduleBody,

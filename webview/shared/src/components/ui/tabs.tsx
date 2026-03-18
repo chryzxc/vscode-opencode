@@ -1,8 +1,6 @@
 import * as React from "react"
 import { cn } from "../../utils"
 
-const Tabs = React.useContext(React.createContext<any>(null)) // Simple tabs implementation
-
 const TabsRoot = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement> & { defaultValue?: string; value?: string; onValueChange?: (value: string) => void }

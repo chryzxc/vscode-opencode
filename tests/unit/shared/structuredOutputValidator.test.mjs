@@ -111,9 +111,11 @@ test('validateStructuredOutput checks for null/undefined/non-object input', () =
 test('validateStructuredOutput validates responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
+  assert.match(fnBody, /const unknownTopLevelFields = Object\.keys\(record\)\.filter\(/, 'Should detect unsupported top-level fields');
+  assert.match(fnBody, /Unsupported top-level fields:/, 'Should report unknown top-level field errors');
   assert.match(fnBody, /typeof record\.responseType === "string"/, 'Should check responseType type');
   assert.match(fnBody, /record\.responseType\.trim\(\)\.length > 0/, 'Should check responseType is not empty');
-  assert.match(fnBody, /if \(!RESPONSE_TYPES\.has\(record\.responseType\)\)/, 'Should validate responseType against allowed types');
+  assert.match(fnBody, /if \(!RESPONSE_TYPES\.has\(responseType\)\)/, 'Should validate responseType against allowed types');
   assert.match(fnBody, /Unsupported responseType:/, 'Should include responseType in error message');
 });
 
@@ -141,11 +143,8 @@ test('validateStructuredOutput validates reasoning array', () => {
 
   assert.match(fnBody, /Array\.isArray\(record\.reasoning\)/, 'Should check reasoning is array before validating items');
   assert.match(fnBody, /record\.reasoning\.some\(/, 'Should use some to check reasoning items');
-  assert.match(fnBody, /typeof item !== "string" \|\| item\.trim\(\)\.length === 0/, 'Should validate each reasoning item');
-  assert.match(fnBody, /reasoning must only contain non-empty strings/, 'Should include reasoning items error');
-
-  assert.match(fnBody, /record\.reasoning\.length === 0/, 'Should check reasoning array is not empty');
-  assert.match(fnBody, /reasoning must contain at least one item/, 'Should include reasoning empty array error');
+  assert.match(fnBody, /typeof item !== "string"/, 'Should validate each reasoning item is string');
+  assert.match(fnBody, /reasoning must only contain strings/, 'Should include reasoning items error');
 });
 
 test('validateStructuredOutput validates plan object', () => {
@@ -216,7 +215,7 @@ test('validateStructuredOutput validates subagents array', () => {
 test('validateStructuredOutput validates implementation_plan responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /if \(record\.responseType === "implementation_plan"\)/, 'Should check for implementation_plan responseType');
+  assert.match(fnBody, /if \(responseType === "implementation_plan"\)/, 'Should check for implementation_plan responseType');
   assert.match(fnBody, /const plan = record\.plan as Record<string, unknown> \| undefined;/, 'Should extract plan');
   assert.match(fnBody, /!plan \|\| typeof plan\.content !== "string"/, 'Should validate plan has content');
   assert.match(fnBody, /implementation_plan requires plan\.content string/, 'Should include implementation_plan error');
@@ -225,9 +224,10 @@ test('validateStructuredOutput validates implementation_plan responseType', () =
 test('validateStructuredOutput validates subagents responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /if \(record\.responseType === "subagents"\)/, 'Should check for subagents responseType');
-  assert.match(fnBody, /!Array\.isArray\(record\.subagents\) \|\| record\.subagents\.length === 0/, 'Should validate subagents array exists and is not empty');
-  assert.match(fnBody, /subagents responseType requires subagents array/, 'Should include subagents error');
+  assert.match(fnBody, /if \(responseType === "subagents"\)/, 'Should check for subagents responseType');
+  assert.match(fnBody, /const hasSubagentsArray =/, 'Should evaluate presence of subagents array');
+  assert.match(fnBody, /const hasSubagentsDeltaArray =/, 'Should evaluate presence of subagentsDelta items array');
+  assert.match(fnBody, /subagents responseType requires subagents array or subagentsDelta\.items/, 'Should include subagents error');
 });
 
 test('validateStructuredOutput validates subagentsDelta structure', () => {
@@ -239,27 +239,33 @@ test('validateStructuredOutput validates subagentsDelta structure', () => {
   assert.match(fnBody, /subagentsDelta requires items array/, 'Should include subagentsDelta error');
 });
 
-test('validateStructuredOutput validates interactive responseType', () => {
+test('validateStructuredOutput validates todo_update responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /if \(record\.responseType === "interactive"\)/, 'Should check for interactive responseType');
-  assert.match(fnBody, /!record\.question \|\| typeof record\.question !== "object"/, 'Should validate question object exists');
-  assert.match(fnBody, /interactive responseType requires question object/, 'Should include interactive error');
+  assert.match(fnBody, /if \(responseType === "todo_update"\)/, 'Should check for todo_update responseType');
+  assert.match(fnBody, /!Array\.isArray\(record\.todoItems\)/, 'Should validate todoItems array exists');
+  assert.match(fnBody, /todo_update responseType requires todoItems array/, 'Should include todo_update error');
+});
+
+test('validateStructuredOutput validates data responseType', () => {
+  const fnBody = extractFunctionBody('export function validateStructuredOutput(');
+
+  assert.match(fnBody, /if \(responseType === "data"\)/, 'Should check for data responseType');
+  assert.match(fnBody, /data responseType requires data object/, 'Should include data responseType error');
 });
 
 test('validateStructuredOutput validates question responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /if \(record\.responseType === "question"\)/, 'Should check for question responseType');
+  assert.match(fnBody, /if \(responseType === "question"\)/, 'Should check for question responseType');
   assert.match(fnBody, /!record\.question \|\| typeof record\.question !== "object"/, 'Should validate question object exists');
   assert.match(fnBody, /question responseType requires question object/, 'Should include question object error');
-  assert.match(fnBody, /question responseType requires question\.type to be 'question'/, 'Should validate question payload type');
 });
 
 test('validateStructuredOutput validates progress_update responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /if \(record\.responseType === "progress_update"\)/, 'Should check for progress_update responseType');
+  assert.match(fnBody, /if \(responseType === "progress_update"\)/, 'Should check for progress_update responseType');
   assert.match(fnBody, /!Array\.isArray\(record\.progressUpdates\)/, 'Should validate progressUpdates array exists');
   assert.match(fnBody, /progress_update responseType requires progressUpdates array/, 'Should include progress_update error');
 });
@@ -267,7 +273,7 @@ test('validateStructuredOutput validates progress_update responseType', () => {
 test('validateStructuredOutput validates message responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /if \(record\.responseType === "message"\)/, 'Should check for message responseType');
+  assert.match(fnBody, /if \(responseType === "message"\)/, 'Should check for message responseType');
 
   assert.match(fnBody, /const assistantMessage =/, 'Should extract assistantMessage');
   assert.match(fnBody, /typeof record\.assistantMessage === "string" && record\.assistantMessage\.trim\(\)\.length > 0/, 'Should validate assistantMessage is non-empty string');
@@ -347,7 +353,7 @@ test('validator provides detailed error messages with context', () => {
   assert.match(validatorSource, /subagents\[\${index}\]/, 'Error should include array index');
 
   // Errors should include validation details
-  assert.match(validatorSource, /Unsupported responseType: \${record\.responseType}/, 'Error should include invalid value');
+  assert.match(validatorSource, /Unsupported responseType: \${responseType}/, 'Error should include invalid value');
   assert.match(validatorSource, /question\.type invalid: \${questionRecord\.type}/, 'Error should include invalid type');
 });
 
@@ -369,15 +375,17 @@ test('validator handles all response type specific requirements', () => {
   assert.match(validatorSource, /implementation_plan requires plan\.content string/, 'Should enforce implementation_plan requirements');
 
   // subagents
-  assert.match(validatorSource, /subagents responseType requires subagents array/, 'Should enforce subagents requirements');
+  assert.match(validatorSource, /subagents responseType requires subagents array or subagentsDelta\.items/, 'Should enforce subagents requirements');
 
-  // interactive + question
-  assert.match(validatorSource, /interactive responseType requires question object/, 'Should enforce interactive requirements');
+  // question
   assert.match(validatorSource, /question responseType requires question object/, 'Should enforce question object requirement');
-  assert.match(validatorSource, /question responseType requires question\.type to be 'question'/, 'Should enforce question payload type requirement');
 
   // progress_update
   assert.match(validatorSource, /progress_update responseType requires progressUpdates array/, 'Should enforce progress_update requirements');
+
+  // todo_update + data
+  assert.match(validatorSource, /todo_update responseType requires todoItems array/, 'Should enforce todo_update requirements');
+  assert.match(validatorSource, /data responseType requires data object/, 'Should enforce data responseType requirements');
 
   // message
   assert.match(validatorSource, /message responseType requires assistantMessage or message string/, 'Should enforce message requirements');

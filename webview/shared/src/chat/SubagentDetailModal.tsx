@@ -1,4 +1,4 @@
-import { Copy, Sparkles, X } from "lucide-react";
+import { Check, Copy, Sparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -207,15 +207,10 @@ export function SubagentDetailModal({
 
 											const dotIndicator = isError ? (
 												<X className="h-3 w-3 text-destructive" />
+											) : isLast && !isDone && !isError ? (
+												<div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
 											) : (
-												<div
-													className={cn(
-														"h-2 w-2 rounded-full",
-														isLast && !isDone && !isError
-															? "bg-primary animate-pulse"
-															: "bg-emerald-500",
-													)}
-												/>
+												<Check className="h-3 w-3 text-emerald-500" />
 											);
 
 											return (

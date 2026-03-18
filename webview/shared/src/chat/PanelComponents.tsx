@@ -11,9 +11,11 @@ import {
   History,
   Loader2,
   Lock,
+  MessageSquare,
   MoreHorizontal,
   Play,
   RefreshCw,
+  Search,
   Send,
   Square,
   Trash2,
@@ -31,6 +33,10 @@ import { ImagePreviewModal } from "./ImagePreviewModal";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { useAppDispatch, useAppState } from "./lib/store";
 import vscode from "./lib/vscode";
@@ -164,12 +170,30 @@ function getSlashTrigger(input: string, cursor: number): SlashTrigger | null {
   };
 }
 
+function isProcessingInCurrentSession(
+  isProcessing: boolean,
+  currentSessionId: string | null,
+  processingSessionIds: string[],
+): boolean {
+  if (!isProcessing) {
+    return false;
+  }
+  if (!currentSessionId) {
+    return true;
+  }
+  if (!Array.isArray(processingSessionIds) || processingSessionIds.length === 0) {
+    return true;
+  }
+  return processingSessionIds.includes(currentSessionId);
+}
+
 export function StickyHeader() {
   const {
     currentSessionId,
     isSidebarOpen,
     sessionStats,
-    isProcessing,
+    isProcessing: globalIsProcessing,
+    processingSessionIds,
     streaming,
     promptQueue,
     availableModels,
@@ -179,6 +203,11 @@ export function StickyHeader() {
     compactionDividerIndex,
   } = useAppState();
   const dispatch = useAppDispatch();
+  const isProcessing = isProcessingInCurrentSession(
+    globalIsProcessing,
+    currentSessionId,
+    processingSessionIds,
+  );
 
   // Replicate context usage calculation from ActiveTaskPanel for header indicator
   const selectedModelContextLimit = useMemo(() => {
@@ -358,7 +387,11 @@ export function HistorySidebar() {
   const dispatch = useAppDispatch();
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
   const visibleSessions = useMemo(() => {
     if (sessionsList.length === 0) {
       return [];
@@ -367,25 +400,69 @@ export function HistorySidebar() {
     const sessionIds = new Set(sessionsList.map((session) => session.id));
     const topLevelSessions = sessionsList.filter((session) => {
       const parentSessionId = session.parentSessionId?.trim();
-      if (!parentSessionId) {
-        return true;
-      }
-      if (parentSessionId === session.id) {
-        return true;
-      }
+      if (!parentSessionId) return true;
+      if (parentSessionId === session.id) return true;
       return !sessionIds.has(parentSessionId);
     });
 
     return topLevelSessions.length > 0 ? topLevelSessions : sessionsList;
   }, [sessionsList]);
 
-  // Focus input when editing starts
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return visibleSessions;
+    const q = searchQuery.toLowerCase();
+    return visibleSessions.filter((s) =>
+      (s.title || "Untitled chat").toLowerCase().includes(q),
+    );
+  }, [visibleSessions, searchQuery]);
+
+  const groupedSessions = useMemo(() => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayTs = todayStart.getTime();
+    const yesterdayTs = todayTs - day;
+    const weekTs = todayTs - 6 * day;
+
+    const groups: { label: string; sessions: typeof filteredSessions }[] = [
+      { label: "Today", sessions: [] },
+      { label: "Yesterday", sessions: [] },
+      { label: "This Week", sessions: [] },
+      { label: "Older", sessions: [] },
+    ];
+
+    for (const session of filteredSessions) {
+      const ts = session.createdAt ?? 0;
+      if (ts >= todayTs) {
+        groups[0].sessions.push(session);
+      } else if (ts >= yesterdayTs) {
+        groups[1].sessions.push(session);
+      } else if (ts >= weekTs) {
+        groups[2].sessions.push(session);
+      } else {
+        groups[3].sessions.push(session);
+      }
+    }
+
+    return groups.filter((g) => g.sessions.length > 0);
+  }, [filteredSessions]);
+
   useEffect(() => {
     if (editingSessionId && inputRef.current) {
       inputRef.current.focus();
       inputRef.current.select();
     }
   }, [editingSessionId]);
+
+  useEffect(() => {
+    if (isSidebarOpen) {
+      setTimeout(() => searchRef.current?.focus(), 220);
+    } else {
+      setSearchQuery("");
+      setConfirmDeleteId(null);
+    }
+  }, [isSidebarOpen]);
 
   function relativeSessionTime(ts: number | undefined): string {
     if (!ts) return "";
@@ -398,204 +475,271 @@ export function HistorySidebar() {
     if (diff < minute) return "Just now";
     if (diff < hour) {
       const mins = Math.round(diff / minute);
-      return `${mins} min${mins === 1 ? "" : "s"} ago`;
+      return `${mins}m ago`;
     }
     if (diff < day) {
       const hrs = Math.round(diff / hour);
-      return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+      return `${hrs}h ago`;
     }
     if (diff < 7 * day) {
       const days = Math.round(diff / day);
-      return days === 1 ? "Yesterday" : `${days} days ago`;
+      return days === 1 ? "Yesterday" : `${days}d ago`;
     }
-
     const d = new Date(ts);
-    return d.toLocaleDateString();
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
+
+  const handleStartEdit = (sessionId: string, title: string) => {
+    setEditingSessionId(sessionId);
+    setNewTitle(title || "");
+    setConfirmDeleteId(null);
+  };
+
+  const handleSaveEdit = () => {
+    if (newTitle.trim() && editingSessionId) {
+      vscode.postMessage({
+        type: "renameSession",
+        sessionId: editingSessionId,
+        newTitle: newTitle.trim(),
+      });
+    }
+    setEditingSessionId(null);
+    setNewTitle("");
+  };
+
+  const handleCancelEdit = () => {
+    setEditingSessionId(null);
+    setNewTitle("");
+  };
+
+  const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") handleSaveEdit();
+    else if (e.key === "Escape") handleCancelEdit();
+  };
+
+  const handleDeleteConfirm = (sessionId: string) => {
+    vscode.postMessage({ type: "deleteSession", sessionId });
+    setConfirmDeleteId(null);
+  };
 
   return (
     <aside
-      className={`oc-history-sidebar absolute bottom-0 left-0 top-0 z-20 w-72 border-r border-oc-border bg-oc-bg-soft transition-transform duration-200 ${
+      className={`oc-history-sidebar absolute bottom-0 left-0 top-0 z-20 flex w-[280px] flex-col border-r border-oc-border bg-oc-bg-soft transition-transform duration-200 ease-in-out ${
         isSidebarOpen ? "translate-x-0" : "-translate-x-full"
       }`}
+      style={{ boxShadow: isSidebarOpen ? "4px 0 24px rgba(0,0,0,0.18)" : "none" }}
     >
-      <div className="flex items-center justify-between border-b border-oc-border px-3 py-2.5">
+      <div className="flex shrink-0 items-center justify-between px-3.5 pt-3.5 pb-2">
         <div className="flex items-center gap-2">
-          <History className="h-3.5 w-3.5 text-oc-text-muted" />
-          <div className="text-xs font-semibold uppercase tracking-widest text-oc-text-muted">
+          <History className="h-3.5 w-3.5 text-oc-accent" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-oc-text-muted">
             Sessions
-          </div>
+          </span>
+          {visibleSessions.length > 0 && (
+            <span className="rounded-full bg-oc-border px-1.5 py-0.5 text-[9px] font-medium tabular-nums text-oc-text-muted leading-none">
+              {visibleSessions.length}
+            </span>
+          )}
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 rounded-md"
+        <button
+          type="button"
+          className="flex h-6 w-6 items-center justify-center rounded-md text-oc-text-muted transition-colors hover:bg-oc-border hover:text-oc-text"
           aria-label="Close history sidebar"
           onClick={() => dispatch({ type: "SET_SIDEBAR_OPEN", payload: false })}
         >
           <X className="h-3.5 w-3.5" />
-        </Button>
+        </button>
       </div>
-      <div className="border-b border-oc-border px-2.5 py-2.5">
-        <Button
-          variant="ghost-accent"
-          size="sm"
+
+      <div className="shrink-0 px-3 pb-2.5">
+        <button
+          type="button"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-oc-accent bg-oc-accent-soft py-1.5 text-[11px] font-medium text-oc-accent transition-all hover:bg-oc-accent hover:text-white active:scale-[0.98]"
           onClick={() => {
             vscode.postMessage({ type: "createSession" });
             dispatch({ type: "SET_SIDEBAR_OPEN", payload: false });
           }}
         >
-          <span className="text-xs">+</span> New Chat
-        </Button>
+          <span className="text-sm leading-none">+</span>
+          New Chat
+        </button>
       </div>
-      <div className="h-[calc(100%-88px)] overflow-y-auto p-2">
-        {visibleSessions.length === 0 ? (
-          <div className="p-4 text-center text-xs text-oc-text-muted opacity-70">
-            No sessions yet.
-            <br />
-            Start a new chat to get going.
+
+      <div className="shrink-0 px-3 pb-2.5">
+        <div className="flex items-center gap-1.5 rounded-md border border-oc-border bg-oc-panel px-2.5 py-1.5 transition-colors focus-within:border-oc-accent">
+          <Search className="h-3 w-3 shrink-0 text-oc-text-muted" />
+          <input
+            ref={searchRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search sessions…"
+            className="flex-1 bg-transparent text-[11px] text-oc-text placeholder-oc-text-muted outline-none"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="flex h-4 w-4 items-center justify-center rounded text-oc-text-muted hover:text-oc-text"
+              aria-label="Clear search"
+            >
+              <X className="h-2.5 w-2.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="mx-3 mb-1 h-px bg-oc-border" />
+
+      <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 pt-1">
+        {filteredSessions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
+            {searchQuery ? (
+              <>
+                <Search className="h-8 w-8 text-oc-border" />
+                <p className="text-[11px] text-oc-text-muted">No sessions match</p>
+                <p className="text-[10px] text-oc-text-muted opacity-60">"{searchQuery}"</p>
+              </>
+            ) : (
+              <>
+                <MessageSquare className="h-8 w-8 text-oc-border" />
+                <p className="text-[11px] text-oc-text-muted">No sessions yet</p>
+                <p className="text-[10px] text-oc-text-muted opacity-60">Start a new chat to begin</p>
+              </>
+            )}
           </div>
         ) : (
-          visibleSessions.map((session) => {
-            const isActive = session.id === currentSessionId;
-            const isProcessing =
-              processingSessionIds?.includes(session.id) || false;
-            const isEditing = editingSessionId === session.id;
+          groupedSessions.map((group) => (
+            <div key={group.label} className="mb-2">
+              <div className="mb-1 px-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-oc-text-muted opacity-60">
+                {group.label}
+              </div>
+              {group.sessions.map((session) => {
+                const isActive = session.id === currentSessionId;
+                const isProcessing = processingSessionIds?.includes(session.id) || false;
+                const isEditing = editingSessionId === session.id;
+                const isConfirmingDelete = confirmDeleteId === session.id;
 
-            const handleStartEdit = () => {
-              setEditingSessionId(session.id);
-              setNewTitle(session.title || "");
-            };
-
-            const handleSaveEdit = () => {
-              if (newTitle.trim()) {
-                vscode.postMessage({
-                  type: "renameSession",
-                  sessionId: session.id,
-                  newTitle: newTitle.trim(),
-                });
-              }
-              setEditingSessionId(null);
-              setNewTitle("");
-            };
-
-            const handleCancelEdit = () => {
-              setEditingSessionId(null);
-              setNewTitle("");
-            };
-
-            const handleKeyDown = (e: React.KeyboardEvent) => {
-              if (e.key === "Enter") {
-                handleSaveEdit();
-              } else if (e.key === "Escape") {
-                handleCancelEdit();
-              }
-            };
-
-            return (
-              <div
-                key={session.id}
-                className="group mb-1 flex min-w-0 items-center gap-1"
-              >
-                {isEditing ? (
-                  <div className="flex-1 flex items-center gap-1 rounded-md border border-oc-accent bg-oc-accent-soft px-2 py-1.5">
-                    <input
-                      ref={inputRef}
-                      type="text"
-                      value={newTitle}
-                      onChange={(e) => setNewTitle(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      onBlur={handleSaveEdit}
-                      className="flex-1 bg-transparent text-xs text-oc-text outline-none"
-                      placeholder="Enter session title..."
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      title="Cancel"
-                      className="h-5 w-5 rounded-md"
-                      onClick={handleCancelEdit}
-                    >
-                      <X className="h-3 w-3" />
-                    </Button>
-                  </div>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        vscode.postMessage({
-                          type: "switchSession",
-                          sessionId: session.id,
-                        });
-                        dispatch({
-                          type: "SET_SIDEBAR_OPEN",
-                          payload: false,
-                        });
-                      }}
-                      className={
-                        `oc-session-item flex-1 min-w-0 overflow-hidden rounded-md px-2.5 py-2 text-left text-xs ` +
-                        (isActive
-                          ? "bg-oc-accent-soft border oc-accent-border-light"
-                          : "border border-transparent")
-                      }
-                    >
-                      <div className="flex items-center gap-2">
-                        {isProcessing ? (
-                          <div title="This session is still working on the response...">
-                            <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
-                          </div>
-                        ) : isActive ? (
-                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-accent" />
-                        ) : (
-                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-border-soft" />
-                        )}
-                        <div
-                          className={`truncate font-medium ${
-                            isActive
-                              ? "text-oc-text"
-                              : "text-[var(--oc-text-soft)]"
-                          }`}
+                return (
+                  <div
+                    key={session.id}
+                    className="group relative mb-0.5"
+                  >
+                    {isEditing ? (
+                      <div className="flex items-center gap-1 rounded-md border border-oc-accent bg-oc-accent-soft px-2 py-2">
+                        <input
+                          ref={inputRef}
+                          type="text"
+                          value={newTitle}
+                          onChange={(e) => setNewTitle(e.target.value)}
+                          onKeyDown={handleEditKeyDown}
+                          onBlur={handleSaveEdit}
+                          className="flex-1 bg-transparent text-[11px] text-oc-text outline-none"
+                          placeholder="Session title…"
+                        />
+                        <button
+                          type="button"
+                          title="Save"
+                          className="flex h-5 w-5 items-center justify-center rounded text-oc-accent hover:bg-oc-accent hover:text-white transition-colors"
+                          onClick={handleSaveEdit}
                         >
-                          {session.title || "Untitled chat"}
+                          <Check className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          title="Cancel"
+                          className="flex h-5 w-5 items-center justify-center rounded text-oc-text-muted hover:bg-oc-border transition-colors"
+                          onClick={handleCancelEdit}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : isConfirmingDelete ? (
+                      <div className="flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-2">
+                        <span className="flex-1 truncate text-[11px] text-oc-text-muted">
+                          Delete "{session.title || "Untitled chat"}"?
+                        </span>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-red-400 hover:bg-red-500/20 transition-colors"
+                          onClick={() => handleDeleteConfirm(session.id)}
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-oc-text-muted hover:bg-oc-border transition-colors"
+                          onClick={() => setConfirmDeleteId(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div
+                        className={`flex items-stretch rounded-md transition-all ${
+                          isActive
+                            ? "bg-oc-accent-soft"
+                            : "hover:bg-oc-panel"
+                        }`}
+                      >
+                        <div
+                          className={`w-[3px] shrink-0 self-stretch rounded-l-md transition-colors ${
+                            isActive ? "bg-oc-accent" : "bg-transparent"
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            vscode.postMessage({ type: "switchSession", sessionId: session.id });
+                            dispatch({ type: "SET_SIDEBAR_OPEN", payload: false });
+                          }}
+                          className="oc-session-item min-w-0 flex-1 overflow-hidden px-2 py-2 text-left"
+                        >
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {isProcessing ? (
+                              <Loader2 className="h-3 w-3 shrink-0 animate-spin text-oc-accent" aria-label="Processing" />
+                            ) : null}
+                            <span
+                              className={`truncate text-[12px] font-medium leading-tight ${
+                                isActive ? "text-oc-text" : "text-oc-text-soft"
+                              }`}
+                            >
+                              {session.title || "Untitled chat"}
+                            </span>
+                          </div>
+                          {session.createdAt ? (
+                            <div className="mt-0.5 text-[10px] text-oc-text-muted tabular-nums">
+                              {relativeSessionTime(session.createdAt)}
+                            </div>
+                          ) : null}
+                        </button>
+                        <div className="flex shrink-0 items-center gap-0.5 pr-1 opacity-0 transition-opacity group-hover:opacity-100">
+                          <button
+                            type="button"
+                            title="Rename session"
+                            aria-label={`Rename session ${session.title ?? session.id}`}
+                            className="oc-session-rename flex h-6 w-6 items-center justify-center rounded text-oc-text-muted transition-colors hover:bg-oc-border hover:text-oc-text"
+                            onClick={() => handleStartEdit(session.id, session.title || "")}
+                          >
+                            <Edit className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Delete session"
+                            aria-label={`Delete session ${session.title ?? session.id}`}
+                            className="oc-session-delete flex h-6 w-6 items-center justify-center rounded text-oc-text-muted transition-colors hover:bg-red-500/15 hover:text-red-400"
+                            onClick={() => setConfirmDeleteId(session.id)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
                         </div>
                       </div>
-                      <div className="truncate text-oc-text-muted text-xs pl-3.5 mt-0.5">
-                        {session.createdAt
-                          ? relativeSessionTime(session.createdAt)
-                          : "Unknown"}
-                      </div>
-                    </button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      title="Rename session"
-                      className="oc-session-rename h-6 w-6 shrink-0 rounded-md opacity-70 group-hover:opacity-100"
-                      aria-label={`Rename session ${session.title ?? session.id}`}
-                      onClick={handleStartEdit}
-                    >
-                      <Edit className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      title="Delete session"
-                      className="oc-session-delete h-6 w-6 shrink-0 rounded-md opacity-70 group-hover:opacity-100"
-                      aria-label={`Delete session ${session.title ?? session.id}`}
-                      onClick={() =>
-                        vscode.postMessage({
-                          type: "deleteSession",
-                          sessionId: session.id,
-                        })
-                      }
-                    >
-                      <X className="h-3 w-3" />
-                    </Button>
-                  </>
-                )}
-              </div>
-            );
-          })
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))
         )}
       </div>
     </aside>
@@ -797,6 +941,16 @@ export function ActiveTaskPanel() {
       const type = (step.type ?? "").toLowerCase();
       if (type === "reasoning" || type === "thinking") return false;
       const title = step.title.trim().toLowerCase();
+      const compactTitle = title.replace(/\s+/g, "");
+      if (
+        compactTitle.includes("structuredoutput") ||
+        compactTitle.includes("structured_output") ||
+        compactTitle === "invalid" ||
+        compactTitle === "runninginvalid" ||
+        compactTitle === "processinginvalid"
+      ) {
+        return false;
+      }
       if (title === "thinking..." || title === "thinking") return false;
       if (title === "starting step" || title === "finishing step") return false;
       const key = `${step.title}-${step.status ?? "pending"}`;
@@ -1211,7 +1365,17 @@ export function ActiveTaskPanel() {
 }
 
 export function MobileRightSummary() {
-  const { sessionStats, isProcessing } = useAppState();
+  const {
+    sessionStats,
+    isProcessing: globalIsProcessing,
+    currentSessionId,
+    processingSessionIds,
+  } = useAppState();
+  const isProcessing = isProcessingInCurrentSession(
+    globalIsProcessing,
+    currentSessionId,
+    processingSessionIds,
+  );
 
   return (
     <div className="block [@media(min-width:1100px)]:hidden border-b border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs text-oc-text">
@@ -1579,11 +1743,17 @@ export function QueueContainer() {
     promptQueue,
     isQueueOpen,
     isExecutingQueue,
-    isProcessing,
+    isProcessing: globalIsProcessing,
     isSteering,
     currentSessionId,
+    processingSessionIds,
   } = useAppState();
   const dispatch = useAppDispatch();
+  const isProcessing = isProcessingInCurrentSession(
+    globalIsProcessing,
+    currentSessionId,
+    processingSessionIds,
+  );
   const [expandedQueueItemId, setExpandedQueueItemId] = useState<string | null>(
     null,
   );
@@ -1796,9 +1966,10 @@ export function QueueContainer() {
 export function InputWrapper() {
   const {
     inputValue,
-    isProcessing,
+    isProcessing: globalIsProcessing,
     isSteering,
     currentSessionId,
+    processingSessionIds,
     messages,
     promptQueue,
     selectedFiles,
@@ -1813,6 +1984,11 @@ export function InputWrapper() {
     interactiveEvents,
   } = useAppState();
   const dispatch = useAppDispatch();
+  const isProcessing = isProcessingInCurrentSession(
+    globalIsProcessing,
+    currentSessionId,
+    processingSessionIds,
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
@@ -3730,6 +3906,124 @@ export function AgentsPanel() {
   );
 }
 
+type ConfigPrimitive = string | number | boolean | null;
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function stripJsonComments(source: string): string {
+  let output = "";
+  let inString = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let escaping = false;
+
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+    const next = source[i + 1];
+
+    if (inLineComment) {
+      if (char === "\n") {
+        inLineComment = false;
+        output += char;
+      }
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (char === "*" && next === "/") {
+        inBlockComment = false;
+        i += 1;
+      }
+      continue;
+    }
+
+    if (inString) {
+      output += char;
+      if (escaping) {
+        escaping = false;
+      } else if (char === "\\") {
+        escaping = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      output += char;
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      inLineComment = true;
+      i += 1;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      inBlockComment = true;
+      i += 1;
+      continue;
+    }
+
+    output += char;
+  }
+
+  return output;
+}
+
+function stripTrailingCommas(source: string): string {
+  return source.replace(/,\s*([}\]])/g, "$1");
+}
+
+function tryParseConfigContent(
+  content: string,
+): { ok: true; value: unknown } | { ok: false; error: string } {
+  try {
+    return { ok: true, value: JSON.parse(content) };
+  } catch (strictError) {
+    try {
+      const cleaned = stripTrailingCommas(stripJsonComments(content));
+      return { ok: true, value: JSON.parse(cleaned) };
+    } catch (jsoncError) {
+      return { ok: false, error: toErrorMessage(jsoncError || strictError) };
+    }
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isConfigPrimitive(value: unknown): value is ConfigPrimitive {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  );
+}
+
+function formatConfigContent(value: Record<string, unknown>): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function resolveConfigPayload(data: unknown): Record<string, unknown> | null {
+  if (!isPlainRecord(data)) {
+    return null;
+  }
+  if (isPlainRecord(data.payload)) {
+    return data.payload;
+  }
+  return data;
+}
+
 export function SettingsModal({
   isOpen,
   onClose,
@@ -3744,12 +4038,26 @@ export function SettingsModal({
   isGlobal?: boolean;
 }) {
   const [content, setContent] = useState(initialContent);
+  const [activeTab, setActiveTab] = useState<"gui" | "json">("gui");
   const [error, setError] = useState<string>("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [newKey, setNewKey] = useState("");
+  const [newType, setNewType] = useState<"string" | "number" | "boolean">(
+    "string",
+  );
+  const [newValue, setNewValue] = useState("");
+  const [newBooleanValue, setNewBooleanValue] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
-      setContent(initialContent);
+      setContent(initialContent || "{\n}\n");
+      setActiveTab("gui");
       setError("");
+      setIsSaving(false);
+      setNewKey("");
+      setNewType("string");
+      setNewValue("");
+      setNewBooleanValue(false);
     }
   }, [isOpen, initialContent]);
 
@@ -3762,22 +4070,178 @@ export function SettingsModal({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    if (!isOpen) return;
 
-  function handleSave() {
-    try {
-      JSON.parse(content);
-      setError("");
-      vscode.postMessage({
-        type: "saveOpenCodeConfig",
-        content,
-        filePath,
-      });
-      onClose();
-    } catch (e: any) {
-      setError(`Invalid JSON: ${e.message}`);
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!isPlainRecord(data) || data.type !== "opencodeConfigSaved") {
+        return;
+      }
+
+      const payload = resolveConfigPayload(data);
+      if (!payload) {
+        return;
+      }
+
+      const success = payload.success === true;
+      setIsSaving(false);
+      if (success) {
+        setError("");
+        onClose();
+        return;
+      }
+
+      const saveError =
+        typeof payload.error === "string"
+          ? payload.error
+          : "Failed to save OpenCode configuration.";
+      setError(saveError);
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [isOpen, onClose]);
+
+  const parseResult = useMemo(() => tryParseConfigContent(content), [content]);
+  const rootConfig = useMemo(() => {
+    if (!parseResult.ok || !isPlainRecord(parseResult.value)) {
+      return null;
     }
-  }
+    return parseResult.value;
+  }, [parseResult]);
+
+  const primitiveEntries = useMemo(() => {
+    if (!rootConfig) {
+      return [] as Array<[string, ConfigPrimitive]>;
+    }
+    return Object.entries(rootConfig)
+      .filter(([, value]) => isConfigPrimitive(value))
+      .map(([key, value]) => [key, value as ConfigPrimitive] as [string, ConfigPrimitive])
+      .sort(([left], [right]) => left.localeCompare(right));
+  }, [rootConfig]);
+
+  const complexEntries = useMemo(() => {
+    if (!rootConfig) {
+      return [] as Array<[string, unknown]>;
+    }
+    return Object.entries(rootConfig)
+      .filter(([, value]) => !isConfigPrimitive(value))
+      .sort(([left], [right]) => left.localeCompare(right));
+  }, [rootConfig]);
+
+  const isDirty = content !== initialContent;
+
+  const applyRootUpdate = (mutate: (draft: Record<string, unknown>) => void) => {
+    if (!rootConfig) {
+      setError("GUI mode requires a top-level JSON object.");
+      return;
+    }
+
+    const draft: Record<string, unknown> = { ...rootConfig };
+    mutate(draft);
+    setContent(formatConfigContent(draft));
+    setError("");
+  };
+
+  const updatePrimitiveValue = (key: string, rawValue: string | boolean) => {
+    if (!rootConfig) {
+      return;
+    }
+    const current = rootConfig[key];
+    if (!isConfigPrimitive(current)) {
+      return;
+    }
+
+    let nextValue: ConfigPrimitive;
+    if (typeof current === "boolean") {
+      nextValue =
+        typeof rawValue === "boolean" ? rawValue : rawValue.toLowerCase() === "true";
+    } else if (typeof current === "number") {
+      const parsedNumber = Number(rawValue);
+      if (!Number.isFinite(parsedNumber)) {
+        setError(`"${key}" expects a numeric value.`);
+        return;
+      }
+      nextValue = parsedNumber;
+    } else if (current === null) {
+      const text = String(rawValue);
+      nextValue = text.trim().length === 0 ? null : text;
+    } else {
+      nextValue = String(rawValue);
+    }
+
+    applyRootUpdate((draft) => {
+      draft[key] = nextValue;
+    });
+  };
+
+  const removeKey = (key: string) => {
+    applyRootUpdate((draft) => {
+      delete draft[key];
+    });
+  };
+
+  const handleAddKey = () => {
+    const normalizedKey = newKey.trim();
+    if (!normalizedKey) {
+      setError("Key name is required.");
+      return;
+    }
+    if (!rootConfig) {
+      setError("GUI mode requires a top-level JSON object.");
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(rootConfig, normalizedKey)) {
+      setError(`"${normalizedKey}" already exists.`);
+      return;
+    }
+
+    let value: ConfigPrimitive;
+    if (newType === "boolean") {
+      value = newBooleanValue;
+    } else if (newType === "number") {
+      const parsedNumber = Number(newValue);
+      if (!Number.isFinite(parsedNumber)) {
+        setError("New key value must be a valid number.");
+        return;
+      }
+      value = parsedNumber;
+    } else {
+      value = newValue;
+    }
+
+    applyRootUpdate((draft) => {
+      draft[normalizedKey] = value;
+    });
+    setNewKey("");
+    setNewType("string");
+    setNewValue("");
+    setNewBooleanValue(false);
+  };
+
+  const handleSave = () => {
+    if (!filePath) {
+      setError("Config path is not available yet. Reload and try again.");
+      return;
+    }
+
+    const validation = tryParseConfigContent(content);
+    if (!validation.ok) {
+      setError(`Invalid JSON/JSONC: ${validation.error}`);
+      return;
+    }
+
+    setError("");
+    setIsSaving(true);
+    vscode.postMessage({
+      type: "saveOpenCodeConfig",
+      content,
+      filePath,
+    });
+  };
+
+  if (!isOpen) return null;
 
   return (
     <div className="oc-image-preview-shell z-50">
@@ -3785,7 +4249,7 @@ export function SettingsModal({
         className="oc-image-preview-backdrop backdrop-blur-sm bg-black/40"
         onClick={onClose}
       />
-      <div className="oc-image-preview-modal max-w-2xl w-[90vw] h-[80vh] flex flex-col overflow-hidden border border-oc-border shadow-2xl animate-in zoom-in-95 duration-200">
+      <div className="oc-image-preview-modal max-w-3xl w-[94vw] h-[84vh] flex flex-col overflow-hidden border border-oc-border shadow-2xl animate-in zoom-in-95 duration-200">
         <div className="oc-image-preview-header flex items-center justify-between px-4 py-3 border-b border-oc-border bg-oc-bg-soft">
           <div className="flex items-center gap-2">
             <Wrench className="h-4 w-4 text-oc-accent" />
@@ -3798,6 +4262,14 @@ export function SettingsModal({
             >
               {isGlobal ? "Global" : "Workspace"}
             </Badge>
+            {isDirty ? (
+              <Badge
+                variant="outline"
+                className="text-[9px] uppercase tracking-wider border-oc-yellow/40 text-oc-yellow"
+              >
+                Unsaved
+              </Badge>
+            ) : null}
           </div>
           <button
             type="button"
@@ -3808,10 +4280,10 @@ export function SettingsModal({
           </button>
         </div>
 
-        <div className="flex-1 flex flex-col p-4 space-y-4 overflow-hidden bg-oc-bg">
-          <div className="flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2 text-oc-text-muted">
-              <FileIcon filePath="opencode.json" className="h-3.5 w-3.5" />
+        <div className="flex-1 flex flex-col p-4 space-y-3 overflow-hidden bg-oc-bg">
+          <div className="flex items-center justify-between text-xs gap-3">
+            <div className="flex items-center gap-2 text-oc-text-muted min-w-0">
+              <FileIcon filePath="opencode.json" className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate opacity-80" title={filePath}>
                 {filePath || "opencode.json"}
               </span>
@@ -3820,34 +4292,220 @@ export function SettingsModal({
               href="https://opencode.ai/docs/config/"
               target="_blank"
               rel="noreferrer"
-              className="text-oc-accent hover:underline flex items-center gap-1"
+              className="text-oc-accent hover:underline flex items-center gap-1 shrink-0"
             >
               Docs <ArrowRight className="h-3 w-3" />
             </a>
           </div>
 
-          <div className="relative flex-1 group">
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              className="h-full w-full resize-none font-mono text-[13px] leading-relaxed p-4 bg-oc-bg-soft border-oc-border focus-visible:ring-1 focus-visible:ring-oc-accent"
-              spellCheck={false}
-              placeholder='{ "model": "..." }'
-            />
-            {error && (
-              <div className="absolute bottom-4 left-4 right-4 animate-in slide-in-from-bottom-2 duration-200">
-                <div className="bg-oc-red/10 border border-oc-red/20 text-oc-red text-xs p-3 rounded-md flex items-start gap-2 backdrop-blur-md">
-                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-                  <span>{error}</span>
+          <Tabs
+            value={activeTab}
+            onValueChange={(value) =>
+              setActiveTab(value === "json" ? "json" : "gui")
+            }
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <TabsList className="grid w-full grid-cols-2 h-8">
+              <TabsTrigger value="gui" className="text-xs">
+                GUI
+              </TabsTrigger>
+              <TabsTrigger value="json" className="text-xs font-mono">
+                JSON / JSONC
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="gui" className="mt-3 min-h-0 flex-1 overflow-hidden">
+              {!rootConfig ? (
+                <div className="h-full rounded-md border border-oc-red/30 bg-oc-red/10 p-3 text-xs text-oc-red space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <span>
+                      GUI mode works only when the config is a valid top-level object.
+                      Fix JSON in the JSON tab first.
+                    </span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setActiveTab("json")}
+                    className="h-7 text-xs"
+                  >
+                    Switch to JSON
+                  </Button>
                 </div>
-              </div>
-            )}
-          </div>
+              ) : (
+                <div className="h-full overflow-y-auto space-y-3 pr-1">
+                  <div className="rounded-md border border-oc-border/70 bg-oc-bg-soft p-2 text-[10px] text-oc-text-muted">
+                    GUI mode edits top-level primitive keys and rewrites the file as
+                    formatted JSON. Use JSON/JSONC tab for complex nested edits.
+                  </div>
+
+                  <div className="space-y-2">
+                    {primitiveEntries.length === 0 ? (
+                      <div className="rounded-md border border-dashed border-oc-border p-3 text-xs text-oc-text-muted">
+                        No primitive top-level keys found. Add one below.
+                      </div>
+                    ) : (
+                      primitiveEntries.map(([key, value]) => (
+                        <div
+                          key={key}
+                          className="rounded-md border border-oc-border bg-oc-bg-soft p-2"
+                        >
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <Label className="text-xs font-mono text-oc-text">
+                              {key}
+                            </Label>
+                            <Badge
+                              variant="outline"
+                              className="h-4 px-1 text-[9px] border-oc-border uppercase"
+                            >
+                              {value === null ? "null" : typeof value}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {typeof value === "boolean" ? (
+                              <div className="flex flex-1 items-center gap-2">
+                                <Switch
+                                  checked={value}
+                                  onCheckedChange={(checked) =>
+                                    updatePrimitiveValue(key, checked)
+                                  }
+                                />
+                                <span className="text-xs text-oc-text-muted">
+                                  {value ? "true" : "false"}
+                                </span>
+                              </div>
+                            ) : (
+                              <Input
+                                value={value === null ? "" : String(value)}
+                                onChange={(event) =>
+                                  updatePrimitiveValue(key, event.target.value)
+                                }
+                                className="h-8 text-xs font-mono"
+                              />
+                            )}
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-oc-text-muted hover:text-oc-red"
+                              onClick={() => removeKey(key)}
+                              title={`Remove ${key}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {complexEntries.length > 0 ? (
+                    <div className="rounded-md border border-oc-border bg-oc-bg-soft p-2 space-y-1.5">
+                      <div className="text-[10px] uppercase tracking-wider text-oc-text-muted">
+                        Advanced-only keys
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {complexEntries.map(([key, value]) => (
+                          <Badge
+                            key={key}
+                            variant="outline"
+                            className="text-[9px] border-oc-border"
+                          >
+                            {key}: {Array.isArray(value) ? "array" : "object"}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="rounded-md border border-oc-border bg-oc-bg-soft p-2 space-y-2">
+                    <div className="text-[10px] uppercase tracking-wider text-oc-text-muted">
+                      Add Top-Level Key
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-[1.3fr_0.9fr_1fr_auto]">
+                      <Input
+                        placeholder="key_name"
+                        value={newKey}
+                        onChange={(event) => setNewKey(event.target.value)}
+                        className="h-8 text-xs font-mono"
+                      />
+                      <select
+                        value={newType}
+                        onChange={(event) =>
+                          setNewType(event.target.value as "string" | "number" | "boolean")
+                        }
+                        className="h-8 rounded-md border border-oc-border bg-oc-bg px-2 text-xs"
+                      >
+                        <option value="string">string</option>
+                        <option value="number">number</option>
+                        <option value="boolean">boolean</option>
+                      </select>
+                      {newType === "boolean" ? (
+                        <div className="h-8 rounded-md border border-oc-border bg-oc-bg px-2 flex items-center justify-between">
+                          <span className="text-xs text-oc-text-muted">
+                            {newBooleanValue ? "true" : "false"}
+                          </span>
+                          <Switch
+                            checked={newBooleanValue}
+                            onCheckedChange={setNewBooleanValue}
+                          />
+                        </div>
+                      ) : (
+                        <Input
+                          placeholder={newType === "number" ? "0" : "value"}
+                          value={newValue}
+                          onChange={(event) => setNewValue(event.target.value)}
+                          className="h-8 text-xs font-mono"
+                        />
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={handleAddKey}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="json" className="mt-3 min-h-0 flex-1 overflow-hidden">
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                className="h-full w-full resize-none font-mono text-[13px] leading-relaxed p-4 bg-oc-bg-soft border-oc-border focus-visible:ring-1 focus-visible:ring-oc-accent"
+                spellCheck={false}
+                placeholder='{ "default_model": "provider/model" }'
+              />
+            </TabsContent>
+          </Tabs>
+
+          {activeTab === "json" && !parseResult.ok ? (
+            <div className="rounded-md border border-oc-yellow/30 bg-oc-yellow/10 text-oc-yellow text-xs p-3 flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{parseResult.error}</span>
+            </div>
+          ) : null}
+
+          {error ? (
+            <div className="rounded-md border border-oc-red/30 bg-oc-red/10 text-oc-red text-xs p-3 flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          ) : null}
         </div>
 
-        <div className="p-4 border-t border-oc-border bg-oc-bg-soft flex justify-between items-center">
+        <div className="p-4 border-t border-oc-border bg-oc-bg-soft flex justify-between items-center gap-3">
           <p className="text-[10px] text-oc-text-muted">
-            Tip: Changes take effect immediately after saving.
+            {isDirty
+              ? "Unsaved changes detected."
+              : "No unsaved changes."}{" "}
+            Changes take effect after saving.
           </p>
           <div className="flex gap-2">
             <Button
@@ -3861,8 +4519,14 @@ export function SettingsModal({
             <Button
               size="sm"
               onClick={handleSave}
-              className="h-8 text-xs bg-oc-accent hover:bg-oc-accent/90 text-white border-0 shadow-lg shadow-oc-accent/20"
+              disabled={isSaving || !isDirty}
+              className="h-8 text-xs bg-oc-accent hover:bg-oc-accent/90 text-white border-0 shadow-lg shadow-oc-accent/20 disabled:opacity-70 disabled:cursor-not-allowed"
             >
+              {isSaving ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Check className="mr-1 h-3.5 w-3.5" />
+              )}
               Save Configuration
             </Button>
           </div>
@@ -3873,11 +4537,11 @@ export function SettingsModal({
 }
 
 export function SettingsPanel() {
-  const { opencodeConfig } = useAppState();
+  const { opencodeConfig, opencodeConfigSaveStatus } = useAppState();
   const [modalOpen, setModalOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Trigger initial fetch if missing
+  // Trigger initial fetch if missing.
   useEffect(() => {
     if (!opencodeConfig) {
       vscode.postMessage({ type: "getOpenCodeConfig" });
@@ -3890,16 +4554,26 @@ export function SettingsPanel() {
     setTimeout(() => setIsRefreshing(false), 600);
   }
 
-  // Parse for preview
   const previewModel = useMemo(() => {
     if (!opencodeConfig?.content) return "Default model";
-    try {
-      const parsed = JSON.parse(opencodeConfig.content);
-      return parsed.model || "Default model";
-    } catch {
-      return "Invalid JSON";
+    const parsed = tryParseConfigContent(opencodeConfig.content);
+    if (!parsed.ok || !isPlainRecord(parsed.value)) {
+      return "Invalid JSON/JSONC";
     }
+    const modelCandidate =
+      parsed.value.default_model ??
+      parsed.value.defaultModel ??
+      parsed.value.model;
+    return typeof modelCandidate === "string" && modelCandidate.trim().length > 0
+      ? modelCandidate
+      : "Default model";
   }, [opencodeConfig]);
+
+  const recentSaveStatus =
+    opencodeConfigSaveStatus &&
+    Date.now() - opencodeConfigSaveStatus.savedAt < 120000
+      ? opencodeConfigSaveStatus
+      : undefined;
 
   return (
     <div className="oc-settings-panel border-t border-oc-border p-3 group transition-colors hover:bg-oc-accent-soft/5">
@@ -3933,7 +4607,7 @@ export function SettingsPanel() {
               variant="outline"
               className="h-4 px-1 text-[8px] border-oc-border"
             >
-              {opencodeConfig?.isGlobal ? "Global" : "Project"}
+              {opencodeConfig?.isGlobal ? "Global" : "Workspace"}
             </Badge>
           </div>
           <div className="flex items-center gap-2">
@@ -3942,7 +4616,35 @@ export function SettingsPanel() {
               {previewModel}
             </span>
           </div>
+          <div
+            className="text-[10px] text-oc-text-muted truncate"
+            title={opencodeConfig?.filePath}
+          >
+            {opencodeConfig?.filePath || "Resolving config path..."}
+          </div>
         </div>
+
+        {recentSaveStatus ? (
+          <div
+            className={`rounded-md border p-2 text-[11px] flex items-start gap-2 ${
+              recentSaveStatus.success
+                ? "border-oc-green/30 bg-oc-green/10 text-oc-green"
+                : "border-oc-red/30 bg-oc-red/10 text-oc-red"
+            }`}
+          >
+            {recentSaveStatus.success ? (
+              <Check className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            )}
+            <span>
+              {recentSaveStatus.message ||
+                (recentSaveStatus.success
+                  ? "Config saved."
+                  : "Config save failed.")}
+            </span>
+          </div>
+        ) : null}
 
         <Button
           onClick={() => setModalOpen(true)}
@@ -3950,14 +4652,14 @@ export function SettingsPanel() {
           variant="outline"
         >
           <Edit className="h-3 w-3 group-hover/btn:scale-110 transition-transform" />
-          Edit opencode.json
+          Open Config Editor
         </Button>
       </div>
 
       <SettingsModal
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
-        initialContent={opencodeConfig?.content || "{}"}
+        initialContent={opencodeConfig?.content || "{\n}\n"}
         filePath={opencodeConfig?.filePath}
         isGlobal={opencodeConfig?.isGlobal}
       />

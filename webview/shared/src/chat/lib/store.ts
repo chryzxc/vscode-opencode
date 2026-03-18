@@ -11,6 +11,7 @@ import type {
   TodoItem,
   ContextItem,
   FileResult,
+  BudgetInfo,
   Message,
   Model,
   QueueItem,
@@ -88,6 +89,7 @@ export const initialState: AppState = {
   lspServers: [],
   contextUsagePct: undefined,
   opencodeConfig: undefined,
+  opencodeConfigSaveStatus: undefined,
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
@@ -207,7 +209,11 @@ export type AppAction =
   | { type: "SET_LSP_SERVERS"; payload: LspServerInfo[] }
   | { type: "SET_SERVER_VERSION"; payload: string | undefined }
   | { type: "SET_CONTEXT_USAGE_PCT"; payload: number | undefined }
-  | { type: "SET_OPENCODE_CONFIG"; payload: AppState["opencodeConfig"] };
+  | { type: "SET_OPENCODE_CONFIG"; payload: AppState["opencodeConfig"] }
+  | {
+    type: "SET_OPENCODE_CONFIG_SAVE_STATUS";
+    payload: AppState["opencodeConfigSaveStatus"];
+  };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   return {
@@ -261,6 +267,108 @@ function appendStreamingReasoning(current: string, incoming: string): string {
   return needsReasoningBoundary(current, incoming)
     ? `${current} ${incoming}`
     : `${current}${incoming}`;
+}
+
+function normalizeReasoningText(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim();
+}
+
+function reasoningFingerprint(value: string): string {
+  return normalizeReasoningText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function isDuplicateReasoningChunk(candidate: string, existing: string): boolean {
+  const candidateNorm = normalizeReasoningText(candidate);
+  const existingNorm = normalizeReasoningText(existing);
+  if (!candidateNorm || !existingNorm) {
+    return false;
+  }
+  if (candidateNorm === existingNorm) {
+    return true;
+  }
+
+  const candidateFingerprint = reasoningFingerprint(candidateNorm);
+  const existingFingerprint = reasoningFingerprint(existingNorm);
+  if (!candidateFingerprint || !existingFingerprint) {
+    return false;
+  }
+  if (candidateFingerprint === existingFingerprint) {
+    return true;
+  }
+
+  if (candidateFingerprint.length < 32 || existingFingerprint.length < 32) {
+    return false;
+  }
+  return (
+    candidateFingerprint.includes(existingFingerprint) ||
+    existingFingerprint.includes(candidateFingerprint)
+  );
+}
+
+type ReasoningMergeResult = {
+  reasoning: string;
+  eventChunk?: string;
+  replaceLastEvent?: boolean;
+};
+
+function mergeStreamingReasoning(
+  current: string,
+  incoming: string,
+  append?: boolean,
+): ReasoningMergeResult {
+  const incomingChunk = incoming.trim();
+  if (!append) {
+    return {
+      reasoning: incoming,
+      eventChunk: incomingChunk || undefined,
+      replaceLastEvent: false,
+    };
+  }
+  if (!incomingChunk) {
+    return { reasoning: current };
+  }
+  if (!current) {
+    return { reasoning: incoming, eventChunk: incomingChunk };
+  }
+
+  const currentNorm = normalizeReasoningText(current);
+  const incomingNorm = normalizeReasoningText(incoming);
+  if (!currentNorm) {
+    return { reasoning: incoming, eventChunk: incomingChunk };
+  }
+  if (!incomingNorm) {
+    return { reasoning: current };
+  }
+
+  if (isDuplicateReasoningChunk(incomingNorm, currentNorm)) {
+    if (incomingNorm.length > currentNorm.length) {
+      return {
+        reasoning: incoming,
+        eventChunk: incomingChunk,
+        replaceLastEvent: true,
+      };
+    }
+    return { reasoning: current };
+  }
+
+  if (
+    incomingNorm.length >= currentNorm.length + 16 &&
+    incomingNorm.includes(currentNorm)
+  ) {
+    return {
+      reasoning: incoming,
+      eventChunk: incomingChunk,
+      replaceLastEvent: true,
+    };
+  }
+
+  return {
+    reasoning: appendStreamingReasoning(current, incoming),
+    eventChunk: incomingChunk,
+    replaceLastEvent: false,
+  };
 }
 
 function getQueueForSession(queue: QueueItem[] | undefined, sessionId: string): QueueItem[] {
@@ -404,6 +512,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         currentSessionId: action.payload,
         sessionStats: statsForNew,
         promptQueue: queueForNew,
+        isExecutingQueue: false,
         isCompacting: false,
         compactionError: undefined,
         lastCompactedAt: undefined,
@@ -581,21 +690,36 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (!state.streaming) {
         return state;
       }
-      const reasoning = action.payload.append
-        ? appendStreamingReasoning(
-          state.streaming.reasoning,
-          action.payload.reasoning,
-        )
-        : action.payload.reasoning;
-      const chunk = action.payload.reasoning.trim();
-      const reasoningEvents =
-        chunk.length > 0
-          ? appendWithCap(
-            state.streaming.reasoningEvents,
+      const merged = mergeStreamingReasoning(
+        state.streaming.reasoning,
+        action.payload.reasoning,
+        action.payload.append,
+      );
+      const reasoning = merged.reasoning;
+      const chunk = merged.eventChunk?.trim() ?? "";
+      let reasoningEvents = state.streaming.reasoningEvents;
+      if (chunk.length > 0) {
+        const lastEvent =
+          reasoningEvents.length > 0
+            ? reasoningEvents[reasoningEvents.length - 1]
+            : undefined;
+        if (
+          lastEvent &&
+          (merged.replaceLastEvent ||
+            isDuplicateReasoningChunk(chunk, lastEvent.text))
+        ) {
+          reasoningEvents = [
+            ...reasoningEvents.slice(0, -1),
+            { ...lastEvent, text: chunk },
+          ];
+        } else {
+          reasoningEvents = appendWithCap(
+            reasoningEvents,
             { text: chunk, createdAt: Date.now() },
             MAX_STREAMING_REASONING_EVENTS,
-          )
-          : state.streaming.reasoningEvents;
+          );
+        }
+      }
       return {
         ...state,
         streaming: { ...state.streaming, reasoning, reasoningEvents },
@@ -940,6 +1064,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, contextUsagePct: action.payload };
     case "SET_OPENCODE_CONFIG":
       return { ...state, opencodeConfig: action.payload };
+    case "SET_OPENCODE_CONFIG_SAVE_STATUS":
+      return { ...state, opencodeConfigSaveStatus: action.payload };
     default:
       return state;
   }

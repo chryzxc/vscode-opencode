@@ -45,6 +45,25 @@ test('ChatViewProvider streams events to webview progressively', () => {
   );
 });
 
+test('ChatViewProvider backfills missing stream event sessionId from active session', () => {
+  const registerHandlersBody = extractFunctionBody(
+    chatProviderSource,
+    'resolveWebviewView(',
+  );
+
+  assert.match(
+    registerHandlersBody,
+    /enrichedEventRecord\.sessionId\s*=\s*enrichedEventSessionId;/,
+    'ChatViewProvider should preserve derived stream-event session ids when available',
+  );
+
+  assert.match(
+    registerHandlersBody,
+    /else if \([\s\S]*activeSessionId[\s\S]*!this\.firstNonEmptyString\([\s\S]*enrichedEventRecord\.sessionId[\s\S]*enrichedEventRecord\.sessionID[\s\S]*\)[\s\S]*\) \{[\s\S]*enrichedEventRecord\.sessionId\s*=\s*activeSessionId;/,
+    'ChatViewProvider should backfill stream-event session id from active session when missing',
+  );
+});
+
 test('ChatViewProvider logs final prompt response diagnostics when non-streaming fallback occurs', () => {
   const sendMessageBody = extractFunctionBody(
     chatProviderSource,
@@ -55,6 +74,57 @@ test('ChatViewProvider logs final prompt response diagnostics when non-streaming
     sendMessageBody,
     /this\.logPromptResponseDiagnostics\(session\.id,\s*response\.data\)/,
     'handleSendMessage should log detailed final response diagnostics for debugging',
+  );
+});
+
+test('ChatViewProvider emits webview error when response has no data payload', () => {
+  const sendMessageBody = extractFunctionBody(
+    chatProviderSource,
+    'private async handleSendMessage(',
+  );
+
+  assert.match(
+    sendMessageBody,
+    /else \{[\s\S]*No response data received from OpenCode\.[\s\S]*type:\s*["']error["'][\s\S]*\}/s,
+    'handleSendMessage should post an error event when response.data is missing so the webview can exit loading',
+  );
+});
+
+test('ChatViewProvider includes sessionId when posting final/error response payloads', () => {
+  const sendMessageBody = extractFunctionBody(
+    chatProviderSource,
+    'private async handleSendMessage(',
+  );
+
+  assert.match(
+    sendMessageBody,
+    /type:\s*"messageResponse",[\s\S]*sessionId:\s*session\.id/s,
+    'messageResponse payload should include originating session id for session-scoped rendering',
+  );
+
+  assert.match(
+    sendMessageBody,
+    /type:\s*"error",[\s\S]*sessionId:\s*session\.id/s,
+    'error payloads emitted during send flow should include originating session id',
+  );
+});
+
+test('ChatViewProvider enforces structured-output validation in strict send mode', () => {
+  const sendMessageBody = extractFunctionBody(
+    chatProviderSource,
+    'private async handleSendMessage(',
+  );
+
+  assert.match(
+    sendMessageBody,
+    /applyStructuredOutputToMessage\(\s*response\.data,\s*\{\s*strictStructuredOutput:\s*useStructuredOutput\s*\},?\s*\)/,
+    'handleSendMessage should pass strict structured-output mode when structured format is requested',
+  );
+
+  assert.match(
+    chatProviderSource,
+    /private buildStructuredOutputValidationError\(/,
+    'ChatViewProvider should provide a deterministic structured error fallback for invalid/missing structured payloads',
   );
 });
 
@@ -106,8 +176,8 @@ test('ChatViewProvider emits subagent updates and async stream enrich payloads',
   );
   assert.match(
     registerHandlersBody,
-    /const isToolDone = partType === "tool" && part\.state\?\.status === "done";/,
-    'diff enrichment should detect completed tool events',
+    /const isToolDone =[\s\S]*partType === "tool"[\s\S]*stateStatus === "done"[\s\S]*stateStatus === "completed"[\s\S]*hasToolOutput/s,
+    'diff enrichment should detect completed tool events via done/completed status or tool output presence',
   );
   assert.match(
     registerHandlersBody,

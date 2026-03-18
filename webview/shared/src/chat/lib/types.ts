@@ -182,6 +182,8 @@ export interface InteractiveQuestionEvent {
   options: InteractiveChoice[];
   multiSelect?: boolean;
   allowCustomInput?: boolean;
+  answer?: string;
+  answers?: string[];
 }
 
 export interface InteractiveConfirmEvent {
@@ -458,6 +460,13 @@ export interface AppState {
     content: string;
     filePath: string;
     isGlobal: boolean;
+    error?: string;
+  };
+  opencodeConfigSaveStatus?: {
+    success: boolean;
+    filePath: string;
+    savedAt: number;
+    message?: string;
     error?: string;
   };
 }

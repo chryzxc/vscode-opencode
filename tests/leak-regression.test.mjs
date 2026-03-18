@@ -163,7 +163,7 @@ test('app reducer caps streaming arrays and deduplicates edit paths', () => {
   );
   assert.match(
     storeSource,
-    /appendWithCap\(\s*state\.streaming\.reasoningEvents,[\s\S]*MAX_STREAMING_REASONING_EVENTS/,
+    /appendWithCap\(\s*reasoningEvents,[\s\S]*MAX_STREAMING_REASONING_EVENTS/,
     'reasoning events should use bounded append helper',
   );
   assert.match(
@@ -180,5 +180,87 @@ test('app reducer caps streaming arrays and deduplicates edit paths', () => {
     storeSource,
     /state\.streaming\.edits\.includes\(action\.payload\)/,
     'stream edits should skip duplicate file paths',
+  );
+});
+
+test('chat streaming/finalization remains session-scoped across session switches', () => {
+  assert.match(
+    chatViewProviderSource,
+    /private\s+getStreamEventSessionId\(/,
+    'ChatViewProvider should expose a stream-event session-id extractor',
+  );
+  assert.match(
+    chatViewProviderSource,
+    /const\s+streamEventSessionId\s*=\s*this\.getStreamEventSessionId\(event\)/,
+    'stream subscription should derive session id from incoming events',
+  );
+  assert.match(
+    chatViewProviderSource,
+    /type:\s*"messageResponse",[\s\S]*sessionId:\s*session\.id/s,
+    'final messageResponse payload should include originating session id',
+  );
+
+  const streamEventBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent(',
+  );
+  assert.match(
+    streamEventBody,
+    /asString\(infoRecord\?\.sessionId\)\s*\|\|\s*asString\(infoRecord\?\.sessionID\)/,
+    'stream handler should honor session id nested under info payload',
+  );
+
+  const createHandlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "messageResponse"[\s\S]*const responseSessionId[\s\S]*responseSessionId !== currentSessionId[\s\S]*break;/s,
+    'messageResponse should be ignored when it belongs to a different session',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "error"[\s\S]*const errorSessionId[\s\S]*errorSessionId !== currentSessionId[\s\S]*break;/s,
+    'error events should be ignored when they belong to a different session',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "stopRequestHandled"[\s\S]*const handledSessionId[\s\S]*handledSessionId !== currentSessionId[\s\S]*break;/s,
+    'stopRequestHandled should only clear streaming state for the active session',
+  );
+});
+
+test('processingSessionsUpdate can end loading fallback without clearing streaming snapshot', () => {
+  const createHandlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+  const processingSessionsCase =
+    /case "processingSessionsUpdate"\s*:\s*\{[\s\S]*?break;\s*\}/.exec(
+      createHandlerBody,
+    )?.[0] ?? "";
+
+  assert.ok(
+    processingSessionsCase.length > 0,
+    'processingSessionsUpdate case block should be present in createMessageHandler',
+  );
+
+  assert.match(
+    processingSessionsCase,
+    /SET_PROCESSING_SESSIONS[\s\S]*SET_STEERING[\s\S]*payload:\s*false[\s\S]*SET_PROCESSING[\s\S]*payload:\s*false/s,
+    'processingSessionsUpdate should clear steering/processing when active session is no longer processing',
+  );
+
+  assert.match(
+    processingSessionsCase,
+    /stateAfterProcessingUpdate\.streaming\?\.isActive[\s\S]*FINISH_STREAMING/s,
+    'processingSessionsUpdate should finish active streaming as a fallback finalization path',
+  );
+
+  assert.doesNotMatch(
+    processingSessionsCase,
+    /SET_STREAMING[\s\S]*payload:\s*null/s,
+    'processingSessionsUpdate fallback should not clear streaming snapshot content',
   );
 });
