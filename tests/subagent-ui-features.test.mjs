@@ -83,6 +83,14 @@ test('subagent sessions are filtered out of History Sidebar', () => {
   assert.match(panelSource, /if\s*\(!parentSessionId\)/, 'Should include sessions without parentSessionId');
 });
 
+test('ThinkingStatusTicker renders below the spawned subagents UI', () => {
+  assert.match(
+    messageSource,
+    /subagents\.length\s*>\s*0\s*&&[\s\S]*?showSubagents\s*&&[\s\S]*?visibleSubagents\.map[\s\S]*?ThinkingStatusTicker/s,
+    'Subagents UI should appear in the source before ThinkingStatusTicker for correct visual ordering'
+  );
+});
+
 test('subagent detail modal is responsive and visually aligned with chat surfaces', () => {
   const modalSource = readSource(
     [joinFromRoot('webview', 'shared', 'src', 'chat', 'SubagentDetailModal.tsx')],

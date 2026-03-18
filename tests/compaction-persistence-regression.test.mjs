@@ -11,6 +11,10 @@ const storeSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'store.ts')],
   'store.ts',
 );
+const typesSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'types.ts')],
+  'types.ts',
+);
 const messageHandlerSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'messageHandler.ts')],
   'messageHandler.ts',
@@ -176,3 +180,120 @@ test('compaction completion always clears stale in-progress UI state in message 
     'compaction done/error should hard-clear steering/processing/streaming state',
   );
 });
+
+test('PersistedCompactionViewState includes pendingAutoCompact and pendingAutoCompactAt for restart resilience', () => {
+  assert.match(
+    providerSource,
+    /type PersistedCompactionViewState = \{[\s\S]*pendingAutoCompact\?: boolean;[\s\S]*pendingAutoCompactAt\?: number;[\s\S]*\}/s,
+    'PersistedCompactionViewState should have pendingAutoCompact and pendingAutoCompactAt fields to persist auto-compact intent across VS Code restarts',
+  );
+});
+
+test('normalizeCompactionViewState passes through pendingAutoCompact and pendingAutoCompactAt fields', () => {
+  assert.match(
+    providerSource,
+    /normalizeCompactionViewState[\s\S]*pendingAutoCompact[\s\S]*pendingAutoCompactAt/s,
+    'normalization helper should retain auto-compact intent fields from workspace state',
+  );
+});
+
+test('maybeAutoCompact reads opencode.autoCompact config setting', () => {
+  assert.match(
+    providerSource,
+    /private async maybeAutoCompact[\s\S]*vscode\.workspace[\s\S]*\.getConfiguration\("opencode"\)[\s\S]*\.get<boolean>\("autoCompact"/s,
+    'maybeAutoCompact should read autoCompact boolean setting; return early if disabled',
+  );
+});
+
+test('maybeAutoCompact reads opencode.autoCompactThreshold config setting', () => {
+  assert.match(
+    providerSource,
+    /private async maybeAutoCompact[\s\S]*vscode\.workspace[\s\S]*\.getConfiguration\("opencode"\)[\s\S]*\.get<number>\("autoCompactThreshold"/s,
+    'maybeAutoCompact should read autoCompactThreshold number setting',
+  );
+});
+
+test('maybeAutoCompact writes intent to workspace state before firing compaction', () => {
+  assert.match(
+    providerSource,
+    /private async maybeAutoCompact[\s\S]*pendingAutoCompact: true[\s\S]*pendingAutoCompactAt: Date\.now\(\)/s,
+    'maybeAutoCompact should persist intent to workspaceState before calling handleCompactSession',
+  );
+});
+
+test('sendPersistedCompactionViewState resumes pending auto-compaction on session load', () => {
+  assert.match(
+    providerSource,
+    /private async sendPersistedCompactionViewState[\s\S]*if \([\s\S]*state\.pendingAutoCompact[\s\S]*\)[\s\S]*handleCompactSession\(sessionId[\s\S]*"auto"\)/s,
+    'sendPersistedCompactionViewState should check pendingAutoCompact flag and resume auto-compaction if set',
+  );
+});
+
+test('handleCompactSession clears pendingAutoCompact flag after successful compaction', () => {
+  assert.match(
+    providerSource,
+    /private async handleCompactSession[\s\S]*status: "done"[\s\S]*await this\.persistAndPublishCompactionViewState[\s\S]*pendingAutoCompact: false[\s\S]*pendingAutoCompactAt: undefined/s,
+    'handleCompactSession should clear auto-compact intent flag when compaction completes successfully',
+  );
+});
+
+test('handleCompactSession accepts and forwards triggeredBy parameter in status messages', () => {
+  assert.match(
+    providerSource,
+    /private async handleCompactSession[\s\S]*triggeredBy: "manual" \| "auto" = "manual"/s,
+    'handleCompactSession should accept triggeredBy parameter with manual/auto variants',
+  );
+  assert.match(
+    providerSource,
+    /this\.postCompactionStatus\(\{[\s\S]*status: "running"[\s\S]*triggeredBy/s,
+    'handleCompactSession should include triggeredBy in running status',
+  );
+  assert.match(
+    providerSource,
+    /this\.postCompactionStatus\(\{[\s\S]*status: "done"[\s\S]*triggeredBy/s,
+    'handleCompactSession should include triggeredBy in done status',
+  );
+  assert.match(
+    providerSource,
+    /this\.postCompactionStatus\(\{[\s\S]*status: "error"[\s\S]*triggeredBy/s,
+    'handleCompactSession should include triggeredBy in error status',
+  );
+});
+
+test('maybeAutoCompact is called from stream message.updated events for real-time threshold checking', () => {
+  assert.match(
+    providerSource,
+    /if \(event\.type === "message\.updated"[\s\S]*const activeId = this\.currentSessionId;[\s\S]*void this\.maybeAutoCompact\(activeId[\s\S]*event\.properties\)/s,
+    'stream subscription should call maybeAutoCompact on message.updated events for proactive compaction',
+  );
+});
+
+test('postCompactionStatus includes triggeredBy field in payload type', () => {
+  assert.match(
+    providerSource,
+    /private postCompactionStatus\(payload: \{[\s\S]*triggeredBy\?: "manual" \| "auto";[\s\S]*\}\)/s,
+    'postCompactionStatus type should include triggeredBy field for UI labeling',
+  );
+});
+
+test('store tracks contextUsagePct for threshold visualization', () => {
+  assert.match(
+    typesSource,
+    /contextUsagePct\?: number;/,
+    'AppState interface should track contextUsagePct for UI threshold visualization',
+  );
+  assert.match(
+    storeSource,
+    /case "SET_CONTEXT_USAGE_PCT"[\s\S]*return \{ \.\.\.state, contextUsagePct: action\.payload \}/,
+    'store should have SET_CONTEXT_USAGE_PCT reducer case to update context usage percentage',
+  );
+});
+
+test('message handler dispatches SET_CONTEXT_USAGE_PCT from streaming message.updated tokens', () => {
+  assert.match(
+    messageHandlerSource,
+    /case 'message\.updated':[\s\S]*\.tokens[\s\S]*\.input[\s\S]*SET_CONTEXT_USAGE_PCT/s,
+    'message handler should calculate and dispatch context usage percentage from message.updated tokens',
+  );
+});
+

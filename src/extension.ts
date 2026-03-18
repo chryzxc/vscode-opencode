@@ -312,7 +312,7 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.commands.registerCommand(
         "opencode.showPlan",
         async (payload: string | { content?: string; title?: string }) => {
-          PlanViewProvider.show(context.extensionUri, payload);
+          PlanViewProvider.show(context, payload);
         },
       ),
     );
@@ -393,6 +393,8 @@ export async function activate(context: vscode.ExtensionContext) {
         },
       ),
     );
+
+
 
     // ============================================================================
     // PHASE 4: Auto-Start Server (Optional)

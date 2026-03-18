@@ -26,7 +26,7 @@ test('structured output schema supports interactive event types', () => {
     'structuredOutputSchema.ts',
   );
   const schemaText = schemaSource;
-  assert.match(schemaText, /interactiveEvents/, 'schema should declare interactiveEvents');
+  assert.match(schemaText, /question:\s*{/, 'schema should declare top-level question payload');
   assert.match(schemaText, /"question"/, 'schema should allow question response type');
   assert.match(schemaText, /"quick_actions"/, 'schema should allow quick_actions interactive event type');
   assert.match(schemaText, /"confirm"/, 'schema should allow confirm interactive event type');

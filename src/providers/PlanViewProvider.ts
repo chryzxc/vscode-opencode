@@ -5,25 +5,29 @@ export class PlanViewProvider {
   public static readonly viewType = 'opencode.planView';
   private static currentPanel: PlanViewProvider | undefined;
   private readonly _panel: vscode.WebviewPanel;
+  private readonly _context: vscode.ExtensionContext;
   private readonly _extensionUri: vscode.Uri;
   private _disposables: vscode.Disposable[] = [];
   // Simple in-memory store for comments keyed by planId (fallback key 'default')
   // Keep comments as a simple local structure to avoid cross-package import issues
-  private _commentsByPlan: Map<string, { id: string; anchor: { startLine: number; endLine: number; selectedText: string }; text: string; createdAt: number; }[]> = new Map();
+  private _commentsByPlan: Map<string, { id: string; anchor: { startLine: number; endLine: number; selectedText: string; surroundingText?: string }; text: string; createdAt: number; resolved?: boolean }[]> = new Map();
 
   private _currentContent: string;
   private _currentTitle: string;
 
   private constructor(
     panel: vscode.WebviewPanel,
-    extensionUri: vscode.Uri,
+    context: vscode.ExtensionContext,
     content: string,
     title?: string,
   ) {
     this._panel = panel;
-    this._extensionUri = extensionUri;
+    this._context = context;
+    this._extensionUri = context.extensionUri;
     this._currentContent = content;
     this._currentTitle = title?.trim() || this.deriveTitle(content) || 'Implementation Plan';
+
+    this.loadComments();
 
     // Set the webview's initial html content
     this._update(content, title);
@@ -69,16 +73,18 @@ export class PlanViewProvider {
             const existing = this._commentsByPlan.get(planId) ?? [];
             existing.push(message.comment);
             this._commentsByPlan.set(planId, existing);
+            this.saveComments();
             this._panel.webview.postMessage({ type: 'commentsUpdated', comments: existing });
             return;
           }
           case 'updateComment': {
             const planId = message.planId ?? 'default';
             const existing = this._commentsByPlan.get(planId) ?? [];
-            const idx = existing.findIndex(c => c.id === message.comment.id);
+            const idx = existing.findIndex((c: any) => c.id === message.comment.id);
             if (idx >= 0) {
               existing[idx] = message.comment;
               this._commentsByPlan.set(planId, existing);
+              this.saveComments();
             }
             this._panel.webview.postMessage({ type: 'commentsUpdated', comments: existing });
             return;
@@ -86,8 +92,9 @@ export class PlanViewProvider {
           case 'deleteComment': {
             const planId = message.planId ?? 'default';
             const existing = this._commentsByPlan.get(planId) ?? [];
-            const next = existing.filter(c => c.id !== message.id);
+            const next = existing.filter((c: any) => c.id !== message.id);
             this._commentsByPlan.set(planId, next);
+            this.saveComments();
             this._panel.webview.postMessage({ type: 'commentsUpdated', comments: next });
             return;
           }
@@ -111,7 +118,7 @@ export class PlanViewProvider {
             });
             vscode.commands
               .executeCommand('opencode.planProceed', payload)
-              .catch((err) => {
+              .then(undefined, (err: any) => {
                 this._panel.webview.postMessage({
                   type: 'planProceedStatus',
                   ok: false,
@@ -130,8 +137,25 @@ export class PlanViewProvider {
     );
   }
 
+  private loadComments() {
+    const saved = this._context.workspaceState.get<{ [planId: string]: any[] }>('opencode.planComments');
+    if (saved) {
+      for (const [key, val] of Object.entries(saved)) {
+        this._commentsByPlan.set(key, val);
+      }
+    }
+  }
+
+  private saveComments() {
+    const obj: { [planId: string]: any[] } = {};
+    for (const [key, val] of this._commentsByPlan.entries()) {
+      obj[key] = val;
+    }
+    this._context.workspaceState.update('opencode.planComments', obj);
+  }
+
   public static show(
-    extensionUri: vscode.Uri,
+    context: vscode.ExtensionContext,
     payload: string | { content?: string; title?: string },
   ) {
     const content = typeof payload === 'string' ? payload : payload?.content ?? '';
@@ -155,14 +179,14 @@ export class PlanViewProvider {
       {
         enableScripts: true,
         localResourceRoots: [
-          vscode.Uri.file(path.join(extensionUri.fsPath, 'webview', 'plan')),
-          vscode.Uri.file(path.join(extensionUri.fsPath, 'webview', 'shared', 'dist')),
-          vscode.Uri.file(path.join(extensionUri.fsPath, 'node_modules'))
+          vscode.Uri.file(path.join(context.extensionUri.fsPath, 'webview', 'plan')),
+          vscode.Uri.file(path.join(context.extensionUri.fsPath, 'webview', 'shared', 'dist')),
+          vscode.Uri.file(path.join(context.extensionUri.fsPath, 'node_modules'))
         ]
       }
     );
 
-    PlanViewProvider.currentPanel = new PlanViewProvider(panel, extensionUri, content, title);
+    PlanViewProvider.currentPanel = new PlanViewProvider(panel, context, content, title);
   }
 
   public static closeCurrentPanel() {

@@ -68,7 +68,7 @@ test('proceed flow forwards plan payload, returns status feedback, and sends exp
   assert.match(chatProviderSource, /const\s+commentsFilename\s*=\s*this\.createPlanCommentsFilename\(artifactId\)/, 'plan proceed handler should generate unique comments filenames');
   assert.match(chatProviderSource, /PlanViewProvider\.closeCurrentPanel\(\)/, 'plan proceed handler should close plan viewer immediately after triggering proceed');
   assert.match(chatProviderSource, /void this\.handleSendMessage\([\s\S]*proceedMessage,\s*attachedFiles[\s\S]*\)/, 'plan proceed handler should dispatch send asynchronously to avoid blocking the plan tab');
-  assert.match(planShellSource, /Proceed on this plan/, 'plan shell should present explicit proceed-on-plan action label');
+  assert.match(planShellSource, /"Proceed"/, 'plan shell should present explicit proceed action label');
 });
 
 test('plan viewer read-path has error fallback for unreadable plan files', () => {
@@ -111,4 +111,9 @@ test('structured implementation plan parsing uses plan.content as source of trut
 
   assert.doesNotMatch(normalizeBody, /planRec\?\.markdown,\s*message/, 'normalizeStructuredOutput should not fallback to structured message for plan content');
   assert.doesNotMatch(applyBody, /structured\.plan\?\.content\s*\|\|\s*structured\.message/, 'applyStructuredOutputToMessage should not use message as plan content fallback');
+});
+
+test('plan shell provides "Proceed" action', () => {
+  assert.match(planShellSource, /"Proceed"/, 'plan shell should present "Proceed" action');
+  assert.doesNotMatch(planShellSource, /Request Revision/, 'plan shell should NOT present "Request Revision" action');
 });

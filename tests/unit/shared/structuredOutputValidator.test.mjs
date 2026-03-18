@@ -156,22 +156,19 @@ test('validateStructuredOutput validates plan object', () => {
   assert.match(fnBody, /plan must be an object/, 'Should include plan error message');
 });
 
-test('validateStructuredOutput validates interactiveEvents array', () => {
+test('validateStructuredOutput rejects deprecated interactiveEvents key', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /Array\.isArray\(record\.interactiveEvents\)/, 'Should check interactiveEvents is array');
-  assert.match(fnBody, /record\.interactiveEvents\.forEach\(\(event, index\) => {/, 'Should iterate over interactive events');
-
-  assert.match(fnBody, /!event \|\| typeof event !== "object"/, 'Should check event is object');
-  assert.match(fnBody, /interactiveEvents\[\${index}\] must be an object/, 'Should include event validation error with index');
+  assert.match(fnBody, /typeof record\.interactiveEvents !== "undefined"/, 'Should check deprecated interactiveEvents key');
+  assert.match(fnBody, /interactiveEvents is no longer supported; use question object/, 'Should include deprecation error');
 });
 
-test('validateStructuredOutput validates interactive event types', () => {
+test('validateStructuredOutput validates question payload type', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /typeof eventRecord\.type === "string"/, 'Should check event type is string');
-  assert.match(fnBody, /!VALID_INTERACTIVE_TYPES\.has\(eventRecord\.type\)/, 'Should validate event type against allowed types');
-  assert.match(fnBody, /interactiveEvents\[\${index}\]\.type invalid:/, 'Should include invalid type error with index');
+  assert.match(fnBody, /typeof questionRecord\.type === "string"/, 'Should check question payload type is string');
+  assert.match(fnBody, /!VALID_INTERACTIVE_TYPES\.has\(questionRecord\.type\)/, 'Should validate question payload type against allowed types');
+  assert.match(fnBody, /question\.type invalid:/, 'Should include invalid type error');
 });
 
 test('VALID_INTERACTIVE_TYPES constant includes all types', () => {
@@ -182,21 +179,21 @@ test('VALID_INTERACTIVE_TYPES constant includes all types', () => {
   assert.match(validatorSource, /"message"/, 'Should include message type');
 });
 
-test('validateStructuredOutput validates question event properties', () => {
+test('validateStructuredOutput validates question payload properties', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /if \(eventRecord\.type === "question"\)/, 'Should check for question event type');
-  assert.match(fnBody, /if \(!isNonEmptyString\(eventRecord\.question\)\)/, 'Should validate question text using isNonEmptyString');
-  assert.match(fnBody, /question event requires question text/, 'Should include question text error');
+  assert.match(fnBody, /const isQuestionPayload = questionType === "question"/, 'Should detect question payload type');
+  assert.match(fnBody, /if \(!isNonEmptyString\(questionRecord\.question\)\)/, 'Should validate question text using isNonEmptyString');
+  assert.match(fnBody, /question requires question text/, 'Should include question text error');
 
-  assert.match(fnBody, /const options = Array\.isArray\(eventRecord\.options\)\s*\?\s*eventRecord\.options\s*:\s*\[\]/, 'Should handle missing or invalid options');
+  assert.match(fnBody, /const options = Array\.isArray\(questionRecord\.options\)\s*\?\s*questionRecord\.options\s*:\s*\[\]/, 'Should handle missing or invalid options');
   assert.match(fnBody, /options\.filter\(\(option\) => {/, 'Should filter options to find valid ones');
 
   assert.match(fnBody, /!option \|\| typeof option !== "object"/, 'Should check option is object');
   assert.match(fnBody, /isNonEmptyString\(optionRecord\.label\)\s*\|\|\s*isNonEmptyString\(optionRecord\.value\)/, 'Should check option has label or value');
 
-  assert.match(fnBody, /if \(validOptionCount < 2\)/, 'Should check for at least 2 valid options');
-  assert.match(fnBody, /question interactive event requires at least two options/, 'Should include options count error');
+  assert.match(fnBody, /if \(!allowCustomInput && validOptionCount < 2\)/, 'Should check for at least 2 valid options unless custom input is enabled');
+  assert.match(fnBody, /question interactive payload requires at least two options unless allowCustomInput is true/, 'Should include options count error');
 });
 
 test('validateStructuredOutput validates subagents array', () => {
@@ -246,21 +243,17 @@ test('validateStructuredOutput validates interactive responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
   assert.match(fnBody, /if \(record\.responseType === "interactive"\)/, 'Should check for interactive responseType');
-  assert.match(fnBody, /!Array\.isArray\(record\.interactiveEvents\)/, 'Should validate interactiveEvents array exists');
-  assert.match(fnBody, /interactive responseType requires interactiveEvents array/, 'Should include interactive error');
+  assert.match(fnBody, /!record\.question \|\| typeof record\.question !== "object"/, 'Should validate question object exists');
+  assert.match(fnBody, /interactive responseType requires question object/, 'Should include interactive error');
 });
 
 test('validateStructuredOutput validates question responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
   assert.match(fnBody, /if \(record\.responseType === "question"\)/, 'Should check for question responseType');
-  assert.match(fnBody, /!Array\.isArray\(record\.interactiveEvents\)/, 'Should validate interactiveEvents array exists');
-  assert.match(fnBody, /question responseType requires interactiveEvents array/, 'Should include question array error');
-
-  assert.match(fnBody, /const hasQuestionEvent = record\.interactiveEvents\.some\(/, 'Should check for question event in array');
-  assert.match(fnBody, /eventRecord\.type === "question"/, 'Should check event type is question');
-  assert.match(fnBody, /if \(!hasQuestionEvent\)/, 'Should validate question event exists');
-  assert.match(fnBody, /question responseType requires at least one question interactive event/, 'Should include question event error');
+  assert.match(fnBody, /!record\.question \|\| typeof record\.question !== "object"/, 'Should validate question object exists');
+  assert.match(fnBody, /question responseType requires question object/, 'Should include question object error');
+  assert.match(fnBody, /question responseType requires question\.type to be 'question'/, 'Should validate question payload type');
 });
 
 test('validateStructuredOutput validates progress_update responseType', () => {
@@ -350,13 +343,12 @@ test('validator provides detailed error messages with context', () => {
   assert.match(validatorSource, /message must be a string/, 'Error should include field name');
   assert.match(validatorSource, /plan must be an object/, 'Error should include field name');
 
-  // Errors should include array indices
-  assert.match(validatorSource, /interactiveEvents\[\${index}\]/, 'Error should include array index');
+  // Errors should include array indices (where relevant)
   assert.match(validatorSource, /subagents\[\${index}\]/, 'Error should include array index');
 
   // Errors should include validation details
   assert.match(validatorSource, /Unsupported responseType: \${record\.responseType}/, 'Error should include invalid value');
-  assert.match(validatorSource, /type invalid: \${eventRecord\.type}/, 'Error should include invalid type');
+  assert.match(validatorSource, /question\.type invalid: \${questionRecord\.type}/, 'Error should include invalid type');
 });
 
 test('validator validates all nested properties', () => {
@@ -379,12 +371,10 @@ test('validator handles all response type specific requirements', () => {
   // subagents
   assert.match(validatorSource, /subagents responseType requires subagents array/, 'Should enforce subagents requirements');
 
-  // interactive
-  assert.match(validatorSource, /interactive responseType requires interactiveEvents array/, 'Should enforce interactive requirements');
-
-  // question
-  assert.match(validatorSource, /question responseType requires interactiveEvents array/, 'Should enforce question array requirement');
-  assert.match(validatorSource, /question responseType requires at least one question interactive event/, 'Should enforce question event requirement');
+  // interactive + question
+  assert.match(validatorSource, /interactive responseType requires question object/, 'Should enforce interactive requirements');
+  assert.match(validatorSource, /question responseType requires question object/, 'Should enforce question object requirement');
+  assert.match(validatorSource, /question responseType requires question\.type to be 'question'/, 'Should enforce question payload type requirement');
 
   // progress_update
   assert.match(validatorSource, /progress_update responseType requires progressUpdates array/, 'Should enforce progress_update requirements');

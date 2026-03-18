@@ -132,6 +132,18 @@
           "type": "number",
           "default": 3,
           "description": "Maximum number of backup log files to keep"
+        },
+        "opencode.autoCompact": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically compact a session when context usage reaches the threshold"
+        },
+        "opencode.autoCompactThreshold": {
+          "type": "number",
+          "default": 0.9,
+          "minimum": 0.5,
+          "maximum": 0.99,
+          "description": "Fraction of the model context limit at which auto-compaction fires (0.9 = 90%)"
         }
       }
     }
@@ -166,7 +178,7 @@
     "vitest": "^4.1.0"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "latest",
+    "@opencode-ai/sdk": "1.2.24",
     "highlight.js": "^11.11.1",
     "marked": "^17.0.1",
     "vscode-file-theme-processor": "^1.0.8"

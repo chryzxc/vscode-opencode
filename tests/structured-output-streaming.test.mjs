@@ -168,7 +168,7 @@ test('chat provider logs request and response payload diagnostics', () => {
   );
 });
 
-test('chat provider prefers streaming and enables structured output for explicit and planning intents', () => {
+test('chat provider enables structured output for all prompts when schema mode is available', () => {
   assert.match(
     chatProviderSource,
     /private structuredOutputMode:\s*"format"\s*\|\s*"disabled"\s*=\s*"format"/,
@@ -186,43 +186,8 @@ test('chat provider prefers streaming and enables structured output for explicit
   );
   assert.match(
     shouldUseBody,
-    /const activeAgent =/,
-    'structured output helper should evaluate agent intent',
-  );
-  assert.match(
-    shouldUseBody,
-    /const promptText =/,
-    'structured output helper should inspect prompt text for explicit structured intent markers',
-  );
-  assert.match(
-    shouldUseBody,
-    /\\\[interactive:/,
-    'structured output helper should enable schema mode for interactive marker prompts',
-  );
-  assert.match(
-    shouldUseBody,
-    /response\\s\*type\|json\[_\\s-\]\?schema\|structured\\s\*output/,
-    'structured output helper should enable schema mode for explicit structured-output prompts',
-  );
-  assert.match(
-    shouldUseBody,
-    /const hasExecutionIntent =/,
-    'structured output helper should detect implementation intent prompts',
-  );
-  assert.match(
-    shouldUseBody,
-    /const hasPlanningIntent =/,
-    'structured output helper should detect planning intent prompts',
-  );
-  assert.match(
-    shouldUseBody,
-    /const hasRepoScopedSignal =/,
-    'structured output helper should detect repo-scoped context cues',
-  );
-  assert.match(
-    shouldUseBody,
-    /if \(!promptText\)\s*\{\s*return false;/,
-    'structured output helper should default to plain streaming when no explicit schema intent is present',
+    /return true;/,
+    'structured output helper should enable schema mode by default for all prompts',
   );
 });
 
@@ -234,7 +199,7 @@ test('chat provider coerces malformed interactive responses into fallback questi
 
   assert.match(
     normalizeBody,
-    /if \(\s*interactiveEvents\.length === 0[\s\S]*this\.isInteractiveResponseType\(responseType\)/s,
+    /if \(\s*!questionEvent[\s\S]*this\.isInteractiveResponseType\(responseType\)/s,
     'normalizeStructuredOutput should detect malformed interactive payloads',
   );
   assert.match(

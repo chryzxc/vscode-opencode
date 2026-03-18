@@ -19,11 +19,12 @@ const generatedWebviewValidatorSource = readSource(
 test('structured output validator enforces responseType specific requirements', () => {
   assert.match(validatorSource, /implementation_plan requires plan\.content string/, 'validator should enforce plan.content for implementation_plan');
   assert.match(validatorSource, /subagents responseType requires subagents array/, 'validator should enforce subagents array for subagents responseType');
-  assert.match(validatorSource, /interactive responseType requires interactiveEvents array/, 'validator should enforce interactiveEvents array for interactive responseType');
-  assert.match(validatorSource, /question responseType requires interactiveEvents array/, 'validator should enforce interactiveEvents array for question responseType');
-  assert.match(validatorSource, /question responseType requires at least one question interactive event/, 'validator should require question responseType to include a question event');
-  assert.match(validatorSource, /question event requires question text/, 'validator should require question events to include question text');
-  assert.match(validatorSource, /question interactive event requires at least two options/, 'validator should require question events to include at least two options');
+  assert.match(validatorSource, /interactive responseType requires question object/, 'validator should enforce question object for interactive responseType');
+  assert.match(validatorSource, /question responseType requires question object/, 'validator should enforce question object for question responseType');
+  assert.match(validatorSource, /question responseType requires question\.type to be 'question'/, 'validator should require question payload type for question responseType');
+  assert.match(validatorSource, /question requires question text/, 'validator should require question payload to include question text');
+  assert.match(validatorSource, /question interactive payload requires at least two options unless allowCustomInput is true/, 'validator should require question payload to include options unless custom input is enabled');
+  assert.match(validatorSource, /interactiveEvents is no longer supported; use question object/, 'validator should reject deprecated interactiveEvents key');
   assert.match(validatorSource, /progress_update responseType requires progressUpdates array/, 'validator should enforce progressUpdates array for progress_update responseType');
 });
 

@@ -63,6 +63,73 @@ function messageTokenStats(message: Message): {
   };
 }
 
+function CircularProgress({
+  pct,
+  size = 16,
+  strokeWidth = 2.5,
+}: {
+  pct: number;
+  size?: number;
+  strokeWidth?: number;
+}) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (pct / 100) * circumference;
+
+  // Determine color based on pressure
+  const strokeColor =
+    pct > 90
+      ? "var(--oc-red)"
+      : pct > 75
+        ? "var(--oc-yellow)"
+        : "var(--oc-accent)";
+
+  return (
+    <div
+      className="relative flex items-center justify-center"
+      style={{ width: size, height: size }}
+    >
+      <svg
+        width={size}
+        height={size}
+        className="-rotate-90"
+        viewBox={`0 0 ${size} ${size}`}
+      >
+        {/* Background track */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="transparent"
+          stroke="currentColor"
+          strokeWidth={strokeWidth}
+          className="text-oc-border-soft opacity-20"
+        />
+        {/* Progress fill */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="transparent"
+          stroke={strokeColor}
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          className="transition-all duration-700 ease-in-out"
+        />
+      </svg>
+      {/* Glow effect for high usage */}
+      {pct > 80 && (
+        <div
+          className="absolute inset-0 rounded-full blur-[4px] opacity-40 animate-pulse"
+          style={{ backgroundColor: strokeColor }}
+        />
+      )}
+    </div>
+  );
+}
+
 type SlashTrigger = {
   query: string;
   replaceFrom: number;
@@ -105,8 +172,76 @@ export function StickyHeader() {
     isProcessing,
     streaming,
     promptQueue,
+    availableModels,
+    selectedModel,
+    messages,
+    compactionBaselineStats,
+    compactionDividerIndex,
   } = useAppState();
   const dispatch = useAppDispatch();
+
+  // Replicate context usage calculation from ActiveTaskPanel for header indicator
+  const selectedModelContextLimit = useMemo(() => {
+    if (!selectedModel) return undefined;
+    const matched = availableModels.find(
+      (m) =>
+        m.providerID === selectedModel.providerID &&
+        m.modelID === selectedModel.modelID,
+    );
+    const limit = matched?.contextLimit;
+    return typeof limit === "number" && Number.isFinite(limit) && limit > 0
+      ? Math.floor(limit)
+      : undefined;
+  }, [availableModels, selectedModel]);
+
+  const safeDividerIdx =
+    typeof compactionDividerIndex === "number"
+      ? Math.max(0, Math.min(compactionDividerIndex, messages.length))
+      : undefined;
+
+  const derivedBaseline = useMemo(() => {
+    const b = { input: 0, output: 0, read: 0, write: 0 };
+    if (safeDividerIdx === undefined || safeDividerIdx <= 0) return b;
+    for (let i = 0; i < safeDividerIdx; i += 1) {
+      const s = messageTokenStats(messages[i]);
+      b.input += s.input;
+      b.output += s.output;
+      b.read += s.read;
+      b.write += s.write;
+    }
+    return b;
+  }, [messages, safeDividerIdx]);
+
+  const effectiveBaseline = compactionBaselineStats
+    ? {
+        input: compactionBaselineStats.input,
+        output: compactionBaselineStats.output,
+        read: compactionBaselineStats.read,
+        write: compactionBaselineStats.write,
+      }
+    : derivedBaseline;
+
+  const contextStats = useMemo(
+    () => ({
+      input: Math.max(0, sessionStats.input - effectiveBaseline.input),
+      output: Math.max(0, sessionStats.output - effectiveBaseline.output),
+      read: Math.max(0, sessionStats.read - effectiveBaseline.read),
+      write: Math.max(0, sessionStats.write - effectiveBaseline.write),
+    }),
+    [sessionStats, effectiveBaseline],
+  );
+
+  const totalUsed = totalTokens(
+    contextStats.input,
+    contextStats.output,
+    contextStats.read,
+    contextStats.write,
+  );
+  const maxContext = selectedModelContextLimit ?? 128_000;
+  const pct =
+    totalUsed > 0
+      ? Math.min(100, Math.round((totalUsed / maxContext) * 100))
+      : 0;
 
   const sessionLabel = currentSessionId ? currentSessionId.slice(0, 8) : "new";
   const taskName =
@@ -137,9 +272,15 @@ export function StickyHeader() {
         >
           <History className="h-3.5 w-3.5" />
         </Button>
-        <div className="flex items-center gap-1.5">
-          <div className="oc-agent-icon">
-            <Zap className="h-2.5 w-2.5" />
+        <div
+          className="flex items-center gap-2 cursor-help"
+          title={`${pct}% context used (${totalUsed.toLocaleString()} / ${maxContext.toLocaleString()} tokens)`}
+        >
+          <div className="oc-agent-icon relative flex items-center justify-center">
+            <CircularProgress pct={pct} size={22} strokeWidth={2.5} />
+            <div className="absolute inset-0 flex items-center justify-center opacity-40">
+              <Zap className="h-2.5 w-2.5" />
+            </div>
           </div>
           <span className="oc-title">OpenCode</span>
         </div>
@@ -208,7 +349,12 @@ export function StickyHeader() {
 }
 
 export function HistorySidebar() {
-  const { isSidebarOpen, sessionsList, currentSessionId } = useAppState();
+  const {
+    isSidebarOpen,
+    sessionsList,
+    currentSessionId,
+    processingSessionIds,
+  } = useAppState();
   const dispatch = useAppDispatch();
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
@@ -312,6 +458,8 @@ export function HistorySidebar() {
         ) : (
           visibleSessions.map((session) => {
             const isActive = session.id === currentSessionId;
+            const isProcessing =
+              processingSessionIds?.includes(session.id) || false;
             const isEditing = editingSessionId === session.id;
 
             const handleStartEdit = () => {
@@ -393,7 +541,11 @@ export function HistorySidebar() {
                       }
                     >
                       <div className="flex items-center gap-2">
-                        {isActive ? (
+                        {isProcessing ? (
+                          <div title="This session is still working on the response...">
+                            <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
+                          </div>
+                        ) : isActive ? (
                           <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-accent" />
                         ) : (
                           <span className="inline-block h-1.5 w-1.5 rounded-full bg-oc-border-soft" />
@@ -605,7 +757,7 @@ export function ActiveTaskPanel() {
     contextStats.read,
     contextStats.write,
   );
-  const maxContext = selectedModelContextLimit ?? 200_000;
+  const maxContext = selectedModelContextLimit ?? 128_000;
   const usingContextFallback = selectedModelContextLimit === undefined;
   const pct =
     total > 0 ? Math.min(100, Math.round((total / maxContext) * 100)) : 0;
@@ -1741,11 +1893,19 @@ export function InputWrapper() {
   // Reset index and custom mode when interactive events change
   useEffect(() => {
     if (interactiveEventCount < 0) return;
+    // If the first event is an open-ended question (allowCustomInput, no pre-set options),
+    // skip straight to the free-text input so the user doesn't see an empty button row.
+    const firstEvent = displayInteractiveEvents[0];
+    const autoCustomMode =
+      firstEvent?.type === "question" &&
+      Array.isArray(firstEvent.options) &&
+      firstEvent.options.length === 0 &&
+      firstEvent.allowCustomInput === true;
     setCurrentInteractiveIndex(0);
-    setIsCustomMode(false);
+    setIsCustomMode(autoCustomMode);
     setCustomValue("");
     setPendingAnswers({});
-  }, [interactiveEventCount]);
+  }, [interactiveEventCount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (isCustomMode) {
@@ -3566,6 +3726,241 @@ export function AgentsPanel() {
           )}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+export function SettingsModal({
+  isOpen,
+  onClose,
+  initialContent,
+  filePath,
+  isGlobal,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  initialContent: string;
+  filePath?: string;
+  isGlobal?: boolean;
+}) {
+  const [content, setContent] = useState(initialContent);
+  const [error, setError] = useState<string>("");
+
+  useEffect(() => {
+    if (isOpen) {
+      setContent(initialContent);
+      setError("");
+    }
+  }, [isOpen, initialContent]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  function handleSave() {
+    try {
+      JSON.parse(content);
+      setError("");
+      vscode.postMessage({
+        type: "saveOpenCodeConfig",
+        content,
+        filePath,
+      });
+      onClose();
+    } catch (e: any) {
+      setError(`Invalid JSON: ${e.message}`);
+    }
+  }
+
+  return (
+    <div className="oc-image-preview-shell z-50">
+      <div
+        className="oc-image-preview-backdrop backdrop-blur-sm bg-black/40"
+        onClick={onClose}
+      />
+      <div className="oc-image-preview-modal max-w-2xl w-[90vw] h-[80vh] flex flex-col overflow-hidden border border-oc-border shadow-2xl animate-in zoom-in-95 duration-200">
+        <div className="oc-image-preview-header flex items-center justify-between px-4 py-3 border-b border-oc-border bg-oc-bg-soft">
+          <div className="flex items-center gap-2">
+            <Wrench className="h-4 w-4 text-oc-accent" />
+            <span className="font-semibold text-sm">
+              OpenCode Configuration
+            </span>
+            <Badge
+              variant="outline"
+              className="ml-2 text-[10px] uppercase tracking-wider opacity-70"
+            >
+              {isGlobal ? "Global" : "Workspace"}
+            </Badge>
+          </div>
+          <button
+            type="button"
+            className="p-1 hover:bg-oc-accent-soft rounded transition-colors"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 flex flex-col p-4 space-y-4 overflow-hidden bg-oc-bg">
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2 text-oc-text-muted">
+              <FileIcon filePath="opencode.json" className="h-3.5 w-3.5" />
+              <span className="truncate opacity-80" title={filePath}>
+                {filePath || "opencode.json"}
+              </span>
+            </div>
+            <a
+              href="https://opencode.ai/docs/config/"
+              target="_blank"
+              rel="noreferrer"
+              className="text-oc-accent hover:underline flex items-center gap-1"
+            >
+              Docs <ArrowRight className="h-3 w-3" />
+            </a>
+          </div>
+
+          <div className="relative flex-1 group">
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="h-full w-full resize-none font-mono text-[13px] leading-relaxed p-4 bg-oc-bg-soft border-oc-border focus-visible:ring-1 focus-visible:ring-oc-accent"
+              spellCheck={false}
+              placeholder='{ "model": "..." }'
+            />
+            {error && (
+              <div className="absolute bottom-4 left-4 right-4 animate-in slide-in-from-bottom-2 duration-200">
+                <div className="bg-oc-red/10 border border-oc-red/20 text-oc-red text-xs p-3 rounded-md flex items-start gap-2 backdrop-blur-md">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-oc-border bg-oc-bg-soft flex justify-between items-center">
+          <p className="text-[10px] text-oc-text-muted">
+            Tip: Changes take effect immediately after saving.
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="h-8 text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              className="h-8 text-xs bg-oc-accent hover:bg-oc-accent/90 text-white border-0 shadow-lg shadow-oc-accent/20"
+            >
+              Save Configuration
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function SettingsPanel() {
+  const { opencodeConfig } = useAppState();
+  const [modalOpen, setModalOpen] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Trigger initial fetch if missing
+  useEffect(() => {
+    if (!opencodeConfig) {
+      vscode.postMessage({ type: "getOpenCodeConfig" });
+    }
+  }, [opencodeConfig]);
+
+  function requestRefresh() {
+    setIsRefreshing(true);
+    vscode.postMessage({ type: "getOpenCodeConfig" });
+    setTimeout(() => setIsRefreshing(false), 600);
+  }
+
+  // Parse for preview
+  const previewModel = useMemo(() => {
+    if (!opencodeConfig?.content) return "Default model";
+    try {
+      const parsed = JSON.parse(opencodeConfig.content);
+      return parsed.model || "Default model";
+    } catch {
+      return "Invalid JSON";
+    }
+  }, [opencodeConfig]);
+
+  return (
+    <div className="oc-settings-panel border-t border-oc-border p-3 group transition-colors hover:bg-oc-accent-soft/5">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="oc-panel-title flex items-center gap-2 select-none">
+          <div className="p-1 rounded bg-oc-accent/10 border border-oc-accent/20">
+            <Wrench className="h-3 w-3 text-oc-accent" />
+          </div>
+          Settings
+        </div>
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Button
+            type="button"
+            aria-label="Reload Config"
+            onClick={requestRefresh}
+            variant="ghost"
+            size="icon"
+            className={`h-6 w-6 text-oc-text-muted hover:text-oc-accent transition-all ${isRefreshing ? "animate-spin" : ""}`}
+            title="Reload config"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex flex-col gap-1.5 p-2 rounded-lg bg-oc-bg-soft border border-oc-border/50 shadow-sm transition-all hover:border-oc-accent/30">
+          <div className="flex items-center justify-between text-[10px] text-oc-text-muted font-medium uppercase tracking-wider">
+            <span>Current Model</span>
+            <Badge
+              variant="outline"
+              className="h-4 px-1 text-[8px] border-oc-border"
+            >
+              {opencodeConfig?.isGlobal ? "Global" : "Project"}
+            </Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <Bot className="h-3.5 w-3.5 text-oc-accent opacity-70" />
+            <span className="text-[11px] font-mono truncate text-oc-text opacity-90">
+              {previewModel}
+            </span>
+          </div>
+        </div>
+
+        <Button
+          onClick={() => setModalOpen(true)}
+          className="w-full h-8 text-[11px] font-medium transition-all gap-2 bg-oc-bg hover:bg-oc-accent hover:text-white border-oc-border group/btn"
+          variant="outline"
+        >
+          <Edit className="h-3 w-3 group-hover/btn:scale-110 transition-transform" />
+          Edit opencode.json
+        </Button>
+      </div>
+
+      <SettingsModal
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+        initialContent={opencodeConfig?.content || "{}"}
+        filePath={opencodeConfig?.filePath}
+        isGlobal={opencodeConfig?.isGlobal}
+      />
     </div>
   );
 }

@@ -87,6 +87,18 @@ test("shouldPreferStreamingContent rejects contaminated mixed stream snapshots",
   );
 });
 
+test("shouldPreferStreamingContent rejects pure reasoning/policy traces", () => {
+  const finalContent = "Hey! How can I help?";
+  const reasoningLeak =
+    'The user just said "hey". According to the instructions, no flattery and be concise. I should respond directly.';
+
+  assert.equal(
+    shouldPreferStreamingContent(finalContent, reasoningLeak),
+    false,
+    "policy-style reasoning traces must never override clean assistant content",
+  );
+});
+
 test("shouldPreferStreamingContent still prefers richer clean stream snapshots", () => {
   const finalContent = "Implemented authentication and tests.";
   const streamingRich =

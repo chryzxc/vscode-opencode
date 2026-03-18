@@ -4,7 +4,6 @@ import type {
   Agent,
   AppState,
   AttachmentItem,
-  BudgetInfo,
   InteractiveEvent,
   LspServerInfo,
   McpServerInfo,
@@ -43,6 +42,7 @@ export const initialState: AppState = {
   isQueueOpen: false,
   isSidebarOpen: false,
   sessionsList: [],
+  processingSessionIds: [],
   sessionEdits: new Set<string>(),
   sessionStats: {
     input: 0,
@@ -86,6 +86,8 @@ export const initialState: AppState = {
   budgetInfo: undefined,
   mcpServers: [],
   lspServers: [],
+  contextUsagePct: undefined,
+  opencodeConfig: undefined,
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
@@ -113,6 +115,7 @@ export type AppAction =
   | { type: "SET_PROCESSING"; payload: boolean }
   | { type: "SET_STEERING"; payload: boolean }
   | { type: "SET_SESSIONS_LIST"; payload: Session[] }
+  | { type: "SET_PROCESSING_SESSIONS"; payload: string[] }
   | { type: "ADD_SESSION_EDIT"; payload: string }
   | { type: "CLEAR_SESSION_EDITS" }
   | { type: "UPDATE_SESSION_STATS"; payload: Partial<SessionStats> }
@@ -202,7 +205,9 @@ export type AppAction =
   | { type: "SET_BUDGET_INFO"; payload: import("./types").BudgetInfo | null }
   | { type: "SET_MCP_SERVERS"; payload: McpServerInfo[] }
   | { type: "SET_LSP_SERVERS"; payload: LspServerInfo[] }
-  | { type: "SET_SERVER_VERSION"; payload: string | undefined };
+  | { type: "SET_SERVER_VERSION"; payload: string | undefined }
+  | { type: "SET_CONTEXT_USAGE_PCT"; payload: number | undefined }
+  | { type: "SET_OPENCODE_CONFIG"; payload: AppState["opencodeConfig"] };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   return {
@@ -239,7 +244,7 @@ function needsReasoningBoundary(previous: string, next: string): boolean {
   if (/^[,.;:!?)}\]]/.test(next)) {
     return false;
   }
-  if (/[(\[{]$/.test(prevChar)) {
+  if (/[([{$]/.test(prevChar)) {
     return false;
   }
 
@@ -411,6 +416,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "SET_SERVER_STATUS":
       return { ...state, serverStatus: action.payload };
+    case "SET_PROCESSING_SESSIONS":
+      return { ...state, processingSessionIds: action.payload };
     case "SET_SERVER_VERSION":
       return { ...state, serverVersion: action.payload };
     case "SET_SELECTED_MODEL":
@@ -929,6 +936,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, mcpServers: action.payload };
     case "SET_LSP_SERVERS":
       return { ...state, lspServers: action.payload };
+    case "SET_CONTEXT_USAGE_PCT":
+      return { ...state, contextUsagePct: action.payload };
+    case "SET_OPENCODE_CONFIG":
+      return { ...state, opencodeConfig: action.payload };
     default:
       return state;
   }

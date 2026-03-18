@@ -159,6 +159,12 @@ export interface MessageStep {
   status?: string;
   meta?: string;
   diffStats?: { added: number; deleted: number };
+  /** Tool-call deduplication key, mirrors StreamingStep.callID */
+  callID?: string;
+  /** Step identity key, mirrors StreamingStep.id */
+  id?: string;
+  /** Arrival-order sequence number, mirrors StreamingStep.streamSeq — used to replay interleaved timeline on reload */
+  streamSeq?: number;
 }
 
 export interface InteractiveChoice {
@@ -408,6 +414,7 @@ export interface AppState {
   isQueueOpen: boolean;
   isSidebarOpen: boolean;
   sessionsList: Session[];
+  processingSessionIds: string[];
   sessionEdits: Set<string>;
   sessionStats: SessionStats;
   sessionsStatsById?: Record<string, SessionStats>;
@@ -446,6 +453,13 @@ export interface AppState {
   budgetInfo: BudgetInfo | null | undefined;
   mcpServers: McpServerInfo[];
   lspServers: LspServerInfo[];
+  contextUsagePct?: number; // 0–1, latest context window usage percentage
+  opencodeConfig?: {
+    content: string;
+    filePath: string;
+    isGlobal: boolean;
+    error?: string;
+  };
 }
 
 export interface AttachmentItem {
@@ -476,4 +490,5 @@ export interface PlanComment {
   };
   text: string;
   createdAt: number;
+  resolved?: boolean;
 }

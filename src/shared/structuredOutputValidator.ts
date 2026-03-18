@@ -79,27 +79,38 @@ export function validateStructuredOutput(
     errors.push("plan must be an object");
   }
 
-  if (Array.isArray(record.interactiveEvents)) {
-    record.interactiveEvents.forEach((event, index) => {
-      if (!event || typeof event !== "object") {
-        errors.push(`interactiveEvents[${index}] must be an object`);
-        return;
-      }
-      const eventRecord = event as Record<string, unknown>;
+  if (typeof record.interactiveEvents !== "undefined") {
+    errors.push("interactiveEvents is no longer supported; use question object");
+  }
+
+  if (typeof record.question !== "undefined") {
+    if (!record.question || typeof record.question !== "object") {
+      errors.push("question must be an object");
+    } else {
+      const questionRecord = record.question as Record<string, unknown>;
+      const questionType =
+        typeof questionRecord.type === "string" && questionRecord.type.trim().length > 0
+          ? questionRecord.type
+          : record.responseType === "question"
+            ? "question"
+            : "";
+
       if (
-        typeof eventRecord.type === "string" &&
-        !VALID_INTERACTIVE_TYPES.has(eventRecord.type)
+        typeof questionRecord.type === "string" &&
+        !VALID_INTERACTIVE_TYPES.has(questionRecord.type)
       ) {
-        errors.push(`interactiveEvents[${index}].type invalid: ${eventRecord.type}`);
+        errors.push(`question.type invalid: ${questionRecord.type}`);
       }
 
-      if (eventRecord.type === "question") {
-        if (!isNonEmptyString(eventRecord.question)) {
-          errors.push(`interactiveEvents[${index}] question event requires question text`);
+      const isQuestionPayload = questionType === "question";
+      if (isQuestionPayload) {
+        if (!isNonEmptyString(questionRecord.question)) {
+          errors.push("question requires question text");
         }
 
-        const options = Array.isArray(eventRecord.options)
-          ? eventRecord.options
+        const allowCustomInput = questionRecord.allowCustomInput === true;
+        const options = Array.isArray(questionRecord.options)
+          ? questionRecord.options
           : [];
         const validOptionCount = options.filter((option) => {
           if (!option || typeof option !== "object") {
@@ -112,13 +123,37 @@ export function validateStructuredOutput(
           );
         }).length;
 
-        if (validOptionCount < 2) {
+        if (!allowCustomInput && validOptionCount < 2) {
           errors.push(
-            `interactiveEvents[${index}] question interactive event requires at least two options`,
+            "question interactive payload requires at least two options unless allowCustomInput is true",
           );
         }
       }
-    });
+
+      if (questionType === "confirm" && !isNonEmptyString(questionRecord.question)) {
+        errors.push("question confirm payload requires question text");
+      }
+
+      if (questionType === "quick_actions") {
+        const actions = Array.isArray(questionRecord.actions)
+          ? questionRecord.actions
+          : [];
+        if (actions.length === 0) {
+          errors.push("question quick_actions payload requires actions array");
+        }
+      }
+
+      if (questionType === "message") {
+        const msg =
+          isNonEmptyString(questionRecord.message) ||
+            isNonEmptyString(questionRecord.content)
+            ? true
+            : false;
+        if (!msg) {
+          errors.push("question message payload requires message/content text");
+        }
+      }
+    }
   }
 
   if (Array.isArray(record.subagents)) {
@@ -161,27 +196,22 @@ export function validateStructuredOutput(
   }
 
   if (record.responseType === "interactive") {
-    if (!Array.isArray(record.interactiveEvents)) {
-      errors.push("interactive responseType requires interactiveEvents array");
+    if (!record.question || typeof record.question !== "object") {
+      errors.push("interactive responseType requires question object");
     }
   }
 
   if (record.responseType === "question") {
-    if (!Array.isArray(record.interactiveEvents)) {
-      errors.push("question responseType requires interactiveEvents array");
+    if (!record.question || typeof record.question !== "object") {
+      errors.push("question responseType requires question object");
     } else {
-      const hasQuestionEvent = record.interactiveEvents.some((event) => {
-        if (!event || typeof event !== "object") {
-          return false;
-        }
-        const eventRecord = event as Record<string, unknown>;
-        return eventRecord.type === "question";
-      });
-
-      if (!hasQuestionEvent) {
-        errors.push(
-          "question responseType requires at least one question interactive event",
-        );
+      const questionRecord = record.question as Record<string, unknown>;
+      const questionType =
+        typeof questionRecord.type === "string" && questionRecord.type.trim().length > 0
+          ? questionRecord.type
+          : "question";
+      if (questionType !== "question") {
+        errors.push("question responseType requires question.type to be 'question'");
       }
     }
   }

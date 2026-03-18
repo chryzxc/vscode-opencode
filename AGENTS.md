@@ -40,6 +40,24 @@ The following features are considered "Core" to the OpenCode experience. They mu
 - Wrapper request payloads should stay transport-focused (`model`, `agent`, `parts`, optional `format`/`outputFormat`).
 - You may strip legacy injected instruction text from persisted history for display hygiene, but do not prepend/re-add it to outgoing prompts.
 
+### Prompt Ownership Regression Guardrails (Required)
+
+- Treat prompt-injection from the wrapper as a blocker-level regression.
+- Never prepend/add wrapper-authored instruction text in `handleSendMessage`, `promptWithStructuredOutput`, or any prompt builder.
+- Never reintroduce helper calls that inject policy text into outgoing prompt parts (for example, adding `getSystemInstruction()` or `getLegacySystemInstruction()` into send paths).
+- Outgoing prompt body must remain transport-only:
+  - Required: `model`, `agent`, `parts`
+  - Optional: `format`/`outputFormat` (schema transport only), `variant`
+  - Not allowed: wrapper behavioral/system policy text injected as user/system content
+- Legacy instruction cleanup is allowed only for stored/displayed history hygiene (strip/filter), never for outgoing request construction.
+
+### Prompt Ownership Verification Checklist
+
+- Before merging prompt-path changes, verify `src/providers/ChatViewProvider.ts` send flow does not prepend instruction text.
+- Ensure `processHistoryMessages`/`stripLegacyInstruction` are only used for history cleanup and transcript hygiene.
+- Run regression contract checks covering this rule (at minimum `tests/system-prompt-and-structured-output-parsing.test.mjs`).
+- If a change touches prompt payload construction, include a short PR note confirming: "No wrapper system-prompt injection added."
+
 ## React Chat Asset Contract (Critical)
 
 The active chat webview is React-based and must keep provider HTML wiring aligned with built assets.
@@ -85,6 +103,6 @@ When spawning subagents (background tasks), you must NOT emit raw text like `[BA
 Instead, utilize the `progressUpdates` array or `subagents` structure defined in the JSON Schema. This allows the UI to silently intercept these events and render them in the "Active Task" side panel and inline Subagent components cleanly.
 
 ### Interactive Elements
-For interactive elements (questions, confirmations, quick actions), use the `interactiveEvents` array defined in the JSON Schema. This ensures that options rendered to the user are clickable and sequentially validated by the frontend (`MessageComponents.tsx`).
+For interactive elements (questions, confirmations, quick actions), use the top-level `question` object defined in the JSON Schema. Do not emit legacy `interactiveEvents`. This ensures that options rendered to the user are clickable and sequentially validated by the frontend (`MessageComponents.tsx`).
 
 Reference the OpenCode SDK docs for implementation specifics: `https://opencode.ai/docs/sdk/#json-schema-format`.

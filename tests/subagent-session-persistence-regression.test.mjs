@@ -58,3 +58,11 @@ test('spawned subagent list container is scrollable', () => {
     'subagent list container should cap height and provide vertical scrolling',
   );
 });
+
+test('subagent.parentMessageId is strictly mapped to finalMessageId before finalizing messages', () => {
+  assert.match(
+    messageHandlerSource,
+    /sanitized\.subagents\s*=\s*sanitized\.subagents\.map\(\(subagent\)\s*=>\s*\(\{\s*\.\.\.subagent,\s*parentMessageId:\s*finalMessageId,\s*\}\)\);/,
+    'message handler should ensure all finalized subagents have parentMessageId bound to the final message id',
+  );
+});

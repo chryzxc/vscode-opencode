@@ -109,13 +109,13 @@ test('progressUpdates property is defined', () => {
   assert.match(schemaSource, /progressUpdates:[\s\S]*?status:[\s\S]*?enum:\s*\[\s*"pending",\s*"done",\s*"error"\s*\]/, 'progressUpdates status should have correct enum');
 });
 
-test('interactiveEvents property is defined', () => {
-  assert.match(schemaSource, /interactiveEvents:\s*{[\s\S]*?type:\s*"array"/, 'interactiveEvents should be array');
-  assert.match(schemaSource, /interactiveEvents:[\s\S]*?type:[\s\S]*?enum:\s*\[[\s\S]*?"question"[\s\S]*?"confirm"[\s\S]*?"quick_actions"[\s\S]*?"message"[\s\S]*?\]/, 'interactiveEvents type should have correct enum');
+test('question property is defined', () => {
+  assert.match(schemaSource, /question:\s*{[\s\S]*?type:\s*"object"/, 'question should be object');
+  assert.match(schemaSource, /question:[\s\S]*?type:[\s\S]*?enum:\s*\[[\s\S]*?"question"[\s\S]*?\]/, 'question.type should have correct enum');
 });
 
-test('interactiveEvents question event properties are defined', () => {
-  assert.match(schemaSource, /question:\s*{[\s\S]*?type:\s*"string"/, 'question property should be string');
+test('question payload properties are defined', () => {
+  assert.match(schemaSource, /question:[\s\S]*?question:\s*{[\s\S]*?type:\s*"string"/, 'question text property should be string');
   assert.match(schemaSource, /options:\s*{[\s\S]*?type:\s*"array"/, 'options property should be array');
   assert.match(schemaSource, /multiSelect:\s*{[\s\S]*?type:\s*"boolean"/, 'multiSelect should be boolean');
   assert.match(schemaSource, /allowCustomInput:\s*{[\s\S]*?type:\s*"boolean"/, 'allowCustomInput should be boolean');

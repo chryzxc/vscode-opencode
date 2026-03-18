@@ -251,6 +251,18 @@ export class SubagentTracker {
     return id || undefined;
   }
 
+  getActiveProcessingSessionIds(): string[] {
+    const activeSessionIds = new Set<string>();
+    for (const detail of this.detailsById.values()) {
+      if (detail.status === "pending" || detail.status === "running") {
+        if (detail.parentSessionId) {
+          activeSessionIds.add(detail.parentSessionId);
+        }
+      }
+    }
+    return Array.from(activeSessionIds);
+  }
+
   seedFromMessages(messages: unknown[]): void {
     this.detailsById.clear();
     this.idsByParentMessageId.clear();

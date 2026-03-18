@@ -142,6 +142,34 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ── Glowing Text Shimmer ────────────────────────────────────────────────── */
+@keyframes oc-text-shimmer {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+.oc-glowing-text {
+  background: linear-gradient(
+    90deg,
+    currentColor 0%,
+    color-mix(in srgb, currentColor, white 40%) 25%,
+    color-mix(in srgb, currentColor, white 80%) 50%,
+    color-mix(in srgb, currentColor, white 40%) 75%,
+    currentColor 100%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent !important;
+  animation: oc-text-shimmer 3s linear infinite;
+  display: inline-block;
+  white-space: nowrap;
+}
+
 #root {
   height: 100vh;
   overflow: hidden;

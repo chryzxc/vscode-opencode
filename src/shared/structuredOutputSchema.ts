@@ -38,12 +38,12 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "error",
         ],
         description:
-          "Structured response category for UI rendering. Use 'question' when clarification is needed before execution, and include interactiveEvents with selectable options.",
+          "Structured response category for UI rendering. Use 'question' when clarification is needed before execution and include the top-level question object. When using 'implementation_plan', questions must NOT be included in the plan content.",
       },
       assistantMessage: {
         type: "string",
         description:
-          "Primary user-facing assistant response text. Keep this separate from reasoning.",
+          "Primary user-facing assistant response text only. Do not include policy/instruction analysis or chain-of-thought.",
       },
       message: {
         type: "string",
@@ -54,7 +54,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "array",
         items: { type: "string" },
         description:
-          "Optional thinking trace for the UI thinking timeline. Do not repeat assistantMessage text here.",
+          "Optional thinking trace for the UI thinking timeline. Keep this separate from assistantMessage and do not duplicate assistantMessage text.",
       },
       progressUpdates: {
         type: "array",
@@ -69,58 +69,36 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
         },
       },
-      interactiveEvents: {
-        type: "array",
+      question: {
+        type: "object",
+        additionalProperties: true,
         description:
-          "Interactive UI events rendered as picker controls. For question responses, include at least one question event with 2-5 options.",
-        items: {
-          type: "object",
-          additionalProperties: true,
-          properties: {
-            type: {
-              type: "string",
-              enum: ["question", "confirm", "quick_actions", "message"],
-            },
-            id: { type: "string" },
-            title: { type: "string" },
-            question: {
-              type: "string",
-              description:
-                "Question text shown in the interactive picker prompt.",
-            },
-            message: { type: "string" },
-            content: { type: "string" },
-            multiSelect: { type: "boolean" },
-            allowCustomInput: { type: "boolean" },
-            confirmLabel: { type: "string" },
-            cancelLabel: { type: "string" },
-            dismissLabel: { type: "string" },
-            options: {
-              type: "array",
-              description:
-                "Choice list for question events. Provide at least two options with clear labels.",
-              items: {
-                type: "object",
-                additionalProperties: true,
-                properties: {
-                  id: { type: "string" },
-                  label: { type: "string" },
-                  value: { type: "string" },
-                  description: { type: "string" },
-                },
-              },
-            },
-            actions: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: true,
-                properties: {
-                  id: { type: "string" },
-                  label: { type: "string" },
-                  value: { type: "string" },
-                  description: { type: "string" },
-                },
+          "Interactive payload for responseType='question' and responseType='interactive'.",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["question", "confirm", "quick_actions", "message"],
+          },
+          id: { type: "string" },
+          title: { type: "string" },
+          question: {
+            type: "string",
+            description: "Question text shown in the interactive picker prompt.",
+          },
+          multiSelect: { type: "boolean" },
+          allowCustomInput: { type: "boolean" },
+          options: {
+            type: "array",
+            description:
+              "Choice list for question responses. Provide at least two options unless allowCustomInput is true.",
+            items: {
+              type: "object",
+              additionalProperties: true,
+              properties: {
+                id: { type: "string" },
+                label: { type: "string" },
+                value: { type: "string" },
+                description: { type: "string" },
               },
             },
           },
@@ -131,7 +109,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         additionalProperties: true,
         properties: {
           file: { type: "string" },
-          content: { type: "string" },
+          content: {
+            type: "string",
+            description:
+              "Markdown implementation plan content. IMPORTANT: Must NOT contain questions, clarifications, or choices. Questions must be moved to top-level 'question'.",
+          },
           title: { type: "string" },
           summary: { type: "string" },
         },

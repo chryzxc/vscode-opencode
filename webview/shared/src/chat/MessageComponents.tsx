@@ -11,7 +11,6 @@ import {
   ChevronRight,
   Copy,
   FileText as FileTextIcon,
-  Layers,
   Loader2,
   X,
   Sparkles,
@@ -317,6 +316,8 @@ type ProgressItem = {
   meta?: string;
   filePath?: string;
   diffStats?: { added: number; deleted: number };
+  /** Arrival-order sequence number from StreamingStep.streamSeq or MessageStep.streamSeq */
+  streamSeq?: number;
 };
 
 type ThinkingBlock = { kind: "thinking"; items: ThoughtItem[] };
@@ -325,12 +326,17 @@ type ContentBlock = { kind: "content"; html: string };
 type TimelineBlock = ThinkingBlock | StepsBlock | ContentBlock;
 
 /**
- * Extracts the Date.now() timestamp embedded in a streaming thought-item key.
- * Keys are formatted as "stream-{idx}-{createdAt}".
+ * Extracts the Date.now() timestamp embedded in a thought-item key.
+ * Handles both streaming keys ("stream-{idx}-{createdAt}") and
+ * persisted reasoningEvent keys ("evt-{createdAt}").
+ * Returns 0 for parts-based keys ("part-{idx}") that have no timestamp.
  */
 function seqFromThoughtKey(key: string): number {
-  const m = key.match(/stream-\d+-(\d+)/);
-  return m ? parseInt(m[1], 10) : 0;
+  const evtMatch = key.match(/^evt-(\d+)$/);
+  if (evtMatch) return parseInt(evtMatch[1], 10);
+  const streamMatch = key.match(/stream-\d+-(\d+)/);
+  if (streamMatch) return parseInt(streamMatch[1], 10);
+  return 0;
 }
 
 function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
@@ -481,6 +487,10 @@ function progressItemsFromSteps(
             "diffStats" in step
               ? (step.diffStats as { added: number; deleted: number })
               : undefined,
+          streamSeq:
+            "streamSeq" in step
+              ? (step as { streamSeq?: number }).streamSeq
+              : undefined,
         });
       }
     });
@@ -521,6 +531,9 @@ function progressItemsFromStreaming(
   if (!streaming) {
     return [];
   }
+  if (Array.isArray(streaming.steps) && streaming.steps.length > 0) {
+    return progressItemsFromSteps(streaming.steps, "stream-steps");
+  }
   if (
     Array.isArray(streaming.progressEvents) &&
     streaming.progressEvents.length > 0
@@ -529,9 +542,6 @@ function progressItemsFromStreaming(
       streaming.progressEvents,
       "stream-progress-events",
     );
-  }
-  if (Array.isArray(streaming.steps) && streaming.steps.length > 0) {
-    return progressItemsFromSteps(streaming.steps, "stream-steps");
   }
   return [];
 }
@@ -555,93 +565,90 @@ function sanitizeUserContent(raw: string): string {
 }
 
 /**
- * Builds a unified ordered timeline for a STREAMING message.
- * Merges thinking events (timestamped via createdAt), steps (via streamSeq),
- * and the response content (via contentStartSeq) into arrival order.
+ * Single source of truth for building the Activity timeline.
+ *
+ * Used for BOTH streaming and completed (persisted) messages. The timeline is
+ * built by sorting thoughtItems (by createdAt timestamp from their key) and
+ * progressItems (by streamSeq) into arrival order, then grouping consecutive
+ * same-kind entries so all steps merge into one StepsBlock and all thinking
+ * items merge into one ThinkingBlock.
+ *
+ * Falls back to a parts-based layout for server-loaded messages where timing
+ * data is absent (no streamSeq on steps, no createdAt on thoughts).
  */
-function buildStreamingTimeline(
-  streaming: StreamingState,
+function buildTimeline(
   thoughtItems: ThoughtItem[],
   progressItems: ProgressItem[],
   html: string,
+  /** Only used for the parts-based fallback path; null during streaming */
+  messageParts?: MessagePart[],
 ): TimelineBlock[] {
-  type RawEntry =
-    | { seq: number; kind: "thinking"; item: ThoughtItem }
-    | { seq: number; kind: "step"; item: ProgressItem }
-    | { seq: number; kind: "content" };
+  // Check if we have any timing data for sorted interleaving.
+  const hasTimedThoughts = thoughtItems.some(
+    (t) => seqFromThoughtKey(t.key) > 0,
+  );
+  const hasTimedSteps = progressItems.some((p) => p.streamSeq != null);
 
-  const entries: RawEntry[] = [];
+  if (hasTimedThoughts || hasTimedSteps || progressItems.length > 0) {
+    type RawEntry =
+      | { seq: number; kind: "thinking"; item: ThoughtItem }
+      | { seq: number; kind: "step"; item: ProgressItem }
+      | { seq: number; kind: "content" };
 
-  for (const item of thoughtItems) {
-    entries.push({ kind: "thinking", item, seq: seqFromThoughtKey(item.key) });
-  }
+    const entries: RawEntry[] = [];
 
-  for (const item of progressItems) {
-    // Match back to the original step to read its streamSeq timestamp.
-    // Use the first occurrence so we get the arrival time, not a later update.
-    const step = streaming.steps.find(
-      (s) =>
-        (!!item.callID && !!s.callID && s.callID === item.callID) ||
-        (!!item.id && !!s.id && s.id === item.id) ||
-        s.title === item.title,
-    );
-    // NOTE: Fall back to MAX_SAFE_INTEGER (not 0) so that steps with
-    // no timestamp always sort AFTER thinking/content, never before.
-    const rawSeq = step?.streamSeq ?? step?.startTime;
-    entries.push({
-      kind: "step",
-      item,
-      // Add a tiny +1 offset so that a step arriving at the exact same
-      // millisecond as a thinking event always renders after it.
-      seq: rawSeq != null ? rawSeq + 1 : Number.MAX_SAFE_INTEGER,
-    });
-  }
-
-  if (html) {
-    // If contentStartSeq is missing the content starts last
-    entries.push({
-      kind: "content",
-      seq: streaming.contentStartSeq ?? Number.MAX_SAFE_INTEGER,
-    });
-  }
-
-  entries.sort((a, b) => a.seq - b.seq);
-
-  const blocks: TimelineBlock[] = [];
-  for (const entry of entries) {
-    const last = blocks[blocks.length - 1];
-    if (entry.kind === "thinking") {
-      if (last?.kind === "thinking") {
-        (last as ThinkingBlock).items.push(entry.item);
-      } else {
-        blocks.push({ kind: "thinking", items: [entry.item] });
-      }
-    } else if (entry.kind === "step") {
-      if (last?.kind === "steps") {
-        (last as StepsBlock).items.push(entry.item);
-      } else {
-        blocks.push({ kind: "steps", items: [entry.item] });
-      }
-    } else {
-      blocks.push({ kind: "content", html });
+    for (const item of thoughtItems) {
+      entries.push({
+        kind: "thinking",
+        item,
+        seq: seqFromThoughtKey(item.key),
+      });
     }
+
+    for (const item of progressItems) {
+      entries.push({
+        kind: "step",
+        item,
+        // +1 offset so a step at the same millisecond as a thinking event
+        // always sorts after it (consistent with original streaming logic).
+        seq:
+          item.streamSeq != null
+            ? item.streamSeq + 1
+            : Number.MAX_SAFE_INTEGER,
+      });
+    }
+
+    if (html) {
+      entries.push({ kind: "content", seq: Number.MAX_SAFE_INTEGER });
+    }
+
+    entries.sort((a, b) => a.seq - b.seq);
+
+    const blocks: TimelineBlock[] = [];
+    for (const entry of entries) {
+      const last = blocks[blocks.length - 1];
+      if (entry.kind === "thinking") {
+        if (last?.kind === "thinking") {
+          (last as ThinkingBlock).items.push(entry.item);
+        } else {
+          blocks.push({ kind: "thinking", items: [entry.item] });
+        }
+      } else if (entry.kind === "step") {
+        if (last?.kind === "steps") {
+          (last as StepsBlock).items.push(entry.item);
+        } else {
+          blocks.push({ kind: "steps", items: [entry.item] });
+        }
+      } else {
+        blocks.push({ kind: "content", html });
+      }
+    }
+
+    return blocks;
   }
 
-  return blocks;
-}
-
-/**
- * Builds a unified ordered timeline for a COMPLETED message.
- * Uses message.parts (already in arrival order) for thinking/content interleaving.
- * Steps are inserted before the first content block (their most common natural position).
- */
-function buildMessageTimeline(
-  message: Message | undefined,
-  thoughtItems: ThoughtItem[],
-  progressItems: ProgressItem[],
-  html: string,
-): TimelineBlock[] {
-  const parts = message?.parts;
+  // ── Fallback: parts-based approach for server-loaded messages with no timing ──
+  const parts = messageParts;
 
   if (Array.isArray(parts) && parts.length > 0) {
     const blocks: TimelineBlock[] = [];
@@ -691,7 +698,7 @@ function buildMessageTimeline(
     }
 
     // If parts had no reasoning entries but the message has reasoningEvents,
-    // they won't have been added above â€” insert them before the first content block.
+    // insert them before the first content block.
     const hasThinkingBlock = blocks.some((b) => b.kind === "thinking");
     if (!hasThinkingBlock && thoughtItems.length > 0) {
       const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
@@ -712,15 +719,19 @@ function buildMessageTimeline(
     });
   }
 
-  // Fallback for messages that have no parts array â€” thinking always precedes content
+  // Fallback for messages with no parts array
   const blocks: TimelineBlock[] = [];
   if (thoughtItems.length > 0)
     blocks.push({ kind: "thinking", items: thoughtItems });
   if (progressItems.length > 0)
     blocks.push({ kind: "steps", items: progressItems });
   if (html) blocks.push({ kind: "content", html });
+
   return blocks;
 }
+
+
+
 
 const MAX_VISIBLE_COMPLETED_ACTIVITY = 5;
 
@@ -782,14 +793,51 @@ function subagentModelLabel(
   return model || provider || "model pending";
 }
 
+function TypewriterText({
+  text,
+  className,
+  speed = 30,
+}: {
+  text: string;
+  className?: string;
+  speed?: number;
+}) {
+  const [displayedText, setDisplayedText] = useState("");
+  const [complete, setComplete] = useState(false);
+
+  useEffect(() => {
+    setDisplayedText("");
+    setComplete(false);
+    let i = 0;
+    const timer = setInterval(() => {
+      if (i < text.length) {
+        setDisplayedText(text.slice(0, i + 1));
+        i++;
+      } else {
+        clearInterval(timer);
+        setComplete(true);
+      }
+    }, speed);
+    return () => clearInterval(timer);
+  }, [text, speed]);
+
+  return (
+    <span className={cn(className, !complete && "after:content-['|'] after:ml-0.5 after:animate-pulse")}>
+      {displayedText}
+    </span>
+  );
+}
+
 function FadeSwapText({
   text,
   className,
   durationMs = 180,
+  useTypewriter = false,
 }: {
   text: string;
   className?: string;
   durationMs?: number;
+  useTypewriter?: boolean;
 }) {
   const [displayText, setDisplayText] = useState(text);
   const [isFadingOut, setIsFadingOut] = useState(false);
@@ -818,26 +866,30 @@ function FadeSwapText({
       )}
       style={{ transitionDuration: `${durationMs}ms` }}
     >
-      {displayText}
+      {useTypewriter ? (
+        <TypewriterText text={displayText} speed={40} />
+      ) : (
+        displayText
+      )}
     </span>
   );
 }
 
 const THINKING_LOADING_TEXTS = [
-  "Analyzing code…",
-  "Processing request…",
-  "Generating solution…",
-  "Building response…",
-  "Refining output…",
-  "Almost ready…",
-  "One moment…",
-  "Still processing…",
-  "Working on it…",
-  "Composing response…",
-  "Running checks…",
-  "Finalizing…",
-  "Nearly done…",
-  "Computing result…",
+  "Bribing the intern to type faster…",
+  "Download more RAM…",
+  "Checking for typos I made up…",
+  "Looking busy…",
+  "Locating the 'any' key…",
+  "Brewing virtual coffee…",
+  "Herding the bits…",
+  "Updating the flux capacitor…",
+  "Waiting for the magic smoke to clear…",
+  "Generating witty loading messages…",
+  "Untangling the spaghetti code…",
+  "Asking StackOverflow…",
+  "Convincing the compiler to cooperate…",
+  "Reversing the polarity…",
 ];
 
 function ThinkingStatusTicker({ className }: { className?: string }) {
@@ -857,7 +909,7 @@ function ThinkingStatusTicker({ className }: { className?: string }) {
         }
         return next;
       });
-    }, 1800);
+    }, 2400); // Increased interval for typewriter to complete
 
     return () => window.clearInterval(timer);
   }, []);
@@ -869,22 +921,11 @@ function ThinkingStatusTicker({ className }: { className?: string }) {
         className,
       )}
     >
-      {[0, 1, 2].map((index) => (
-        <span
-          key={index}
-          className={cn(
-            "inline-block rounded-full bg-current h-1.5 w-1.5",
-            index > 0 ? "ml-1.5" : "",
-          )}
-          style={{
-            animation: `thinking-pulse 1.3s ${index * 0.16}s infinite`,
-          }}
-        />
-      ))}
       <FadeSwapText
         text={THINKING_LOADING_TEXTS[messageIndex]}
-        className="ml-3 italic opacity-85 tracking-wide"
+        className="italic opacity-85 tracking-wide oc-glowing-text"
         durationMs={220}
+        useTypewriter={true}
       />
     </div>
   );
@@ -1126,6 +1167,18 @@ export function UserMessage({ message }: { message?: Message }) {
   }, []);
 
   if (!message) return null;
+
+  if (content && typeof content === "string" && content.startsWith("Proceed on this plan.")) {
+    return (
+      <div className="oc-message-enter mb-5 px-4 flex justify-end">
+        <div className="flex items-center gap-1.5 rounded-full border border-oc-green/30 bg-oc-green/10 px-3 py-1.5 text-oc-xs text-oc-green">
+          <Check className="h-3.5 w-3.5" />
+          <span className="font-medium">Plan Approved</span>
+        </div>
+      </div>
+    );
+  }
+
   if (!content && fileChips.length === 0 && !hasImages) {
     return null;
   }
@@ -1317,16 +1370,8 @@ export function AssistantMessage({
 
   /** Unified chronological list of timeline blocks to render. */
   const timelineBlocks = useMemo<TimelineBlock[]>(() => {
-    if (streaming) {
-      return buildStreamingTimeline(
-        streaming,
-        thoughtItems,
-        progressItems,
-        content,
-      );
-    }
-    return buildMessageTimeline(message, thoughtItems, progressItems, content);
-  }, [streaming, message, thoughtItems, progressItems, content]);
+    return buildTimeline(thoughtItems, progressItems, content, message?.parts);
+  }, [thoughtItems, progressItems, content, message?.parts]);
   const isStreamingActive = !!streaming?.isActive;
   const displayEvents = useMemo(
     () => buildDisplayEvents(timelineBlocks, message, isStreamingActive),
@@ -1366,6 +1411,53 @@ export function AssistantMessage({
   const info = message?.info;
   const plan = message?.plan;
   const messageId = info?.id || message?.id || streaming?.messageId;
+
+  const state = useAppState();
+  const { planStatus, isRevisedPlan } = useMemo(() => {
+    let status: "Draft" | "Executing" | "Revision Requested" | undefined;
+    let revised = false;
+
+    if (plan) {
+      status = "Draft"; // Default
+      const msgIndex = state.messages.findIndex(
+        (m) => m === message || (messageId && (m.info?.id === messageId || m.id === messageId))
+      );
+
+      if (msgIndex !== -1) {
+        // Did user ask for a revision before this plan was generated?
+        for (let i = msgIndex - 1; i >= 0; i--) {
+          const m = state.messages[i];
+          if (m.role === "user") {
+            const text = String(m.content ?? m.text ?? "");
+            if (text.includes("Revise this implementation plan")) {
+              revised = true;
+            }
+            break;
+          }
+        }
+
+        // Did user approve or request revision on this plan?
+        for (let i = msgIndex + 1; i < state.messages.length; i++) {
+          const m = state.messages[i];
+          if (m.role === "assistant" && m.plan) {
+            break; // Stop checking if a new plan was spawned
+          }
+          if (m.role === "user") {
+            const text = String(m.content ?? m.text ?? "");
+            if (text.includes("Proceed on this plan.")) {
+              status = "Executing";
+              break;
+            } else if (text.includes("Revise this implementation plan")) {
+              status = "Revision Requested";
+              break;
+            }
+          }
+        }
+      }
+    }
+    return { planStatus: status, isRevisedPlan: revised };
+  }, [plan, message, messageId, state.messages]);
+
   // Merge subagents from message data and from the store lookup by parent message ID
   const subagents = useMemo(() => {
     const fromMessage = (
@@ -1482,7 +1574,8 @@ export function AssistantMessage({
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
-  const showResponseSection = !isLiveStreamingCard && hasResponseContent;
+  const showResponseSection =
+    !isLiveStreamingCard && (hasResponseContent || !!plan);
   const hasThinkingEvents = useMemo(
     () => displayEvents.some((event) => event.kind === "thinking"),
     [displayEvents],
@@ -1969,13 +2062,71 @@ export function AssistantMessage({
               data-assistant-section="response"
               className="rounded-md border border-oc-border bg-background p-3.5 shadow-sm"
             >
-              <div className={responseBodyClass}>
-                <MarkdownRenderer
-                  content={content}
-                  className={markdownBodyClass}
-                />
-              </div>
+              {hasResponseContent && (
+                <div className={responseBodyClass}>
+                  <MarkdownRenderer
+                    content={content}
+                    className={markdownBodyClass}
+                  />
+                </div>
+              )}
+
+              {plan && (
+                <div
+                  className={cn(
+                    "flex items-center justify-between gap-2",
+                    hasResponseContent &&
+                      "mt-3 pt-3 border-t border-oc-border/30",
+                  )}
+                >
+                  <div className="flex flex-col gap-0.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="text-oc-xs font-semibold text-oc-text-soft uppercase tracking-widest font-mono">
+                        {plan.title || "Implementation Plan"}
+                      </div>
+                      {isRevisedPlan && (
+                        <span className="rounded bg-oc-blue/20 text-oc-blue px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          Revised
+                        </span>
+                      )}
+                      {planStatus === "Executing" && (
+                        <span className="rounded bg-oc-green/20 text-oc-green px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          Approved
+                        </span>
+                      )}
+                      {planStatus === "Revision Requested" && (
+                        <span className="rounded bg-oc-yellow/20 text-oc-yellow px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          Revision Requested
+                        </span>
+                      )}
+                      {planStatus === "Draft" && (
+                        <span className="rounded border border-oc-border text-oc-text-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          Draft
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    title="Core Feature: View Implementation Plan"
+                    onClick={() =>
+                      vscode.postMessage({ type: "viewPlan", plan })
+                    }
+                    className="oc-plan-btn shrink-0"
+                  >
+                    <FileTextIcon className="h-3 w-3" />
+                    View Plan
+                  </button>
+                </div>
+              )}
+
             </section>
+          )}
+
+          {isStreamingActive && !showResponseSection && hasStreamingActivity && (
+            <div className="mt-1 px-1">
+              <ThinkingStatusTicker className="text-[#4e648c]" />
+            </div>
           )}
         </div>
 
@@ -2170,6 +2321,11 @@ export function AssistantMessage({
             )}
           </div>
         )}
+        {isStreamingActive && hasStreamingActivity && (
+          <div className="mt-1 px-1">
+            <ThinkingStatusTicker className="text-[#4e648c]" />
+          </div>
+        )}
         {/* Raw Data â€” moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (
           <details className="group mb-3">
@@ -2224,48 +2380,6 @@ export function AssistantMessage({
             </div>
           </details>
         )} */}
-        {/* FORBIDDEN TO REMOVE: Plan card rendering - core UI element for viewing implementation plans */}
-        {plan ? (
-          <div className="plan-card mt-3 p-3 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex flex-col gap-0.5 min-w-0">
-                <div className="text-oc-xs font-semibold text-oc-text-soft uppercase tracking-widest font-mono">
-                  {plan.title || "Implementation Plan"}
-                </div>
-                {plan.summary && (
-                  <div className="text-[11px] text-oc-text-muted line-clamp-2">
-                    {plan.summary}
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                title="Core Feature: View Implementation Plan"
-                onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
-                className="oc-plan-btn shrink-0"
-              >
-                <FileTextIcon className="h-3 w-3" />
-                View Plan
-              </button>
-            </div>
-            {message?.edits && message.edits.length > 0 && (
-              <div className="flex items-center gap-2 pt-1.5 border-t border-oc-border/50">
-                <span className="text-[10px] font-mono text-oc-text-muted">
-                  {message.edits.length} file{message.edits.length !== 1 ? "s" : ""} changed
-                </span>
-                <button
-                  type="button"
-                  title="Review all file changes in diff viewer"
-                  onClick={() => vscode.postMessage({ type: "reviewChanges" })}
-                  className="oc-plan-btn shrink-0"
-                >
-                  <Layers className="h-3 w-3" />
-                  Review All Changes
-                </button>
-              </div>
-            )}
-          </div>
-        ) : null}
       </div>
     </div>
   );

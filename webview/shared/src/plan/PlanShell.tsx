@@ -55,6 +55,7 @@ export default function PlanShell() {
     null,
   );
   const [commentText, setCommentText] = useState("");
+  const [generalCommentText, setGeneralCommentText] = useState("");
 
   // Listen for commentsUpdated messages from the extension
   useEffect(() => {
@@ -87,11 +88,8 @@ export default function PlanShell() {
       vscode?.postMessage({ type: "deleteComment", id, planId });
     return () => {
       try {
-        // @ts-ignore
         delete window.postAddComment;
-        // @ts-ignore
         delete window.postUpdateComment;
-        // @ts-ignore
         delete window.postDeleteComment;
       } catch {
         /* ignore */
@@ -301,6 +299,20 @@ export default function PlanShell() {
     setCommentText("");
     setPendingAnchor(null);
     setPopoverPos(null);
+    setCommentsPanelOpen(true);
+  }
+
+  function handleAddGeneralComment() {
+    const trimmed = generalCommentText.trim();
+    if (!trimmed) return;
+    const newComment: PlanComment = {
+      id: crypto.randomUUID(),
+      anchor: { startLine: -1, endLine: -1, selectedText: "" },
+      text: trimmed,
+      createdAt: Date.now(),
+    };
+    window.postAddComment?.(newComment);
+    setGeneralCommentText("");
   }
 
   return (
@@ -342,10 +354,10 @@ export default function PlanShell() {
               onClick={handleProceed}
               disabled={executing}
               className="flex items-center gap-1.5"
-              aria-label="Proceed on this plan"
+              aria-label="Proceed"
             >
               <Play className="h-3.5 w-3.5" />
-              <span>{executing ? "Submitting…" : "Proceed on this plan"}</span>
+              <span>{executing ? "Proceeding…" : "Proceed"}</span>
             </Button>
           </div>
         </div>
@@ -387,7 +399,7 @@ export default function PlanShell() {
             zIndex: 50,
             width: 300,
           }}
-          className="comment-popover rounded-md border border-[var(--vscode-panel-border)] bg-[var(--vscode-editorWidget-background,var(--vscode-editor-background))] p-3 shadow-lg"
+          className="comment-popover animate-in fade-in zoom-in-95 duration-200 rounded-md border border-[var(--vscode-panel-border)] bg-[var(--vscode-editorWidget-background,var(--vscode-editor-background))] p-4 shadow-xl"
         >
           <p className="mb-2 text-xs text-[var(--vscode-descriptionForeground)] italic line-clamp-2">
             &ldquo;
@@ -471,35 +483,57 @@ export default function PlanShell() {
         </div>
 
         {/* Panel body */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-3">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {comments.length === 0 ? (
-            <p className="text-xs text-[var(--vscode-descriptionForeground)]">
-              No comments yet. Highlight text to add one.
-            </p>
+            <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-70 mt-12 pb-12">
+              <div className="bg-white/5 p-3 rounded-full">
+                <MessageSquare className="h-6 w-6 text-[var(--vscode-descriptionForeground)]" />
+              </div>
+              <div>
+                <p className="text-xs font-medium text-[var(--vscode-foreground)] mb-1">No comments yet</p>
+                <p className="text-xs text-[var(--vscode-descriptionForeground)]">
+                  Highlight text in the plan or use the form below to add one.
+                </p>
+              </div>
+            </div>
           ) : (
             comments.map((comment) => {
-              const isStale = !rawPlan.includes(
+              const isStale = comment.anchor.startLine !== -1 && !rawPlan.includes(
                 comment.anchor.selectedText || "",
               );
               return (
                 <div
                   key={comment.id}
-                  className="rounded border border-[var(--vscode-panel-border)] bg-white/5 p-2 text-xs"
+                  className={`relative rounded-md border border-[var(--vscode-panel-border)] p-3 shadow-sm text-xs transition-all duration-300 ease-in-out ${
+                    comment.resolved ? "opacity-50 grayscale bg-transparent" : "bg-white/[0.03] hover:bg-white/[0.05]"
+                  }`}
                 >
                   <div className="flex items-start justify-between gap-2 mb-1">
                     <p className="italic text-[var(--vscode-descriptionForeground)] truncate flex-1">
-                      &ldquo;{comment.anchor.selectedText}&rdquo;
+                      {comment.anchor.startLine === -1
+                        ? "(General Feedback)"
+                        : `\u201C${comment.anchor.selectedText}\u201D`}
                     </p>
-                    {isStale && (
-                      <Badge
-                        variant="secondary"
-                        className="text-[10px] flex-shrink-0"
-                      >
-                        Stale
-                      </Badge>
-                    )}
+                    <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                      {isStale && (
+                        <Badge
+                          variant="secondary"
+                          className="text-[10px]"
+                        >
+                          Stale
+                        </Badge>
+                      )}
+                      {comment.resolved && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] text-green-500 border-green-500/30"
+                        >
+                          Resolved
+                        </Badge>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-[var(--vscode-editor-foreground)] mb-2">
+                  <p className={`mb-2 ${comment.resolved ? "text-[var(--vscode-descriptionForeground)] line-through" : "text-[var(--vscode-editor-foreground)]"}`}>
                     {comment.text}
                   </p>
 
@@ -550,6 +584,18 @@ export default function PlanShell() {
                       <Button
                         size="sm"
                         variant="outline"
+                        onClick={() =>
+                          window.postUpdateComment?.({
+                            ...comment,
+                            resolved: !comment.resolved,
+                          })
+                        }
+                      >
+                        {comment.resolved ? "Unresolve" : "Resolve"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
                         onClick={() => {
                           setEditingId(comment.id);
                           setEditText(comment.text);
@@ -570,6 +616,30 @@ export default function PlanShell() {
               );
             })
           )}
+        </div>
+
+        {/* General Comment Input */}
+        <div className="border-t border-[var(--vscode-panel-border)] p-3 bg-[var(--vscode-editor-background)]">
+          <Textarea
+            value={generalCommentText}
+            onChange={(e) => setGeneralCommentText(e.target.value)}
+            placeholder="Add general feedback..."
+            className="mb-2 text-xs"
+            rows={2}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                handleAddGeneralComment();
+              }
+            }}
+          />
+          <Button
+            size="sm"
+            className="w-full"
+            onClick={handleAddGeneralComment}
+            disabled={!generalCommentText.trim()}
+          >
+            Add General Comment
+          </Button>
         </div>
       </div>
     </div>

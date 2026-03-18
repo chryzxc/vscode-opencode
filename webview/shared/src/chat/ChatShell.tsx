@@ -16,6 +16,7 @@ import {
   AgentsPanel,
   SkillsPanel,
   MobileRightSummary,
+  SettingsPanel,
 } from "./PanelComponents";
 import { StreamingCard } from "./StreamingComponents";
 import {
@@ -333,6 +334,7 @@ function ChatContent() {
         <LspPanel />
         <SkillsPanel />
         <AgentsPanel />
+        <SettingsPanel />
       </aside>
     </div>
   );
