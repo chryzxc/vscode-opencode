@@ -459,6 +459,76 @@ function getMessageSignature(message: unknown): string {
   return `fallback:${role}|${created}|${content}|${text}`;
 }
 
+function normalizeSignatureText(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function getMessageFallbackSignature(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return `fallback:${String(message)}`;
+  }
+
+  const rec = message as Record<string, unknown>;
+  const role = typeof rec.role === "string" ? rec.role : "";
+  const content =
+    typeof rec.content === "string" ? rec.content.slice(0, 300) : "";
+  const text = typeof rec.text === "string" ? rec.text.slice(0, 300) : "";
+  const created = getMessageCreatedTime(message);
+  return `fallback:${role}|${created}|${content}|${text}`;
+}
+
+function getAssistantContentAliasSignature(message: unknown): string | undefined {
+  if (!message || typeof message !== "object") {
+    return undefined;
+  }
+
+  const rec = message as Record<string, unknown>;
+  if (typeof rec.role !== "string" || rec.role !== "assistant") {
+    return undefined;
+  }
+
+  const content = normalizeSignatureText(rec.content);
+  const text = normalizeSignatureText(rec.text);
+  const body = content || text;
+  if (!body) {
+    return undefined;
+  }
+
+  const hasActivityPayload =
+    (Array.isArray(rec.progressEvents) && rec.progressEvents.length > 0) ||
+    (Array.isArray(rec.steps) && rec.steps.length > 0) ||
+    (Array.isArray(rec.subagents) && rec.subagents.length > 0);
+
+  if (!hasActivityPayload) {
+    return undefined;
+  }
+
+  const created = getMessageCreatedTime(message);
+  const createdPart = created > 0 ? String(created) : "unknown";
+  return `assistant-activity:${createdPart}|${body.slice(0, 500)}`;
+}
+
+function getMessageSignaturesForMerge(message: unknown): string[] {
+  const signatures = new Set<string>();
+  const primary = getMessageSignature(message);
+  signatures.add(primary);
+
+  const fallback = getMessageFallbackSignature(message);
+  if (fallback !== primary) {
+    signatures.add(fallback);
+  }
+
+  const assistantAlias = getAssistantContentAliasSignature(message);
+  if (assistantAlias) {
+    signatures.add(assistantAlias);
+  }
+
+  return Array.from(signatures.values());
+}
+
 function messageRichnessScore(message: unknown): number {
   if (!message || typeof message !== "object") {
     return 0;
@@ -669,17 +739,26 @@ function mergeConversationMessages(messageGroups: unknown[][]): unknown[] {
   const merged: unknown[] = [];
   const indexBySignature = new Map<string, number>();
   for (const item of flattened) {
-    const signature = getMessageSignature(item.message);
-    const existingIndex = indexBySignature.get(signature);
+    const signatures = getMessageSignaturesForMerge(item.message);
+    const existingIndex = signatures
+      .map((signature) => indexBySignature.get(signature))
+      .find((index): index is number => typeof index === "number");
     if (existingIndex === undefined) {
-      indexBySignature.set(signature, merged.length);
+      const nextIndex = merged.length;
       merged.push(item.message);
+      signatures.forEach((signature) => {
+        indexBySignature.set(signature, nextIndex);
+      });
       continue;
     }
     merged[existingIndex] = pickRicherMessage(
       merged[existingIndex],
       item.message,
     );
+    const mergedSignatures = getMessageSignaturesForMerge(merged[existingIndex]);
+    mergedSignatures.forEach((signature) => {
+      indexBySignature.set(signature, existingIndex);
+    });
   }
 
   return merged;
@@ -1508,10 +1587,13 @@ export class SessionService {
 
   async upsertMessage(sessionId: string, message: unknown): Promise<void> {
     const messages = await this.loadSessionMessages(sessionId);
-    const incomingSignature = getMessageSignature(message);
-    const existingIndex = messages.findIndex(
-      (candidate) => getMessageSignature(candidate) === incomingSignature,
-    );
+    const incomingSignatures = getMessageSignaturesForMerge(message);
+    const existingIndex = messages.findIndex((candidate) => {
+      const candidateSignatures = getMessageSignaturesForMerge(candidate);
+      return incomingSignatures.some((signature) =>
+        candidateSignatures.includes(signature),
+      );
+    });
     if (existingIndex >= 0) {
       messages[existingIndex] = pickRicherMessage(
         messages[existingIndex],

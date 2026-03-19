@@ -1109,65 +1109,19 @@ export function ActiveTaskPanel() {
           </MiniSection>
         )}
 
-        {sessionTodos.length > 0 && (
-          <MiniSection title="Current Tasks">
-            <div className="space-y-1">
-              {sessionTodos.map((todo) => (
-                <div key={todo.id} className="flex items-center gap-1.5 py-0.5 text-xs text-oc-text-muted">
-                  <span className="truncate">{todo.text}</span>
+            {sessionTodos.length > 0 && (
+              <MiniSection title="Current Tasks">
+                <div className="space-y-1">
+                  {sessionTodos.map((todo) => (
+                    <div key={todo.id} className="flex items-center gap-1.5 py-0.5 text-xs text-oc-text-muted">
+                      <span className="truncate">{todo.text}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </MiniSection>
-        )}
+              </MiniSection>
+            )}
 
-        {sessionPatchedFiles.length > 0 && (
-          <MiniSection title="Patched Files">
-            <div className="space-y-1.5">
-              {sessionPatchedFiles.map((entry) => {
-                const fileName = entry.file.split(/[\\/]/).pop() || entry.file;
-                return (
-                  <div
-                    key={`patched-${entry.file}`}
-                    className="flex items-center gap-2 rounded-md border border-oc-border bg-oc-panel-soft px-2 py-1.5"
-                  >
-                    <button
-                      type="button"
-                      className="min-w-0 flex-1 inline-flex items-center gap-1.5 text-left text-xs text-[var(--oc-text-soft)] hover:text-oc-accent"
-                      onClick={() =>
-                        vscode.postMessage({
-                          type: "openFile",
-                          file: entry.file,
-                        })
-                      }
-                      title={entry.file}
-                    >
-                      <FileIcon filePath={entry.file} />
-                      <span className="truncate">{fileName}</span>
-                    </button>
-                    <span className="shrink-0 rounded-md border border-oc-accent/30 bg-oc-accent/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-oc-accent">
-                      {entry.patchType}
-                    </span>
-                    <button
-                      type="button"
-                      className="shrink-0 text-[10px] uppercase font-semibold tracking-wider text-oc-accent hover:underline"
-                      onClick={() =>
-                        vscode.postMessage({
-                          type: "openDiff",
-                          file: entry.file,
-                        })
-                      }
-                    >
-                      Diff
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </MiniSection>
-        )}
-
-        <MiniSection title="Context">
+         <MiniSection title="Context">
           {/* Token usage bar */}
           <div className="mb-3">
             <div className="mb-1.5 flex items-center justify-between">

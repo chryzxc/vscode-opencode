@@ -528,7 +528,9 @@ function progressItemsFromMessage(message?: Message): ProgressItem[] {
     return [];
   }
   let items: ProgressItem[] = [];
-  if (
+  if (Array.isArray(message.steps) && message.steps.length > 0) {
+    items = progressItemsFromSteps(message.steps, "msg-steps");
+  } else if (
     Array.isArray(message.progressEvents) &&
     message.progressEvents.length > 0
   ) {
@@ -536,8 +538,6 @@ function progressItemsFromMessage(message?: Message): ProgressItem[] {
       message.progressEvents,
       "msg-progress-events",
     );
-  } else if (Array.isArray(message.steps) && message.steps.length > 0) {
-    items = progressItemsFromSteps(message.steps, "msg-steps");
   }
 
   // For completed messages, any hanging pending steps should be marked as done

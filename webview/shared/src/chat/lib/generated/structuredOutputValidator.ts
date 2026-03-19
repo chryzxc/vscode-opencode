@@ -268,6 +268,20 @@ export function validateStructuredOutput(
     }
   }
 
+  // Enforce mutual exclusivity: question/interactive responses must not include
+  // a substantial implementation plan in plan.content. The schema contains
+  // documentation but JSON Schema can't easily express this runtime rule.
+  // We treat plan.content > 100 chars as a substantial plan.
+  if (responseType === "question") {
+    const plan = asRecord(record.plan);
+    const planContent = plan && typeof plan.content === "string" ? plan.content : "";
+    if (planContent && planContent.trim().length > 100) {
+      errors.push(
+        "question/interactive response cannot include implementation plan payload: move questions to top-level 'question' and remove plan.content",
+      );
+    }
+  }
+
   if (responseType === "subagents") {
     const hasSubagentsArray =
       Array.isArray(record.subagents) && record.subagents.length > 0;
@@ -322,14 +336,15 @@ export function validateStructuredOutput(
         }
         const status = typeof todo.status === "string" ? todo.status : "";
         if (
-          status &&
-          status !== "pending" &&
-          status !== "in_progress" &&
-          status !== "completed" &&
-          status !== "cancelled"
-        ) {
+        status &&
+        status !== "pending" &&
+        status !== "in_progress" &&
+        status !== "completed" &&
+        status !== "cancelled" &&
+        status !== "failed"
+      ) {
           errors.push(
-            `todoItems[${index}].status must be pending|in_progress|completed|cancelled`,
+            `todoItems[${index}].status must be pending|in_progress|completed|cancelled|failed`,
           );
           return;
         }

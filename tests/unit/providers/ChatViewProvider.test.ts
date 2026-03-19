@@ -282,7 +282,7 @@ describe('ChatViewProvider', () => {
       vi.mocked(mockSessionService.getCurrentSession).mockResolvedValue({
         id: 'session-1',
         title: 'Test Session',
-      });
+      } as any);
       vi.mocked(mockSessionService.getMessages).mockResolvedValue([]);
       vi.mocked(mockSessionService.listSessions).mockResolvedValue([]);
 
@@ -464,9 +464,9 @@ describe('ChatViewProvider', () => {
           modelID: 'big-pickle',
         },
       };
-      vi.mocked(mockSessionService.switchSession).mockResolvedValue(session);
-      vi.mocked(mockSessionService.getMessages).mockResolvedValue([]);
-      vi.mocked(mockSessionService.listSessions).mockResolvedValue([session]);
+      vi.mocked(mockSessionService.switchSession).mockResolvedValue(session as any);
+      vi.mocked(mockSessionService.getMessages).mockResolvedValue([] as any);
+      vi.mocked(mockSessionService.listSessions).mockResolvedValue([session] as any);
 
       chatViewProvider.resolveWebviewView(mockWebviewView, {} as any, {
         isCancellationRequested: false,
@@ -605,7 +605,7 @@ describe('ChatViewProvider', () => {
         mockSessionService
       );
 
-      vi.mocked(mockSessionService.renameSession).mockResolvedValue(undefined);
+      vi.mocked(mockSessionService.renameSession).mockResolvedValue(undefined as any);
       vi.mocked(mockSessionService.listSessions).mockResolvedValue([]);
 
       chatViewProvider.resolveWebviewView(mockWebviewView, {} as any, {
@@ -856,7 +856,7 @@ describe('ChatViewProvider', () => {
       );
 
       vi.mocked(mockSessionService.getCurrentSession).mockResolvedValue(
-        undefined
+        undefined as any
       );
 
       chatViewProvider.resolveWebviewView(mockWebviewView, {} as any, {
@@ -896,6 +896,79 @@ describe('ChatViewProvider', () => {
       await expect(
         receiveMessageCallback({ type: 'ready' })
       ).resolves.not.toThrow();
+    });
+  });
+
+  describe('structured output precedence - question-first gating', () => {
+    beforeEach(() => {
+      chatViewProvider = new ChatViewProvider(
+        mockContext,
+        mockServerManager,
+        mockSessionService
+      );
+    });
+
+    it('normalizeStructuredOutput suppresses plan when interactive payload present', () => {
+      const structured = (chatViewProvider as any).normalizeStructuredOutput({
+        responseType: 'question',
+        interactiveEvents: [
+          { type: 'question', id: 'q1', question: 'Which option?', options: [{ label: 'A' }, { label: 'B' }] },
+        ],
+        plan: { content: 'This is a plan that should be ignored for questions.' },
+      });
+
+      expect(structured).toBeTruthy();
+      expect(structured.plan).toBeUndefined();
+    });
+
+    it('normalizeStructuredOutput preserves implementation_plan when legitimate and no clarifications', () => {
+      const longPlan = 'A'.repeat(120);
+      const structured = (chatViewProvider as any).normalizeStructuredOutput({
+        responseType: 'implementation_plan',
+        plan: { content: longPlan, title: 'Plan Title' },
+      });
+
+      expect(structured).toBeTruthy();
+      expect(structured.plan).toBeTruthy();
+      expect(structured.plan.content).toEqual(longPlan);
+    });
+
+    it('normalizeStructuredOutput suppresses plan when clarification-like questionnaire detected', () => {
+      const clarification = [
+        'Could you clarify the scope?',
+        'Which provider should we target?',
+        'Do you prefer a specific stack?'
+      ].join('\n');
+      const structured = (chatViewProvider as any).normalizeStructuredOutput({
+        responseType: 'implementation_plan',
+        plan: { content: clarification, title: 'Draft Plan (needs clarifications)' },
+      });
+
+      expect(structured).toBeTruthy();
+      // Plan must be suppressed when the content looks like a clarification questionnaire
+      expect(structured.plan).toBeUndefined();
+    });
+
+    it('normalizeStructuredOutput suppresses plan when responseType is question even if plan present', () => {
+      const structured = (chatViewProvider as any).normalizeStructuredOutput({
+        responseType: 'question',
+        plan: { content: 'This plan should not be included because responseType is question.' },
+      });
+
+      expect(structured).toBeTruthy();
+      expect(structured.plan).toBeUndefined();
+    });
+
+    it('normalizeStructuredOutput preserves plan when responseType implementation_plan and not clarification', () => {
+      const planText = 'Step 1: Do X.\nStep 2: Do Y.\n'.repeat(10);
+      const structured = (chatViewProvider as any).normalizeStructuredOutput({
+        responseType: 'implementation_plan',
+        plan: { content: planText, title: 'Legit Plan' },
+      });
+
+      expect(structured).toBeTruthy();
+      expect(structured.plan).toBeTruthy();
+      expect(structured.plan.content).toEqual(planText);
     });
   });
 });

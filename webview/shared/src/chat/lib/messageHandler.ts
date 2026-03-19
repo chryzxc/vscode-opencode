@@ -430,6 +430,236 @@ function normalizeProgressStatus(
   return "pending";
 }
 
+function normalizeDiffStats(
+  value: unknown,
+): { added: number; deleted: number } | undefined {
+  const rec = asRecord(value);
+  if (!rec) {
+    return undefined;
+  }
+  const addedRaw =
+    typeof rec.added === "number" && Number.isFinite(rec.added)
+      ? rec.added
+      : undefined;
+  const deletedRaw =
+    typeof rec.deleted === "number" && Number.isFinite(rec.deleted)
+      ? rec.deleted
+      : undefined;
+  if (typeof addedRaw !== "number" && typeof deletedRaw !== "number") {
+    return undefined;
+  }
+  return {
+    added: Math.max(0, addedRaw ?? 0),
+    deleted: Math.max(0, deletedRaw ?? 0),
+  };
+}
+
+function normalizeActivityStepRecord(value: unknown): MessageStep | undefined {
+  const rec = asRecord(value);
+  if (!rec) {
+    return undefined;
+  }
+  const title = asString(rec.title) || asString(rec.message);
+  if (!title) {
+    return undefined;
+  }
+  const filePath =
+    asString(rec.filePath) ||
+    asString(rec.content) ||
+    asString(rec.file) ||
+    asString(rec.path) ||
+    undefined;
+  const statusRaw = asString(rec.status);
+
+  return {
+    type: asString(rec.type) || "step",
+    title,
+    content: filePath,
+    status: statusRaw ? normalizeProgressStatus(statusRaw) : undefined,
+    meta: asString(rec.meta) || asString(rec.detail) || undefined,
+    id: asString(rec.id) || undefined,
+    callID: asString(rec.callID) || asString(rec.callId) || undefined,
+    streamSeq: asOptionalNumber(rec.streamSeq),
+    diffStats: normalizeDiffStats(rec.diffStats),
+  };
+}
+
+function activityStepMergeKey(step: MessageStep, index: number): string {
+  const callID = asString(step.callID).trim();
+  if (callID) {
+    return `call:${callID}`;
+  }
+  const id = asString(step.id).trim();
+  if (id) {
+    return `id:${id}`;
+  }
+  const title = asString(step.title).trim().toLowerCase();
+  const content = asString(step.content).trim().toLowerCase();
+  if (title || content) {
+    return `title:${title}|content:${content}`;
+  }
+  return `index:${index}`;
+}
+
+function mergeCanonicalActivityStep(
+  existing: MessageStep,
+  incoming: MessageStep,
+): MessageStep {
+  const currentStatus = asString(existing.status);
+  const nextStatus = asString(incoming.status);
+  let status = currentStatus || undefined;
+  if (nextStatus) {
+    if (
+      (currentStatus === "done" || currentStatus === "error") &&
+      nextStatus === "pending"
+    ) {
+      status = currentStatus;
+    } else {
+      status = normalizeProgressStatus(nextStatus);
+    }
+  }
+
+  const existingSeq = existing.streamSeq;
+  const incomingSeq = incoming.streamSeq;
+  let streamSeq = existingSeq;
+  if (typeof streamSeq !== "number") {
+    streamSeq = incomingSeq;
+  } else if (typeof incomingSeq === "number") {
+    streamSeq = Math.min(streamSeq, incomingSeq);
+  }
+
+  return {
+    ...existing,
+    ...incoming,
+    title: incoming.title || existing.title,
+    type: incoming.type || existing.type,
+    status,
+    meta: incoming.meta || existing.meta,
+    content: incoming.content || existing.content,
+    id: existing.id || incoming.id,
+    callID: existing.callID || incoming.callID,
+    streamSeq,
+    diffStats: incoming.diffStats || existing.diffStats,
+  };
+}
+
+function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[] {
+  const fromParts: MessageStep[] = [];
+  const seenCallIds = new Set<string>();
+  for (const part of parts) {
+    const rec = asRecord(part);
+    if (!rec || asString(rec.type).toLowerCase() !== "tool") {
+      continue;
+    }
+
+    const tool = asString(rec.tool);
+    const toolLower = tool.toLowerCase();
+    if (
+      toolLower.includes("structuredoutput") ||
+      toolLower.includes("structured_output")
+    ) {
+      continue;
+    }
+
+    const callID = asString(rec.callID) || asString(rec.callId) || undefined;
+    if (callID) {
+      if (seenCallIds.has(callID)) {
+        continue;
+      }
+      seenCallIds.add(callID);
+    }
+
+    const stateRec = asRecord(rec.state);
+    const inputRec = asRecord(stateRec?.input);
+    const resultRec = asRecord(stateRec?.result);
+    const filePath =
+      asString(inputRec?.file) ||
+      asString(inputRec?.path) ||
+      asString(inputRec?.filename) ||
+      asString(inputRec?.TargetFile) ||
+      asString(inputRec?.AbsolutePath) ||
+      asString(inputRec?.uri) ||
+      asString(inputRec?.DirectoryPath) ||
+      asString(inputRec?.SearchPath) ||
+      asString(inputRec?.SearchDirectory) ||
+      asString(rec.filePath) ||
+      undefined;
+    const metaValues = [
+      asString(inputRec?.CommandId),
+      asString(inputRec?.CommandLine),
+      asString(inputRec?.Query),
+      asString(inputRec?.Pattern),
+      asString(inputRec?.pattern),
+      asString(inputRec?.command),
+      asString(inputRec?.query),
+      asString(inputRec?.url),
+      asString(inputRec?.Url),
+    ].filter(Boolean);
+    const title = asString(rec.title) || (tool ? `${tool}` : "Tool call");
+    const statusValue = asString(stateRec?.status ?? rec.status);
+
+    fromParts.push({
+      type: "tool",
+      title,
+      content: filePath,
+      status: statusValue ? normalizeProgressStatus(statusValue) : "done",
+      meta: asString(rec.meta) || metaValues[0] || undefined,
+      id: asString(rec.id) || undefined,
+      callID,
+      streamSeq: asOptionalNumber(rec.streamSeq),
+      diffStats:
+        normalizeDiffStats(resultRec?.diffStats) ||
+        normalizeDiffStats(rec.diffStats),
+    });
+  }
+  return fromParts;
+}
+
+function normalizeActivitySteps(
+  message: Message,
+  streaming: StreamingState | null,
+  sanitizedMergedParts: MessagePart[],
+): MessageStep[] {
+  const candidates: unknown[] = [];
+  if (Array.isArray(message.steps)) {
+    candidates.push(...message.steps);
+  }
+  if (Array.isArray(message.progressEvents)) {
+    candidates.push(...message.progressEvents);
+  }
+  if (Array.isArray(streaming?.steps)) {
+    candidates.push(...streaming.steps);
+  }
+  if (Array.isArray(streaming?.progressEvents)) {
+    candidates.push(...streaming.progressEvents);
+  }
+
+  const merged: MessageStep[] = [];
+  const indexByKey = new Map<string, number>();
+  candidates.forEach((candidate, index) => {
+    const normalized = normalizeActivityStepRecord(candidate);
+    if (!normalized) {
+      return;
+    }
+    const key = activityStepMergeKey(normalized, index);
+    const existingIndex = indexByKey.get(key);
+    if (typeof existingIndex !== "number") {
+      indexByKey.set(key, merged.length);
+      merged.push(normalized);
+      return;
+    }
+    merged[existingIndex] = mergeCanonicalActivityStep(
+      merged[existingIndex],
+      normalized,
+    );
+  });
+
+  if (merged.length > 0) {
+    return merged;
+  }
+  return extractActivityStepsFromParts(sanitizedMergedParts);
+}
+
 type StructuredInteractiveEvent = {
   type: 'question' | 'confirm' | 'quick_actions' | 'message';
   id?: string;
@@ -1635,101 +1865,14 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     normalized.reasoningEvents = mergedReasoningEvents;
   }
 
-  const existingProgressEvents = Array.isArray(message.progressEvents)
-    ? message.progressEvents
-    : [];
-  const mergedProgressEvents = [
-    ...existingProgressEvents,
-    ...(streaming?.progressEvents ?? []).map((step) => ({
-      type: step.type,
-      title: step.title,
-      content: step.filePath,
-      status: step.status,
-      meta: step.meta
-    }))
-  ];
-  if (mergedProgressEvents.length > 0) {
-    normalized.progressEvents = mergedProgressEvents;
-  } else if (!Array.isArray(normalized.steps) || normalized.steps.length === 0) {
-    // When neither progressEvents nor steps are available (e.g. history loaded from server),
-    // extract tool-call steps directly from message parts for persistent display.
-    const seenCallIds = new Set<string>();
-    const fromParts: Array<{ type: string; title: string; content?: string; status?: string; meta?: string }> = [];
-    for (const part of sanitizedMergedParts) {
-      const rec = asRecord(part);
-      if (!rec || asString(rec.type).toLowerCase() !== 'tool') continue;
-      const tool = asString(rec.tool);
-      if (
-        tool.toLowerCase().includes("structuredoutput") ||
-        tool.toLowerCase().includes("structured_output")
-      )
-        continue;
-      
-      const callID = asString(rec.callID);
-      if (callID) {
-        if (seenCallIds.has(callID)) continue;
-        seenCallIds.add(callID);
-      }
-      const stateRec = asRecord(rec.state);
-      const inputRec = asRecord(stateRec?.['input']);
-      const filePath =
-        asString(inputRec?.["file"]) ||
-        asString(inputRec?.["path"]) ||
-        asString(inputRec?.["filename"]) ||
-        asString(inputRec?.["TargetFile"]) ||
-        asString(inputRec?.["AbsolutePath"]) ||
-        asString(inputRec?.["uri"]) ||
-        asString(inputRec?.["DirectoryPath"]) ||
-        asString(inputRec?.["SearchPath"]) ||
-        asString(inputRec?.["SearchDirectory"]) ||
-        asString(rec.filePath) ||
-        undefined;
-      const metaValues = [
-        asString(inputRec?.["CommandId"]),
-        asString(inputRec?.["CommandLine"]),
-        asString(inputRec?.["Query"]),
-        asString(inputRec?.["Pattern"]),
-        asString(inputRec?.["pattern"]),
-        asString(inputRec?.["command"]),
-        asString(inputRec?.["query"]),
-        asString(inputRec?.["url"]),
-        asString(inputRec?.["Url"]),
-      ].filter(Boolean);
-      const title = asString(rec.title) || (tool ? `${tool}` : 'Tool call');
-      const statusStr = asString(stateRec?.['status'] ?? rec.status);
-
-      let diffStats: { added: number; deleted: number } | undefined = undefined;
-      const resultRec = asRecord(stateRec?.["result"]);
-      if (resultRec?.diffStats) {
-        const ds = asRecord(resultRec.diffStats);
-        if (ds) {
-          diffStats = {
-            added: asNumber(ds.added) || 0,
-            deleted: asNumber(ds.deleted) || 0,
-          };
-        }
-      } else if (rec.diffStats) {
-        const ds = asRecord(rec.diffStats);
-        if (ds) {
-          diffStats = {
-            added: asNumber(ds.added) || 0,
-            deleted: asNumber(ds.deleted) || 0,
-          };
-        }
-      }
-
-      fromParts.push({
-        type: "tool",
-        title,
-        content: filePath || undefined,
-        status: statusStr || "done",
-        meta: asString(rec.meta) || metaValues[0] || undefined,
-        diffStats,
-      } as any);
-    }
-    if (fromParts.length > 0) {
-      normalized.progressEvents = fromParts;
-    }
+  const canonicalSteps = normalizeActivitySteps(
+    normalized,
+    streaming,
+    sanitizedMergedParts as MessagePart[],
+  );
+  if (canonicalSteps.length > 0) {
+    normalized.steps = canonicalSteps;
+    normalized.progressEvents = canonicalSteps;
   }
 
   // Extract file edits from patch-type parts when edits are not already populated.
@@ -2631,26 +2774,22 @@ function buildStreamingMessage(streaming: StreamingState): Message {
       reasoning: streaming.reasoning
     });
   }
+  const canonicalSteps = normalizeActivitySteps(
+    {
+      role: "assistant",
+      parts: parts as MessagePart[],
+    } as Message,
+    streaming,
+    parts as MessagePart[],
+  );
 
   return {
     role: "assistant",
     content: streaming.content,
     parts,
     reasoningEvents: streaming.reasoningEvents,
-    progressEvents: streaming.progressEvents.map((step) => ({
-      type: step.type,
-      title: step.title,
-      content: step.filePath,
-      status: step.status,
-      meta: step.meta,
-    })),
-    steps: streaming.steps.map((step) => ({
-      type: step.type,
-      title: step.title,
-      content: step.filePath,
-      status: step.status,
-      meta: step.meta,
-    })),
+    progressEvents: canonicalSteps,
+    steps: canonicalSteps,
     edits: streaming.edits.map((file) => ({ file })),
     info: {
       id: streaming.messageId ?? undefined,

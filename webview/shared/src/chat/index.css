@@ -960,6 +960,7 @@ body {
   border: 1px solid color-mix(in srgb, var(--oc-accent) 18%, transparent) !important;
   background: color-mix(in srgb, var(--oc-accent) 4%, transparent) !important;
   border-radius: 10px !important;
+  padding: 12px 16px;
 }
 
 /* ── Plan button ─────────────────────────────────────────────────────────── */

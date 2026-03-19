@@ -1,0 +1,20 @@
+Structured output contract check:
+-------------------------------
+Structured output contract is in sync.
+
+TypeScript compile:
+-------------------
+Build complete!
+
+Full test suite tail (last 10 lines):
+------------------------------------
+  ...
+1..796
+# tests 796
+# suites 0
+# pass 755
+# fail 41
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1686.7283

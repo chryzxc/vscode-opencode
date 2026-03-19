@@ -149,6 +149,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             description:
               "Markdown implementation plan content. IMPORTANT: Must NOT contain questions, clarifications, or choices. Questions must be moved to top-level 'question'.",
           },
+          // Note: runtime validator enforces mutual exclusivity between
+          // question/interactive responseTypes and substantial plan content.
+          // JSON Schema cannot easily express conditional string-length
+          // constraints; see src/shared/structuredOutputValidator.ts for
+          // the actual enforcement logic.
           title: { type: "string" },
           summary: { type: "string" },
         },
@@ -262,7 +267,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             text: { type: "string" },
             status: {
               type: "string",
-              enum: ["pending", "in_progress", "completed", "cancelled"],
+              enum: ["pending", "in_progress", "completed", "cancelled", "failed"],
             },
             description: { type: "string" },
           },

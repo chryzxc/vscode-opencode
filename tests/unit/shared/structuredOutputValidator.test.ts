@@ -1853,6 +1853,35 @@ describe('validateStructuredOutput', () => {
       expect(result.errors).toContain('interactiveEvents[1].type invalid: invalid_type');
       expect(result.errors).toContain('interactiveEvents[3] must be an object');
     });
+
+    it('should reject mixed responseType=question with substantial plan.content (>100 chars)', () => {
+      const longPlan = 'A'.repeat(101);
+      const result = validateStructuredOutput({
+        responseType: 'question',
+        plan: { content: longPlan },
+        question: { question: 'Is this okay?', type: 'question' },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain(
+        "question/interactive response cannot include implementation plan payload: move questions to top-level 'question' and remove plan.content",
+      );
+    });
+
+    it('should accept pure responseType=question with no plan', () => {
+      const result = validateStructuredOutput({
+        responseType: 'question',
+        question: { question: 'Proceed?', type: 'question', options: [{ label: 'Yes' }, { label: 'No' }] },
+      });
+      expect(result.valid).toBe(true);
+    });
+
+    it('should accept pure responseType=implementation_plan with plan content', () => {
+      const result = validateStructuredOutput({
+        responseType: 'implementation_plan',
+        plan: { content: 'This is a valid implementation plan.' },
+      });
+      expect(result.valid).toBe(true);
+    });
   });
 });
 

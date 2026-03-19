@@ -74,10 +74,101 @@ test('plan detection avoids classifying clarification questionnaires as implemen
     /looksLikeClarificationQuestions/,
     'plan enrichment should compute clarification-questionnaire heuristics for fallback text',
   );
+  // New defensive pattern: short-circuit on clarification questionnaires regardless
+  // of hasPlanFile so ensure the simplified guard is present and that any attached
+  // plan would be stripped when present.
   assert.match(
     enrichBody,
-    /if \(!hasPlanFile && looksLikeClarificationQuestions\)\s*\{\s*return message;/,
-    'plan enrichment should skip plan card when content is just clarification questions',
+    /if \(looksLikeClarificationQuestions\)\s*\{[\s\S]*delete nextMessage\.plan[\s\S]*return nextMessage;|if \(looksLikeClarificationQuestions\)\s*\{[\s\S]*return message;/,
+    'plan enrichment should skip or strip plan card when content is just clarification questions',
+  );
+});
+
+test('enrichMessageWithPlan must short-circuit clarification questionnaires before heuristic plan matching', () => {
+  const enrichBody = extractFunctionBody(
+    chatProviderSource,
+    'private enrichMessageWithPlan(message: any): any',
+  );
+
+  const idxClarify = enrichBody.indexOf('isClarificationQuestionnaire(');
+  const idxKeyword = enrichBody.indexOf('basicPlanKeywordMatch');
+
+  // The clarification questionnaire guard must appear before keyword heuristics
+  assert.ok(
+    idxClarify !== -1 && idxKeyword !== -1 && idxClarify < idxKeyword,
+    'isClarificationQuestionnaire check must appear before basicPlanKeywordMatch in enrichMessageWithPlan',
+  );
+});
+
+test('enrichMessageWithPlan still produces a plan card for genuine plans', () => {
+  const enrichBody = extractFunctionBody(
+    chatProviderSource,
+    'private enrichMessageWithPlan(message: any): any',
+  );
+
+  const idxBranch = enrichBody.indexOf('if (hasPlanFile || hasPlanKeywords)');
+  // Ensure the fallback plan detection branch exists and assigns a plan object
+  assert.match(
+    enrichBody,
+    /if \(hasPlanFile \|\| hasPlanKeywords\)[\s\S]*plan:\s*\{/,
+    'enrichMessageWithPlan should create a plan object when hasPlanFile || hasPlanKeywords is true',
+  );
+});
+
+test('questionnaire-like content with plan keywords is not enriched as a plan', () => {
+  // Craft a message that looks like a clarification questionnaire but mentions plan-like keywords.
+  const questionnaireWithPlanKeywords = [
+    "What is the target platform?",
+    "Which files are in scope?",
+    "Could you describe the proposed changes?",
+    "When do you expect this to be completed?",
+    "Do you have a preferred implementation plan or roadmap?",
+  ].join('\n\n');
+
+  // Ensure the provider helper exists and classifies this text as a clarification questionnaire
+  assert.match(
+    chatProviderSource,
+    /private isClarificationQuestionnaire\(content: unknown\): boolean/,
+    'provider should define clarification-questionnaire guard helper',
+  );
+
+  // Check that the heuristic would detect plan keywords if not for the questionnaire guard
+  const enrichBody = extractFunctionBody(
+    chatProviderSource,
+    'private enrichMessageWithPlan(message: any): any',
+  );
+  assert.ok(
+    enrichBody.indexOf('basicPlanKeywordMatch') !== -1,
+    'enrichMessageWithPlan should include basicPlanKeywordMatch heuristic',
+  );
+
+  // Programmatically invoke the guard function by copying its logic from the source
+  // (We cannot import the class here; instead assert via regex that the guard would classify it)
+  const isClarificationRegex = /const looksLikeClarificationQuestions =\s*this\.isClarificationQuestionnaire\(fullContent\);/;
+  assert.match(
+    enrichBody,
+    isClarificationRegex,
+    'enrichMessageWithPlan should compute looksLikeClarificationQuestions from fullContent',
+  );
+
+  // Finally, assert that the textual pattern meets the survey criteria:
+  // at least two question marks and clarification hint words are present.
+  assert.ok(
+    (questionnaireWithPlanKeywords.match(/\?/g) || []).length >= 2,
+    'crafted content should contain multiple questions',
+  );
+  assert.match(
+    questionnaireWithPlanKeywords,
+    /\b(which|which files|what|when|how|could you|do you)\b/i,
+    'crafted content should include clarification hint words',
+  );
+
+  // The core expectation: even though a plan-like phrase appears, the guard must prevent plan enrichment.
+  // We assert this by checking the short-circuit pattern exists in the source (strip or return when looksLikeClarificationQuestions).
+  assert.match(
+    enrichBody,
+    /if \(looksLikeClarificationQuestions\) \{[\s\S]*return (nextMessage;|message;)/,
+    'enrichMessageWithPlan should short-circuit and return when content looks like clarification questionnaire',
   );
 });
 

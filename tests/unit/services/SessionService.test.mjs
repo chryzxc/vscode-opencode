@@ -312,8 +312,8 @@ test('SessionService implements upsertMessage for rich persistence', () => {
   );
   assert.match(
     upsertBody,
-    /getMessageSignature\(/,
-    'upsertMessage should compute message signature'
+    /getMessageSignaturesForMerge\(/,
+    'upsertMessage should compute candidate signature set'
   );
   assert.match(
     upsertBody,
@@ -690,5 +690,63 @@ test('SessionService compaction preserves essential fields', () => {
     compactProgressBody,
     /typeof\s+rec\.status\s*===\s*"string"/,
     'compactProgressEventForPersistence should preserve status'
+  );
+});
+
+test('SessionService uses multi-signature matching for message merge/upsert', () => {
+  assert.match(
+    sessionServiceSource,
+    /function\s+getMessageSignaturesForMerge\(/,
+    'Should define getMessageSignaturesForMerge helper'
+  );
+
+  const signaturesBody = extractFunctionBody(
+    sessionServiceSource,
+    'function getMessageSignaturesForMerge('
+  );
+  assert.match(
+    signaturesBody,
+    /getMessageSignature\(message\)/,
+    'Signature helper should include primary message signature'
+  );
+  assert.match(
+    signaturesBody,
+    /getMessageFallbackSignature\(message\)/,
+    'Signature helper should include fallback signature'
+  );
+  assert.match(
+    signaturesBody,
+    /getAssistantContentAliasSignature\(message\)/,
+    'Signature helper should include assistant alias signature'
+  );
+
+  const mergeBody = extractFunctionBody(
+    sessionServiceSource,
+    'function mergeConversationMessages('
+  );
+  assert.match(
+    mergeBody,
+    /getMessageSignaturesForMerge\(item\.message\)/,
+    'Conversation merge should resolve all candidate signatures for incoming message'
+  );
+  assert.match(
+    mergeBody,
+    /signatures\s*\.\s*map\(\(signature\)\s*=>\s*indexBySignature\.get\(signature\)\)\s*\.\s*find\(/,
+    'Conversation merge should match existing messages by any candidate signature'
+  );
+
+  const upsertBody = extractFunctionBody(
+    sessionServiceSource,
+    'async upsertMessage(sessionId: string, message: unknown): Promise<void>'
+  );
+  assert.match(
+    upsertBody,
+    /const\s+incomingSignatures\s*=\s*getMessageSignaturesForMerge\(message\)/,
+    'Upsert should compute incoming signature set'
+  );
+  assert.match(
+    upsertBody,
+    /incomingSignatures\.some\(\(signature\)\s*=>\s*candidateSignatures\.includes\(signature\),?\s*\)/,
+    'Upsert should match existing assistant messages by intersecting signature sets'
   );
 });

@@ -404,6 +404,23 @@ export class ChatViewProvider
 
   /** ID of the session currently active in the webview (undefined until first bootstrap) */
   private currentSessionId: string | undefined;
+  private currentTodoItems: any[] = [];
+
+  private getTodoStorageKey(sessionId: string): string {
+    return `opencode.session.todos.${sessionId}`;
+  }
+
+  private loadPersistedTodos(sessionId?: string): { items: any[]; lastUpdatedAt?: number } {
+    if (!sessionId) return { items: [] };
+    const raw = this.context.workspaceState.get<{ items: any[]; lastUpdatedAt: number }>(
+      this.getTodoStorageKey(sessionId),
+    );
+    return { items: raw?.items ?? [], lastUpdatedAt: raw?.lastUpdatedAt };
+  }
+
+  private clearSessionTodos(): void {
+    this.currentTodoItems = [];
+  }
 
   /** Session-scoped queue of prompts awaiting execution */
   private queueBySessionId = new Map<string, QueuedPrompt[]>();
@@ -531,6 +548,7 @@ export class ChatViewProvider
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
               currentSessionId: this.currentSessionId,
+              todoItems: this.loadPersistedTodos(this.currentSessionId).items,
             });
             this.hasInitializedWebview = true;
           }
@@ -725,6 +743,8 @@ export class ChatViewProvider
         case "createSession": {
           const createdSession = await this.sessionService.createNewSession();
           this.currentSessionId = createdSession.id;
+          // Clear in-memory todo cache for the newly created session.
+          this.clearSessionTodos();
           this.subagentTracker.resetForSession(createdSession.id);
           await this.clearPersistedSubagentSnapshot(createdSession.id);
           this.sendQueueUpdate(createdSession.id);
@@ -1122,20 +1142,128 @@ export class ChatViewProvider
             enrichedEvent.structuredOutput.responseType;
         }
 
-        this.logger.aiStreamEvent(
-          "stream", // sessionId - using placeholder since stream events don't have a sessionId
-          structured?.kind || "unknown", // eventType
-          responseContext, // context
-        );
-      } catch (error) {
-        // Silently ignore logging errors to prevent stream interruption
-        console.error("[ChatViewProvider] Failed to log stream event:", error);
+       this.logger.aiStreamEvent(
+         "stream", // sessionId - using placeholder since stream events don't have a sessionId
+         structured?.kind || "unknown", // eventType
+         responseContext, // context
+       );
+     } catch (error) {
+       // Silently ignore logging errors to prevent stream interruption
+       console.error("[ChatViewProvider] Failed to log stream event:", error);
+     }
+
+      // Forward todo_update stream events as todoUpdate postMessage to webview
+      if (enrichedEvent?.structuredOutput?.responseType === "todo_update") {
+        const structured = enrichedEvent.structuredOutput as Record<string, unknown>;
+        const todoItems = Array.isArray(structured.todoItems)
+          ? structured.todoItems
+          : [];
+
+        for (const rawItem of todoItems) {
+          if (typeof rawItem !== "object" || rawItem === null) {
+            continue;
+          }
+
+          const item = rawItem as Record<string, unknown>;
+          const id = typeof item.id === "string" ? item.id : "";
+          const text = typeof item.text === "string" ? item.text : "";
+          const status = typeof item.status === "string" ? item.status : "";
+          const sessionId =
+            typeof item.sessionId === "string" ? item.sessionId : undefined;
+
+          if (!id || !text || !status) {
+            continue;
+          }
+
+          this.view?.webview.postMessage({
+            type: "todoUpdate",
+            action: "update",
+            item: {
+              id,
+              text,
+              status,
+              ...(sessionId ? { sessionId } : {}),
+            },
+          });
+        }
+        // Persist full todo snapshot for session after forwarding updates
+        try {
+          if (this.currentSessionId) {
+            const key = `opencode.session.todos.${this.currentSessionId}`;
+            const existing =
+              (this.context.workspaceState.get<{
+                items: any[];
+                lastUpdatedAt: number;
+              }>(key) as { items: any[]; lastUpdatedAt: number } | undefined) ??
+              { items: [], lastUpdatedAt: 0 };
+
+            // Merge/upsert incoming items into existing snapshot using id + lifecycle rank
+            const incoming = Array.isArray(todoItems) ? (todoItems as any[]) : [];
+
+            const LIFECYCLE_RANK: Record<string, number> = {
+              pending: 0,
+              in_progress: 1,
+              completed: 2,
+              failed: 2,
+            };
+
+            const byId = new Map<string, any>();
+            for (const item of existing.items) {
+              const id = typeof item?.id === "string" ? item.id : undefined;
+              if (!id) continue;
+              byId.set(id, item);
+            }
+
+            for (const inc of incoming) {
+              if (!inc || typeof inc !== "object") continue;
+              const id = typeof inc.id === "string" ? inc.id : undefined;
+              const text = typeof inc.text === "string" ? inc.text : undefined;
+              const status = typeof inc.status === "string" ? inc.status : undefined;
+              if (!id || !text || !status) continue;
+
+              const existingItem = byId.get(id);
+              if (!existingItem) {
+                byId.set(id, { id, text, status });
+                continue;
+              }
+
+              const existingRank = LIFECYCLE_RANK[existingItem.status] ?? 0;
+              const incomingRank = LIFECYCLE_RANK[status] ?? 0;
+
+              if (incomingRank > existingRank) {
+                byId.set(id, { ...existingItem, text: text || existingItem.text, status });
+              } else if (incomingRank === existingRank) {
+                // If same rank and same status, idempotent; if different status at same rank, prefer existing
+                if (status === existingItem.status) {
+                  // keep existing (no-op)
+                } else {
+                  // prefer existing to avoid blind flips
+                  byId.set(id, existingItem);
+                }
+              } else {
+                // incoming rank lower -> ignore
+                byId.set(id, existingItem);
+              }
+            }
+
+            const updatedItems = Array.from(byId.values());
+            await this.context.workspaceState.update(key, {
+              items: updatedItems,
+              lastUpdatedAt: Date.now(),
+            });
+
+            // update in-memory cache for active session
+            this.currentTodoItems = updatedItems;
+          }
+        } catch (err) {
+          console.warn("[ChatViewProvider] Failed to persist todo snapshot:", err);
+        }
       }
 
-      this.view?.webview.postMessage({
-        type: "streamEvent",
-        event: enrichedEvent,
-      });
+     this.view?.webview.postMessage({
+       type: "streamEvent",
+       event: enrichedEvent,
+     });
       if (this.shouldVerboseStreamDebug()) {
         console.log("[ChatViewProvider] streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
@@ -1317,18 +1445,23 @@ export class ChatViewProvider
       await this.sessionService.switchSession(sessionId);
       this.currentSessionId = sessionId;
       this.subagentTracker.setActiveSession(sessionId);
+      // Clear in-memory todo cache to avoid cross-session leakage; will be
+      // rehydrated from persisted snapshot when initState is sent.
+      this.clearSessionTodos();
 
       // Restore per-session agent / model / thinking selections
       await this.applySessionSettings(sessionId);
 
       // Notify the webview of the restored selections for this session
-      this.view?.webview.postMessage({
-        type: "initState",
-        serverStatus: this.serverManager.getStatus(),
-        selectedModel: this.selectedModel,
-        selectedAgent: this.selectedAgent,
-        currentSessionId: this.currentSessionId,
-      });
+            this.view?.webview.postMessage({
+              type: "initState",
+              serverStatus: this.serverManager.getStatus(),
+              selectedModel: this.selectedModel,
+              selectedAgent: this.selectedAgent,
+              serverVersion: this.serverManager.getVersion(),
+              currentSessionId: this.currentSessionId,
+              todoItems: this.loadPersistedTodos(this.currentSessionId).items,
+            });
       const sessionThinkingLevel =
         this.getSessionSettings(sessionId).thinkingLevel ??
         this.context.globalState.get<string>("thinkingLevel");
@@ -1381,6 +1514,8 @@ export class ChatViewProvider
           currentSession = await this.sessionService.createNewSession();
         }
         this.currentSessionId = currentSession?.id;
+        // Clear in-memory todo cache when active session changes after deletion
+        this.clearSessionTodos();
         this.subagentTracker.resetForSession(currentSession?.id || null);
         this.view?.webview.postMessage({
           type: "chatHistory",
@@ -1502,6 +1637,7 @@ export class ChatViewProvider
     return mentionsFormat && mentionsUnsupported;
   }
 
+  // PROMPT-OWNERSHIP: do not modify — transport-only path
   private async promptWithStructuredOutput(
     client: any,
     sessionID: string,
@@ -1945,9 +2081,13 @@ export class ChatViewProvider
     };
 
     if (Array.isArray(existingRaw)) {
-      existingRaw.forEach((entry) => upsert(entry, false));
+      existingRaw.forEach((entry) => {
+        upsert(entry, false);
+      });
     }
-    incoming.forEach((entry) => upsert(entry, true));
+    incoming.forEach((entry) => {
+      upsert(entry, true);
+    });
 
     return Array.from(byId.values());
   }
@@ -3393,6 +3533,21 @@ export class ChatViewProvider
       interactiveEvents.length > 0;
 
     const planRec = this.asRecord(sanitizedRec.plan ?? rec.plan);
+
+    // Determine if the plan content looks like a clarification questionnaire.
+    // Question-first precedence: if the response is interactive OR the plan
+    // content appears to be a clarification questionnaire, we must NOT treat
+    // it as a real implementation plan. This prevents a model from returning
+    // an `implementation_plan` responseType while embedding clarifying
+    // questions inside the plan body.
+    const candidatePlanContent = this.firstNonEmptyString(
+      planRec?.content,
+      planRec?.markdown,
+      sanitizedRec.message,
+      sanitizedRec.assistantMessage,
+    );
+    const isClarification = this.isClarificationQuestionnaire(candidatePlanContent);
+
     if (isInteractiveResponse && planRec) {
       this.logger.warn("Ignoring plan payload for interactive response", {
         source: diagnostics?.source,
@@ -3400,20 +3555,45 @@ export class ChatViewProvider
         modelID: diagnostics?.modelID,
       });
     }
+
+    // Bounded telemetry for plan-suppression decisions. Avoid logging any raw
+    // message or plan content — include only booleans/ids/responseType.
+    const responseTypeSafe = responseType || "unknown";
+    const shouldAttachPlan = !isInteractiveResponse && !isClarification && (planRec || responseType === "implementation_plan");
+    if (!shouldAttachPlan) {
+      const reason = isInteractiveResponse
+        ? "interactive-wins"
+        : isClarification
+          ? "clarification-detected"
+          : "heuristic-rejected";
+      this.logger.debug("Plan suppressed", {
+        source: "normalizeStructuredOutput",
+        reason,
+        responseType: responseTypeSafe,
+        hasInteractiveEvents: !!isInteractiveResponse,
+        isClarification: !!isClarification,
+      });
+    }
+
+    // Only surface a plan when: (1) this is NOT an interactive response, and
+    // (2) the content does not look like a clarification questionnaire, and
+    // (3) either the structured record includes a plan OR the declared
+    // responseType is 'implementation_plan'. This centralizes the precedence
+    // logic so downstream consumers cannot mistakenly attach a plan when the
+    // model is actually asking clarifying questions.
     const plan =
-      !isInteractiveResponse &&
-        (planRec || responseType === "implementation_plan")
+      shouldAttachPlan
         ? {
-          file:
-            this.firstNonEmptyString(planRec?.file) ||
-            "implementation_plan.md",
-          content: this.firstNonEmptyString(
-            planRec?.content,
-            planRec?.markdown,
-          ),
-          title: this.firstNonEmptyString(planRec?.title),
-          summary: this.firstNonEmptyString(planRec?.summary),
-        }
+            file:
+              this.firstNonEmptyString(planRec?.file) ||
+              "implementation_plan.md",
+            content: this.firstNonEmptyString(
+              planRec?.content,
+              planRec?.markdown,
+            ),
+            title: this.firstNonEmptyString(planRec?.title),
+            summary: this.firstNonEmptyString(planRec?.summary),
+          }
         : undefined;
 
     if (
@@ -3946,6 +4126,7 @@ export class ChatViewProvider
   /**
    * Handles sending a message to OpenCode
    */
+  // PROMPT-OWNERSHIP: do not modify — transport-only path
   private async handleSendMessage(
     text: string,
     files?: string[],
@@ -4502,6 +4683,13 @@ export class ChatViewProvider
 
     if (isInteractiveClarificationResponse) {
       if (message.plan) {
+        this.logger.debug("Plan suppressed", {
+          source: "enrichMessageWithPlan",
+          reason: "interactive-wins",
+          responseType: structuredResponseType || "unknown",
+          hasInteractiveEvents: !!hasInteractiveEvents,
+          isClarification: false,
+        });
         const nextMessage = { ...message };
         delete nextMessage.plan;
         return nextMessage;
@@ -4593,7 +4781,21 @@ export class ChatViewProvider
     const looksLikeClarificationQuestions =
       this.isClarificationQuestionnaire(fullContent);
 
-    if (!hasPlanFile && looksLikeClarificationQuestions) {
+    // If the content looks like a clarification questionnaire, never promote it
+    // into an implementation plan. If a plan was already attached, strip it.
+    if (looksLikeClarificationQuestions) {
+      if (message.plan) {
+        this.logger.debug("Plan suppressed", {
+          source: "enrichMessageWithPlan",
+          reason: "clarification-detected",
+          responseType: structuredResponseType || "unknown",
+          hasInteractiveEvents: !!hasInteractiveEvents,
+          isClarification: true,
+        });
+        const nextMessage = { ...message };
+        delete nextMessage.plan;
+        return nextMessage;
+      }
       return message;
     }
 
@@ -5550,13 +5752,14 @@ export class ChatViewProvider
    * Refreshes the view with current state
    */
   private refreshView(): void {
-    this.view?.webview.postMessage({
-      type: "initState",
-      serverStatus: this.serverManager.getStatus(),
-      selectedModel: this.selectedModel,
-      selectedAgent: this.selectedAgent,
-      currentSessionId: this.currentSessionId,
-    });
+      this.view?.webview.postMessage({
+        type: "initState",
+        serverStatus: this.serverManager.getStatus(),
+        selectedModel: this.selectedModel,
+        selectedAgent: this.selectedAgent,
+        currentSessionId: this.currentSessionId,
+        todoItems: this.loadPersistedTodos(this.currentSessionId).items,
+      });
   }
 
   /**
@@ -6639,6 +6842,7 @@ export class ChatViewProvider
     return item;
   }
 
+  // PROMPT-OWNERSHIP: do not modify — transport-only path
   private async schedulePromptDispatch(
     mode: PromptDispatchMode,
     payload: {

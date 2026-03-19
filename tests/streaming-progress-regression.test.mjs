@@ -318,6 +318,96 @@ test('normalizeMessage picks the richest available final content candidate', () 
   );
 });
 
+test('activity normalization uses one canonical helper shared by streaming and history paths', () => {
+  assert.match(
+    messageHandlerSource,
+    /function normalizeActivitySteps\(/,
+    'message handler should define one canonical activity-step normalizer',
+  );
+
+  const normalizeBody = extractFunctionBody(
+    messageHandlerSource,
+    'function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined',
+  );
+  assert.match(
+    normalizeBody,
+    /const canonicalSteps = normalizeActivitySteps\(/,
+    'normalizeMessage should normalize activity via canonical helper',
+  );
+  assert.match(
+    normalizeBody,
+    /normalized\.steps = canonicalSteps;/,
+    'normalizeMessage should persist canonical activity as steps',
+  );
+  assert.match(
+    normalizeBody,
+    /normalized\.progressEvents = canonicalSteps;/,
+    'normalizeMessage should mirror canonical activity into progressEvents for compatibility',
+  );
+
+  const createHandlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "messageResponse"[\s\S]*normalizeMessage\(msg,\s*streaming\)/s,
+    'messageResponse should pass through normalizeMessage canonicalization',
+  );
+  assert.match(
+    createHandlerBody,
+    /case "chatHistory"[\s\S]*normalizeMessage\(msg,\s*null\)/s,
+    'chatHistory should pass through the same normalizeMessage canonicalization',
+  );
+});
+
+test('canonical activity steps preserve id/callID/streamSeq/diffStats across finalize and reload', () => {
+  const canonicalBody = extractFunctionBody(
+    messageHandlerSource,
+    'function normalizeActivityStepRecord(value: unknown): MessageStep | undefined',
+  );
+  assert.match(
+    canonicalBody,
+    /id:\s*asString\(rec\.id\)\s*\|\|\s*undefined/,
+    'canonical step normalization should preserve step id',
+  );
+  assert.match(
+    canonicalBody,
+    /callID:\s*asString\(rec\.callID\)\s*\|\|\s*asString\(rec\.callId\)\s*\|\|\s*undefined/,
+    'canonical step normalization should preserve callID aliases',
+  );
+  assert.match(
+    canonicalBody,
+    /streamSeq:\s*asOptionalNumber\(rec\.streamSeq\)/,
+    'canonical step normalization should preserve stream sequence when present',
+  );
+  assert.match(
+    canonicalBody,
+    /diffStats:\s*normalizeDiffStats\(rec\.diffStats\)/,
+    'canonical step normalization should preserve diff stats',
+  );
+
+  const streamBuildBody = extractFunctionBody(
+    messageHandlerSource,
+    'function buildStreamingMessage(streaming: StreamingState): Message',
+  );
+  assert.match(
+    streamBuildBody,
+    /const canonicalSteps = normalizeActivitySteps\(/,
+    'streaming finalize snapshot should use canonical activity helper',
+  );
+  assert.match(
+    streamBuildBody,
+    /steps:\s*canonicalSteps/,
+    'streaming finalize snapshot should persist canonical steps',
+  );
+  assert.match(
+    streamBuildBody,
+    /progressEvents:\s*canonicalSteps/,
+    'streaming finalize snapshot should mirror canonical steps into progressEvents',
+  );
+});
+
 test('structured response helper avoids synthetic message defaults', () => {
   const structuredContentBody = extractFunctionBody(
     messageHandlerSource,
@@ -601,6 +691,28 @@ test('message timeline filters placeholder starting/finishing steps', () => {
     messageComponentsSource,
     /runninginvalid|processinginvalid/,
     'timeline progress filter should also hide internal invalid structured-output retry rows',
+  );
+});
+
+test('completed activity prefers canonical message.steps over progressEvents fallback', () => {
+  const progressBody = extractFunctionBody(
+    messageComponentsSource,
+    'function progressItemsFromMessage(message?: Message): ProgressItem[]',
+  );
+  assert.match(
+    progressBody,
+    /Array\.isArray\(message\.steps\)\s*&&\s*message\.steps\.length > 0/,
+    'completed activity should check canonical message.steps first',
+  );
+  assert.match(
+    progressBody,
+    /items = progressItemsFromSteps\(message\.steps,\s*"msg-steps"\)/,
+    'completed activity should derive from canonical steps path',
+  );
+  assert.match(
+    progressBody,
+    /else if[\s\S]*Array\.isArray\(message\.progressEvents\)\s*&&\s*message\.progressEvents\.length > 0/s,
+    'completed activity should only use progressEvents as compatibility fallback',
   );
 });
 
