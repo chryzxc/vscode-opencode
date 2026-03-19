@@ -8,8 +8,9 @@ const panelSource = readSource(
   'PanelComponents.tsx',
 );
 
-test('ActiveTaskPanel reads streaming and todoItems from store state', () => {
-  // Confirm live data wiring — the panel must destructure both fields from useAppState().
+test('ActiveTaskPanel reads streaming from store state and does not render todoItems', () => {
+  // Confirm live data wiring — the panel must destructure streaming from useAppState()
+  // and must NOT render todoItems (todos belong exclusively to TodoPanel).
   const body = extractFunctionBody(panelSource, 'export function ActiveTaskPanel()');
 
   assert.match(
@@ -17,10 +18,15 @@ test('ActiveTaskPanel reads streaming and todoItems from store state', () => {
     /streaming[^)]*useAppState\(\)|useAppState\(\)[^;]*streaming/s,
     'ActiveTaskPanel must read streaming from useAppState()',
   );
-  assert.match(
+  assert.doesNotMatch(
     body,
-    /todoItems/,
-    'ActiveTaskPanel must read todoItems from useAppState()',
+    /sessionTodos/,
+    'ActiveTaskPanel must NOT define sessionTodos — todos belong exclusively to TodoPanel',
+  );
+  assert.doesNotMatch(
+    body,
+    /Current Tasks/,
+    'ActiveTaskPanel must NOT render a Current Tasks section — todos belong exclusively to TodoPanel',
   );
 });
 
@@ -58,27 +64,6 @@ test('ActiveTaskPanel renders Progress Updates section conditionally on isActive
     body,
     /Thinking[\u2026\.]{1,3}/u,
     'Progress Updates section must show a Thinking fallback when no steps are present',
-  );
-});
-
-test('ActiveTaskPanel renders Current Tasks section conditionally on sessionTodos length', () => {
-  // Confirms the section only appears when there are session-scoped todos.
-  const body = extractFunctionBody(panelSource, 'export function ActiveTaskPanel()');
-
-  assert.match(
-    body,
-    /sessionTodos/,
-    'ActiveTaskPanel should define sessionTodos derived field',
-  );
-  assert.match(
-    body,
-    /sessionTodos\.length\s*>\s*0/,
-    'Current Tasks section must be guarded by sessionTodos.length > 0',
-  );
-  assert.match(
-    body,
-    /Current Tasks/,
-    'Current Tasks MiniSection title must appear in the render output',
   );
 });
 
