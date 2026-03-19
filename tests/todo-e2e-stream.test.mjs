@@ -122,7 +122,7 @@ test('provider forwards todo stream events and keeps todo persistence helpers', 
   );
   assert.match(
     chatProviderSource,
-    /private\s+clearSessionTodos\(\):\s*void\s*\{/,
+    /private\s+clearSessionTodos\(sessionId\?:\s*string\):\s*void\s*\{/,
     'ChatViewProvider should expose clearSessionTodos helper',
   );
   assert.match(

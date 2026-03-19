@@ -418,8 +418,11 @@ export class ChatViewProvider
     return { items: raw?.items ?? [], lastUpdatedAt: raw?.lastUpdatedAt };
   }
 
-  private clearSessionTodos(): void {
+  private clearSessionTodos(sessionId?: string): void {
     this.currentTodoItems = [];
+    if (sessionId) {
+      this.context.workspaceState.update(this.getTodoStorageKey(sessionId), undefined);
+    }
   }
 
   /** Session-scoped queue of prompts awaiting execution */
@@ -1205,6 +1208,7 @@ export class ChatViewProvider
               in_progress: 1,
               completed: 2,
               failed: 2,
+              cancelled: 2,
             };
 
             const byId = new Map<string, any>();
@@ -1505,6 +1509,8 @@ export class ChatViewProvider
       this.queueBySessionId.delete(sessionId);
       await this.clearPersistedSubagentSnapshot(sessionId);
       await this.clearPersistedCompactionViewState(sessionId);
+      // Clear persisted todo state for the deleted session
+      this.clearSessionTodos(sessionId);
       await this.handleGetSessions();
 
       // If we deleted the current session, create a new one and clear messages

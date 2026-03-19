@@ -25,7 +25,7 @@ test('handleLoadSession clears in-memory todos and posts rehydrated todo snapsho
 test('clearSessionTodos implementation resets currentTodoItems', () => {
   assert.match(
     providerSource,
-    /private clearSessionTodos\(\): void \{[\s\S]*this\.currentTodoItems\s*=\s*\[\s*\];[\s\S]*\}/,
+    /private clearSessionTodos\(sessionId\?:\s*string\):\s*void \{[\s\S]*this\.currentTodoItems\s*=\s*\[\s*\];[\s\S]*\}/,
     'clearSessionTodos should reset this.currentTodoItems to an empty array',
   );
 });
