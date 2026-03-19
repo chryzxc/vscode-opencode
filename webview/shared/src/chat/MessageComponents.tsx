@@ -36,6 +36,7 @@ import type {
   StreamingStep,
   SubagentDetail,
   SubagentSummary,
+  TodoItem,
 } from "./lib/types";
 import { useAppDispatch, useAppState } from "./lib/store";
 import { jumpToMessage } from "./lib/messageJump";
@@ -578,6 +579,63 @@ function formatDurationMs(ms?: number): string {
     return `${(ms / 1000).toFixed(1)}s`;
   }
   return `${Math.round(ms)}ms`;
+}
+
+function formatTodoStatus(status: TodoItem["status"]): string {
+  switch (status) {
+    case "in_progress":
+      return "in progress";
+    default:
+      return status;
+  }
+}
+
+function truncateTodoLabel(text: string, maxLength = 44): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxLength - 3)}...`;
+}
+
+function getLatestTodoTransition(items: TodoItem[]): TodoItem | undefined {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index];
+    if (item.status !== "pending") {
+      return item;
+    }
+  }
+  return items.at(-1);
+}
+
+function TodoInlineSummary({ todoItems }: { todoItems: TodoItem[] }) {
+  if (todoItems.length === 0) {
+    return null;
+  }
+
+  const inProgressCount = todoItems.reduce(
+    (count, item) => (item.status === "in_progress" ? count + 1 : count),
+    0,
+  );
+  const totalCount = todoItems.length;
+  const latest = getLatestTodoTransition(todoItems);
+
+  return (
+    <section
+      data-assistant-section="todo-inline-summary"
+      className="rounded-md border border-oc-border/70 bg-oc-panel-soft/30 px-2.5 py-2"
+    >
+      <div className="text-[11px] font-mono text-oc-text-muted">
+        {totalCount} {totalCount === 1 ? "task" : "tasks"} - {inProgressCount} in
+        progress
+      </div>
+      {latest && (
+        <div className="mt-0.5 truncate text-[11px] text-oc-text-muted/90">
+          Latest: "{truncateTodoLabel(latest.text)}" - {formatTodoStatus(latest.status)}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function sanitizeUserContent(raw: string): string {
@@ -1182,6 +1240,24 @@ function buildDisplayEvents(
     if (event.viewDiffFile) previous.viewDiffFile = event.viewDiffFile;
   }
 
+  if (isStreamingActive) {
+    let latestPendingIndex = -1;
+    for (let index = collapsed.length - 1; index >= 0; index -= 1) {
+      if (collapsed[index].status === "pending") {
+        latestPendingIndex = index;
+        break;
+      }
+    }
+
+    if (latestPendingIndex > 0) {
+      for (let index = 0; index < latestPendingIndex; index += 1) {
+        if (collapsed[index].status === "pending") {
+          collapsed[index].status = "done";
+        }
+      }
+    }
+  }
+
   return collapsed;
 }
 
@@ -1388,8 +1464,12 @@ export function AssistantMessage({
   isContiguous?: boolean;
 }) {
   const dispatch = useAppDispatch();
-  const { subagentsByParentMessageId, subagentDetailsById, availableAgents } =
-    useAppState();
+  const {
+    subagentsByParentMessageId,
+    subagentDetailsById,
+    availableAgents,
+    todoItems = [],
+  } = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
@@ -1460,6 +1540,19 @@ export function AssistantMessage({
   const messageId = info?.id || message?.id || streaming?.messageId;
 
   const state = useAppState();
+  const latestAssistantMessageId = useMemo(() => {
+    for (let index = state.messages.length - 1; index >= 0; index--) {
+      const candidate = state.messages[index];
+      const role = candidate.role ?? candidate.info?.role ?? "user";
+      if (role === "assistant") {
+        return candidate.info?.id ?? candidate.id;
+      }
+    }
+    return undefined;
+  }, [state.messages]);
+  const shouldShowTodoInlineSummary =
+    todoItems.length > 0 &&
+    (!latestAssistantMessageId || latestAssistantMessageId === messageId);
   const { planStatus, isRevisedPlan } = useMemo(() => {
     let status: "Draft" | "Executing" | "Revision Requested" | undefined;
     let revised = false;
@@ -1863,6 +1956,8 @@ export function AssistantMessage({
         )}
 
         <div className="space-y-3">
+          {shouldShowTodoInlineSummary && <TodoInlineSummary todoItems={todoItems} />}
+
           {(displayEvents.length > 0 || showThinkingPlaceholder) && (
             <section
               data-assistant-section="activity"
@@ -2119,7 +2214,7 @@ export function AssistantMessage({
                 </div>
               )}
 
-              {plan && (
+              {plan && !message?.interactiveEvents?.length && (
                 <div
                   className={
                     hasResponseContent

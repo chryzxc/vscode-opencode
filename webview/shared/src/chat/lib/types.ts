@@ -483,7 +483,7 @@ export type ThinkingLevel = 'high' | 'medium' | 'low';
 export interface TodoItem {
   id: string;
   text: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'failed';
   sessionId: string;
   // optional human-friendly description used by the UI
   description?: string;

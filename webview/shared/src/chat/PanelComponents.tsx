@@ -817,8 +817,8 @@ export function ActiveTaskPanel() {
     compactionError,
     compactionBaselineStats,
     compactionDividerIndex,
-    todoItems,
     serverVersion,
+    todoItems,
   } = useAppState();
   const progressListRef = useRef<HTMLDivElement>(null);
 
@@ -979,12 +979,6 @@ export function ActiveTaskPanel() {
     }
   }, [progressStepCount]);
 
-  // Session-scoped todos (only items belonging to the active session).
-  const sessionTodos = useMemo(() => {
-    if (!currentSessionId || !Array.isArray(todoItems)) return [] as TodoItem[];
-    return todoItems.filter((t) => t.sessionId === currentSessionId);
-  }, [todoItems, currentSessionId]);
-
   // Session-scoped patched files from assistant patch parts, normalized history edits, and live streaming edits.
   const sessionPatchedFiles = useMemo(() => {
     if (!currentSessionId) {
@@ -1037,20 +1031,10 @@ export function ActiveTaskPanel() {
       .map(({ file, patchType }) => ({ file, patchType }));
   }, [messages, streaming?.edits, currentSessionId]);
 
-  const todoStatusIcon = (status?: string) => {
-    switch (status) {
-      case "pending":
-        return "⏳";
-      case "in_progress":
-        return "🔄";
-      case "completed":
-        return "✅";
-      case "cancelled":
-        return "❌";
-      default:
-        return "•";
-    }
-  };
+  const sessionTodos = useMemo(
+    () => (Array.isArray(todoItems) ? todoItems : []),
+    [todoItems],
+  );
 
   return (
     <div className="oc-active-task-panel flex flex-col w-full bg-oc-bg-soft">
@@ -1125,21 +1109,12 @@ export function ActiveTaskPanel() {
           </MiniSection>
         )}
 
-        {/* ── Current Tasks: session-scoped todos from AI response ── */}
         {sessionTodos.length > 0 && (
           <MiniSection title="Current Tasks">
-            <div className="space-y-1.5">
-              {sessionTodos.map((t) => (
-                <div
-                  key={t.id}
-                  className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-panel-soft p-2"
-                >
-                  <div className="text-[14px] leading-none mt-0.5 shrink-0">
-                    {todoStatusIcon(t.status)}
-                  </div>
-                  <div className="text-xs text-[var(--oc-text-soft)] leading-relaxed">
-                    {(t as any).description ?? t.text ?? "Untitled"}
-                  </div>
+            <div className="space-y-1">
+              {sessionTodos.map((todo) => (
+                <div key={todo.id} className="flex items-center gap-1.5 py-0.5 text-xs text-oc-text-muted">
+                  <span className="truncate">{todo.text}</span>
                 </div>
               ))}
             </div>
@@ -3297,6 +3272,40 @@ export function TodoPanel() {
     }
   };
 
+  const statusLabel = (status?: TodoItem["status"]) => {
+    switch (status) {
+      case "pending":
+        return "Pending";
+      case "in_progress":
+        return "In progress";
+      case "completed":
+        return "Completed";
+      case "failed":
+        return "Failed";
+      case "cancelled":
+        return "Cancelled";
+      default:
+        return "Unknown";
+    }
+  };
+
+  const statusTone = (status?: TodoItem["status"]) => {
+    switch (status) {
+      case "pending":
+        return "text-[#d29922] bg-[#d29922]/10 border-[#d29922]/30";
+      case "in_progress":
+        return "text-oc-accent bg-oc-accent/10 border-oc-accent/30";
+      case "completed":
+        return "text-oc-green bg-oc-green/10 border-oc-green/30";
+      case "failed":
+        return "text-oc-red bg-oc-red/10 border-oc-red/30";
+      case "cancelled":
+        return "text-[var(--oc-text-soft)] bg-oc-border/30 border-oc-border";
+      default:
+        return "text-[var(--oc-text-soft)] bg-oc-border/20 border-oc-border";
+    }
+  };
+
   return (
     <div className="oc-todo-panel border-t border-oc-border p-3 text-xs">
       <div className="mb-2 flex items-center justify-between">
@@ -3330,11 +3339,32 @@ export function TodoPanel() {
                   key={t.id}
                   className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-panel-soft p-2"
                 >
-                  <div className="text-[14px] leading-none mt-0.5">
+                  <div
+                    className={`text-[14px] leading-none mt-0.5 ${
+                      t.status === "failed"
+                        ? "text-oc-red"
+                        : t.status === "completed"
+                          ? "text-oc-green"
+                          : t.status === "in_progress"
+                            ? "text-oc-accent"
+                            : t.status === "pending"
+                              ? "text-[#d29922]"
+                              : "text-[var(--oc-text-soft)]"
+                    }`}
+                  >
                     {statusIcon(t.status)}
                   </div>
-                  <div className="text-xs text-[var(--oc-text-soft)] leading-relaxed">
-                    {(t as any).description ?? t.text ?? "Untitled"}
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="text-xs text-[var(--oc-text-soft)] leading-relaxed break-words">
+                      {t.description ?? t.text ?? "Untitled"}
+                    </div>
+                    <div
+                      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusTone(
+                        t.status,
+                      )}`}
+                    >
+                      {statusLabel(t.status)}
+                    </div>
                   </div>
                 </div>
               ))}

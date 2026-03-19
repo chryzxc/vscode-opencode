@@ -230,6 +230,71 @@ const MAX_STREAMING_STEPS = 400;
 const MAX_STREAMING_PROGRESS_EVENTS = 1000;
 const MAX_STREAMING_EDITS = 300;
 
+const LIFECYCLE_RANK: Record<string, number> = {
+  pending: 0,
+  in_progress: 1,
+  completed: 2,
+  failed: 2,
+  cancelled: 2,
+};
+
+function isTerminalStatus(status: string | undefined): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+function hasTodoPatchChanges(current: TodoItem, patch: Partial<TodoItem>): boolean {
+  const keys = Object.keys(patch) as Array<keyof TodoItem>;
+  for (const key of keys) {
+    const nextValue = patch[key];
+    if (typeof nextValue === 'undefined') {
+      continue;
+    }
+    if (current[key] !== nextValue) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function upsertTodoItemArray(items: TodoItem[] | undefined, incoming: TodoItem): TodoItem[] {
+  const list = Array.isArray(items) ? [...items] : [];
+  const idx = list.findIndex((it) => it.id === incoming.id);
+
+  if (idx < 0) {
+    // Insert new incoming item at end
+    return [...list, incoming];
+  }
+
+  const current = list[idx];
+  const currentRank = LIFECYCLE_RANK[current.status] ?? 0;
+  const incomingRank = LIFECYCLE_RANK[incoming.status] ?? 0;
+
+  // Terminal states are immutable
+  if (isTerminalStatus(current.status)) {
+    return list;
+  }
+
+  if (incomingRank > currentRank) {
+    // Promote: merge fields from incoming (incoming wins)
+    const merged: TodoItem = { ...current, ...incoming };
+    const next = [...list];
+    next[idx] = merged;
+    return next;
+  }
+
+  if (incomingRank === currentRank) {
+    // Same rank: if identical status -> idempotent no-op
+    if (incoming.status === current.status) {
+      return list;
+    }
+    // Same numeric rank but different status (e.g., completed vs failed) prefer existing
+    return list;
+  }
+
+  // incomingRank < currentRank -> stale/out-of-order event -> ignore
+  return list;
+}
+
 function appendWithCap<T>(items: T[], next: T, maxItems: number): T[] {
   if (items.length >= maxItems) {
     return [...items.slice(items.length - maxItems + 1), next];
@@ -1000,12 +1065,90 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, todoItems: action.payload };
     }
     case "UPDATE_TODO_ITEM": {
-      const items = (state.todoItems || []).map((it) =>
-        it.id === action.payload.id ? { ...it, ...action.payload.patch } : it,
-      );
-      return { ...state, todoItems: items };
+      // Map-based patch path: preserve existing behaviour for non-status patches
+      // while enforcing lifecycle rank rules for status changes.
+      let changed = false;
+      const items = (state.todoItems || []).map((it) => {
+        if (it.id !== action.payload.id) {
+          return it;
+        }
+
+        const patch = action.payload.patch;
+        const incomingStatus = patch.status ?? it.status;
+        const currentRank = LIFECYCLE_RANK[it.status] ?? 0;
+        const incomingRank = LIFECYCLE_RANK[incomingStatus] ?? 0;
+
+        // If existing is terminal, ignore any status change and keep existing
+        if (isTerminalStatus(it.status) && incomingStatus !== it.status) {
+          return it;
+        }
+
+        if (typeof patch.status === 'string') {
+          if (incomingRank > currentRank) {
+            const promoted = { ...it, ...patch };
+            if (hasTodoPatchChanges(it, promoted)) {
+              changed = true;
+            }
+            return promoted;
+          }
+          if (incomingRank === currentRank) {
+            if (incomingStatus === it.status) {
+              const { status: _ignoredStatus, ...rest } = patch;
+              if (!hasTodoPatchChanges(it, rest)) {
+                return it;
+              }
+              changed = true;
+              return { ...it, ...rest };
+            }
+            // same numeric rank but different status -> prefer existing
+            return it;
+          }
+          // incomingRank < currentRank -> stale
+          return it;
+        }
+
+        // No status in patch: apply patch to non-status fields
+        if (!hasTodoPatchChanges(it, patch)) {
+          return it;
+        }
+        changed = true;
+        return { ...it, ...patch };
+      });
+      return changed ? { ...state, todoItems: items } : state;
     }
     case "ADD_TODO_ITEM": {
+      // Preserve legacy append pattern while also handling idempotent upsert
+      const current = state.todoItems || [];
+      const idx = current.findIndex((it) => it.id === action.payload.id);
+      if (idx >= 0) {
+        // Existing item found -> apply lifecycle rank rules
+        const existing = current[idx];
+        const currentRank = LIFECYCLE_RANK[existing.status] ?? 0;
+        const incomingRank = LIFECYCLE_RANK[action.payload.status] ?? 0;
+
+        if (isTerminalStatus(existing.status)) {
+          return state;
+        }
+
+        if (incomingRank > currentRank) {
+          const next = [...current];
+          next[idx] = { ...existing, ...action.payload };
+          return { ...state, todoItems: next };
+        }
+
+        if (incomingRank === currentRank) {
+          if (action.payload.status === existing.status) {
+            // idempotent
+            return state;
+          }
+          return state; // prefer existing on same-rank but different status
+        }
+
+        // incomingRank < currentRank -> stale
+        return state;
+      }
+
+      // Append new item (legacy append pattern)
       return {
         ...state,
         todoItems: [...(state.todoItems || []), action.payload],
