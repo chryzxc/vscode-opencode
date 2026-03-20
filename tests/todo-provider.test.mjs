@@ -52,5 +52,5 @@ test('todo update handles missing sessionId gracefully and persistence is guarde
 test('ChatViewProvider exposes getTodoStorageKey and loadPersistedTodos helpers', () => {
   // Ensure helper functions exist for todo storage
   assert.match(chatProviderSource, /private getTodoStorageKey\(sessionId: string\): string/);
-  assert.match(chatProviderSource, /private loadPersistedTodos\(sessionId\?: string\): \{ items: any\[\]; lastUpdatedAt\?: number \}/);
+  assert.match(chatProviderSource, /private loadPersistedTodos\(sessionId\?: string\): \{ items: unknown\[\]; lastUpdatedAt\?: number \}/);
 });

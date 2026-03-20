@@ -117,7 +117,7 @@ test('provider forwards todo stream events and keeps todo persistence helpers', 
   );
   assert.match(
     chatProviderSource,
-    /private\s+loadPersistedTodos\(sessionId\?:\s*string\):\s*\{\s*items:\s*any\[\];\s*lastUpdatedAt\?:\s*number\s*\}/,
+    /private\s+loadPersistedTodos\(sessionId\?:\s*string\):\s*\{\s*items:\s*unknown\[\];\s*lastUpdatedAt\?:\s*number\s*\}/,
     'ChatViewProvider should expose loadPersistedTodos helper',
   );
   assert.match(

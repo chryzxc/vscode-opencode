@@ -404,15 +404,15 @@ export class ChatViewProvider
 
   /** ID of the session currently active in the webview (undefined until first bootstrap) */
   private currentSessionId: string | undefined;
-  private currentTodoItems: any[] = [];
+  private currentTodoItems: unknown[] = [];
 
   private getTodoStorageKey(sessionId: string): string {
     return `opencode.session.todos.${sessionId}`;
   }
 
-  private loadPersistedTodos(sessionId?: string): { items: any[]; lastUpdatedAt?: number } {
+  private loadPersistedTodos(sessionId?: string): { items: unknown[]; lastUpdatedAt?: number } {
     if (!sessionId) return { items: [] };
-    const raw = this.context.workspaceState.get<{ items: any[]; lastUpdatedAt: number }>(
+    const raw = this.context.workspaceState.get<{ items: unknown[]; lastUpdatedAt: number }>(
       this.getTodoStorageKey(sessionId),
     );
     return { items: raw?.items ?? [], lastUpdatedAt: raw?.lastUpdatedAt };
@@ -1195,13 +1195,13 @@ export class ChatViewProvider
             const key = `opencode.session.todos.${this.currentSessionId}`;
             const existing =
               (this.context.workspaceState.get<{
-                items: any[];
+                items: unknown[];
                 lastUpdatedAt: number;
-              }>(key) as { items: any[]; lastUpdatedAt: number } | undefined) ??
+              }>(key) as { items: unknown[]; lastUpdatedAt: number } | undefined) ??
               { items: [], lastUpdatedAt: 0 };
 
             // Merge/upsert incoming items into existing snapshot using id + lifecycle rank
-            const incoming = Array.isArray(todoItems) ? (todoItems as any[]) : [];
+            const incoming = Array.isArray(todoItems) ? todoItems : [];
 
             const LIFECYCLE_RANK: Record<string, number> = {
               pending: 0,
@@ -1211,11 +1211,14 @@ export class ChatViewProvider
               cancelled: 2,
             };
 
-            const byId = new Map<string, any>();
+            interface StoredTodoItem { id: string; text: string; status: string; [key: string]: unknown }
+
+            const byId = new Map<string, StoredTodoItem>();
             for (const item of existing.items) {
-              const id = typeof item?.id === "string" ? item.id : undefined;
+              const rec = item as Record<string, unknown>;
+              const id = typeof rec?.id === "string" ? rec.id : undefined;
               if (!id) continue;
-              byId.set(id, item);
+              byId.set(id, item as StoredTodoItem);
             }
 
             for (const inc of incoming) {

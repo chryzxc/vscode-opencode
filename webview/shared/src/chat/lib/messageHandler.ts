@@ -4021,14 +4021,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
         // Rehydrate persisted todos from initState payload (sent by provider on
         // extension open or session switch).
-        const rawTodoItems = asArray(state.todoItems);
+        const rawTodoItems = Array.isArray(state.todoItems) ? state.todoItems : [];
         if (rawTodoItems.length > 0) {
+          const VALID_TODO_STATUS = new Set(['pending', 'in_progress', 'completed', 'cancelled', 'failed']);
           const validTodos = rawTodoItems.filter(
-            (item): item is TodoItem =>
-              !!asRecord(item) &&
-              typeof (item as Record<string, unknown>).id === 'string' &&
-              typeof (item as Record<string, unknown>).text === 'string' &&
-              typeof (item as Record<string, unknown>).status === 'string',
+            (item): item is TodoItem => {
+              const rec = asRecord(item);
+              return (
+                !!rec &&
+                typeof rec.id === 'string' && rec.id.length > 0 &&
+                typeof rec.text === 'string' && rec.text.length > 0 &&
+                typeof rec.status === 'string' && VALID_TODO_STATUS.has(rec.status) &&
+                typeof rec.sessionId === 'string'
+              );
+            },
           );
           if (validTodos.length > 0) {
             dispatch({ type: 'SET_TODO_ITEMS', payload: validTodos });
