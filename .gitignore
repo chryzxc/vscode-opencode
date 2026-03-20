@@ -16,3 +16,6 @@ src/__mocks__/
 
 # Temporary/error files
 nul
+
+# Local test outputs
+test_output.txt
