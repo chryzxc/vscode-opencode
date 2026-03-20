@@ -4018,6 +4018,23 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           payload: asString(state.serverVersion) || undefined,
         });
         dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
+
+        // Rehydrate persisted todos from initState payload (sent by provider on
+        // extension open or session switch).
+        const rawTodoItems = asArray(state.todoItems);
+        if (rawTodoItems.length > 0) {
+          const validTodos = rawTodoItems.filter(
+            (item): item is TodoItem =>
+              !!asRecord(item) &&
+              typeof (item as Record<string, unknown>).id === 'string' &&
+              typeof (item as Record<string, unknown>).text === 'string' &&
+              typeof (item as Record<string, unknown>).status === 'string',
+          );
+          if (validTodos.length > 0) {
+            dispatch({ type: 'SET_TODO_ITEMS', payload: validTodos });
+          }
+        }
+
         break;
       }
       case "modelsList": {

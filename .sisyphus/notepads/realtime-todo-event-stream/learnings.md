@@ -87,4 +87,12 @@ Notes:
   - npm test -> 755 pass, 41 fail (no new failures introduced)
 - Executed focused todo tests via node --test and confirmed all 27 todo-specific tests passed.
 - Created evidence files under .sisyphus/evidence/ capturing command outputs for audit.
-- No behavioral changes were made; only evidence and minor whitespace/clarity edits appended to notepad.
+ - No behavioral changes were made; only evidence and minor whitespace/clarity edits appended to notepad.
+
+## [2026-03-19] F-Wave Fix: Remove todo rendering from ActiveTaskPanel
+
+- Removed sessionTodos useMemo and "Current Tasks" MiniSection from ActiveTaskPanel
+- ActiveTaskPanel is now subagents/progress-only per hybrid UI contract
+- TodoPanel remains the sole full-list todo rendering surface
+- All 27 todo tests pass post-fix
+- npm run compile clean
