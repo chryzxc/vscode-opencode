@@ -143,7 +143,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         properties: {
-          file: { type: "string" },
+          file: {
+            type: "string",
+            description:
+              "Filename of the implementation plan file written to the workspace (e.g. 'implementation_plan.md'). Set this to the exact filename used when writing the plan to disk so the viewer can read the live file. Omit if no file was written.",
+          },
           content: {
             type: "string",
             description:

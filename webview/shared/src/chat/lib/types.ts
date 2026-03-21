@@ -289,6 +289,7 @@ export interface Message {
   parts?: MessagePart[];
   text?: string;
   content?: string;
+  rawResponse?: unknown;
   reasoningEvents?: ReasoningEvent[];
   progressEvents?: MessageStep[];
   info?: MessageInfo;

@@ -323,6 +323,21 @@ type StructuredAssistantOutput = {
     files?: any[]; // To match ImplementationPlan structure
     fileCount?: number;
   };
+  question?: {
+    type?: string;
+    id?: string;
+    title?: string;
+    question?: string;
+    multiSelect?: boolean;
+    allowCustomInput?: boolean;
+    options?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
+    actions?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    dismissLabel?: string;
+    message?: string;
+    content?: string;
+  };
 };
 
 /**
@@ -1701,68 +1716,14 @@ export class ChatViewProvider
   }
 
   private shouldUseStructuredOutput(
-    parts: Array<Record<string, unknown>>,
-    agent?: string,
+    _parts: Array<Record<string, unknown>>,
+    _agent?: string,
   ): boolean {
     if (this.structuredOutputMode === "disabled") {
       return false;
     }
 
-    // Prefer normal text-mode prompts for best incremental streaming.
-    // Enable schema mode for explicit structured workflows and
-    // implementation/planning prompts where interactive clarifications are likely.
-    const activeAgent = (agent || this.selectedAgent || "").toLowerCase();
-    if (activeAgent === "plan" || activeAgent === "planner") {
-      return true;
-    }
-
-    const promptText = parts
-      .map((part) => {
-        const type = this.firstNonEmptyString(part.type)?.toLowerCase();
-        if (type && type !== "text") {
-          return "";
-        }
-        return this.firstNonEmptyString(part.text, part.content) || "";
-      })
-      .filter((chunk) => chunk.length > 0)
-      .join("\n")
-      .toLowerCase();
-
-    if (!promptText) {
-      return false;
-    }
-
-    const hasExplicitStructuredIntent =
-      /\[interactive:[^\]]+\]/i.test(promptText) ||
-      /\b(response\s*type|json[_\s-]?schema|structured\s*output)\b/i.test(
-        promptText,
-      );
-    if (hasExplicitStructuredIntent) {
-      return true;
-    }
-
-    const hasExecutionIntent =
-      /\b(implement|build|create|add|update|modify|refactor|fix|integrate|wire|migrate|setup|set up)\b/i.test(
-        promptText,
-      );
-    const hasPlanningIntent =
-      /\b(plan|planning|implementation|roadmap|approach|design|architecture|spec|proposal)\b/i.test(
-        promptText,
-      );
-    const hasRepoScopedSignal =
-      /\b(codebase|repo|repository|project|workspace|extension|file|files|function|module|component)\b/i.test(
-        promptText,
-      ) ||
-      parts.some((part) => {
-        const type = this.firstNonEmptyString(part.type)?.toLowerCase();
-        return Boolean(type && type !== "text");
-      });
-
-    if (hasRepoScopedSignal && (hasExecutionIntent || hasPlanningIntent)) {
-      return true;
-    }
-
-    return false;
+    return true;
   }
 
   private resolvePromptVariant(sessionId: string): string | undefined {
@@ -3618,6 +3579,8 @@ export class ChatViewProvider
       return undefined;
     }
 
+    const rawQuestion = this.asRecord(sanitizedRec.question ?? rec.question);
+
     return {
       responseType,
       assistantMessage,
@@ -3629,6 +3592,7 @@ export class ChatViewProvider
       subagents: subagents && subagents.length > 0 ? subagents : undefined,
       subagentsDelta,
       plan: plan?.content ? plan : undefined,
+      question: rawQuestion ?? undefined,
     };
   }
 
@@ -3744,11 +3708,49 @@ export class ChatViewProvider
             toolName.includes("structuredoutput") ||
             toolName.includes("structured_output")
           ) {
-            if (part.state.result) {
-              candidates.push({
-                value: part.state.result,
-                source: "messageLike.parts[].state.result",
-              });
+            const pushCandidate = (value: unknown, source: string) => {
+              if (typeof value === "undefined") return;
+              candidates.push({ value, source });
+            };
+            pushCandidate(
+              part.state.result,
+              "messageLike.parts[].state.result",
+            );
+            pushCandidate(
+              part.state.output,
+              "messageLike.parts[].state.output",
+            );
+            pushCandidate(
+              part.state.arguments,
+              "messageLike.parts[].state.arguments",
+            );
+
+            const resultRec = this.asRecord(part.state.result);
+            if (resultRec) {
+              pushCandidate(
+                resultRec.output,
+                "messageLike.parts[].state.result.output",
+              );
+              pushCandidate(
+                resultRec.data,
+                "messageLike.parts[].state.result.data",
+              );
+              pushCandidate(
+                resultRec.value,
+                "messageLike.parts[].state.result.value",
+              );
+              pushCandidate(
+                resultRec.arguments,
+                "messageLike.parts[].state.result.arguments",
+              );
+              pushCandidate(
+                resultRec.structuredOutput,
+                "messageLike.parts[].state.result.structuredOutput",
+              );
+              pushCandidate(
+                resultRec.structured_output,
+                "messageLike.parts[].state.result.structured_output",
+              );
             }
           }
         }
@@ -3844,22 +3846,6 @@ export class ChatViewProvider
         parts.push({ type: "text", text: messageContent });
       }
       next.parts = parts;
-    }
-
-    if (structured.reasoning && structured.reasoning.length > 0) {
-      const parts = Array.isArray(next.parts) ? [...next.parts] : [];
-      const hasReasoningPart = parts.some(
-        (part: any) =>
-          part?.type === "reasoning" ||
-          part?.type === "thinking" ||
-          part?.type === "thought",
-      );
-      if (!hasReasoningPart) {
-        structured.reasoning.forEach((chunk) => {
-          parts.push({ type: "reasoning", reasoning: chunk });
-        });
-        next.parts = parts;
-      }
     }
 
     if (structured.progressUpdates && structured.progressUpdates.length > 0) {
@@ -4492,6 +4478,7 @@ export class ChatViewProvider
 
       // Send response back to webview
       if (response.data) {
+        const rawResponse = this.sanitizeDebugPayload(response.data);
         const structuredMessage = this.applyStructuredOutputToMessage(
           response.data,
         );
@@ -4605,15 +4592,20 @@ export class ChatViewProvider
           }
         }
 
+        const debugMessage = {
+          ...enrichedMessage,
+          rawResponse,
+        };
+
         // Save assistant message to local history
         await this.sessionService.appendMessage(session.id, {
-          ...enrichedMessage,
+          ...debugMessage,
           timing: {
             duration: duration,
           },
         });
         const snapshotFromFinalMessage = this.buildSubagentPayloadFromMessage(
-          enrichedMessage,
+          debugMessage,
           session.id,
         );
         if (snapshotFromFinalMessage) {
@@ -4626,7 +4618,7 @@ export class ChatViewProvider
         this.view?.webview.postMessage({
           type: "messageResponse",
           message: {
-            ...enrichedMessage,
+            ...debugMessage,
             timing: {
               duration: duration,
             },
@@ -4722,11 +4714,30 @@ export class ChatViewProvider
             err,
           );
         });
+
+        // Resolve the plan filename: prefer what the agent declared in structured
+        // output, then look for a matching filename in the message edits/patches,
+        // then fall back to the default. The viewer reads this to load the live
+        // file from disk so the user sees the exact content the agent wrote.
+        const editsForPlan: any[] = message.edits || [];
+        const partsForPlan: any[] = message.parts || [];
+        const editPlanFile: string | undefined =
+          editsForPlan.find((e: any) => e.file && planFilePattern.test(e.file))?.file ||
+          (() => {
+            for (const p of partsForPlan) {
+              if (p.type === "patch" && Array.isArray(p.files)) {
+                const f = p.files.find((f: string) => planFilePattern.test(f));
+                if (f) return f;
+              }
+            }
+            return undefined;
+          })();
+
         return {
           ...message,
           structuredOutput: structured,
           plan: {
-            file: structured.plan?.file || fallbackPlanFile,
+            file: structured.plan?.file || editPlanFile || fallbackPlanFile,
             content: structuredPlanContent,
             title: structured.plan?.title,
             summary: structured.plan?.summary,
@@ -5631,13 +5642,11 @@ export class ChatViewProvider
   }): Promise<void> {
     let planData: string | undefined;
 
-    // First, try to use the plan content directly if available
-    if (plan.content && typeof plan.content === "string") {
-      planData = plan.content;
-      console.log("[ChatViewProvider] Using plan content from message");
-    }
-    // Otherwise, if it looks like a filename, try to read the actual file
-    else if (
+    // Prefer the file on disk — it is the source of truth.
+    // The AI writes the actual plan via tool calls; the structured-output
+    // plan.content field may be an earlier draft or summary that differs
+    // from what ended up on disk.
+    if (
       plan.file &&
       plan.file.endsWith(".md") &&
       !plan.file.includes("\n")
@@ -5657,6 +5666,14 @@ export class ChatViewProvider
           err,
         );
       }
+    }
+
+    // Fall back to the structured-output content if the file could not be read
+    if (!planData && plan.content && typeof plan.content === "string") {
+      planData = plan.content;
+      console.log(
+        "[ChatViewProvider] Using plan content from structured output (file unavailable)",
+      );
     }
 
     // If we have plan data, show it

@@ -1709,7 +1709,23 @@ export function AssistantMessage({
     !streaming && thoughtItems.length === 0 && reasoningTok > 0;
   const thinkingPlaceholderText =
     "Reasoning tokens were used, but this provider did not expose reasoning text.";
-  const hasResponseContent = content.trim().length > 0 || !!plan;
+  const rawResponseText = useMemo(() => {
+    const raw = message?.rawResponse;
+    if (typeof raw === "undefined") {
+      return "";
+    }
+    if (typeof raw === "string") {
+      return raw;
+    }
+    try {
+      return JSON.stringify(raw, null, 2);
+    } catch {
+      return String(raw);
+    }
+  }, [message?.rawResponse]);
+  const hasRawResponseDebug = rawResponseText.trim().length > 0;
+  const hasPrimaryResponseBody = content.trim().length > 0 || !!plan;
+  const hasResponseContent = hasPrimaryResponseBody || hasRawResponseDebug;
   const isLiveStreamingCard = !message && !!streaming;
   const responseBodyClass = isLiveStreamingCard
     ? "w-full max-h-[340px] overflow-y-auto pr-1"
@@ -2260,6 +2276,24 @@ export function AssistantMessage({
                     View Plan
                   </button>
                   </div>
+                </div>
+              )}
+
+              {hasRawResponseDebug && (
+                <div
+                  data-assistant-section="raw-response-debug"
+                  className={
+                    hasPrimaryResponseBody
+                      ? "mt-3 pt-3 border-t border-oc-border/30"
+                      : undefined
+                  }
+                >
+                  <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                    Raw Response (Debug)
+                  </div>
+                  <pre className="max-h-[260px] overflow-auto rounded border border-oc-border bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-mono">
+                    {rawResponseText}
+                  </pre>
                 </div>
               )}
 
