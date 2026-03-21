@@ -302,6 +302,15 @@ function compactMessageForPersistence(message: unknown): unknown {
   if (typeof rec.role === "string") compact.role = rec.role;
   if (typeof rec.content === "string") compact.content = truncateString(rec.content);
   if (typeof rec.text === "string") compact.text = truncateString(rec.text);
+  if (typeof rec.plainTextFallback === "boolean") {
+    compact.plainTextFallback = rec.plainTextFallback;
+  }
+  if (typeof rec.plainTextFallbackMessage === "string") {
+    compact.plainTextFallbackMessage = truncateString(rec.plainTextFallbackMessage);
+  }
+  if (typeof rec.plainTextFallbackReason === "string") {
+    compact.plainTextFallbackReason = truncateString(rec.plainTextFallbackReason);
+  }
   if (rec.time) compact.time = sanitizeForPersistence(rec.time);
   if (rec.info) compact.info = sanitizeForPersistence(rec.info);
 
@@ -432,6 +441,67 @@ function getMessageCreatedTime(message: unknown): number {
   return 0;
 }
 
+function getMessageRoleForSignature(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  const rec = message as Record<string, unknown>;
+  if (typeof rec.role === "string" && rec.role.trim().length > 0) {
+    return rec.role;
+  }
+  const info = rec.info;
+  if (info && typeof info === "object") {
+    const infoRole = (info as Record<string, unknown>).role;
+    if (typeof infoRole === "string" && infoRole.trim().length > 0) {
+      return infoRole;
+    }
+  }
+  return "";
+}
+
+function getMessageTextForSignature(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+
+  const rec = message as Record<string, unknown>;
+  const content =
+    typeof rec.content === "string" ? rec.content : "";
+  const text =
+    typeof rec.text === "string" ? rec.text : "";
+  const direct = content || text;
+  if (direct.trim().length > 0) {
+    return direct.slice(0, 300);
+  }
+
+  const parts = Array.isArray(rec.parts) ? rec.parts : [];
+  const partText = parts
+    .map((part) => {
+      if (!part || typeof part !== "object") {
+        return "";
+      }
+      const partRec = part as Record<string, unknown>;
+      const type = typeof partRec.type === "string" ? partRec.type : "";
+      if (
+        type === "reasoning" ||
+        type === "thinking" ||
+        type === "thought"
+      ) {
+        return "";
+      }
+      const piece =
+        typeof partRec.text === "string"
+          ? partRec.text
+          : typeof partRec.content === "string"
+            ? partRec.content
+            : "";
+      return piece;
+    })
+    .join("")
+    .trim();
+  return partText.slice(0, 300);
+}
+
 function getMessageSignature(message: unknown): string {
   if (!message || typeof message !== "object") {
     return `primitive:${String(message)}`;
@@ -451,12 +521,10 @@ function getMessageSignature(message: unknown): string {
     return `id:${rootId}`;
   }
 
-  const role = typeof rec.role === "string" ? rec.role : "";
-  const content =
-    typeof rec.content === "string" ? rec.content.slice(0, 200) : "";
-  const text = typeof rec.text === "string" ? rec.text.slice(0, 200) : "";
+  const role = getMessageRoleForSignature(message);
+  const body = getMessageTextForSignature(message).slice(0, 200);
   const created = getMessageCreatedTime(message);
-  return `fallback:${role}|${created}|${content}|${text}`;
+  return `fallback:${role}|${created}|${body}`;
 }
 
 function normalizeSignatureText(value: unknown): string {
@@ -471,13 +539,10 @@ function getMessageFallbackSignature(message: unknown): string {
     return `fallback:${String(message)}`;
   }
 
-  const rec = message as Record<string, unknown>;
-  const role = typeof rec.role === "string" ? rec.role : "";
-  const content =
-    typeof rec.content === "string" ? rec.content.slice(0, 300) : "";
-  const text = typeof rec.text === "string" ? rec.text.slice(0, 300) : "";
+  const role = getMessageRoleForSignature(message);
+  const body = getMessageTextForSignature(message).slice(0, 300);
   const created = getMessageCreatedTime(message);
-  return `fallback:${role}|${created}|${content}|${text}`;
+  return `fallback:${role}|${created}|${body}`;
 }
 
 function getAssistantContentAliasSignature(message: unknown): string | undefined {

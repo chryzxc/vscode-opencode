@@ -328,6 +328,20 @@ export interface Message {
   created?: number;
   /** Optional error message if the generation failed */
   error?: string;
+  /** Optional retry hint: resend prompt without structured output schema */
+  retryWithoutStructuredOutput?: boolean;
+  /** Optional persistent retry status for UI banners */
+  retryState?: "retrying_without_structured_output";
+  /** Optional persistent retry banner message */
+  retryMessage?: string;
+  /** Optional retry banner timestamp */
+  retryStartedAt?: number;
+  /** Indicates this assistant message is a plain-text fallback after structured output failure. */
+  plainTextFallback?: boolean;
+  /** Short user-facing fallback note for hover/tooltips. */
+  plainTextFallbackMessage?: string;
+  /** Optional compact reason for fallback (debug-friendly). */
+  plainTextFallbackReason?: string;
 }
 
 export type StructuredResponseType = SharedStructuredResponseType;
@@ -470,6 +484,7 @@ export interface AppState {
     message?: string;
     error?: string;
   };
+  configFiles?: ConfigFilesState;
 }
 
 export interface AttachmentItem {
@@ -501,4 +516,19 @@ export interface PlanComment {
   text: string;
   createdAt: number;
   resolved?: boolean;
+}
+
+export interface ConfigFile {
+  name: string;
+  path: string;
+  content: string;
+  lastModified: number;
+  size: number;
+}
+
+export interface ConfigFilesState {
+  files: ConfigFile[];
+  activeFileName: string | null;
+  isSaving: boolean;
+  globalError: string;
 }

@@ -53,6 +53,7 @@ test('StructuredResponseType includes all required response types', () => {
   assert.ok(typeDefinition.includes('"todo_update"'), 'Should include todo_update type');
   assert.ok(typeDefinition.includes('"data"'), 'Should include data type');
   assert.ok(typeDefinition.includes('"error"'), 'Should include error type');
+  assert.ok(!typeDefinition.includes('"conversation"'), 'Should not include legacy conversation type');
 });
 
 test('structuredOutputSchema has correct top-level structure', () => {
@@ -88,6 +89,26 @@ test('responseType enum includes all valid types', () => {
   assert.ok(enumValues.includes('"todo_update"'), 'Enum should include todo_update');
   assert.ok(enumValues.includes('"data"'), 'Enum should include data');
   assert.ok(enumValues.includes('"error"'), 'Enum should include error');
+  assert.ok(!enumValues.includes('"conversation"'), 'Enum should not include legacy conversation');
+});
+
+test('schema defines top-level examples for all main response types', () => {
+  assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"message"/, 'Should include message example');
+  assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"implementation_plan"/, 'Should include implementation_plan example');
+  assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"progress_update"/, 'Should include progress_update example');
+  assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"subagents"/, 'Should include subagents example');
+  assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"question"/, 'Should include question example');
+  assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"todo_update"/, 'Should include todo_update example');
+  assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"data"/, 'Should include data example');
+  assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"error"/, 'Should include error example');
+});
+
+test('schema includes field-level examples for ambiguous payloads', () => {
+  assert.match(schemaSource, /assistantMessage:[\s\S]*?examples:/, 'assistantMessage should include examples');
+  assert.match(schemaSource, /options:[\s\S]*?examples:/, 'question.options should include examples');
+  assert.match(schemaSource, /content:[\s\S]*?examples:/, 'plan.content should include examples');
+  assert.match(schemaSource, /todoItems:[\s\S]*?examples:/, 'todoItems should include examples');
+  assert.match(schemaSource, /subagents:[\s\S]*?examples:/, 'subagents should include examples');
 });
 
 test('todoItems and data payloads are defined for extended structured types', () => {
@@ -98,12 +119,12 @@ test('todoItems and data payloads are defined for extended structured types', ()
 
 test('assistantMessage property is defined', () => {
   assert.match(schemaSource, /assistantMessage:\s*{[\s\S]*?type:\s*"string"/, 'assistantMessage should be string');
-  assert.match(schemaSource, /assistantMessage:[\s\S]*?description:[\s\S]*?"Primary user-facing/, 'assistantMessage should have description');
+  assert.match(schemaSource, /assistantMessage:[\s\S]*?description:[\s\S]*?"Required user-facing/, 'assistantMessage should have description');
 });
 
 test('message property is defined as legacy alias', () => {
   assert.match(schemaSource, /message:\s*{[\s\S]*?type:\s*"string"/, 'message should be string');
-  assert.match(schemaSource, /message:[\s\S]*?Legacy alias for assistantMessage/, 'message should indicate it is legacy');
+  assert.match(schemaSource, /message:[\s\S]*?Legacy compatibility alias for assistantMessage/, 'message should indicate it is legacy');
 });
 
 test('reasoning property is defined as array of strings', () => {

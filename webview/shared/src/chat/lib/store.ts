@@ -22,6 +22,8 @@ import type {
   SubagentSummary,
   StreamingState,
   StreamingStep,
+  ConfigFile,
+  ConfigFilesState,
 } from "./types";
 
 export const initialState: AppState = {
@@ -90,6 +92,7 @@ export const initialState: AppState = {
   contextUsagePct: undefined,
   opencodeConfig: undefined,
   opencodeConfigSaveStatus: undefined,
+  configFiles: undefined,
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
@@ -213,6 +216,14 @@ export type AppAction =
   | {
     type: "SET_OPENCODE_CONFIG_SAVE_STATUS";
     payload: AppState["opencodeConfigSaveStatus"];
+  }
+  | {
+    type: "SET_CONFIG_FILES_LIST";
+    payload: { files: ConfigFile[]; error?: string };
+  }
+  | {
+    type: "SET_CONFIG_FILE_SAVED";
+    payload: { filePath: string; success: boolean; error?: string };
   };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
@@ -1209,6 +1220,38 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, opencodeConfig: action.payload };
     case "SET_OPENCODE_CONFIG_SAVE_STATUS":
       return { ...state, opencodeConfigSaveStatus: action.payload };
+    case "SET_CONFIG_FILES_LIST": {
+      const configFilesState: ConfigFilesState = {
+        files: action.payload.files,
+        activeFileName: null,
+        isSaving: false,
+        globalError: action.payload.error || "",
+      };
+      return { ...state, configFiles: configFilesState };
+    }
+    case "SET_CONFIG_FILE_SAVED": {
+      if (!state.configFiles) return state;
+
+      if (action.payload.success) {
+        return {
+          ...state,
+          configFiles: {
+            ...state.configFiles,
+            isSaving: false,
+            globalError: "",
+          },
+        };
+      } else {
+        return {
+          ...state,
+          configFiles: {
+            ...state.configFiles,
+            isSaving: false,
+            globalError: action.payload.error || "Failed to save config file",
+          },
+        };
+      }
+    }
     default:
       return state;
   }

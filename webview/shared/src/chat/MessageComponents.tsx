@@ -90,6 +90,50 @@ function isReasoningPart(part: MessagePart): boolean {
   );
 }
 
+function isStructuredOutputFailureMessage(value?: string): boolean {
+  const normalized = (value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("structured output error") ||
+    normalized.includes("empty structured payload") ||
+    normalized.includes("valid structured response") ||
+    normalized.includes("json_schema") ||
+    normalized.includes("structuredoutput")
+  );
+}
+
+function patchMessageRetryState(
+  message: Message,
+  retryWithoutStructuredOutput: boolean,
+): Message {
+  const retryMessage = retryWithoutStructuredOutput
+    ? "Retrying without structured output..."
+    : "Retrying request...";
+  const existingParts = Array.isArray(message.parts) ? [...message.parts] : [];
+  const nextParts =
+    existingParts.length > 0
+      ? existingParts.map((part, index) => {
+          if (index === 0 && (part.type === "text" || !part.type)) {
+            return { ...part, type: "text", text: retryMessage };
+          }
+          return part;
+        })
+      : [{ type: "text", text: retryMessage }];
+  return {
+    ...message,
+    error: undefined,
+    content: retryMessage,
+    text: retryMessage,
+    parts: nextParts,
+    retryWithoutStructuredOutput,
+    retryState: retryWithoutStructuredOutput
+      ? "retrying_without_structured_output"
+      : undefined,
+    retryMessage,
+    retryStartedAt: Date.now(),
+  };
+}
+
 // Deterministic accent colors for subagents
 const SUBAGENT_COLORS = [
   "text-oc-orange",
@@ -356,16 +400,9 @@ function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
     }
   }
 
-  return (message?.parts ?? [])
-    .map((part: MessagePart, index: number) => {
-      const text =
-        part.reasoning ??
-        part.thought ??
-        part.thinking ??
-        (isReasoningPart(part) ? (part.text ?? part.content ?? "") : "");
-      return { key: `part-${index}`, text: text.trim() };
-    })
-    .filter((item: ThoughtItem) => item.text.length > 0);
+  // Do not derive visible thinking text from raw reasoning parts.
+  // Some providers include internal instruction/planning traces there.
+  return [];
 }
 
 function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
@@ -386,8 +423,8 @@ function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
     }
   }
 
-  const fallback = (streaming?.reasoning || "").trim();
-  return fallback ? [{ key: "stream-reasoning-fallback", text: fallback }] : [];
+  // Avoid showing raw streaming reasoning fallback text in the UI timeline.
+  return [];
 }
 
 function normalizeProgressStatus(
@@ -1710,22 +1747,45 @@ export function AssistantMessage({
   const thinkingPlaceholderText =
     "Reasoning tokens were used, but this provider did not expose reasoning text.";
   const rawResponseText = useMemo(() => {
+    const maxRawDebugChars = 30000;
+    const withCap = (value: string): string =>
+      value.length > maxRawDebugChars
+        ? `${value.slice(0, maxRawDebugChars)}\n...<truncated ${
+            value.length - maxRawDebugChars
+          } chars>`
+        : value;
     const raw = message?.rawResponse;
     if (typeof raw === "undefined") {
       return "";
     }
     if (typeof raw === "string") {
-      return raw;
+      return withCap(raw);
     }
     try {
-      return JSON.stringify(raw, null, 2);
+      return withCap(JSON.stringify(raw, null, 2));
     } catch {
-      return String(raw);
+      return withCap(String(raw));
     }
   }, [message?.rawResponse]);
   const hasRawResponseDebug = rawResponseText.trim().length > 0;
   const hasPrimaryResponseBody = content.trim().length > 0 || !!plan;
   const hasResponseContent = hasPrimaryResponseBody || hasRawResponseDebug;
+  const structuredRetryError =
+    !!message?.error &&
+    (message.retryWithoutStructuredOutput === true ||
+      isStructuredOutputFailureMessage(message.error));
+  const plainTextFallback = message?.plainTextFallback === true;
+  const plainTextFallbackTooltip = plainTextFallback
+    ? [
+        message.plainTextFallbackMessage ||
+          "Structured output failed for this turn. Showing plain text response.",
+        message.plainTextFallbackReason
+          ? `Reason: ${message.plainTextFallbackReason}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
   const isLiveStreamingCard = !message && !!streaming;
   const responseBodyClass = isLiveStreamingCard
     ? "w-full max-h-[340px] overflow-y-auto pr-1"
@@ -1742,6 +1802,41 @@ export function AssistantMessage({
     await navigator.clipboard.writeText(content);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
+  };
+  const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
+    dispatch({ type: "SET_PROCESSING", payload: true });
+    dispatch({ type: "CLEAR_ERROR_MESSAGES" });
+    const targetMessageIndex = state.messages.findIndex((candidate) => {
+      if (messageId) {
+        const candidateId = candidate.info?.id ?? candidate.id;
+        return candidateId === messageId;
+      }
+      return candidate === message;
+    });
+    if (targetMessageIndex >= 0) {
+      let persistedPatchedMessage: Message | undefined;
+      const nextMessages = state.messages.map((candidate, index) => {
+        if (index !== targetMessageIndex) return candidate;
+        const patched = patchMessageRetryState(
+          candidate,
+          retryWithoutStructuredOutput,
+        );
+        persistedPatchedMessage = patched;
+        return patched;
+      });
+      dispatch({ type: "SET_MESSAGES", payload: nextMessages });
+      if (state.currentSessionId && persistedPatchedMessage) {
+        vscode.postMessage({
+          type: "persistAssistantMessage",
+          sessionId: state.currentSessionId,
+          message: persistedPatchedMessage,
+        });
+      }
+    }
+    vscode.postMessage({
+      type: "retryLastMessage",
+      retryWithoutStructuredOutput,
+    });
   };
   const openSubagentModal = (subagentId: string) => {
     setSelectedSubagentId(subagentId);
@@ -1955,6 +2050,15 @@ export function AssistantMessage({
               )}
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              {plainTextFallback && (
+                <span
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-oc-border text-oc-text-muted"
+                  title={plainTextFallbackTooltip}
+                  aria-label={plainTextFallbackTooltip}
+                >
+                  <AlertCircle className="h-3.5 w-3.5 text-oc-yellow" />
+                </span>
+              )}
               <button
                 type="button"
                 className="oc-msg-copy-btn h-6 w-6"
@@ -2307,15 +2411,41 @@ export function AssistantMessage({
           )}
         </div>
 
-        {message?.error && (
+        {message?.error && !structuredRetryError && (
           <div className="mt-2">
+            {(() => {
+              const retryWithoutStructuredOutput =
+                message.retryWithoutStructuredOutput === true ||
+                isStructuredOutputFailureMessage(message.error);
+              return (
             <ErrorBanner
               message={message.error}
+              retryLabel={
+                retryWithoutStructuredOutput
+                  ? "Retry Without Structured Output"
+                  : "Retry"
+              }
+              retryHint={
+                retryWithoutStructuredOutput
+                  ? "This will resend your last prompt as plain text (no json_schema)."
+                  : undefined
+              }
               onRetry={() => {
-                dispatch({ type: "SET_PROCESSING", payload: true });
-                dispatch({ type: "CLEAR_ERROR_MESSAGES" });
-                vscode.postMessage({ type: "retryLastMessage" });
+                retryLastMessage(retryWithoutStructuredOutput);
               }}
+            />
+              );
+            })()}
+          </div>
+        )}
+
+        {message?.retryState === "retrying_without_structured_output" && (
+          <div className="mt-2">
+            <InfoBanner
+              message={
+                message.retryMessage ||
+                "Retrying without structured output..."
+              }
             />
           </div>
         )}
@@ -2583,9 +2713,13 @@ export function PermissionCard({ perm }: { perm: unknown }) {
 export function ErrorBanner({
   message,
   onRetry,
+  retryLabel,
+  retryHint,
 }: {
   message: string;
   onRetry?: () => void;
+  retryLabel?: string;
+  retryHint?: string;
 }) {
   const errorDetails =
     typeof message === "string" && message.trim().length > 0
@@ -2621,10 +2755,41 @@ export function ErrorBanner({
               className="inline-flex items-center gap-1.5 rounded-md border border-[#ef444480] bg-[#ef444426] px-2.5 py-1 text-[11px] font-medium text-[#fecaca] transition-all hover:bg-[#ef444440] active:scale-95"
             >
               <RotateCw className="h-3 w-3" />
-              <span>Retry</span>
+              <span>{retryLabel || "Retry"}</span>
             </button>
           </div>
         )}
+        {retryHint ? (
+          <div className="text-[10px] leading-snug text-[#fca5a5]">{retryHint}</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function InfoBanner({ message }: { message: string }) {
+  const infoDetails =
+    typeof message === "string" && message.trim().length > 0
+      ? message.trim()
+      : "Working...";
+
+  return (
+    <div className="mb-2 px-4">
+      <div className="flex flex-col gap-2 rounded-lg border border-[#2563eb80] bg-[#1e3a8a26] p-2.5 text-oc-xs text-[#dbeafe] shadow-[0_4px_14px_rgba(30,58,138,0.18)] transition-all duration-200">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-[#60a5fa80] bg-[#3b82f626]">
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[#93c5fd]" />
+          </span>
+          <span className="text-[10px] font-semibold uppercase tracking-[0.07em] text-[#93c5fd]">
+            Retrying
+          </span>
+        </div>
+
+        <div className="rounded-md border border-[#3b82f640] bg-[#1e40af33] px-2 py-1.5">
+          <div className="overflow-hidden text-[11px] leading-snug text-[#dbeafe] whitespace-pre-wrap break-words">
+            {infoDetails}
+          </div>
+        </div>
       </div>
     </div>
   );

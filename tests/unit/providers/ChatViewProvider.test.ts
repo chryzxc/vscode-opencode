@@ -933,6 +933,17 @@ describe('ChatViewProvider', () => {
       expect(structured.plan.content).toEqual(longPlan);
     });
 
+    it('normalizeStructuredOutput maps legacy conversation responseType to message', () => {
+      const structured = (chatViewProvider as any).normalizeStructuredOutput({
+        responseType: 'conversation',
+        assistantMessage: 'Hello from legacy payload',
+      });
+
+      expect(structured).toBeTruthy();
+      expect(structured.responseType).toBe('message');
+      expect(structured.assistantMessage).toBe('Hello from legacy payload');
+    });
+
     it('normalizeStructuredOutput suppresses plan when clarification-like questionnaire detected', () => {
       const clarification = [
         'Could you clarify the scope?',

@@ -29,6 +29,7 @@ import {
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { ConfigSidebar } from "./ConfigSidebar";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -4680,3 +4681,5 @@ export function SettingsPanel() {
     </div>
   );
 }
+
+export { ConfigSidebar } from './ConfigSidebar';

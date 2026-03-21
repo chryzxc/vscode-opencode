@@ -155,11 +155,11 @@ test('validateStructuredOutput validates plan object', () => {
   assert.match(fnBody, /plan must be an object/, 'Should include plan error message');
 });
 
-test('validateStructuredOutput rejects deprecated interactiveEvents key', () => {
+test('validateStructuredOutput validates interactiveEvents compatibility key', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
-  assert.match(fnBody, /typeof record\.interactiveEvents !== "undefined"/, 'Should check deprecated interactiveEvents key');
-  assert.match(fnBody, /interactiveEvents is no longer supported; use question object/, 'Should include deprecation error');
+  assert.match(fnBody, /typeof record\.interactiveEvents !== "undefined"/, 'Should check interactiveEvents compatibility key');
+  assert.match(fnBody, /interactiveEvents must be an array/, 'Should validate interactiveEvents as an array');
 });
 
 test('validateStructuredOutput validates question payload type', () => {
@@ -258,8 +258,7 @@ test('validateStructuredOutput validates question responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
   assert.match(fnBody, /if \(responseType === "question"\)/, 'Should check for question responseType');
-  assert.match(fnBody, /!record\.question \|\| typeof record\.question !== "object"/, 'Should validate question object exists');
-  assert.match(fnBody, /question responseType requires question object/, 'Should include question object error');
+  assert.match(fnBody, /question responseType requires question object or interactiveEvents/, 'Should include question payload contract error');
 });
 
 test('validateStructuredOutput validates progress_update responseType', () => {
@@ -378,7 +377,7 @@ test('validator handles all response type specific requirements', () => {
   assert.match(validatorSource, /subagents responseType requires subagents array or subagentsDelta\.items/, 'Should enforce subagents requirements');
 
   // question
-  assert.match(validatorSource, /question responseType requires question object/, 'Should enforce question object requirement');
+  assert.match(validatorSource, /question responseType requires question object or interactiveEvents/, 'Should enforce question payload requirement');
 
   // progress_update
   assert.match(validatorSource, /progress_update responseType requires progressUpdates array/, 'Should enforce progress_update requirements');
@@ -389,4 +388,9 @@ test('validator handles all response type specific requirements', () => {
 
   // message
   assert.match(validatorSource, /message responseType requires assistantMessage or message string/, 'Should enforce message requirements');
+  assert.doesNotMatch(
+    validatorSource,
+    /message\/conversation responseType requires assistantMessage or message string/,
+    'Should not include legacy conversation wording in canonical validation errors',
+  );
 });

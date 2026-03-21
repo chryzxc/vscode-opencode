@@ -8,6 +8,7 @@ export type StructuredOutputValidationResult = {
 const TOP_LEVEL_FIELDS = Object.keys(
   structuredOutputSchema.schema.properties ?? {},
 );
+const LEGACY_COMPAT_TOP_LEVEL_FIELDS = new Set(["interactiveEvents"]);
 
 const RESPONSE_TYPES = new Set(
   (structuredOutputSchema.schema.properties as { responseType?: { enum?: string[] } })
@@ -41,7 +42,9 @@ export function validateStructuredOutput(
   const record = value as Record<string, unknown>;
   const errors: string[] = [];
   const unknownTopLevelFields = Object.keys(record).filter(
-    (key) => !TOP_LEVEL_FIELDS.includes(key),
+    (key) =>
+      !TOP_LEVEL_FIELDS.includes(key) &&
+      !LEGACY_COMPAT_TOP_LEVEL_FIELDS.has(key),
   );
   if (unknownTopLevelFields.length > 0) {
     errors.push(
@@ -145,8 +148,86 @@ export function validateStructuredOutput(
     }
   }
 
+  let hasCompatibleInteractivePayload = false;
   if (typeof record.interactiveEvents !== "undefined") {
-    errors.push("interactiveEvents is no longer supported; use question object");
+    if (!Array.isArray(record.interactiveEvents)) {
+      errors.push("interactiveEvents must be an array");
+    } else {
+      record.interactiveEvents.forEach((entry, index) => {
+        const eventRecord = asRecord(entry);
+        if (!eventRecord) {
+          errors.push(`interactiveEvents[${index}] must be an object`);
+          return;
+        }
+        const eventType = typeof eventRecord.type === "string"
+          ? eventRecord.type
+          : "";
+        if (eventType && !VALID_INTERACTIVE_TYPES.has(eventType)) {
+          errors.push(`interactiveEvents[${index}].type invalid: ${eventType}`);
+          return;
+        }
+        if (!eventType) {
+          return;
+        }
+
+        hasCompatibleInteractivePayload = true;
+
+        if (eventType === "question") {
+          if (!isNonEmptyString(eventRecord.question)) {
+            errors.push(
+              `interactiveEvents[${index}] question event requires question text`,
+            );
+          }
+          const allowCustomInput = eventRecord.allowCustomInput === true;
+          const options = Array.isArray(eventRecord.options)
+            ? eventRecord.options
+            : [];
+          const validOptionCount = options.filter((option) => {
+            if (!option || typeof option !== "object") {
+              return false;
+            }
+            const optionRecord = option as Record<string, unknown>;
+            return (
+              isNonEmptyString(optionRecord.label) ||
+              isNonEmptyString(optionRecord.value)
+            );
+          }).length;
+          if (!allowCustomInput && validOptionCount < 2) {
+            errors.push(
+              `interactiveEvents[${index}] question interactive event requires at least two options`,
+            );
+          }
+        }
+
+        if (eventType === "confirm" && !isNonEmptyString(eventRecord.question)) {
+          errors.push(
+            `interactiveEvents[${index}] confirm event requires question text`,
+          );
+        }
+
+        if (eventType === "quick_actions") {
+          const actions = Array.isArray(eventRecord.actions)
+            ? eventRecord.actions
+            : [];
+          if (actions.length === 0) {
+            errors.push(
+              `interactiveEvents[${index}] quick_actions event requires actions array`,
+            );
+          }
+        }
+
+        if (eventType === "message") {
+          const hasMessageText =
+            isNonEmptyString(eventRecord.message) ||
+            isNonEmptyString(eventRecord.content);
+          if (!hasMessageText) {
+            errors.push(
+              `interactiveEvents[${index}] message event requires message/content text`,
+            );
+          }
+        }
+      });
+    }
   }
 
   if (typeof record.question !== "undefined") {
@@ -297,8 +378,11 @@ export function validateStructuredOutput(
   }
 
   if (responseType === "question") {
-    if (!record.question || typeof record.question !== "object") {
-      errors.push("question responseType requires question object");
+    if (
+      (!record.question || typeof record.question !== "object") &&
+      !hasCompatibleInteractivePayload
+    ) {
+      errors.push("question responseType requires question object or interactiveEvents");
     }
   }
 
@@ -370,7 +454,9 @@ export function validateStructuredOutput(
         ? record.message
         : undefined;
     if (!assistantMessage && !legacyMessage) {
-      errors.push("message responseType requires assistantMessage or message string");
+      errors.push(
+        "message responseType requires assistantMessage or message string",
+      );
     }
   }
 
@@ -403,6 +489,11 @@ export function sanitizeStructuredOutput(
 ): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {};
   TOP_LEVEL_FIELDS.forEach((key) => {
+    if (typeof value[key] !== "undefined") {
+      sanitized[key] = value[key];
+    }
+  });
+  LEGACY_COMPAT_TOP_LEVEL_FIELDS.forEach((key) => {
     if (typeof value[key] !== "undefined") {
       sanitized[key] = value[key];
     }

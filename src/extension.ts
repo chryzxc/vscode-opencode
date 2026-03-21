@@ -31,6 +31,7 @@ import { ChatViewProvider } from "./providers/ChatViewProvider";
 import { StatusBarProvider } from "./providers/StatusBarProvider";
 import { PlanViewProvider } from "./providers/PlanViewProvider";
 import { DiffReviewProvider } from "./providers/DiffReviewProvider";
+import { ConfigFilesProvider, type ConfigFile } from "./providers/ConfigFilesProvider";
 import { createLogger, logger } from "./utils/Logger";
 
 const log = createLogger("Extension");
@@ -134,6 +135,40 @@ export async function activate(context: vscode.ExtensionContext) {
         "opencode.chatView",
         chatViewProvider,
       ),
+    );
+
+    // ============================================================================
+    // Config Files Provider Setup
+    // ============================================================================
+    const configFilesProvider = new ConfigFilesProvider();
+
+    context.subscriptions.push(
+      vscode.commands.registerCommand('opencode.getConfigFiles', async () => {
+        try {
+          const files = await configFilesProvider.scanFiles();
+          return { success: true, files };
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+          vscode.window.showErrorMessage(`Failed to scan config files: ${errorMsg}`);
+          return { success: false, error: errorMsg, files: [] };
+        }
+      })
+    );
+
+    context.subscriptions.push(
+      vscode.commands.registerCommand('opencode.saveConfigFile', async (filePath: string, content: string) => {
+        try {
+          const result = await configFilesProvider.saveFile(filePath, content);
+          if (!result.success) {
+            vscode.window.showErrorMessage(`Failed to save: ${result.error}`);
+          }
+          return result;
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+          vscode.window.showErrorMessage(`Failed to save config file: ${errorMsg}`);
+          return { success: false, error: errorMsg };
+        }
+      })
     );
 
     // ============================================================================

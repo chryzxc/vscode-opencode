@@ -36,6 +36,18 @@ type StreamViewportState = {
 
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
 
+function isStructuredOutputFailureMessage(value?: string): boolean {
+  const normalized = (value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("structured output error") ||
+    normalized.includes("empty structured payload") ||
+    normalized.includes("valid structured response") ||
+    normalized.includes("json_schema") ||
+    normalized.includes("structuredoutput")
+  );
+}
+
 function CompactionDivider({ at }: { at?: number }) {
   const label =
     typeof at === "number"
@@ -200,9 +212,59 @@ function ChatContent() {
             <EmptyState />
           ) : null}
 
-          {state.errorMessages.map((msg) => (
-            <ErrorBanner key={`err-${msg}`} message={msg} />
-          ))}
+          {state.errorMessages.map((msg) => {
+            const retryWithoutStructuredOutput =
+              isStructuredOutputFailureMessage(msg);
+            if (retryWithoutStructuredOutput) {
+              return null;
+            }
+            return (
+              <ErrorBanner
+                key={`err-${msg}`}
+                message={msg}
+                retryLabel={
+                  retryWithoutStructuredOutput ? "Retry Without Structured Output" : "Retry"
+                }
+                retryHint={
+                  retryWithoutStructuredOutput
+                    ? "This will resend your last prompt as plain text (no json_schema)."
+                    : undefined
+                }
+                onRetry={() => {
+                  dispatch({ type: "SET_PROCESSING", payload: true });
+                  dispatch({ type: "CLEAR_ERROR_MESSAGES" });
+                  if (retryWithoutStructuredOutput) {
+                    const retryText = "Retrying without structured output...";
+                    const retryMessage: Message = {
+                      id: `retry-info-${Date.now()}`,
+                      role: "assistant",
+                      content: retryText,
+                      text: retryText,
+                      parts: [{ type: "text", text: retryText }],
+                      retryWithoutStructuredOutput: true,
+                      retryState: "retrying_without_structured_output",
+                      retryMessage: retryText,
+                      retryStartedAt: Date.now(),
+                      created: Date.now(),
+                    };
+                    const nextMessages = [...state.messages, retryMessage];
+                    dispatch({ type: "SET_MESSAGES", payload: nextMessages });
+                    if (state.currentSessionId) {
+                      vscode.postMessage({
+                        type: "persistAssistantMessage",
+                        sessionId: state.currentSessionId,
+                        message: retryMessage,
+                      });
+                    }
+                  }
+                  vscode.postMessage({
+                    type: "retryLastMessage",
+                    retryWithoutStructuredOutput,
+                  });
+                }}
+              />
+            );
+          })}
 
           {hasCompactedSegment ? (
             <div className="-mx-4 py-2">

@@ -110,6 +110,7 @@ import { MessageStreamService } from "../services/MessageStreamService";
 import type { Command as SdkCommand, SessionPromptData } from "@opencode-ai/sdk";
 import { QuotaService } from "../services/QuotaService";
 import { RequestBudgeter } from "../services/RequestBudgeter";
+import type { ConfigFile } from "./ConfigFilesProvider";
 import {
   SubagentTracker,
   type SubagentUpdatePayload,
@@ -340,6 +341,16 @@ type StructuredAssistantOutput = {
   };
 };
 
+const STRUCTURED_RESPONSE_TYPES = new Set(
+  (
+    (
+      structuredOutputSchema.schema.properties as {
+        responseType?: { enum?: string[] };
+      }
+    ).responseType?.enum ?? []
+  ).map((value) => value.toLowerCase()),
+);
+
 /**
  * Provides the chat interface webview for the OpenCode extension.
  *
@@ -460,9 +471,10 @@ export class ChatViewProvider
     images?: any[];
     agent?: string;
   };
-  private structuredOutputMode: "format" | "disabled" = "format";
+  private structuredOutputMode: "format" | "outputFormat" | "disabled" = "format";
   private readonly promptDebugBySession = new Map<string, Record<string, unknown>>();
   private readonly structuredValidationFailureCounters = new Map<string, number>();
+  private readonly structuredOutputIncompatibleModelKeys = new Set<string>();
   private modelsFetchPromise: Promise<ChatModelOption[]> | null = null;
   private commandCatalog: ChatSlashCommand[] = [];
   private commandCatalogFetchedAt = 0;
@@ -709,16 +721,7 @@ export class ChatViewProvider
             break;
           }
 
-          const contextPrefix = this.firstNonEmptyString(
-            message?.eventType,
-            message?.eventId,
-          )
-            ? `[interactive:${this.firstNonEmptyString(
-              message?.eventType,
-              "event",
-            )}:${this.firstNonEmptyString(message?.eventId, "unknown")}] `
-            : "";
-          const composedPrompt = `${contextPrefix}${choiceText}`;
+          const composedPrompt = choiceText;
 
           await this.schedulePromptDispatch(
             this.isProcessingRequest ? "queue" : "send-now",
@@ -741,11 +744,12 @@ export class ChatViewProvider
           }
 
           const composedPrompt = responses
-            .map((resp) => {
-              const contextPrefix = `[interactive:${resp.eventType || "event"}:${resp.eventId || "unknown"}] `;
-              return `${contextPrefix}${resp.text}`;
-            })
+            .map((resp) => this.firstNonEmptyString(resp.text) || "")
+            .filter((value) => value.length > 0)
             .join("\n");
+          if (!composedPrompt) {
+            break;
+          }
 
           await this.schedulePromptDispatch(
             this.isProcessingRequest ? "queue" : "send-now",
@@ -1027,6 +1031,8 @@ export class ChatViewProvider
         }
         case "retryLastMessage": {
           if (this.lastSendMessageArgs && !this.isProcessingRequest) {
+            const retryWithoutStructuredOutput =
+              message.retryWithoutStructuredOutput === true;
             if (this.currentSessionId) {
               try {
                 const rawMessages = await this.sessionService.getMessages(
@@ -1049,6 +1055,8 @@ export class ChatViewProvider
               this.lastSendMessageArgs.images,
               this.lastSendMessageArgs.agent,
               true,
+              undefined,
+              retryWithoutStructuredOutput,
             );
           }
           break;
@@ -1076,6 +1084,78 @@ export class ChatViewProvider
               err instanceof Error ? err : undefined,
             ),
           );
+          break;
+        }
+        case "getConfigFilesList": {
+          try {
+            const response = await vscode.commands.executeCommand<{
+              success: boolean;
+              error?: string;
+              files: ConfigFile[];
+            }>('opencode.getConfigFiles');
+
+            this.view?.webview.postMessage({
+              type: 'configFilesList',
+              success: response.success,
+              error: response.error,
+              files: response.files ?? []
+            });
+          } catch (err) {
+            log.error(
+              "getConfigFilesList error",
+              {},
+              err instanceof Error ? err : undefined,
+            );
+            this.view?.webview.postMessage({
+              type: 'configFilesList',
+              success: false,
+              error: err instanceof Error ? err.message : 'Unknown error',
+              files: []
+            });
+          }
+          break;
+        }
+        case "saveConfigFile": {
+          try {
+            // Input validation
+            if (!message.filePath || typeof message.filePath !== 'string') {
+              throw new Error('Invalid or missing filePath');
+            }
+            if (!message.content || typeof message.content !== 'string') {
+              throw new Error('Invalid or missing content');
+            }
+
+            const saveResult = await vscode.commands.executeCommand<{
+              success: boolean;
+              error?: string;
+            }>(
+              'opencode.saveConfigFile',
+              message.filePath,
+              message.content
+            );
+
+            // Null check for saveResult
+            if (!saveResult) {
+              throw new Error('No response from saveConfigFile command');
+            }
+
+            this.view?.webview.postMessage({
+              type: 'configFileSaved',
+              success: saveResult?.success ?? false,
+              error: saveResult?.error
+            });
+          } catch (err) {
+            log.error(
+              "saveConfigFile error",
+              {},
+              err instanceof Error ? err : undefined,
+            );
+            this.view?.webview.postMessage({
+              type: 'configFileSaved',
+              success: false,
+              error: err instanceof Error ? err.message : 'Unknown error'
+            });
+          }
           break;
         }
         case "planProceed": {
@@ -1626,8 +1706,8 @@ export class ChatViewProvider
       "Set responseType explicitly and keep message concise for chat rendering.",
       "responseType rules:",
       "- implementation_plan: put full markdown only in plan.content, include plan.title, keep message short.",
-      "- question/interactive: use interactiveEvents only; do not infer or mix with plain prose questions.",
-      "- If you need clarifications before planning, use responseType question/interactive with interactiveEvents and do not emit implementation_plan.",
+      "- question: use top-level question object (type/question/options). Do not return plain prose questions.",
+      "- If you need clarifications before planning, use responseType question with question payload and do not emit implementation_plan.",
       "- progress_update: use progressUpdates for machine-readable steps.",
       "- subagents: include subagents[] with id/name/status/latestActivity and optional progress/thinking/timeline events.",
       "For subagent updates, prioritize structured fields over narrative text so the UI can render clickable subagent cards.",
@@ -1635,7 +1715,26 @@ export class ChatViewProvider
   }
 
   private getStructuredOutputFormat(): Record<string, unknown> {
-    return structuredOutputSchema as Record<string, unknown>;
+    const topLevel = structuredOutputSchema as unknown as Record<string, unknown>;
+    const schemaRecord = this.asRecord(topLevel.schema);
+    const properties = this.asRecord(schemaRecord?.properties) ?? {};
+    const required = Array.isArray(schemaRecord?.required)
+      ? (schemaRecord?.required as string[]).filter(
+        (item) => typeof item === "string" && item.trim().length > 0,
+      )
+      : ["responseType"];
+
+    // Send a docs-style minimal JSON schema to maximize compatibility across providers.
+    return {
+      type: "json_schema",
+      retryCount:
+        typeof topLevel.retryCount === "number" ? topLevel.retryCount : 1,
+      schema: {
+        type: "object",
+        properties,
+        required,
+      },
+    };
   }
 
   private getWorkspaceDirectory(): string | undefined {
@@ -1682,37 +1781,43 @@ export class ChatViewProvider
       return callPrompt(body as Record<string, unknown>);
     }
 
-    // Prefer documented `format` field (SDK docs), then fall back to
-    // `outputFormat` for server versions that still expect it.
-    let attempt = await callPrompt({
+    const withSchema = (
+      mode: "format" | "outputFormat",
+    ): Record<string, unknown> => ({
       ...(body as Record<string, unknown>),
-      format: schema,
+      [mode]: schema,
     });
 
-    if (
-      attempt.error &&
-      this.isStructuredFormatUnsupportedError(attempt.error)
-    ) {
-      // Backward-compat fallback
-      attempt = await callPrompt({
-        ...(body as Record<string, unknown>),
-        outputFormat: schema,
-      });
+    const primaryMode: "format" | "outputFormat" =
+      this.structuredOutputMode === "outputFormat"
+        ? "outputFormat"
+        : "format";
+    const primaryAttempt = await callPrompt(withSchema(primaryMode));
+    if (!primaryAttempt.error) {
+      return primaryAttempt;
     }
 
-    if (!attempt.error) {
-      return attempt;
+    if (!this.isStructuredFormatUnsupportedError(primaryAttempt.error)) {
+      return primaryAttempt;
     }
 
-    if (!this.isStructuredFormatUnsupportedError(attempt.error)) {
-      return attempt;
+    const secondaryMode: "format" | "outputFormat" =
+      primaryMode === "format" ? "outputFormat" : "format";
+    const secondaryAttempt = await callPrompt(withSchema(secondaryMode));
+    if (!secondaryAttempt.error) {
+      this.structuredOutputMode = secondaryMode;
+      return secondaryAttempt;
     }
 
-    this.structuredOutputMode = "disabled";
-    log.warn(
-      "Structured output format is not supported by this OpenCode server version. Falling back to plain prompts.",
-    );
-    return callPrompt(body as Record<string, unknown>);
+    if (this.isStructuredFormatUnsupportedError(secondaryAttempt.error)) {
+      this.structuredOutputMode = "disabled";
+      log.warn(
+        "Structured output format is not supported by this OpenCode server version. Falling back to plain prompts.",
+      );
+      return callPrompt(body as Record<string, unknown>);
+    }
+
+    return secondaryAttempt;
   }
 
   private shouldUseStructuredOutput(
@@ -1720,6 +1825,13 @@ export class ChatViewProvider
     _agent?: string,
   ): boolean {
     if (this.structuredOutputMode === "disabled") {
+      return false;
+    }
+    const modelKey = this.getSelectedStructuredOutputModelKey();
+    if (
+      modelKey &&
+      this.structuredOutputIncompatibleModelKeys.has(modelKey)
+    ) {
       return false;
     }
 
@@ -1767,6 +1879,40 @@ export class ChatViewProvider
     return undefined;
   }
 
+  private getStructuredOutputModelKey(
+    providerID?: string,
+    modelID?: string,
+  ): string | undefined {
+    const provider = this.firstNonEmptyString(providerID)?.toLowerCase();
+    const model = this.firstNonEmptyString(modelID)?.toLowerCase();
+    if (!provider || !model) {
+      return undefined;
+    }
+    return `${provider}/${model}`;
+  }
+
+  private getSelectedStructuredOutputModelKey(): string | undefined {
+    return this.getStructuredOutputModelKey(
+      this.selectedModel.providerID,
+      this.selectedModel.modelID,
+    );
+  }
+
+  private isLikelyToolCallTranscript(text: string): boolean {
+    const normalized = text.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    return (
+      normalized.includes("<tool_call>") ||
+      normalized.includes("</tool_call>") ||
+      normalized.includes("<arg_key>") ||
+      normalized.includes("</arg_key>") ||
+      normalized.includes("<arg_value>") ||
+      normalized.includes("</arg_value>")
+    );
+  }
+
   private normalizeErrorCandidate(value: unknown): string | undefined {
     if (typeof value !== "string") {
       return undefined;
@@ -1784,6 +1930,33 @@ export class ChatViewProvider
       normalized === "network error" ||
       normalized === "network request failed" ||
       normalized === "unknown error"
+    );
+  }
+
+  private isStructuredOutputTransportError(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    return (
+      normalized.includes("structuredoutput") ||
+      normalized.includes("structured output") ||
+      normalized.includes("json_schema") ||
+      normalized.includes("invalid schema for function") ||
+      normalized.includes("invalid_function_parameters")
+    );
+  }
+
+  private isStructuredOutputFailureMessage(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    return (
+      this.isStructuredOutputTransportError(normalized) ||
+      normalized.includes("empty structured payload") ||
+      normalized.includes("valid structured response") ||
+      normalized.includes("couldn't produce a valid structured response")
     );
   }
 
@@ -1917,7 +2090,7 @@ export class ChatViewProvider
 
   private isInteractiveResponseType(value: unknown): boolean {
     const responseType = this.firstNonEmptyString(value)?.toLowerCase();
-    return responseType === "question" || responseType === "interactive";
+    return responseType === "question";
   }
 
   private isClarificationQuestionnaire(content: unknown): boolean {
@@ -2801,6 +2974,27 @@ export class ChatViewProvider
     return walk(value, 0);
   }
 
+  private buildRawResponseDebugText(value: unknown): string {
+    const maxChars = 30000;
+    let text: string;
+    try {
+      text = JSON.stringify(this.sanitizeDebugPayload(value), null, 2);
+    } catch {
+      try {
+        text = String(value);
+      } catch {
+        text = "<unserializable response payload>";
+      }
+    }
+    if (!text) {
+      return "";
+    }
+    if (text.length <= maxChars) {
+      return text;
+    }
+    return `${text.slice(0, maxChars)}\n...<truncated ${text.length - maxChars} chars>`;
+  }
+
   private getDebugFilePath(): string | undefined {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder || workspaceFolder.uri.scheme !== "file") {
@@ -2950,6 +3144,41 @@ export class ChatViewProvider
     const nextCount =
       (this.structuredValidationFailureCounters.get(key) || 0) + 1;
     this.structuredValidationFailureCounters.set(key, nextCount);
+    const modelKey = this.getStructuredOutputModelKey(providerID, modelID);
+    const sourceLower = (diagnostics?.source || "").toLowerCase();
+    const cameFromStructuredPayload =
+      sourceLower.includes("structured") ||
+      sourceLower.includes("parts[].state.input") ||
+      sourceLower.includes("parts[].state.result");
+    const missingRequiredMessagePayload = errors.some(
+      (error) =>
+        error.includes("responseType is required") ||
+        error.includes(
+          "message responseType requires assistantMessage or message string",
+        ),
+    );
+    const hasNoRenderableMessage = !this.firstNonEmptyString(
+      record.assistantMessage,
+      record.message,
+    );
+
+    if (
+      modelKey &&
+      cameFromStructuredPayload &&
+      missingRequiredMessagePayload &&
+      hasNoRenderableMessage &&
+      !this.structuredOutputIncompatibleModelKeys.has(modelKey)
+    ) {
+      this.structuredOutputIncompatibleModelKeys.add(modelKey);
+      this.logger.warn(
+        "Detected empty structured payload pattern; disabling structured-output mode for this model",
+        {
+          modelKey,
+          source: diagnostics?.source,
+          errors,
+        },
+      );
+    }
 
     const shouldLogAggregate =
       nextCount === 1 ||
@@ -2992,7 +3221,62 @@ export class ChatViewProvider
       return undefined;
     }
 
-    const validation = validateStructuredOutput(rec);
+    const sanitizedRec = sanitizeStructuredOutput(rec);
+    const assistantMessageCandidate = this.firstNonEmptyString(
+      sanitizedRec.assistantMessage,
+      sanitizedRec.message,
+    );
+
+    let responseTypeRaw =
+      this.firstNonEmptyString(
+        sanitizedRec.responseType,
+        rec.type,
+        rec.kind,
+        rec.category,
+      ) ||
+      (assistantMessageCandidate ? "message" : undefined);
+
+    if (responseTypeRaw?.toLowerCase() === "conversation") {
+      responseTypeRaw = "message";
+    }
+    if (responseTypeRaw?.toLowerCase() === "interactive") {
+      responseTypeRaw = "question";
+    }
+
+    if (
+      responseTypeRaw &&
+      !STRUCTURED_RESPONSE_TYPES.has(responseTypeRaw.toLowerCase())
+    ) {
+      responseTypeRaw = assistantMessageCandidate ? "message" : undefined;
+    }
+
+    if (!responseTypeRaw) {
+      return undefined;
+    }
+
+    let canonicalRec: Record<string, unknown> = {
+      ...sanitizedRec,
+      responseType: responseTypeRaw,
+    };
+    if (
+      assistantMessageCandidate &&
+      !this.firstNonEmptyString(
+        canonicalRec.assistantMessage,
+        canonicalRec.message,
+      )
+    ) {
+      canonicalRec.assistantMessage = assistantMessageCandidate;
+    }
+
+    let validation = validateStructuredOutput(canonicalRec);
+    if (!validation.valid && assistantMessageCandidate) {
+      canonicalRec = {
+        responseType: "message",
+        assistantMessage: assistantMessageCandidate,
+        message: assistantMessageCandidate,
+      };
+      validation = validateStructuredOutput(canonicalRec);
+    }
     if (!validation.valid) {
       this.logger.warn("Structured output validation failed", {
         errors: validation.errors,
@@ -3000,27 +3284,29 @@ export class ChatViewProvider
         providerID: diagnostics?.providerID,
         modelID: diagnostics?.modelID,
       });
-      this.recordStructuredValidationFailure(rec, validation.errors, diagnostics);
+      this.recordStructuredValidationFailure(
+        canonicalRec,
+        validation.errors,
+        diagnostics,
+      );
+      return undefined;
     }
-    const sanitizedRec = sanitizeStructuredOutput(rec);
 
+    const sanitizedCanonicalRec = sanitizeStructuredOutput(canonicalRec);
     const responseType = this.firstNonEmptyString(
-      sanitizedRec.responseType,
-      rec.type,
-      rec.kind,
-      rec.category,
+      sanitizedCanonicalRec.responseType,
     );
     if (!responseType) {
       return undefined;
     }
 
     const assistantMessage = this.firstNonEmptyString(
-      sanitizedRec.assistantMessage,
-      sanitizedRec.message,
+      sanitizedCanonicalRec.assistantMessage,
+      sanitizedCanonicalRec.message,
     );
-    const message = this.firstNonEmptyString(sanitizedRec.message);
+    const message = this.firstNonEmptyString(sanitizedCanonicalRec.message);
 
-    const reasoningRaw = sanitizedRec.reasoning;
+    const reasoningRaw = sanitizedCanonicalRec.reasoning;
     const reasoning = Array.isArray(reasoningRaw)
       ? reasoningRaw
         .filter((item): item is string => typeof item === "string")
@@ -3067,7 +3353,7 @@ export class ChatViewProvider
       .filter(Boolean);
 
     const progressRaw =
-      sanitizedRec.progressUpdates ?? (rec.progress_updates as unknown);
+      sanitizedCanonicalRec.progressUpdates ?? (rec.progress_updates as unknown);
     const progressUpdates = Array.isArray(progressRaw)
       ? progressRaw
         .map((item) => {
@@ -3210,7 +3496,7 @@ export class ChatViewProvider
     };
 
     const interactiveRaw =
-      sanitizedRec.interactiveEvents ??
+      sanitizedCanonicalRec.interactiveEvents ??
       rec.interactions ??
       rec.uiEvents ??
       rec.question ??
@@ -3274,7 +3560,7 @@ export class ChatViewProvider
     }
 
     const subagentsDeltaRaw = this.asRecord(
-      sanitizedRec.subagentsDelta ?? rec.subagents_delta,
+      sanitizedCanonicalRec.subagentsDelta ?? rec.subagents_delta,
     );
     const subagentsDeltaItems = Array.isArray(subagentsDeltaRaw?.items)
       ? (subagentsDeltaRaw?.items
@@ -3335,7 +3621,7 @@ export class ChatViewProvider
         : undefined;
 
     const subagentsRaw =
-      sanitizedRec.subagents ?? (rec.spawnedSubagents as unknown);
+      sanitizedCanonicalRec.subagents ?? (rec.spawnedSubagents as unknown);
     const subagents = Array.isArray(subagentsRaw)
       ? (subagentsRaw
         .map((item, index) => {
@@ -3502,7 +3788,7 @@ export class ChatViewProvider
       this.isInteractiveResponseType(responseType) &&
       interactiveEvents.length > 0;
 
-    const planRec = this.asRecord(sanitizedRec.plan ?? rec.plan);
+    const planRec = this.asRecord(sanitizedCanonicalRec.plan ?? rec.plan);
 
     // Determine if the plan content looks like a clarification questionnaire.
     // Question-first precedence: if the response is interactive OR the plan
@@ -3513,8 +3799,8 @@ export class ChatViewProvider
     const candidatePlanContent = this.firstNonEmptyString(
       planRec?.content,
       planRec?.markdown,
-      sanitizedRec.message,
-      sanitizedRec.assistantMessage,
+      sanitizedCanonicalRec.message,
+      sanitizedCanonicalRec.assistantMessage,
     );
     const isClarification = this.isClarificationQuestionnaire(candidatePlanContent);
 
@@ -3579,7 +3865,9 @@ export class ChatViewProvider
       return undefined;
     }
 
-    const rawQuestion = this.asRecord(sanitizedRec.question ?? rec.question);
+    const rawQuestion = this.asRecord(
+      sanitizedCanonicalRec.question ?? rec.question,
+    );
 
     return {
       responseType,
@@ -3614,7 +3902,6 @@ export class ChatViewProvider
         }
         return "📊 Working on tasks...";
       case "question":
-      case "interactive":
         if (interactiveEvents && interactiveEvents.length > 0) {
           const firstEvent = interactiveEvents[0];
           if (firstEvent.type === "question" && firstEvent.question) {
@@ -3664,7 +3951,11 @@ export class ChatViewProvider
         .trim();
     }
 
-    return this.stripLegacyInstruction(rawText);
+    const cleaned = this.stripLegacyInstruction(rawText);
+    if (this.isLikelyToolCallTranscript(cleaned)) {
+      return "";
+    }
+    return cleaned;
   }
 
   private extractStructuredOutput(
@@ -3689,9 +3980,11 @@ export class ChatViewProvider
       { value: messageLike.output, source: "messageLike.output" },
       { value: messageLike.info?.structuredOutput, source: "messageLike.info.structuredOutput" },
       { value: messageLike.info?.structured_output, source: "messageLike.info.structured_output" },
+      { value: messageLike.info?.structured, source: "messageLike.info.structured" },
       { value: messageLike.info?.output, source: "messageLike.info.output" },
       { value: messageLike.properties?.structuredOutput, source: "messageLike.properties.structuredOutput" },
       { value: messageLike.properties?.structured_output, source: "messageLike.properties.structured_output" },
+      { value: messageLike.properties?.structured, source: "messageLike.properties.structured" },
       { value: messageLike.properties?.output, source: "messageLike.properties.output" },
     ];
 
@@ -3723,6 +4016,10 @@ export class ChatViewProvider
             pushCandidate(
               part.state.arguments,
               "messageLike.parts[].state.arguments",
+            );
+            pushCandidate(
+              part.state.input,
+              "messageLike.parts[].state.input",
             );
 
             const resultRec = this.asRecord(part.state.result);
@@ -3782,6 +4079,78 @@ export class ChatViewProvider
   private applyStructuredOutputToMessage(message: any): any {
     const structured = this.extractStructuredOutput(message);
     if (!structured) {
+      const role = this.firstNonEmptyString(
+        message?.info?.role,
+        message?.role,
+      )?.toLowerCase();
+      const bodyText = this.extractMessageBodyText(message);
+      if (role === "assistant" && bodyText) {
+        const next: any = {
+          ...message,
+          structuredOutput: {
+            responseType: "message",
+            assistantMessage: bodyText,
+            message: bodyText,
+          },
+          content: bodyText,
+        };
+        if (Array.isArray(next.parts)) {
+          next.parts = next.parts.filter((part: any) => {
+            if (part && part.type === "tool") {
+              const toolName = (part.tool || "").toString().toLowerCase();
+              if (
+                toolName.includes("structuredoutput") ||
+                toolName.includes("structured_output")
+              ) {
+                return false;
+              }
+            }
+            return true;
+          });
+        }
+        return next;
+      }
+      if (role === "assistant" && !bodyText) {
+        const incompatibleModelKey = this.getStructuredOutputModelKey(
+          this.firstNonEmptyString(
+            message?.info?.providerID,
+            message?.providerID,
+          ),
+          this.firstNonEmptyString(
+            message?.info?.modelID,
+            message?.modelID,
+          ),
+        );
+        const retryWithoutStructuredOutput = true;
+        const fallbackText =
+          incompatibleModelKey &&
+          this.structuredOutputIncompatibleModelKeys.has(incompatibleModelKey)
+            ? "Structured output error: this model returned an empty structured payload."
+            : "I couldn't produce a valid structured response for this turn. Please retry.";
+        const next: any = {
+          ...message,
+          content: fallbackText,
+          error: fallbackText,
+          retryWithoutStructuredOutput,
+        };
+        const parts = Array.isArray(next.parts)
+          ? next.parts.filter((part: any) => this.isRenderableTextPart(part))
+          : [];
+        const textIndex = parts.findIndex((part: any) =>
+          this.isRenderableTextPart(part),
+        );
+        if (textIndex >= 0) {
+          parts[textIndex] = {
+            ...parts[textIndex],
+            type: "text",
+            text: fallbackText,
+          };
+        } else {
+          parts.push({ type: "text", text: fallbackText });
+        }
+        next.parts = parts;
+        return next;
+      }
       return message;
     }
 
@@ -4130,6 +4499,8 @@ export class ChatViewProvider
     agent?: string,
     isRetry = false,
     recoveredContext?: RecoveredSessionContext,
+    retryWithoutStructuredOutput = false,
+    structuredFallbackReason?: string,
   ): Promise<void> {
     // Cache for retry
     this.lastSendMessageArgs = { text, files, contexts, images, agent };
@@ -4305,10 +4676,12 @@ export class ChatViewProvider
 
       // Send the message using the SDK
       const startTime = Date.now();
-      const useStructuredOutput = this.shouldUseStructuredOutput(
-        parts as Array<Record<string, unknown>>,
-        agent || this.selectedAgent,
-      );
+      const useStructuredOutput =
+        !retryWithoutStructuredOutput &&
+        this.shouldUseStructuredOutput(
+          parts as Array<Record<string, unknown>>,
+          agent || this.selectedAgent,
+        );
       const promptBody: NonNullable<SessionPromptData["body"]> = {
         model: this.selectedModel,
         agent: agent || this.selectedAgent,
@@ -4427,6 +4800,8 @@ export class ChatViewProvider
                   transcript: recoveryTranscript,
                 }
                 : undefined,
+              retryWithoutStructuredOutput,
+              structuredFallbackReason,
             );
           } catch (recreateError) {
             console.error(
@@ -4443,6 +4818,42 @@ export class ChatViewProvider
         ) {
           errorMessage +=
             "\n\nTIP: Try starting a new session (click +) to use the default model.";
+        }
+
+        const isStructuredOutputError =
+          this.isStructuredOutputTransportError(errorMessage);
+        if (isStructuredOutputError) {
+          const modelKey = this.getSelectedStructuredOutputModelKey();
+          if (modelKey) {
+            this.structuredOutputIncompatibleModelKeys.add(modelKey);
+          }
+          if (!retryWithoutStructuredOutput) {
+            this.logger.warn(
+              "Structured output failed; auto-retrying without schema",
+              {
+                sessionId: session.id,
+                providerID: this.selectedModel.providerID,
+                modelID: this.selectedModel.modelID,
+              },
+            );
+            return this.handleSendMessage(
+              text,
+              files,
+              contexts,
+              images,
+              agent,
+              true,
+              recoveredContext,
+              true,
+              errorMessage,
+            );
+          }
+          errorMessage = [
+            "Structured output error: the selected model/provider did not return a usable JSON payload.",
+            "Retry without structured output to continue with a plain text response.",
+            "",
+            `Details: ${errorMessage}`,
+          ].join("\n");
         }
 
         vscode.window.showErrorMessage(`OpenCode error: ${errorMessage}`);
@@ -4478,11 +4889,44 @@ export class ChatViewProvider
 
       // Send response back to webview
       if (response.data) {
-        const rawResponse = this.sanitizeDebugPayload(response.data);
+        const rawResponse = this.buildRawResponseDebugText(response.data);
         const structuredMessage = this.applyStructuredOutputToMessage(
           response.data,
         );
         const enrichedMessage = this.enrichMessageWithPlan(structuredMessage);
+        const structuredFailureText = this.firstNonEmptyString(
+          (enrichedMessage as any)?.error,
+        );
+        if (
+          !retryWithoutStructuredOutput &&
+          structuredFailureText &&
+          this.isStructuredOutputFailureMessage(structuredFailureText)
+        ) {
+          const modelKey = this.getSelectedStructuredOutputModelKey();
+          if (modelKey) {
+            this.structuredOutputIncompatibleModelKeys.add(modelKey);
+          }
+          this.logger.warn(
+            "Structured output payload unusable; auto-retrying without schema",
+            {
+              sessionId: session.id,
+              providerID: this.selectedModel.providerID,
+              modelID: this.selectedModel.modelID,
+              reason: structuredFailureText,
+            },
+          );
+          return this.handleSendMessage(
+            text,
+            files,
+            contexts,
+            images,
+            agent,
+            true,
+            recoveredContext,
+            true,
+            structuredFailureText,
+          );
+        }
         const trackerSnapshotPayload = this.subagentTracker.getSnapshotPayload();
         const hasSubagentSignal =
           this.hasStructuredSubagentSignal(enrichedMessage);
@@ -4592,20 +5036,40 @@ export class ChatViewProvider
           }
         }
 
+        const normalizedFallbackReason = this.firstNonEmptyString(
+          structuredFallbackReason,
+        );
+        const plainTextFallbackMetadata =
+          retryWithoutStructuredOutput && normalizedFallbackReason
+            ? {
+              plainTextFallback: true,
+              plainTextFallbackMessage:
+                "Structured output failed for this turn. Showing plain text response.",
+              plainTextFallbackReason: normalizedFallbackReason.slice(0, 500),
+            }
+            : undefined;
+        const finalMessage = plainTextFallbackMetadata
+          ? {
+            ...enrichedMessage,
+            ...plainTextFallbackMetadata,
+          }
+          : enrichedMessage;
+
         const debugMessage = {
-          ...enrichedMessage,
+          ...finalMessage,
           rawResponse,
         };
 
-        // Save assistant message to local history
+        // Persist canonical assistant message without raw debug payload so
+        // session storage/write path stays lightweight.
         await this.sessionService.appendMessage(session.id, {
-          ...debugMessage,
+          ...finalMessage,
           timing: {
             duration: duration,
           },
         });
         const snapshotFromFinalMessage = this.buildSubagentPayloadFromMessage(
-          debugMessage,
+          finalMessage,
           session.id,
         );
         if (snapshotFromFinalMessage) {
@@ -4628,7 +5092,33 @@ export class ChatViewProvider
         // Auto-compact if the context window is getting full.
         void this.maybeAutoCompact(session.id, response.data);
       } else {
-        console.warn("No response data received from OpenCode");
+        const noDataMessageText =
+          "No final response payload was returned by the provider.";
+        const rawResponse = this.buildRawResponseDebugText({
+          status: response?.response?.status,
+          data: response?.data,
+          error: response?.error,
+        });
+        const fallbackMessage = {
+          role: "assistant",
+          content: noDataMessageText,
+          parts: [{ type: "text", text: noDataMessageText }],
+          rawResponse,
+          timing: {
+            duration: duration,
+          },
+        };
+
+        await this.sessionService.appendMessage(session.id, fallbackMessage);
+        this.view?.webview.postMessage({
+          type: "messageResponse",
+          message: fallbackMessage,
+        });
+        this.logger.warn("No response data received from OpenCode", {
+          sessionId: session.id,
+          status: response?.response?.status,
+          hasError: Boolean(response?.error),
+        });
       }
     } catch (error) {
       const errorMessage = this.extractErrorMessage(

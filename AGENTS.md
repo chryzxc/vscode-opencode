@@ -56,6 +56,7 @@ vscode-opencode/
 - `webview/shared/` is a real package boundary with its own `package.json`, Vite config, and Tailwind config.
 - Wrapper prompt payloads stay transport-only. Behavioural/system instructions belong to OpenCode agents/server, not this extension.
 - Structured output schema originates in `src/shared/*` and is copied into `webview/shared/src/chat/lib/generated/*`; update through the sync script, not manual dual edits.
+- Structured-output handling must be schema/data-driven only; we do not want phrase-identification or prompt-text inference logic.
 - Tests primarily use Node's built-in runner with `.test.mjs`; Vitest exists for targeted unit runs.
 
 ## ANTI-PATTERNS (THIS PROJECT)

@@ -723,11 +723,15 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   }
   const sanitizedRec = sanitizeStructuredOutput(rec);
 
-  const responseType =
+  const rawResponseType =
     asString(sanitizedRec.responseType) || asString(rec.type) || asString(rec.kind) || undefined;
-  if (!responseType) {
+  if (!rawResponseType) {
     return undefined;
   }
+  const responseType =
+    rawResponseType.toLowerCase() === "interactive"
+      ? "question"
+      : rawResponseType;
   const assistantMessage =
     asString(sanitizedRec.assistantMessage) ||
     asString(sanitizedRec.message) ||
@@ -946,8 +950,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     }
   }
 
-  const isInteractiveResponseType =
-    responseType === 'question' || responseType === 'interactive';
+  const isInteractiveResponseType = responseType === 'question';
   if (interactiveEvents.length === 0 && isInteractiveResponseType) {
     const fallbackQuestion =
       asString(rec.question) ||
@@ -4219,7 +4222,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         // Always prefer the latest local streaming snapshot for final normalization.
         // Some providers emit different IDs between stream events and final response.
-        const streaming = currentStreaming ?? latestStreamingSnapshot;
+        const plainTextFallbackFinal =
+          asBoolean(asRecord(msg)?.plainTextFallback, false) ||
+          asBoolean(asRecord(asRecord(msg)?.info)?.plainTextFallback, false);
+        const streaming = plainTextFallbackFinal
+          ? null
+          : (currentStreaming ?? latestStreamingSnapshot);
         const normalizedMessage = isMessage(msg)
           ? normalizeMessage(msg, streaming)
           : streaming

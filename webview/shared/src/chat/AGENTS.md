@@ -18,6 +18,7 @@
 ## CONVENTIONS
 - Keep the UI additive and information-dense; the product deliberately exposes advanced status panels and token metrics.
 - Structured output should flow through validated/normalised channels, not by scraping plain markdown or generic text fields.
+- Do not implement phrase-identification or prompt-text heuristics in the webview; render directly from structured JSON fields.
 - State shape changes must be mirrored across `lib/types.ts`, `lib/store.ts`, and `lib/messageHandler.ts`.
 - Prefer local chat components for chat-only UI; shared primitives belong in `../components/ui/` only when reused across chat/plan/diff-review.
 

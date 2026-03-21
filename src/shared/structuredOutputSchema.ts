@@ -13,10 +13,11 @@ export type StructuredOutputSchema = {
   retryCount?: number;
   schema: {
     type: "object";
+    description?: string;
     additionalProperties: boolean;
     required?: string[];
     properties: Record<string, unknown>;
-    allOf?: Array<Record<string, unknown>>;
+    examples?: unknown[];
   };
 };
 
@@ -25,11 +26,15 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   retryCount: 1,
   schema: {
     type: "object",
+    description:
+      "Assistant response contract for chat rendering. Return one JSON object only, with no prose before or after it. Always include assistantMessage as the user-facing text summary for this turn. Choose exactly one primary responseType per turn. Keep payloads schema-driven and do not mix incompatible intents in the same object.",
     additionalProperties: false,
-    required: ["responseType"],
+    required: ["responseType", "assistantMessage"],
     properties: {
       responseType: {
         type: "string",
+        minLength: 1,
+        default: "message",
         enum: [
           "message",
           "implementation_plan",
@@ -41,17 +46,34 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "error",
         ],
         description:
-          "Structured response category for UI rendering. Use 'question' when clarification is needed before execution and include the top-level question object. When using 'implementation_plan', questions must NOT be included in the plan content.",
+          "Primary response classifier for UI behavior. Must be one of the enum values and must never be empty. Use exactly one primary intent per turn: message for normal chat replies (including greetings), implementation_plan for plan markdown in plan.content, progress_update for machine-readable progress steps, subagents for background-agent state, question for clarification prompts, todo_update for task checklist changes, data for structured data cards, and error for failures.",
+        examples: [
+          "message",
+          "implementation_plan",
+          "progress_update",
+          "subagents",
+          "question",
+          "todo_update",
+          "data",
+          "error",
+        ],
       },
       assistantMessage: {
         type: "string",
+        minLength: 1,
         description:
-          "Primary user-facing assistant response text only. Do not include policy/instruction analysis or chain-of-thought.",
+          "Required user-facing assistant response text for every turn, regardless of responseType. Keep this concise and actionable. Do not include policy/instruction analysis.",
+        examples: [
+          "Hello! How can I help?",
+          "I updated the parser and tests. Ready for review.",
+        ],
       },
       message: {
         type: "string",
+        minLength: 1,
         description:
-          "Legacy alias for assistantMessage. Prefer assistantMessage for new structured responses.",
+          "Legacy compatibility alias for assistantMessage. Prefer assistantMessage for new outputs. For responseType='message', at least one of assistantMessage or message is required.",
+        examples: ["Hello!"],
       },
       reasoning: {
         type: "array",
@@ -61,17 +83,45 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       },
       progressUpdates: {
         type: "array",
+        description:
+          "Ordered progress step updates for responseType='progress_update'. Include concrete, user-visible execution steps.",
+        examples: [
+          [{ title: "Run structured-output sync", status: "done" }],
+          [{ title: "Compile extension host", status: "pending" }],
+        ],
         items: {
           type: "object",
           additionalProperties: true,
           properties: {
-            id: { type: "string" },
-            type: { type: "string" },
-            title: { type: "string" },
-            status: { type: "string", enum: ["pending", "done", "error"] },
-            meta: { type: "string" },
-            filePath: { type: "string" },
-            createdAt: { type: "number" },
+            id: {
+              type: "string",
+              description: "Stable identifier for deduping or updating a step.",
+            },
+            type: {
+              type: "string",
+              description: "Optional step category such as tool, patch, or step.",
+            },
+            title: {
+              type: "string",
+              description: "Short human-readable step title shown in activity UI.",
+            },
+            status: {
+              type: "string",
+              enum: ["pending", "done", "error"],
+              description: "Current status of the step.",
+            },
+            meta: {
+              type: "string",
+              description: "Optional extra context such as command, query, or summary.",
+            },
+            filePath: {
+              type: "string",
+              description: "Optional workspace-relative or absolute file path affected by the step.",
+            },
+            createdAt: {
+              type: "number",
+              description: "Optional epoch timestamp in milliseconds.",
+            },
           },
         },
       },
@@ -79,20 +129,38 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         description:
-          "Interactive payload for responseType='question'.",
+          "Interactive payload for responseType='question'. Use this only when user input is required before proceeding. Keep implementation plan text out of this object.",
         properties: {
           type: {
             type: "string",
             enum: ["question", "confirm", "quick_actions", "message"],
+            description:
+              "Interactive mode. question: choose from options, confirm: yes/no style confirmation, quick_actions: action buttons, message: non-blocking informational prompt.",
+            examples: ["question", "confirm"],
           },
-          id: { type: "string" },
-          title: { type: "string" },
+          id: {
+            type: "string",
+            description: "Optional stable interaction id for follow-up responses.",
+          },
+          title: {
+            type: "string",
+            description: "Optional short title shown above the interaction prompt.",
+          },
           question: {
             type: "string",
-            description: "Question text shown in the interactive picker prompt.",
+            description:
+              "Prompt text shown to the user. Required for type='question' and type='confirm'.",
+            examples: ["Which path should I implement first?"],
           },
-          multiSelect: { type: "boolean" },
-          allowCustomInput: { type: "boolean" },
+          multiSelect: {
+            type: "boolean",
+            description: "Whether the user can select more than one option.",
+          },
+          allowCustomInput: {
+            type: "boolean",
+            description:
+              "Whether free-form text input is allowed in addition to options.",
+          },
           answer: {
             type: "string",
             description:
@@ -107,41 +175,103 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           options: {
             type: "array",
             description:
-              "Choice list for question responses. Provide at least two options unless allowCustomInput is true.",
+              "Choice list for type='question'. Provide at least two options unless allowCustomInput is true.",
+            examples: [
+              [
+                { label: "Use strict schema", value: "strict" },
+                { label: "Keep compatibility mode", value: "compat" },
+              ],
+            ],
             items: {
               type: "object",
               additionalProperties: true,
               properties: {
-                id: { type: "string" },
-                label: { type: "string" },
-                value: { type: "string" },
-                description: { type: "string" },
+                id: {
+                  type: "string",
+                  description: "Optional stable option id.",
+                },
+                label: {
+                  type: "string",
+                  description: "User-visible option label.",
+                },
+                value: {
+                  type: "string",
+                  description: "Machine value returned when this option is selected.",
+                },
+                description: {
+                  type: "string",
+                  description: "Optional secondary text describing the option.",
+                },
               },
             },
           },
           actions: {
             type: "array",
+            description:
+              "Action button list for type='quick_actions'.",
+            examples: [
+              [
+                { label: "Apply fix", value: "apply_fix" },
+                { label: "Show diff", value: "show_diff" },
+              ],
+            ],
             items: {
               type: "object",
               additionalProperties: true,
               properties: {
-                id: { type: "string" },
-                label: { type: "string" },
-                value: { type: "string" },
-                description: { type: "string" },
+                id: {
+                  type: "string",
+                  description: "Optional stable action id.",
+                },
+                label: {
+                  type: "string",
+                  description: "Button text shown in UI.",
+                },
+                value: {
+                  type: "string",
+                  description: "Machine value returned when action is clicked.",
+                },
+                description: {
+                  type: "string",
+                  description: "Optional helper text for the action.",
+                },
               },
             },
           },
-          confirmLabel: { type: "string" },
-          cancelLabel: { type: "string" },
-          dismissLabel: { type: "string" },
-          message: { type: "string" },
-          content: { type: "string" },
+          confirmLabel: {
+            type: "string",
+            description: "Custom label for confirm button in type='confirm'.",
+          },
+          cancelLabel: {
+            type: "string",
+            description: "Custom label for cancel button in type='confirm'.",
+          },
+          dismissLabel: {
+            type: "string",
+            description: "Custom label for dismiss button in type='message'.",
+          },
+          message: {
+            type: "string",
+            description: "Message text for type='message'.",
+            examples: ["Done. Choose an option to continue."],
+          },
+          content: {
+            type: "string",
+            description: "Legacy alias for message text in type='message'.",
+          },
         },
       },
       plan: {
         type: "object",
         additionalProperties: true,
+        description:
+          "Implementation plan payload for responseType='implementation_plan'. Keep user clarifications/questions out of plan.content.",
+        examples: [
+          {
+            file: "implementation_plan.md",
+            content: "## Plan\n1. Update schema\n2. Sync generated artifacts",
+          },
+        ],
         properties: {
           file: {
             type: "string",
@@ -152,79 +282,189 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             type: "string",
             description:
               "Markdown implementation plan content. IMPORTANT: Must NOT contain questions, clarifications, or choices. Questions must be moved to top-level 'question'.",
+            examples: ["## Plan\n1. Add canonical enum\n2. Update validator\n3. Run compile"],
           },
           // Note: runtime validator enforces mutual exclusivity between
           // question/interactive responseTypes and substantial plan content.
           // JSON Schema cannot easily express conditional string-length
           // constraints; see src/shared/structuredOutputValidator.ts for
           // the actual enforcement logic.
-          title: { type: "string" },
-          summary: { type: "string" },
+          title: {
+            type: "string",
+            description: "Short plan title for headings/cards.",
+          },
+          summary: {
+            type: "string",
+            description: "Optional high-level summary of the plan.",
+          },
         },
       },
       subagents: {
         type: "array",
+        description:
+          "Background subagent snapshots for responseType='subagents'. Use when reporting parallel/child agent work.",
+        examples: [
+          [
+            {
+              id: "agent-1",
+              name: "Schema Worker",
+              status: "running",
+              latestActivity: "Updating schema examples",
+            },
+          ],
+        ],
         items: {
           type: "object",
           additionalProperties: true,
           properties: {
-            id: { type: "string" },
-            name: { type: "string" },
+            id: {
+              type: "string",
+              description: "Stable subagent identifier.",
+            },
+            name: {
+              type: "string",
+              description: "Human-readable subagent label.",
+            },
             status: {
               type: "string",
               enum: ["pending", "running", "done", "error", "orphaned"],
+              description: "Current execution status of this subagent.",
             },
-            progress: { type: "number" },
-            description: { type: "string" },
-            latestActivity: { type: "string" },
-            childSessionId: { type: "string" },
-            parentSessionId: { type: "string" },
-            parentMessageId: { type: "string" },
+            progress: {
+              type: "number",
+              description: "Optional completion ratio from 0 to 100.",
+            },
+            description: {
+              type: "string",
+              description: "Optional subagent objective/role description.",
+            },
+            latestActivity: {
+              type: "string",
+              description: "Latest user-visible activity summary for this subagent.",
+            },
+            childSessionId: {
+              type: "string",
+              description: "Session id of the child subagent thread, if any.",
+            },
+            parentSessionId: {
+              type: "string",
+              description: "Parent session id containing the main conversation.",
+            },
+            parentMessageId: {
+              type: "string",
+              description: "Parent assistant message id this subagent belongs to.",
+            },
             timelineEvents: {
               type: "array",
+              description: "Chronological event timeline entries for this subagent.",
               items: {
                 type: "object",
                 additionalProperties: true,
                 properties: {
-                  key: { type: "string" },
-                  type: { type: "string" },
-                  label: { type: "string" },
-                  createdAt: { type: "number" },
-                  messageID: { type: "string" },
-                  partID: { type: "string" },
-                  callID: { type: "string" },
+                  key: {
+                    type: "string",
+                    description: "Stable timeline event key.",
+                  },
+                  type: {
+                    type: "string",
+                    description: "Event kind/category label.",
+                  },
+                  label: {
+                    type: "string",
+                    description: "Event text shown in timeline UI.",
+                  },
+                  createdAt: {
+                    type: "number",
+                    description: "Epoch timestamp in milliseconds.",
+                  },
+                  messageID: {
+                    type: "string",
+                    description: "Related message id, if available.",
+                  },
+                  partID: {
+                    type: "string",
+                    description: "Related message part id, if available.",
+                  },
+                  callID: {
+                    type: "string",
+                    description: "Related tool call id, if available.",
+                  },
                 },
               },
             },
             progressEvents: {
               type: "array",
+              description: "Structured progress events emitted by this subagent.",
               items: {
                 type: "object",
                 additionalProperties: true,
                 properties: {
-                  id: { type: "string" },
-                  title: { type: "string" },
-                  status: { type: "string" },
-                  meta: { type: "string" },
-                  filePath: { type: "string" },
-                  createdAt: { type: "number" },
-                  messageID: { type: "string" },
-                  partID: { type: "string" },
-                  callID: { type: "string" },
+                  id: {
+                    type: "string",
+                    description: "Stable progress event id.",
+                  },
+                  title: {
+                    type: "string",
+                    description: "Progress step title.",
+                  },
+                  status: {
+                    type: "string",
+                    description: "Progress event status text.",
+                  },
+                  meta: {
+                    type: "string",
+                    description: "Optional metadata for the progress step.",
+                  },
+                  filePath: {
+                    type: "string",
+                    description: "Optional related file path.",
+                  },
+                  createdAt: {
+                    type: "number",
+                    description: "Epoch timestamp in milliseconds.",
+                  },
+                  messageID: {
+                    type: "string",
+                    description: "Related message id, if available.",
+                  },
+                  partID: {
+                    type: "string",
+                    description: "Related message part id, if available.",
+                  },
+                  callID: {
+                    type: "string",
+                    description: "Related tool call id, if available.",
+                  },
                 },
               },
             },
             thinkingEvents: {
               type: "array",
+              description: "Optional concise reasoning snippets attributed to this subagent.",
               items: {
                 type: "object",
                 additionalProperties: true,
                 properties: {
-                  id: { type: "string" },
-                  text: { type: "string" },
-                  createdAt: { type: "number" },
-                  messageID: { type: "string" },
-                  partID: { type: "string" },
+                  id: {
+                    type: "string",
+                    description: "Stable thinking event id.",
+                  },
+                  text: {
+                    type: "string",
+                    description: "Thinking/event text.",
+                  },
+                  createdAt: {
+                    type: "number",
+                    description: "Epoch timestamp in milliseconds.",
+                  },
+                  messageID: {
+                    type: "string",
+                    description: "Related message id, if available.",
+                  },
+                  partID: {
+                    type: "string",
+                    description: "Related message part id, if available.",
+                  },
                 },
               },
             },
@@ -234,26 +474,57 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       subagentsDelta: {
         type: "object",
         additionalProperties: true,
+        description:
+          "Partial subagent updates when only changed fields are emitted.",
         properties: {
-          parentMessageId: { type: "string" },
+          parentMessageId: {
+            type: "string",
+            description: "Target parent assistant message id for this delta batch.",
+          },
           items: {
             type: "array",
+            description: "Delta items keyed by subagent id.",
             items: {
               type: "object",
               additionalProperties: true,
               properties: {
-                id: { type: "string" },
-                name: { type: "string" },
+                id: {
+                  type: "string",
+                  description: "Stable subagent identifier.",
+                },
+                name: {
+                  type: "string",
+                  description: "Updated subagent label, if changed.",
+                },
                 status: {
                   type: "string",
                   enum: ["pending", "running", "done", "error", "orphaned"],
+                  description: "Updated status, if changed.",
                 },
-                progress: { type: "number" },
-                description: { type: "string" },
-                latestActivity: { type: "string" },
-                childSessionId: { type: "string" },
-                parentSessionId: { type: "string" },
-                parentMessageId: { type: "string" },
+                progress: {
+                  type: "number",
+                  description: "Updated progress value, if changed.",
+                },
+                description: {
+                  type: "string",
+                  description: "Updated objective/description, if changed.",
+                },
+                latestActivity: {
+                  type: "string",
+                  description: "Updated activity summary, if changed.",
+                },
+                childSessionId: {
+                  type: "string",
+                  description: "Updated child session id, if changed.",
+                },
+                parentSessionId: {
+                  type: "string",
+                  description: "Updated parent session id, if changed.",
+                },
+                parentMessageId: {
+                  type: "string",
+                  description: "Updated parent message id, if changed.",
+                },
               },
             },
           },
@@ -263,17 +534,33 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "array",
         description:
           "Optional todo/task list payload used by responseType='todo_update'.",
+        examples: [
+          [
+            { id: "todo-1", text: "Sync generated schema", status: "pending" },
+            { id: "todo-2", text: "Run compile", status: "completed" },
+          ],
+        ],
         items: {
           type: "object",
           additionalProperties: true,
           properties: {
-            id: { type: "string" },
-            text: { type: "string" },
+            id: {
+              type: "string",
+              description: "Stable todo item id.",
+            },
+            text: {
+              type: "string",
+              description: "Todo item label shown to the user.",
+            },
             status: {
               type: "string",
               enum: ["pending", "in_progress", "completed", "cancelled", "failed"],
+              description: "Current todo lifecycle status.",
             },
-            description: { type: "string" },
+            description: {
+              type: "string",
+              description: "Optional long-form todo description.",
+            },
           },
         },
       },
@@ -281,100 +568,92 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         description:
-          "Machine-readable payload for UI components that render custom data cards.",
+          "Machine-readable payload for UI components that render custom data cards. Use only for structured data, not normal chat text.",
+        examples: [{ cardType: "metrics", values: { passed: 12, failed: 0 } }],
       },
       error: {
         type: "object",
         additionalProperties: true,
+        description:
+          "Error metadata for responseType='error'. Include user-safe message text in error.message and/or assistantMessage.",
+        examples: [
+          {
+            message: "Schema validation failed.",
+            code: "SCHEMA_VALIDATION_ERROR",
+            retryable: true,
+          },
+        ],
         properties: {
-          message: { type: "string" },
-          code: { type: "string" },
-          details: { type: "string" },
-          retryable: { type: "boolean" },
-        },
-      },
-    },
-    allOf: [
-      {
-        if: {
-          properties: { responseType: { const: "message" } },
-          required: ["responseType"],
-        },
-        then: {
-          anyOf: [{ required: ["assistantMessage"] }, { required: ["message"] }],
-        },
-      },
-      {
-        if: {
-          properties: { responseType: { const: "implementation_plan" } },
-          required: ["responseType"],
-        },
-        then: {
-          required: ["plan"],
-          properties: {
-            plan: {
-              type: "object",
-              required: ["content"],
-            },
+          message: {
+            type: "string",
+            description: "User-facing error message.",
+          },
+          code: {
+            type: "string",
+            description: "Stable machine-readable error code.",
+          },
+          details: {
+            type: "string",
+            description: "Optional diagnostic details.",
+          },
+          retryable: {
+            type: "boolean",
+            description: "Whether retrying the request may succeed.",
           },
         },
       },
+    },
+    examples: [
       {
-        if: {
-          properties: { responseType: { const: "progress_update" } },
-          required: ["responseType"],
-        },
-        then: {
-          required: ["progressUpdates"],
+        responseType: "message",
+        assistantMessage: "Hello! How can I help?",
+      },
+      {
+        responseType: "implementation_plan",
+        assistantMessage: "I drafted an implementation plan and attached the markdown below.",
+        plan: {
+          content: "## Plan\n1. Inspect schema\n2. Patch schema\n3. Verify build",
         },
       },
       {
-        if: {
-          properties: { responseType: { const: "subagents" } },
-          required: ["responseType"],
-        },
-        then: {
-          anyOf: [{ required: ["subagents"] }, { required: ["subagentsDelta"] }],
-        },
+        responseType: "progress_update",
+        assistantMessage: "Progress update: compile step completed.",
+        progressUpdates: [{ title: "Running compile", status: "done" }],
       },
       {
-        if: {
-          properties: { responseType: { const: "question" } },
-          required: ["responseType"],
-        },
-        then: {
-          required: ["question"],
-        },
+        responseType: "subagents",
+        assistantMessage: "Subagents are running in the background.",
+        subagents: [{ id: "agent-1", name: "Worker", status: "running" }],
       },
       {
-        if: {
-          properties: { responseType: { const: "todo_update" } },
-          required: ["responseType"],
-        },
-        then: {
-          required: ["todoItems"],
-        },
-      },
-      {
-        if: {
-          properties: { responseType: { const: "data" } },
-          required: ["responseType"],
-        },
-        then: {
-          required: ["data"],
-        },
-      },
-      {
-        if: {
-          properties: { responseType: { const: "error" } },
-          required: ["responseType"],
-        },
-        then: {
-          anyOf: [
-            { required: ["error"] },
-            { required: ["assistantMessage"] },
-            { required: ["message"] },
+        responseType: "question",
+        assistantMessage: "I need one clarification before proceeding.",
+        question: {
+          type: "question",
+          question: "Which option should we use?",
+          options: [
+            { label: "Strict schema", value: "strict" },
+            { label: "Compat schema", value: "compat" },
           ],
+        },
+      },
+      {
+        responseType: "todo_update",
+        assistantMessage: "I updated the task checklist.",
+        todoItems: [{ id: "todo-1", text: "Update tests", status: "pending" }],
+      },
+      {
+        responseType: "data",
+        assistantMessage: "Here is the structured data summary.",
+        data: { cardType: "summary", status: "ok" },
+      },
+      {
+        responseType: "error",
+        assistantMessage: "I hit an error while processing your request.",
+        error: {
+          message: "Unable to parse output.",
+          code: "PARSE_ERROR",
+          retryable: true,
         },
       },
     ],

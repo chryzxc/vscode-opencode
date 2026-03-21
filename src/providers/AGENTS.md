@@ -17,6 +17,7 @@
 - Keep message protocol changes symmetrical with `webview/shared/src/chat/lib/messageHandler.ts` and related state types.
 - When touching prompt send flow, verify payload stays transport-only: `model`, `agent`, `parts`, optional format fields.
 - Provider changes that affect structured output must stay in sync with `src/shared/*` validators and generated webview copies.
+- Do not add prompt/content phrase-matching logic to decide behavior; providers should rely on explicit structured fields and declared response types.
 
 ## ANTI-PATTERNS
 - Do not reintroduce wrapper system-prompt injection in `handleSendMessage`, `promptWithStructuredOutput`, or helper calls they use.
