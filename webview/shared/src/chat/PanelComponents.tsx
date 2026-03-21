@@ -29,7 +29,7 @@ import {
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ImagePreviewModal } from "./ImagePreviewModal";
-import { ConfigSidebar } from "./ConfigSidebar";
+import { JsonFormEditor } from "./JsonFormEditor";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -43,10 +43,12 @@ import { useAppDispatch, useAppState } from "./lib/store";
 import vscode from "./lib/vscode";
 import type {
   Message,
-  MessagePart,
   SlashCommand,
   ThinkingLevel,
   TodoItem,
+  FileResult,
+  ContextItem,
+  Model,
 } from "./lib/types";
 
 import { FileIcon } from "./MessageComponents";
@@ -167,6 +169,40 @@ function getSlashTrigger(input: string, cursor: number): SlashTrigger | null {
   return {
     query: token,
     replaceFrom: slashIndex,
+    replaceTo: cursor,
+  };
+}
+
+export type MentionTrigger = {
+  query: string;
+  replaceFrom: number;
+  replaceTo: number;
+};
+
+export function getMentionTrigger(input: string, cursor: number): MentionTrigger | null {
+  if (cursor < 0 || cursor > input.length) {
+    return null;
+  }
+
+  const beforeCursor = input.slice(0, cursor);
+  const mentionIndex = beforeCursor.lastIndexOf("@");
+  if (mentionIndex < 0) {
+    return null;
+  }
+
+  // Trigger @ mentions only when "@" starts a token (start or whitespace).
+  if (mentionIndex > 0 && !/\s/.test(beforeCursor[mentionIndex - 1])) {
+    return null;
+  }
+
+  const token = beforeCursor.slice(mentionIndex + 1);
+  if (/\s/.test(token)) {
+    return null;
+  }
+
+  return {
+    query: token,
+    replaceFrom: mentionIndex,
     replaceTo: cursor,
   };
 }
@@ -418,7 +454,6 @@ export function HistorySidebar() {
   }, [visibleSessions, searchQuery]);
 
   const groupedSessions = useMemo(() => {
-    const now = Date.now();
     const day = 86_400_000;
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
@@ -979,60 +1014,6 @@ export function ActiveTaskPanel() {
     }
   }, [progressStepCount]);
 
-  // Session-scoped patched files from assistant patch parts, normalized history edits, and live streaming edits.
-  const sessionPatchedFiles = useMemo(() => {
-    if (!currentSessionId) {
-      return [] as Array<{ file: string; patchType: "PATCH" }>;
-    }
-
-    const latestByKey = new Map<
-      string,
-      { file: string; patchType: "PATCH"; order: number }
-    >();
-    let order = 0;
-
-    const addFile = (value: unknown) => {
-      if (typeof value !== "string") return;
-      const file = value.trim();
-      if (!file) return;
-      const dedupeKey = file.replace(/\\/g, "/").toLowerCase();
-      order += 1;
-      latestByKey.set(dedupeKey, {
-        file,
-        patchType: "PATCH",
-        order,
-      });
-    };
-
-    for (const message of messages) {
-      const role = message.role ?? message.info?.role ?? "assistant";
-      if (role !== "assistant") continue;
-
-      const parts = Array.isArray(message.parts) ? message.parts : [];
-      for (const part of parts) {
-        const typedPart = part as MessagePart;
-        const partType = (typedPart.type ?? "").toLowerCase();
-        if (partType !== "patch") continue;
-        const files = Array.isArray(typedPart.files) ? typedPart.files : [];
-        files.forEach(addFile);
-      }
-
-      if (Array.isArray(message.edits)) {
-        message.edits.forEach((edit) => addFile(edit?.file));
-      }
-    }
-
-    if (Array.isArray(streaming?.edits)) {
-      streaming.edits.forEach(addFile);
-    }
-
-    return Array.from(latestByKey.values())
-      .sort((a, b) => b.order - a.order)
-      .map(({ file, patchType }) => ({ file, patchType }));
-  }, [messages, streaming?.edits, currentSessionId]);
-
-  
-
   return (
     <div className="oc-active-task-panel flex flex-col w-full bg-oc-bg-soft">
       {/* Panel title */}
@@ -1104,52 +1085,6 @@ export function ActiveTaskPanel() {
               </div>
             )}
           </MiniSection>
-         )}
-        
-         {sessionPatchedFiles.length > 0 && (
-           <MiniSection title="Patched Files">
-             <div className="space-y-1.5">
-               {sessionPatchedFiles.map((entry) => {
-                 const fileName = entry.file.split(/[\\/]/).pop() || entry.file;
-                 return (
-                   <div
-                     key={`patched-${entry.file}`}
-                     className="flex items-center gap-2 rounded-md border border-oc-border bg-oc-panel-soft px-2 py-1.5"
-                   >
-                     <button
-                       type="button"
-                       className="min-w-0 flex-1 inline-flex items-center gap-1.5 text-left text-xs text-[var(--oc-text-soft)] hover:text-oc-accent"
-                       onClick={() =>
-                         vscode.postMessage({
-                           type: "openFile",
-                           file: entry.file,
-                         })
-                       }
-                       title={entry.file}
-                     >
-                       <FileIcon filePath={entry.file} />
-                       <span className="truncate">{fileName}</span>
-                     </button>
-                     <span className="shrink-0 rounded-md border border-oc-accent/30 bg-oc-accent/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-oc-accent">
-                       {entry.patchType}
-                     </span>
-                     <button
-                       type="button"
-                       className="shrink-0 text-[10px] uppercase font-semibold tracking-wider text-oc-accent hover:underline"
-                       onClick={() =>
-                         vscode.postMessage({
-                           type: "openDiff",
-                           file: entry.file,
-                         })
-                       }
-                     >
-                       Diff
-                     </button>
-                   </div>
-                 );
-               })}
-             </div>
-           </MiniSection>
          )}
 
          <MiniSection title="Context">
@@ -1962,6 +1897,7 @@ export function InputWrapper() {
     Record<string, { text: string; eventType: string }>
   >({});
   const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
+  const [mentionTrigger, setMentionTrigger] = useState<MentionTrigger | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const commandsRequestedRef = useRef(false);
   const suggestionsContainerRef = useRef<HTMLDivElement>(null);
@@ -1979,8 +1915,7 @@ export function InputWrapper() {
 
     return base.filter((command) => {
       const name = command.name.toLowerCase();
-      const description = (command.description || "").toLowerCase();
-      return name.includes(query) || description.includes(query);
+      return name.includes(query);
     });
   }, [slashTrigger, availableCommands]);
 
@@ -1990,6 +1925,12 @@ export function InputWrapper() {
       vscode.postMessage({ type: "getCommands" });
     }
   }, [slashTrigger, commandsLoaded]);
+
+  useEffect(() => {
+    if (mentionTrigger) {
+      vscode.postMessage({ type: "getMentions", query: mentionTrigger.query });
+    }
+  }, [mentionTrigger?.query]);
 
   useEffect(() => {
     setSelectedCommandIndex(0);
@@ -2041,7 +1982,7 @@ export function InputWrapper() {
     setIsCustomMode(autoCustomMode);
     setCustomValue("");
     setPendingAnswers({});
-  }, [interactiveEventCount]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [interactiveEventCount]);
 
   useEffect(() => {
     if (isCustomMode) {
@@ -2077,6 +2018,43 @@ export function InputWrapper() {
       if (!textareaRef.current) return;
       textareaRef.current.focus();
       textareaRef.current.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const applyMentionSuggestion = (suggestion: FileResult) => {
+    if (!mentionTrigger) return;
+    
+    // Convert suggestion to a ContextItem
+    const contextItem: ContextItem = {
+      file: suggestion.path,
+      lineInfo: "",
+      content: "", // Content can be fetched downstream or attached implicitly
+    };
+    
+    const isAlreadySelected = selectedContexts.some(
+      (c) => c.file === contextItem.file && c.lineInfo === contextItem.lineInfo
+    );
+    
+    if (!isAlreadySelected) {
+      dispatch({
+        type: "SET_SELECTED_CONTEXTS",
+        payload: [...selectedContexts, contextItem],
+      });
+    }
+
+    const before = inputValue.slice(0, mentionTrigger.replaceFrom);
+    const after = inputValue.slice(mentionTrigger.replaceTo);
+    const nextValue = `${before}${after}`; 
+
+    dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
+    setMentionTrigger(null);
+    dispatch({ type: "SET_SHOW_FILE_SUGGESTIONS", payload: false });
+    dispatch({ type: "SET_SUGGESTION_INDEX", payload: 0 });
+
+    requestAnimationFrame(() => {
+      if (!textareaRef.current) return;
+      textareaRef.current.focus();
+      textareaRef.current.setSelectionRange(before.length, before.length);
     });
   };
 
@@ -2620,6 +2598,7 @@ export function InputWrapper() {
               dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
               const cursor = e.target.selectionStart ?? nextValue.length;
               setSlashTrigger(getSlashTrigger(nextValue, cursor));
+              setMentionTrigger(getMentionTrigger(nextValue, cursor));
             }}
             onKeyDown={(e) => {
               if (slashTrigger) {
@@ -2653,6 +2632,38 @@ export function InputWrapper() {
                 }
               }
 
+              if (mentionTrigger && showFileSuggestions) {
+                if (e.key === "ArrowDown" && fileSuggestions.length > 0) {
+                  e.preventDefault();
+                  dispatch({ 
+                    type: "SET_SUGGESTION_INDEX", 
+                    payload: Math.min(selectedSuggestionIndex + 1, fileSuggestions.length - 1) 
+                  });
+                  return;
+                }
+                if (e.key === "ArrowUp" && fileSuggestions.length > 0) {
+                  e.preventDefault();
+                  dispatch({ 
+                    type: "SET_SUGGESTION_INDEX", 
+                    payload: Math.max(selectedSuggestionIndex - 1, 0) 
+                  });
+                  return;
+                }
+                if ((e.key === "Enter" || e.key === "Tab") && fileSuggestions.length > 0) {
+                  e.preventDefault();
+                  applyMentionSuggestion(
+                    fileSuggestions[selectedSuggestionIndex] || fileSuggestions[0]
+                  );
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setMentionTrigger(null);
+                  dispatch({ type: "SET_SHOW_FILE_SUGGESTIONS", payload: false });
+                  return;
+                }
+              }
+
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 sendPrompt();
@@ -2662,6 +2673,7 @@ export function InputWrapper() {
               const target = e.target as HTMLTextAreaElement;
               const cursor = target.selectionStart ?? target.value.length;
               setSlashTrigger(getSlashTrigger(target.value, cursor));
+              setMentionTrigger(getMentionTrigger(target.value, cursor));
             }}
             onPaste={handlePaste}
           />
@@ -2720,16 +2732,9 @@ export function InputWrapper() {
                   className={`oc-suggestion-item ${
                     index === selectedSuggestionIndex ? "active" : ""
                   }`}
-                  onClick={() => {
-                    dispatch({
-                      type: "SET_SELECTED_FILES",
-                      payload: [...selectedFiles, suggestion.path],
-                    });
-                    dispatch({
-                      type: "SET_SHOW_FILE_SUGGESTIONS",
-                      payload: false,
-                    });
-                  }}
+                  onMouseEnter={() => dispatch({ type: "SET_SUGGESTION_INDEX", payload: index })}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => applyMentionSuggestion(suggestion)}
                 >
                   {suggestion.name}
                 </button>
@@ -2808,7 +2813,9 @@ export function ThinkingLevelControl() {
     dispatch({ type: "SET_THINKING_DROPDOWN_OPEN", payload: false });
     try {
       vscode.postMessage({ type: "setThinkingLevel", level });
-    } catch (e) {}
+    } catch (e) {
+      /* ignore */
+    }
   };
 
   // Close on outside click
@@ -3641,9 +3648,17 @@ export function LspPanel() {
 export function SkillsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
-  const { availableCommands } = useAppState();
+  const { availableCommands, commandsLoaded, serverStatus } = useAppState();
 
   const hasSkills = availableCommands.length > 0;
+
+  // Load commands on mount if server is ready and commands not yet loaded
+  // This ensures SkillsPanel shows data immediately on desktop ≥1100px
+  useEffect(() => {
+    if (serverStatus === "running" && !commandsLoaded) {
+      vscode.postMessage({ type: "getCommands" });
+    }
+  }, [serverStatus, commandsLoaded]);
 
   function toggleSkill(name: string) {
     setExpandedSkills((prev) => {
@@ -3666,6 +3681,11 @@ export function SkillsPanel() {
             aria-hidden="true"
           />
           <span>Skills</span>
+          {hasSkills && (
+            <span className="text-[10px] text-[var(--oc-text-soft)] opacity-50">
+              {availableCommands.length}
+            </span>
+          )}
         </div>
         <Button
           type="button"
@@ -3684,7 +3704,7 @@ export function SkillsPanel() {
       </div>
 
       {open ? (
-        <div className="space-y-1.5">
+        <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1">
           {!hasSkills ? (
             <div className="py-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
               No skills configured
@@ -3764,12 +3784,6 @@ export function SkillsPanel() {
                 </div>
               );
             })
-          )}
-          {hasSkills && (
-            <div className="mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
-              {availableCommands.length} skill
-              {availableCommands.length !== 1 ? "s" : ""}
-            </div>
           )}
         </div>
       ) : null}
@@ -4039,18 +4053,35 @@ function resolveConfigPayload(data: unknown): Record<string, unknown> | null {
   return data;
 }
 
+// Helper function for immutable path-based updates
+function updateAtPath(obj: unknown, path: string[], value: unknown): unknown {
+  if (path.length === 0) return value;
+  const [key, ...rest] = path;
+  if (Array.isArray(obj)) {
+    const copy = [...obj];
+    copy[Number(key)] = rest.length === 0 ? value : updateAtPath(copy[Number(key)], rest, value);
+    return copy;
+  } else if (typeof obj === 'object' && obj !== null) {
+    const record = obj as Record<string, unknown>;
+    return { ...record, [key]: rest.length === 0 ? value : updateAtPath(record[key], rest, value) };
+  }
+  return value;
+}
+
 export function SettingsModal({
   isOpen,
   onClose,
   initialContent,
   filePath,
   isGlobal,
+  availableModels,
 }: {
   isOpen: boolean;
   onClose: () => void;
   initialContent: string;
   filePath?: string;
   isGlobal?: boolean;
+  availableModels?: Model[];
 }) {
   const [content, setContent] = useState(initialContent);
   const [activeTab, setActiveTab] = useState<"gui" | "json">("gui");
@@ -4315,9 +4346,7 @@ export function SettingsModal({
 
           <Tabs
             value={activeTab}
-            onValueChange={(value) =>
-              setActiveTab(value === "json" ? "json" : "gui")
-            }
+            onValueChange={(value) => setActiveTab(value === "json" ? "json" : "gui")}
             className="flex min-h-0 flex-1 flex-col"
           >
             <TabsList className="grid w-full grid-cols-2 h-8">
@@ -4335,8 +4364,7 @@ export function SettingsModal({
                   <div className="flex items-start gap-2">
                     <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
                     <span>
-                      GUI mode works only when the config is a valid top-level object.
-                      Fix JSON in the JSON tab first.
+                      GUI mode requires valid JSON. Fix JSON in the JSON tab first.
                     </span>
                   </div>
                   <Button
@@ -4351,140 +4379,17 @@ export function SettingsModal({
               ) : (
                 <div className="h-full overflow-y-auto space-y-3 pr-1">
                   <div className="rounded-md border border-oc-border/70 bg-oc-bg-soft p-2 text-[10px] text-oc-text-muted">
-                    GUI mode edits top-level primitive keys and rewrites the file as
-                    formatted JSON. Use JSON/JSONC tab for complex nested edits.
+                    GUI mode: Edit nested objects, arrays, and primitives with full JSON structure support.
                   </div>
-
-                  <div className="space-y-2">
-                    {primitiveEntries.length === 0 ? (
-                      <div className="rounded-md border border-dashed border-oc-border p-3 text-xs text-oc-text-muted">
-                        No primitive top-level keys found. Add one below.
-                      </div>
-                    ) : (
-                      primitiveEntries.map(([key, value]) => (
-                        <div
-                          key={key}
-                          className="rounded-md border border-oc-border bg-oc-bg-soft p-2"
-                        >
-                          <div className="mb-2 flex items-center justify-between gap-2">
-                            <Label className="text-xs font-mono text-oc-text">
-                              {key}
-                            </Label>
-                            <Badge
-                              variant="outline"
-                              className="h-4 px-1 text-[9px] border-oc-border uppercase"
-                            >
-                              {value === null ? "null" : typeof value}
-                            </Badge>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {typeof value === "boolean" ? (
-                              <div className="flex flex-1 items-center gap-2">
-                                <Switch
-                                  checked={value}
-                                  onCheckedChange={(checked) =>
-                                    updatePrimitiveValue(key, checked)
-                                  }
-                                />
-                                <span className="text-xs text-oc-text-muted">
-                                  {value ? "true" : "false"}
-                                </span>
-                              </div>
-                            ) : (
-                              <Input
-                                value={value === null ? "" : String(value)}
-                                onChange={(event) =>
-                                  updatePrimitiveValue(key, event.target.value)
-                                }
-                                className="h-8 text-xs font-mono"
-                              />
-                            )}
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-oc-text-muted hover:text-oc-red"
-                              onClick={() => removeKey(key)}
-                              title={`Remove ${key}`}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-
-                  {complexEntries.length > 0 ? (
-                    <div className="rounded-md border border-oc-border bg-oc-bg-soft p-2 space-y-1.5">
-                      <div className="text-[10px] uppercase tracking-wider text-oc-text-muted">
-                        Advanced-only keys
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {complexEntries.map(([key, value]) => (
-                          <Badge
-                            key={key}
-                            variant="outline"
-                            className="text-[9px] border-oc-border"
-                          >
-                            {key}: {Array.isArray(value) ? "array" : "object"}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div className="rounded-md border border-oc-border bg-oc-bg-soft p-2 space-y-2">
-                    <div className="text-[10px] uppercase tracking-wider text-oc-text-muted">
-                      Add Top-Level Key
-                    </div>
-                    <div className="grid grid-cols-1 gap-2 md:grid-cols-[1.3fr_0.9fr_1fr_auto]">
-                      <Input
-                        placeholder="key_name"
-                        value={newKey}
-                        onChange={(event) => setNewKey(event.target.value)}
-                        className="h-8 text-xs font-mono"
-                      />
-                      <select
-                        value={newType}
-                        onChange={(event) =>
-                          setNewType(event.target.value as "string" | "number" | "boolean")
-                        }
-                        className="h-8 rounded-md border border-oc-border bg-oc-bg px-2 text-xs"
-                      >
-                        <option value="string">string</option>
-                        <option value="number">number</option>
-                        <option value="boolean">boolean</option>
-                      </select>
-                      {newType === "boolean" ? (
-                        <div className="h-8 rounded-md border border-oc-border bg-oc-bg px-2 flex items-center justify-between">
-                          <span className="text-xs text-oc-text-muted">
-                            {newBooleanValue ? "true" : "false"}
-                          </span>
-                          <Switch
-                            checked={newBooleanValue}
-                            onCheckedChange={setNewBooleanValue}
-                          />
-                        </div>
-                      ) : (
-                        <Input
-                          placeholder={newType === "number" ? "0" : "value"}
-                          value={newValue}
-                          onChange={(event) => setNewValue(event.target.value)}
-                          className="h-8 text-xs font-mono"
-                        />
-                      )}
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8 text-xs"
-                        onClick={handleAddKey}
-                      >
-                        Add
-                      </Button>
-                    </div>
-                  </div>
+                  <JsonFormEditor
+                    value={rootConfig}
+                    path={[]}
+                    onChange={(path, newValue) => {
+                      const updated = updateAtPath(rootConfig, path, newValue);
+                      setContent(formatConfigContent(updated as Record<string, unknown>));
+                    }}
+                    availableModels={availableModels}
+                  />
                 </div>
               )}
             </TabsContent>
@@ -4552,7 +4457,7 @@ export function SettingsModal({
 }
 
 export function SettingsPanel() {
-  const { opencodeConfig, opencodeConfigSaveStatus } = useAppState();
+  const { opencodeConfig, opencodeConfigSaveStatus, availableModels } = useAppState();
   const [modalOpen, setModalOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -4661,6 +4566,34 @@ export function SettingsPanel() {
           </div>
         ) : null}
 
+        {/* File Selector Dropdown */}
+        {opencodeConfig?.files && opencodeConfig.files.length > 1 && (
+          <div className="flex flex-col gap-1.5 p-2 rounded-lg bg-oc-bg-soft border border-oc-border/50 shadow-sm">
+            <div className="text-[10px] text-oc-text-muted font-medium uppercase tracking-wider">
+              Config Files ({opencodeConfig.files.length})
+            </div>
+            <select
+              value={opencodeConfig.fileName}
+              onChange={(e) => {
+                const selectedFile = opencodeConfig?.files?.find(f => f.name === e.target.value);
+                if (selectedFile) {
+                  vscode.postMessage({
+                    type: "getOpenCodeConfig",
+                    fileName: selectedFile.name,
+                  });
+                }
+              }}
+              className="w-full h-7 text-[11px] font-mono border border-oc-border bg-oc-bg rounded px-2"
+            >
+              {opencodeConfig.files.map(file => (
+                <option key={file.name} value={file.name}>
+                  {file.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <Button
           onClick={() => setModalOpen(true)}
           className="w-full h-8 text-[11px] font-medium transition-all gap-2 bg-oc-bg hover:bg-oc-accent hover:text-white border-oc-border group/btn"
@@ -4677,6 +4610,7 @@ export function SettingsPanel() {
         initialContent={opencodeConfig?.content || "{\n}\n"}
         filePath={opencodeConfig?.filePath}
         isGlobal={opencodeConfig?.isGlobal}
+        availableModels={availableModels}
       />
     </div>
   );
