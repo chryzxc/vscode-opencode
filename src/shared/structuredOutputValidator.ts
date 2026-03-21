@@ -32,6 +32,25 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function isQualifiedMarkdownPath(value: string): boolean {
+  const candidate = value.trim();
+  if (!candidate || !/\.md$/i.test(candidate)) {
+    return false;
+  }
+
+  return (
+    /^[a-zA-Z]:[\\/]/.test(candidate) ||
+    candidate.startsWith("/") ||
+    candidate.startsWith("\\\\") ||
+    candidate.startsWith("./") ||
+    candidate.startsWith("../") ||
+    candidate.startsWith(".\\") ||
+    candidate.startsWith("..\\") ||
+    candidate.includes("/") ||
+    candidate.includes("\\")
+  );
+}
+
 export function validateStructuredOutput(
   value: unknown,
 ): StructuredOutputValidationResult {
@@ -337,9 +356,44 @@ export function validateStructuredOutput(
   }
 
   if (responseType === "implementation_plan") {
-    const plan = record.plan as Record<string, unknown> | undefined;
-    if (!plan || typeof plan.content !== "string") {
-      errors.push("implementation_plan requires plan.content string");
+    // IMPORTANT CONTRACT: implementation plans may be represented by a disk file
+    // path only (plan.file) when the markdown was written by tools. Do not
+    // require plan.content here or the UI "View Plan" flow regresses.
+    const plan = asRecord(record.plan);
+    const planContent =
+      plan && typeof plan.content === "string" ? plan.content.trim() : "";
+    const planFile =
+      plan && typeof plan.file === "string" ? plan.file.trim() : "";
+    if (!planContent && !planFile) {
+      errors.push("implementation_plan requires plan.file or plan.content string");
+    }
+    if (plan && typeof plan.content !== "undefined" && typeof plan.content !== "string") {
+      errors.push("plan.content must be a string when provided");
+    }
+    if (plan && typeof plan.file !== "undefined" && typeof plan.file !== "string") {
+      errors.push("plan.file must be a string when provided");
+    }
+    if (planFile && !isQualifiedMarkdownPath(planFile)) {
+      errors.push(
+        "plan.file must be a full markdown filepath (absolute or workspace-relative), not just a filename",
+      );
+    }
+    if (plan && typeof plan.files !== "undefined") {
+      if (!Array.isArray(plan.files)) {
+        errors.push("plan.files must be an array of strings when provided");
+      } else {
+        const invalidPlanFiles = plan.files.some((entry) => {
+          if (typeof entry !== "string") {
+            return true;
+          }
+          return !isQualifiedMarkdownPath(entry);
+        });
+        if (invalidPlanFiles) {
+          errors.push(
+            "plan.files must contain full markdown filepaths (absolute or workspace-relative)",
+          );
+        }
+      }
     }
   }
 

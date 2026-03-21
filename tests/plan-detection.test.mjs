@@ -21,23 +21,23 @@ test('plan detection enriches assistant messages from plan files and structured 
 
   assert.match(
     enrichBody,
-    /planFilePattern\s*=\s*\/implementation_plan\(\?:_\[a-z0-9-\]\+\)\?\\\.md\/i/,
-    'plan detection should define a matcher supporting implementation_plan_<id>.md variants',
+    /isLikelyPlanMarkdownFile/,
+    'plan detection should use helper-based markdown file detection for plan files',
   );
   assert.match(
     enrichBody,
-    /edits\.some\([\s\S]*planFilePattern\.test\(e\.file\)/,
-    'plan detection should scan edits with the plan filename matcher',
+    /for \(const edit of editsForPlan\) \{[\s\S]*isLikelyPlanMarkdownFile\(edit\?\.file\)/,
+    'plan detection should scan edits with plan markdown helper detection',
   );
   assert.match(
     enrichBody,
-    /parts\.some\([\s\S]*p\.type\s*===\s*"patch"[\s\S]*planFilePattern\.test\(f\)/,
-    'plan detection should scan patch parts with the plan filename matcher',
+    /for \(const part of partsForPlan\) \{[\s\S]*part\?\.type !== "patch"[\s\S]*isLikelyPlanMarkdownFile\(patchFile\)/,
+    'plan detection should scan patch parts with plan markdown helper detection',
   );
   assert.match(enrichBody, /basicPlanKeywordMatch/, 'plan detection should include keyword checks');
   assert.match(enrichBody, /hasStructuralMarkers/, 'plan detection should include structural marker checks to reduce false positives');
   assert.match(enrichBody, /const\s+hasPlanKeywords\s*=\s*basicPlanKeywordMatch\s*&&\s*hasStructuralMarkers/, 'plan detection should require keywords plus structure');
-  assert.match(enrichBody, /plan:\s*\{[\s\S]*file:\s*(?:structured\.plan\?\.file\s*\|\|\s*fallbackPlanFile|fallbackPlanFile)[\s\S]*content:\s*(?:planContent|cleanPlanContent|structuredPlanContent)/, 'enriched messages must include plan metadata with file + content');
+  assert.match(enrichBody, /plan:\s*\{[\s\S]*file:\s*(?:resolvedPlanFile|extractedPlanFiles\[0\])[\s\S]*content:\s*(?:cleanPlanContent|structuredPlanContent)/, 'enriched messages must include plan metadata with file + content');
 });
 
 test('plan detection preserves safety guards and persistence behavior', () => {

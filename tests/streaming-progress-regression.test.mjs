@@ -361,6 +361,70 @@ test('activity normalization uses one canonical helper shared by streaming and h
   );
 });
 
+test('parts-based activity fallback keeps streaming-style tool titles', () => {
+  const partsFallbackBody = extractFunctionBody(
+    messageHandlerSource,
+    'function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[]',
+  );
+
+  assert.match(
+    partsFallbackBody,
+    /tool \? `Running \$\{tool\}\.\.\.` : inferredStepTitle\(rec\)/,
+    'parts fallback should use "Running <tool>..." titles so hydrated labels match streaming labels',
+  );
+  assert.doesNotMatch(
+    partsFallbackBody,
+    /tool \? `\$\{tool\}` : "Tool call"/,
+    'parts fallback should avoid bare tool-name titles that degrade to generic EVENT labels',
+  );
+});
+
+test('timeline parser recognizes compact single-word tool titles from hydrated history', () => {
+  const parserBody = extractFunctionBody(
+    messageComponentsSource,
+    'function parseTimelineStepTitle(rawTitle: string):',
+  );
+
+  assert.match(
+    parserBody,
+    /const singleToken = stripTrailingEllipsis\(title\.toLowerCase\(\)\);/,
+    'timeline parser should normalize compact token titles for hydrated activity compatibility',
+  );
+  assert.match(
+    parserBody,
+    /\^\[a-z\]\[a-z0-9_.-\]\{1,40\}\$/,
+    'timeline parser should treat compact slug-like tool names as explicit labels',
+  );
+});
+
+test('parts fallback merges duplicate callID tool rows and preserves enriched metadata', () => {
+  const partsFallbackBody = extractFunctionBody(
+    messageHandlerSource,
+    'function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[]',
+  );
+
+  assert.match(
+    partsFallbackBody,
+    /const stepIndexByCallId = new Map<string, number>\(\);/,
+    'parts fallback should track tool rows by callID',
+  );
+  assert.match(
+    partsFallbackBody,
+    /mergeCanonicalActivityStep\(/,
+    'parts fallback should merge repeated callID snapshots instead of dropping later updates',
+  );
+  assert.match(
+    partsFallbackBody,
+    /asString\(stateRec\?\.title\)|asString\(stateRec\?\.label\)/,
+    'parts fallback should read title fallbacks from state payloads used by hydrated history',
+  );
+  assert.match(
+    partsFallbackBody,
+    /asString\(rec\.description\)|asString\(stateRec\?\.description\)/,
+    'parts fallback should preserve description-like metadata for hydrated rows',
+  );
+});
+
 test('canonical activity steps preserve id/callID/streamSeq/diffStats across finalize and reload', () => {
   const canonicalBody = extractFunctionBody(
     messageHandlerSource,
@@ -713,6 +777,19 @@ test('completed activity prefers canonical message.steps over progressEvents fal
     progressBody,
     /else if[\s\S]*Array\.isArray\(message\.progressEvents\)\s*&&\s*message\.progressEvents\.length > 0/s,
     'completed activity should only use progressEvents as compatibility fallback',
+  );
+});
+
+test('latest assistant message keeps full completed activity list after streaming ends', () => {
+  assert.match(
+    messageComponentsSource,
+    /const isLatestAssistantMessage =[\s\S]*latestAssistantMessageId === messageId;/,
+    'assistant message should detect whether it is the latest assistant turn',
+  );
+  assert.match(
+    messageComponentsSource,
+    /const hasCompletedCondensedActivity =[\s\S]*!isLatestAssistantMessage[\s\S]*displayEvents\.length > MAX_VISIBLE_COMPLETED_ACTIVITY/s,
+    'completed activity condensation should skip the latest assistant turn to avoid post-stream row loss',
   );
 });
 

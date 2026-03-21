@@ -233,6 +233,30 @@ function looksLikeReasoningTrace(value: string, currentContent: string): boolean
   return score >= 3;
 }
 
+// Detects AI-internal tool-use narration that leaked into the main content stream
+// (e.g. "Let me search for...", "Let me read the file...", "Now let me check...").
+// Returns true if the text is predominantly a reasoning monologue with no user-facing value.
+function looksLikeToolUseMonologue(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length < 40) {
+    return false;
+  }
+  const toolNarrationPatterns = [
+    /let me (?:(?:also|now|first|then|just) )?(?:read|search|look|find|check|examine|grep|analyze|explore|scan|fetch|run|verify)\b/gi,
+    /now let me (?:read|search|look|find|check|examine|grep|analyze|explore|verify)\b/gi,
+    /(?:good|great|okay),?\s+(?:so |now )(?:let me|i need|i should)\b/gi,
+    /\bi (?:need|should|will) (?:now )?(?:read|search|look|find|check|examine|use)\b/gi,
+  ];
+  let total = 0;
+  for (const pattern of toolNarrationPatterns) {
+    total += (trimmed.match(pattern) ?? []).length;
+    if (total >= 2) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function splitMixedReasoningFromContent(
   value: string,
 ): { content: string; reasoning: string } | null {
@@ -459,24 +483,42 @@ function normalizeActivityStepRecord(value: unknown): MessageStep | undefined {
   if (!rec) {
     return undefined;
   }
-  const title = asString(rec.title) || asString(rec.message);
+  const label = asString(rec.label);
+  const summary = asString(rec.summary);
+  const title =
+    asString(rec.title) ||
+    asString(rec.message) ||
+    (label && summary ? `${label} ${summary}` : label || summary) ||
+    asString(rec.tool);
   if (!title) {
     return undefined;
   }
+  const stateRec = asRecord(rec.state);
+  const stateInput = asRecord(stateRec?.input);
   const filePath =
     asString(rec.filePath) ||
     asString(rec.content) ||
     asString(rec.file) ||
     asString(rec.path) ||
+    asString(stateInput?.file) ||
+    asString(stateInput?.path) ||
     undefined;
-  const statusRaw = asString(rec.status);
+  const statusRaw = asString(stateRec?.status) || asString(rec.status);
 
   return {
     type: asString(rec.type) || "step",
     title,
     content: filePath,
     status: statusRaw ? normalizeProgressStatus(statusRaw) : undefined,
-    meta: asString(rec.meta) || asString(rec.detail) || undefined,
+    meta:
+      asString(rec.meta) ||
+      asString(rec.detail) ||
+      asString(rec.description) ||
+      asString(rec.subtitle) ||
+      asString(stateRec?.meta) ||
+      asString(stateRec?.detail) ||
+      asString(stateRec?.description) ||
+      undefined,
     id: asString(rec.id) || undefined,
     callID: asString(rec.callID) || asString(rec.callId) || undefined,
     streamSeq: asOptionalNumber(rec.streamSeq),
@@ -545,7 +587,7 @@ function mergeCanonicalActivityStep(
 
 function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[] {
   const fromParts: MessageStep[] = [];
-  const seenCallIds = new Set<string>();
+  const stepIndexByCallId = new Map<string, number>();
   for (const part of parts) {
     const rec = asRecord(part);
     if (!rec || asString(rec.type).toLowerCase() !== "tool") {
@@ -562,12 +604,6 @@ function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[] {
     }
 
     const callID = asString(rec.callID) || asString(rec.callId) || undefined;
-    if (callID) {
-      if (seenCallIds.has(callID)) {
-        continue;
-      }
-      seenCallIds.add(callID);
-    }
 
     const stateRec = asRecord(rec.state);
     const inputRec = asRecord(stateRec?.input);
@@ -595,22 +631,55 @@ function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[] {
       asString(inputRec?.url),
       asString(inputRec?.Url),
     ].filter(Boolean);
-    const title = asString(rec.title) || (tool ? `${tool}` : "Tool call");
+    const explicitTitle =
+      asString(rec.title) ||
+      asString(stateRec?.title) ||
+      asString(stateRec?.label);
+    const meta =
+      asString(rec.meta) ||
+      asString(rec.detail) ||
+      asString(rec.description) ||
+      asString(stateRec?.meta) ||
+      asString(stateRec?.detail) ||
+      asString(stateRec?.description) ||
+      metaValues[0] ||
+      undefined;
     const statusValue = asString(stateRec?.status ?? rec.status);
-
-    fromParts.push({
+    const existingIndex =
+      callID && stepIndexByCallId.has(callID)
+        ? stepIndexByCallId.get(callID)
+        : undefined;
+    const title =
+      explicitTitle ||
+      (tool ? `Running ${tool}...` : inferredStepTitle(rec));
+    const normalized: MessageStep = {
       type: "tool",
       title,
       content: filePath,
       status: statusValue ? normalizeProgressStatus(statusValue) : "done",
-      meta: asString(rec.meta) || metaValues[0] || undefined,
+      meta,
       id: asString(rec.id) || undefined,
       callID,
       streamSeq: asOptionalNumber(rec.streamSeq),
       diffStats:
         normalizeDiffStats(resultRec?.diffStats) ||
         normalizeDiffStats(rec.diffStats),
-    });
+    };
+
+    if (typeof existingIndex === "number") {
+      // History can include multiple tool snapshots with the same callID.
+      // Merge them so hydrated rows preserve the latest title/meta/status.
+      fromParts[existingIndex] = mergeCanonicalActivityStep(
+        fromParts[existingIndex],
+        normalized,
+      );
+      continue;
+    }
+
+    fromParts.push(normalized);
+    if (callID) {
+      stepIndexByCallId.set(callID, fromParts.length - 1);
+    }
   }
   return fromParts;
 }
@@ -1076,7 +1145,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     return events.length > 0 ? events : undefined;
   };
   const subagents = Array.isArray(subagentsRaw)
-      ? subagentsRaw
+    ? subagentsRaw
       .map((item): StructuredSubagent | null => {
         const subagent = asRecord(item);
         if (!subagent) {
@@ -1109,36 +1178,36 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     | undefined;
   const subagentsDelta =
     subagentsDeltaRaw &&
-    Array.isArray(subagentsDeltaRaw.items)
+      Array.isArray(subagentsDeltaRaw.items)
       ? {
-          parentMessageId: asString(subagentsDeltaRaw.parentMessageId) || undefined,
-          items: subagentsDeltaRaw.items
-            .map((item) => {
-              const subagent = asRecord(item);
-              if (!subagent) {
-                return null;
-              }
-              const id = asString(subagent.id);
-              if (!id) {
-                return null;
-              }
-              return {
-                id,
-                name: asString(subagent.name) || asString(subagent.agentId) || undefined,
-                status: asString(subagent.status) || undefined,
-                progress: typeof subagent.progress === 'number' ? subagent.progress : undefined,
-                description: asString(subagent.description) || undefined,
-                latestActivity: asString(subagent.latestActivity) || asString(subagent.description) || undefined,
-                childSessionId: asString(subagent.childSessionId) || undefined,
-                parentSessionId: asString(subagent.parentSessionId) || undefined,
-                parentMessageId: asString(subagent.parentMessageId) || undefined,
-                progressEvents: normalizeSubagentProgressEvents(subagent.progressEvents, id),
-                thinkingEvents: normalizeSubagentThinkingEvents(subagent.thinkingEvents, id),
-                timelineEvents: normalizeSubagentTimelineEvents(subagent.timelineEvents, id),
-              } as StructuredSubagent;
-            })
-            .filter(Boolean) as StructuredSubagent[]
-        }
+        parentMessageId: asString(subagentsDeltaRaw.parentMessageId) || undefined,
+        items: subagentsDeltaRaw.items
+          .map((item) => {
+            const subagent = asRecord(item);
+            if (!subagent) {
+              return null;
+            }
+            const id = asString(subagent.id);
+            if (!id) {
+              return null;
+            }
+            return {
+              id,
+              name: asString(subagent.name) || asString(subagent.agentId) || undefined,
+              status: asString(subagent.status) || undefined,
+              progress: typeof subagent.progress === 'number' ? subagent.progress : undefined,
+              description: asString(subagent.description) || undefined,
+              latestActivity: asString(subagent.latestActivity) || asString(subagent.description) || undefined,
+              childSessionId: asString(subagent.childSessionId) || undefined,
+              parentSessionId: asString(subagent.parentSessionId) || undefined,
+              parentMessageId: asString(subagent.parentMessageId) || undefined,
+              progressEvents: normalizeSubagentProgressEvents(subagent.progressEvents, id),
+              thinkingEvents: normalizeSubagentThinkingEvents(subagent.thinkingEvents, id),
+              timelineEvents: normalizeSubagentTimelineEvents(subagent.timelineEvents, id),
+            } as StructuredSubagent;
+          })
+          .filter(Boolean) as StructuredSubagent[]
+      }
       : undefined;
 
   if (
@@ -1277,6 +1346,178 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
       }
       return undefined;
     })
+    .filter((event): event is InteractiveEvent => !!event);
+}
+
+function hasBlockingInteractiveEvents(events: InteractiveEvent[]): boolean {
+  return events.some(
+    (event) =>
+      event.type === "question" ||
+      event.type === "confirm" ||
+      event.type === "quick_actions",
+  );
+}
+
+function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) {
+        return null;
+      }
+      const label = asString(rec.label) || asString(rec.value);
+      if (!label) {
+        return null;
+      }
+      return {
+        id: asString(rec.id) || undefined,
+        label,
+        value: asString(rec.value) || label,
+        description: asString(rec.description) || asString(rec.detail) || undefined,
+      } as InteractiveChoice;
+    })
+    .filter((item): item is InteractiveChoice => !!item);
+}
+
+function normalizeToolInteractiveEvent(
+  record: UnknownRecord,
+  fallbackId: string,
+  fallbackTitle?: string,
+): InteractiveEvent | undefined {
+  const id = asString(record.id) || fallbackId;
+  const typeRaw = asString(record.type).toLowerCase();
+  const title = asString(record.title) || fallbackTitle || undefined;
+
+  if (typeRaw === "message") {
+    const message =
+      asString(record.message) ||
+      asString(record.content) ||
+      asString(record.text);
+    if (!message) {
+      return undefined;
+    }
+    return {
+      type: "message",
+      id,
+      title,
+      message,
+      dismissLabel: asString(record.dismissLabel) || undefined,
+    };
+  }
+
+  if (typeRaw === "quick_actions" || typeRaw === "quick-actions") {
+    const actions = normalizeInteractiveChoices(record.actions ?? record.options);
+    if (actions.length === 0) {
+      return undefined;
+    }
+    return {
+      type: "quick_actions",
+      id,
+      title,
+      actions,
+    };
+  }
+
+  const questionText =
+    asString(record.question) ||
+    asString(record.prompt) ||
+    asString(record.message) ||
+    asString(record.text) ||
+    title;
+
+  if (typeRaw === "confirm") {
+    if (!questionText) {
+      return undefined;
+    }
+    return {
+      type: "confirm",
+      id,
+      title,
+      question: questionText,
+      confirmLabel: asString(record.confirmLabel) || undefined,
+      cancelLabel: asString(record.cancelLabel) || undefined,
+    };
+  }
+
+  const options = normalizeInteractiveChoices(
+    record.options ?? record.choices ?? record.answers ?? record.actions,
+  );
+  const allowCustomInput =
+    asBoolean(record.allowCustomInput, false) ||
+    asBoolean(record.allow_custom_input, false) ||
+    options.length === 0;
+
+  if (!questionText) {
+    return undefined;
+  }
+  if (options.length < 2 && !allowCustomInput) {
+    return undefined;
+  }
+
+  return {
+    type: "question",
+    id,
+    title,
+    question: questionText,
+    options,
+    multiSelect: asBoolean(record.multiSelect, false),
+    allowCustomInput,
+  };
+}
+
+function interactiveEventsFromToolQuestionPart(part: UnknownRecord): InteractiveEvent[] {
+  const toolName = asString(part.tool).toLowerCase();
+  if (
+    !toolName ||
+    (toolName !== "question" &&
+      !toolName.includes("request_user_input") &&
+      !toolName.includes("request-user-input"))
+  ) {
+    return [];
+  }
+
+  const state = asRecord(part.state);
+  const input =
+    asRecord(state?.input) ||
+    asRecord(part.input) ||
+    asRecord(part.arguments) ||
+    null;
+  if (!input) {
+    return [];
+  }
+
+  const rootTitle =
+    asString(input.title) || asString(input.header) || asString(input.label) || undefined;
+  const baseId =
+    asString(part.callID) || asString(part.callId) || asString(part.id) || `interactive-${Date.now()}`;
+
+  const listRaw =
+    Array.isArray(input.questions) ? input.questions
+      : Array.isArray(input.items) ? input.items
+        : Array.isArray(input.prompts) ? input.prompts
+          : Array.isArray(input.events) ? input.events
+            : null;
+
+  const records: UnknownRecord[] = [];
+  if (Array.isArray(listRaw) && listRaw.length > 0) {
+    listRaw.forEach((entry) => {
+      const rec = asRecord(entry);
+      if (rec) {
+        records.push(rec);
+      }
+    });
+  } else {
+    const nestedQuestion = asRecord(input.question);
+    records.push(nestedQuestion || input);
+  }
+
+  return records
+    .map((record, index) =>
+      normalizeToolInteractiveEvent(record, `${baseId}-${index}`, rootTitle),
+    )
     .filter((event): event is InteractiveEvent => !!event);
 }
 
@@ -1724,8 +1965,8 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   const directReasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
   const directReasoningChunks = Array.isArray(directReasoningRaw)
     ? directReasoningRaw
-        .map((item) => asRichString(item).trim())
-        .filter((item) => item.length > 0)
+      .map((item) => asRichString(item).trim())
+      .filter((item) => item.length > 0)
     : typeof directReasoningRaw !== "undefined"
       ? [asRichString(directReasoningRaw).trim()].filter((item) => item.length > 0)
       : [];
@@ -2324,16 +2565,16 @@ function syncSubagentMapsIntoMessages(
     mode === "replace"
       ? summariesByParentMessageId
       : {
-          ...state.subagentsByParentMessageId,
-          ...summariesByParentMessageId,
-        };
+        ...state.subagentsByParentMessageId,
+        ...summariesByParentMessageId,
+      };
   const allDetailsById =
     mode === "replace"
       ? detailsById
       : {
-          ...state.subagentDetailsById,
-          ...detailsById,
-        };
+        ...state.subagentDetailsById,
+        ...detailsById,
+      };
 
   const messageIds = new Set<string>();
   state.messages.forEach((message) => {
@@ -2470,7 +2711,35 @@ function extractMessageText(message: Message): string {
   return reasoningFromParts(parts);
 }
 
+function isInternalSystemReminderMessage(message: Message): boolean {
+  const role = asString(message.role) || asString(asRecord(message.info)?.role);
+  const normalizedRole = role.toLowerCase().trim();
+  if (normalizedRole !== "user" && normalizedRole !== "system") {
+    return false;
+  }
+
+  const text = extractMessageText(message).trim();
+  if (!text) {
+    return false;
+  }
+  if (/\bproceed on this plan\./i.test(text)) {
+    return false;
+  }
+
+  const normalizedText = text.toLowerCase();
+  return (
+    normalizedText.includes("<system-reminder>") ||
+    normalizedText.includes("<!-- omo_internal_initiator -->") ||
+    (normalizedText.includes("[search-model]") &&
+      normalizedText.includes("maximize search effort"))
+  );
+}
+
 function hasRenderableHistoryPayload(message: Message): boolean {
+  if (isInternalSystemReminderMessage(message)) {
+    return false;
+  }
+
   const text = extractMessageText(message).trim();
   if (text.length > 0) {
     return true;
@@ -2516,6 +2785,13 @@ function hasRenderableHistoryPayload(message: Message): boolean {
     return true;
   }
 
+  // Preserve assistant turns that only contain activity parts
+  // (tool/reasoning/step/patch) so reload matches stream-time rendering.
+  const role = asString(message.role) || asString(asRecord(message.info)?.role);
+  if (role === "assistant" && Array.isArray(message.parts) && message.parts.length > 0) {
+    return true;
+  }
+
   if (Array.isArray(message.parts)) {
     return message.parts.some((part) => {
       const rec = asRecord(part);
@@ -2540,6 +2816,305 @@ function isRenderableHistoryMessage(message: Message): boolean {
     return hasPayload;
   }
   return hasPayload;
+}
+
+function isAssistantHistoryMessage(message: Message | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+  const role = asString(message.role) || asString(asRecord(message.info)?.role);
+  return role.toLowerCase().trim() === "assistant";
+}
+
+function messagePartFingerprint(part: MessagePart): string {
+  const rec = asRecord(part);
+  if (!rec) {
+    return "unknown";
+  }
+  const type = asString(rec.type).toLowerCase() || "unknown";
+  const callId = asString(rec.callID) || asString(rec.callId);
+  const tool = asString(rec.tool);
+  const state = asRecord(rec.state);
+  const status = asString(state?.status) || asString(rec.status);
+  const title = asString(rec.title) || asString(state?.title);
+  const filePath =
+    asString(rec.filePath) ||
+    asString(asRecord(state?.input)?.file) ||
+    asString(asRecord(state?.input)?.path);
+  const text = asRichString(rec.text || rec.content || rec.delta || rec.reasoning)
+    .trim()
+    .slice(0, 160);
+  return [type, callId, tool, status, title, filePath, text].join("|");
+}
+
+function isTextLikePart(part: MessagePart): boolean {
+  const rec = asRecord(part);
+  if (!rec) {
+    return false;
+  }
+  const type = asString(rec.type).toLowerCase();
+  if (type === "text") {
+    return true;
+  }
+  return (
+    typeof rec.text === "string" ||
+    typeof rec.content === "string" ||
+    typeof rec.delta === "string"
+  );
+}
+
+function coalesceAssistantHistoryBurst(burst: Message[]): Message {
+  const base = { ...(burst[burst.length - 1] || burst[0]) } as Message;
+  const mergedParts: MessagePart[] = [];
+  const seenPartFingerprints = new Set<string>();
+  const seenReasoning = new Set<string>();
+  const seenProgress = new Set<string>();
+  const seenSteps = new Set<string>();
+  const seenEdits = new Set<string>();
+
+  let latestText = "";
+  let latestTextPart: MessagePart | undefined;
+  let latestInteractiveEvents: InteractiveEvent[] | undefined;
+  let latestPlan = base.plan;
+  let latestSubagents = base.subagents;
+  let latestError = asString((base as unknown as UnknownRecord).error);
+  let latestStructuredOutput = asRecord(
+    (base as unknown as UnknownRecord).structuredOutput,
+  );
+  let canonicalMessageId: string | null = getMessageId(base);
+
+  const appendReasoningEvent = (event: ReasoningEvent) => {
+    const key = `${asNumber(event.createdAt)}|${normalizeComparableText(asString(event.text))}`;
+    if (seenReasoning.has(key)) {
+      return;
+    }
+    seenReasoning.add(key);
+    const list = Array.isArray(base.reasoningEvents) ? base.reasoningEvents : [];
+    base.reasoningEvents = [...list, event];
+  };
+
+  const appendProgressEvent = (event: MessageStep) => {
+    const key = [
+      asString(event.id),
+      asString(event.callID),
+      normalizeComparableText(asString(event.title)),
+      asString(event.status),
+      asString(event.filePath),
+      asString(event.meta),
+      asNumber(event.streamSeq),
+    ].join("|");
+    if (seenProgress.has(key)) {
+      return;
+    }
+    seenProgress.add(key);
+    const list = Array.isArray(base.progressEvents) ? base.progressEvents : [];
+    base.progressEvents = [...list, event];
+  };
+
+  const appendStep = (step: MessageStep) => {
+    const key = [
+      asString(step.id),
+      asString(step.callID),
+      normalizeComparableText(asString(step.title)),
+      asString(step.status),
+      asString(step.filePath),
+      asString(step.meta),
+      asNumber(step.streamSeq),
+    ].join("|");
+    if (seenSteps.has(key)) {
+      return;
+    }
+    seenSteps.add(key);
+    const list = Array.isArray(base.steps) ? base.steps : [];
+    base.steps = [...list, step];
+  };
+
+  const appendEdit = (edit: { file: string; added?: number; deleted?: number }) => {
+    const key = normalizeComparableText(asString(edit.file));
+    if (!key || seenEdits.has(key)) {
+      return;
+    }
+    seenEdits.add(key);
+    const list = Array.isArray(base.edits) ? base.edits : [];
+    base.edits = [...list, edit];
+  };
+
+  for (const message of burst) {
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+
+    const messageId = getMessageId(message);
+    if (messageId) {
+      canonicalMessageId = messageId;
+    }
+
+    const content = extractMessageText(message).trim();
+    if (content.length > 0) {
+      latestText = content;
+      latestTextPart = Array.isArray(message.parts)
+        ? message.parts.find((part) => isTextLikePart(part))
+        : undefined;
+    }
+
+    if (
+      Array.isArray(message.interactiveEvents) &&
+      message.interactiveEvents.length > 0
+    ) {
+      latestInteractiveEvents = message.interactiveEvents;
+    }
+    if (message.plan && typeof message.plan === "object") {
+      latestPlan = message.plan;
+    }
+    if (Array.isArray(message.subagents) && message.subagents.length > 0) {
+      latestSubagents = message.subagents;
+    }
+    const errorText = asString((message as unknown as UnknownRecord).error);
+    if (errorText) {
+      latestError = errorText;
+    }
+    const structured = asRecord(
+      (message as unknown as UnknownRecord).structuredOutput,
+    );
+    if (structured) {
+      latestStructuredOutput = structured;
+    }
+
+    if (Array.isArray(message.parts)) {
+      for (const part of message.parts) {
+        if (isTextLikePart(part)) {
+          continue;
+        }
+        const key = messagePartFingerprint(part);
+        if (seenPartFingerprints.has(key)) {
+          continue;
+        }
+        seenPartFingerprints.add(key);
+        mergedParts.push(part);
+      }
+    }
+
+    if (Array.isArray(message.reasoningEvents)) {
+      message.reasoningEvents.forEach(appendReasoningEvent);
+    }
+    if (Array.isArray(message.progressEvents)) {
+      message.progressEvents.forEach(appendProgressEvent);
+    }
+    if (Array.isArray(message.steps)) {
+      message.steps.forEach(appendStep);
+    }
+    if (Array.isArray(message.edits)) {
+      message.edits.forEach(appendEdit);
+    }
+  }
+
+  if (latestText.length > 0) {
+    const source = asRecord(latestTextPart) ?? {};
+    mergedParts.push({
+      ...source,
+      type: "text",
+      text: latestText,
+    } as MessagePart);
+    base.content = latestText;
+    base.text = latestText;
+  }
+
+  if (mergedParts.length > 0) {
+    base.parts = mergedParts;
+  }
+  if (latestInteractiveEvents) {
+    base.interactiveEvents = latestInteractiveEvents;
+  }
+  if (latestPlan) {
+    base.plan = latestPlan;
+  }
+  if (latestSubagents) {
+    base.subagents = latestSubagents;
+  }
+  if (latestError) {
+    (base as unknown as UnknownRecord).error = latestError;
+  }
+  if (latestStructuredOutput) {
+    (base as unknown as UnknownRecord).structuredOutput = latestStructuredOutput;
+  }
+
+  if (canonicalMessageId) {
+    base.id = canonicalMessageId;
+    const infoRec = asRecord(base.info);
+    base.info = infoRec
+      ? { ...infoRec, id: canonicalMessageId }
+      : ({ id: canonicalMessageId } as Record<string, unknown>);
+  }
+
+  return base;
+}
+
+function coalesceAdjacentAssistantHistoryMessages(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length <= 1) {
+    return messages;
+  }
+
+  const out: Message[] = [];
+  let index = 0;
+  while (index < messages.length) {
+    const current = messages[index];
+    if (!isAssistantHistoryMessage(current)) {
+      out.push(current);
+      index += 1;
+      continue;
+    }
+
+    const burst: Message[] = [current];
+    let cursor = index + 1;
+    while (cursor < messages.length && isAssistantHistoryMessage(messages[cursor])) {
+      burst.push(messages[cursor]);
+      cursor += 1;
+    }
+
+    if (burst.length === 1) {
+      out.push(current);
+    } else {
+      out.push(coalesceAssistantHistoryBurst(burst));
+    }
+    index = cursor;
+  }
+
+  return out;
+}
+
+function summarizeRenderMessageForDebug(message: Message, index: number): Record<string, unknown> {
+  const info = asRecord(message.info);
+  const structured = asRecord((message as unknown as UnknownRecord).structuredOutput);
+  const text = extractMessageText(message).trim();
+  return {
+    index,
+    id: getMessageId(message),
+    role: asString(message.role) || asString(info?.role) || "unknown",
+    responseType: asString(structured?.responseType).toLowerCase() || undefined,
+    textLength: text.length,
+    textPreview: text ? text.slice(0, 160) : undefined,
+    hasPlan: !!message.plan,
+    subagentCount: Array.isArray(message.subagents) ? message.subagents.length : 0,
+    interactiveCount: Array.isArray(message.interactiveEvents) ? message.interactiveEvents.length : 0,
+    partCount: Array.isArray(message.parts) ? message.parts.length : 0,
+  };
+}
+
+function logRenderSnapshot(source: string, messages: Message[]): void {
+  const tail = messages.slice(-20);
+  const summary = tail.map((message, index) =>
+    summarizeRenderMessageForDebug(message, messages.length - tail.length + index),
+  );
+  const last = summary[summary.length - 1];
+  console.info("[OpenCode][webview] render snapshot", {
+    source,
+    messageCount: messages.length,
+    last,
+  });
+  streamDebug("[OpenCode][webview] render snapshot tail", {
+    source,
+    items: summary,
+  });
 }
 
 function slugifyChoiceValue(input: string): string {
@@ -3001,6 +3576,13 @@ function handleStreamEvent(
         });
       }
 
+      const interactiveEvents = toInteractiveEvents(structuredOutput);
+      const hasBlockingInteractive =
+        hasBlockingInteractiveEvents(interactiveEvents);
+      if (interactiveEvents.length > 0) {
+        dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: interactiveEvents });
+      }
+
       const isReasoning = structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk;
       if (isReasoning) {
         const nextReasoning = sanitizeReasoningChunk(
@@ -3012,12 +3594,12 @@ function handleStreamEvent(
             payload: { reasoning: nextReasoning, append: true }
           });
         }
-        } else if (
-          structuredKind === "message" ||
-          partType === "text" ||
-          (!!textChunk && !isProgressPartType) ||
-          (!partType && structuredKind !== "progress")
-        ) {
+      } else if (
+        structuredKind === "message" ||
+        partType === "text" ||
+        (!!textChunk && !isProgressPartType) ||
+        (!partType && structuredKind !== "progress")
+      ) {
         const streamingState = getState().streaming;
         const rawReasoningLike = looksLikeReasoningTrace(textChunk, streamingState?.content || "");
         const mixedChunk = splitMixedReasoningFromContent(textChunk);
@@ -3065,30 +3647,30 @@ function handleStreamEvent(
         const cleanedChunk = contentEmpty
           ? stripLeadingUserEcho(candidateChunk, getState())
           : candidateChunk;
-          if (cleanedChunk) {
-            const contentPatch = resolveStreamingContentUpdate(
-              streamingState?.content || '',
-              cleanedChunk,
-              !!deltaChunk,
-            );
-            if (!contentPatch) {
-              dispatch({ type: "SET_PROCESSING", payload: true });
-              break;
-            }
-            streamDebug("[OpenCode][stream] message.part.updated chunk", {
-              messageId,
-              eventType,
-              partType,
-              append: contentPatch.append,
-              length: cleanedChunk.length,
-              preview: cleanedChunk.slice(0, 80),
-            });
-            dispatch({
-              type: "UPDATE_STREAMING_CONTENT",
-              payload: { content: contentPatch.content, append: contentPatch.append },
-            });
+        if (cleanedChunk) {
+          const contentPatch = resolveStreamingContentUpdate(
+            streamingState?.content || '',
+            cleanedChunk,
+            !!deltaChunk,
+          );
+          if (!contentPatch) {
+            dispatch({ type: "SET_PROCESSING", payload: true });
+            break;
           }
+          streamDebug("[OpenCode][stream] message.part.updated chunk", {
+            messageId,
+            eventType,
+            partType,
+            append: contentPatch.append,
+            length: cleanedChunk.length,
+            preview: cleanedChunk.slice(0, 80),
+          });
+          dispatch({
+            type: "UPDATE_STREAMING_CONTENT",
+            payload: { content: contentPatch.content, append: contentPatch.append },
+          });
         }
+      }
 
       if (partType === 'step-start' && structuredKind !== 'thinking') {
         upsertStreamingStep(dispatch, getState, {
@@ -3196,6 +3778,19 @@ function handleStreamEvent(
         if (filePath) {
           dispatch({ type: 'ADD_STREAMING_EDIT', payload: filePath });
         }
+
+        const toolInteractiveEvents = interactiveEventsFromToolQuestionPart(part);
+        if (toolInteractiveEvents.length > 0) {
+          dispatch({
+            type: "SET_INTERACTIVE_EVENTS",
+            payload: toolInteractiveEvents,
+          });
+          if (hasBlockingInteractiveEvents(toolInteractiveEvents)) {
+            dispatch({ type: "FINISH_STREAMING" });
+            dispatch({ type: "SET_PROCESSING", payload: false });
+            break;
+          }
+        }
       }
 
       if (
@@ -3238,6 +3833,12 @@ function handleStreamEvent(
           meta: asString(part.meta) || undefined,
           startTime: Date.now(),
         });
+      }
+
+      if (hasBlockingInteractive) {
+        dispatch({ type: "FINISH_STREAMING" });
+        dispatch({ type: "SET_PROCESSING", payload: false });
+        break;
       }
 
       dispatch({ type: 'SET_PROCESSING', payload: true });
@@ -3338,8 +3939,15 @@ function handleStreamEvent(
         }
 
         const interactiveEvents = toInteractiveEvents(structuredOutput);
+        const hasBlockingInteractive =
+          hasBlockingInteractiveEvents(interactiveEvents);
         if (interactiveEvents.length > 0) {
           dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents });
+        }
+        if (hasBlockingInteractive && !finish) {
+          dispatch({ type: "FINISH_STREAMING" });
+          dispatch({ type: "SET_PROCESSING", payload: false });
+          break;
         }
 
         if (structuredOutput && structuredOutput.responseType === 'subagents' && messageId) {
@@ -3401,9 +4009,9 @@ function handleStreamEvent(
               const statusValue = (subagent.status || 'pending').toLowerCase();
               const status: SubagentSummary['status'] =
                 statusValue === 'running' ||
-                statusValue === 'done' ||
-                statusValue === 'error' ||
-                statusValue === 'orphaned'
+                  statusValue === 'done' ||
+                  statusValue === 'error' ||
+                  statusValue === 'orphaned'
                   ? statusValue
                   : 'pending';
               const summary: SubagentSummary = {
@@ -3443,27 +4051,27 @@ function handleStreamEvent(
         // "todoUpdate" postMessage path. This keeps reducer semantics identical
         // regardless of whether the host forwarded a postMessage or the stream
         // carried the structured payload directly.
-          try {
-            const todoSource =
-              asRecord(payload.structuredOutput) ?? structuredRecord ?? asRecord(properties?.structuredOutput);
-            const rawTodoItems = Array.isArray(todoSource?.todoItems) ? todoSource!.todoItems : undefined;
-            if (
-              structuredOutput &&
-              (structuredOutput.responseType === 'todo_update' ||
-                asString(payload.responseType) === 'todo_update') &&
-              Array.isArray(rawTodoItems)
-            ) {
-              for (const raw of rawTodoItems) {
-                const normalized = normalizeTodoRecord(raw);
-                if (!normalized) continue; // skip malformed items silently
-                ingestNormalizedTodo(dispatch, getState, normalized);
-              }
+        try {
+          const todoSource =
+            asRecord(payload.structuredOutput) ?? structuredRecord ?? asRecord(properties?.structuredOutput);
+          const rawTodoItems = Array.isArray(todoSource?.todoItems) ? todoSource!.todoItems : undefined;
+          if (
+            structuredOutput &&
+            (structuredOutput.responseType === 'todo_update' ||
+              asString(payload.responseType) === 'todo_update') &&
+            Array.isArray(rawTodoItems)
+          ) {
+            for (const raw of rawTodoItems) {
+              const normalized = normalizeTodoRecord(raw);
+              if (!normalized) continue; // skip malformed items silently
+              ingestNormalizedTodo(dispatch, getState, normalized);
             }
-          } catch (e) {
-            // Defensive: never allow malformed structured payloads to throw inside
-            // the message handler — just skip and continue processing other parts.
-            console.warn('Failed to normalize todo_update structured payload', e);
           }
+        } catch (e) {
+          // Defensive: never allow malformed structured payloads to throw inside
+          // the message handler — just skip and continue processing other parts.
+          console.warn('Failed to normalize todo_update structured payload', e);
+        }
       }
 
 
@@ -3528,67 +4136,67 @@ function handleStreamEvent(
     }
     case 'contentDelta':
     case 'content':
-      case 'text':
-      case 'text-delta': {
-        const chunk =
-          asString(payload.delta) || asString(payload.text) || asString(payload.content) || asString(payload.chunk);
-        if (chunk) {
-          const streamingState = getState().streaming;
-          const contentEmpty = !streamingState || !streamingState.content.trim();
-          let candidateChunk = contentEmpty
-            ? stripLeadingUserEcho(chunk, getState())
-            : chunk;
-          const mixedChunk = splitMixedReasoningFromContent(candidateChunk);
-          if (mixedChunk) {
-            const mixedReasoning = sanitizeReasoningChunk(mixedChunk.reasoning);
-            if (mixedReasoning) {
-              dispatch({
-                type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: mixedReasoning, append: true },
-              });
-            }
-            candidateChunk = mixedChunk.content;
+    case 'text':
+    case 'text-delta': {
+      const chunk =
+        asString(payload.delta) || asString(payload.text) || asString(payload.content) || asString(payload.chunk);
+      if (chunk) {
+        const streamingState = getState().streaming;
+        const contentEmpty = !streamingState || !streamingState.content.trim();
+        let candidateChunk = contentEmpty
+          ? stripLeadingUserEcho(chunk, getState())
+          : chunk;
+        const mixedChunk = splitMixedReasoningFromContent(candidateChunk);
+        if (mixedChunk) {
+          const mixedReasoning = sanitizeReasoningChunk(mixedChunk.reasoning);
+          if (mixedReasoning) {
+            dispatch({
+              type: "UPDATE_STREAMING_REASONING",
+              payload: { reasoning: mixedReasoning, append: true },
+            });
           }
-          const cleanedChunk = candidateChunk;
-          if (!cleanedChunk) {
-            break;
-          }
-          if (looksLikeReasoningTrace(cleanedChunk, streamingState?.content || "")) {
-            const reasoningLeak = sanitizeReasoningChunk(cleanedChunk);
-            if (reasoningLeak) {
-              dispatch({
-                type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true },
-              });
-            }
-            break;
-          }
-          const fromDelta =
-            eventType === 'contentDelta' ||
-            eventType === 'text-delta' ||
-            !!asString(payload.delta);
-          const contentPatch = resolveStreamingContentUpdate(
-            streamingState?.content || '',
-            cleanedChunk,
-            fromDelta,
-          );
-          if (!contentPatch) {
-            break;
-          }
-          streamDebug("[OpenCode][stream] content delta chunk", {
-            messageId,
-            eventType,
-            append: contentPatch.append,
-            length: cleanedChunk.length,
-            preview: cleanedChunk.slice(0, 80),
-          });
-          dispatch({
-            type: 'UPDATE_STREAMING_CONTENT',
-            payload: { content: contentPatch.content, append: contentPatch.append },
-          });
+          candidateChunk = mixedChunk.content;
         }
-        break;
+        const cleanedChunk = candidateChunk;
+        if (!cleanedChunk) {
+          break;
+        }
+        if (looksLikeReasoningTrace(cleanedChunk, streamingState?.content || "")) {
+          const reasoningLeak = sanitizeReasoningChunk(cleanedChunk);
+          if (reasoningLeak) {
+            dispatch({
+              type: "UPDATE_STREAMING_REASONING",
+              payload: { reasoning: reasoningLeak, append: true },
+            });
+          }
+          break;
+        }
+        const fromDelta =
+          eventType === 'contentDelta' ||
+          eventType === 'text-delta' ||
+          !!asString(payload.delta);
+        const contentPatch = resolveStreamingContentUpdate(
+          streamingState?.content || '',
+          cleanedChunk,
+          fromDelta,
+        );
+        if (!contentPatch) {
+          break;
+        }
+        streamDebug("[OpenCode][stream] content delta chunk", {
+          messageId,
+          eventType,
+          append: contentPatch.append,
+          length: cleanedChunk.length,
+          preview: cleanedChunk.slice(0, 80),
+        });
+        dispatch({
+          type: 'UPDATE_STREAMING_CONTENT',
+          payload: { content: contentPatch.content, append: contentPatch.append },
+        });
       }
+      break;
+    }
     case 'reasoningDelta':
     case 'reasoning':
     case 'thinking': {
@@ -3608,8 +4216,8 @@ function handleStreamEvent(
         title: asString(payload.title, 'Working'),
         type:
           stepTypeRaw === 'tool' ||
-          stepTypeRaw === 'reasoning' ||
-          stepTypeRaw === 'thinking'
+            stepTypeRaw === 'reasoning' ||
+            stepTypeRaw === 'thinking'
             ? (stepTypeRaw === "thinking" ? "reasoning" : stepTypeRaw)
             : 'step',
         status: 'pending',
@@ -3714,6 +4322,14 @@ function handleStreamEvent(
         });
       }
 
+      const interactiveEvents = toInteractiveEvents(structuredOutput);
+      const hasBlockingInteractive =
+        hasBlockingInteractiveEvents(interactiveEvents);
+      if (interactiveEvents.length > 0) {
+        dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: interactiveEvents });
+        consumed = true;
+      }
+
       if (structuredKind === "thinking" && structuredText) {
         const chunk = sanitizeReasoningChunk(structuredText);
         if (chunk) {
@@ -3723,58 +4339,58 @@ function handleStreamEvent(
           });
           consumed = true;
         }
-        } else if (structuredKind === "message" && structuredText) {
-          const streamingState = getState().streaming;
-          const rawReasoningLike = looksLikeReasoningTrace(structuredText, streamingState?.content || "");
-          let messageText = structuredText;
-          const mixedMessage = splitMixedReasoningFromContent(messageText);
-          if (mixedMessage) {
-            const mixedReasoning = sanitizeReasoningChunk(mixedMessage.reasoning);
-            if (mixedReasoning) {
-              dispatch({
-                type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: mixedReasoning, append: true },
-              });
-              consumed = true;
-            }
-            messageText = mixedMessage.content;
+      } else if (structuredKind === "message" && structuredText) {
+        const streamingState = getState().streaming;
+        const rawReasoningLike = looksLikeReasoningTrace(structuredText, streamingState?.content || "");
+        let messageText = structuredText;
+        const mixedMessage = splitMixedReasoningFromContent(messageText);
+        if (mixedMessage) {
+          const mixedReasoning = sanitizeReasoningChunk(mixedMessage.reasoning);
+          if (mixedReasoning) {
+            dispatch({
+              type: "UPDATE_STREAMING_REASONING",
+              payload: { reasoning: mixedReasoning, append: true },
+            });
+            consumed = true;
           }
-          if (rawReasoningLike && !mixedMessage) {
-            const reasoningLeak = sanitizeReasoningChunk(structuredText);
-            if (reasoningLeak) {
-              dispatch({
-                type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true },
-              });
-              consumed = true;
-            }
-            break;
+          messageText = mixedMessage.content;
+        }
+        if (rawReasoningLike && !mixedMessage) {
+          const reasoningLeak = sanitizeReasoningChunk(structuredText);
+          if (reasoningLeak) {
+            dispatch({
+              type: "UPDATE_STREAMING_REASONING",
+              payload: { reasoning: reasoningLeak, append: true },
+            });
+            consumed = true;
           }
-          if (looksLikeReasoningTrace(messageText, streamingState?.content || "")) {
-            const reasoningLeak = sanitizeReasoningChunk(messageText);
-            if (reasoningLeak) {
-              dispatch({
-                type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true },
-              });
-              consumed = true;
-            }
-            break;
+          break;
+        }
+        if (looksLikeReasoningTrace(messageText, streamingState?.content || "")) {
+          const reasoningLeak = sanitizeReasoningChunk(messageText);
+          if (reasoningLeak) {
+            dispatch({
+              type: "UPDATE_STREAMING_REASONING",
+              payload: { reasoning: reasoningLeak, append: true },
+            });
+            consumed = true;
           }
-          const contentPatch = resolveStreamingContentUpdate(
-            streamingState?.content || '',
-            messageText,
-            false,
-          );
-          if (!contentPatch) {
-            break;
-          }
-          dispatch({
-            type: "UPDATE_STREAMING_CONTENT",
-            payload: { content: contentPatch.content, append: contentPatch.append },
-          });
-          consumed = true;
-        } else if (structuredKind === "progress") {
+          break;
+        }
+        const contentPatch = resolveStreamingContentUpdate(
+          streamingState?.content || '',
+          messageText,
+          false,
+        );
+        if (!contentPatch) {
+          break;
+        }
+        dispatch({
+          type: "UPDATE_STREAMING_CONTENT",
+          payload: { content: contentPatch.content, append: contentPatch.append },
+        });
+        consumed = true;
+      } else if (structuredKind === "progress") {
         const fallbackPart = eventPart ?? properties ?? payload;
         const title = structuredText || inferredStepTitle(fallbackPart);
         if (title) {
@@ -3789,6 +4405,12 @@ function handleStreamEvent(
           });
           consumed = true;
         }
+      }
+
+      if (hasBlockingInteractive) {
+        dispatch({ type: "FINISH_STREAMING" });
+        dispatch({ type: "SET_PROCESSING", payload: false });
+        break;
       }
 
       if (consumed) {
@@ -4318,10 +4940,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       case "chatHistory": {
-        const messages = asArray(data.messages, isMessage)
+        const normalizedMessages = asArray(data.messages, isMessage)
           .map((msg) => normalizeMessage(msg, null))
           .filter((msg): msg is Message => !!msg)
           .filter((msg) => isRenderableHistoryMessage(msg));
+        const messages =
+          coalesceAdjacentAssistantHistoryMessages(normalizedMessages);
 
         latestStreamingSnapshot = null;
 
@@ -4334,6 +4958,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
         dispatch({ type: "CLEAR_MESSAGES" });
         dispatch({ type: "SET_MESSAGES", payload: messages });
+        const canonicalMessages = getState().messages;
 
         // If the backend included a sessionId (e.g. on session switch), update it BEFORE
         // storing stats so RESET_SESSION_STATS writes under the correct key.
@@ -4346,7 +4971,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
         // FORBIDDEN TO REMOVE - recalculate session stats from full history
         const stats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
-        messages.forEach((msg) => {
+        canonicalMessages.forEach((msg) => {
           stats.input += msg.tokens?.input || msg.info?.tokens?.input || 0;
           stats.output += msg.tokens?.output || msg.info?.tokens?.output || 0;
           stats.read +=
@@ -4359,7 +4984,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         dispatch({ type: "RESET_SESSION_STATS", payload: stats });
         dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
         const { summariesByParentMessageId, detailsById } =
-          extractSubagentsFromMessages(messages);
+          extractSubagentsFromMessages(canonicalMessages);
         if (Object.keys(summariesByParentMessageId).length > 0) {
           dispatch({
             type: "UPSERT_SUBAGENT_SUMMARIES",
@@ -4370,8 +4995,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
         }
         let latestInteractive: InteractiveEvent[] = [];
-        for (let index = messages.length - 1; index >= 0; index -= 1) {
-          const msg = messages[index];
+        for (let index = canonicalMessages.length - 1; index >= 0; index -= 1) {
+          const msg = canonicalMessages[index];
           const role = msg.role ?? msg.info?.role;
           const items = interactiveEventsFromMessage(msg);
           if (items.length > 0) {
@@ -4386,6 +5011,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           type: "SET_INTERACTIVE_EVENTS",
           payload: latestInteractive,
         });
+        logRenderSnapshot("chatHistory", canonicalMessages);
         break;
       }
       case "subagentSnapshot": {
@@ -4486,8 +5112,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           latestStreamingSnapshot = streamingBefore;
         }
         const payload = asRecord(data.event) ?? data;
+        const streamEventType = asString(payload.type) || "unknown";
         streamDebug("[OpenCode][webview] streamEvent received", {
-          type: asString(payload.type) || "unknown",
+          type: streamEventType,
           hasProperties: !!asRecord(payload.properties),
           hasPart: !!asRecord(asRecord(payload.properties)?.part),
           structuredKind:
@@ -4497,6 +5124,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const streamingAfter = getState().streaming;
         if (streamingAfter) {
           latestStreamingSnapshot = streamingAfter;
+        }
+        if (
+          streamEventType === "message.updated" ||
+          streamEventType === "message.completed" ||
+          streamEventType === "session.completed"
+        ) {
+          const stateNow = getState();
+          logRenderSnapshot(`streamEvent:${streamEventType}`, stateNow.messages);
         }
         break;
       }
@@ -4531,13 +5166,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         // would render a second, duplicate "Request Failed" banner above the message.
         const currentStreaming = getState().streaming;
         if (currentStreaming) {
+          // If the streamed content is an AI internal monologue (tool-use narration like
+          // "Let me search for...", "Let me read the file..."), it has no user-facing value.
+          // Suppress it so only the error banner is shown rather than garbled reasoning text.
+          const rawContent = currentStreaming.content ?? "";
+          const contentIsReasoningMonologue =
+            looksLikeReasoningTrace(rawContent, "") ||
+            looksLikeToolUseMonologue(rawContent);
           const partialMessage: Message = {
             id: currentStreaming.messageId || `error-${Date.now()}`,
             role: "assistant",
             agent: currentStreaming.agent,
             modelID: currentStreaming.modelID,
             providerID: currentStreaming.providerID,
-            content: currentStreaming.content,
+            content: contentIsReasoningMonologue ? "" : rawContent,
             reasoningEvents: currentStreaming.reasoningEvents,
             steps: currentStreaming.steps as any,
             created: Date.now(),
@@ -4714,48 +5356,48 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         dispatch({ type: "SET_LSP_SERVERS", payload: lspServers });
         break;
       }
-          case "todoUpdate": {
-            // Normalize the incoming item to the canonical shape and ingest via
-            // the shared ingestion helper so stream-origin and direct postMessage
-            // messages produce identical reducer effects.
-            try {
-              const action = asString(data.action);
-              const item = data.item;
-              // Guard: ignore malformed or missing items silently.
-              if (!item) break;
-              const normalized = normalizeTodoRecord(item);
-              if (!normalized) break;
+      case "todoUpdate": {
+        // Normalize the incoming item to the canonical shape and ingest via
+        // the shared ingestion helper so stream-origin and direct postMessage
+        // messages produce identical reducer effects.
+        try {
+          const action = asString(data.action);
+          const item = data.item;
+          // Guard: ignore malformed or missing items silently.
+          if (!item) break;
+          const normalized = normalizeTodoRecord(item);
+          if (!normalized) break;
 
-              // Keep a clear, test-friendly branching for add/update so existing
-              // string-based regression tests continue to match the handler body.
-              if (action === "add") {
-                dispatch({
-                  type: "ADD_TODO_ITEM",
-                  payload: {
-                    id: normalized.id,
-                    text: normalized.text,
-                    status: normalized.status,
-                    sessionId: normalized.sessionId ?? "",
-                  },
-                });
-              } else if (action === "update") {
-                const patch: Partial<TodoItem> = {
-                  text: normalized.text,
-                  status: normalized.status,
-                };
-                if (normalized.sessionId) patch.sessionId = normalized.sessionId;
-                dispatch({ type: "UPDATE_TODO_ITEM", payload: { id: normalized.id, patch } });
-              } else {
-                // Unknown action: fall back to unified ingestion which will decide
-                // whether to add or update based on existing state.
-                ingestNormalizedTodo(dispatch, getState, normalized);
-              }
-            } catch (e) {
-              // Defensive: do not allow a malformed postMessage to throw.
-              console.warn("Failed to process todoUpdate postMessage", e);
-            }
-            break;
+          // Keep a clear, test-friendly branching for add/update so existing
+          // string-based regression tests continue to match the handler body.
+          if (action === "add") {
+            dispatch({
+              type: "ADD_TODO_ITEM",
+              payload: {
+                id: normalized.id,
+                text: normalized.text,
+                status: normalized.status,
+                sessionId: normalized.sessionId ?? "",
+              },
+            });
+          } else if (action === "update") {
+            const patch: Partial<TodoItem> = {
+              text: normalized.text,
+              status: normalized.status,
+            };
+            if (normalized.sessionId) patch.sessionId = normalized.sessionId;
+            dispatch({ type: "UPDATE_TODO_ITEM", payload: { id: normalized.id, patch } });
+          } else {
+            // Unknown action: fall back to unified ingestion which will decide
+            // whether to add or update based on existing state.
+            ingestNormalizedTodo(dispatch, getState, normalized);
           }
+        } catch (e) {
+          // Defensive: do not allow a malformed postMessage to throw.
+          console.warn("Failed to process todoUpdate postMessage", e);
+        }
+        break;
+      }
       case "thinkingLevelUpdate": {
         const level = asString(data.level) as any;
         if (level) {

@@ -933,6 +933,20 @@ describe('ChatViewProvider', () => {
       expect(structured.plan.content).toEqual(longPlan);
     });
 
+    it('normalizeStructuredOutput preserves implementation_plan when only plan.file is provided', () => {
+      const planFile = '.sisyphus/plans/todo-feature.md';
+      const structured = (chatViewProvider as any).normalizeStructuredOutput({
+        responseType: 'implementation_plan',
+        assistantMessage: `Implementation plan created at ${planFile}.`,
+        plan: { file: planFile, title: 'Plan Title' },
+      });
+
+      expect(structured).toBeTruthy();
+      expect(structured.plan).toBeTruthy();
+      expect(structured.plan.file).toEqual(planFile);
+      expect(structured.plan.content).toBeUndefined();
+    });
+
     it('normalizeStructuredOutput maps legacy conversation responseType to message', () => {
       const structured = (chatViewProvider as any).normalizeStructuredOutput({
         responseType: 'conversation',
@@ -980,6 +994,45 @@ describe('ChatViewProvider', () => {
       expect(structured).toBeTruthy();
       expect(structured.plan).toBeTruthy();
       expect(structured.plan.content).toEqual(planText);
+    });
+
+    it('extractMarkdownFileReferences captures hidden-directory plan file paths', () => {
+      const refs = (chatViewProvider as any).extractMarkdownFileReferences(
+        'Plan saved to .sisyphus/plans/todo-feature-implementation.md for review.'
+      );
+      expect(refs).toContain('.sisyphus/plans/todo-feature-implementation.md');
+    });
+
+    it('enrichMessageWithPlan promotes file-path plan replies to implementation_plan response type', () => {
+      const content =
+        "I've created a comprehensive implementation plan and saved it to .sisyphus/plans/todo-feature-implementation.md.";
+      const enriched = (chatViewProvider as any).enrichMessageWithPlan({
+        role: 'assistant',
+        content,
+        parts: [{ type: 'text', text: content }],
+      });
+
+      expect(enriched.plan).toBeTruthy();
+      expect(enriched.plan.file).toBe('.sisyphus/plans/todo-feature-implementation.md');
+      expect(enriched.structuredOutput).toBeTruthy();
+      expect(enriched.structuredOutput.responseType).toBe('implementation_plan');
+    });
+
+    it('resolvePlanTitle prefers specific schema title over generic fallback labels', () => {
+      const resolved = (chatViewProvider as any).resolvePlanTitle({
+        explicitTitle: 'Todo Feature Implementation',
+        fallbackTitle: 'Summary',
+        primaryFile: '.sisyphus/plans/todo-feature-implementation.md',
+      });
+      expect(resolved).toBe('Todo Feature Implementation');
+    });
+
+    it('resolvePlanTitle derives a readable title from plan filepath when title is generic', () => {
+      const resolved = (chatViewProvider as any).resolvePlanTitle({
+        explicitTitle: 'Summary',
+        primaryFile: '.sisyphus/plans/todo-feature-implementation.md',
+      });
+      expect(resolved).toBe('Todo Feature Implementation');
     });
   });
 });

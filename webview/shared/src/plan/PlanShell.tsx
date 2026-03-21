@@ -12,6 +12,7 @@ import { renderMarkdown } from "./markdownRenderer";
 interface PlanEnvelope {
   raw?: string;
   title?: string;
+  sourceFile?: string;
   comments?: PlanComment[];
   planId?: string;
 }
@@ -33,6 +34,7 @@ export default function PlanShell() {
   const envelope = window.__PLAN_DATA__;
   const rawPlan = envelope?.raw ?? "";
   const planTitle = envelope?.title?.trim() || "Implementation Plan";
+  const sourceFile = envelope?.sourceFile?.trim();
   const planId = envelope?.planId?.trim() || planTitle;
 
   const [executing, setExecuting] = useState(false);
@@ -283,7 +285,7 @@ export default function PlanShell() {
     if (executing) return;
     setProceedError(null);
     setExecuting(true);
-    vscode?.postMessage({ type: "proceedWithPlan", rawPlan, comments });
+    vscode?.postMessage({ type: "proceedWithPlan", rawPlan, comments, sourceFile });
   }
 
   function handleAddComment() {
@@ -326,6 +328,11 @@ export default function PlanShell() {
               <Shield className="h-4 w-4 flex-shrink-0 text-[var(--vscode-focusBorder)]" />
               <h1 className="truncate text-xs font-semibold">{planTitle}</h1>
             </div>
+            {sourceFile ? (
+              <p className="truncate font-mono text-[10px] text-[var(--vscode-descriptionForeground)]">
+                Source: {sourceFile}
+              </p>
+            ) : null}
           </div>
 
           {/* Right: Comments + Proceed buttons */}

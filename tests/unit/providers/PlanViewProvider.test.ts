@@ -465,6 +465,7 @@ describe('PlanViewProvider', () => {
           {
             rawPlan: '# Test Plan\n\nContent',
             comments: [],
+            sourceFile: undefined,
           }
         );
       });
@@ -526,6 +527,50 @@ describe('PlanViewProvider', () => {
           {
             rawPlan: '# Test Plan',
             comments,
+            sourceFile: undefined,
+          }
+        );
+      });
+
+      it('should forward explicit sourceFile from webview message payload', () => {
+        receiveMessageCallback({
+          type: 'proceedWithPlan',
+          rawPlan: '# Test Plan',
+          comments: [],
+          sourceFile: '/mock/workspace/.sisyphus/plans/todo-feature.md',
+        });
+
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+          'opencode.planProceed',
+          {
+            rawPlan: '# Test Plan',
+            comments: [],
+            sourceFile: '/mock/workspace/.sisyphus/plans/todo-feature.md',
+          }
+        );
+      });
+
+      it('should fallback to panel sourceFile when message sourceFile is missing', () => {
+        (PlanViewProvider as any).currentPanel = undefined;
+        PlanViewProvider.show(mockExtensionUri, {
+          content: '# Test Plan',
+          sourceFile: '/mock/workspace/.sisyphus/plans/source-plan.md',
+        });
+        const receiveCalls = vi.mocked(mockPanel.webview.onDidReceiveMessage).mock.calls;
+        const cb = receiveCalls[receiveCalls.length - 1][0];
+
+        cb({
+          type: 'proceedWithPlan',
+          rawPlan: '# Test Plan',
+          comments: [],
+        });
+
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+          'opencode.planProceed',
+          {
+            rawPlan: '# Test Plan',
+            comments: [],
+            sourceFile: '/mock/workspace/.sisyphus/plans/source-plan.md',
           }
         );
       });

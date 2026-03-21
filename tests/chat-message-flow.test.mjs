@@ -58,6 +58,9 @@ test('queue row actions switch between steer and send-now based on processing st
 test('message thread renders user and assistant content including image thumbnails', () => {
   // Verify thread-level rendering and image output in user bubbles.
   assert.match(messageSource, /export function UserMessage\(/, 'UserMessage component should exist');
+  assert.match(messageSource, /function isPlanProceedMessageContent\(value: string\): boolean/, 'UserMessage should use a dedicated helper for proceed confirmations');
+  assert.match(messageSource, /if\s*\(isPlanProceedMessageContent\(content\)\)\s*\{[\s\S]*Plan Approved/, 'UserMessage should render plan-approval chip when proceed text is present');
+  assert.doesNotMatch(messageSource, /content\.startsWith\("Proceed on this plan\."\)/, 'UserMessage should not rely on strict startsWith for proceed confirmations');
   assert.match(messageSource, /if\s*\(!content\s*&&\s*fileChips\.length\s*===\s*0\s*&&\s*!hasImages\)\s*\{\s*return null;\s*\}/, 'UserMessage should skip rendering fully empty history entries');
   assert.match(messageSource, /message\.images\s*&&\s*message\.images\.length\s*>\s*0/, 'UserMessage should guard image rendering with a non-empty images check');
   assert.match(messageSource, /<img\s+key=\{src\}\s+src=\{src\}\s+alt="attachment"/, 'UserMessage should render image thumbnails for attachments');

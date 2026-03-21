@@ -23,18 +23,15 @@ test('ChatViewProvider does not inject wrapper system prompts in send path', () 
   assert.ok(!handleSendMessageBody.includes('getLegacySystemInstruction()'), 'send path should not call getLegacySystemInstruction');
 });
 
-test('ChatViewProvider keeps legacy instruction stripping for transcript hygiene only', () => {
+test('ChatViewProvider removes legacy system-instruction helpers and does not strip message text', () => {
   const processHistoryBody = extractFunctionBody(
     providerSource,
-    'private processHistoryMessages(rawMessages: any[]): any[]',
-  );
-  const stripBody = extractFunctionBody(
-    providerSource,
-    'private stripLegacyInstruction(text: string): string',
+    'private processHistoryMessages(',
   );
 
-  assert.match(processHistoryBody, /this\.stripLegacyInstruction\(p\.text\)/, 'history processor should strip legacy instruction text');
-  assert.match(stripBody, /getLegacySystemInstruction\(\)/, 'strip helper should compare against legacy instruction text');
+  assert.doesNotMatch(processHistoryBody, /stripLegacyInstruction/, 'history processor should not strip prompt prefixes');
+  assert.doesNotMatch(providerSource, /private stripLegacyInstruction\(/, 'provider should not define stripLegacyInstruction helper');
+  assert.doesNotMatch(providerSource, /private getLegacySystemInstruction\(/, 'provider should not define legacy system-instruction helper');
 });
 
 test('ChatViewProvider structured extraction reads explicit structured channels only', () => {

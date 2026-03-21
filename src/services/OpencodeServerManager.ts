@@ -277,7 +277,10 @@ export class OpencodeServerManager {
     if (this.client && this.port > 0) {
       const reachable = await this.isPortReachable(this.port);
       if (reachable) {
-        return this.client;
+        const healthy = await this.fetchVersion();
+        if (healthy) {
+          return this.client;
+        }
       }
 
       log.warn("Detected stale client connection; restarting server client", {
@@ -317,7 +320,7 @@ export class OpencodeServerManager {
         log.serverEvent("connect", { port: configuredPort });
 
         // Fetch server version
-        await this.fetchVersion();
+        await this.fetchVersion({ requireHealthy: true });
 
         this.setStatus("running");
         return this.client;
@@ -356,7 +359,7 @@ export class OpencodeServerManager {
           source: "persisted-port",
         });
 
-        await this.fetchVersion();
+        await this.fetchVersion({ requireHealthy: true });
         this.setStatus("running");
         return this.client;
       } catch (error) {
@@ -667,7 +670,7 @@ export class OpencodeServerManager {
     log.serverEvent("connect", { port: this.port });
 
     // Fetch server version
-    await this.fetchVersion();
+    await this.fetchVersion({ requireHealthy: true });
 
     this.setStatus("running");
     void this.persistManagedPort(this.port);
@@ -675,23 +678,94 @@ export class OpencodeServerManager {
   }
 
   /**
-   * Fetches the server version using the global health API.
+   * Fetches server version when available and verifies server health.
+   *
+   * Some SDK/server combinations do not expose `global.health()`. In that
+   * case we fall back to a lightweight compatibility probe (`path.get()` or
+   * `config.get()`) so we can still treat the connection as healthy.
    *
    * @private
    */
-  private async fetchVersion(): Promise<void> {
+  private async fetchVersion(options?: { requireHealthy?: boolean }): Promise<boolean> {
     if (!this.client) {
-      return;
+      return false;
     }
 
-    try {
-      const health = await this.client.global.health();
-      if (health.data && typeof health.data.version === "string") {
-        this.serverVersion = health.data.version;
-        log.info(`Server version: ${this.serverVersion}`);
+    const compatibilityProbe = async (): Promise<boolean> => {
+      try {
+        const clientRec = this.client as unknown as Record<string, unknown>;
+        const pathRec =
+          clientRec.path && typeof clientRec.path === "object"
+            ? (clientRec.path as Record<string, unknown>)
+            : null;
+        if (pathRec && typeof pathRec.get === "function") {
+          await (pathRec.get as () => Promise<unknown>)();
+          return true;
+        }
+
+        const configRec =
+          clientRec.config && typeof clientRec.config === "object"
+            ? (clientRec.config as Record<string, unknown>)
+            : null;
+        if (configRec && typeof configRec.get === "function") {
+          await (configRec.get as () => Promise<unknown>)();
+          return true;
+        }
+      } catch (error) {
+        log.warn("Compatibility health probe failed", { error });
+        return false;
       }
+
+      return false;
+    };
+
+    try {
+      const clientRec = this.client as unknown as Record<string, unknown>;
+      const globalRec =
+        clientRec.global && typeof clientRec.global === "object"
+          ? (clientRec.global as Record<string, unknown>)
+          : null;
+      const healthFn =
+        globalRec && typeof globalRec.health === "function"
+          ? (globalRec.health as () => Promise<unknown>)
+          : null;
+
+      if (healthFn) {
+        const health = (await healthFn()) as
+          | { data?: { version?: unknown } }
+          | undefined;
+        if (health?.data && typeof health.data.version === "string") {
+          this.serverVersion = health.data.version;
+          log.info(`Server version: ${this.serverVersion}`);
+        }
+        // No version field is acceptable; connection can still be healthy.
+        return true;
+      }
+
+      const healthy = await compatibilityProbe();
+      if (healthy) {
+        return true;
+      }
+
+      const missingHealthApiError = new Error(
+        "No supported health API found on client (global.health/path.get/config.get)",
+      );
+      if (options?.requireHealthy) {
+        throw missingHealthApiError;
+      }
+      log.warn("Failed to fetch server version", { error: missingHealthApiError });
+      return false;
     } catch (error) {
+      const healthy = await compatibilityProbe();
+      if (healthy) {
+        return true;
+      }
+
       log.warn("Failed to fetch server version", { error });
+      if (options?.requireHealthy) {
+        throw error;
+      }
+      return false;
     }
   }
 

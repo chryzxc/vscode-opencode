@@ -1026,13 +1026,40 @@ describe('validateStructuredOutput', () => {
         expect(result.valid).toBe(true);
       });
 
+      it('should accept with plan.file string', () => {
+        const result = validateStructuredOutput({
+          responseType: 'implementation_plan',
+          plan: { file: '.sisyphus/plans/todo-feature.md' },
+        });
+        expect(result.valid).toBe(true);
+      });
+
+      it('should reject bare filename in plan.file', () => {
+        const result = validateStructuredOutput({
+          responseType: 'implementation_plan',
+          plan: { file: 'implementation_plan.md' },
+        });
+        expect(result.valid).toBe(false);
+        expect(result.errors).toContain(
+          'plan.file must be a full markdown filepath (absolute or workspace-relative), not just a filename'
+        );
+      });
+
+      it('should accept with absolute plan.file path', () => {
+        const result = validateStructuredOutput({
+          responseType: 'implementation_plan',
+          plan: { file: '/workspace/project/.sisyphus/plans/todo-feature.md' },
+        });
+        expect(result.valid).toBe(true);
+      });
+
       it('should reject without plan', () => {
         const result = validateStructuredOutput({
           responseType: 'implementation_plan',
         });
         expect(result.valid).toBe(false);
         expect(result.errors).toContain(
-          'implementation_plan requires plan.content string'
+          'implementation_plan requires plan.file or plan.content string'
         );
       });
 
@@ -1043,7 +1070,7 @@ describe('validateStructuredOutput', () => {
         });
         expect(result.valid).toBe(false);
         expect(result.errors).toContain(
-          'implementation_plan requires plan.content string'
+          'implementation_plan requires plan.file or plan.content string'
         );
       });
 
@@ -1054,8 +1081,9 @@ describe('validateStructuredOutput', () => {
         });
         expect(result.valid).toBe(false);
         expect(result.errors).toContain(
-          'implementation_plan requires plan.content string'
+          'implementation_plan requires plan.file or plan.content string'
         );
+        expect(result.errors).toContain('plan.content must be a string when provided');
       });
 
       it('should reject with null plan', () => {
@@ -1065,7 +1093,7 @@ describe('validateStructuredOutput', () => {
         });
         expect(result.valid).toBe(false);
         expect(result.errors).toContain(
-          'implementation_plan requires plan.content string'
+          'implementation_plan requires plan.file or plan.content string'
         );
       });
     });
@@ -1400,7 +1428,9 @@ describe('validateStructuredOutput', () => {
         assistantMessage: 123,
       });
       expect(result.valid).toBe(false);
-      expect(result.errors).toContain('implementation_plan requires plan.content string');
+      expect(result.errors).toContain(
+        'implementation_plan requires plan.file or plan.content string'
+      );
       expect(result.errors).toContain('assistantMessage must be a string');
     });
 

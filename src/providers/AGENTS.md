@@ -18,10 +18,12 @@
 - When touching prompt send flow, verify payload stays transport-only: `model`, `agent`, `parts`, optional format fields.
 - Provider changes that affect structured output must stay in sync with `src/shared/*` validators and generated webview copies.
 - Do not add prompt/content phrase-matching logic to decide behavior; providers should rely on explicit structured fields and declared response types.
+- Keep implementation-plan compatibility: `responseType="implementation_plan"` is valid with `plan.file` only (without `plan.content`), and provider normalization/enrichment must preserve that so the `View Plan` flow can open the file.
 
 ## ANTI-PATTERNS
 - Do not reintroduce wrapper system-prompt injection in `handleSendMessage`, `promptWithStructuredOutput`, or helper calls they use.
 - Do not remove plan detection/button hooks or stop-request plumbing during UI or protocol cleanup.
+- Do not gate `message.plan` creation on `plan.content` only; filepath-driven plan cards are intentional behavior.
 - Do not change host HTML asset wiring without rebuilding the webview and checking the chat mount contract.
 - Do not move provider responsibilities into services if they are specifically about webview hosting, VS Code registration, or product-visible contracts.
 
@@ -37,3 +39,8 @@
 ## NOTES
 - `ChatViewProvider.ts` is oversized because it centralises multiple contracts; prefer surgical edits over broad refactors unless you can verify the whole send/stream/history surface.
 - The root AGENTS file covers repo-wide build/test rules; this file only records provider-local constraints.
+- Knowledge base: `docs/knowledge-base/implementation-plan-contract.md` is the canonical provider-facing reference for implementation-plan payload handling.
+
+
+
+- Knowledge base: docs/knowledge-base/activity-timeline-hydration-contract.md captures provider/webview activity hydration parity requirements.

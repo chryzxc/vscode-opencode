@@ -98,6 +98,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
 import * as cp from "child_process";
+import * as fs from "fs/promises";
 import {
   FileThemeProcessor,
   CssGenerator,
@@ -407,6 +408,9 @@ export class ChatViewProvider
 
   /** Logger for tracking events and metrics */
   private readonly logger: ReturnType<typeof createLogger>;
+  private renderParityLogWriteChain: Promise<void> = Promise.resolve();
+  private renderParityDebugFilePath?: string;
+  private didLogRenderParityFilePath = false;
 
   /** Currently selected AI model (persisted to global state) */
   private selectedModel: {
@@ -449,6 +453,134 @@ export class ChatViewProvider
     if (sessionId) {
       this.context.workspaceState.update(this.getTodoStorageKey(sessionId), undefined);
     }
+  }
+
+  private async clearSessionMessageOverrides(sessionId?: string): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+    await this.context.workspaceState.update(
+      this.getMessageOverrideStorageKey(sessionId),
+      undefined,
+    );
+  }
+
+  private getMessageOverrideStorageKey(sessionId: string): string {
+    return `opencode.session.message-overrides.${sessionId}`;
+  }
+
+  private loadSessionMessageOverrides(
+    sessionId?: string,
+  ): Record<string, unknown> {
+    if (!sessionId) {
+      return {};
+    }
+    return (
+      this.context.workspaceState.get<Record<string, unknown>>(
+        this.getMessageOverrideStorageKey(sessionId),
+      ) || {}
+    );
+  }
+
+  private async persistSessionMessageOverride(
+    sessionId: string,
+    messageRaw: unknown,
+  ): Promise<void> {
+    const message = this.asRecord(messageRaw);
+    if (!message) {
+      return;
+    }
+    const id = this.firstNonEmptyString(message.id, this.asRecord(message.info)?.id);
+    if (!id) {
+      return;
+    }
+
+    const overrides = this.loadSessionMessageOverrides(sessionId);
+    const sanitized = { ...message };
+    delete (sanitized as Record<string, unknown>).rawResponse;
+    overrides[id] = sanitized;
+
+    const entries = Object.entries(overrides);
+    if (entries.length > 200) {
+      entries.sort(([, a], [, b]) => {
+        const aTime = this.historyMessageCreatedAt(a) || 0;
+        const bTime = this.historyMessageCreatedAt(b) || 0;
+        return bTime - aTime;
+      });
+      const trimmed = entries.slice(0, 200);
+      const next: Record<string, unknown> = {};
+      trimmed.forEach(([key, value]) => {
+        next[key] = value;
+      });
+      await this.context.workspaceState.update(
+        this.getMessageOverrideStorageKey(sessionId),
+        next,
+      );
+      return;
+    }
+
+    await this.context.workspaceState.update(
+      this.getMessageOverrideStorageKey(sessionId),
+      overrides,
+    );
+  }
+
+  private applySessionMessageOverrides(
+    sessionId: string | undefined,
+    rawMessages: any[],
+  ): any[] {
+    if (!sessionId || !Array.isArray(rawMessages) || rawMessages.length === 0) {
+      return Array.isArray(rawMessages) ? rawMessages : [];
+    }
+
+    const overrides = this.loadSessionMessageOverrides(sessionId);
+    const overrideEntries = Object.entries(overrides);
+    if (overrideEntries.length === 0) {
+      return rawMessages;
+    }
+
+    const merged = rawMessages.map((rawMessage) => {
+      const messageId = this.extractHistoryMessageId(rawMessage);
+      if (!messageId) {
+        return rawMessage;
+      }
+
+      const override = this.asRecord(overrides[messageId]);
+      if (!override) {
+        return rawMessage;
+      }
+
+      const rawInfo = this.asRecord((rawMessage as any)?.info);
+      const overrideInfo = this.asRecord(override.info);
+      const rawScore = this.historyMessageRichnessScore(rawMessage);
+      const overrideScore = this.historyMessageRichnessScore(override);
+      const preferOverride = overrideScore >= rawScore;
+      if (!preferOverride) {
+        return rawMessage;
+      }
+
+      return {
+        ...rawMessage,
+        ...override,
+        info:
+          rawInfo || overrideInfo
+            ? {
+              ...(rawInfo || {}),
+              ...(overrideInfo || {}),
+            }
+            : undefined,
+      };
+    });
+
+    merged.sort((a, b) => {
+      const aTime = this.historyMessageCreatedAt(a) || 0;
+      const bTime = this.historyMessageCreatedAt(b) || 0;
+      if (aTime !== bTime) {
+        return aTime - bTime;
+      }
+      return 0;
+    });
+    return merged;
   }
 
   /** Session-scoped queue of prompts awaiting execution */
@@ -584,11 +716,18 @@ export class ChatViewProvider
           }
 
           try {
-            // Fetch models first to ensure we have correct provider IDs
-            const models = await this.handleGetModels();
-
-            // Reconcile selected model by full identity (provider + model), not model ID alone.
-            await this.reconcileSelectedModelSelection(models);
+            // Fetch models in the background so provider-list/network issues
+            // never block chat/session bootstrap.
+            void this.handleGetModels()
+              .then(async (models) => {
+                await this.reconcileSelectedModelSelection(models);
+              })
+              .catch((error) => {
+                console.warn(
+                  "[ChatViewProvider] Background model discovery failed during ready bootstrap:",
+                  error,
+                );
+              });
 
             // Sync default agent selection
             await this.syncCLIAgents();
@@ -637,7 +776,16 @@ export class ChatViewProvider
               const rawMessages = await this.sessionService.getMessages(
                 currentSession.id,
               );
-              const messages = this.processHistoryMessages(rawMessages);
+              const messages = this.processHistoryMessages(
+                rawMessages,
+                currentSession.id,
+              );
+              this.logHistoryRenderDiagnostics(
+                "webview.ready.current-session",
+                currentSession.id,
+                rawMessages,
+                messages,
+              );
               this.view?.webview.postMessage({
                 type: "chatHistory",
                 messages: messages,
@@ -701,6 +849,7 @@ export class ChatViewProvider
             break;
           }
           await this.sessionService.upsertMessage(sessionId, message.message);
+          await this.persistSessionMessageOverride(sessionId, message.message);
           const snapshotFromMessage = this.buildSubagentPayloadFromMessage(
             message.message,
             sessionId,
@@ -723,14 +872,11 @@ export class ChatViewProvider
 
           const composedPrompt = choiceText;
 
-          await this.schedulePromptDispatch(
-            this.isProcessingRequest ? "queue" : "send-now",
-            {
-              sessionId: message?.sessionId,
-              text: composedPrompt,
-              agent: message?.agent,
-            },
-          );
+          await this.dispatchInteractiveResponse({
+            sessionId: message?.sessionId,
+            text: composedPrompt,
+            agent: message?.agent,
+          });
           break;
         }
         case "batchInteractiveResponse": {
@@ -744,21 +890,26 @@ export class ChatViewProvider
           }
 
           const composedPrompt = responses
-            .map((resp) => this.firstNonEmptyString(resp.text) || "")
+            .map((resp) => {
+              const answer = this.firstNonEmptyString(resp.text) || "";
+              if (!answer) {
+                return "";
+              }
+              const eventType = this.firstNonEmptyString(resp.eventType) || "event";
+              const eventId = this.firstNonEmptyString(resp.eventId) || "unknown";
+              return `[interactive:${eventType}:${eventId}] ${answer}`;
+            })
             .filter((value) => value.length > 0)
             .join("\n");
           if (!composedPrompt) {
             break;
           }
 
-          await this.schedulePromptDispatch(
-            this.isProcessingRequest ? "queue" : "send-now",
-            {
-              sessionId: message?.sessionId,
-              text: composedPrompt,
-              agent: message?.agent,
-            },
-          );
+          await this.dispatchInteractiveResponse({
+            sessionId: message?.sessionId,
+            text: composedPrompt,
+            agent: message?.agent,
+          });
           break;
         }
         case "newSession":
@@ -1038,7 +1189,16 @@ export class ChatViewProvider
                 const rawMessages = await this.sessionService.getMessages(
                   this.currentSessionId,
                 );
-                const messages = this.processHistoryMessages(rawMessages);
+                const messages = this.processHistoryMessages(
+                  rawMessages,
+                  this.currentSessionId,
+                );
+                this.logHistoryRenderDiagnostics(
+                  "retryLastMessage.reload",
+                  this.currentSessionId,
+                  rawMessages,
+                  messages,
+                );
                 this.view?.webview.postMessage({
                   type: "chatHistory",
                   sessionId: this.currentSessionId,
@@ -1176,7 +1336,6 @@ export class ChatViewProvider
 
     // Subscribe to stream events
     this.unsubscribe = this.streamService.subscribe(async (event) => {
-      this.logStreamEventDiagnostics(event);
 
       const subagentUpdate = this.subagentTracker.consumeStreamEvent(event);
       if (subagentUpdate) {
@@ -1216,6 +1375,7 @@ export class ChatViewProvider
 
       // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
+      this.logStreamEventDiagnostics(event, enrichedEvent);
 
       // Log stream event for debugging response types (with error handling)
       try {
@@ -1576,7 +1736,13 @@ export class ChatViewProvider
 
       // Reload history for the new session
       const rawMessages = await this.sessionService.getMessages(sessionId);
-      const messages = this.processHistoryMessages(rawMessages);
+      const messages = this.processHistoryMessages(rawMessages, sessionId);
+      this.logHistoryRenderDiagnostics(
+        "switchSession.load",
+        sessionId,
+        rawMessages,
+        messages,
+      );
 
       this.view?.webview.postMessage({
         type: "chatHistory",
@@ -1607,6 +1773,7 @@ export class ChatViewProvider
       this.queueBySessionId.delete(sessionId);
       await this.clearPersistedSubagentSnapshot(sessionId);
       await this.clearPersistedCompactionViewState(sessionId);
+      await this.clearSessionMessageOverrides(sessionId);
       // Clear persisted todo state for the deleted session
       this.clearSessionTodos(sessionId);
       await this.handleGetSessions();
@@ -1662,56 +1829,833 @@ export class ChatViewProvider
   }
 
   /**
-   * Processes raw history messages by stripping legacy system instructions,
-   * applying structured outputs, and enriching with plans.
+   * Processes raw history messages by applying structured outputs and enriching
+   * plan metadata for rendering.
    */
-  private processHistoryMessages(rawMessages: any[]): any[] {
-    return rawMessages.map((m: any) => {
-      if (m.role === "user" && Array.isArray(m.parts)) {
-        m.parts = m.parts.map((p: any) => {
-          if (p.type === "text" && typeof p.text === "string") {
-            const stripped = this.stripLegacyInstruction(p.text);
-            if (stripped !== p.text) {
-              return { ...p, text: stripped };
-            }
-          }
-          return p;
+  private processHistoryMessages(
+    rawMessages: any[],
+    sessionId?: string,
+  ): any[] {
+    if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
+      return [];
+    }
+
+    const normalizedRawMessages = this.applySessionMessageOverrides(
+      sessionId,
+      rawMessages,
+    );
+
+    const processed = normalizedRawMessages
+      .map((rawMessage: any) => {
+        const message =
+          rawMessage && typeof rawMessage === "object"
+            ? { ...rawMessage }
+            : rawMessage;
+        const normalizedMessage = this.normalizePlanProceedUserMessage(message);
+
+        const structured = this.applyStructuredOutputToMessage(normalizedMessage, {
+          allowSyntheticFallbackError: false,
+        });
+        return this.enrichMessageWithPlan(structured);
+      })
+      .filter((message) => this.isRenderableHistoryMessage(message));
+
+    const deduped = this.dedupeMirrorHistoryMessages(processed);
+    const mergedActivity = this.mergeAdjacentAssistantActivityMessages(deduped);
+    return this.mergeConsecutiveAssistantBursts(mergedActivity);
+  }
+
+  private mergeAdjacentAssistantActivityMessages(messages: any[]): any[] {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return [];
+    }
+
+    const merged: any[] = [];
+    for (const currentRaw of messages) {
+      const current =
+        currentRaw && typeof currentRaw === "object"
+          ? { ...currentRaw }
+          : currentRaw;
+      if (!this.isActivityOnlyAssistantMessage(current)) {
+        merged.push(current);
+        continue;
+      }
+
+      const previous = merged.length > 0 ? merged[merged.length - 1] : undefined;
+      const previousRole = this.firstNonEmptyString(
+        previous?.role,
+        previous?.info?.role,
+      )?.toLowerCase();
+      if (!previous || previousRole !== "assistant") {
+        merged.push(current);
+        continue;
+      }
+
+      this.mergeMessageParts(previous, current);
+      if (Array.isArray(current.steps) && current.steps.length > 0) {
+        previous.steps = [
+          ...(Array.isArray(previous.steps) ? previous.steps : []),
+          ...current.steps,
+        ];
+      }
+      if (Array.isArray(current.progressEvents) && current.progressEvents.length > 0) {
+        previous.progressEvents = [
+          ...(Array.isArray(previous.progressEvents) ? previous.progressEvents : []),
+          ...current.progressEvents,
+        ];
+      }
+      if (Array.isArray(current.reasoningEvents) && current.reasoningEvents.length > 0) {
+        previous.reasoningEvents = [
+          ...(Array.isArray(previous.reasoningEvents) ? previous.reasoningEvents : []),
+          ...current.reasoningEvents,
+        ];
+      }
+      if (Array.isArray(current.edits) && current.edits.length > 0) {
+        previous.edits = [
+          ...(Array.isArray(previous.edits) ? previous.edits : []),
+          ...current.edits,
+        ];
+      }
+      if (this.shouldVerboseStreamDebug()) {
+        this.logger.debug("Merged assistant activity-only history fragment", {
+          previousId: this.extractHistoryMessageId(previous),
+          mergedId: this.extractHistoryMessageId(current),
+          previousPartCount: Array.isArray(previous.parts) ? previous.parts.length : 0,
         });
       }
-      return this.enrichMessageWithPlan(this.applyStructuredOutputToMessage(m));
+    }
+
+    return merged;
+  }
+
+  private mergeConsecutiveAssistantBursts(messages: any[]): any[] {
+    if (!Array.isArray(messages) || messages.length <= 1) {
+      return Array.isArray(messages) ? messages : [];
+    }
+
+    const out: any[] = [];
+    let index = 0;
+    while (index < messages.length) {
+      const current = messages[index];
+      if (!this.isAssistantHistoryMessage(current)) {
+        out.push(current);
+        index += 1;
+        continue;
+      }
+
+      const burst: any[] = [current];
+      let cursor = index + 1;
+      while (cursor < messages.length) {
+        const next = messages[cursor];
+        if (!this.isAssistantHistoryMessage(next)) {
+          break;
+        }
+        burst.push(next);
+        cursor += 1;
+      }
+
+      if (burst.length === 1) {
+        out.push(current);
+      } else {
+        out.push(this.coalesceAssistantBurst(burst));
+      }
+      index = cursor;
+    }
+
+    return out;
+  }
+
+  private coalesceAssistantBurst(burst: any[]): any {
+    const base = { ...(burst[burst.length - 1] || burst[0] || {}) };
+
+    const mergedParts: any[] = [];
+    const seenPartKeys = new Set<string>();
+    const addPart = (part: any) => {
+      const key = this.historyPartFingerprint(part);
+      if (key && seenPartKeys.has(key)) {
+        return;
+      }
+      if (key) {
+        seenPartKeys.add(key);
+      }
+      mergedParts.push(part);
+    };
+
+    let latestText = "";
+    let latestTextSourcePart: any;
+    let latestStructuredOutput: Record<string, unknown> | undefined;
+    let latestPlan: unknown;
+    let latestInteractiveEvents: unknown;
+    let latestSubagents: unknown;
+    let latestError: string | undefined;
+    let latestMessageForId = burst[0];
+    const mergedSteps = Array.isArray(base.steps) ? [...base.steps] : [];
+    const mergedProgressEvents = Array.isArray(base.progressEvents)
+      ? [...base.progressEvents]
+      : [];
+    const mergedReasoningEvents = Array.isArray(base.reasoningEvents)
+      ? [...base.reasoningEvents]
+      : [];
+    const mergedEdits = Array.isArray(base.edits) ? [...base.edits] : [];
+    const seenStepKeys = new Set<string>();
+    const seenProgressKeys = new Set<string>();
+    const seenReasoningKeys = new Set<string>();
+    const seenEditKeys = new Set<string>();
+    const stepLikeKey = (entry: unknown, fallbackIndex: number): string => {
+      const rec = this.asRecord(entry);
+      if (!rec) {
+        return `idx:${fallbackIndex}`;
+      }
+      return [
+        this.firstNonEmptyString(rec.id),
+        this.firstNonEmptyString(rec.callID, rec.callId),
+        this.firstNonEmptyString(rec.title),
+        this.firstNonEmptyString(rec.status),
+        this.firstNonEmptyString(rec.filePath),
+        this.firstNonEmptyString(rec.meta),
+        typeof rec.streamSeq === "number" ? String(rec.streamSeq) : "",
+        typeof rec.createdAt === "number" ? String(rec.createdAt) : "",
+      ].join("|");
+    };
+    const reasoningKey = (entry: unknown, fallbackIndex: number): string => {
+      const rec = this.asRecord(entry);
+      if (!rec) {
+        return `idx:${fallbackIndex}`;
+      }
+      return [
+        typeof rec.createdAt === "number" ? String(rec.createdAt) : "",
+        this.firstNonEmptyString(rec.text)?.slice(0, 240) || "",
+      ].join("|");
+    };
+    const editKey = (entry: unknown, fallbackIndex: number): string => {
+      const rec = this.asRecord(entry);
+      if (!rec) {
+        return `idx:${fallbackIndex}`;
+      }
+      return [
+        this.firstNonEmptyString(rec.file),
+        typeof rec.added === "number" ? String(rec.added) : "",
+        typeof rec.deleted === "number" ? String(rec.deleted) : "",
+      ].join("|");
+    };
+    const seedSeenKeys = (
+      target: unknown[],
+      seen: Set<string>,
+      keyBuilder: (entry: unknown, fallbackIndex: number) => string,
+    ) => {
+      target.forEach((entry, index) => {
+        seen.add(keyBuilder(entry, index));
+      });
+    };
+    const appendUnique = (
+      target: unknown[],
+      incoming: unknown[],
+      seen: Set<string>,
+      keyBuilder: (entry: unknown, fallbackIndex: number) => string,
+    ) => {
+      incoming.forEach((entry, index) => {
+        const key = keyBuilder(entry, target.length + index);
+        if (seen.has(key)) {
+          return;
+        }
+        seen.add(key);
+        target.push(entry);
+      });
+    };
+
+    seedSeenKeys(mergedSteps, seenStepKeys, stepLikeKey);
+    seedSeenKeys(mergedProgressEvents, seenProgressKeys, stepLikeKey);
+    seedSeenKeys(mergedReasoningEvents, seenReasoningKeys, reasoningKey);
+    seedSeenKeys(mergedEdits, seenEditKeys, editKey);
+
+    for (const message of burst) {
+      if (!message || typeof message !== "object") {
+        continue;
+      }
+
+      const text = this.extractMessageBodyText(message).trim();
+      if (text.length > 0) {
+        latestText = text;
+        latestMessageForId = message;
+      }
+
+      const structured = this.asRecord(message.structuredOutput);
+      if (structured) {
+        latestStructuredOutput = structured;
+      }
+      if (this.asRecord(message.plan)) {
+        latestPlan = message.plan;
+      }
+      if (
+        Array.isArray(message.interactiveEvents) &&
+        message.interactiveEvents.length > 0
+      ) {
+        latestInteractiveEvents = message.interactiveEvents;
+      }
+      if (Array.isArray(message.subagents) && message.subagents.length > 0) {
+        latestSubagents = message.subagents;
+      }
+      if (
+        typeof message.error === "string" &&
+        message.error.trim().length > 0
+      ) {
+        latestError = message.error;
+      }
+
+      const parts = Array.isArray(message.parts) ? message.parts : [];
+      for (const part of parts) {
+        if (this.isRenderableTextPart(part)) {
+          latestTextSourcePart = part;
+          continue;
+        }
+        addPart(part);
+      }
+
+      if (Array.isArray(message.steps)) {
+        appendUnique(mergedSteps, message.steps, seenStepKeys, stepLikeKey);
+      }
+      if (Array.isArray(message.progressEvents)) {
+        appendUnique(
+          mergedProgressEvents,
+          message.progressEvents,
+          seenProgressKeys,
+          stepLikeKey,
+        );
+      }
+      if (Array.isArray(message.reasoningEvents)) {
+        appendUnique(
+          mergedReasoningEvents,
+          message.reasoningEvents,
+          seenReasoningKeys,
+          reasoningKey,
+        );
+      }
+      if (Array.isArray(message.edits)) {
+        appendUnique(mergedEdits, message.edits, seenEditKeys, editKey);
+      }
+    }
+
+    if (latestText.length > 0) {
+      base.content = latestText;
+      const sourcePart = this.asRecord(latestTextSourcePart) || {};
+      addPart({
+        ...sourcePart,
+        type: "text",
+        text: latestText,
+      });
+    }
+
+    if (latestStructuredOutput) {
+      base.structuredOutput = latestStructuredOutput;
+    }
+    if (typeof latestPlan !== "undefined") {
+      base.plan = latestPlan;
+    }
+    if (typeof latestInteractiveEvents !== "undefined") {
+      base.interactiveEvents = latestInteractiveEvents;
+    }
+    if (typeof latestSubagents !== "undefined") {
+      base.subagents = latestSubagents;
+    }
+    if (latestError) {
+      base.error = latestError;
+    }
+
+    base.parts = mergedParts;
+    if (mergedSteps.length > 0) {
+      base.steps = mergedSteps;
+    } else {
+      delete base.steps;
+    }
+    if (mergedProgressEvents.length > 0) {
+      base.progressEvents = mergedProgressEvents;
+    } else {
+      delete base.progressEvents;
+    }
+    if (mergedReasoningEvents.length > 0) {
+      base.reasoningEvents = mergedReasoningEvents;
+    } else {
+      delete base.reasoningEvents;
+    }
+    if (mergedEdits.length > 0) {
+      base.edits = mergedEdits;
+    } else {
+      delete base.edits;
+    }
+
+    const canonicalId = this.pickCanonicalHistoryMessageId(
+      latestMessageForId,
+      burst[0],
+    );
+    if (canonicalId) {
+      base.id = canonicalId;
+      const info = this.asRecord(base.info);
+      base.info = info ? { ...info, id: canonicalId } : { id: canonicalId };
+    }
+
+    return base;
+  }
+
+  private mergeMessageParts(target: any, incoming: any): void {
+    const targetParts = Array.isArray(target?.parts) ? [...target.parts] : [];
+    const incomingParts = Array.isArray(incoming?.parts) ? incoming.parts : [];
+    if (incomingParts.length === 0) {
+      target.parts = targetParts;
+      return;
+    }
+
+    const seen = new Set<string>();
+    for (const part of targetParts) {
+      const key = this.historyPartFingerprint(part);
+      if (key) {
+        seen.add(key);
+      }
+    }
+    for (const part of incomingParts) {
+      const key = this.historyPartFingerprint(part);
+      if (key && seen.has(key)) {
+        continue;
+      }
+      if (key) {
+        seen.add(key);
+      }
+      targetParts.push(part);
+    }
+    target.parts = targetParts;
+  }
+
+  private historyPartFingerprint(part: unknown): string | undefined {
+    const rec = this.asRecord(part);
+    if (!rec) {
+      return undefined;
+    }
+    const type = this.firstNonEmptyString(rec.type)?.toLowerCase() || "unknown";
+    const callId = this.firstNonEmptyString(rec.callID, rec.callId);
+    const tool = this.firstNonEmptyString(rec.tool);
+    const state = this.asRecord(rec.state);
+    const status = this.firstNonEmptyString(state?.status);
+    const title = this.firstNonEmptyString(state?.title, rec.title);
+    const text = this.firstNonEmptyString(
+      rec.text,
+      rec.content,
+      rec.reasoning,
+      rec.thinking,
+      rec.delta,
+    );
+    const preview = text ? text.slice(0, 140) : "";
+    const filePath = this.firstNonEmptyString(
+      rec.filePath,
+      this.asRecord(state?.input)?.file,
+      this.asRecord(state?.input)?.path,
+    );
+    return [type, callId, tool, status, title, filePath, preview].join("|");
+  }
+
+  private isAssistantHistoryMessage(message: any): boolean {
+    return (
+      this.firstNonEmptyString(message?.role, message?.info?.role)?.toLowerCase() ===
+      "assistant"
+    );
+  }
+
+  private isActivityOnlyAssistantMessage(message: any): boolean {
+    if (!message || typeof message !== "object") {
+      return false;
+    }
+    const role = this.firstNonEmptyString(message?.role, message?.info?.role)
+      ?.toLowerCase()
+      .trim();
+    if (role !== "assistant") {
+      return false;
+    }
+    if (this.extractMessageBodyText(message).trim().length > 0) {
+      return false;
+    }
+    if (this.asRecord(message.plan)) {
+      return false;
+    }
+    if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
+      return false;
+    }
+    if (Array.isArray(message.subagents) && message.subagents.length > 0) {
+      return false;
+    }
+    if (
+      typeof message.error === "string" &&
+      message.error.trim().length > 0
+    ) {
+      return false;
+    }
+    const structured = this.asRecord(message.structuredOutput);
+    if (structured && this.firstNonEmptyString(structured.responseType)) {
+      return false;
+    }
+    return Array.isArray(message.parts) && message.parts.length > 0;
+  }
+
+  private hasRenderableHistoryPayload(message: any): boolean {
+    if (!message || typeof message !== "object") {
+      return false;
+    }
+
+    if (this.isInternalSystemReminderMessage(message)) {
+      return false;
+    }
+
+    const text = this.extractMessageBodyText(message).trim();
+    if (text.length > 0) {
+      return true;
+    }
+
+    if (Array.isArray(message.images) && message.images.length > 0) {
+      return true;
+    }
+    if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+      return true;
+    }
+    if (Array.isArray(message.subagents) && message.subagents.length > 0) {
+      return true;
+    }
+    if (
+      Array.isArray(message.interactiveEvents) &&
+      message.interactiveEvents.length > 0
+    ) {
+      return true;
+    }
+    if (
+      Array.isArray(message.reasoningEvents) &&
+      message.reasoningEvents.length > 0
+    ) {
+      return true;
+    }
+    if (
+      Array.isArray(message.progressEvents) &&
+      message.progressEvents.length > 0
+    ) {
+      return true;
+    }
+    if (Array.isArray(message.steps) && message.steps.length > 0) {
+      return true;
+    }
+    if (Array.isArray(message.edits) && message.edits.length > 0) {
+      return true;
+    }
+    if (
+      typeof message.error === "string" &&
+      message.error.trim().length > 0
+    ) {
+      return true;
+    }
+    if (message.plan && typeof message.plan === "object") {
+      return true;
+    }
+
+    if (!Array.isArray(message.parts)) {
+      return false;
+    }
+
+    // Keep assistant turns that contain non-text activity parts
+    // (tool/reasoning/step/patch) so hydration does not drop streamed output.
+    const role = this.firstNonEmptyString(message?.role, message?.info?.role)
+      ?.toLowerCase()
+      .trim();
+    if (role === "assistant" && message.parts.length > 0) {
+      return true;
+    }
+
+    return message.parts.some((part: any) => {
+      const rec = this.asRecord(part);
+      if (!rec) {
+        return false;
+      }
+      return (
+        this.firstNonEmptyString(rec.filename)?.length ||
+        this.firstNonEmptyString(this.asRecord(rec.source)?.path)?.length ||
+        this.firstNonEmptyString(rec.url)?.length
+      )
+        ? true
+        : false;
     });
   }
 
-  private stripLegacyInstruction(text: string): string {
-    if (!text) return "";
-    const legacyInstruction = this.getLegacySystemInstruction();
-    const legacyWithNewline = legacyInstruction + "\n";
+  private isInternalSystemReminderMessage(message: any): boolean {
+    if (!message || typeof message !== "object") {
+      return false;
+    }
 
-    if (text.startsWith(legacyWithNewline)) {
-      return text.substring(legacyWithNewline.length);
+    const role = this.firstNonEmptyString(message?.role, message?.info?.role)
+      ?.toLowerCase()
+      .trim();
+    if (role !== "user" && role !== "system") {
+      return false;
     }
-    if (text.startsWith(legacyInstruction)) {
-      return text.substring(legacyInstruction.length);
+
+    const text = this.extractMessageBodyText(message).trim();
+    if (!text) {
+      return false;
     }
-    return text;
+    if (this.isPlanProceedMessageText(text)) {
+      return false;
+    }
+
+    const normalized = text.toLowerCase();
+    return (
+      normalized.includes("<system-reminder>") ||
+      normalized.includes("<!-- omo_internal_initiator -->") ||
+      (normalized.includes("[search-model]") &&
+        normalized.includes("maximize search effort"))
+    );
   }
 
-  /**
-   * Gets the unified system instruction
-   */
-  private getLegacySystemInstruction(): string {
-    return [
-      "You are an assistant integrated in a VS Code extension UI that expects structured JSON output.",
-      "Always produce a JSON object matching the provided json_schema when structured output format is enabled.",
-      "Set responseType explicitly and keep message concise for chat rendering.",
-      "responseType rules:",
-      "- implementation_plan: put full markdown only in plan.content, include plan.title, keep message short.",
-      "- question: use top-level question object (type/question/options). Do not return plain prose questions.",
-      "- If you need clarifications before planning, use responseType question with question payload and do not emit implementation_plan.",
-      "- progress_update: use progressUpdates for machine-readable steps.",
-      "- subagents: include subagents[] with id/name/status/latestActivity and optional progress/thinking/timeline events.",
-      "For subagent updates, prioritize structured fields over narrative text so the UI can render clickable subagent cards.",
-    ].join("\n");
+  private isRenderableHistoryMessage(message: any): boolean {
+    const role = this.firstNonEmptyString(message?.role, message?.info?.role);
+    const hasPayload = this.hasRenderableHistoryPayload(message);
+    if (role === "user" || role === "assistant") {
+      return hasPayload;
+    }
+    return hasPayload;
+  }
+
+  private dedupeMirrorHistoryMessages(messages: any[]): any[] {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return [];
+    }
+
+    const deduped: any[] = [];
+    for (const incoming of messages) {
+      const existingIndex = deduped.findIndex((existing) =>
+        this.areMirrorHistoryMessages(existing, incoming),
+      );
+      if (existingIndex < 0) {
+        deduped.push(incoming);
+        continue;
+      }
+
+      const existing = deduped[existingIndex];
+      const preferred = this.pickRicherHistoryMessage(existing, incoming);
+      const fallback = preferred === existing ? incoming : existing;
+      const canonicalId = this.pickCanonicalHistoryMessageId(
+        preferred,
+        fallback,
+      );
+      if (canonicalId) {
+        preferred.id = canonicalId;
+        const info = this.asRecord(preferred.info);
+        preferred.info = info ? { ...info, id: canonicalId } : { id: canonicalId };
+      }
+      deduped[existingIndex] = preferred;
+    }
+
+    return deduped;
+  }
+
+  private areMirrorHistoryMessages(existing: any, incoming: any): boolean {
+    if (!existing || !incoming || typeof existing !== "object" || typeof incoming !== "object") {
+      return false;
+    }
+
+    const existingRole = this.firstNonEmptyString(
+      existing.role,
+      existing.info?.role,
+    )?.toLowerCase();
+    const incomingRole = this.firstNonEmptyString(
+      incoming.role,
+      incoming.info?.role,
+    )?.toLowerCase();
+    if (existingRole && incomingRole && existingRole !== incomingRole) {
+      return false;
+    }
+
+    const existingId = this.extractHistoryMessageId(existing);
+    const incomingId = this.extractHistoryMessageId(incoming);
+    if (existingId && incomingId) {
+      if (existingId === incomingId) {
+        return true;
+      }
+    } else if (!existingId && !incomingId) {
+      return false;
+    }
+
+    const existingFingerprint = this.historyMessageFingerprint(existing);
+    const incomingFingerprint = this.historyMessageFingerprint(incoming);
+    if (
+      !existingFingerprint ||
+      !incomingFingerprint ||
+      existingFingerprint !== incomingFingerprint
+    ) {
+      return false;
+    }
+
+    const existingCreatedAt = this.historyMessageCreatedAt(existing);
+    const incomingCreatedAt = this.historyMessageCreatedAt(incoming);
+    if (
+      typeof existingCreatedAt === "number" &&
+      typeof incomingCreatedAt === "number" &&
+      Math.abs(existingCreatedAt - incomingCreatedAt) <= 15_000
+    ) {
+      const createdAtDelta = Math.abs(existingCreatedAt - incomingCreatedAt);
+      if (existingId && incomingId) {
+        const existingSynthetic = this.isSyntheticLocalMessageId(existingId);
+        const incomingSynthetic = this.isSyntheticLocalMessageId(incomingId);
+        return existingSynthetic || incomingSynthetic;
+      }
+      return createdAtDelta <= 4_000;
+    }
+
+    return false;
+  }
+
+  private extractHistoryMessageId(message: any): string | undefined {
+    if (!message || typeof message !== "object") {
+      return undefined;
+    }
+    return this.firstNonEmptyString(message.info?.id, message.id);
+  }
+
+  private historyMessageCreatedAt(message: any): number | undefined {
+    const candidates = [
+      message?.time?.created,
+      message?.info?.time?.created,
+      message?.createdAt,
+      message?.info?.createdAt,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === "number" && Number.isFinite(candidate)) {
+        return candidate;
+      }
+    }
+    return undefined;
+  }
+
+  private historyMessageFingerprint(message: any): string | undefined {
+    const role = this.firstNonEmptyString(message?.role, message?.info?.role)
+      ?.toLowerCase()
+      .trim();
+    const text = this.extractMessageBodyText(message)
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text.length > 0) {
+      return `${role || "unknown"}|text:${text}`;
+    }
+
+    if (Array.isArray(message?.images) && message.images.length > 0) {
+      const imageKey = message.images
+        .map((image: any) => {
+          if (typeof image === "string") {
+            return image;
+          }
+          return this.firstNonEmptyString(
+            image?.url,
+            image?.dataUrl,
+            image?.filename,
+          );
+        })
+        .filter((value: string | undefined): value is string => Boolean(value))
+        .join("|");
+      if (imageKey) {
+        return `${role || "unknown"}|images:${imageKey}`;
+      }
+    }
+
+    if (Array.isArray(message?.parts) && message.parts.length > 0) {
+      const attachmentKey = message.parts
+        .map((part: any) => {
+          const rec = this.asRecord(part);
+          if (!rec) {
+            return undefined;
+          }
+          return this.firstNonEmptyString(
+            rec.filename,
+            this.asRecord(rec.source)?.path,
+            rec.url,
+          );
+        })
+        .filter((value: string | undefined): value is string => Boolean(value))
+        .join("|");
+      if (attachmentKey) {
+        return `${role || "unknown"}|attachments:${attachmentKey}`;
+      }
+    }
+
+    return undefined;
+  }
+
+  private historyMessageRichnessScore(message: any): number {
+    if (!message || typeof message !== "object") {
+      return 0;
+    }
+
+    let score = 0;
+    const textLength = this.extractMessageBodyText(message).trim().length;
+    score += Math.min(textLength, 400);
+
+    const listWeights: Array<[unknown, number]> = [
+      [message.parts, 4],
+      [message.steps, 6],
+      [message.progressEvents, 8],
+      [message.reasoningEvents, 6],
+      [message.interactiveEvents, 20],
+      [message.subagents, 20],
+      [message.images, 3],
+      [message.attachments, 3],
+      [message.edits, 6],
+    ];
+    for (const [value, weight] of listWeights) {
+      if (Array.isArray(value)) {
+        score += value.length * weight;
+      }
+    }
+
+    if (this.asRecord(message.plan)) {
+      score += 40;
+    }
+    if (this.asRecord(message.structuredOutput)) {
+      score += 30;
+    }
+    if (
+      typeof message.error === "string" &&
+      message.error.trim().length > 0
+    ) {
+      score += 5;
+    }
+
+    const id = this.extractHistoryMessageId(message);
+    if (id && !this.isSyntheticLocalMessageId(id)) {
+      score += 50;
+    }
+
+    return score;
+  }
+
+  private pickRicherHistoryMessage(existing: any, incoming: any): any {
+    const existingScore = this.historyMessageRichnessScore(existing);
+    const incomingScore = this.historyMessageRichnessScore(incoming);
+    return incomingScore >= existingScore ? incoming : existing;
+  }
+
+  private pickCanonicalHistoryMessageId(preferred: any, fallback: any): string | undefined {
+    const candidates = [
+      this.extractHistoryMessageId(preferred),
+      this.extractHistoryMessageId(fallback),
+    ].filter((id): id is string => Boolean(id));
+    const stableId = candidates.find((id) => !this.isSyntheticLocalMessageId(id));
+    return stableId || candidates[0];
+  }
+
+  private isSyntheticLocalMessageId(id: string): boolean {
+    const normalized = id.trim().toLowerCase();
+    if (!normalized) {
+      return true;
+    }
+    return (
+      normalized.startsWith("local-") ||
+      normalized.startsWith("temp-") ||
+      normalized.startsWith("pending-") ||
+      normalized.startsWith("synthetic-") ||
+      normalized.startsWith("error-") ||
+      normalized.startsWith("stream-")
+    );
   }
 
   private getStructuredOutputFormat(): Record<string, unknown> {
@@ -1877,6 +2821,138 @@ export class ChatViewProvider
       }
     }
     return undefined;
+  }
+
+  private isPlanProceedMessageText(value: unknown): boolean {
+    const text = this.firstNonEmptyString(value);
+    if (!text) {
+      return false;
+    }
+    return /\bproceed on this plan\./i.test(text);
+  }
+
+  private normalizePlanProceedUserMessage(message: any): any {
+    if (!message || typeof message !== "object") {
+      return message;
+    }
+
+    const role = this.firstNonEmptyString(message.role, message.info?.role)
+      ?.toLowerCase()
+      .trim();
+    if (role !== "user") {
+      return message;
+    }
+
+    const text = this.extractMessageBodyText(message);
+    if (!this.isPlanProceedMessageText(text)) {
+      return message;
+    }
+
+    const canonical = "Proceed on this plan.";
+    const nextMessage: Record<string, unknown> = {
+      ...message,
+      content: canonical,
+      text: canonical,
+    };
+
+    if (Array.isArray(message.parts)) {
+      let replaced = false;
+      nextMessage.parts = message.parts.map((part: any) => {
+        if (replaced || !part || typeof part !== "object") {
+          return part;
+        }
+        const partText = this.firstNonEmptyString(part.text, part.content);
+        if (!partText || !this.isPlanProceedMessageText(partText)) {
+          return part;
+        }
+        replaced = true;
+        return {
+          ...part,
+          type: "text",
+          text: canonical,
+        };
+      });
+      if (!replaced) {
+        nextMessage.parts = [
+          { type: "text", text: canonical },
+          ...(nextMessage.parts as any[]),
+        ];
+      }
+    }
+
+    return nextMessage;
+  }
+
+  private isGenericPlanTitle(value: unknown): boolean {
+    const title = this.firstNonEmptyString(value)?.toLowerCase();
+    if (!title) {
+      return false;
+    }
+    const normalized = title.replace(/\s+/g, " ").trim();
+    return (
+      normalized === "summary" ||
+      normalized === "plan summary" ||
+      normalized === "implementation plan" ||
+      normalized === "plan" ||
+      normalized === "draft"
+    );
+  }
+
+  private derivePlanTitleFromFilePath(filePath: unknown): string | undefined {
+    const normalized = this.normalizePlanFileReference(filePath);
+    if (!normalized) {
+      return undefined;
+    }
+
+    const basename = path.basename(normalized, path.extname(normalized));
+    if (!basename) {
+      return undefined;
+    }
+
+    const cleaned = basename
+      .replace(/^implementation_plan[_-]?/i, "")
+      .replace(/[_-]?implementation[_-]?plan$/i, "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const source = cleaned || basename.replace(/[_-]+/g, " ").trim();
+    if (!source) {
+      return undefined;
+    }
+
+    return source
+      .split(" ")
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
+  }
+
+  private resolvePlanTitle(options: {
+    explicitTitle?: unknown;
+    fallbackTitle?: unknown;
+    primaryFile?: unknown;
+    files?: unknown[];
+  }): string | undefined {
+    const explicit = this.firstNonEmptyString(options.explicitTitle);
+    if (explicit && !this.isGenericPlanTitle(explicit)) {
+      return explicit;
+    }
+
+    const fallback = this.firstNonEmptyString(options.fallbackTitle);
+    if (fallback && !this.isGenericPlanTitle(fallback)) {
+      return fallback;
+    }
+
+    const fileCandidates = [options.primaryFile, ...(options.files || [])];
+    for (const candidate of fileCandidates) {
+      const derived = this.derivePlanTitleFromFilePath(candidate);
+      if (derived) {
+        return derived;
+      }
+    }
+
+    return explicit || fallback;
   }
 
   private getStructuredOutputModelKey(
@@ -2594,7 +3670,7 @@ export class ChatViewProvider
     try {
       const rawMessages = await this.sessionService.getMessages(sessionId);
       const messages = Array.isArray(rawMessages)
-        ? this.processHistoryMessages(rawMessages)
+        ? this.processHistoryMessages(rawMessages, sessionId)
         : [];
       const compactionDividerIndex = messages.length;
       const compactionDividerBeforeMessageId =
@@ -2802,11 +3878,7 @@ export class ChatViewProvider
     await this.sessionService.saveSessionMessages(sessionId, nextMessages);
   }
 
-  private logStreamEventDiagnostics(event: any): void {
-    if (!this.shouldVerboseStreamDebug()) {
-      return;
-    }
-
+  private logStreamEventDiagnostics(event: any, enrichedEvent?: any): void {
     const eventType =
       typeof event?.type === "string" ? event.type : "unknown";
     const properties = this.asRecord(event?.properties) || {};
@@ -2831,15 +3903,26 @@ export class ChatViewProvider
         info?.id,
       ) || undefined;
 
-    if (eventType === "server.heartbeat") {
-      console.log("[ChatViewProvider] stream heartbeat", {
-        source: this.firstNonEmptyString(event?.source),
-        directory: this.firstNonEmptyString(event?.directory),
-      });
-      return;
-    }
-
-    console.log("[ChatViewProvider] stream event received", {
+    const structured = this.asRecord(enrichedEvent?.structured);
+    const structuredOutput = this.asRecord(enrichedEvent?.structuredOutput);
+    const partPreview =
+      this.firstNonEmptyString(
+        part?.delta,
+        part?.text,
+        part?.content,
+        part?.reasoning,
+        part?.thought,
+        part?.thinking,
+      ) || undefined;
+    const eventPreview =
+      this.firstNonEmptyString(
+        event?.delta,
+        event?.text,
+        event?.content,
+        event?.reasoning,
+      ) || undefined;
+    const preview = partPreview || eventPreview;
+    const summary: Record<string, unknown> = {
       type: eventType,
       source: this.firstNonEmptyString(event?.source),
       directory: this.firstNonEmptyString(event?.directory),
@@ -2847,7 +3930,151 @@ export class ChatViewProvider
       messageID,
       partType: this.firstNonEmptyString(part?.type),
       hasProperties: Object.keys(properties).length > 0,
+      structuredKind: this.firstNonEmptyString(structured?.kind),
+      structuredResponseType: this.firstNonEmptyString(
+        structuredOutput?.responseType,
+      ),
+      hasStructuredOutput: Boolean(structuredOutput),
+      preview: preview ? preview.slice(0, 180) : undefined,
+      previewLength: preview?.length,
+    };
+
+    if (eventType === "server.heartbeat") {
+      if (this.shouldVerboseStreamDebug()) {
+        console.log("[ChatViewProvider] stream heartbeat", summary);
+      }
+      return;
+    }
+
+    const shouldLogInfo =
+      eventType === "message.updated" ||
+      eventType === "message.completed" ||
+      eventType === "session.completed";
+    const shouldPersistFile =
+      shouldLogInfo ||
+      eventType === "message.part.updated" ||
+      eventType === "message.part.added" ||
+      eventType === "message.part.created";
+    if (shouldPersistFile) {
+      this.appendRenderParityDebugLog("stream", summary);
+    }
+    if (this.shouldVerboseStreamDebug()) {
+      console.log("[ChatViewProvider] stream event received", summary);
+      return;
+    }
+    if (shouldLogInfo) {
+      this.logger.info("Render parity stream snapshot", summary);
+    }
+  }
+
+  private summarizeRenderMessageForDebug(
+    message: any,
+    index: number,
+  ): Record<string, unknown> {
+    const info = this.asRecord(message?.info);
+    const structured = this.asRecord(
+      message?.structuredOutput ??
+      message?.structured_output ??
+      info?.structuredOutput ??
+      info?.structured,
+    );
+    const content =
+      this.firstNonEmptyString(
+        message?.content,
+        message?.text,
+        this.extractMessageBodyText(message),
+      ) || "";
+    const createdAt = this.historyMessageCreatedAt(message);
+    const id = this.extractHistoryMessageId(message);
+    const responseType = this.firstNonEmptyString(
+      structured?.responseType,
+    )?.toLowerCase();
+    return {
+      index,
+      id,
+      role:
+        this.firstNonEmptyString(message?.role, info?.role) || "unknown",
+      createdAt,
+      responseType,
+      contentLength: content.length,
+      contentPreview: content ? content.slice(0, 160) : undefined,
+      hasPlan: Boolean(this.asRecord(message?.plan)),
+      subagentCount: Array.isArray(message?.subagents)
+        ? message.subagents.length
+        : 0,
+      interactiveCount: Array.isArray(message?.interactiveEvents)
+        ? message.interactiveEvents.length
+        : 0,
+      partCount: Array.isArray(message?.parts) ? message.parts.length : 0,
+      renderable: this.isRenderableHistoryMessage(message),
+      fingerprint: this.historyMessageFingerprint(message),
+    };
+  }
+
+  private logHistoryRenderDiagnostics(
+    source: string,
+    sessionId: string | undefined,
+    rawMessages: any[],
+    processedMessages: any[],
+  ): void {
+    const rawTail = rawMessages.slice(-20);
+    const processedTail = processedMessages.slice(-20);
+    const rawSummary = rawTail.map((message, index) =>
+      this.summarizeRenderMessageForDebug(
+        message,
+        rawMessages.length - rawTail.length + index,
+      ),
+    );
+    const processedSummary = processedTail.map((message, index) =>
+      this.summarizeRenderMessageForDebug(
+        message,
+        processedMessages.length - processedTail.length + index,
+      ),
+    );
+
+    const rawIds = new Set(
+      rawSummary
+        .map((item) => this.firstNonEmptyString(item.id))
+        .filter((value): value is string => Boolean(value)),
+    );
+    const processedIds = new Set(
+      processedSummary
+        .map((item) => this.firstNonEmptyString(item.id))
+        .filter((value): value is string => Boolean(value)),
+    );
+    const missingProcessedIds = Array.from(rawIds).filter(
+      (id) => !processedIds.has(id),
+    );
+
+    const summaryContext: Record<string, unknown> = {
+      source,
+      sessionId,
+      rawCount: rawMessages.length,
+      processedCount: processedMessages.length,
+      droppedCount: rawMessages.length - processedMessages.length,
+      missingProcessedIds: missingProcessedIds.slice(0, 20),
+      rawLast: rawSummary[rawSummary.length - 1],
+      processedLast: processedSummary[processedSummary.length - 1],
+    };
+    this.appendRenderParityDebugLog("history", {
+      ...summaryContext,
+      rawTail: rawSummary,
+      processedTail: processedSummary,
     });
+    this.logger.info("Render parity history snapshot", summaryContext);
+
+    if (this.shouldVerboseStreamDebug()) {
+      this.logger.debug("Render parity history raw tail", {
+        source,
+        sessionId,
+        items: rawSummary,
+      });
+      this.logger.debug("Render parity history processed tail", {
+        source,
+        sessionId,
+        items: processedSummary,
+      });
+    }
   }
 
   private logPromptResponseDiagnostics(
@@ -3005,6 +4232,67 @@ export class ChatViewProvider
       ".opencode-debug",
       "last-ai-exchange.json",
     );
+  }
+
+  private getRenderParityDebugFilePath(): string {
+    if (this.renderParityDebugFilePath) {
+      return this.renderParityDebugFilePath;
+    }
+
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (workspaceFolder?.uri.scheme === "file") {
+      this.renderParityDebugFilePath = path.join(
+        workspaceFolder.uri.fsPath,
+        ".opencode-debug",
+        "render-parity.ndjson",
+      );
+      return this.renderParityDebugFilePath;
+    }
+
+    this.renderParityDebugFilePath = path.join(
+      os.tmpdir(),
+      "opencode-debug",
+      "render-parity.ndjson",
+    );
+    return this.renderParityDebugFilePath;
+  }
+
+  private appendRenderParityDebugLog(
+    channel: "stream" | "history",
+    payload: Record<string, unknown>,
+  ): void {
+    const filePath = this.getRenderParityDebugFilePath();
+    const entry = {
+      timestamp: new Date().toISOString(),
+      channel,
+      ...payload,
+    };
+    const line = `${JSON.stringify(this.sanitizeDebugPayload(entry))}\n`;
+
+    this.renderParityLogWriteChain = this.renderParityLogWriteChain
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          await vscode.workspace.fs.createDirectory(
+            vscode.Uri.file(path.dirname(filePath)),
+          );
+          await fs.appendFile(filePath, line, "utf8");
+          if (!this.didLogRenderParityFilePath) {
+            this.didLogRenderParityFilePath = true;
+            this.logger.info("Render parity debug file active", { filePath });
+          }
+        } catch (error) {
+          if (this.shouldVerboseStreamDebug()) {
+            console.warn(
+              "[ChatViewProvider] Failed to append render parity debug log",
+              {
+                filePath,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
+          }
+        }
+      });
   }
 
   private async persistAiDebugSnapshot(
@@ -3796,12 +5084,21 @@ export class ChatViewProvider
     // it as a real implementation plan. This prevents a model from returning
     // an `implementation_plan` responseType while embedding clarifying
     // questions inside the plan body.
-    const candidatePlanContent = this.firstNonEmptyString(
+    const structuredPlanFileCandidates =
+      this.collectPlanFileCandidatesFromStructuredPlan(planRec);
+    const normalizedPlanFile = structuredPlanFileCandidates[0];
+    const normalizedPlanContent = this.firstNonEmptyString(
       planRec?.content,
       planRec?.markdown,
-      sanitizedCanonicalRec.message,
-      sanitizedCanonicalRec.assistantMessage,
     );
+    const candidatePlanContent = normalizedPlanContent
+      ? normalizedPlanContent
+      : !normalizedPlanFile
+        ? this.firstNonEmptyString(
+            sanitizedCanonicalRec.message,
+            sanitizedCanonicalRec.assistantMessage,
+          )
+        : undefined;
     const isClarification = this.isClarificationQuestionnaire(candidatePlanContent);
 
     if (isInteractiveResponse && planRec) {
@@ -3840,17 +5137,25 @@ export class ChatViewProvider
     const plan =
       shouldAttachPlan
         ? {
-            file:
-              this.firstNonEmptyString(planRec?.file) ||
-              "implementation_plan.md",
-            content: this.firstNonEmptyString(
-              planRec?.content,
-              planRec?.markdown,
-            ),
-            title: this.firstNonEmptyString(planRec?.title),
+            file: normalizedPlanFile,
+            content: normalizedPlanContent,
+            title: this.resolvePlanTitle({
+              explicitTitle: planRec?.title,
+              fallbackTitle: planRec?.summary,
+              primaryFile: normalizedPlanFile,
+              files: structuredPlanFileCandidates,
+            }),
             summary: this.firstNonEmptyString(planRec?.summary),
+            files:
+              structuredPlanFileCandidates.length > 0
+                ? structuredPlanFileCandidates
+                : undefined,
           }
         : undefined;
+    // Keep plan.file as first-class: the plan card/button should still render
+    // when only the filepath is provided and content lives on disk.
+    const hasStructuredPlanPayload =
+      !!this.firstNonEmptyString(plan?.file, plan?.content);
 
     if (
       !assistantMessage &&
@@ -3859,7 +5164,7 @@ export class ChatViewProvider
       progressUpdates.length === 0 &&
       interactiveEvents.length === 0 &&
       (!subagents || subagents.length === 0) &&
-      !plan?.content &&
+      !hasStructuredPlanPayload &&
       !subagentsDelta
     ) {
       return undefined;
@@ -3879,7 +5184,8 @@ export class ChatViewProvider
         interactiveEvents.length > 0 ? interactiveEvents : undefined,
       subagents: subagents && subagents.length > 0 ? subagents : undefined,
       subagentsDelta,
-      plan: plan?.content ? plan : undefined,
+      // Do not gate on plan.content only; filepath-only plans are valid.
+      plan: hasStructuredPlanPayload ? plan : undefined,
       question: rawQuestion ?? undefined,
     };
   }
@@ -3951,11 +5257,10 @@ export class ChatViewProvider
         .trim();
     }
 
-    const cleaned = this.stripLegacyInstruction(rawText);
-    if (this.isLikelyToolCallTranscript(cleaned)) {
+    if (this.isLikelyToolCallTranscript(rawText)) {
       return "";
     }
-    return cleaned;
+    return rawText;
   }
 
   private extractStructuredOutput(
@@ -4076,7 +5381,12 @@ export class ChatViewProvider
     return undefined;
   }
 
-  private applyStructuredOutputToMessage(message: any): any {
+  private applyStructuredOutputToMessage(
+    message: any,
+    options?: { allowSyntheticFallbackError?: boolean },
+  ): any {
+    const allowSyntheticFallbackError =
+      options?.allowSyntheticFallbackError !== false;
     const structured = this.extractStructuredOutput(message);
     if (!structured) {
       const role = this.firstNonEmptyString(
@@ -4111,6 +5421,9 @@ export class ChatViewProvider
         return next;
       }
       if (role === "assistant" && !bodyText) {
+        if (!allowSyntheticFallbackError) {
+          return message;
+        }
         const incompatibleModelKey = this.getStructuredOutputModelKey(
           this.firstNonEmptyString(
             message?.info?.providerID,
@@ -4345,15 +5658,35 @@ export class ChatViewProvider
       !isInteractiveStructuredResponse &&
       !shouldSuppressStructuredPlan &&
       (structured.responseType === "implementation_plan" ||
-        structured.plan?.content)
+        structured.plan?.content ||
+        structured.plan?.file)
     ) {
-      const planContent = structured.plan?.content || "";
-      if (typeof planContent === "string" && planContent.trim().length >= 80) {
+      const planContent = this.firstNonEmptyString(structured.plan?.content);
+      const structuredPlanCandidates =
+        this.collectPlanFileCandidatesFromStructuredPlan(
+          this.asRecord(structured.plan),
+        );
+      const planFile = structuredPlanCandidates[0];
+      const resolvedPlanTitle = this.resolvePlanTitle({
+        explicitTitle: structured.plan?.title,
+        fallbackTitle: structured.plan?.summary,
+        primaryFile: planFile,
+        files: structuredPlanCandidates,
+      });
+      const hasLongPlanContent =
+        typeof planContent === "string" && planContent.trim().length >= 80;
+      // File-backed plans must still produce a plan card even when no markdown
+      // content is embedded in structured output.
+      if (hasLongPlanContent || planFile) {
         next.plan = {
-          file: structured.plan?.file || "implementation_plan.md",
-          content: planContent,
-          title: structured.plan?.title,
+          file: planFile,
+          content: hasLongPlanContent ? planContent : undefined,
+          title: resolvedPlanTitle,
           summary: structured.plan?.summary,
+          files:
+            structuredPlanCandidates.length > 0
+              ? structuredPlanCandidates
+              : undefined,
         };
       }
     }
@@ -5068,6 +6401,12 @@ export class ChatViewProvider
             duration: duration,
           },
         });
+        await this.persistSessionMessageOverride(session.id, {
+          ...finalMessage,
+          timing: {
+            duration: duration,
+          },
+        });
         const snapshotFromFinalMessage = this.buildSubagentPayloadFromMessage(
           finalMessage,
           session.id,
@@ -5155,9 +6494,6 @@ export class ChatViewProvider
       return message;
     }
 
-    const fallbackPlanFile = "implementation_plan.md";
-    const planFilePattern = /implementation_plan(?:_[a-z0-9-]+)?\.md/i;
-
     const structured = this.extractStructuredOutput(message);
     const structuredResponseType = this.firstNonEmptyString(
       structured?.responseType,
@@ -5189,7 +6525,51 @@ export class ChatViewProvider
     }
 
     if (structured) {
-      const structuredPlanContent = structured.plan?.content;
+      const structuredPlanRecord = this.asRecord(structured.plan);
+      const structuredPlanContent = this.firstNonEmptyString(
+        structuredPlanRecord?.content,
+      );
+      const structuredPlanFiles =
+        this.collectPlanFileCandidatesFromStructuredPlan(structuredPlanRecord);
+      const structuredPlanFile = structuredPlanFiles[0];
+
+      // Resolve the plan filename: prefer what the agent declared in structured
+      // output, then look for a matching filename in the message edits/patches,
+      // then from markdown references. The viewer reads this to load the live
+      // file from disk so the user sees the exact content the agent wrote.
+      const editsForPlan: any[] = message.edits || [];
+      const partsForPlan: any[] = message.parts || [];
+      const fileCandidatesFromEditsAndParts: string[] = [];
+      for (const edit of editsForPlan) {
+        if (this.isLikelyPlanMarkdownFile(edit?.file)) {
+          fileCandidatesFromEditsAndParts.push(edit.file);
+        }
+      }
+      for (const part of partsForPlan) {
+        if (part?.type !== "patch" || !Array.isArray(part.files)) {
+          continue;
+        }
+        for (const patchFile of part.files) {
+          if (this.isLikelyPlanMarkdownFile(patchFile)) {
+            fileCandidatesFromEditsAndParts.push(patchFile);
+          }
+        }
+      }
+      const mergedPlanFiles = this.prioritizePlanFileCandidates([
+        ...structuredPlanFiles,
+        ...fileCandidatesFromEditsAndParts,
+        ...this.extractMarkdownFileReferences(structuredPlanContent),
+        ...this.extractMarkdownFileReferences(structuredPlanRecord?.summary),
+        ...this.extractMarkdownFileReferences(structuredPlanRecord?.title),
+      ]);
+      const resolvedPlanFile = mergedPlanFiles[0];
+      const resolvedPlanTitle = this.resolvePlanTitle({
+        explicitTitle: this.firstNonEmptyString(structuredPlanRecord?.title),
+        fallbackTitle: this.firstNonEmptyString(structuredPlanRecord?.summary),
+        primaryFile: resolvedPlanFile,
+        files: mergedPlanFiles,
+      });
+
       if (
         structuredPlanContent &&
         typeof structuredPlanContent === "string" &&
@@ -5205,33 +6585,35 @@ export class ChatViewProvider
           );
         });
 
-        // Resolve the plan filename: prefer what the agent declared in structured
-        // output, then look for a matching filename in the message edits/patches,
-        // then fall back to the default. The viewer reads this to load the live
-        // file from disk so the user sees the exact content the agent wrote.
-        const editsForPlan: any[] = message.edits || [];
-        const partsForPlan: any[] = message.parts || [];
-        const editPlanFile: string | undefined =
-          editsForPlan.find((e: any) => e.file && planFilePattern.test(e.file))?.file ||
-          (() => {
-            for (const p of partsForPlan) {
-              if (p.type === "patch" && Array.isArray(p.files)) {
-                const f = p.files.find((f: string) => planFilePattern.test(f));
-                if (f) return f;
-              }
-            }
-            return undefined;
-          })();
-
         return {
           ...message,
           structuredOutput: structured,
           plan: {
-            file: structured.plan?.file || editPlanFile || fallbackPlanFile,
+            file: resolvedPlanFile,
             content: structuredPlanContent,
-            title: structured.plan?.title,
-            summary: structured.plan?.summary,
-            fileCount: Array.isArray(structured.plan?.files) ? structured.plan.files.length : 0,
+            title: resolvedPlanTitle,
+            summary: this.firstNonEmptyString(structuredPlanRecord?.summary),
+            files: mergedPlanFiles.length > 0 ? mergedPlanFiles : undefined,
+            fileCount: mergedPlanFiles.length,
+          },
+        };
+      }
+
+      if (
+        structuredResponseType === "implementation_plan" &&
+        structuredPlanFile
+      ) {
+        // Preserve structured file-only plans so the webview "View Plan" action
+        // can open the plan tab directly from disk.
+        return {
+          ...message,
+          structuredOutput: structured,
+          plan: {
+            file: resolvedPlanFile,
+            title: resolvedPlanTitle,
+            summary: this.firstNonEmptyString(structuredPlanRecord?.summary),
+            files: mergedPlanFiles.length > 0 ? mergedPlanFiles : undefined,
+            fileCount: mergedPlanFiles.length,
           },
         };
       }
@@ -5242,17 +6624,8 @@ export class ChatViewProvider
     const parts = message.parts || [];
     const info = message.info || {};
 
-    // 1. Check for explicit filename in edits/parts
-    const hasPlanFile =
-      edits.some((e: any) => e.file && planFilePattern.test(e.file)) ||
-      parts.some(
-        (p: any) =>
-          p.type === "patch" &&
-          p.files &&
-          p.files.some((f: string) => planFilePattern.test(f)),
-      );
-
-    // 2. Fallback: Check for plan-like content in message summary, parts, or plain content
+    // 1. Gather text body and fallback plan-like content in message summary,
+    // parts, or plain content.
     const partsContent = parts
       .filter((p: any) => this.isRenderableTextPart(p)) // ignore reasoning parts directly
       .map((p: any) => {
@@ -5261,6 +6634,25 @@ export class ChatViewProvider
         return c;
       })
       .join(" ");
+
+    // 2. Check for explicit markdown filenames in edits/parts/text.
+    const extractedPlanFiles = this.prioritizePlanFileCandidates([
+      ...edits
+        .map((e: any) => this.firstNonEmptyString(e?.file))
+        .filter((file): file is string => !!file),
+      ...parts
+        .filter((p: any) => p.type === "patch" && Array.isArray(p.files))
+        .flatMap((p: any) =>
+          (p.files as unknown[])
+            .map((f) => this.firstNonEmptyString(f))
+            .filter((file): file is string => !!file),
+        ),
+      ...this.extractMarkdownFileReferences(message?.content),
+      ...this.extractMarkdownFileReferences(info.summary?.title),
+      ...this.extractMarkdownFileReferences(info.summary?.body),
+      ...this.extractMarkdownFileReferences(partsContent),
+    ]);
+    const hasPlanFile = extractedPlanFiles.length > 0;
 
     const fullContent =
       (info.summary?.title || "") +
@@ -5321,6 +6713,17 @@ export class ChatViewProvider
 
       const parsed = PlanParser.parse(rawContent);
       const cleanPlanContent = PlanParser.toMarkdown(parsed);
+      const existingStructured = this.asRecord(message.structuredOutput);
+      const existingStructuredPlan = this.asRecord(existingStructured?.plan);
+      const resolvedPlanTitle = this.resolvePlanTitle({
+        explicitTitle: this.firstNonEmptyString(
+          existingStructuredPlan?.title,
+          message?.plan?.title,
+        ),
+        fallbackTitle: parsed.goal,
+        primaryFile: extractedPlanFiles[0],
+        files: extractedPlanFiles,
+      });
 
       // PERSISTENCE: Automatically save the cleaned plan to disk.
       // This ensures handleViewPlan can read it even if the SDK didn't write it.
@@ -5340,16 +6743,36 @@ export class ChatViewProvider
       const nextMessage = {
         ...message,
         plan: {
-          file: fallbackPlanFile,
+          file: extractedPlanFiles[0],
           content: cleanPlanContent,
-          title: parsed.goal,
+          title: resolvedPlanTitle,
           summary: parsed.description,
-          fileCount: parsed.files.length,
+          files: extractedPlanFiles.length > 0 ? extractedPlanFiles : undefined,
+          fileCount: parsed.files.length || extractedPlanFiles.length,
         },
       };
+      const nextStructured: Record<string, unknown> = existingStructured
+        ? { ...existingStructured }
+        : {};
+      nextStructured.responseType = "implementation_plan";
+      nextStructured.plan = {
+        ...(existingStructuredPlan || {}),
+        file: extractedPlanFiles[0] ?? existingStructuredPlan?.file,
+        files:
+          extractedPlanFiles.length > 0
+            ? extractedPlanFiles
+            : existingStructuredPlan?.files,
+        content: cleanPlanContent,
+        title: resolvedPlanTitle,
+        summary:
+          parsed.description ||
+          this.firstNonEmptyString(existingStructuredPlan?.summary),
+      };
+      nextMessage.structuredOutput = nextStructured;
       if (message?.structuredOutput?.responseType !== "implementation_plan") {
         const safeMessage =
           "Implementation plan is ready. Use View Plan to inspect details.";
+        nextStructured.assistantMessage = safeMessage;
         nextMessage.content = safeMessage;
         const parts = Array.isArray(nextMessage.parts)
           ? [...nextMessage.parts]
@@ -5734,7 +7157,16 @@ export class ChatViewProvider
         // Discard the stale local cache so getMessages fetches from the server.
         await this.sessionService.saveSessionMessages(sessionId, []);
         const freshMessages = await this.sessionService.getMessages(sessionId);
-        const processedMessages = this.processHistoryMessages(freshMessages);
+        const processedMessages = this.processHistoryMessages(
+          freshMessages,
+          sessionId,
+        );
+        this.logHistoryRenderDiagnostics(
+          "compaction.reload",
+          sessionId,
+          freshMessages,
+          processedMessages,
+        );
         this.view?.webview.postMessage({
           type: "chatHistory",
           sessionId,
@@ -5935,6 +7367,7 @@ export class ChatViewProvider
   async handlePlanProceed(payload: {
     rawPlan: string;
     comments: PlanProceedComment[];
+    sourceFile?: string;
   }): Promise<void> {
     const rawPlan = typeof payload?.rawPlan === "string" ? payload.rawPlan : "";
     if (!rawPlan.trim()) {
@@ -5959,49 +7392,80 @@ export class ChatViewProvider
       commentLines.length > 0
         ? `# Implementation Plan Comments\n\n${commentLines.join("\n")}`
         : "";
-
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    const artifactId = this.createPlanArtifactId();
-    const planFilename = this.createPlanFilename(artifactId);
-    const commentsFilename = this.createPlanCommentsFilename(artifactId);
-    const planFilePath = workspaceFolder
-      ? path.join(workspaceFolder.uri.fsPath, planFilename)
-      : path.join(os.tmpdir(), `opencode-plan-${Date.now()}.md`);
-    const commentsFilePath = workspaceFolder
-      ? path.join(workspaceFolder.uri.fsPath, commentsFilename)
-      : path.join(os.tmpdir(), `opencode-plan-comments-${Date.now()}.md`);
-
-    await vscode.workspace.fs.writeFile(
-      vscode.Uri.file(planFilePath),
-      new TextEncoder().encode(rawPlan),
+    const providedSourceFile = this.normalizePlanFileReference(
+      payload?.sourceFile,
     );
+    let planFilePath: string | undefined;
 
-    if (hasChangeRequests && commentsMd) {
-      await vscode.workspace.fs.writeFile(
-        vscode.Uri.file(commentsFilePath),
-        new TextEncoder().encode(commentsMd),
+    if (providedSourceFile) {
+      const diskPlan = await this.readPlanFileFromDisk(providedSourceFile);
+      planFilePath =
+        diskPlan?.resolvedPath ??
+        this.resolvePlanFileCandidates(providedSourceFile)[0];
+    } else {
+      const fallbackCandidates = this.prioritizePlanFileCandidates([
+        ...this.extractMarkdownFileReferences(rawPlan),
+        ...(await this.discoverLikelyPlanFileCandidates()),
+      ]);
+      for (const candidate of fallbackCandidates) {
+        const diskPlan = await this.readPlanFileFromDisk(candidate);
+        if (!diskPlan) {
+          continue;
+        }
+        planFilePath = diskPlan.resolvedPath;
+        break;
+      }
+    }
+
+    if (!planFilePath) {
+      vscode.window.showErrorMessage(
+        "Cannot proceed because the plan source file path is missing. Re-open the plan and try again.",
       );
+      return;
+    }
+
+    let commentsFilePath: string | undefined;
+    if (hasChangeRequests && commentsMd) {
+      const ext = path.extname(planFilePath) || ".md";
+      const baseName = path.basename(planFilePath, ext);
+      commentsFilePath = path.join(
+        path.dirname(planFilePath),
+        `${baseName}_comments.md`,
+      );
+      try {
+        await vscode.workspace.fs.writeFile(
+          vscode.Uri.file(commentsFilePath),
+          new TextEncoder().encode(commentsMd),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(
+          `Cannot proceed because plan comments could not be written: ${message}`,
+        );
+        return;
+      }
     }
 
     const proceedMessage = hasChangeRequests
       ? [
         "Proceed on this plan.",
-        `The attached file \`${planFilename}\` is the source of truth.`,
-        `Apply all reviewer comments from \`${commentsFilename}\`, then execute the resulting plan.`,
+        `The attached plan file \`${planFilePath}\` is the source of truth.`,
+        `Apply all reviewer comments from attached file \`${commentsFilePath}\`, then execute the resulting plan.`,
         "Begin making real edits now and continue until the implementation is complete.",
         "Do not return only a status update.",
       ].join("\n")
       : [
         "Proceed on this plan.",
-        `The attached file \`${planFilename}\` is the source of truth.`,
+        `The attached plan file \`${planFilePath}\` is the source of truth.`,
         "Execute the plan step-by-step and implement the described changes now.",
         "Begin making real edits now and continue until the implementation is complete.",
         "Do not return only a status update.",
       ].join("\n");
 
-    const attachedFiles = hasChangeRequests
-      ? [planFilePath, commentsFilePath]
-      : [planFilePath];
+    const attachedFiles =
+      hasChangeRequests && commentsFilePath
+        ? [planFilePath, commentsFilePath]
+        : [planFilePath];
 
     // Post addPlanAttachment message to chat webview for the visual chip
     const planGoal =
@@ -6018,6 +7482,37 @@ export class ChatViewProvider
       },
     });
 
+    const approvalMessage = {
+      role: "user" as const,
+      content: "Proceed on this plan.",
+      text: "Proceed on this plan.",
+      parts: [{ type: "text", text: "Proceed on this plan." }],
+      time: {
+        created: Date.now(),
+      },
+    };
+
+    let activeSession: { id: string } | undefined;
+    try {
+      activeSession = this.currentSessionId
+        ? await this.sessionService.switchSession(this.currentSessionId)
+        : await this.sessionService.getCurrentSession();
+    } catch {
+      try {
+        activeSession = await this.sessionService.getCurrentSession();
+      } catch {
+        activeSession = undefined;
+      }
+    }
+    if (activeSession?.id) {
+      await this.sessionService.appendMessage(activeSession.id, approvalMessage);
+      this.view?.webview.postMessage({
+        type: "userMessageAppended",
+        message: approvalMessage,
+      });
+      await this.handleGetSessions();
+    }
+
     PlanViewProvider.closeCurrentPanel();
 
     // Fire and forget so the plan tab closes immediately and execution starts in chat.
@@ -6027,29 +7522,11 @@ export class ChatViewProvider
       undefined,
       undefined,
       "build",
+      true,
     ).catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       vscode.window.showErrorMessage(`Failed to proceed with plan: ${message}`);
     });
-  }
-
-  private createPlanArtifactId(): string {
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[-:TZ.]/g, "")
-      .slice(0, 14);
-    const random = Math.random().toString(36).slice(2, 8);
-    return `${timestamp}-${random}`;
-  }
-
-  private createPlanFilename(id: string = this.createPlanArtifactId()): string {
-    return `implementation_plan_${id}.md`;
-  }
-
-  private createPlanCommentsFilename(
-    id: string = this.createPlanArtifactId(),
-  ): string {
-    return `implementation_plan_comments_${id}.md`;
   }
 
   private buildRecoveredTranscript(messages: unknown[]): string {
@@ -6122,44 +7599,403 @@ export class ChatViewProvider
     await this.context.globalState.update("sessionRecoveryMap", existing);
   }
 
+  private normalizePlanFileReference(file: unknown): string | undefined {
+    const raw = this.firstNonEmptyString(file);
+    if (!raw) {
+      return undefined;
+    }
+
+    let value = raw.trim();
+    if (!value) {
+      return undefined;
+    }
+
+    if (value.startsWith("file://")) {
+      try {
+        const uri = vscode.Uri.parse(value);
+        if (uri.scheme === "file" && uri.fsPath) {
+          value = uri.fsPath;
+        }
+      } catch {
+        // Keep string cleanup fallback below.
+      }
+    }
+
+    // Strip common markdown wrappers around file paths.
+    value = value
+      .replace(/^`+|`+$/g, "")
+      .replace(/^"+|"+$/g, "")
+      .replace(/^'+|'+$/g, "")
+      .replace(/^<+|>+$/g, "")
+      .replace(/^\(+|\)+$/g, "")
+      .trim();
+
+    return value || undefined;
+  }
+
+  private isLikelyPlanMarkdownFile(file: unknown): boolean {
+    const normalized = this.normalizePlanFileReference(file);
+    if (!normalized || !normalized.toLowerCase().endsWith(".md")) {
+      return false;
+    }
+    const lower = normalized.replace(/\\/g, "/").toLowerCase();
+    if (lower.includes("/node_modules/")) {
+      return false;
+    }
+    if (
+      /(^|\/)implementation_plan_comments_[^/]+\.md$/.test(lower) ||
+      /(^|\/)[^/]+_comments\.md$/.test(lower)
+    ) {
+      return false;
+    }
+    return (
+      lower.includes("/.sisyphus/plans/") ||
+      /(^|\/)implementation_plan(?:_[a-z0-9-]+)?\.md$/.test(lower) ||
+      /(^|\/)plans?\//.test(lower) ||
+      lower.includes("plan")
+    );
+  }
+
+  private getPlanFileCandidateScore(filePath: string): number {
+    const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+    let score = 0;
+    if (!normalized.endsWith(".md")) {
+      return -999;
+    }
+    if (normalized.includes("/.sisyphus/plans/")) {
+      score += 120;
+    }
+    if (/(^|\/)implementation_plan(?:_[a-z0-9-]+)?\.md$/.test(normalized)) {
+      score += 100;
+    }
+    if (/(^|\/)plans?\//.test(normalized)) {
+      score += 70;
+    }
+    if (normalized.includes("plan")) {
+      score += 50;
+    }
+    if (normalized.includes("comment")) {
+      score -= 80;
+    }
+    return score;
+  }
+
+  private prioritizePlanFileCandidates(candidates: Array<unknown>): string[] {
+    const deduped: Array<{ value: string; score: number }> = [];
+    const seen = new Set<string>();
+
+    for (const candidate of candidates) {
+      const normalized = this.normalizePlanFileReference(candidate);
+      if (!normalized || !this.isLikelyPlanMarkdownFile(normalized)) {
+        continue;
+      }
+      const dedupeKey = path.normalize(normalized);
+      if (seen.has(dedupeKey)) {
+        continue;
+      }
+      seen.add(dedupeKey);
+      deduped.push({
+        value: dedupeKey,
+        score: this.getPlanFileCandidateScore(dedupeKey),
+      });
+    }
+
+    deduped.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return a.value.length - b.value.length;
+    });
+
+    return deduped.map((entry) => entry.value);
+  }
+
+  private collectPlanFileCandidatesFromStructuredPlan(
+    planRecord: Record<string, unknown> | undefined,
+  ): string[] {
+    if (!planRecord) {
+      return [];
+    }
+
+    const candidates: unknown[] = [];
+    candidates.push(planRecord.file);
+
+    const files = Array.isArray(planRecord.files) ? planRecord.files : [];
+    for (const fileEntry of files) {
+      if (typeof fileEntry === "string") {
+        candidates.push(fileEntry);
+        continue;
+      }
+      if (fileEntry && typeof fileEntry === "object") {
+        const record = this.asRecord(fileEntry);
+        candidates.push(record?.file, record?.path, record?.filename);
+      }
+    }
+
+    this.extractMarkdownFileReferences(planRecord.content).forEach((value) =>
+      candidates.push(value),
+    );
+    this.extractMarkdownFileReferences(planRecord.summary).forEach((value) =>
+      candidates.push(value),
+    );
+    this.extractMarkdownFileReferences(planRecord.title).forEach((value) =>
+      candidates.push(value),
+    );
+
+    return this.prioritizePlanFileCandidates(candidates);
+  }
+
+  private resolvePlanFileCandidates(planFile: string): string[] {
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const push = (candidate: string | undefined) => {
+      const cleaned = this.firstNonEmptyString(candidate);
+      if (!cleaned) {
+        return;
+      }
+      const normalized = path.normalize(cleaned);
+      if (seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      candidates.push(normalized);
+    };
+
+    push(planFile);
+    if (path.isAbsolute(planFile)) {
+      return candidates;
+    }
+
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+    const relativeVariants = [
+      planFile,
+      planFile.replace(/^[.][\\/]+/, ""),
+      planFile.replace(/^[\\/]+/, ""),
+    ];
+    for (const folder of workspaceFolders) {
+      for (const variant of relativeVariants) {
+        push(path.join(folder.uri.fsPath, variant));
+      }
+    }
+
+    return candidates;
+  }
+
+  private async readPlanFileFromDisk(
+    planFile: string,
+  ): Promise<{ content: string; resolvedPath: string } | undefined> {
+    const candidates = this.resolvePlanFileCandidates(planFile);
+    for (const candidate of candidates) {
+      try {
+        const fileUri = vscode.Uri.file(candidate);
+        const uint8Array = await vscode.workspace.fs.readFile(fileUri);
+        return {
+          content: new TextDecoder().decode(uint8Array),
+          resolvedPath: candidate,
+        };
+      } catch {
+        // Continue trying other candidates.
+      }
+    }
+    return undefined;
+  }
+
+  private extractMarkdownFileReferences(text: unknown): string[] {
+    const source = this.firstNonEmptyString(text);
+    if (!source) {
+      return [];
+    }
+
+    const matches: string[] = [];
+    const seen = new Set<string>();
+    const push = (value: string | undefined) => {
+      const normalized = this.normalizePlanFileReference(value);
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      matches.push(normalized);
+    };
+
+    // Markdown code spans: `path/to/file.md`
+    const codeSpanRegex = /`([^`\n]+\.md)`/gi;
+    for (const match of source.matchAll(codeSpanRegex)) {
+      push(match[1]);
+    }
+
+    // Markdown links: [label](path/to/file.md)
+    const linkRegex = /\]\(([^)\n]+\.md)\)/gi;
+    for (const match of source.matchAll(linkRegex)) {
+      push(match[1]);
+    }
+
+    // Generic path-like markdown filename occurrences.
+    const pathRegex =
+      /(?:^|[\s("'`<])((?:[a-zA-Z]:\\|\.{1,2}[\\/]|[\\/])?[^ \t\r\n"'`<>()[\]{}]+\.md)(?=$|[\s)"'`>,])/g;
+    for (const match of source.matchAll(pathRegex)) {
+      push(match[1]);
+    }
+
+    // Hidden-directory relative paths like `.sisyphus/plans/todo-feature.md`
+    // are common in plan responses but are not covered by ./ or ../ prefixes.
+    const hiddenDirPathRegex =
+      /(?:^|[\s("'`<])(\.[a-zA-Z0-9._-]+(?:[\\/][^ \t\r\n"'`<>()[\]{}]+)+\.md)(?=$|[\s)"'`>,])/g;
+    for (const match of source.matchAll(hiddenDirPathRegex)) {
+      push(match[1]);
+    }
+
+    return matches;
+  }
+
+  private async discoverLikelyPlanFileCandidates(): Promise<string[]> {
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+    if (workspaceFolders.length === 0) {
+      return [];
+    }
+
+    const patterns = ["**/.sisyphus/plans/*.md", "**/implementation_plan*.md"];
+    const excludes = "**/{node_modules,.git,dist,out,build}/**";
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    for (const pattern of patterns) {
+      const uris = await vscode.workspace.findFiles(pattern, excludes, 30);
+      for (const uri of uris) {
+        const normalized = path.normalize(uri.fsPath);
+        if (seen.has(normalized)) {
+          continue;
+        }
+        seen.add(normalized);
+        candidates.push(normalized);
+      }
+    }
+
+    const ranked = this.prioritizePlanFileCandidates(candidates);
+    if (ranked.length === 0) {
+      return ranked;
+    }
+
+    const withMtime = await Promise.all(
+      ranked.map(async (candidate) => {
+        try {
+          const stat = await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
+          return { candidate, mtime: stat.mtime ?? 0 };
+        } catch {
+          return { candidate, mtime: 0 };
+        }
+      }),
+    );
+
+    withMtime.sort((a, b) => {
+      const scoreDelta =
+        this.getPlanFileCandidateScore(b.candidate) -
+        this.getPlanFileCandidateScore(a.candidate);
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+      return b.mtime - a.mtime;
+    });
+
+    return withMtime.map((entry) => entry.candidate);
+  }
+
   /**
    * Handles viewing the implementation plan
    */
   private async handleViewPlan(plan: {
     file?: string;
+    files?: unknown[];
     content?: string;
     title?: string;
+    summary?: string;
   }): Promise<void> {
     let planData: string | undefined;
+    let sourceFilePath: string | undefined;
+    const normalizedPlanFile = this.normalizePlanFileReference(plan.file);
+    const fileCandidates: string[] = [];
+    const seenCandidates = new Set<string>();
+    const addCandidate = (value: string | undefined) => {
+      const normalized = this.normalizePlanFileReference(value);
+      if (!normalized) {
+        return;
+      }
+      const dedupeKey = path.normalize(normalized);
+      if (seenCandidates.has(dedupeKey)) {
+        return;
+      }
+      seenCandidates.add(dedupeKey);
+      fileCandidates.push(dedupeKey);
+    };
 
-    // Prefer the file on disk — it is the source of truth.
-    // The AI writes the actual plan via tool calls; the structured-output
-    // plan.content field may be an earlier draft or summary that differs
-    // from what ended up on disk.
-    if (
-      plan.file &&
-      plan.file.endsWith(".md") &&
-      !plan.file.includes("\n")
-    ) {
-      try {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (workspaceFolders) {
-          const filePath = path.join(workspaceFolders[0].uri.fsPath, plan.file);
-          const fileUri = vscode.Uri.file(filePath);
-          const uint8Array = await vscode.workspace.fs.readFile(fileUri);
-          planData = new TextDecoder().decode(uint8Array);
-          console.log(`[ChatViewProvider] Read plan from file ${filePath}`);
+    addCandidate(normalizedPlanFile);
+    if (Array.isArray(plan.files)) {
+      for (const fileEntry of plan.files) {
+        if (typeof fileEntry === "string") {
+          addCandidate(fileEntry);
+          continue;
         }
-      } catch (err) {
-        console.error(
-          `[ChatViewProvider] Failed to read plan file ${plan.file}:`,
-          err,
-        );
+        if (fileEntry && typeof fileEntry === "object") {
+          const rec = this.asRecord(fileEntry);
+          addCandidate(this.firstNonEmptyString(rec?.file, rec?.path));
+        }
+      }
+    }
+    this.extractMarkdownFileReferences(plan.file).forEach(addCandidate);
+    this.extractMarkdownFileReferences(plan.content).forEach(addCandidate);
+    this.extractMarkdownFileReferences(plan.summary).forEach(addCandidate);
+    this.extractMarkdownFileReferences(plan.title).forEach(addCandidate);
+
+    const prioritizedCandidates = this.prioritizePlanFileCandidates(fileCandidates);
+
+    // File-backed plan payloads are source-of-truth. When any markdown filepath
+    // is available, render exactly what is on disk (no summary fallback).
+    for (const candidate of prioritizedCandidates) {
+      const diskPlan = await this.readPlanFileFromDisk(candidate);
+      if (!diskPlan) {
+        continue;
+      }
+      planData = diskPlan.content;
+      sourceFilePath = diskPlan.resolvedPath;
+      console.log(
+        `[ChatViewProvider] Read plan from file ${diskPlan.resolvedPath}`,
+      );
+      break;
+    }
+
+    // If explicit candidates fail, attempt workspace discovery as a recovery
+    // path for older payloads that only carried placeholder filenames.
+    const hasStructuredContentFallback =
+      typeof plan.content === "string" && plan.content.trim().length > 0;
+    if (!planData && (prioritizedCandidates.length > 0 || !hasStructuredContentFallback)) {
+      const discovered = await this.discoverLikelyPlanFileCandidates();
+      for (const candidate of discovered) {
+        if (seenCandidates.has(path.normalize(candidate))) {
+          continue;
+        }
+        const diskPlan = await this.readPlanFileFromDisk(candidate);
+        if (!diskPlan) {
+          continue;
+        }
+        planData = diskPlan.content;
+        sourceFilePath = diskPlan.resolvedPath;
+        break;
       }
     }
 
-    // Fall back to the structured-output content if the file could not be read
-    if (!planData && plan.content && typeof plan.content === "string") {
+    if (!planData && prioritizedCandidates.length > 0) {
+      vscode.window.showErrorMessage(
+        `Could not read plan file: ${prioritizedCandidates[0]}`,
+      );
+      return;
+    }
+
+    // Fall back to the structured-output content only when no plan.file was
+    // provided at all.
+    if (
+      !planData &&
+      prioritizedCandidates.length === 0 &&
+      plan.content &&
+      typeof plan.content === "string"
+    ) {
       planData = plan.content;
       console.log(
         "[ChatViewProvider] Using plan content from structured output (file unavailable)",
@@ -6172,6 +8008,7 @@ export class ChatViewProvider
       await vscode.commands.executeCommand("opencode.showPlan", {
         content: planData,
         title: this.firstNonEmptyString(plan.title, fallbackTitle),
+        sourceFile: sourceFilePath,
       });
     } else {
       vscode.window.showErrorMessage(
@@ -6575,23 +8412,28 @@ export class ChatViewProvider
     this.modelsFetchPromise = (async () => {
       try {
         const client = await this.serverManager.ensureRunning();
+        const providerListTimeoutMs = 8000;
+        let timeoutHandle: NodeJS.Timeout | undefined;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error("Provider list timeout")),
+            providerListTimeoutMs,
+          );
+        });
 
-        // Add timeout to provider list call
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Provider list timeout")), 15000),
-        );
-
-        // Use provider.list() instead of config.get() to see all available models
+        // Use provider.list() to discover all provider/model combinations.
         const response = (await Promise.race([
           client.provider.list(),
           timeoutPromise,
-        ])) as any; // Type assertion since race result type is union
+        ])) as any;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
 
-        if (response.data && response.data.all) {
-          const models: ChatModelOption[] = [];
-
+        const models: ChatModelOption[] = [];
+        if (response?.data && Array.isArray(response.data.all)) {
           for (const provider of response.data.all) {
-            if (provider.models) {
+            if (provider?.models) {
               for (const [modelID, modelConfig] of Object.entries(
                 provider.models,
               )) {
@@ -6613,7 +8455,9 @@ export class ChatViewProvider
               }
             }
           }
+        }
 
+        if (models.length > 0) {
           console.log(
             `Discovered ${models.length} total models across all providers`,
           );
@@ -6632,15 +8476,32 @@ export class ChatViewProvider
         }
       } catch (error) {
         console.error("Failed to get models:", error);
-        // Send empty list to allow UI to proceed
-        this.availableModels = [];
-        this.view?.webview.postMessage({
-          type: "modelsList",
-          models: [],
-          selectedModel: this.selectedModel,
-        });
       }
-      return [];
+
+      // Keep extension usable even when provider discovery fails/timeouts.
+      const cachedModels = Array.isArray(this.availableModels)
+        ? this.availableModels
+        : [];
+      const fallbackModels =
+        cachedModels.length > 0
+          ? cachedModels
+          : this.getSelectedModelFallbackList();
+      this.availableModels = fallbackModels;
+      if (fallbackModels.length === 0) {
+        console.warn(
+          "[ChatViewProvider] No provider models discovered and no selected-model fallback available.",
+        );
+      } else {
+        console.warn(
+          `[ChatViewProvider] Using ${fallbackModels.length} fallback model(s) after provider discovery failure.`,
+        );
+      }
+      this.view?.webview.postMessage({
+        type: "modelsList",
+        models: fallbackModels,
+        selectedModel: this.selectedModel,
+      });
+      return fallbackModels;
     })();
 
     try {
@@ -6648,6 +8509,29 @@ export class ChatViewProvider
     } finally {
       this.modelsFetchPromise = null;
     }
+  }
+
+  private getSelectedModelFallbackList(): ChatModelOption[] {
+    const selected = this.selectedModel;
+    if (!selected || typeof selected !== "object") {
+      return [];
+    }
+
+    const providerID = this.firstNonEmptyString(selected.providerID);
+    const modelID = this.firstNonEmptyString(selected.modelID);
+    if (!providerID || !modelID) {
+      return [];
+    }
+
+    return [
+      {
+        providerID,
+        modelID,
+        name: modelID,
+        providerName:
+          this.firstNonEmptyString(selected.providerName) || providerID,
+      },
+    ];
   }
 
   /**
@@ -7356,6 +9240,55 @@ export class ChatViewProvider
     this.setSessionQueue(sessionId, queue);
     this.sendQueueUpdate(sessionId);
     return item;
+  }
+
+  private async dispatchInteractiveResponse(payload: {
+    sessionId?: string;
+    text?: string;
+    agent?: string;
+  }): Promise<void> {
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    if (!text) {
+      return;
+    }
+
+    const sessionId = await this.resolveQueueSessionId(payload.sessionId);
+    if (!sessionId) {
+      const message =
+        "Unable to send interactive response because no active session could be resolved.";
+      this.view?.webview.postMessage({
+        type: "error",
+        message,
+      });
+      vscode.window.showErrorMessage(message);
+      return;
+    }
+
+    // Interactive popover responses should always be persisted/sent as one
+    // immediate message. If anything is still processing, stop it first and
+    // then send directly (instead of relying on queue fallback).
+    if (this.isProcessingRequest) {
+      const activeSessionId = this.firstNonEmptyString(this.currentSessionId);
+      await this.handleStopRequest(activeSessionId || sessionId);
+    }
+
+    if (this.isProcessingRequest) {
+      await this.schedulePromptDispatch("steer", {
+        sessionId,
+        text,
+        agent: payload.agent,
+      });
+      return;
+    }
+
+    this.currentSessionId = sessionId;
+    await this.handleSendMessage(
+      text,
+      undefined,
+      undefined,
+      undefined,
+      payload.agent,
+    );
   }
 
   // PROMPT-OWNERSHIP: do not modify — transport-only path

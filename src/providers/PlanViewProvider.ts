@@ -14,18 +14,21 @@ export class PlanViewProvider {
 
   private _currentContent: string;
   private _currentTitle: string;
+  private _currentSourceFile?: string;
 
   private constructor(
     panel: vscode.WebviewPanel,
     context: vscode.ExtensionContext,
     content: string,
     title?: string,
+    sourceFile?: string,
   ) {
     this._panel = panel;
     this._context = context;
     this._extensionUri = context.extensionUri;
     this._currentContent = content;
     this._currentTitle = title?.trim() || this.deriveTitle(content) || 'Implementation Plan';
+    this._currentSourceFile = sourceFile?.trim() || undefined;
 
     this.loadComments();
 
@@ -102,6 +105,10 @@ export class PlanViewProvider {
             const payload = {
               rawPlan: message.rawPlan ?? '',
               comments: message.comments ?? [],
+              sourceFile:
+                typeof message.sourceFile === "string"
+                  ? message.sourceFile
+                  : this._currentSourceFile,
             };
             if (!payload.rawPlan.trim()) {
               this._panel.webview.postMessage({
@@ -156,10 +163,11 @@ export class PlanViewProvider {
 
   public static show(
     context: vscode.ExtensionContext,
-    payload: string | { content?: string; title?: string },
+    payload: string | { content?: string; title?: string; sourceFile?: string },
   ) {
     const content = typeof payload === 'string' ? payload : payload?.content ?? '';
     const title = typeof payload === 'string' ? undefined : payload?.title;
+    const sourceFile = typeof payload === 'string' ? undefined : payload?.sourceFile;
     const column = vscode.window.activeTextEditor
       ? vscode.window.activeTextEditor.viewColumn
       : undefined;
@@ -167,7 +175,7 @@ export class PlanViewProvider {
     // If we already have a panel, show it.
     if (PlanViewProvider.currentPanel) {
       PlanViewProvider.currentPanel._panel.reveal(column);
-      PlanViewProvider.currentPanel._update(content, title);
+      PlanViewProvider.currentPanel._update(content, title, sourceFile);
       return;
     }
 
@@ -186,7 +194,13 @@ export class PlanViewProvider {
       }
     );
 
-    PlanViewProvider.currentPanel = new PlanViewProvider(panel, context, content, title);
+    PlanViewProvider.currentPanel = new PlanViewProvider(
+      panel,
+      context,
+      content,
+      title,
+      sourceFile,
+    );
   }
 
   public static closeCurrentPanel() {
@@ -213,8 +227,11 @@ export class PlanViewProvider {
     return value || undefined;
   }
 
-  private _update(content: string, explicitTitle?: string) {
+  private _update(content: string, explicitTitle?: string, sourceFile?: string) {
     this._currentContent = content;
+    if (sourceFile && sourceFile.trim()) {
+      this._currentSourceFile = sourceFile.trim();
+    }
     const webview = this._panel.webview;
     this._currentTitle =
       explicitTitle?.trim() || this.deriveTitle(content) || this._currentTitle || 'Implementation Plan';
@@ -233,10 +250,11 @@ export class PlanViewProvider {
 
     const nonce = getNonce();
     // Inject wrapper payload: raw + parsed + comments + revision
-    const planId = title || "default";
+    const planId = this._currentSourceFile || title || "default";
     const planData = {
       raw: content,
       title,
+      sourceFile: this._currentSourceFile,
       comments: this._commentsByPlan.get(planId) ?? [],
       revision: 0,
       planId,

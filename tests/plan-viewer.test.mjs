@@ -58,14 +58,14 @@ test('proceed flow forwards plan payload, returns status feedback, and sends exp
     planProviderSource,
     'private constructor(',
   );
-  assert.match(planShellSource, /vscode\?\.postMessage\(\{\s*type:\s*["']proceedWithPlan["'],\s*rawPlan,\s*comments\s*\}\)/, 'plan shell should post proceedWithPlan including rawPlan and comments');
+  assert.match(planShellSource, /vscode\?\.postMessage\(\{\s*type:\s*["']proceedWithPlan["'],\s*rawPlan,\s*comments,\s*sourceFile\s*\}\)/, 'plan shell should post proceedWithPlan including rawPlan, comments, and sourceFile');
   assert.match(ctorBody, /case\s+["']proceedWithPlan["']:\s*\{[\s\S]*opencode\.planProceed/, 'plan provider should route proceedWithPlan to opencode.planProceed command');
   assert.match(ctorBody, /type:\s*['"]planProceedStatus['"]/, 'plan provider should emit planProceedStatus messages for UI feedback');
-  assert.match(chatProviderSource, /implementation_plan_comments_\$\{id\}\.md/, 'plan proceed handler should persist reviewer comments in a dedicated markdown file with unique suffix');
+  assert.match(chatProviderSource, /\$\{baseName\}_comments\.md/, 'plan proceed handler should persist reviewer comments next to the source plan file');
+  assert.match(chatProviderSource, /resolvePlanFileCandidates\(providedSourceFile\)\[0\]/, 'plan proceed handler should resolve sourceFile against workspace paths');
   assert.match(chatProviderSource, /Proceed on this plan\./, 'plan proceed handler should explicitly instruct AI to proceed on plan');
-  assert.match(chatProviderSource, /\$\{planFilename\}\\` is the source of truth\./, 'plan proceed handler should anchor execution to the attached unique implementation plan filename');
-  assert.match(chatProviderSource, /const\s+planFilename\s*=\s*this\.createPlanFilename\(artifactId\)/, 'plan proceed handler should generate unique implementation plan filenames');
-  assert.match(chatProviderSource, /const\s+commentsFilename\s*=\s*this\.createPlanCommentsFilename\(artifactId\)/, 'plan proceed handler should generate unique comments filenames');
+  assert.match(chatProviderSource, /\$\{planFilePath\}\\` is the source of truth\./, 'plan proceed handler should anchor execution to the attached source plan filename');
+  assert.doesNotMatch(chatProviderSource, /createPlanFilename|createPlanCommentsFilename/, 'plan proceed handler should not generate legacy unique plan/comments filenames');
   assert.match(chatProviderSource, /PlanViewProvider\.closeCurrentPanel\(\)/, 'plan proceed handler should close plan viewer immediately after triggering proceed');
   assert.match(chatProviderSource, /void this\.handleSendMessage\([\s\S]*proceedMessage,\s*attachedFiles[\s\S]*\)/, 'plan proceed handler should dispatch send asynchronously to avoid blocking the plan tab');
   assert.match(planShellSource, /"Proceed"/, 'plan shell should present explicit proceed action label');
@@ -80,6 +80,72 @@ test('plan viewer read-path has error fallback for unreadable plan files', () =>
 
   assert.match(viewPlanBody, /showErrorMessage/i, 'handleViewPlan should surface an explicit error when file read fails');
   assert.match(viewPlanBody, /Could not read plan file/i, 'handleViewPlan should surface an explicit error when file read fails');
+});
+
+test('viewPlan enforces disk-first content when plan.file is present', () => {
+  const viewPlanBody = extractFunctionBody(
+    chatProviderSource,
+    'private async handleViewPlan(plan:',
+  );
+
+  assert.match(
+    chatProviderSource,
+    /private normalizePlanFileReference\(file: unknown\): string \| undefined/,
+    'provider should normalize plan file references before reading',
+  );
+  assert.match(
+    chatProviderSource,
+    /private async readPlanFileFromDisk\(/,
+    'provider should resolve and read plan files via a dedicated helper',
+  );
+  assert.match(
+    viewPlanBody,
+    /const normalizedPlanFile = this\.normalizePlanFileReference\(plan\.file\);/,
+    'handleViewPlan should normalize incoming plan.file before use',
+  );
+  assert.match(
+    viewPlanBody,
+    /const prioritizedCandidates = this\.prioritizePlanFileCandidates\(fileCandidates\);/,
+    'handleViewPlan should rank candidate file paths before reading',
+  );
+  assert.match(
+    viewPlanBody,
+    /for \(const candidate of prioritizedCandidates\) \{[\s\S]*readPlanFileFromDisk\(candidate\)/,
+    'handleViewPlan should read file-backed plans from disk using ranked candidates',
+  );
+  assert.match(
+    viewPlanBody,
+    /if \(!planData && prioritizedCandidates\.length > 0\) \{[\s\S]*showErrorMessage[\s\S]*return;/,
+    'handleViewPlan should stop when file-backed plan cannot be read (no summary fallback)',
+  );
+  assert.match(
+    viewPlanBody,
+    /if \(\s*!planData &&\s*prioritizedCandidates\.length === 0[\s\S]*plan\.content &&[\s\S]*typeof plan\.content === "string"\s*\)/,
+    'structured plan.content fallback should only apply when no plan.file is provided',
+  );
+});
+
+test('plan viewer payload carries source file metadata for traceability', () => {
+  assert.match(
+    planProviderSource,
+    /sourceFile\?: string/,
+    'PlanViewProvider payload should accept optional sourceFile metadata',
+  );
+  assert.match(
+    planProviderSource,
+    /sourceFile: this\._currentSourceFile/,
+    'plan webview bootstrap payload should include sourceFile',
+  );
+  assert.match(
+    planShellSource,
+    /const sourceFile = envelope\?\.sourceFile\?\.trim\(\);/,
+    'PlanShell should read sourceFile metadata from __PLAN_DATA__',
+  );
+  assert.match(
+    planShellSource,
+    /Source: \{sourceFile\}/,
+    'PlanShell should render source file path in the header',
+  );
 });
 
 test('chat provider routes viewPlan to handleViewPlan', () => {
@@ -106,7 +172,7 @@ test('structured implementation plan parsing uses plan.content as source of trut
   );
   const applyBody = extractFunctionBody(
     chatProviderSource,
-    'private applyStructuredOutputToMessage(message: any): any',
+    'private applyStructuredOutputToMessage(',
   );
 
   assert.doesNotMatch(normalizeBody, /planRec\?\.markdown,\s*message/, 'normalizeStructuredOutput should not fallback to structured message for plan content');

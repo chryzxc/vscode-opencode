@@ -67,6 +67,11 @@ const FILE_COLOR_MAP: Record<string, string> = {
   hpp: "#a8ff97",
 };
 
+const RAW_RESPONSE_DEBUG_ENABLED =
+  typeof window !== "undefined" &&
+  (window as unknown as { __OPENCODE_STREAM_DEBUG__?: boolean })
+    .__OPENCODE_STREAM_DEBUG__ === true;
+
 // Extract file extension from path
 function getFileExtension(path: string): string {
   const match = path.match(/\.([a-zA-Z0-9]+)(?::|:|$)/);
@@ -683,6 +688,20 @@ function sanitizeUserContent(raw: string): string {
     .trim();
 }
 
+function normalizedUserMessageText(message?: Message): string {
+  const raw =
+    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
+  return sanitizeUserContent(typeof raw === "string" ? raw : "");
+}
+
+function isPlanProceedMessageContent(value: string): boolean {
+  return /\bproceed on this plan\./i.test(value);
+}
+
+function isPlanRevisionMessageContent(value: string): boolean {
+  return /\brevise this implementation plan\b/i.test(value);
+}
+
 /**
  * Single source of truth for building the Activity timeline.
  *
@@ -1139,6 +1158,14 @@ function parseTimelineStepTitle(rawTitle: string): {
     };
   }
 
+  // Hydrated history can include compact tool titles as a single token
+  // (for example "read_file" or "shell"). Keep these as explicit labels
+  // instead of collapsing to a generic "event" chip.
+  const singleToken = stripTrailingEllipsis(title.toLowerCase());
+  if (/^[a-z][a-z0-9_.-]{1,40}$/.test(singleToken)) {
+    return { label: singleToken, summary: "" };
+  }
+
   const spaceIdx = title.indexOf(" ");
   if (spaceIdx > 0 && spaceIdx <= 12) {
     const label = stripTrailingEllipsis(title.slice(0, spaceIdx).toLowerCase());
@@ -1301,9 +1328,7 @@ function buildDisplayEvents(
 export function UserMessage({ message }: { message?: Message }) {
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const userMessageRef = useRef<HTMLDivElement>(null);
-  const rawContent =
-    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
-  const content = sanitizeUserContent(rawContent);
+  const content = normalizedUserMessageText(message);
   const fileChips = (message?.parts ?? [])
     .map((part) => part.filename ?? part.source?.path)
     .filter((value): value is string => !!value);
@@ -1328,7 +1353,7 @@ export function UserMessage({ message }: { message?: Message }) {
 
   if (!message) return null;
 
-  if (content && typeof content === "string" && content.startsWith("Proceed on this plan.")) {
+  if (isPlanProceedMessageContent(content)) {
     return (
       <div className="oc-message-enter mb-5 px-4 flex justify-end">
         <div className="flex items-center gap-1.5 rounded-full border border-oc-green/30 bg-oc-green/10 px-3 py-1.5 text-oc-xs text-oc-green">
@@ -1541,6 +1566,22 @@ export function AssistantMessage({
     () => buildDisplayEvents(timelineBlocks, message, isStreamingActive),
     [timelineBlocks, message, isStreamingActive],
   );
+  const info = message?.info;
+  const plan = message?.plan;
+  const messageId = info?.id || message?.id || streaming?.messageId;
+  const state = useAppState();
+  const latestAssistantMessageId = useMemo(() => {
+    for (let index = state.messages.length - 1; index >= 0; index--) {
+      const candidate = state.messages[index];
+      const role = candidate.role ?? candidate.info?.role ?? "user";
+      if (role === "assistant") {
+        return candidate.info?.id ?? candidate.id;
+      }
+    }
+    return undefined;
+  }, [state.messages]);
+  const isLatestAssistantMessage =
+    !!messageId && latestAssistantMessageId === messageId;
   const [viewState, setViewState] = useState<MessageViewState>({
     activityExpanded: true,
     showActivityDetails: false,
@@ -1549,6 +1590,7 @@ export function AssistantMessage({
   });
   const hasCompletedCondensedActivity =
     !isStreamingActive &&
+    !isLatestAssistantMessage &&
     displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY &&
     !viewState.showAllCompletedActivity;
   const visibleDisplayEvents = hasCompletedCondensedActivity
@@ -1571,22 +1613,6 @@ export function AssistantMessage({
       ),
     [visibleDisplayEvents],
   );
-
-  const info = message?.info;
-  const plan = message?.plan;
-  const messageId = info?.id || message?.id || streaming?.messageId;
-
-  const state = useAppState();
-  const latestAssistantMessageId = useMemo(() => {
-    for (let index = state.messages.length - 1; index >= 0; index--) {
-      const candidate = state.messages[index];
-      const role = candidate.role ?? candidate.info?.role ?? "user";
-      if (role === "assistant") {
-        return candidate.info?.id ?? candidate.id;
-      }
-    }
-    return undefined;
-  }, [state.messages]);
   const shouldShowTodoInlineSummary =
     todoItems.length > 0 &&
     (!latestAssistantMessageId || latestAssistantMessageId === messageId);
@@ -1605,8 +1631,8 @@ export function AssistantMessage({
         for (let i = msgIndex - 1; i >= 0; i--) {
           const m = state.messages[i];
           if (m.role === "user") {
-            const text = String(m.content ?? m.text ?? "");
-            if (text.includes("Revise this implementation plan")) {
+            const text = normalizedUserMessageText(m);
+            if (isPlanRevisionMessageContent(text)) {
               revised = true;
             }
             break;
@@ -1620,11 +1646,11 @@ export function AssistantMessage({
             break; // Stop checking if a new plan was spawned
           }
           if (m.role === "user") {
-            const text = String(m.content ?? m.text ?? "");
-            if (text.includes("Proceed on this plan.")) {
+            const text = normalizedUserMessageText(m);
+            if (isPlanProceedMessageContent(text)) {
               status = "Executing";
               break;
-            } else if (text.includes("Revise this implementation plan")) {
+            } else if (isPlanRevisionMessageContent(text)) {
               status = "Revision Requested";
               break;
             }
@@ -1767,7 +1793,8 @@ export function AssistantMessage({
       return withCap(String(raw));
     }
   }, [message?.rawResponse]);
-  const hasRawResponseDebug = rawResponseText.trim().length > 0;
+  const hasRawResponseDebug =
+    RAW_RESPONSE_DEBUG_ENABLED && rawResponseText.trim().length > 0;
   const hasPrimaryResponseBody = content.trim().length > 0 || !!plan;
   const hasResponseContent = hasPrimaryResponseBody || hasRawResponseDebug;
   const structuredRetryError =

@@ -55,6 +55,22 @@ test('OpencodeServerManager handles stale client connections', () => {
   assert.match(ensureBody, /this\.setStatus\("idle"\)/, 'ensureRunning should set status to idle on stale connection');
 });
 
+test('OpencodeServerManager requires health/version success before trusting reused ports', () => {
+  const ensureBody = extractFunctionBody(serverManagerSource, 'private async ensureRunningInternal(): Promise<OpencodeClient>');
+  const connectBody = extractFunctionBody(serverManagerSource, 'private async connectToServer(): Promise<OpencodeClient>');
+  const fetchVersionBody = extractFunctionBody(serverManagerSource, 'private async fetchVersion(options?: { requireHealthy?: boolean }): Promise<boolean>');
+
+  assert.match(ensureBody, /const healthy = await this\.fetchVersion\(\)/, 'ensureRunningInternal should health-check existing connected clients');
+  assert.match(ensureBody, /if\s*\(healthy\)\s*\{\s*return this\.client;\s*\}/, 'ensureRunningInternal should only reuse existing client when health check succeeds');
+  assert.match(ensureBody, /await this\.fetchVersion\(\{\s*requireHealthy:\s*true\s*\}\)/, 'ensureRunningInternal should require healthy version check when reconnecting configured/persisted ports');
+  assert.match(connectBody, /await this\.fetchVersion\(\{\s*requireHealthy:\s*true\s*\}\)/, 'connectToServer should fail startup when health/version is unavailable');
+  assert.match(fetchVersionBody, /if\s*\(options\?\.requireHealthy\)\s*\{\s*throw/, 'fetchVersion should throw in strict mode so caller can fall back to a new port');
+  assert.match(fetchVersionBody, /return false/, 'fetchVersion should return false in non-strict mode when version fetch fails');
+  assert.match(fetchVersionBody, /typeof globalRec\.health === "function"/, 'fetchVersion should feature-detect global.health for SDK compatibility');
+  assert.match(fetchVersionBody, /pathRec && typeof pathRec\.get === "function"/, 'fetchVersion should use path.get compatibility probe when global.health is unavailable');
+  assert.match(fetchVersionBody, /configRec && typeof configRec\.get === "function"/, 'fetchVersion should use config.get compatibility probe fallback');
+});
+
 test('OpencodeServerManager connects to configured port if available', () => {
   // Verify connection to user-configured port before starting new server
   const ensureBody = extractFunctionBody(serverManagerSource, 'private async ensureRunningInternal(): Promise<OpencodeClient>');

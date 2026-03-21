@@ -44,7 +44,9 @@ test('structured output schema is defined in shared module', () => {
 
 test('provider accepts interactive responses from webview', () => {
   assert.match(providerSource, /case "interactiveResponse"/, 'provider should handle interactiveResponse webview messages');
-  assert.match(providerSource, /interactive:/, 'interactive responses should include event context prefix');
+  assert.match(providerSource, /case "batchInteractiveResponse"/, 'provider should handle batchInteractiveResponse webview messages');
+  assert.match(providerSource, /dispatchInteractiveResponse\(/, 'interactive responses should route through dedicated dispatch helper');
+  assert.match(providerSource, /\[interactive:\$\{eventType\}:\$\{eventId\}\]/, 'batch interactive responses should preserve event context in the composed prompt');
 });
 
 test('frontend normalizes and stores interactive events', () => {

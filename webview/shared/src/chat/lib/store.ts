@@ -236,6 +236,556 @@ function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   };
 }
 
+function asRecordLocal(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asStringLocal(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length > 0) {
+        return trimmed;
+      }
+    }
+  }
+  return "";
+}
+
+function normalizeComparableTextLocal(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function getMessageRoleForCanonical(message: Message): string {
+  const info = asRecordLocal(message.info);
+  return asStringLocal(message.role, info?.role).toLowerCase();
+}
+
+function getMessageIdForCanonical(message: Message): string {
+  const info = asRecordLocal(message.info);
+  return asStringLocal(info?.id, message.id);
+}
+
+function getMessageCreatedAtForCanonical(message: Message): number | undefined {
+  const rec = asRecordLocal(message);
+  const info = asRecordLocal(message.info);
+  const infoTime = asRecordLocal(info?.time);
+  const messageTime = asRecordLocal(rec?.time);
+  const candidates = [
+    messageTime?.created,
+    infoTime?.created,
+    rec?.createdAt,
+    info?.createdAt,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function extractMessageTextForCanonical(message: Message): string {
+  const rec = asRecordLocal(message);
+  if (!rec) {
+    return "";
+  }
+  const direct = asStringLocal(rec.content, rec.text);
+  if (direct) {
+    return direct;
+  }
+  const parts = Array.isArray(rec.parts) ? rec.parts : [];
+  const textParts: string[] = [];
+  for (const part of parts) {
+    const partRec = asRecordLocal(part);
+    if (!partRec) {
+      continue;
+    }
+    const partType = asStringLocal(partRec.type).toLowerCase();
+    const partText = asStringLocal(
+      partRec.text,
+      partRec.content,
+      partRec.delta,
+      partRec.reasoning,
+      partRec.thought,
+      partRec.thinking,
+    );
+    if (!partText) {
+      continue;
+    }
+    if (partType === "text" || partType === "reasoning" || !partType) {
+      textParts.push(partText);
+    }
+  }
+  return textParts.join("\n").trim();
+}
+
+function isInternalTransportReminderMessage(message: Message): boolean {
+  const role = getMessageRoleForCanonical(message);
+  if (role !== "user" && role !== "system") {
+    return false;
+  }
+  const normalizedText = normalizeComparableTextLocal(
+    extractMessageTextForCanonical(message),
+  );
+  if (!normalizedText) {
+    return false;
+  }
+  return (
+    normalizedText.includes("<system-reminder>") ||
+    normalizedText.includes("<!-- omo_internal_initiator -->") ||
+    normalizedText.includes("[background task completed]") ||
+    normalizedText.includes("[all background tasks complete]") ||
+    normalizedText.includes("background_output(task_id=")
+  );
+}
+
+function hasAssistantPayloadForCanonical(message: Message): boolean {
+  const rec = asRecordLocal(message);
+  if (!rec) {
+    return false;
+  }
+  if (
+    asRecordLocal(rec.plan) ||
+    asRecordLocal(rec.structuredOutput) ||
+    asRecordLocal((rec.info as Record<string, unknown> | undefined)?.structuredOutput)
+  ) {
+    return true;
+  }
+  if (asStringLocal(rec.error)) {
+    return true;
+  }
+  const listFields = [
+    rec.parts,
+    rec.reasoningEvents,
+    rec.progressEvents,
+    rec.steps,
+    rec.edits,
+    rec.interactiveEvents,
+    rec.subagents,
+  ];
+  return listFields.some((value) => Array.isArray(value) && value.length > 0);
+}
+
+function isAssistantMessageForCanonical(message: Message): boolean {
+  const role = getMessageRoleForCanonical(message);
+  if (role === "assistant") {
+    return true;
+  }
+  if (role === "user") {
+    return false;
+  }
+  return hasAssistantPayloadForCanonical(message);
+}
+
+function messageRichnessScoreForCanonical(message: Message): number {
+  const rec = asRecordLocal(message);
+  if (!rec) {
+    return 0;
+  }
+  let score = Math.min(extractMessageTextForCanonical(message).length, 400);
+  const listWeights: Array<[unknown, number]> = [
+    [rec.parts, 4],
+    [rec.steps, 6],
+    [rec.progressEvents, 8],
+    [rec.reasoningEvents, 6],
+    [rec.interactiveEvents, 20],
+    [rec.subagents, 20],
+    [rec.edits, 6],
+  ];
+  for (const [value, weight] of listWeights) {
+    if (Array.isArray(value)) {
+      score += value.length * weight;
+    }
+  }
+  if (asRecordLocal(rec.plan)) {
+    score += 40;
+  }
+  if (asRecordLocal(rec.structuredOutput)) {
+    score += 30;
+  }
+  if (asStringLocal(rec.error)) {
+    score += 5;
+  }
+  if (getMessageIdForCanonical(message)) {
+    score += 20;
+  }
+  return score;
+}
+
+function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
+  const deduped: Message[] = [];
+  for (const message of messages) {
+    const id = getMessageIdForCanonical(message);
+    if (id) {
+      const existingById = deduped.findIndex(
+        (entry) => getMessageIdForCanonical(entry) === id,
+      );
+      if (existingById >= 0) {
+        const existing = deduped[existingById];
+        deduped[existingById] =
+          messageRichnessScoreForCanonical(message) >=
+          messageRichnessScoreForCanonical(existing)
+            ? message
+            : existing;
+        continue;
+      }
+    }
+
+    const role = getMessageRoleForCanonical(message);
+    const normalizedText = normalizeComparableTextLocal(
+      extractMessageTextForCanonical(message),
+    );
+    if (normalizedText && (role === "user" || role === "assistant")) {
+      const existingByText = deduped.findIndex((entry) => {
+        if (getMessageRoleForCanonical(entry) !== role) {
+          return false;
+        }
+        const entryText = normalizeComparableTextLocal(
+          extractMessageTextForCanonical(entry),
+        );
+        if (entryText !== normalizedText) {
+          return false;
+        }
+        const createdA = getMessageCreatedAtForCanonical(entry);
+        const createdB = getMessageCreatedAtForCanonical(message);
+        if (
+          typeof createdA === "number" &&
+          typeof createdB === "number" &&
+          Math.abs(createdA - createdB) > 4_000
+        ) {
+          return false;
+        }
+        return true;
+      });
+      if (existingByText >= 0) {
+        const existing = deduped[existingByText];
+        deduped[existingByText] =
+          messageRichnessScoreForCanonical(message) >=
+          messageRichnessScoreForCanonical(existing)
+            ? message
+            : existing;
+        continue;
+      }
+    }
+
+    deduped.push(message);
+  }
+  return deduped;
+}
+
+function isTextLikePartForCanonical(part: unknown): boolean {
+  const rec = asRecordLocal(part);
+  if (!rec) {
+    return false;
+  }
+  const type = asStringLocal(rec.type).toLowerCase();
+  if (type === "text") {
+    return true;
+  }
+  return (
+    typeof rec.text === "string" ||
+    typeof rec.content === "string" ||
+    typeof rec.delta === "string"
+  );
+}
+
+function partFingerprintForCanonical(part: unknown): string {
+  const rec = asRecordLocal(part);
+  if (!rec) {
+    return "unknown";
+  }
+  const state = asRecordLocal(rec.state);
+  return [
+    asStringLocal(rec.type).toLowerCase() || "unknown",
+    asStringLocal(rec.callID, rec.callId),
+    asStringLocal(rec.tool),
+    asStringLocal(state?.status, rec.status),
+    asStringLocal(state?.title, rec.title),
+    asStringLocal(
+      rec.filePath,
+      asRecordLocal(state?.input)?.file,
+      asRecordLocal(state?.input)?.path,
+    ),
+    asStringLocal(rec.text, rec.content, rec.delta, rec.reasoning).slice(0, 160),
+  ].join("|");
+}
+
+function stepFingerprintForCanonical(step: unknown, fallbackIndex: number): string {
+  const rec = asRecordLocal(step);
+  if (!rec) {
+    return `idx:${fallbackIndex}`;
+  }
+  return [
+    asStringLocal(rec.id),
+    asStringLocal(rec.callID, rec.callId),
+    asStringLocal(rec.title),
+    asStringLocal(rec.status),
+    asStringLocal(rec.filePath),
+    asStringLocal(rec.meta),
+    typeof rec.streamSeq === "number" ? String(rec.streamSeq) : "",
+    typeof rec.createdAt === "number" ? String(rec.createdAt) : "",
+  ].join("|");
+}
+
+function reasoningFingerprintForCanonical(
+  event: unknown,
+  fallbackIndex: number,
+): string {
+  const rec = asRecordLocal(event);
+  if (!rec) {
+    return `idx:${fallbackIndex}`;
+  }
+  return [
+    typeof rec.createdAt === "number" ? String(rec.createdAt) : "",
+    asStringLocal(rec.text).slice(0, 240),
+  ].join("|");
+}
+
+function editFingerprintForCanonical(edit: unknown, fallbackIndex: number): string {
+  const rec = asRecordLocal(edit);
+  if (!rec) {
+    return `idx:${fallbackIndex}`;
+  }
+  return [
+    asStringLocal(rec.file),
+    typeof rec.added === "number" ? String(rec.added) : "",
+    typeof rec.deleted === "number" ? String(rec.deleted) : "",
+  ].join("|");
+}
+
+function appendUniqueEntries<T>(
+  target: T[],
+  incoming: T[],
+  seen: Set<string>,
+  keyBuilder: (entry: T, fallbackIndex: number) => string,
+): void {
+  incoming.forEach((entry, index) => {
+    const key = keyBuilder(entry, target.length + index);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    target.push(entry);
+  });
+}
+
+function coalesceAssistantRunForCanonical(run: Message[]): Message {
+  const base = { ...(run[run.length - 1] || run[0]) } as Message;
+  const mergedParts: unknown[] = [];
+  const seenPartKeys = new Set<string>();
+  const mergedSteps = Array.isArray(base.steps) ? [...base.steps] : [];
+  const mergedProgressEvents = Array.isArray(base.progressEvents)
+    ? [...base.progressEvents]
+    : [];
+  const mergedReasoningEvents = Array.isArray(base.reasoningEvents)
+    ? [...base.reasoningEvents]
+    : [];
+  const mergedEdits = Array.isArray(base.edits) ? [...base.edits] : [];
+  const seenStepKeys = new Set<string>();
+  const seenProgressKeys = new Set<string>();
+  const seenReasoningKeys = new Set<string>();
+  const seenEditKeys = new Set<string>();
+  let latestText = "";
+  let latestTextPart: unknown;
+  let latestInteractiveEvents = base.interactiveEvents;
+  let latestPlan = base.plan;
+  let latestSubagents = base.subagents;
+  let latestError = asStringLocal((base as unknown as Record<string, unknown>).error);
+  let latestStructuredOutput = asRecordLocal(
+    (base as unknown as Record<string, unknown>).structuredOutput,
+  );
+  let canonicalId = getMessageIdForCanonical(base);
+
+  mergedSteps.forEach((entry, entryIndex) => {
+    seenStepKeys.add(stepFingerprintForCanonical(entry, entryIndex));
+  });
+  mergedProgressEvents.forEach((entry, entryIndex) => {
+    seenProgressKeys.add(stepFingerprintForCanonical(entry, entryIndex));
+  });
+  mergedReasoningEvents.forEach((entry, entryIndex) => {
+    seenReasoningKeys.add(reasoningFingerprintForCanonical(entry, entryIndex));
+  });
+  mergedEdits.forEach((entry, entryIndex) => {
+    seenEditKeys.add(editFingerprintForCanonical(entry, entryIndex));
+  });
+
+  for (const message of run) {
+    const messageId = getMessageIdForCanonical(message);
+    if (messageId) {
+      canonicalId = messageId;
+    }
+    const text = extractMessageTextForCanonical(message);
+    if (text) {
+      latestText = text;
+      latestTextPart = Array.isArray(message.parts)
+        ? message.parts.find((part) => isTextLikePartForCanonical(part))
+        : undefined;
+    }
+    if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
+      latestInteractiveEvents = message.interactiveEvents;
+    }
+    if (message.plan && typeof message.plan === "object") {
+      latestPlan = message.plan;
+    }
+    if (Array.isArray(message.subagents) && message.subagents.length > 0) {
+      latestSubagents = message.subagents;
+    }
+    const errorText = asStringLocal(
+      (message as unknown as Record<string, unknown>).error,
+    );
+    if (errorText) {
+      latestError = errorText;
+    }
+    const structured = asRecordLocal(
+      (message as unknown as Record<string, unknown>).structuredOutput,
+    );
+    if (structured) {
+      latestStructuredOutput = structured;
+    }
+
+    if (Array.isArray(message.parts)) {
+      for (const part of message.parts) {
+        if (isTextLikePartForCanonical(part)) {
+          continue;
+        }
+        const key = partFingerprintForCanonical(part);
+        if (seenPartKeys.has(key)) {
+          continue;
+        }
+        seenPartKeys.add(key);
+        mergedParts.push(part);
+      }
+    }
+    if (Array.isArray(message.steps)) {
+      appendUniqueEntries(
+        mergedSteps,
+        message.steps,
+        seenStepKeys,
+        stepFingerprintForCanonical,
+      );
+    }
+    if (Array.isArray(message.progressEvents)) {
+      appendUniqueEntries(
+        mergedProgressEvents,
+        message.progressEvents,
+        seenProgressKeys,
+        stepFingerprintForCanonical,
+      );
+    }
+    if (Array.isArray(message.reasoningEvents)) {
+      appendUniqueEntries(
+        mergedReasoningEvents,
+        message.reasoningEvents,
+        seenReasoningKeys,
+        reasoningFingerprintForCanonical,
+      );
+    }
+    if (Array.isArray(message.edits)) {
+      appendUniqueEntries(
+        mergedEdits,
+        message.edits,
+        seenEditKeys,
+        editFingerprintForCanonical,
+      );
+    }
+  }
+
+  if (latestText) {
+    const sourcePart = asRecordLocal(latestTextPart) ?? {};
+    mergedParts.push({
+      ...sourcePart,
+      type: "text",
+      text: latestText,
+    });
+    base.content = latestText;
+    (base as unknown as Record<string, unknown>).text = latestText;
+  }
+  if (mergedParts.length > 0) {
+    base.parts = mergedParts as Message["parts"];
+  }
+  if (mergedSteps.length > 0) {
+    base.steps = mergedSteps as Message["steps"];
+  } else {
+    delete (base as Record<string, unknown>).steps;
+  }
+  if (mergedProgressEvents.length > 0) {
+    base.progressEvents = mergedProgressEvents as Message["progressEvents"];
+  } else {
+    delete (base as Record<string, unknown>).progressEvents;
+  }
+  if (mergedReasoningEvents.length > 0) {
+    base.reasoningEvents = mergedReasoningEvents as Message["reasoningEvents"];
+  } else {
+    delete (base as Record<string, unknown>).reasoningEvents;
+  }
+  if (mergedEdits.length > 0) {
+    base.edits = mergedEdits as Message["edits"];
+  } else {
+    delete (base as Record<string, unknown>).edits;
+  }
+  if (latestInteractiveEvents) {
+    base.interactiveEvents = latestInteractiveEvents;
+  }
+  if (latestPlan) {
+    base.plan = latestPlan;
+  }
+  if (latestSubagents) {
+    base.subagents = latestSubagents;
+  }
+  if (latestError) {
+    (base as unknown as Record<string, unknown>).error = latestError;
+  }
+  if (latestStructuredOutput) {
+    (base as unknown as Record<string, unknown>).structuredOutput = latestStructuredOutput;
+  }
+  if (canonicalId) {
+    base.id = canonicalId;
+    const info = asRecordLocal(base.info);
+    base.info = info
+      ? { ...info, id: canonicalId }
+      : ({ id: canonicalId } as Record<string, unknown>);
+  }
+  return base;
+}
+
+function canonicalizeMessagesForRender(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+
+  const withoutInternalTransport = messages.filter(
+    (message) => !isInternalTransportReminderMessage(message),
+  );
+  const deduped = dedupeMirrorMessagesForCanonical(withoutInternalTransport);
+  const canonical: Message[] = [];
+  let index = 0;
+
+  while (index < deduped.length) {
+    const current = deduped[index];
+    if (!isAssistantMessageForCanonical(current)) {
+      canonical.push(current);
+      index += 1;
+      continue;
+    }
+    const burst: Message[] = [current];
+    let cursor = index + 1;
+    while (cursor < deduped.length && isAssistantMessageForCanonical(deduped[cursor])) {
+      burst.push(deduped[cursor]);
+      cursor += 1;
+    }
+    canonical.push(
+      burst.length === 1 ? current : coalesceAssistantRunForCanonical(burst),
+    );
+    index = cursor;
+  }
+
+  return canonical;
+}
+
 const MAX_STREAMING_REASONING_EVENTS = 300;
 const MAX_STREAMING_STEPS = 400;
 const MAX_STREAMING_PROGRESS_EVENTS = 1000;
@@ -614,7 +1164,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_AGENTS_LIST":
       return { ...state, availableAgents: action.payload };
     case "SET_MESSAGES": {
-      const resolvedDividerIndex = resolveCompactionDividerIndex(action.payload, {
+      const canonicalMessages = canonicalizeMessagesForRender(action.payload);
+      const resolvedDividerIndex = resolveCompactionDividerIndex(canonicalMessages, {
         compactionDividerIndex: state.compactionDividerIndex,
         compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
         compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
@@ -622,7 +1173,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       });
       const resolvedAnchors =
         typeof resolvedDividerIndex === "number"
-          ? resolveCompactionDividerAnchors(action.payload, resolvedDividerIndex)
+          ? resolveCompactionDividerAnchors(canonicalMessages, resolvedDividerIndex)
           : {
             compactionDividerBeforeMessageId:
               state.compactionDividerBeforeMessageId,
@@ -630,7 +1181,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           };
       return {
         ...state,
-        messages: action.payload,
+        messages: canonicalMessages,
         compactionDividerIndex: resolvedDividerIndex,
         compactionDividerBeforeMessageId:
           resolvedAnchors.compactionDividerBeforeMessageId,

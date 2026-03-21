@@ -295,6 +295,7 @@ export interface Message {
   info?: MessageInfo;
   plan?: {
     file?: string;
+    files?: unknown[];
     content?: string;
     title?: string;
     summary?: string;

@@ -346,7 +346,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.commands.registerCommand(
         "opencode.showPlan",
-        async (payload: string | { content?: string; title?: string }) => {
+        async (payload: string | { content?: string; title?: string; sourceFile?: string }) => {
           PlanViewProvider.show(context, payload);
         },
       ),
@@ -423,6 +423,7 @@ export async function activate(context: vscode.ExtensionContext) {
             text: string;
             createdAt: number;
           }>;
+          sourceFile?: string;
         }) => {
           await chatViewProvider.handlePlanProceed(payload);
         },

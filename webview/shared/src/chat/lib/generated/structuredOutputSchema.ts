@@ -52,7 +52,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "error",
         ],
         description:
-          "Primary response classifier for UI behavior. Must be one of the enum values and must never be empty. Use exactly one primary intent per turn: message for normal chat replies (including greetings), implementation_plan for plan markdown in plan.content, progress_update for machine-readable progress steps, subagents for background-agent state, question for clarification prompts, todo_update for task checklist changes, data for structured data cards, and error for failures.",
+          "Primary response classifier for UI behavior. Must be one of the enum values and must never be empty. Use exactly one primary intent per turn: message for normal chat replies (including greetings), implementation_plan for implementation plan payloads (prefer plan.file when a markdown file is written, include plan.content when markdown text is available), progress_update for machine-readable progress steps, subagents for background-agent state, question for clarification prompts, todo_update for task checklist changes, data for structured data cards, and error for failures.",
         examples: [
           "message",
           "implementation_plan",
@@ -271,10 +271,16 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         description:
-          "Implementation plan payload for responseType='implementation_plan'. Keep user clarifications/questions out of plan.content.",
+          "Implementation plan payload for responseType='implementation_plan'. Include the full markdown filepath in plan.file when a plan file was written (absolute path preferred; workspace-relative path accepted) so View Plan can load the source-of-truth file. Keep user clarifications/questions out of plan.content.",
         examples: [
           {
-            file: "implementation_plan.md",
+            file: "/workspace/project/.sisyphus/plans/todo-feature.md",
+            title: "Todo Feature Implementation",
+          },
+          {
+            file: "E:\\Projects\\vscode-opencode\\.sisyphus\\plans\\auth-session-hardening.md",
+            files: ["E:\\Projects\\vscode-opencode\\.sisyphus\\plans\\auth-session-hardening.md"],
+            title: "Auth Session Hardening",
             content: "## Plan\n1. Update schema\n2. Sync generated artifacts",
           },
         ],
@@ -282,7 +288,13 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           file: {
             type: "string",
             description:
-              "Filename of the implementation plan file written to the workspace (e.g. 'implementation_plan.md'). Set this to the exact filename used when writing the plan to disk so the viewer can read the live file. Omit if no file was written.",
+              "Full filepath of the implementation plan markdown written to the workspace (absolute path preferred, workspace-relative path accepted; examples: '/workspace/project/.sisyphus/plans/todo-feature.md' or 'E:\\\\Projects\\\\vscode-opencode\\\\.sisyphus\\\\plans\\\\todo-feature.md'). Set this to the same path the tool write used; do not emit placeholder values that were not actually written to disk. Omit if no file was written.",
+          },
+          files: {
+            type: "array",
+            description:
+              "Optional additional markdown filepath hints relevant to this plan. Include when multiple plan markdown files were touched and keep the canonical source-of-truth file in plan.file.",
+            items: { type: "string" },
           },
           content: {
             type: "string",
@@ -297,7 +309,8 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           // the actual enforcement logic.
           title: {
             type: "string",
-            description: "Short plan title for headings/cards.",
+            description:
+              "Plan title shown in the implementation plan card and plan tab header (for example 'Todo Feature Implementation'). Prefer specific titles and avoid generic values like 'Summary'.",
           },
           summary: {
             type: "string",
@@ -616,9 +629,9 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       },
       {
         responseType: "implementation_plan",
-        assistantMessage: "I drafted an implementation plan and attached the markdown below.",
+        assistantMessage: "Implementation plan created at .sisyphus/plans/todo-feature.md.",
         plan: {
-          content: "## Plan\n1. Inspect schema\n2. Patch schema\n3. Verify build",
+          file: ".sisyphus/plans/todo-feature.md",
         },
       },
       {

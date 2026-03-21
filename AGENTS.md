@@ -57,12 +57,14 @@ vscode-opencode/
 - Wrapper prompt payloads stay transport-only. Behavioural/system instructions belong to OpenCode agents/server, not this extension.
 - Structured output schema originates in `src/shared/*` and is copied into `webview/shared/src/chat/lib/generated/*`; update through the sync script, not manual dual edits.
 - Structured-output handling must be schema/data-driven only; we do not want phrase-identification or prompt-text inference logic.
+- Implementation-plan contract: for `responseType="implementation_plan"`, treat `plan.file` as first-class (filepath-only payloads are valid and expected when the plan is written to disk). Do not require `plan.content` to render the plan card or enable `View Plan`.
 - Tests primarily use Node's built-in runner with `.test.mjs`; Vitest exists for targeted unit runs.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not remove or hide the sticky token/session stats header, implementation-plan affordances, or stop-request control without explicit user request.
 - Do not inject wrapper-authored system/policy text into outgoing prompt parts in `ChatViewProvider` send paths.
 - Do not break the React chat asset contract in `getHtmlContent`: keep `#root`, `chat.js`, and `chat.css` wired together.
+- Do not regress implementation-plan wiring by requiring `plan.content` everywhere; the viewer must continue to work from `plan.file` alone.
 - Do not emit raw `[BACKGROUND TASK ...]` text for subagents when structured output fields can carry the same state.
 - Do not silently trim information density from the chat UI just to simplify layout.
 
@@ -89,3 +91,8 @@ npm run lint                      # lint extension-host TypeScript
 - Child guides exist only where local rules are stronger than this root document: `src/providers/`, `webview/shared/src/chat/`, `tests/`.
 - If chat becomes unstyled or inert, verify asset wiring first, then run `npm run webview:build` and `npm run compile`.
 - Existing AGENTS guidance had stale paths like `Shell.tsx`; use current filenames such as `ChatShell.tsx` and the provider/html contract instead.
+- Knowledge base: `docs/knowledge-base/implementation-plan-contract.md` defines the implementation-plan payload contract and required safeguards.
+
+
+
+- Knowledge base: docs/knowledge-base/activity-timeline-hydration-contract.md defines streaming vs hydrated activity parity contracts (title/description/label semantics).
