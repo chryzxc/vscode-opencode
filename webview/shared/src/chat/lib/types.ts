@@ -475,8 +475,10 @@ export interface AppState {
   opencodeConfig?: {
     content: string;
     filePath: string;
+    fileName: string;
     isGlobal: boolean;
     error?: string;
+    files?: ConfigFileInfo[]; // Available config files
   };
   opencodeConfigSaveStatus?: {
     success: boolean;
@@ -486,6 +488,13 @@ export interface AppState {
     error?: string;
   };
   configFiles?: ConfigFilesState;
+}
+
+export interface ConfigFileInfo {
+  name: string;
+  path: string;
+  lastModified: number;
+  size: number;
 }
 
 export interface AttachmentItem {

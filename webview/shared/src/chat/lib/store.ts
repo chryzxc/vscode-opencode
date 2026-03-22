@@ -428,7 +428,7 @@ function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
         const existing = deduped[existingById];
         deduped[existingById] =
           messageRichnessScoreForCanonical(message) >=
-          messageRichnessScoreForCanonical(existing)
+            messageRichnessScoreForCanonical(existing)
             ? message
             : existing;
         continue;
@@ -465,7 +465,7 @@ function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
         const existing = deduped[existingByText];
         deduped[existingByText] =
           messageRichnessScoreForCanonical(message) >=
-          messageRichnessScoreForCanonical(existing)
+            messageRichnessScoreForCanonical(existing)
             ? message
             : existing;
         continue;
@@ -595,6 +595,7 @@ function coalesceAssistantRunForCanonical(run: Message[]): Message {
   let latestPlan = base.plan;
   let latestSubagents = base.subagents;
   let latestError = asStringLocal((base as unknown as Record<string, unknown>).error);
+  let latestRawResponse = (base as unknown as Record<string, unknown>).rawResponse;
   let latestStructuredOutput = asRecordLocal(
     (base as unknown as Record<string, unknown>).structuredOutput,
   );
@@ -633,6 +634,13 @@ function coalesceAssistantRunForCanonical(run: Message[]): Message {
     }
     if (Array.isArray(message.subagents) && message.subagents.length > 0) {
       latestSubagents = message.subagents;
+    }
+    if (typeof message.rawResponse === "string") {
+      if (message.rawResponse.trim().length > 0) {
+        latestRawResponse = message.rawResponse;
+      }
+    } else if (typeof message.rawResponse !== "undefined") {
+      latestRawResponse = message.rawResponse;
     }
     const errorText = asStringLocal(
       (message as unknown as Record<string, unknown>).error,
@@ -741,6 +749,12 @@ function coalesceAssistantRunForCanonical(run: Message[]): Message {
   }
   if (latestStructuredOutput) {
     (base as unknown as Record<string, unknown>).structuredOutput = latestStructuredOutput;
+  }
+  if (typeof latestRawResponse !== "undefined") {
+    // Keep the latest available rawResponse when collapsing assistant bursts.
+    // Canonicalization also runs for hydrated history, so removing this causes
+    // "Raw Response (Debug)" to disappear after refresh/session reload.
+    base.rawResponse = latestRawResponse;
   }
   if (canonicalId) {
     base.id = canonicalId;
@@ -1139,6 +1153,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         sessionStats: statsForNew,
         promptQueue: queueForNew,
         isExecutingQueue: false,
+        isQueueOpen: false,
+        // Reset all transient per-session processing/streaming UI so states from
+        // the previous session do not bleed into the newly active one.
+        isProcessing: false,
+        isSteering: false,
+        streaming: null,
         isCompacting: false,
         compactionError: undefined,
         lastCompactedAt: undefined,
@@ -1768,7 +1788,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_CONTEXT_USAGE_PCT":
       return { ...state, contextUsagePct: action.payload };
     case "SET_OPENCODE_CONFIG":
-      return { ...state, opencodeConfig: action.payload };
+      return {
+        ...state,
+        opencodeConfig: {
+          ...action.payload,
+          files: action.payload.files || [],
+        },
+      };
     case "SET_OPENCODE_CONFIG_SAVE_STATUS":
       return { ...state, opencodeConfigSaveStatus: action.payload };
     case "SET_CONFIG_FILES_LIST": {

@@ -4,11 +4,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import type { ConfigFile } from './lib/types';
+import { JsonFormEditor } from './JsonFormEditor';
 
 interface ConfigEditorProps {
   file: ConfigFile & { isDirty: boolean };
-  activeTab: 'gui' | 'json';
-  onTabChange: (tab: 'gui' | 'json') => void;
+  activeTab: 'gui' | 'json' | 'advanced';
+  onTabChange: (tab: 'gui' | 'json' | 'advanced') => void;
   onContentChange: (content: string) => void;
 }
 
@@ -47,10 +48,11 @@ export function ConfigEditor({ file, activeTab, onTabChange, onContentChange }: 
       </div>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={(v) => onTabChange(v as 'gui' | 'json')} className="flex-1 flex flex-col">
+      <Tabs value={activeTab} onValueChange={(v) => onTabChange(v as 'gui' | 'json' | 'advanced')} className="flex-1 flex flex-col">
         <div className="border-b border-oc-border px-4">
-          <TabsList className="grid w-full grid-cols-2 h-8">
-            <TabsTrigger value="gui" className="text-xs">GUI</TabsTrigger>
+          <TabsList className="grid w-full grid-cols-3 h-8">
+            <TabsTrigger value="gui" className="text-xs">Simple</TabsTrigger>
+            <TabsTrigger value="advanced" className="text-xs">Advanced</TabsTrigger>
             <TabsTrigger value="json" className="text-xs font-mono">JSON / JSONC</TabsTrigger>
           </TabsList>
         </div>
@@ -61,6 +63,13 @@ export function ConfigEditor({ file, activeTab, onTabChange, onContentChange }: 
             onChange={onContentChange}
             rootConfig={rootConfig}
             primitiveEntries={primitiveEntries}
+          />
+        </TabsContent>
+
+        <TabsContent value="advanced" className="flex-1 overflow-auto p-4">
+          <AdvancedFormEditor
+            content={file.content}
+            onChange={onContentChange}
           />
         </TabsContent>
 
@@ -123,7 +132,7 @@ function GuiEditor({
   return (
     <div className="space-y-4">
       <div className="text-xs text-oc-text-muted p-3 rounded border border-oc-border bg-oc-bg-soft">
-        GUI mode edits top-level primitive keys. Use JSON tab for complex nested edits.
+        GUI mode edits top-level primitive keys only. Use Advanced tab for nested objects/arrays, or JSON tab for complex edits.
       </div>
 
       {!rootConfig ? (
@@ -186,6 +195,77 @@ function GuiEditor({
       )}
     </div>
   );
+}
+
+// Advanced GUI Editor component with full JSON structure support
+function AdvancedFormEditor({
+  content,
+  onChange,
+}: {
+  content: string;
+  onChange: (content: string) => void;
+}) {
+  const parseResult = tryParseConfigContent(content);
+
+  if (!parseResult.ok) {
+    return (
+      <div className="h-full rounded-md border border-oc-red/30 bg-oc-red/10 p-3 text-xs text-oc-red space-y-2">
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>
+            Advanced GUI mode requires valid JSON. Fix JSON in the JSON tab first.
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const rootConfig = parseResult.value;
+  if (!isPlainRecord(rootConfig)) {
+    return (
+      <div className="h-full rounded-md border border-oc-yellow/30 bg-oc-yellow/10 p-3 text-xs text-oc-yellow space-y-2">
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>
+            Advanced GUI mode works with JSON objects. Use JSON tab for other types.
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const handleChange = (path: string[], newValue: unknown) => {
+    const updated = updateAt(rootConfig, path, newValue);
+    onChange(formatConfigContent(updated));
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="text-xs text-oc-text-muted p-3 rounded border border-oc-border bg-oc-bg-soft">
+        Advanced GUI mode: Edit nested objects, arrays, and primitives. Full JSON structure support.
+      </div>
+      <JsonFormEditor
+        value={rootConfig}
+        path={[]}
+        onChange={handleChange}
+      />
+    </div>
+  );
+}
+
+// Helper function for immutable updates
+function updateAt(obj: unknown, path: string[], value: unknown): unknown {
+  if (path.length === 0) return value;
+  const [key, ...rest] = path;
+  if (Array.isArray(obj)) {
+    const copy = [...obj];
+    copy[Number(key)] = rest.length === 0 ? value : updateAt(copy[Number(key)], rest, value);
+    return copy;
+  } else if (typeof obj === 'object' && obj !== null) {
+    const record = obj as Record<string, unknown>;
+    return { ...record, [key]: rest.length === 0 ? value : updateAt(record[key], rest, value) };
+  }
+  return value;
 }
 
 // JSON Editor component

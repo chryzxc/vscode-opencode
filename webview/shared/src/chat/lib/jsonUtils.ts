@@ -46,3 +46,21 @@ export function getValueType(value: unknown): 'string' | 'number' | 'boolean' | 
   if (type === 'object') return 'object';
   return 'object'; // fallback
 }
+
+/**
+ * Detect cyclic references in an object
+ * @returns true if cycles detected
+ */
+export function detectCycles(obj: unknown): boolean {
+  const seen = new WeakSet();
+  const traverse = (value: unknown): boolean => {
+    if (typeof value !== 'object' || value === null) return false;
+    if (seen.has(value as object)) return true;
+    seen.add(value as object);
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      if (traverse(v)) return true;
+    }
+    return false;
+  };
+  return traverse(obj);
+}

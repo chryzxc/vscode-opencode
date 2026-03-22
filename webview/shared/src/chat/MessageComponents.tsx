@@ -3,6 +3,7 @@ import {
   useMemo,
   useRef,
   useState,
+  memo,
   type CSSProperties,
 } from "react";
 import {
@@ -17,6 +18,7 @@ import {
   RotateCw,
   Zap,
   AlertCircle,
+  Terminal,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +30,7 @@ import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 
 import type {
+  AppState,
   Message,
   MessagePart,
   MessageStep,
@@ -66,11 +69,6 @@ const FILE_COLOR_MAP: Record<string, string> = {
   h: "#a8ff97",
   hpp: "#a8ff97",
 };
-
-const RAW_RESPONSE_DEBUG_ENABLED =
-  typeof window !== "undefined" &&
-  (window as unknown as { __OPENCODE_STREAM_DEBUG__?: boolean })
-    .__OPENCODE_STREAM_DEBUG__ === true;
 
 // Extract file extension from path
 function getFileExtension(path: string): string {
@@ -1325,7 +1323,25 @@ function buildDisplayEvents(
   return collapsed;
 }
 
-export function UserMessage({ message }: { message?: Message }) {
+function isSystemPromptMessageContent(value: string): boolean {
+  return /^\[[\w-]+\]/.test(value) || value.includes("<system-reminder>") || value.includes("<!-- omo_internal_initiator -->");
+}
+
+const SystemMessage = memo(function SystemMessage({ content }: { content: string }) {
+  return (
+    <div className="oc-message-enter mb-6 px-10 flex flex-col gap-1.5 opacity-60 hover:opacity-100 transition-opacity">
+      <div className="flex items-center gap-2">
+        <Terminal className="h-2.5 w-2.5 text-oc-accent" />
+        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-oc-text-soft">Context</span>
+      </div>
+      <div className="pl-4 py-0.5 border-l border-oc-border/30 whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-oc-text-muted select-text">
+        {content}
+      </div>
+    </div>
+  );
+});
+
+export const UserMessage = memo(function UserMessage({ message }: { message?: Message }) {
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const userMessageRef = useRef<HTMLDivElement>(null);
   const content = normalizedUserMessageText(message);
@@ -1364,6 +1380,10 @@ export function UserMessage({ message }: { message?: Message }) {
     );
   }
 
+  if (isSystemPromptMessageContent(content)) {
+    return <SystemMessage content={content} />;
+  }
+
   if (!content && fileChips.length === 0 && !hasImages) {
     return null;
   }
@@ -1373,7 +1393,18 @@ export function UserMessage({ message }: { message?: Message }) {
       <div className="w-fit max-w-[78%]">
         <div className="oc-msg-user" ref={userMessageRef}>
           <div className="whitespace-pre-wrap text-xs leading-relaxed">
-            {content}
+            {content && (() => {
+              const match = content.match(/^(\/[a-zA-Z0-9_-]+)(.*)$/s);
+              if (match) {
+                return (
+                  <>
+                    <span className="text-oc-accent font-medium">{match[1]}</span>
+                    {match[2]}
+                  </>
+                );
+              }
+              return content;
+            })()}
           </div>
           {fileChips.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
@@ -1410,7 +1441,7 @@ export function UserMessage({ message }: { message?: Message }) {
       />
     </div>
   );
-}
+});
 
 /**
  * Type-safe helper to get agent name from message or streaming state.
@@ -1516,22 +1547,24 @@ function getDuration(
   return undefined;
 }
 
-export function AssistantMessage({
+const AssistantMessageInner = memo(function AssistantMessageInner({
   message,
   streaming,
   isContiguous,
+  subagentsByParentMessageId,
+  subagentDetailsById,
+  availableAgents,
+  todoItems = [],
 }: {
   message?: Message;
   streaming?: StreamingState;
   isContiguous?: boolean;
+  subagentsByParentMessageId: AppState["subagentsByParentMessageId"];
+  subagentDetailsById: AppState["subagentDetailsById"];
+  availableAgents: AppState["availableAgents"];
+  todoItems?: AppState["todoItems"];
 }) {
   const dispatch = useAppDispatch();
-  const {
-    subagentsByParentMessageId,
-    subagentDetailsById,
-    availableAgents,
-    todoItems = [],
-  } = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
@@ -1793,8 +1826,9 @@ export function AssistantMessage({
       return withCap(String(raw));
     }
   }, [message?.rawResponse]);
-  const hasRawResponseDebug =
-    RAW_RESPONSE_DEBUG_ENABLED && rawResponseText.trim().length > 0;
+  // Render raw debug whenever payload exists. Do not gate behind stream-debug
+  // flags, otherwise streamed + hydrated sessions can silently hide rawResponse.
+  const hasRawResponseDebug = rawResponseText.trim().length > 0;
   const hasPrimaryResponseBody = content.trim().length > 0 || !!plan;
   const hasResponseContent = hasPrimaryResponseBody || hasRawResponseDebug;
   const structuredRetryError =
@@ -1813,7 +1847,7 @@ export function AssistantMessage({
         .filter(Boolean)
         .join("\n")
     : "";
-  const isLiveStreamingCard = !message && !!streaming;
+  const isLiveStreamingCard = !message && !!streaming?.isActive;
   const responseBodyClass = isLiveStreamingCard
     ? "w-full max-h-[340px] overflow-y-auto pr-1"
     : "w-full";
@@ -2396,6 +2430,12 @@ export function AssistantMessage({
                         </span>
                       )}
                     </div>
+                    {plan.file && (
+                      <div className="flex items-center gap-1.5 text-[11px] font-mono text-oc-text-muted">
+                        <FileIcon filePath={plan.file} />
+                        <span className="truncate">{plan.file}</span>
+                      </div>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -2429,12 +2469,6 @@ export function AssistantMessage({
               )}
 
             </section>
-          )}
-
-          {isStreamingActive && !showResponseSection && hasStreamingActivity && (
-            <div className="mt-1 px-1">
-              <ThinkingStatusTicker className="text-[#4e648c]" />
-            </div>
           )}
         </div>
 
@@ -2658,6 +2692,12 @@ export function AssistantMessage({
             )}
           </div>
         )}
+
+        {isStreamingActive && !showResponseSection && hasStreamingActivity && (
+          <div className="mt-2 mb-2 px-1">
+            <ThinkingStatusTicker className="text-[#4e648c]" />
+          </div>
+        )}
         {/* Raw Data â€" moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (
           <details className="group mb-3">
@@ -2714,6 +2754,35 @@ export function AssistantMessage({
         )} */}
       </div>
     </div>
+  );
+});
+
+export function AssistantMessage({
+  message,
+  streaming,
+  isContiguous,
+}: {
+  message?: Message;
+  streaming?: StreamingState;
+  isContiguous?: boolean;
+}) {
+  const {
+    subagentsByParentMessageId,
+    subagentDetailsById,
+    availableAgents,
+    todoItems = [],
+  } = useAppState();
+
+  return (
+    <AssistantMessageInner
+      message={message}
+      streaming={streaming}
+      isContiguous={isContiguous}
+      subagentsByParentMessageId={subagentsByParentMessageId}
+      subagentDetailsById={subagentDetailsById}
+      availableAgents={availableAgents}
+      todoItems={todoItems}
+    />
   );
 }
 export function PermissionCard({ perm }: { perm: unknown }) {

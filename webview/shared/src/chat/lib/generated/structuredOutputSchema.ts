@@ -299,7 +299,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           content: {
             type: "string",
             description:
-              "Markdown implementation plan content. IMPORTANT: Must NOT contain questions, clarifications, or choices. Questions must be moved to top-level 'question'.",
+              "Markdown implementation plan content. IMPORTANT: Must NOT contain questions, clarifications, or choices. Questions must be moved to top-level 'question'. If you wrote the plan to disk using tools, you MUST omit this field to prevent overwriting your file.",
             examples: ["## Plan\n1. Add canonical enum\n2. Update validator\n3. Run compile"],
           },
           // Note: runtime validator enforces mutual exclusivity between
@@ -372,6 +372,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             parentMessageId: {
               type: "string",
               description: "Parent assistant message id this subagent belongs to.",
+            },
+            exploredFiles: {
+              type: "array",
+              description: "List of file paths the subagent has explored or modified.",
+              items: { type: "string" },
             },
             timelineEvents: {
               type: "array",
@@ -543,6 +548,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
                 parentMessageId: {
                   type: "string",
                   description: "Updated parent message id, if changed.",
+                },
+                exploredFiles: {
+                  type: "array",
+                  description: "Updated list of file paths explored, if changed.",
+                  items: { type: "string" },
                 },
               },
             },

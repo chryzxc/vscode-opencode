@@ -111,6 +111,7 @@ import { MessageStreamService } from "../services/MessageStreamService";
 import type { Command as SdkCommand, SessionPromptData } from "@opencode-ai/sdk";
 import { QuotaService } from "../services/QuotaService";
 import { RequestBudgeter } from "../services/RequestBudgeter";
+import { ConfigFilesProvider } from "./ConfigFilesProvider";
 import type { ConfigFile } from "./ConfigFilesProvider";
 import {
   SubagentTracker,
@@ -397,6 +398,9 @@ export class ChatViewProvider
   private quotaService: QuotaService;
   private subagentTracker: SubagentTracker;
 
+  /** Provider for managing configuration files */
+  private configFilesProvider: ConfigFilesProvider;
+
   /** Service for tracking Gemini token usage from stream events */
   private geminiTokenTracker: GeminiTokenUsageTracker;
   /** Service for managing daily request budgets */
@@ -435,6 +439,7 @@ export class ChatViewProvider
   /** ID of the session currently active in the webview (undefined until first bootstrap) */
   private currentSessionId: string | undefined;
   private currentTodoItems: unknown[] = [];
+  private awaitingInteractiveAnswer = false;
 
   private getTodoStorageKey(sessionId: string): string {
     return `opencode.session.todos.${sessionId}`;
@@ -497,7 +502,10 @@ export class ChatViewProvider
 
     const overrides = this.loadSessionMessageOverrides(sessionId);
     const sanitized = { ...message };
-    delete (sanitized as Record<string, unknown>).rawResponse;
+    // Keep rawResponse in the hydrated override payload on purpose.
+    // SessionService stores a lightweight canonical message, so overrides are the
+    // source of truth for restoring "Raw Response (Debug)" after refresh/reload.
+    // Do not delete rawResponse here unless hydration contracts are redesigned.
     overrides[id] = sanitized;
 
     const entries = Object.entries(overrides);
@@ -640,6 +648,7 @@ export class ChatViewProvider
     this.quotaService = new QuotaService();
     this.subagentTracker = new SubagentTracker();
     this.budgeter = new RequestBudgeter();
+    this.configFilesProvider = new ConfigFilesProvider();
     this.geminiTokenTracker = GeminiTokenUsageTracker.getInstance();
     this.quotaService.on("quotaUpdate", (data) => {
       this.view?.webview.postMessage({ type: "quotaData", data });
@@ -734,6 +743,15 @@ export class ChatViewProvider
 
             // Fetch and send full agents list to webview
             await this.handleGetAgents();
+
+            // Fetch and send commands list for SkillsPanel
+            // Load in background like models to avoid blocking bootstrap
+            void this.handleGetCommands().catch((error) => {
+              console.warn(
+                "[ChatViewProvider] Background commands loading failed during ready bootstrap:",
+                error,
+              );
+            });
 
             // Resolve the active session before sending initState so that
             // per-session settings (agent / model / thinking) are applied first.
@@ -953,8 +971,17 @@ export class ChatViewProvider
           this.handleReviewChanges();
           break;
         }
-        case "searchFiles": {
+        case "searchFiles":
+        case "getMentions": {
           await this.handleSearchFiles(message.query);
+          break;
+        }
+        case "getOpenCodeConfig": {
+          await this.handleGetOpenCodeConfig(message.fileName);
+          break;
+        }
+        case "saveOpenCodeConfig": {
+          await this.handleSaveOpenCodeConfig(message.content, message.filePath);
           break;
         }
         case "selectModel":
@@ -1337,6 +1364,15 @@ export class ChatViewProvider
     // Subscribe to stream events
     this.unsubscribe = this.streamService.subscribe(async (event) => {
 
+      // Session-scoped filtering: drop events that explicitly belong to a different
+      // session than the one currently active in the extension host. This prevents
+      // streamed responses from a previous (or background) session from leaking
+      // into the UI after the user has switched sessions.
+      const eventSessionId = this.extractEventSessionId(event);
+      if (eventSessionId && this.currentSessionId && eventSessionId !== this.currentSessionId) {
+        return;
+      }
+
       const subagentUpdate = this.subagentTracker.consumeStreamEvent(event);
       if (subagentUpdate) {
         this.view?.webview.postMessage({
@@ -1376,6 +1412,9 @@ export class ChatViewProvider
       // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
       this.logStreamEventDiagnostics(event, enrichedEvent);
+      if (this.hasBlockingInteractiveInStreamPayload(enrichedEvent)) {
+        this.awaitingInteractiveAnswer = true;
+      }
 
       // Log stream event for debugging response types (with error handling)
       try {
@@ -1400,15 +1439,15 @@ export class ChatViewProvider
             enrichedEvent.structuredOutput.responseType;
         }
 
-       this.logger.aiStreamEvent(
-         "stream", // sessionId - using placeholder since stream events don't have a sessionId
-         structured?.kind || "unknown", // eventType
-         responseContext, // context
-       );
-     } catch (error) {
-       // Silently ignore logging errors to prevent stream interruption
-       console.error("[ChatViewProvider] Failed to log stream event:", error);
-     }
+        this.logger.aiStreamEvent(
+          "stream", // sessionId - using placeholder since stream events don't have a sessionId
+          structured?.kind || "unknown", // eventType
+          responseContext, // context
+        );
+      } catch (error) {
+        // Silently ignore logging errors to prevent stream interruption
+        console.error("[ChatViewProvider] Failed to log stream event:", error);
+      }
 
       // Forward todo_update stream events as todoUpdate postMessage to webview
       if (enrichedEvent?.structuredOutput?.responseType === "todo_update") {
@@ -1466,7 +1505,7 @@ export class ChatViewProvider
               cancelled: 2,
             };
 
-            interface StoredTodoItem { id: string; text: string; status: string; [key: string]: unknown }
+            interface StoredTodoItem { id: string; text: string; status: string;[key: string]: unknown }
 
             const byId = new Map<string, StoredTodoItem>();
             for (const item of existing.items) {
@@ -1522,10 +1561,13 @@ export class ChatViewProvider
         }
       }
 
-     this.view?.webview.postMessage({
-       type: "streamEvent",
-       event: enrichedEvent,
-     });
+      // Stamp the active session ID onto every event so the webview can always
+      // perform a reliable session-scoped filter even when the raw event payload
+      // does not carry a sessionId field.
+      this.view?.webview.postMessage({
+        type: "streamEvent",
+        event: { ...enrichedEvent, sessionId: this.currentSessionId },
+      });
       if (this.shouldVerboseStreamDebug()) {
         console.log("[ChatViewProvider] streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
@@ -1715,15 +1757,15 @@ export class ChatViewProvider
       await this.applySessionSettings(sessionId);
 
       // Notify the webview of the restored selections for this session
-            this.view?.webview.postMessage({
-              type: "initState",
-              serverStatus: this.serverManager.getStatus(),
-              selectedModel: this.selectedModel,
-              selectedAgent: this.selectedAgent,
-              serverVersion: this.serverManager.getVersion(),
-              currentSessionId: this.currentSessionId,
-              todoItems: this.loadPersistedTodos(this.currentSessionId).items,
-            });
+      this.view?.webview.postMessage({
+        type: "initState",
+        serverStatus: this.serverManager.getStatus(),
+        selectedModel: this.selectedModel,
+        selectedAgent: this.selectedAgent,
+        serverVersion: this.serverManager.getVersion(),
+        currentSessionId: this.currentSessionId,
+        todoItems: this.loadPersistedTodos(this.currentSessionId).items,
+      });
       const sessionThinkingLevel =
         this.getSessionSettings(sessionId).thinkingLevel ??
         this.context.globalState.get<string>("thinkingLevel");
@@ -1988,6 +2030,7 @@ export class ChatViewProvider
     let latestInteractiveEvents: unknown;
     let latestSubagents: unknown;
     let latestError: string | undefined;
+    let latestRawResponse: unknown = base.rawResponse;
     let latestMessageForId = burst[0];
     const mergedSteps = Array.isArray(base.steps) ? [...base.steps] : [];
     const mergedProgressEvents = Array.isArray(base.progressEvents)
@@ -2101,6 +2144,13 @@ export class ChatViewProvider
       ) {
         latestError = message.error;
       }
+      if (typeof message.rawResponse === "string") {
+        if (message.rawResponse.trim().length > 0) {
+          latestRawResponse = message.rawResponse;
+        }
+      } else if (typeof message.rawResponse !== "undefined") {
+        latestRawResponse = message.rawResponse;
+      }
 
       const parts = Array.isArray(message.parts) ? message.parts : [];
       for (const part of parts) {
@@ -2159,6 +2209,12 @@ export class ChatViewProvider
     }
     if (latestError) {
       base.error = latestError;
+    }
+    if (typeof latestRawResponse !== "undefined") {
+      // Preserve debug payload from the latest assistant fragment that carried it.
+      // Without this, burst coalescing during history hydration can drop the
+      // "Raw Response (Debug)" panel after extension refresh.
+      base.rawResponse = latestRawResponse;
     }
 
     base.parts = mergedParts;
@@ -2814,6 +2870,27 @@ export class ChatViewProvider
       : null;
   }
 
+  /**
+   * Extracts the session ID from an SSE event by checking all locations where
+   * the OpenCode server may embed it (properties, part, info sub-objects).
+   */
+  private extractEventSessionId(event: unknown): string | undefined {
+    const ev = this.asRecord(event);
+    if (!ev) return undefined;
+    const props = this.asRecord(ev.properties) ?? {};
+    const part = this.asRecord(props.part) ?? {};
+    const info = this.asRecord(props.info) ?? {};
+    return (
+      (typeof props.sessionID === 'string' && props.sessionID) ||
+      (typeof props.sessionId === 'string' && props.sessionId) ||
+      (typeof part.sessionID === 'string' && part.sessionID) ||
+      (typeof part.sessionId === 'string' && part.sessionId) ||
+      (typeof info.sessionID === 'string' && info.sessionID) ||
+      (typeof info.sessionId === 'string' && info.sessionId) ||
+      undefined
+    );
+  }
+
   private firstNonEmptyString(...values: unknown[]): string | undefined {
     for (const value of values) {
       if (typeof value === "string" && value.trim()) {
@@ -3034,6 +3111,126 @@ export class ChatViewProvider
       normalized.includes("valid structured response") ||
       normalized.includes("couldn't produce a valid structured response")
     );
+  }
+
+  private isLikelyInteractiveAwaitTimeoutError(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    if (!normalized || !normalized.includes("timeout")) {
+      return false;
+    }
+    return (
+      normalized.includes("headers timeout") ||
+      normalized.includes("header timeout") ||
+      normalized.includes("und_err_headers_timeout") ||
+      normalized.includes("request timed out") ||
+      normalized.includes("response timeout") ||
+      normalized.includes("body timeout")
+    );
+  }
+
+  private hasBlockingInteractiveInStreamPayload(event: unknown): boolean {
+    const eventRec = this.asRecord(event);
+    if (!eventRec) {
+      return false;
+    }
+    const isBlockingType = (value: unknown): boolean => {
+      const type = this.firstNonEmptyString(value)?.toLowerCase();
+      return (
+        type === "question" ||
+        type === "confirm" ||
+        type === "quick_actions" ||
+        type === "quick-actions" ||
+        type === "interactive"
+      );
+    };
+
+    const structured = this.asRecord(eventRec.structuredOutput);
+    if (structured) {
+      if (isBlockingType(structured.responseType)) {
+        return true;
+      }
+
+      const interactiveEvents = Array.isArray(structured.interactiveEvents)
+        ? structured.interactiveEvents
+        : [];
+      if (interactiveEvents.length > 0) {
+        const hasBlockingInteractive = interactiveEvents.some((item) => {
+          const rec = this.asRecord(item);
+          if (!rec) return false;
+          return isBlockingType(rec.type) || isBlockingType(rec.kind);
+        });
+        if (hasBlockingInteractive) {
+          return true;
+        }
+      }
+
+      const question = this.asRecord(structured.question);
+      if (question && (!question.type || isBlockingType(question.type))) {
+        return true;
+      }
+    }
+
+    // Tool-question path: some providers emit interactive prompts through
+    // tool parts (question/request_user_input) instead of top-level structuredOutput.
+    const properties = this.asRecord(eventRec.properties) || {};
+    const part = this.asRecord(properties.part) || this.asRecord(eventRec.part);
+    if (!part) {
+      return false;
+    }
+
+    const toolName = this.firstNonEmptyString(part.tool)?.toLowerCase() || "";
+    if (
+      toolName === "question" ||
+      toolName.includes("request_user_input") ||
+      toolName.includes("request-user-input")
+    ) {
+      return true;
+    }
+
+    const state = this.asRecord(part.state);
+    const input =
+      this.asRecord(state?.input) ||
+      this.asRecord(part.input) ||
+      this.asRecord(part.arguments) ||
+      null;
+    if (!input) {
+      return false;
+    }
+
+    if (
+      Array.isArray(input.questions) ||
+      Array.isArray(input.items) ||
+      Array.isArray(input.prompts) ||
+      Array.isArray(input.events)
+    ) {
+      return true;
+    }
+
+    const questionLike = this.asRecord(input.question) || input;
+    const hasQuestionText = !!this.firstNonEmptyString(
+      questionLike.question,
+      questionLike.prompt,
+      questionLike.message,
+      questionLike.content,
+      questionLike.text,
+      questionLike.title,
+    );
+    const hasChoices =
+      Array.isArray(questionLike.options) ||
+      Array.isArray(questionLike.choices) ||
+      Array.isArray(questionLike.answers) ||
+      Array.isArray(questionLike.actions);
+    const hasConfirmControls = !!this.firstNonEmptyString(
+      questionLike.confirmLabel,
+      questionLike.confirm_text,
+      questionLike.cancelLabel,
+      questionLike.cancel_text,
+    );
+    const allowsCustomInput =
+      questionLike.allowCustomInput === true ||
+      questionLike.allow_custom_input === true;
+
+    return hasQuestionText && (hasChoices || hasConfirmControls || allowsCustomInput);
   }
 
   private collectErrorMessageCandidates(
@@ -5095,9 +5292,9 @@ export class ChatViewProvider
       ? normalizedPlanContent
       : !normalizedPlanFile
         ? this.firstNonEmptyString(
-            sanitizedCanonicalRec.message,
-            sanitizedCanonicalRec.assistantMessage,
-          )
+          sanitizedCanonicalRec.message,
+          sanitizedCanonicalRec.assistantMessage,
+        )
         : undefined;
     const isClarification = this.isClarificationQuestionnaire(candidatePlanContent);
 
@@ -5137,20 +5334,20 @@ export class ChatViewProvider
     const plan =
       shouldAttachPlan
         ? {
-            file: normalizedPlanFile,
-            content: normalizedPlanContent,
-            title: this.resolvePlanTitle({
-              explicitTitle: planRec?.title,
-              fallbackTitle: planRec?.summary,
-              primaryFile: normalizedPlanFile,
-              files: structuredPlanFileCandidates,
-            }),
-            summary: this.firstNonEmptyString(planRec?.summary),
-            files:
-              structuredPlanFileCandidates.length > 0
-                ? structuredPlanFileCandidates
-                : undefined,
-          }
+          file: normalizedPlanFile,
+          content: normalizedPlanContent,
+          title: this.resolvePlanTitle({
+            explicitTitle: planRec?.title,
+            fallbackTitle: planRec?.summary,
+            primaryFile: normalizedPlanFile,
+            files: structuredPlanFileCandidates,
+          }),
+          summary: this.firstNonEmptyString(planRec?.summary),
+          files:
+            structuredPlanFileCandidates.length > 0
+              ? structuredPlanFileCandidates
+              : undefined,
+        }
         : undefined;
     // Keep plan.file as first-class: the plan card/button should still render
     // when only the filepath is provided and content lives on disk.
@@ -5437,7 +5634,7 @@ export class ChatViewProvider
         const retryWithoutStructuredOutput = true;
         const fallbackText =
           incompatibleModelKey &&
-          this.structuredOutputIncompatibleModelKeys.has(incompatibleModelKey)
+            this.structuredOutputIncompatibleModelKeys.has(incompatibleModelKey)
             ? "Structured output error: this model returned an empty structured payload."
             : "I couldn't produce a valid structured response for this turn. Please retry.";
         const next: any = {
@@ -5869,6 +6066,7 @@ export class ChatViewProvider
       this.currentSessionId = session.id;
       drainSessionId = session.id;
       this.subagentTracker.setActiveSession(session.id);
+      this.awaitingInteractiveAnswer = false;
 
       // Check budget before sending
       const budgetCheck = this.budgeter.canMakeRequest();
@@ -6076,6 +6274,19 @@ export class ChatViewProvider
           response.error,
           "Failed to send message",
         );
+        if (
+          this.awaitingInteractiveAnswer &&
+          this.isLikelyInteractiveAwaitTimeoutError(errorMessage)
+        ) {
+          this.logger.info(
+            "Suppressing timeout error while awaiting interactive response",
+            {
+              sessionId: session.id,
+              errorMessage,
+            },
+          );
+          return;
+        }
 
         // Handle Session Not Found error (likely server restart)
         if (
@@ -6401,8 +6612,9 @@ export class ChatViewProvider
             duration: duration,
           },
         });
+        // Persist a hydrated override that *includes* rawResponse for reload parity.
         await this.persistSessionMessageOverride(session.id, {
-          ...finalMessage,
+          ...debugMessage,
           timing: {
             duration: duration,
           },
@@ -6464,6 +6676,19 @@ export class ChatViewProvider
         error,
         "Failed to send message",
       );
+      if (
+        this.awaitingInteractiveAnswer &&
+        this.isLikelyInteractiveAwaitTimeoutError(errorMessage)
+      ) {
+        this.logger.info(
+          "Suppressing thrown timeout while awaiting interactive response",
+          {
+            sessionId: drainSessionId,
+            errorMessage,
+          },
+        );
+        return;
+      }
       vscode.window.showErrorMessage(`Failed to send message: ${errorMessage}`);
       console.error("Send message error:", error);
 
@@ -6569,6 +6794,8 @@ export class ChatViewProvider
         primaryFile: resolvedPlanFile,
         files: mergedPlanFiles,
       });
+      const fallbackPlanFile =
+        resolvedPlanFile || this.buildFallbackPlanFilePath(resolvedPlanTitle);
 
       if (
         structuredPlanContent &&
@@ -6578,23 +6805,39 @@ export class ChatViewProvider
         if (this.isClarificationQuestionnaire(structuredPlanContent)) {
           return message;
         }
-        this.persistPlan(structuredPlanContent).catch((err) => {
-          console.error(
-            "[ChatViewProvider] Failed to auto-persist structured plan:",
-            err,
-          );
-        });
+        if (!resolvedPlanFile) {
+          this.persistPlan(
+            structuredPlanContent,
+            fallbackPlanFile,
+            resolvedPlanTitle,
+          ).catch((err) => {
+            console.error(
+              "[ChatViewProvider] Failed to auto-persist structured plan:",
+              err,
+            );
+          });
+        }
 
         return {
           ...message,
           structuredOutput: structured,
           plan: {
-            file: resolvedPlanFile,
+            file: fallbackPlanFile,
             content: structuredPlanContent,
             title: resolvedPlanTitle,
             summary: this.firstNonEmptyString(structuredPlanRecord?.summary),
-            files: mergedPlanFiles.length > 0 ? mergedPlanFiles : undefined,
-            fileCount: mergedPlanFiles.length,
+            files:
+              mergedPlanFiles.length > 0
+                ? mergedPlanFiles
+                : fallbackPlanFile
+                  ? [fallbackPlanFile]
+                  : undefined,
+            fileCount:
+              mergedPlanFiles.length > 0
+                ? mergedPlanFiles.length
+                : fallbackPlanFile
+                  ? 1
+                  : 0,
           },
         };
       }
@@ -6609,11 +6852,21 @@ export class ChatViewProvider
           ...message,
           structuredOutput: structured,
           plan: {
-            file: resolvedPlanFile,
+            file: fallbackPlanFile,
             title: resolvedPlanTitle,
             summary: this.firstNonEmptyString(structuredPlanRecord?.summary),
-            files: mergedPlanFiles.length > 0 ? mergedPlanFiles : undefined,
-            fileCount: mergedPlanFiles.length,
+            files:
+              mergedPlanFiles.length > 0
+                ? mergedPlanFiles
+                : fallbackPlanFile
+                  ? [fallbackPlanFile]
+                  : undefined,
+            fileCount:
+              mergedPlanFiles.length > 0
+                ? mergedPlanFiles.length
+                : fallbackPlanFile
+                  ? 1
+                  : 0,
           },
         };
       }
@@ -6724,6 +6977,9 @@ export class ChatViewProvider
         primaryFile: extractedPlanFiles[0],
         files: extractedPlanFiles,
       });
+      const fallbackPlanFile =
+        extractedPlanFiles[0] ||
+        this.buildFallbackPlanFilePath(resolvedPlanTitle);
 
       // PERSISTENCE: Automatically save the cleaned plan to disk.
       // This ensures handleViewPlan can read it even if the SDK didn't write it.
@@ -6732,23 +6988,37 @@ export class ChatViewProvider
         cleanPlanContent.length > 100 &&
         (parsed.goal || parsed.files.length > 0 || parsed.steps.length > 0)
       ) {
-        this.persistPlan(cleanPlanContent).catch((err) => {
-          console.error(
-            "[ChatViewProvider] Failed to auto-persist cleaned plan:",
-            err,
-          );
-        });
+        if (!resolvedPlanFile) {
+          this.persistPlan(
+            cleanPlanContent,
+            fallbackPlanFile,
+            resolvedPlanTitle,
+          ).catch((err) => {
+            console.error(
+              "[ChatViewProvider] Failed to auto-persist cleaned plan:",
+              err,
+            );
+          });
+        }
       }
 
       const nextMessage = {
         ...message,
         plan: {
-          file: extractedPlanFiles[0],
+          file: fallbackPlanFile,
           content: cleanPlanContent,
           title: resolvedPlanTitle,
           summary: parsed.description,
-          files: extractedPlanFiles.length > 0 ? extractedPlanFiles : undefined,
-          fileCount: parsed.files.length || extractedPlanFiles.length,
+          files:
+            extractedPlanFiles.length > 0
+              ? extractedPlanFiles
+              : fallbackPlanFile
+                ? [fallbackPlanFile]
+                : undefined,
+          fileCount:
+            parsed.files.length ||
+            extractedPlanFiles.length ||
+            (fallbackPlanFile ? 1 : 0),
         },
       };
       const nextStructured: Record<string, unknown> = existingStructured
@@ -6757,11 +7027,15 @@ export class ChatViewProvider
       nextStructured.responseType = "implementation_plan";
       nextStructured.plan = {
         ...(existingStructuredPlan || {}),
-        file: extractedPlanFiles[0] ?? existingStructuredPlan?.file,
+        file:
+          fallbackPlanFile ??
+          this.firstNonEmptyString(existingStructuredPlan?.file),
         files:
           extractedPlanFiles.length > 0
             ? extractedPlanFiles
-            : existingStructuredPlan?.files,
+            : fallbackPlanFile
+              ? [fallbackPlanFile]
+              : existingStructuredPlan?.files,
         content: cleanPlanContent,
         title: resolvedPlanTitle,
         summary:
@@ -6800,32 +7074,63 @@ export class ChatViewProvider
   /**
    * Automatically persists an implementation plan to the workspace
    */
-  private async persistPlan(content: string): Promise<void> {
+  private buildFallbackPlanFilePath(explicitTitle?: string): string | undefined {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return undefined;
+    }
+
+    const normalizedTitle =
+      this.firstNonEmptyString(explicitTitle)?.trim() || "implementation plan";
+    const slug = normalizedTitle
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80);
+    const fileName = `${slug || "implementation-plan"}.md`;
+    return path.join(
+      workspaceFolders[0].uri.fsPath,
+      ".sisyphus",
+      "plans",
+      fileName,
+    );
+  }
+
+  private async persistPlan(
+    content: string,
+    preferredPath?: string,
+    explicitTitle?: string,
+  ): Promise<string | undefined> {
     try {
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      if (!workspaceFolders) return;
-
-      const filePath = path.join(
-        workspaceFolders[0].uri.fsPath,
-        "implementation_plan.md",
-      );
-      const fileUri = vscode.Uri.file(filePath);
-
-      // Extra safety: only write if it looks like a real plan
-      if (
-        !content.includes("# Implementation Plan") &&
-        !content.includes("Proposed Changes")
-      ) {
-        return;
+      const normalizedContent = this.firstNonEmptyString(content);
+      if (!normalizedContent) {
+        return undefined;
       }
 
-      await vscode.workspace.fs.writeFile(
-        fileUri,
-        new TextEncoder().encode(content),
+      const normalizedPreferred = this.normalizePlanFileReference(preferredPath);
+      const resolvedPreferred = normalizedPreferred
+        ? this.resolvePlanFileCandidates(normalizedPreferred)[0] ||
+        path.normalize(normalizedPreferred)
+        : undefined;
+      const resolvedPath =
+        resolvedPreferred || this.buildFallbackPlanFilePath(explicitTitle);
+      if (!resolvedPath) {
+        return undefined;
+      }
+
+      const normalizedPath = path.normalize(resolvedPath);
+      await vscode.workspace.fs.createDirectory(
+        vscode.Uri.file(path.dirname(normalizedPath)),
       );
-      console.log(`[ChatViewProvider] Auto-persisted plan to ${filePath}`);
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(normalizedPath),
+        new TextEncoder().encode(normalizedContent),
+      );
+      console.log(`[ChatViewProvider] Auto-persisted plan to ${normalizedPath}`);
+      return normalizedPath;
     } catch (err) {
       console.error("[ChatViewProvider] persistPlan error:", err);
+      return undefined;
     }
   }
 
@@ -7399,9 +7704,16 @@ export class ChatViewProvider
 
     if (providedSourceFile) {
       const diskPlan = await this.readPlanFileFromDisk(providedSourceFile);
-      planFilePath =
-        diskPlan?.resolvedPath ??
-        this.resolvePlanFileCandidates(providedSourceFile)[0];
+      if (diskPlan?.resolvedPath) {
+        planFilePath = diskPlan.resolvedPath;
+      } else {
+        const preferredPath = this.resolvePlanFileCandidates(providedSourceFile)[0];
+        planFilePath = await this.persistPlan(
+          rawPlan,
+          preferredPath,
+          rawPlan.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim(),
+        );
+      }
     } else {
       const fallbackCandidates = this.prioritizePlanFileCandidates([
         ...this.extractMarkdownFileReferences(rawPlan),
@@ -7415,6 +7727,14 @@ export class ChatViewProvider
         planFilePath = diskPlan.resolvedPath;
         break;
       }
+    }
+
+    if (!planFilePath) {
+      planFilePath = await this.persistPlan(
+        rawPlan,
+        undefined,
+        rawPlan.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim(),
+      );
     }
 
     if (!planFilePath) {
@@ -7988,18 +8308,33 @@ export class ChatViewProvider
       return;
     }
 
-    // Fall back to the structured-output content only when no plan.file was
-    // provided at all.
+    // Fall back to structured output content only when no plan.file was
+    // provided. Persist it so the plan viewer/proceed flow has a real
+    // source-of-truth markdown path.
     if (
       !planData &&
       prioritizedCandidates.length === 0 &&
       plan.content &&
       typeof plan.content === "string"
     ) {
-      planData = plan.content;
-      console.log(
-        "[ChatViewProvider] Using plan content from structured output (file unavailable)",
+      const persistedPath = await this.persistPlan(
+        plan.content,
+        undefined,
+        this.firstNonEmptyString(plan.title),
       );
+      if (persistedPath) {
+        const persisted = await this.readPlanFileFromDisk(persistedPath);
+        if (persisted) {
+          planData = persisted.content;
+          sourceFilePath = persisted.resolvedPath;
+        } else {
+          planData = plan.content;
+          sourceFilePath = path.normalize(persistedPath);
+        }
+      } else {
+        planData = plan.content;
+      }
+      console.log("[ChatViewProvider] Using persisted fallback plan content");
     }
 
     // If we have plan data, show it
@@ -8105,14 +8440,14 @@ export class ChatViewProvider
    * Refreshes the view with current state
    */
   private refreshView(): void {
-      this.view?.webview.postMessage({
-        type: "initState",
-        serverStatus: this.serverManager.getStatus(),
-        selectedModel: this.selectedModel,
-        selectedAgent: this.selectedAgent,
-        currentSessionId: this.currentSessionId,
-        todoItems: this.loadPersistedTodos(this.currentSessionId).items,
-      });
+    this.view?.webview.postMessage({
+      type: "initState",
+      serverStatus: this.serverManager.getStatus(),
+      selectedModel: this.selectedModel,
+      selectedAgent: this.selectedAgent,
+      currentSessionId: this.currentSessionId,
+      todoItems: this.loadPersistedTodos(this.currentSessionId).items,
+    });
   }
 
   /**
@@ -8191,6 +8526,93 @@ export class ChatViewProvider
       this.view?.webview.postMessage({
         type: "fileSearchResults",
         results: [],
+      });
+    }
+  }
+
+  /**
+   * Handles requests to get OpenCode configuration files
+   */
+  private async handleGetOpenCodeConfig(fileName?: string) {
+    try {
+      // Scan all JSON config files
+      const configFiles = await this.configFilesProvider.scanFiles();
+
+      // Determine which file to load
+      let selectedFile: ConfigFile | undefined;
+      if (fileName && configFiles.length > 0) {
+        // Load specific file if requested
+        selectedFile = configFiles.find(f => f.name === fileName || f.path === fileName);
+      } else if (configFiles.length > 0) {
+        // Default to first file (alphabetically sorted)
+        selectedFile = configFiles[0];
+      }
+
+      if (!selectedFile) {
+        // No config files found - send empty state with available files list
+        this.view?.webview.postMessage({
+          type: "opencodeConfigFiles",
+          files: configFiles.map(f => ({
+            name: f.name,
+            path: f.path,
+            lastModified: f.lastModified,
+            size: f.size,
+          })),
+          currentFile: null,
+        });
+        return;
+      }
+
+      // Send config data with files list
+      this.view?.webview.postMessage({
+        type: "opencodeConfig",
+        content: selectedFile.content,
+        filePath: selectedFile.path,
+        fileName: selectedFile.name,
+        files: configFiles.map(f => ({
+          name: f.name,
+          path: f.path,
+          lastModified: f.lastModified,
+          size: f.size,
+        })),
+      });
+    } catch (error) {
+      this.logger.error("Failed to load OpenCode config", error);
+      this.view?.webview.postMessage({
+        type: "opencodeConfigError",
+        error: error instanceof Error ? error.message : "Failed to load configuration",
+      });
+    }
+  }
+
+  /**
+   * Handles requests to save OpenCode configuration
+   */
+  private async handleSaveOpenCodeConfig(content: string, filePath?: string) {
+    try {
+      if (!filePath) {
+        throw new Error("File path is required for saving configuration");
+      }
+
+      const result = await this.configFilesProvider.saveFile(filePath, content);
+
+      this.view?.webview.postMessage({
+        type: "opencodeConfigSaved",
+        success: result.success,
+        error: result.error,
+        filePath,
+      });
+
+      if (result.success) {
+        this.logger.info(`OpenCode config saved: ${filePath}`);
+      }
+    } catch (error) {
+      this.logger.error("Failed to save OpenCode config", error);
+      this.view?.webview.postMessage({
+        type: "opencodeConfigSaved",
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to save configuration",
+        filePath,
       });
     }
   }

@@ -373,6 +373,9 @@ export function validateStructuredOutput(
     if (!planContent && !planFile) {
       errors.push("implementation_plan requires plan.file or plan.content string");
     }
+    if (planContent && planFile) {
+      errors.push("implementation_plan must not include plan.content when plan.file is provided. Omit plan.content to prevent overwriting.");
+    }
     if (plan && typeof plan.content !== "undefined" && typeof plan.content !== "string") {
       errors.push("plan.content must be a string when provided");
     }

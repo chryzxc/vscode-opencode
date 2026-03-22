@@ -1358,6 +1358,22 @@ function hasBlockingInteractiveEvents(events: InteractiveEvent[]): boolean {
   );
 }
 
+function isLikelyInteractiveAwaitTimeout(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized || !normalized.includes("timeout")) {
+    return false;
+  }
+
+  return (
+    normalized.includes("headers timeout") ||
+    normalized.includes("header timeout") ||
+    normalized.includes("und_err_headers_timeout") ||
+    normalized.includes("request timed out") ||
+    normalized.includes("response timeout") ||
+    normalized.includes("body timeout")
+  );
+}
+
 function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -3413,7 +3429,9 @@ function handleStreamEvent(
     asString(properties?.sessionId) ||
     asString(properties?.sessionID) ||
     asString(partRecord?.sessionId) ||
-    asString(partRecord?.sessionID);
+    asString(partRecord?.sessionID) ||
+    asString(infoRecord?.sessionId) ||
+    asString(infoRecord?.sessionID);
 
   if (eventSessionId && state.currentSessionId && eventSessionId !== state.currentSessionId) {
     return;
@@ -4644,6 +4662,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         });
         dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
 
+        // Store workspace root on window object for use in file path display
+        const workspaceRoot = asString(state.workspaceRoot);
+        if (workspaceRoot) {
+          // @ts-expect-error - setting __workspace_root__ for use in file path utilities
+          window.__workspace_root__ = workspaceRoot;
+        }
+
         // Rehydrate persisted todos from initState payload (sent by provider on
         // extension open or session switch).
         const rawTodoItems = Array.isArray(state.todoItems) ? state.todoItems : [];
@@ -4847,14 +4872,52 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const plainTextFallbackFinal =
           asBoolean(asRecord(msg)?.plainTextFallback, false) ||
           asBoolean(asRecord(asRecord(msg)?.info)?.plainTextFallback, false);
-        const streaming = plainTextFallbackFinal
-          ? null
-          : (currentStreaming ?? latestStreamingSnapshot);
-        const normalizedMessage = isMessage(msg)
+        const snapshotStreaming = currentStreaming ?? latestStreamingSnapshot;
+        const interactiveEventsInResponse = isMessage(msg)
+          ? interactiveEventsFromMessage(msg)
+          : [];
+        const shouldPreserveStreamingSnapshot =
+          !plainTextFallbackFinal || interactiveEventsInResponse.length > 0;
+        const streaming = shouldPreserveStreamingSnapshot
+          ? snapshotStreaming
+          : null;
+        let normalizedMessage = isMessage(msg)
           ? normalizeMessage(msg, streaming)
           : streaming
             ? buildStreamingMessage(streaming)
             : undefined;
+        if (
+          normalizedMessage &&
+          snapshotStreaming &&
+          interactiveEventsInResponse.length > 0
+        ) {
+          const hasCanonicalActivity =
+            (Array.isArray(normalizedMessage.steps) &&
+              normalizedMessage.steps.length > 0) ||
+            (Array.isArray(normalizedMessage.progressEvents) &&
+              normalizedMessage.progressEvents.length > 0);
+          if (!hasCanonicalActivity) {
+            const mergedSteps = normalizeActivitySteps(
+              normalizedMessage,
+              {
+                ...snapshotStreaming,
+                content: "",
+                reasoning: "",
+                reasoningEvents: [],
+              },
+              Array.isArray(normalizedMessage.parts)
+                ? (normalizedMessage.parts as MessagePart[])
+                : [],
+            );
+            if (mergedSteps.length > 0) {
+              normalizedMessage = {
+                ...normalizedMessage,
+                steps: mergedSteps,
+                progressEvents: mergedSteps,
+              };
+            }
+          }
+        }
         if (normalizedMessage) {
           const streamingMessageId =
             currentStreaming?.messageId || snapshotMessageId;
@@ -5156,15 +5219,32 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       case "error": {
-        latestStreamingSnapshot = null;
         const errorMsg = asString(data.message, "Unknown error");
+        const stateBeforeError = getState();
+        const currentStreaming = stateBeforeError.streaming;
+        const pendingBlockingInteractive = hasBlockingInteractiveEvents(
+          stateBeforeError.interactiveEvents,
+        );
+        const suppressAsAwaitingInteractive =
+          pendingBlockingInteractive &&
+          isLikelyInteractiveAwaitTimeout(errorMsg);
+
+        // When the model is waiting for an interactive answer, transport header
+        // timeouts are expected and should not surface as hard request failures.
+        if (suppressAsAwaitingInteractive) {
+          latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
+          dispatch({ type: "SET_PROCESSING", payload: false });
+          dispatch({ type: "FINISH_STREAMING" });
+          break;
+        }
+
+        latestStreamingSnapshot = null;
 
         // If we were in the middle of a stream, preserve it as a message so the user
         // can see partial output + the error banner + retry.
         // NOTE: In that case, the error is shown via partialMessage.error inside
         // AssistantMessage, so we must NOT also dispatch ADD_ERROR_MESSAGE — that
         // would render a second, duplicate "Request Failed" banner above the message.
-        const currentStreaming = getState().streaming;
         if (currentStreaming) {
           // If the streamed content is an AI internal monologue (tool-use narration like
           // "Let me search for...", "Let me read the file..."), it has no user-facing value.
@@ -5430,6 +5510,53 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           }
           styleTag.textContent = css;
         }
+        break;
+      }
+      case "opencodeConfig": {
+        // Handle OpenCode configuration with file list
+        const files = asArray(data.files, (item): item is AppState["opencodeConfig"]["files"][number] => {
+          const rec = asRecord(item);
+          return !!rec && typeof rec.name === 'string' && typeof rec.path === 'string';
+        });
+
+        dispatch({
+          type: 'SET_OPENCODE_CONFIG',
+          payload: {
+            content: asString(data.content) || '',
+            filePath: asString(data.filePath) || '',
+            fileName: asString(data.fileName) || '',
+            isGlobal: false, // TODO: determine if global vs workspace
+            files,
+          },
+        });
+        break;
+      }
+      case "opencodeConfigSaved": {
+        dispatch({
+          type: 'SET_OPENCODE_CONFIG_SAVE_STATUS',
+          payload: {
+            success: asBoolean(data.success, false),
+            filePath: asString(data.filePath) || '',
+            savedAt: Date.now(),
+            message: asString(data.message),
+            error: asString(data.error),
+          },
+        });
+        break;
+      }
+      case "opencodeConfigError": {
+        // Handle error loading config
+        dispatch({
+          type: 'SET_OPENCODE_CONFIG',
+          payload: {
+            content: '',
+            filePath: '',
+            fileName: '',
+            isGlobal: false,
+            error: asString(data.error) || 'Failed to load configuration',
+            files: [],
+          },
+        });
         break;
       }
       default:

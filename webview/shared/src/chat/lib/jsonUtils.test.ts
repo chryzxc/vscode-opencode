@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { updateAt, getValueType } from './jsonUtils';
+import { updateAt, getValueType } from './jsonUtils.ts';
 
 describe('updateAt', () => {
   it('should update primitive at root path', () => {
