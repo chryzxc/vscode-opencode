@@ -161,7 +161,7 @@ test('enrichMessageWithPlan cleanses background noise from perceived plans', () 
 
   assert.match(enrichBody, /PlanParser\.parse/, 'enrichMessageWithPlan must parse the message content');
   assert.match(enrichBody, /PlanParser\.toMarkdown/, 'enrichMessageWithPlan must generate clean markdown from parsed plan');
-  assert.match(enrichBody, /this\.persistPlan\(cleanPlanContent(?:,\s*[^)]+)?\)/, 'enrichMessageWithPlan should persist the cleaned content');
+  assert.match(enrichBody, /this\.persistPlan\(\s*cleanPlanContent[\s\S]*?\)/, 'enrichMessageWithPlan should persist the cleaned content');
   assert.match(enrichBody, /content:\s*cleanPlanContent/, 'enrichMessageWithPlan should include cleaned content in return payload');
 });
 

@@ -24,7 +24,6 @@ export function extractFunctionBody(source, signature) {
   // If the signature passed in is just a prefix, find the actual end
   if (signature.includes('(') && !signature.includes(')')) {
     let parenDepth = 0;
-    // Find the position of '(' within the signature itself, so we start from the correct '('
     const signatureParenPos = signature.indexOf('(');
     for (let i = fnStart + signatureParenPos; i < source.length; i++) {
       if (source[i] === '(') parenDepth++;
@@ -38,17 +37,48 @@ export function extractFunctionBody(source, signature) {
     }
   }
 
-  const braceStart = source.indexOf('{', signatureEnd);
-  assert.notEqual(braceStart, -1, `${signature} body start not found`);
-
+  // Find the actual body start. 
+  // We need to be careful with structural return types like `function foo(): { a: string } { ... }`
+  let braceStart = -1;
   let depth = 0;
-  for (let i = braceStart; i < source.length; i += 1) {
+
+  for (let i = signatureEnd; i < source.length; i++) {
     const ch = source[i];
-    if (ch === '{') depth += 1;
-    if (ch === '}') {
-      depth -= 1;
+    if (ch === '{') {
       if (depth === 0) {
-        return source.slice(braceStart + 1, i);
+        braceStart = i;
+      }
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        // This was the end of a block at depth 0. 
+        // We need to decide if this was the function body or a structural return type.
+        
+        // Peek ahead to see if there is ANOTHER '{' before a semicolon or another function.
+        let nextBlockStart = -1;
+        for (let j = i + 1; j < Math.min(i + 300, source.length); j++) {
+          const nextCh = source[j];
+          if (nextCh === '{') {
+            nextBlockStart = j;
+            break;
+          }
+          if (nextCh === ';' || /export|function|const|class/.test(source.slice(j, j + 10))) {
+            break;
+          }
+        }
+
+        if (nextBlockStart !== -1) {
+          // Found another block start. The one we just closed was likely a type.
+          i = nextBlockStart - 1;
+          braceStart = -1;
+          depth = 0;
+        } else {
+          // No more blocks found before a stop condition. This must be the body.
+          if (braceStart !== -1) {
+            return source.slice(braceStart + 1, i);
+          }
+        }
       }
     }
   }

@@ -79,7 +79,7 @@ test('session service merges server/local messages and keeps richer duplicates',
   );
   assert.match(
     upsertBody,
-    /getMessageSignature\(candidate\)\s*===\s*incomingSignature/,
+    /messages\.findIndex\([\s\S]*getMessageSignaturesForMerge/,
     'upsertMessage should match existing cached messages by stable signature',
   );
   assert.match(
@@ -172,8 +172,9 @@ test('history sidebar emits session create/switch/delete events to extension', (
   const historyBody = extractFunctionBody(panelSource, 'export function HistorySidebar()');
 
   assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']createSession["']\s*\}\)[\s\S]*dispatch\(\{\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*payload:\s*false\s*\}\)/, 'new session button should post createSession and close sidebar');
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*\n?\s*type:\s*["']switchSession["'],\s*\n?\s*sessionId:\s*session\.id,?\s*\n?\s*\}\)[\s\S]*dispatch\(\{\s*\n?\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*\n?\s*payload:\s*false,\s*\n?\s*\}\)/, 'session row should post switchSession and close sidebar');
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']deleteSession["'],\s*sessionId:\s*session\.id,?\s*\}\)/, 'session delete action should post deleteSession with selected id');
+  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']switchSession["'],\s*sessionId:\s*session\.id\s*\}\)/, 'session row should post switchSession');
+  assert.match(historyBody, /dispatch\(\{\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*payload:\s*false\s*\}\)/, 'sidebar should close after action');
+  assert.match(historyBody, /handleDeleteConfirm\(session\.id\)/, 'session delete action should call handleDeleteConfirm with selected id');
 });
 
 test('chat provider routes session CRUD messages and handles delete edge cases', () => {

@@ -71,6 +71,42 @@ test("assistant burst coalescing keeps latest base and dedupes timeline arrays",
     /const\s+mergeArrayField\s*=\s*\(field:\s*string\)/,
     "coalesceAssistantBurst should not re-append base arrays with mergeArrayField (causes duplicate activity rows)",
   );
+  assert.match(
+    coalesceBody,
+    /let\s+latestRawResponse\s*:\s*unknown\s*=\s*base\.rawResponse;/,
+    "coalesceAssistantBurst should track latest rawResponse while collapsing assistant bursts",
+  );
+  assert.match(
+    coalesceBody,
+    /base\.rawResponse\s*=\s*latestRawResponse;/,
+    "coalesceAssistantBurst should retain rawResponse for hydrated debug rendering parity",
+  );
+});
+
+test("session override persistence intentionally keeps rawResponse debug payload", () => {
+  const persistOverrideBody = extractFunctionBody(
+    chatProviderSource,
+    "private async persistSessionMessageOverride(",
+  );
+
+  assert.doesNotMatch(
+    persistOverrideBody,
+    /delete\s+\(sanitized as Record<string, unknown>\)\.rawResponse;/,
+    "persistSessionMessageOverride should not strip rawResponse from hydrated overrides",
+  );
+});
+
+test("final assistant response persists debug override payload for refresh parity", () => {
+  const sendBody = extractFunctionBody(
+    chatProviderSource,
+    "private async handleSendMessage(",
+  );
+
+  assert.match(
+    sendBody,
+    /await\s+this\.persistSessionMessageOverride\(session\.id,\s*\{[\s\S]*\.\.\.debugMessage,/,
+    "handleSendMessage should persist debugMessage payload (with rawResponse) into hydration overrides",
+  );
 });
 
 test("structured-output fallback synthesis can be disabled for session reload normalization", () => {
@@ -153,4 +189,5 @@ test("history hydration filters internal system-reminder transport messages", ()
     /if\s*\(\s*this\.isPlanProceedMessageText\(text\)\s*\)\s*\{\s*return false;\s*\}/,
     "internal reminder detector should preserve plan proceed confirmations",
   );
+
 });

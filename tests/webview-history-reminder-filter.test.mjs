@@ -42,6 +42,7 @@ test("webview history normalization drops internal system-reminder transport mes
     /if\s*\(\/\\bproceed on this plan\\\.\/i\.test\(text\)\)\s*\{\s*return false;\s*\}/,
     "isInternalSystemReminderMessage should preserve plan proceed confirmations",
   );
+
   assert.match(
     renderableBody,
     /if\s*\(\s*isInternalSystemReminderMessage\(message\)\s*\)\s*\{\s*return false;\s*\}/,

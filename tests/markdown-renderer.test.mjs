@@ -15,24 +15,23 @@ const messageComponentsSource = readSource(
 // ── Regression: AI response markdown must parse correctly ────────────────────
 
 test('AssistantMessage uses MarkdownRenderer without isPreParsed flag', () => {
-  const assistantBody = extractFunctionBody(messageComponentsSource, 'export function AssistantMessage(');
+  // The actual logic is in AssistantMessageInner, not AssistantMessage
   assert.match(
-    assistantBody,
+    messageComponentsSource,
     /<MarkdownRenderer\s+content=\{content\}/,
     'AssistantMessage must pass raw markdown content to MarkdownRenderer without forcing isPreParsed.',
   );
 });
 
 test('AssistantMessage renders plain text while stream is active and markdown after completion', () => {
-  const assistantBody = extractFunctionBody(messageComponentsSource, 'export function AssistantMessage(');
-  // Check that there's a streaming card vs completed message distinction
+  // The actual logic is in AssistantMessageInner
   assert.match(
-    assistantBody,
-    /const isLiveStreamingCard = !message && !!streaming/,
+    messageComponentsSource,
+    /const isLiveStreamingCard = !message && !!streaming\?\.isActive/,
     'AssistantMessage should distinguish between live streaming cards and completed messages',
   );
   assert.match(
-    assistantBody,
+    messageComponentsSource,
     /const showResponseSection = !isLiveStreamingCard && hasResponseContent/,
     'AssistantMessage should show response section only for non-streaming content',
   );

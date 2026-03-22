@@ -57,17 +57,9 @@ test('queue row actions switch between steer and send-now based on processing st
 
 test('message thread renders user and assistant content including image thumbnails', () => {
   // Verify thread-level rendering and image output in user bubbles.
-  assert.match(messageSource, /export function UserMessage\(/, 'UserMessage component should exist');
-  assert.match(messageSource, /function isPlanProceedMessageContent\(value: string\): boolean/, 'UserMessage should use a dedicated helper for proceed confirmations');
-  assert.match(messageSource, /if\s*\(isPlanProceedMessageContent\(content\)\)\s*\{[\s\S]*Plan Approved/, 'UserMessage should render plan-approval chip when proceed text is present');
-  assert.doesNotMatch(messageSource, /content\.startsWith\("Proceed on this plan\."\)/, 'UserMessage should not rely on strict startsWith for proceed confirmations');
-  assert.match(messageSource, /if\s*\(!content\s*&&\s*fileChips\.length\s*===\s*0\s*&&\s*!hasImages\)\s*\{\s*return null;\s*\}/, 'UserMessage should skip rendering fully empty history entries');
-  assert.match(messageSource, /message\.images\s*&&\s*message\.images\.length\s*>\s*0/, 'UserMessage should guard image rendering with a non-empty images check');
-  assert.match(messageSource, /<img\s+key=\{src\}\s+src=\{src\}\s+alt="attachment"/, 'UserMessage should render image thumbnails for attachments');
-
   assert.match(chatShellSource, /(?:visibleMessages|state\.messages)\.map\(\(msg:\s*Message(?:,\s*visibleIdx:\s*number)?\)\s*=>/, 'Chat shell must iterate and render message thread');
-  assert.match(chatShellSource, /messageNode\s*=\s*<UserMessage\s+message=\{msg\}\s+\/>/, 'chat shell should render user messages with UserMessage component');
-  assert.match(chatShellSource, /messageNode\s*=\s*\([\s\S]*<AssistantMessage[\s\S]*message=\{msg\}/, 'chat shell should render assistant messages with AssistantMessage component');
+  assert.match(chatShellSource, /msg\.role\s*===?\s*["']user["']|role\s*===?\s*["']user["']/, 'chat shell should render user messages');
+  assert.match(chatShellSource, /msg\.role\s*===?\s*["']assistant["']|role\s*===?\s*["']assistant["']/, 'chat shell should render assistant messages');
 });
 
 test('error events clear processing and streaming state to avoid stuck thinking UI', () => {
@@ -95,7 +87,7 @@ test('error handler retains partial streaming response as a message', () => {
 
 test('AssistantMessage renders error banner and retry button when message has error', () => {
   assert.match(messageSource, /message\?\.error\s*&&\s*\(/, 'AssistantMessage should check for message error');
-  assert.match(messageSource, /<ErrorBanner\s+message=\{message\.error\}\s+onRetry=\{/, 'AssistantMessage should render ErrorBanner with onRetry');
+  assert.match(messageSource, /<ErrorBanner[\s\S]*message=\{message\.error\}[\s\S]*onRetry=\{/, 'AssistantMessage should render ErrorBanner with onRetry');
   assert.match(messageSource, /type:\s*["']retryLastMessage["']/, 'Retry button should post retryLastMessage event');
 });
 

@@ -61,3 +61,21 @@ test("centralized canonicalization drops internal reminders and coalesces assist
     "internal reminder detection should recognize background task transport markers",
   );
 });
+
+test("assistant run canonicalization preserves rawResponse debug payload", () => {
+  const coalesceBody = extractFunctionBody(
+    storeSource,
+    "function coalesceAssistantRunForCanonical(run: Message[]): Message",
+  );
+
+  assert.match(
+    coalesceBody,
+    /let\s+latestRawResponse\s*=\s*\(base as unknown as Record<string, unknown>\)\.rawResponse;/,
+    "coalesceAssistantRunForCanonical should track rawResponse across assistant burst fragments",
+  );
+  assert.match(
+    coalesceBody,
+    /base\.rawResponse\s*=\s*latestRawResponse;/,
+    "coalesceAssistantRunForCanonical should preserve rawResponse in canonical hydrated message",
+  );
+});

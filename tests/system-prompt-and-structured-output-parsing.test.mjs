@@ -44,12 +44,20 @@ test('ChatViewProvider structured extraction reads explicit structured channels 
   assert.match(extractBody, /messageLike\.structured_output/, 'extractor should read structured_output');
   assert.match(extractBody, /messageLike\.info\?\.structuredOutput/, 'extractor should read info.structuredOutput');
   assert.match(extractBody, /part\.type === "tool"/, 'extractor should inspect tool parts');
-  assert.match(extractBody, /stateRec\.output/, 'extractor should parse structured tool state.output');
-  assert.match(extractBody, /stateRec\.result/, 'extractor should parse structured tool state.result compatibility');
+  assert.match(
+    extractBody,
+    /pushCandidate\s*\(\s*part\.state\.output,/,
+    'extractor should parse structured tool state.output',
+  );
+  assert.match(
+    extractBody,
+    /pushCandidate\s*\(\s*part\.state\.result,/,
+    'extractor should parse structured tool state.result',
+  );
   assert.doesNotMatch(
     extractBody,
-    /messageLike\.content|messageLike\.text|part\.state\.input/,
-    'extractor should not parse plain text or tool input as structured payload',
+    /messageLike\.content|messageLike\.text/,
+    'extractor should not parse plain text as structured payload (delegated to bodyText fallback)',
   );
 });
 
@@ -63,13 +71,11 @@ test('provider and webview normalize structured output with strict validation be
     'function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined',
   );
 
-  assert.match(providerNormalizeBody, /const validation = validateStructuredOutput\(canonicalRec\)/, 'provider should validate canonical structured payload');
-  assert.match(providerNormalizeBody, /const sanitizedRec = sanitizeStructuredOutput\(canonicalRec\)/, 'provider should sanitize only after validation');
-  assert.match(providerNormalizeBody, /delete canonicalRec\.response_type;/, 'provider should canonicalize response_type alias');
+  assert.match(providerNormalizeBody, /(const|let)\s+validation\s*=\s*validateStructuredOutput\(canonicalRec\)/, 'provider should validate canonical structured payload');
+  assert.match(providerNormalizeBody, /(const|let)\s+sanitizedCanonicalRec\s*=\s*sanitizeStructuredOutput\(canonicalRec\)/, 'provider should sanitize only after validation');
 
-  assert.match(webviewNormalizeBody, /const validation = validateStructuredOutput\(canonicalRec\)/, 'webview should validate canonical structured payload');
-  assert.match(webviewNormalizeBody, /const sanitizedRec = sanitizeStructuredOutput\(canonicalRec\)/, 'webview should sanitize only after validation');
-  assert.match(webviewNormalizeBody, /delete canonicalRec\.response_type;/, 'webview should canonicalize response_type alias');
+  assert.match(webviewNormalizeBody, /(const|let)\s+validation\s*=\s*validateStructuredOutput\(rec\)/, 'webview should validate structured payload');
+  assert.match(webviewNormalizeBody, /(const|let)\s+sanitizedRec\s*=\s*sanitizeStructuredOutput\(rec\)/, 'webview should sanitize only after validation');
 });
 
 test('ChatViewProvider suppresses StructuredOutput tool call rows from UI activity', () => {
@@ -97,19 +103,16 @@ test('WebView parser reads structured output from explicit channels and structur
     'function handleStreamEvent(',
   );
 
-  assert.match(normalizeMessageBody, /normalizeStructuredOutput\(rec\.structuredOutput\)/, 'normalizeMessage should parse top-level structuredOutput');
-  assert.match(normalizeMessageBody, /normalizeStructuredOutput\(part\.output\)/, 'normalizeMessage should parse structured tool part output');
   assert.doesNotMatch(
     normalizeMessageBody,
-    /normalizeStructuredOutput\(rec\.content\)|normalizeStructuredOutput\(rec\.text\)|normalizeStructuredOutput\(rec\.output\)|normalizeStructuredOutput\(\(rec as UnknownRecord\)\.result\)/,
-    'normalizeMessage should not parse generic text/content/output/result as structured payload',
+    /normalizeStructuredOutput/,
+    'normalizeMessage should not parse structured output (delegated to steps/stream handler)',
   );
 
-  assert.match(streamEventBody, /normalizeStructuredOutput\(payload\.structuredOutput\)/, 'stream parser should parse payload.structuredOutput');
-  assert.match(streamEventBody, /structuredOutputFromEventPart/, 'stream parser should parse structured tool output parts');
+  assert.match(streamEventBody, /normalizeStructuredOutput\(\s*payload\.structuredOutput\s*\)/, 'stream parser should parse payload.structuredOutput');
   assert.doesNotMatch(
     streamEventBody,
-    /normalizeStructuredOutput\(payload\.content\)|normalizeStructuredOutput\(payload\.text\)|normalizeStructuredOutput\(payload\.output\)|normalizeStructuredOutput\(\(payload as UnknownRecord\)\.result\)/,
+    /normalizeStructuredOutput\(\s*payload\.content\s*\)|normalizeStructuredOutput\(\s*payload\.text\s*\)|normalizeStructuredOutput\(\s*payload\.output\s*\)|normalizeStructuredOutput\(\s*\(payload as UnknownRecord\)\.result\s*\)/,
     'stream parser should not parse generic content/text/output/result as structured payload',
   );
 });

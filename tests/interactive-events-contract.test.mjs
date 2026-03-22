@@ -49,6 +49,24 @@ test('provider accepts interactive responses from webview', () => {
   assert.match(providerSource, /\[interactive:\$\{eventType\}:\$\{eventId\}\]/, 'batch interactive responses should preserve event context in the composed prompt');
 });
 
+test('provider suppresses timeout errors while awaiting interactive answers', () => {
+  assert.match(
+    providerSource,
+    /hasBlockingInteractiveInStreamPayload\(/,
+    'provider should detect blocking interactive payloads from stream events',
+  );
+  assert.match(
+    providerSource,
+    /awaitingInteractiveAnswer\s*=\s*true/,
+    'provider should mark interactive wait state when a blocking question is streamed',
+  );
+  assert.match(
+    providerSource,
+    /awaitingInteractiveAnswer[\s\S]*isLikelyInteractiveAwaitTimeoutError\(errorMessage\)[\s\S]*Suppressing timeout error while awaiting interactive response/s,
+    'provider should suppress timeout errors caused by interactive-wait turns',
+  );
+});
+
 test('frontend normalizes and stores interactive events', () => {
   assert.match(handlerSource, /toInteractiveEvents\(/, 'message handler should map structured output to interactive events');
   assert.match(handlerSource, /SET_INTERACTIVE_EVENTS/, 'message handler should update interactive event state');
@@ -57,6 +75,24 @@ test('frontend normalizes and stores interactive events', () => {
   assert.match(handlerSource, /options\.length < 2/, 'question interactive events should require at least two options');
   assert.doesNotMatch(handlerSource, /return\s+detectInteractiveEventsFromText\(/, 'plain assistant text should not auto-generate interactive popups');
   assert.doesNotMatch(handlerSource, /const\s+interactiveEvents\s*=\s*detectInteractiveEventsFromText\(/, 'streaming completion should not infer popup questions from text heuristics');
+});
+
+test('interactive wait timeout is suppressed instead of rendering a hard error banner', () => {
+  assert.match(
+    handlerSource,
+    /function isLikelyInteractiveAwaitTimeout\(/,
+    'message handler should classify timeout errors that occur while waiting for interactive responses',
+  );
+  assert.match(
+    handlerSource,
+    /pendingBlockingInteractive[\s\S]*isLikelyInteractiveAwaitTimeout\(errorMsg\)/s,
+    'error handler should gate timeout suppression on active blocking interactive events',
+  );
+  assert.match(
+    handlerSource,
+    /suppressAsAwaitingInteractive[\s\S]*SET_PROCESSING[\s\S]*FINISH_STREAMING[\s\S]*break;/s,
+    'interactive-timeout suppression path should end loading state without showing request failure',
+  );
 });
 
 test('structured question outputs dispatch popup interactive state', () => {
