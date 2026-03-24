@@ -55,6 +55,104 @@ export interface SlashCommand {
   subtask?: boolean;
 }
 
+/**
+ * Custom skill definition stored locally
+ */
+export interface SkillDefinition {
+  name: string;
+  displayName: string;
+  version: string;
+  description: string;
+  agent?: string;
+  model?: string;
+  template?: string;
+  subtask?: boolean;
+  author?: string;
+  homepage?: string;
+  repository?: string;
+  license?: string;
+  installedAt: string;
+  installedFrom: string;
+  lastUpdated: string;
+  dependencies?: {
+    skills?: string[];
+    minVersion?: string;
+  };
+  $schema?: string;
+}
+
+/**
+ * Metadata index for all installed skills
+ */
+export interface SkillsMetadata {
+  version: number;
+  skills: {
+    [skillName: string]: {
+      path: string;
+      version: string;
+      installedAt: string;
+      installedFrom: string;
+      lastChecked: string;
+      hash?: string;
+    };
+  };
+  settings: {
+    autoUpdate: boolean;
+    updateCheckInterval: number;
+  };
+}
+
+/**
+ * Installation result
+ */
+export interface InstallResult {
+  success: boolean;
+  skill?: SkillDefinition;
+  error?: string;
+  details?: Array<{ field: string; message: string }>;
+}
+
+/**
+ * Progress update during installation
+ */
+export interface ProgressUpdate {
+  stage: 'downloading' | 'validating' | 'checking_conflicts' | 'saving' | 'updating_metadata';
+  percent: number;
+  message: string;
+}
+
+/**
+ * Validation result
+ */
+export interface ValidationResult {
+  valid: boolean;
+  errors?: Array<{ field: string; message: string }>;
+}
+
+/**
+ * Webview message types for skill operations
+ */
+export type SkillMessage =
+  | { type: 'getMySkills' }
+  | { type: 'installSkill'; source: 'url' | 'file' | 'git'; data: string }
+  | { type: 'removeSkill'; name: string }
+  | { type: 'updateSkill'; name: string }
+  | { type: 'editSkill'; name: string; updates: Partial<SkillDefinition> }
+  | { type: 'checkUpdates' }
+  | { type: 'validateSkill'; skill: unknown };
+
+/**
+ * Webview response types for skill operations
+ */
+export type SkillResponse =
+  | { type: 'mySkills'; skills: SkillDefinition[] }
+  | { type: 'skillInstalled'; skill: SkillDefinition }
+  | { type: 'skillRemoved'; name: string }
+  | { type: 'skillUpdated'; name: string; newVersion: string }
+  | { type: 'updatesAvailable'; updates: { [name: string]: string } }
+  | { type: 'installProgress'; progress: ProgressUpdate }
+  | { type: 'skillError'; error: string };
+
 export interface QueueItem {
   id: string;
   sessionId: string;
@@ -343,6 +441,8 @@ export interface Message {
   plainTextFallbackMessage?: string;
   /** Optional compact reason for fallback (debug-friendly). */
   plainTextFallbackReason?: string;
+  /** Indicates this assistant message was aborted by the user (stop button). */
+  aborted?: boolean;
 }
 
 export type StructuredResponseType = SharedStructuredResponseType;

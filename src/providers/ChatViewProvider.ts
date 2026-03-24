@@ -107,6 +107,7 @@ import {
 } from "vscode-file-theme-processor";
 import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { SessionService } from "../services/SessionService";
+import { SkillManagerService } from "../services/SkillManagerService";
 import { MessageStreamService } from "../services/MessageStreamService";
 import type { Command as SdkCommand, SessionPromptData } from "@opencode-ai/sdk";
 import { QuotaService } from "../services/QuotaService";
@@ -401,6 +402,9 @@ export class ChatViewProvider
   /** Provider for managing configuration files */
   private configFilesProvider: ConfigFilesProvider;
 
+  /** Service for managing custom skill installation and lifecycle */
+  private skillManager: SkillManagerService;
+
   /** Service for tracking Gemini token usage from stream events */
   private geminiTokenTracker: GeminiTokenUsageTracker;
   /** Service for managing daily request budgets */
@@ -649,6 +653,10 @@ export class ChatViewProvider
     this.subagentTracker = new SubagentTracker();
     this.budgeter = new RequestBudgeter();
     this.configFilesProvider = new ConfigFilesProvider();
+    this.skillManager = new SkillManagerService(context);
+    this.skillManager.initialize().catch((error) => {
+      this.logger.error('Failed to initialize skill manager', error);
+    });
     this.geminiTokenTracker = GeminiTokenUsageTracker.getInstance();
     this.quotaService.on("quotaUpdate", (data) => {
       this.view?.webview.postMessage({ type: "quotaData", data });
@@ -1358,6 +1366,14 @@ export class ChatViewProvider
           });
           break;
         }
+        // Skill installer message routing
+        case "getMySkills":
+        case "installSkill":
+        case "removeSkill":
+        case "editSkill":
+        case "validateSkill":
+          await this.handleSkillMessage(message);
+          break;
       }
     });
 
@@ -5618,6 +5634,12 @@ export class ChatViewProvider
         return next;
       }
       if (role === "assistant" && !bodyText) {
+        // Detect MessageAbortedError before falling into the structured output error path.
+        // An aborted message must not be treated as a structured output failure.
+        const messageInfoError = message?.info?.error ?? message?.error;
+        if (messageInfoError?.name === "MessageAbortedError") {
+          return { ...message, aborted: true };
+        }
         if (!allowSyntheticFallbackError) {
           return message;
         }
@@ -7898,6 +7920,104 @@ export class ChatViewProvider
     }
     map[newSessionId] = { ...oldSettings, ...map[newSessionId] };
     void this.context.globalState.update("sessionSettings", map);
+  }
+
+  /**
+   * Shows the skill installer modal in the webview
+   */
+  async showSkillInstaller(): Promise<void> {
+    this.view?.webview.postMessage({
+      type: "showSkillInstaller",
+    });
+  }
+
+  /**
+   * Opens the My Skills panel in the webview
+   */
+  async openMySkills(): Promise<void> {
+    this.view?.webview.postMessage({
+      type: "openMySkills",
+    });
+  }
+
+  /**
+   * Refreshes the skills list in the webview
+   */
+  async refreshSkills(): Promise<void> {
+    const skills = await this.skillManager.listSkills();
+    this.view?.webview.postMessage({
+      type: "mySkills",
+      skills,
+    });
+  }
+
+  /**
+   * Handles skill-related messages from the webview
+   */
+  private async handleSkillMessage(message: {
+    type: string;
+    [key: string]: unknown;
+  }): Promise<void> {
+    switch (message.type) {
+      case "getMySkills": {
+        const skills = await this.skillManager.listSkills();
+        this.view?.webview.postMessage({ type: "mySkills", skills });
+        break;
+      }
+
+      case "installSkill": {
+        const { source, data } = message;
+        let result;
+
+        if (source === "url") {
+          result = await this.skillManager.installFromUrl(data, (progress) => {
+            this.view?.webview.postMessage({ type: "installProgress", progress });
+          });
+        } else if (source === "file") {
+          result = await this.skillManager.installFromFile(data);
+        } else {
+          result = { success: false, error: "Unknown installation source" };
+        }
+
+        if (result.success) {
+          this.view?.webview.postMessage({ type: "skillInstalled", skill: result.skill });
+        } else {
+          this.view?.webview.postMessage({ type: "skillError", error: result.error });
+        }
+        break;
+      }
+
+      case "removeSkill": {
+        const { name } = message;
+        await this.skillManager.deleteSkill(name);
+        this.view?.webview.postMessage({ type: "skillRemoved", name });
+        break;
+      }
+
+      case "editSkill": {
+        const { name, updates } = message;
+        await this.skillManager.updateSkill(name, updates);
+        const skill = await this.skillManager.getSkill(name);
+        this.view?.webview.postMessage({ type: "skillInstalled", skill });
+        break;
+      }
+
+      case "validateSkill": {
+        const { skill } = message;
+        const validation = this.skillManager.validateSkill(skill);
+        if (!validation.valid) {
+          this.view?.webview.postMessage({
+            type: "skillError",
+            error: "Validation failed",
+            details: validation.errors,
+          });
+        }
+        break;
+      }
+
+      default:
+        this.logger.warn("Unknown skill message type:", message.type);
+    }
   }
 
   private async saveSessionRecoveryMap(

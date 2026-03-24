@@ -19,6 +19,7 @@ import {
   Zap,
   AlertCircle,
   Terminal,
+  StopCircle,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -1831,6 +1832,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const hasRawResponseDebug = rawResponseText.trim().length > 0;
   const hasPrimaryResponseBody = content.trim().length > 0 || !!plan;
   const hasResponseContent = hasPrimaryResponseBody || hasRawResponseDebug;
+  const isAborted = message?.aborted === true;
   const structuredRetryError =
     !!message?.error &&
     (message.retryWithoutStructuredOutput === true ||
@@ -2472,7 +2474,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           )}
         </div>
 
-        {message?.error && !structuredRetryError && (
+        {isAborted && (
+          <div className="mt-2">
+            <AbortedBanner onRetry={() => retryLastMessage(false)} />
+          </div>
+        )}
+
+        {message?.error && !structuredRetryError && !isAborted && (
           <div className="mt-2">
             {(() => {
               const retryWithoutStructuredOutput =
@@ -2858,6 +2866,29 @@ export function ErrorBanner({
         {retryHint ? (
           <div className="text-[10px] leading-snug text-[#fca5a5]">{retryHint}</div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function AbortedBanner({ onRetry }: { onRetry?: () => void }) {
+  return (
+    <div className="mb-2 px-4">
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-[#78716c80] bg-[#1c1917e6] px-3 py-2 text-oc-xs text-[#d6d3d1] shadow-sm transition-all duration-200">
+        <div className="flex items-center gap-2">
+          <StopCircle className="h-3.5 w-3.5 shrink-0 text-[#a8a29e]" />
+          <span className="text-[11px] text-[#a8a29e]">Response was stopped</span>
+        </div>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#78716c80] bg-[#292524] px-2 py-1 text-[11px] font-medium text-[#d6d3d1] transition-all hover:bg-[#3c3836] active:scale-95"
+          >
+            <RotateCw className="h-3 w-3" />
+            <span>Retry</span>
+          </button>
+        )}
       </div>
     </div>
   );

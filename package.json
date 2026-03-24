@@ -53,6 +53,18 @@
       {
         "command": "opencode.insertFileReference",
         "title": "OpenCode: Insert File Reference"
+      },
+      {
+        "command": "opencode.installSkill",
+        "title": "OpenCode: Install Skill"
+      },
+      {
+        "command": "opencode.openMySkills",
+        "title": "OpenCode: Open My Skills"
+      },
+      {
+        "command": "opencode.refreshSkills",
+        "title": "OpenCode: Refresh Skills"
       }
     ],
     "keybindings": [

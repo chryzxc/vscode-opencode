@@ -430,6 +430,27 @@ export async function activate(context: vscode.ExtensionContext) {
       ),
     );
 
+    // Register skill installer commands
+    context.subscriptions.push(
+      vscode.commands.registerCommand("opencode.installSkill", async () => {
+        if (chatViewProvider) {
+          await chatViewProvider.showSkillInstaller();
+        }
+      }),
+
+      vscode.commands.registerCommand("opencode.openMySkills", async () => {
+        if (chatViewProvider) {
+          await chatViewProvider.openMySkills();
+        }
+      }),
+
+      vscode.commands.registerCommand("opencode.refreshSkills", async () => {
+        if (chatViewProvider) {
+          await chatViewProvider.refreshSkills();
+        }
+      }),
+    );
+
 
 
     // ============================================================================
