@@ -27,6 +27,7 @@ import {
   ThinkingBubble,
   UserMessage,
 } from "./MessageComponents";
+import { SkillInstallerModal } from "./SkillInstallerModal";
 import type { Message } from "./lib/types";
 
 type StreamViewportState = {
@@ -75,6 +76,7 @@ function ChatContent() {
     isFollowing: true,
     unseenUpdateCount: 0,
   });
+  const [showSkillInstaller, setShowSkillInstaller] = useState(false);
   const streamViewportRef = useRef(streamViewport);
 
   // Keep ref current so message handler closure always reads latest state
@@ -91,6 +93,19 @@ function ChatContent() {
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [dispatch]);
+
+  // Listen for skill installer messages
+  useEffect(() => {
+    const handleSkillMessages = (event: MessageEvent) => {
+      const message = event.data;
+      if (message.type === "showSkillInstaller") {
+        setShowSkillInstaller(true);
+      }
+    };
+
+    window.addEventListener("message", handleSkillMessages);
+    return () => window.removeEventListener("message", handleSkillMessages);
+  }, []);
 
   // Send ready + retry until initState received
   useEffect(() => {
@@ -404,6 +419,12 @@ function ChatContent() {
         <AgentsPanel />
         <SettingsPanel />
       </aside>
+
+      {/* Skill Installer Modal */}
+      <SkillInstallerModal
+        isOpen={showSkillInstaller}
+        onClose={() => setShowSkillInstaller(false)}
+      />
     </div>
   );
 }

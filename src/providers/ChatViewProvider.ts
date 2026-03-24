@@ -5598,6 +5598,13 @@ export class ChatViewProvider
     message: any,
     options?: { allowSyntheticFallbackError?: boolean },
   ): any {
+    // Abort detection must happen before any content extraction or fallback generation.
+    // A cached/persisted message may already have error text written into its content
+    // field, so checking only at the !bodyText branch is insufficient.
+    const messageInfoError = message?.info?.error ?? message?.error;
+    if (messageInfoError?.name === "MessageAbortedError") {
+      return { ...message, aborted: true };
+    }
     const allowSyntheticFallbackError =
       options?.allowSyntheticFallbackError !== false;
     const structured = this.extractStructuredOutput(message);
@@ -5634,12 +5641,6 @@ export class ChatViewProvider
         return next;
       }
       if (role === "assistant" && !bodyText) {
-        // Detect MessageAbortedError before falling into the structured output error path.
-        // An aborted message must not be treated as a structured output failure.
-        const messageInfoError = message?.info?.error ?? message?.error;
-        if (messageInfoError?.name === "MessageAbortedError") {
-          return { ...message, aborted: true };
-        }
         if (!allowSyntheticFallbackError) {
           return message;
         }
