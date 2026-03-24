@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { X } from "lucide-react";
-import { vscode } from "./lib/vscode";
+import vscode from "./lib/vscode";
 
 type SkillInstallerModalProps = {
   isOpen: boolean;
