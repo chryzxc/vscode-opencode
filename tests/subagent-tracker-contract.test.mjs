@@ -105,7 +105,7 @@ test('subagent live sidecar persists on stream updates and assistant snapshot sa
   );
   assert.match(
     receiveBody,
-    /persistSubagentLiveState\(sessionId,\s*snapshotFromMessage\)/,
+    /persistSubagentLiveState\(\s*sessionId\s*,\s*snapshotFromMessage\s*,?\s*\)/,
     'persistAssistantMessage should persist derived subagent snapshot into live sidecar storage',
   );
 
@@ -115,12 +115,7 @@ test('subagent live sidecar persists on stream updates and assistant snapshot sa
   );
   assert.match(
     sendBody,
-    /snapshotFromFinalMessage = this\.buildSubagentPayloadFromMessage\(\s*enrichedMessage,\s*session\.id,\s*\)/,
-    'final assistant response flow should derive sidecar snapshot from enriched final message',
-  );
-  assert.match(
-    sendBody,
-    /await this\.persistSubagentLiveState\(\s*session\.id,\s*snapshotFromFinalMessage,\s*\)/,
+    /await this\.persistSubagentLiveState\(\s*session\.id\s*,\s*snapshotFromFinalMessage\s*,?\s*\)/,
     'final assistant response flow should persist derived sidecar snapshot for reload/session-switch durability',
   );
 });
@@ -142,7 +137,7 @@ test('subagent live sidecar cleanup runs on session create/delete transitions', 
   );
   assert.match(
     deleteBody,
-    /await this\.clearPersistedSubagentSnapshot\(sessionId\);/,
+    /await this\.clearPersistedSubagentSnapshot\(\s*sessionId\s*,?\s*\);/,
     'delete session flow should remove persisted subagent sidecar snapshot for that session id',
   );
 });

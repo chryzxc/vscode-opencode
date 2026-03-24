@@ -7,10 +7,6 @@ const chatShellSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
   'ChatShell.tsx',
 );
-const panelSource = readSource(
-  [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
-  'PanelComponents.tsx',
-);
 const messageSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
   'MessageComponents.tsx',
@@ -55,7 +51,7 @@ test('structured output supports explicit subagents response type and extraction
     'structuredOutputSchema.ts',
   );
   assert.match(schemaSource, /"subagents"/, 'schema should allow subagents responseType');
-  assert.match(providerSource, /subagentsRaw\s*=\s*sanitizedRec\.subagents\s*\?\?\s*\(rec\.spawnedSubagents/, 'provider should normalize subagents from structured output payload');
+  assert.match(providerSource, /subagentsRaw\s*=\s*sanitizedCanonicalRec\.subagents\s*\?\?\s*\(rec\.spawnedSubagents/, 'provider should normalize subagents from structured output payload');
   assert.match(providerSource, /subagentsDelta/, 'provider should normalize subagentsDelta payloads');
   assert.match(providerSource, /Spawned \$\{subagentCount\} subagent/, 'provider should emit compact summary text for subagents');
   assert.match(handlerSource, /subagentsRaw\s*=\s*sanitizedRec\.subagents\s*\?\?\s*\(rec\.spawnedSubagents/, 'frontend handler should normalize structured subagents payload');

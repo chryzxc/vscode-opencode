@@ -42,7 +42,7 @@ test('normalizeStructuredOutput forwards validation failures to telemetry', () =
   );
   assert.match(
     normalizeBody,
-    /this\.recordStructuredValidationFailure\(rec,\s*validation\.errors,\s*diagnostics\)/,
+    /this\.recordStructuredValidationFailure\(\s*canonicalRec,\s*validation\.errors,\s*diagnostics,?\s*\)/,
     'normalizer should record structured validation failures with diagnostics metadata',
   );
 });

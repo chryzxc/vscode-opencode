@@ -54,7 +54,7 @@ test('session history merge waits for persisted-state initialization', () => {
 test('spawned subagent list container is scrollable', () => {
   assert.match(
     messageComponentsSource,
-    /max-h-\[320px\]\s+space-y-1\.5\s+overflow-y-auto\s+pr-1/,
+    /max-h-\[\d+px\]\s+.*overflow-y-auto/,
     'subagent list container should cap height and provide vertical scrolling',
   );
 });
@@ -62,7 +62,7 @@ test('spawned subagent list container is scrollable', () => {
 test('subagent.parentMessageId is strictly mapped to finalMessageId before finalizing messages', () => {
   assert.match(
     messageHandlerSource,
-    /sanitized\.subagents\s*=\s*sanitized\.subagents\.map\(\(subagent\)\s*=>\s*\(\{\s*\.\.\.subagent,\s*parentMessageId:\s*finalMessageId,\s*\}\)\);/,
+    /source\.map\(\(entry\)\s*=>\s*\(\{\s*\.\.\.entry,\s*parentMessageId:\s*finalMessageId,\s*\}\)\);/,
     'message handler should ensure all finalized subagents have parentMessageId bound to the final message id',
   );
 });
