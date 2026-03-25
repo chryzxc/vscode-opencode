@@ -42,8 +42,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAppDispatch, useAppState } from "./lib/store";
 import vscode from "./lib/vscode";
 import type {
+  InteractiveEvent,
   Message,
   SlashCommand,
+  StreamingState,
   ThinkingLevel,
   TodoItem,
   FileResult,
@@ -216,12 +218,117 @@ function isProcessingInCurrentSession(
     return false;
   }
   if (!currentSessionId) {
-    return true;
+    return isProcessing;
   }
   if (!Array.isArray(processingSessionIds) || processingSessionIds.length === 0) {
-    return true;
+    // If we have no session IDs but isProcessing is true, it might be a legacy 
+    // or global state. We'll return false to be safe unless we are sure.
+    return false;
   }
   return processingSessionIds.includes(currentSessionId);
+}
+
+function isExecutingQueueInCurrentSession(
+  isExecutingQueue: boolean,
+  currentSessionId: string | null,
+  executingQueueSessionIds: Set<string>,
+): boolean {
+  if (!isExecutingQueue) {
+    return false;
+  }
+  if (!currentSessionId) {
+    return isExecutingQueue;
+  }
+  if (!executingQueueSessionIds || executingQueueSessionIds.size === 0) {
+    return false;
+  }
+  return executingQueueSessionIds.has(currentSessionId);
+}
+
+function isQuickInputInteractiveEvent(event: InteractiveEvent): boolean {
+  if (event.uiCategory === "quick_input") {
+    return true;
+  }
+  if (event.uiCategory === "passive") {
+    return false;
+  }
+  return (
+    event.type === "question" ||
+    event.type === "quick_actions" ||
+    event.type === "confirm"
+  );
+}
+
+function hasRenderableStreamingPayload(
+  streaming?: StreamingState | null,
+): boolean {
+  if (!streaming) {
+    return false;
+  }
+  if ((streaming.content || "").trim().length > 0) {
+    return true;
+  }
+  if ((streaming.reasoning || "").trim().length > 0) {
+    return true;
+  }
+  if (
+    Array.isArray(streaming.reasoningEvents) &&
+    streaming.reasoningEvents.length > 0
+  ) {
+    return true;
+  }
+  if (Array.isArray(streaming.steps) && streaming.steps.length > 0) {
+    return true;
+  }
+  if (
+    Array.isArray(streaming.progressEvents) &&
+    streaming.progressEvents.length > 0
+  ) {
+    return true;
+  }
+  if (Array.isArray(streaming.edits) && streaming.edits.length > 0) {
+    return true;
+  }
+  return false;
+}
+
+function buildAssistantMessageFromStreaming(streaming: StreamingState): Message {
+  const content = streaming.content || "";
+  const parts = content
+    ? [{ type: "text", text: content }]
+    : ([] as Message["parts"]);
+  const canonicalSteps =
+    Array.isArray(streaming.steps) && streaming.steps.length > 0
+      ? streaming.steps.map((step) => ({
+          id: step.id,
+          callID: step.callID,
+          type: step.type,
+          title: step.title,
+          status: step.status,
+          meta: step.meta,
+          diffStats: step.diffStats,
+          streamSeq: step.streamSeq,
+        }))
+      : [];
+
+  return {
+    id: streaming.messageId || undefined,
+    role: "assistant",
+    content,
+    parts,
+    reasoningEvents: streaming.reasoningEvents,
+    progressEvents: canonicalSteps,
+    steps: canonicalSteps,
+    edits: streaming.edits.map((file) => ({ file })),
+    info: {
+      id: streaming.messageId || undefined,
+      agent: streaming.agent,
+      model: streaming.model,
+      modelID: streaming.modelID,
+      providerID: streaming.providerID,
+      duration: streaming.usage?.duration,
+    },
+  };
 }
 
 export function StickyHeader() {
@@ -847,7 +954,9 @@ export function ActiveTaskPanel() {
     sessionsList,
     availableModels,
     selectedModel,
-    isProcessing,
+    isProcessing: isProcessingGlobal,
+    processingSessionIds,
+    executingQueueSessionIds,
     isCompacting,
     lastCompactedAt,
     compactionError,
@@ -855,6 +964,18 @@ export function ActiveTaskPanel() {
     compactionDividerIndex,
     serverVersion,
   } = useAppState();
+
+  const isProcessing = isProcessingInCurrentSession(
+    isProcessingGlobal,
+    currentSessionId,
+    processingSessionIds,
+  );
+
+  const isExecutingQueue = isExecutingQueueInCurrentSession(
+    false,
+    currentSessionId,
+    executingQueueSessionIds,
+  );
   const progressListRef = useRef<HTMLDivElement>(null);
 
   const selectedModelContextLimit = useMemo(() => {
@@ -944,6 +1065,7 @@ export function ActiveTaskPanel() {
     !!compactionBaselineStats ||
     (typeof safeCompactionDividerIndex === "number" &&
       safeCompactionDividerIndex > 0);
+
   const compactDisabled = !currentSessionId || isProcessing || isCompacting;
   const compactedAtLabel =
     typeof lastCompactedAt === "number"
@@ -1090,19 +1212,51 @@ export function ActiveTaskPanel() {
          <MiniSection title="Context">
           {/* Token usage bar */}
           <div className="mb-3">
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-xs text-[var(--oc-text-soft)]">
-                Tokens used{hasCompactionBaseline ? " (since compact)" : ""}
-              </span>
-              <div className="flex items-center gap-1">
-                <span className="font-mono tabular-nums text-xs text-[var(--oc-text-soft)]">
-                  {total.toLocaleString()} / {maxContext.toLocaleString()}
-                </span>
-                {usingContextFallback ? (
-                  <span className="text-[10px] uppercase tracking-wider text-oc-text-muted opacity-70">
-                    fallback
+            <div className="mb-1.5 flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-semibold text-[var(--oc-text-soft)] uppercase tracking-wider">
+                    Tokens Used
                   </span>
-                ) : null}
+                  {hasCompactionBaseline && (
+                    <span className="rounded-full bg-oc-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-oc-text-muted">
+                      Since compact
+                    </span>
+                  )}
+                </div>
+                <div
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums tracking-wider ${
+                    pct > 90
+                      ? "bg-red-500/15 text-red-500"
+                      : pct > 75
+                        ? "bg-amber-500/15 text-amber-500"
+                        : "bg-oc-green/15 text-oc-green"
+                  }`}
+                >
+                  {pct}%
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 opacity-70">
+                <span className="font-mono tabular-nums text-[11px] text-[var(--oc-text-soft)]">
+                  {total.toLocaleString()} /{" "}
+                  <span
+                    title={
+                      usingContextFallback
+                        ? "Context limit is estimated; model metadata unavailable"
+                        : undefined
+                    }
+                    className={
+                      usingContextFallback
+                        ? "underline decoration-oc-border decoration-dashed underline-offset-2 cursor-help"
+                        : ""
+                    }
+                  >
+                    {maxContext.toLocaleString()}
+                  </span>
+                </span>
+                {usingContextFallback && (
+                  <span className="text-[10px] text-oc-text-muted">~est</span>
+                )}
               </div>
             </div>
             <div className="h-1 w-full overflow-hidden rounded-full bg-oc-border">
@@ -1121,80 +1275,101 @@ export function ActiveTaskPanel() {
             </div>
           </div>
 
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <span className="text-xs text-[var(--oc-text-soft)] opacity-80">
-              Session compaction
-            </span>
-            <Button
-              type="button"
-              variant="chip"
-              size="chip"
-              className="h-5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider"
-              disabled={compactDisabled}
-              onClick={() =>
-                vscode.postMessage({
-                  type: "compactSession",
-                  ...(currentSessionId ? { sessionId: currentSessionId } : {}),
-                  baselineStats: {
-                    input: Math.max(0, Math.floor(sessionStats.input || 0)),
-                    output: Math.max(0, Math.floor(sessionStats.output || 0)),
-                    read: Math.max(0, Math.floor(sessionStats.read || 0)),
-                    write: Math.max(0, Math.floor(sessionStats.write || 0)),
-                    duration: Math.max(
-                      0,
-                      Math.floor(sessionStats.duration || 0),
-                    ),
-                  },
-                })
-              }
-            >
-              {isCompacting ? "Compacting..." : "Compact"}
-            </Button>
+          {/* Compaction Controls */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-[var(--oc-text-soft)] opacity-80">
+                  Session compaction
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {!isCompacting && compactedAtLabel ? (
+                  <span className="rounded-full bg-oc-border-soft px-1.5 py-0.5 text-[9px] font-mono tracking-wider text-oc-text-muted opacity-80">
+                    {compactedAtLabel}
+                  </span>
+                ) : null}
+                {isCompacting ? (
+                  <span className="animate-pulse rounded-full bg-oc-accent-soft px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-oc-accent">
+                    Compacting...
+                  </span>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="chip"
+                  size="chip"
+                  className="h-5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider"
+                  disabled={compactDisabled}
+                  onClick={() =>
+                    vscode.postMessage({
+                      type: "compactSession",
+                      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+                      baselineStats: {
+                        input: Math.max(0, Math.floor(sessionStats.input || 0)),
+                        output: Math.max(0, Math.floor(sessionStats.output || 0)),
+                        read: Math.max(0, Math.floor(sessionStats.read || 0)),
+                        write: Math.max(0, Math.floor(sessionStats.write || 0)),
+                        duration: Math.max(
+                          0,
+                          Math.floor(sessionStats.duration || 0),
+                        ),
+                      },
+                    })
+                  }
+                >
+                  Compact
+                </Button>
+              </div>
+            </div>
+            {!isCompacting && compactionError ? (
+              <div className="mt-1.5 text-[10px] text-oc-red">
+                {compactionError}
+              </div>
+            ) : null}
           </div>
-          {isCompacting ? (
-            <div className="mb-2 text-[10px] font-mono uppercase tracking-wider text-oc-accent">
-              Compacting...
-            </div>
-          ) : null}
-          {!isCompacting && compactedAtLabel ? (
-            <div className="mb-2 text-[10px] text-[var(--oc-text-soft)] opacity-70">
-              Last compacted: {compactedAtLabel}
-            </div>
-          ) : null}
-          {!isCompacting && compactionError ? (
-            <div className="mb-2 text-[10px] text-oc-red">
-              {compactionError}
-            </div>
-          ) : null}
 
-          {/* 2-col token grid */}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+          <div className="mb-2 h-px w-full bg-oc-border opacity-50" />
+
+          {/* Detailed Token Stats */}
+          <div className="space-y-1.5 text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">In</span>
+              <span className="text-[var(--oc-text-soft)] opacity-80">Input</span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {contextStats.input.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Out</span>
+              <span className="text-[var(--oc-text-soft)] opacity-80">Output</span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {contextStats.output.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
-                Cache R
-              </span>
-              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+              <span className="text-[var(--oc-text-soft)] opacity-80">Cache hits</span>
+              <span
+                className={`font-mono tabular-nums transition-colors duration-300 ${
+                  contextStats.read > 0
+                    ? "text-oc-green font-semibold"
+                    : "text-[var(--oc-text-soft)]"
+                }`}
+              >
                 {contextStats.read.toLocaleString()}
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-[var(--oc-text-soft)] opacity-80">
-                Cache W
+                Cache writes
               </span>
               <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
                 {contextStats.write.toLocaleString()}
+              </span>
+            </div>
+            <div className="flex items-center justify-between pt-1 border-t border-oc-border mt-2">
+              <span className="text-[var(--oc-text-soft)] opacity-80">Duration</span>
+              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+                {sessionStats.duration >= 1000
+                  ? `${(sessionStats.duration / 1000).toFixed(1)}s`
+                  : `${Math.round(sessionStats.duration)}ms`}
               </span>
             </div>
           </div>
@@ -1637,17 +1812,25 @@ export function QueueContainer() {
   const {
     promptQueue,
     isQueueOpen,
-    isExecutingQueue,
+    isExecutingQueue: isExecutingQueueGlobal,
+    executingQueueSessionIds,
+    processingSessionIds,
     isProcessing: globalIsProcessing,
     isSteering,
     currentSessionId,
-    processingSessionIds,
   } = useAppState();
   const dispatch = useAppDispatch();
+
   const isProcessing = isProcessingInCurrentSession(
     globalIsProcessing,
     currentSessionId,
     processingSessionIds,
+  );
+
+  const isExecutingQueue = isExecutingQueueInCurrentSession(
+    isExecutingQueueGlobal,
+    currentSessionId,
+    executingQueueSessionIds,
   );
   const [expandedQueueItemId, setExpandedQueueItemId] = useState<string | null>(
     null,
@@ -1862,9 +2045,12 @@ export function InputWrapper() {
   const {
     inputValue,
     isProcessing: globalIsProcessing,
+    isExecutingQueue: globalIsExecutingQueue,
     isSteering,
+    streaming,
     currentSessionId,
     processingSessionIds,
+    executingQueueSessionIds,
     messages,
     promptQueue,
     selectedFiles,
@@ -1879,11 +2065,19 @@ export function InputWrapper() {
     interactiveEvents,
   } = useAppState();
   const dispatch = useAppDispatch();
+
   const isProcessing = isProcessingInCurrentSession(
     globalIsProcessing,
     currentSessionId,
     processingSessionIds,
   );
+
+  const isExecutingQueue = isExecutingQueueInCurrentSession(
+    globalIsExecutingQueue,
+    currentSessionId,
+    executingQueueSessionIds,
+  );
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
@@ -1964,7 +2158,9 @@ export function InputWrapper() {
   //
   // Even if the AI types the question in the chat bubble, we show the popup
   // here to make the call-to-action obvious and clickable.
-  const displayInteractiveEvents = interactiveEvents;
+  const displayInteractiveEvents = interactiveEvents.filter(
+    isQuickInputInteractiveEvent,
+  );
   const interactiveEventCount = displayInteractiveEvents.length;
 
   // Reset index and custom mode when interactive events change
@@ -2201,7 +2397,6 @@ export function InputWrapper() {
       text: data.text,
     }));
 
-    // Optimistically update UI so that the user message appears before the assistant responds
     const composedPrompt = batch
       .map(
         (resp) =>
@@ -2209,18 +2404,70 @@ export function InputWrapper() {
       )
       .join("\n");
 
+    const displayText = batch
+      .map((resp) => {
+        const event = displayInteractiveEvents.find((e) => e.id === resp.eventId);
+        const questionText =
+          event && "question" in event
+            ? event.question
+            : event && "message" in event
+              ? event.message
+              : event?.title || null;
+        if (questionText) {
+          return `**${questionText}**\n${resp.text}`;
+        }
+        return resp.text;
+      })
+      .join("\n\n");
+
+    const nextMessages = [...messages];
+    if (hasRenderableStreamingPayload(streaming)) {
+      const frozenAssistant = buildAssistantMessageFromStreaming(streaming!);
+      const frozenMessageId = frozenAssistant.info?.id || frozenAssistant.id;
+      const alreadyPresent = frozenMessageId
+        ? nextMessages.some(
+            (message) =>
+              (message.info?.id || message.id || null) === frozenMessageId,
+          )
+        : nextMessages.some((message) => {
+            const role = message.role || message.info?.role;
+            return (
+              role === "assistant" &&
+              (message.content || "").trim() ===
+                (frozenAssistant.content || "").trim() &&
+              (message.steps?.length || 0) ===
+                (frozenAssistant.steps?.length || 0) &&
+              (message.reasoningEvents?.length || 0) ===
+                (frozenAssistant.reasoningEvents?.length || 0)
+            );
+          });
+
+      if (!alreadyPresent) {
+        nextMessages.push(frozenAssistant);
+        if (currentSessionId) {
+          vscode.postMessage({
+            type: "persistAssistantMessage",
+            sessionId: currentSessionId,
+            message: frozenAssistant,
+          });
+        }
+      }
+    }
+
+    nextMessages.push({
+      id: `interactive-${Date.now()}`,
+      role: "user",
+      content: displayText,
+      parts: [{ type: "text", text: composedPrompt }],
+    });
+
     dispatch({
       type: "SET_MESSAGES",
-      payload: [
-        ...messages,
-        {
-          id: `interactive-${Date.now()}`,
-          role: "user",
-          content: composedPrompt,
-          parts: [{ type: "text", text: composedPrompt }],
-        },
-      ],
+      payload: nextMessages,
     });
+
+    dispatch({ type: "SET_STREAMING", payload: null });
+    dispatch({ type: "SET_PROCESSING", payload: false });
 
     vscode.postMessage({
       type: "batchInteractiveResponse",
@@ -2304,6 +2551,11 @@ export function InputWrapper() {
                     >
                       <ArrowRight className="h-3 w-3" />
                     </button>
+                    {Object.keys(pendingAnswers).length > 0 && (
+                      <span className="ml-1 rounded-full bg-[var(--oc-accent-soft)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--oc-accent)] tabular-nums">
+                        {Object.keys(pendingAnswers).length} answered
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -2372,7 +2624,10 @@ export function InputWrapper() {
                         )
                       }
                     >
-                      Submit
+                      {currentInteractiveIndex === displayInteractiveEvents.length - 1 &&
+                      Object.keys(pendingAnswers).length > 0
+                        ? `Submit All (${Object.keys(pendingAnswers).length + 1} answers)`
+                        : "Submit"}
                     </button>
                     <button
                       type="button"
@@ -2804,7 +3059,7 @@ export function InputWrapper() {
 }
 
 export function ThinkingLevelControl() {
-  const { thinkingLevel, thinkingDropdownOpen } = useAppState();
+  const { thinkingLevel, thinkingDropdownOpen, modelCapability } = useAppState();
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -2833,11 +3088,25 @@ export function ThinkingLevelControl() {
     return () => document.removeEventListener("mousedown", handler);
   }, [thinkingDropdownOpen, dispatch]);
 
-  const levelLabels: Record<ThinkingLevel, string> = {
-    high: "High",
-    medium: "Med",
-    low: "Low",
+  const localVariants =
+    (modelCapability && modelCapability.variants && modelCapability.variants.length > 0)
+      ? modelCapability.variants
+      : ["low", "medium", "high"];
+
+  const displayLabel = (lvl?: string) => {
+    const current = lvl ?? localVariants[1] ?? localVariants[0];
+    if (!current) return "Med";
+    return current.slice(0, 3).toUpperCase();
   };
+
+  useEffect(() => {
+    if (!localVariants || localVariants.length === 0) return;
+    if (!thinkingLevel || !localVariants.includes(thinkingLevel)) {
+      dispatch({ type: "SET_THINKING_LEVEL", payload: localVariants[0] as ThinkingLevel });
+    }
+  }, [ (localVariants || []).join(","), thinkingLevel, dispatch]);
+
+  if (!modelCapability || !modelCapability.reasoning) return null;
 
   return (
     <div className="relative" ref={containerRef}>
@@ -2853,12 +3122,12 @@ export function ThinkingLevelControl() {
         }
         aria-label="Set thinking level"
       >
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className="opacity-60">Think</span>
-          <span className="font-medium text-oc-accent">
-            {levelLabels[thinkingLevel ?? "medium"]}
-          </span>
-        </div>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="opacity-60">Think</span>
+            <span className="font-medium text-oc-accent">
+              {displayLabel(thinkingLevel)}
+            </span>
+          </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${
             thinkingDropdownOpen ? "rotate-180" : ""
@@ -2868,7 +3137,7 @@ export function ThinkingLevelControl() {
       {thinkingDropdownOpen && (
         <div className="oc-popover absolute bottom-full left-0 z-30 mb-1.5 w-44 rounded-xl border border-oc-border bg-oc-panel shadow-xl overflow-hidden">
           <div className="px-1.5 py-1.5">
-            {(["high", "medium", "low"] as ThinkingLevel[]).map((level) => (
+            {(localVariants as ThinkingLevel[]).map((level) => (
               <button
                 key={level}
                 type="button"
@@ -2890,11 +3159,7 @@ export function ThinkingLevelControl() {
                   )}
                 </div>
                 <div className="text-xs font-mono text-oc-text-muted mt-0.5">
-                  {level === "high"
-                    ? "Deep reasoning"
-                    : level === "medium"
-                      ? "Balanced"
-                      : "Fast response"}
+                  {level.charAt(0).toUpperCase() + level.slice(1)}
                 </div>
               </button>
             ))}

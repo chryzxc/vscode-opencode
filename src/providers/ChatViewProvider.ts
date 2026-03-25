@@ -131,6 +131,7 @@ import {
   validateStructuredOutput,
 } from "../shared/structuredOutputValidator";
 import { createLogger } from "../utils/Logger";
+import { ModelCapabilitiesService } from "../services/ModelCapabilitiesService";
 
 const log = createLogger("ChatViewProvider");
 type QueuedPrompt = {
@@ -404,6 +405,8 @@ export class ChatViewProvider
 
   /** Service for managing custom skill installation and lifecycle */
   private skillManager: SkillManagerService;
+  /** Service for resolving model capabilities (reasoning, variants) */
+  private modelCapabilitiesService: ModelCapabilitiesService;
 
   /** Service for tracking Gemini token usage from stream events */
   private geminiTokenTracker: GeminiTokenUsageTracker;
@@ -599,10 +602,13 @@ export class ChatViewProvider
   private queueBySessionId = new Map<string, QueuedPrompt[]>();
   private queueItemSequence = 0;
 
-  /** Flag indicating if queue is currently being executed */
-  private isExecutingQueue: boolean = false;
+  /** Set of session IDs currently executing their queue */
+  private executingQueueSessionIds: Set<string> = new Set();
 
-  private isProcessingRequest: boolean = false;
+  private processingSessionIds: Set<string> = new Set();
+  private get isProcessingRequest(): boolean {
+    return this.processingSessionIds.size > 0;
+  }
   private isBootstrappingWebview: boolean = false;
   private hasInitializedWebview: boolean = false;
   private sessionsListRequestVersion = 0;
@@ -646,6 +652,7 @@ export class ChatViewProvider
     private context: vscode.ExtensionContext,
     private serverManager: OpencodeServerManager,
     private sessionService: SessionService,
+    modelCapabilitiesService?: ModelCapabilitiesService,
   ) {
     this.logger = createLogger("ChatViewProvider");
     this.streamService = new MessageStreamService(serverManager);
@@ -657,6 +664,8 @@ export class ChatViewProvider
     this.skillManager.initialize().catch((error) => {
       this.logger.error('Failed to initialize skill manager', error);
     });
+    // Use injected service or create local instance as fallback
+    this.modelCapabilitiesService = modelCapabilitiesService ?? new ModelCapabilitiesService();
     this.geminiTokenTracker = GeminiTokenUsageTracker.getInstance();
     this.quotaService.on("quotaUpdate", (data) => {
       this.view?.webview.postMessage({ type: "quotaData", data });
@@ -791,6 +800,21 @@ export class ChatViewProvider
                 type: "thinkingLevelUpdate",
                 level: bootstrapThinkingLevel,
               });
+              // Fire-and-forget: fetch and broadcast current model capabilities on bootstrap
+              void this.modelCapabilitiesService
+                .getCapabilities(
+                  this.selectedModel?.providerID ?? "",
+                  this.selectedModel?.modelID ?? "",
+                )
+                .then((capability) => {
+                  this.view?.webview.postMessage({
+                    type: "modelCapabilityUpdate",
+                    capability: capability ?? null,
+                  });
+                })
+                .catch(() => {
+                  // Silently ignore capability fetch failures during bootstrap
+                });
             }
 
             // Send initial budget status
@@ -1035,9 +1059,77 @@ export class ChatViewProvider
               model: this.selectedModel,
             });
           }
-          console.log(
-            `[ChatViewProvider] Persisted model selection: ${this.selectedModel.modelID} (${this.selectedModel.providerName})`,
-          );
+          this.logger.info("Persisted model selection", {
+            modelID: this.selectedModel.modelID,
+            providerName: this.selectedModel.providerName,
+          });
+
+          // Fetch and broadcast model capabilities (fire-and-forget).
+          void this.modelCapabilitiesService
+            .getCapabilities(
+              this.selectedModel.providerID,
+              this.selectedModel.modelID,
+            )
+            .then(async (capability) => {
+              // Broadcast capability update (preserve existing behaviour)
+              this.view?.webview.postMessage({
+                type: "modelCapabilityUpdate",
+                capability: capability ?? null,
+              });
+
+              // Check for stale persisted thinking level and clear if it's no
+              // longer supported by the newly selected model.
+              try {
+                const persistedLevel =
+                  (this.currentSessionId
+                    ? this.getSessionSettings(this.currentSessionId).thinkingLevel
+                    : undefined) ?? this.context.globalState.get<string>("thinkingLevel");
+
+                const newVariants = capability?.variants;
+                const isStale =
+                  persistedLevel &&
+                  newVariants &&
+                  newVariants.length > 0 &&
+                  !newVariants.includes(persistedLevel);
+
+                if (isStale) {
+                  this.logger.warn("Clearing stale thinking level on model switch", {
+                    staleLevel: persistedLevel,
+                    newVariants,
+                    modelID: this.selectedModel?.modelID,
+                  });
+
+                  // Clear from globalState
+                  await this.context.globalState.update("thinkingLevel", undefined);
+
+                  // Clear from session settings if applicable
+                  if (this.currentSessionId) {
+                    await this.persistSessionSettings(this.currentSessionId, {
+                      thinkingLevel: undefined,
+                    });
+                  }
+
+                  // Notify webview to reset its displayed thinking level
+                  this.view?.webview.postMessage({
+                    type: "thinkingLevelUpdate",
+                    level: "",
+                  });
+                }
+              } catch (err) {
+                // Best-effort only — log and continue
+                this.logger.warn("Error while checking/clearing stale thinking level", { err });
+              }
+            })
+            .catch((err) => {
+              this.logger.warn(
+                "Failed to fetch model capabilities on model switch",
+                { err },
+              );
+              this.view?.webview.postMessage({
+                type: "modelCapabilityUpdate",
+                capability: null,
+              });
+            });
           break;
         }
         case "selectAgent":
@@ -1160,23 +1252,15 @@ export class ChatViewProvider
           break;
         }
         case "log": {
-          const { level, message: logMsg } = message;
-          const cappedLog =
+          const { level, message: logMsg, category, context } = message;
+          const prefix = category ? `[${category}]` : "[WebView]";
+          this.logger.log(
+            level || "info",
             typeof logMsg === "string" && logMsg.length > 2000
               ? `${logMsg.slice(0, 2000)}...[truncated ${logMsg.length - 2000} chars]`
-              : logMsg;
-          const prefix = "[WebView]";
-          switch (level) {
-            case "error":
-              console.error(prefix, cappedLog);
-              break;
-            case "warn":
-              console.warn(prefix, cappedLog);
-              break;
-            default:
-              console.log(prefix, cappedLog);
-              break;
-          }
+              : logMsg,
+            { ...context, source: prefix },
+          );
           break;
         }
         case "refreshQuota": {
@@ -1192,7 +1276,7 @@ export class ChatViewProvider
                 thinkingLevel: level,
               });
             }
-            console.log(`[ChatViewProvider] Thinking level set to ${level}`);
+            this.logger.info("Thinking level set", { level });
             // NOTE: The webview handler only listens for 'thinkingLevelUpdate' (not 'thinkingLevelSet')
             this.view?.webview.postMessage({
               type: "thinkingLevelUpdate",
@@ -1216,7 +1300,8 @@ export class ChatViewProvider
           break;
         }
         case "retryLastMessage": {
-          if (this.lastSendMessageArgs && !this.isProcessingRequest) {
+          const retrySessionId = this.currentSessionId;
+          if (this.lastSendMessageArgs && retrySessionId && !this.processingSessionIds.has(retrySessionId)) {
             const retryWithoutStructuredOutput =
               message.retryWithoutStructuredOutput === true;
             if (this.currentSessionId) {
@@ -1359,7 +1444,7 @@ export class ChatViewProvider
             "lastPlanProceed",
             payload || null,
           );
-          console.log("[ChatViewProvider] planProceed received");
+          this.logger.debug("planProceed received");
           this.view?.webview.postMessage({
             type: "planProceedAck",
             payload: { received: true },
@@ -1380,11 +1465,9 @@ export class ChatViewProvider
     // Subscribe to stream events
     this.unsubscribe = this.streamService.subscribe(async (event) => {
 
-      // Session-scoped filtering: drop events that explicitly belong to a different
-      // session than the one currently active in the extension host. This prevents
-      // streamed responses from a previous (or background) session from leaking
-      // into the UI after the user has switched sessions.
       const eventSessionId = this.extractEventSessionId(event);
+      // We process all events for internal logic (tracking, persistence),
+      // but drop early if the stream event belongs to a different active session.
       if (eventSessionId && this.currentSessionId && eventSessionId !== this.currentSessionId) {
         return;
       }
@@ -1428,6 +1511,7 @@ export class ChatViewProvider
       // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
       this.logStreamEventDiagnostics(event, enrichedEvent);
+
       if (this.hasBlockingInteractiveInStreamPayload(enrichedEvent)) {
         this.awaitingInteractiveAnswer = true;
       }
@@ -1488,21 +1572,22 @@ export class ChatViewProvider
             continue;
           }
 
-          this.view?.webview.postMessage({
-            type: "todoUpdate",
-            action: "update",
-            item: {
-              id,
-              text,
-              status,
-              ...(sessionId ? { sessionId } : {}),
-            },
-          });
+            this.view?.webview.postMessage({
+              type: "todoUpdate",
+              action: "update",
+              item: {
+                id,
+                text,
+                status,
+                ...(sessionId ? { sessionId } : {}),
+              },
+            });
         }
         // Persist full todo snapshot for session after forwarding updates
         try {
-          if (this.currentSessionId) {
-            const key = `opencode.session.todos.${this.currentSessionId}`;
+          const targetPersistSessionId = eventSessionId || this.currentSessionId;
+          if (targetPersistSessionId) {
+            const key = `opencode.session.todos.${targetPersistSessionId}`;
             const existing =
               (this.context.workspaceState.get<{
                 items: unknown[];
@@ -1580,10 +1665,10 @@ export class ChatViewProvider
       // Stamp the active session ID onto every event so the webview can always
       // perform a reliable session-scoped filter even when the raw event payload
       // does not carry a sessionId field.
-      this.view?.webview.postMessage({
-        type: "streamEvent",
-        event: { ...enrichedEvent, sessionId: this.currentSessionId },
-      });
+       this.view?.webview.postMessage({
+         type: "streamEvent",
+         event: { ...enrichedEvent, sessionId: this.currentSessionId },
+       });
       if (this.shouldVerboseStreamDebug()) {
         console.log("[ChatViewProvider] streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
@@ -1622,13 +1707,13 @@ export class ChatViewProvider
             if (callID) {
               this.getDiffStats(filePath)
                 .then((stats) => {
-                  if (stats && this.view) {
-                    this.view.webview.postMessage({
-                      type: "streamEventEnrich",
-                      callID,
-                      diffStats: stats,
-                    });
-                  }
+                   if (stats && this.view) {
+                     this.view.webview.postMessage({
+                       type: "streamEventEnrich",
+                       callID,
+                       diffStats: stats,
+                     });
+                   }
                 })
                 .catch((err) => {
                   console.error(
@@ -1758,6 +1843,16 @@ export class ChatViewProvider
   }
 
   /**
+   * Notifies the webview of the current set of processing session IDs.
+   */
+  private sendProcessingSessionsUpdate() {
+    this.view?.webview.postMessage({
+      type: "SET_PROCESSING_SESSIONS",
+      payload: Array.from(this.processingSessionIds),
+    });
+  }
+
+  /**
    * Handles switching to a specific session
    */
   private async handleLoadSession(sessionId: string): Promise<void> {
@@ -1790,6 +1885,21 @@ export class ChatViewProvider
           type: "thinkingLevelUpdate",
           level: sessionThinkingLevel,
         });
+        // Fire-and-forget: fetch and broadcast current model capabilities on session load
+        void this.modelCapabilitiesService
+          .getCapabilities(
+            this.selectedModel?.providerID ?? "",
+            this.selectedModel?.modelID ?? "",
+          )
+          .then((capability) => {
+            this.view?.webview.postMessage({
+              type: "modelCapabilityUpdate",
+              capability: capability ?? null,
+            });
+          })
+          .catch(() => {
+            // Silently ignore capability fetch failures during session load
+          });
       }
 
       // Reload history for the new session
@@ -2854,36 +2964,31 @@ export class ChatViewProvider
     return true;
   }
 
-  private resolvePromptVariant(sessionId: string): string | undefined {
+  private async resolvePromptVariant(sessionId: string): Promise<string | undefined> {
     const savedLevel =
       this.getSessionSettings(sessionId).thinkingLevel ??
       this.context.globalState.get<string>("thinkingLevel");
-    if (!savedLevel) {
-      return undefined;
-    }
-
+    if (!savedLevel) return undefined;
     const normalizedLevel = savedLevel.toLowerCase().trim();
-    if (!normalizedLevel) {
-      return undefined;
-    }
+    if (!normalizedLevel) return undefined;
 
-    // Claude "thinking" model families commonly expose "max" rather than "high".
-    const modelID = (this.selectedModel.modelID || "").toLowerCase();
-    if (
-      normalizedLevel === "high" &&
-      modelID.includes("claude") &&
-      modelID.includes("thinking")
-    ) {
-      return "max";
-    }
+    const { providerID, modelID } = this.selectedModel;
+    const capability = await this.modelCapabilitiesService.getCapabilities(providerID, modelID);
 
+    // If model doesn't support reasoning, don't send variant
+    if (!capability || !capability.reasoning) return undefined;
+
+    // Anthropic: map 'high' → 'max' for extended thinking
+    if (providerID === 'anthropic' && normalizedLevel === 'high') return 'max';
+
+    // For all other providers: pass through directly
     return normalizedLevel;
   }
 
-  private asRecord(value: unknown): Record<string, unknown> | null {
+  private asRecord(value: unknown): Record<string, unknown> | undefined {
     return typeof value === "object" && value !== null
       ? (value as Record<string, unknown>)
-      : null;
+      : undefined;
   }
 
   /**
@@ -6057,7 +6162,17 @@ export class ChatViewProvider
   ): Promise<void> {
     // Cache for retry
     this.lastSendMessageArgs = { text, files, contexts, images, agent };
-    this.isProcessingRequest = true;
+    
+    // We'll set processing state once we have a definitive session ID below
+
+    this.logger.info("Processing request started", {
+      isRetry,
+      hasFiles: !!files?.length,
+      hasContexts: !!contexts?.length,
+      hasImages: !!images?.length,
+      agent,
+    });
+
     let drainSessionId: string | undefined;
     const capturePromptDebug = this.shouldVerboseStreamDebug();
     let debugSessionId: string | undefined;
@@ -6086,8 +6201,10 @@ export class ChatViewProvider
           this.currentSessionId,
         );
       }
-      this.currentSessionId = session.id;
       drainSessionId = session.id;
+      this.processingSessionIds.add(drainSessionId);
+      this.sendProcessingSessionsUpdate();
+      this.currentSessionId = session.id;
       this.subagentTracker.setActiveSession(session.id);
       this.awaitingInteractiveAnswer = false;
 
@@ -6230,10 +6347,12 @@ export class ChatViewProvider
 
       // Send the message using the SDK
       const startTime = Date.now();
-      const useStructuredOutput =
+    const useStructuredOutput =
         !retryWithoutStructuredOutput &&
         this.shouldUseStructuredOutput(
-          parts as Array<Record<string, unknown>>,
+          (parts as Array<Record<string, unknown>>)
+            ? (parts as Array<Record<string, unknown>>)
+            : [],
           agent || this.selectedAgent,
         );
       const promptBody: NonNullable<SessionPromptData["body"]> = {
@@ -6241,7 +6360,7 @@ export class ChatViewProvider
         agent: agent || this.selectedAgent,
         parts: parts,
       };
-      const promptVariant = this.resolvePromptVariant(session.id);
+      const promptVariant = await this.resolvePromptVariant(session.id);
       if (promptVariant) {
         (promptBody as Record<string, unknown>).variant = promptVariant;
       }
@@ -6724,7 +6843,13 @@ export class ChatViewProvider
       if (debugSessionId) {
         this.promptDebugBySession.delete(debugSessionId);
       }
-      this.isProcessingRequest = false;
+      if (drainSessionId) {
+        this.processingSessionIds.delete(drainSessionId);
+        this.sendProcessingSessionsUpdate();
+      }
+      this.logger.info("Processing request finished", {
+        sessionId: drainSessionId,
+      });
       this.maybeAutoDrainQueue(drainSessionId);
     }
   }
@@ -7011,7 +7136,7 @@ export class ChatViewProvider
         cleanPlanContent.length > 100 &&
         (parsed.goal || parsed.files.length > 0 || parsed.steps.length > 0)
       ) {
-        if (!resolvedPlanFile) {
+        if (!extractedPlanFiles[0]) {
           this.persistPlan(
             cleanPlanContent,
             fallbackPlanFile,
@@ -7195,23 +7320,21 @@ export class ChatViewProvider
     try {
       resolvedSessionId = await this.resolveStopSessionId(sessionId);
       if (!resolvedSessionId) {
-        console.warn(
-          "[ChatViewProvider] stopRequest ignored: no active session ID could be resolved.",
-        );
+        this.logger.warn("stopRequest ignored: no active session ID resolved");
         return;
       }
 
       const client = this.serverManager.getClient();
       if (!client) {
-        console.warn(
-          `[ChatViewProvider] stopRequest skipped: no server client available for session ${resolvedSessionId}.`,
-        );
+        this.logger.warn("stopRequest skipped: no client available", {
+          sessionId: resolvedSessionId,
+        });
         return;
       }
 
-      console.log(
-        `[ChatViewProvider] Stopping request for session ${resolvedSessionId}`,
-      );
+      this.logger.info("Stopping request", {
+        sessionId: resolvedSessionId,
+      });
 
       const workspaceDirectory = this.getWorkspaceDirectory();
       await client.session.abort({
@@ -7221,7 +7344,10 @@ export class ChatViewProvider
     } catch (error) {
       console.error("Failed to stop request:", error);
     } finally {
-      this.isProcessingRequest = false;
+      if (resolvedSessionId) {
+        this.processingSessionIds.delete(resolvedSessionId);
+        this.sendProcessingSessionsUpdate();
+      }
       this.view?.webview.postMessage({
         type: "stopRequestHandled",
         sessionId: resolvedSessionId,
@@ -8173,15 +8299,15 @@ export class ChatViewProvider
       }
     }
 
-    this.extractMarkdownFileReferences(planRecord.content).forEach((value) =>
-      candidates.push(value),
-    );
-    this.extractMarkdownFileReferences(planRecord.summary).forEach((value) =>
-      candidates.push(value),
-    );
-    this.extractMarkdownFileReferences(planRecord.title).forEach((value) =>
-      candidates.push(value),
-    );
+    for (const value of this.extractMarkdownFileReferences(planRecord.content)) {
+      candidates.push(value);
+    }
+    for (const value of this.extractMarkdownFileReferences(planRecord.summary)) {
+      candidates.push(value);
+    }
+    for (const value of this.extractMarkdownFileReferences(planRecord.title)) {
+      candidates.push(value);
+    }
 
     return this.prioritizePlanFileCandidates(candidates);
   }
@@ -8380,10 +8506,10 @@ export class ChatViewProvider
         }
       }
     }
-    this.extractMarkdownFileReferences(plan.file).forEach(addCandidate);
-    this.extractMarkdownFileReferences(plan.content).forEach(addCandidate);
-    this.extractMarkdownFileReferences(plan.summary).forEach(addCandidate);
-    this.extractMarkdownFileReferences(plan.title).forEach(addCandidate);
+    for (const v of this.extractMarkdownFileReferences(plan.file)) addCandidate(v);
+    for (const v of this.extractMarkdownFileReferences(plan.content)) addCandidate(v);
+    for (const v of this.extractMarkdownFileReferences(plan.summary)) addCandidate(v);
+    for (const v of this.extractMarkdownFileReferences(plan.title)) addCandidate(v);
 
     const prioritizedCandidates = this.prioritizePlanFileCandidates(fileCandidates);
 
@@ -9437,7 +9563,7 @@ export class ChatViewProvider
       let allDiffs = diffOutput;
       for (const file of untrackedFiles) {
         try {
-          const fileUri = vscode.Uri.file(path.join(cwd, file));
+          const fileUri = vscode.Uri.file(path.join(cwd, String(file)));
           const content = await vscode.workspace.fs.readFile(fileUri);
           const text = new TextDecoder().decode(content);
           const lines = text.split("\n");
@@ -9449,9 +9575,9 @@ export class ChatViewProvider
             "",
           ].join("\n");
           allDiffs += (allDiffs ? "\n" : "") + pseudoDiff;
-        } catch (e) {
+        } catch (e: any) {
           console.warn(
-            `[ChatViewProvider] Failed to read untracked file ${file}:`,
+            `[ChatViewProvider] Failed to read untracked file ${String(file)}:`,
             e,
           );
         }
@@ -9808,14 +9934,13 @@ export class ChatViewProvider
     }
 
     // Interactive popover responses should always be persisted/sent as one
-    // immediate message. If anything is still processing, stop it first and
+    // immediate message. If the target session is still processing, stop it first and
     // then send directly (instead of relying on queue fallback).
-    if (this.isProcessingRequest) {
-      const activeSessionId = this.firstNonEmptyString(this.currentSessionId);
-      await this.handleStopRequest(activeSessionId || sessionId);
+    if (this.processingSessionIds.has(sessionId)) {
+      await this.handleStopRequest(sessionId);
     }
 
-    if (this.isProcessingRequest) {
+    if (this.processingSessionIds.has(sessionId)) {
       await this.schedulePromptDispatch("steer", {
         sessionId,
         text,
@@ -9857,7 +9982,7 @@ export class ChatViewProvider
     }
 
     const effectiveMode =
-      mode === "send-now" && this.isProcessingRequest ? "steer" : mode;
+      mode === "send-now" && this.processingSessionIds.has(sessionId) ? "steer" : mode;
     const prompt = this.createQueuedPrompt(
       sessionId,
       text,
@@ -9945,7 +10070,10 @@ export class ChatViewProvider
       return;
     }
 
-    if (this.isExecutingQueue || this.isProcessingRequest) {
+    if (
+      this.executingQueueSessionIds.has(sessionId) ||
+      this.processingSessionIds.has(sessionId)
+    ) {
       return;
     }
 
@@ -9957,14 +10085,17 @@ export class ChatViewProvider
       return;
     }
 
-    this.isExecutingQueue = true;
+    this.executingQueueSessionIds.add(sessionId);
     this.view?.webview.postMessage({
       type: "queueExecutionStarted",
       sessionId,
     });
 
     try {
-      while (sessionId === this.currentSessionId && !this.isProcessingRequest) {
+      while (
+        sessionId === this.currentSessionId &&
+        !this.processingSessionIds.has(sessionId)
+      ) {
         const nextItem = this.takeQueuedPrompt(sessionId, undefined, 0);
         if (!nextItem) {
           break;
@@ -9982,7 +10113,7 @@ export class ChatViewProvider
       console.error("[ChatViewProvider] Queue execution failed:", error);
       vscode.window.showErrorMessage(`Queue execution error: ${error}`);
     } finally {
-      this.isExecutingQueue = false;
+      this.executingQueueSessionIds.delete(sessionId);
       this.view?.webview.postMessage({
         type: "queueExecutionFinished",
         sessionId,
@@ -9996,7 +10127,10 @@ export class ChatViewProvider
     if (!targetSessionId) {
       return;
     }
-    if (this.isExecutingQueue || this.isProcessingRequest) {
+    if (
+      this.executingQueueSessionIds.has(targetSessionId) ||
+      this.processingSessionIds.has(targetSessionId)
+    ) {
       return;
     }
     if (targetSessionId !== this.currentSessionId) {

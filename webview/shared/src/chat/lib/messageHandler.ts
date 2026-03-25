@@ -5485,6 +5485,27 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         break;
       }
+      case "modelCapabilityUpdate": {
+        try {
+          const capRec = asRecord(data.capability);
+          dispatch({
+            type: "SET_MODEL_CAPABILITY",
+            payload: capRec
+              ? {
+                  reasoning: Boolean(capRec.reasoning),
+                  variants: Array.isArray(capRec.variants)
+                    ? (capRec.variants as string[])
+                    : undefined,
+                  thinkingConfig: capRec.thinkingConfig as Record<string, unknown> | undefined,
+                }
+              : null,
+          });
+        } catch (e) {
+          // Defensive: do not allow malformed postMessage to throw
+          console.warn("Failed to process modelCapabilityUpdate postMessage", e);
+        }
+        break;
+      }
       case "addPlanAttachment": {
         const p = asRecord(data.payload);
         if (!p) break;

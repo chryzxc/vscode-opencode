@@ -26,6 +26,8 @@ import type {
   ConfigFilesState,
 } from "./types";
 
+import type { ModelCapability } from "./types";
+
 export const initialState: AppState = {
   selectedFiles: [],
   selectedContexts: [],
@@ -42,6 +44,7 @@ export const initialState: AppState = {
   promptQueue: [],
   queueBySessionId: {},
   isExecutingQueue: false,
+  executingQueueSessionIds: new Set<string>(),
   isQueueOpen: false,
   isSidebarOpen: false,
   sessionsList: [],
@@ -80,6 +83,7 @@ export const initialState: AppState = {
   quotaIsRefreshing: false,
   attachments: [],
   thinkingLevel: "medium",
+  modelCapability: null,
   todoItems: [],
   subagentsByParentMessageId: {},
   subagentDetailsById: {},
@@ -150,7 +154,7 @@ export type AppAction =
     type: "SET_QUEUE";
     payload: { sessionId: string | null; queue: QueueItem[] };
   }
-  | { type: "SET_EXECUTING_QUEUE"; payload: boolean }
+  | { type: "SET_EXECUTING_QUEUE"; payload: { sessionId: string; executing: boolean } }
   | { type: "SET_QUEUE_OPEN"; payload: boolean }
   | { type: "SET_SIDEBAR_OPEN"; payload: boolean }
   | { type: "SET_MODEL_DROPDOWN_OPEN"; payload: boolean }
@@ -191,6 +195,7 @@ export type AppAction =
   | { type: "REMOVE_ATTACHMENT"; payload: string }
   | { type: "CLEAR_ATTACHMENTS" }
   | { type: "SET_THINKING_LEVEL"; payload: ThinkingLevel }
+  | { type: "SET_MODEL_CAPABILITY"; payload: ModelCapability | null }
   | { type: "SET_TODO_ITEMS"; payload: TodoItem[] }
   | {
     type: "UPDATE_TODO_ITEM";
@@ -1498,8 +1503,16 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             : state.promptQueue,
       };
     }
-    case "SET_EXECUTING_QUEUE":
-      return { ...state, isExecutingQueue: action.payload };
+    case "SET_EXECUTING_QUEUE": {
+      const { sessionId, executing } = action.payload;
+      const next = new Set(state.executingQueueSessionIds);
+      if (executing) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      return { ...state, executingQueueSessionIds: next };
+    }
     case "SET_QUEUE_OPEN":
       return { ...state, isQueueOpen: action.payload };
     case "SET_SIDEBAR_OPEN":
@@ -1642,6 +1655,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "SET_THINKING_LEVEL": {
       return { ...state, thinkingLevel: action.payload };
+    }
+    case "SET_MODEL_CAPABILITY": {
+      return { ...state, modelCapability: action.payload };
     }
     case "SET_TODO_ITEMS": {
       return { ...state, todoItems: action.payload };

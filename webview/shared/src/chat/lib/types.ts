@@ -272,10 +272,13 @@ export interface InteractiveChoice {
   description?: string;
 }
 
+export type InteractiveUiCategory = "quick_input" | "passive";
+
 export interface InteractiveQuestionEvent {
   type: 'question';
   id: string;
   title?: string;
+  uiCategory?: InteractiveUiCategory;
   question: string;
   options: InteractiveChoice[];
   multiSelect?: boolean;
@@ -288,6 +291,7 @@ export interface InteractiveConfirmEvent {
   type: 'confirm';
   id: string;
   title?: string;
+  uiCategory?: InteractiveUiCategory;
   question: string;
   confirmLabel?: string;
   cancelLabel?: string;
@@ -297,6 +301,7 @@ export interface InteractiveQuickActionsEvent {
   type: 'quick_actions';
   id: string;
   title?: string;
+  uiCategory?: InteractiveUiCategory;
   actions: InteractiveChoice[];
 }
 
@@ -304,6 +309,7 @@ export interface InteractiveMessageEvent {
   type: 'message';
   id: string;
   title?: string;
+  uiCategory?: InteractiveUiCategory;
   message: string;
   dismissLabel?: string;
 }
@@ -528,7 +534,8 @@ export interface AppState {
   messages: Message[];
   promptQueue: QueueItem[];
   queueBySessionId: Record<string, QueueItem[]>;
-  isExecutingQueue: boolean;
+  isExecutingQueue: boolean; // Legacy global flag, to be removed or used carefully
+  executingQueueSessionIds: Set<string>;
   isQueueOpen: boolean;
   isSidebarOpen: boolean;
   sessionsList: Session[];
@@ -549,6 +556,7 @@ export interface AppState {
   modelDropdownOpen: boolean;
   agentDropdownOpen: boolean;
   thinkingDropdownOpen: boolean;
+  modelCapability?: ModelCapability | null;
   isCompacting: boolean;
   lastCompactedAt?: number;
   compactionError?: string;
@@ -604,7 +612,13 @@ export interface AttachmentItem {
   mimeType: string;
 }
 
-export type ThinkingLevel = 'high' | 'medium' | 'low';
+export type ThinkingLevel = string;
+
+export interface ModelCapability {
+  reasoning: boolean;
+  variants?: string[];
+  thinkingConfig?: Record<string, unknown> | null;
+}
 
 export interface TodoItem {
   id: string;
