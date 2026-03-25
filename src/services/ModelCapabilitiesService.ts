@@ -1,4 +1,5 @@
-import * as fs from "fs";
+import { createLogger } from "../utils/Logger";
+const log = createLogger("ModelCapabilitiesService");
 
 export interface ModelCapability {
   reasoning: boolean;
@@ -69,7 +70,7 @@ export class ModelCapabilitiesService {
       clearTimeout(timeout);
 
       if (!resp.ok) {
-        console.error(`ModelCapabilitiesService: models.dev responded ${resp.status}`);
+        log.error("ModelCapabilitiesService: models.dev non-OK response", { status: resp.status });
         return null;
       }
 
@@ -88,35 +89,6 @@ export class ModelCapabilitiesService {
 
             // Cache result for the exact key
             this.apiCache.set(key, { data: capability, timestamp: Date.now() });
-
-            // Evidence: if this is a Claude model, write a sample file
-            try {
-              if (key.toLowerCase().includes("claude")) {
-                const evidenceDir = ".sisyphus/evidence";
-                try {
-                  fs.mkdirSync(evidenceDir, { recursive: true });
-                } catch {}
-                fs.writeFileSync(
-                  `${evidenceDir}/task-1-claude-thinking-query.txt`,
-                  `queried=${MODELS_DEV_URL}\nmatched=${maybeId}\nentry=${JSON.stringify(entry, null, 2)}`,
-                );
-              }
-
-              // Cache timing evidence
-              const timingDir = ".sisyphus/evidence";
-              try {
-                fs.mkdirSync(timingDir, { recursive: true });
-              } catch {}
-              const expiresAt = Date.now() + CACHE_TTL_MS;
-              fs.writeFileSync(
-                `${timingDir}/task-1-cache-timing.txt`,
-                `key=${key}\ncachedAt=${Date.now()}\nexpiresAt=${expiresAt}\nttlMs=${CACHE_TTL_MS}`,
-              );
-            } catch (e) {
-              // never throw for evidence write failures
-              console.error("ModelCapabilitiesService: failed writing evidence", e);
-            }
-
             return capability;
           }
         }
@@ -126,9 +98,11 @@ export class ModelCapabilitiesService {
       const negative: ModelCapability = { reasoning: false };
       this.apiCache.set(key, { data: negative, timestamp: Date.now() });
       return negative;
-    } catch (err: any) {
+    } catch (err: unknown) {
       // On failure, log and return static result if available, otherwise null
-      console.error("ModelCapabilitiesService: failed fetching models.dev", err?.name || err, err?.message || "");
+      const errName = err instanceof Error ? err.name : String(err);
+      const errMsg = err instanceof Error ? err.message : "";
+      log.error("ModelCapabilitiesService: failed fetching models.dev", { errName, errMsg });
       // return cached static if any (we checked above), but to be safe return null
       return null;
     }
@@ -144,28 +118,34 @@ export class ModelCapabilitiesService {
     return cap && Array.isArray(cap.variants) ? cap.variants : [];
   }
 
-  private parseEntryToCapability(entry: any): ModelCapability {
-    const tags: string[] = Array.isArray(entry.tags) ? entry.tags.map(String) : [];
+  private parseEntryToCapability(entry: unknown): ModelCapability {
+    const e = entry as Record<string, unknown>;
+    const tags: string[] = Array.isArray(e.tags) ? (e.tags as unknown[]).map(String) : [];
 
+    const capabilities = e.capabilities as Record<string, unknown> | undefined;
     const reasoning =
-      Boolean(entry?.capabilities?.reasoning) ||
+      Boolean(capabilities?.reasoning) ||
       tags.some((t) => /reasoning|thinking|chain/.test(t.toLowerCase()));
 
     const variants: string[] = [];
-    if (Array.isArray(entry.variants)) {
-      for (const v of entry.variants) {
+    if (Array.isArray(e.variants)) {
+      for (const v of e.variants as unknown[]) {
         if (typeof v === "string") variants.push(v);
-        else if (v && typeof v.name === "string") variants.push(v.name);
+        else if (v && typeof (v as Record<string, unknown>).name === "string") {
+          variants.push((v as Record<string, unknown>).name as string);
+        }
       }
     }
     // fallbacks
-    if (variants.length === 0 && Array.isArray(entry?.configs)) {
-      for (const c of entry.configs) {
-        if (c && typeof c.name === "string") variants.push(c.name);
+    if (variants.length === 0 && Array.isArray(e.configs)) {
+      for (const c of e.configs as unknown[]) {
+        if (c && typeof (c as Record<string, unknown>).name === "string") {
+          variants.push((c as Record<string, unknown>).name as string);
+        }
       }
     }
 
-    const thinkingConfig = entry?.thinkingConfig || null;
+    const thinkingConfig = (e.thinkingConfig as Record<string, unknown> | null | undefined) ?? null;
 
     return { reasoning: Boolean(reasoning), variants, thinkingConfig };
   }

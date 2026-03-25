@@ -100,9 +100,7 @@ let statusBarProvider: StatusBarProvider;
  * 5. Add keyboard shortcut in package.json keybindings if needed
  */
 export async function activate(context: vscode.ExtensionContext) {
-  console.log(
-    `OpenCode extension activating... [Version: ${context.extension.packageJSON.version}]`,
-  );
+  log.info("OpenCode extension activating", { version: context.extension.packageJSON.version });
 
   try {
     // ============================================================================
@@ -469,8 +467,7 @@ export async function activate(context: vscode.ExtensionContext) {
       await serverManager.ensureRunning();
     }
 
-    console.log("OpenCode extension activated successfully");
-    log.info("Extension activated successfully");
+    log.info("OpenCode extension activated successfully");
   } catch (error) {
     log.error(
       "Extension activation failed",
@@ -539,7 +536,7 @@ export async function deactivate(): Promise<void> {
     log.warn("Failed to dispose ServerManager", { error });
   }
 
-  console.log("OpenCode extension deactivated");
+  log.info("OpenCode extension deactivated");
   log.info("Extension deactivated successfully");
   await logger.dispose();
 }
