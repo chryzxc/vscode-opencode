@@ -13,8 +13,10 @@ import type {
   McpServerStatus,
   Message,
   MessagePart,
+  MessageStep,
   QueueItem,
   QuotaData,
+  ReasoningEvent,
   SlashCommand,
   Session,
   StreamingState,
@@ -3402,8 +3404,15 @@ function buildStreamingMessage(streaming: StreamingState): Message {
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
-  payload: UnknownRecord
+  payload: UnknownRecord,
+  terminalErrorReached: boolean
 ): void {
+  // Ignore streaming parts after a terminal error to prevent showing both
+  // error banner and active streaming state simultaneously
+  if (terminalErrorReached) {
+    return;
+  }
+
   const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
   const isPartUpdateEvent = eventType.startsWith("message.part.");
   const normalizedEventType = isPartUpdateEvent ? "message.part.updated" : eventType;
@@ -3607,28 +3616,65 @@ function handleStreamEvent(
         dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: interactiveEvents });
       }
 
-      const isReasoning = structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk;
-      if (isReasoning) {
-        const nextReasoning = sanitizeReasoningChunk(
-          reasoningChunk || textChunk,
-        );
-        if (nextReasoning) {
-          dispatch({
-            type: 'UPDATE_STREAMING_REASONING',
-            payload: { reasoning: nextReasoning, append: true }
-          });
+      const streamingState = getState().streaming;
+      let nextInThoughtBlock = streamingState?.inThoughtBlock ?? false;
+
+      let reasoningContent = "";
+      let mainContent = "";
+
+      if (structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk) {
+        reasoningContent = reasoningChunk || textChunk;
+      } else if (typeof textChunk === "string") {
+        let remaining = textChunk;
+        while (remaining.length > 0) {
+          if (nextInThoughtBlock) {
+            const closeIdx = remaining.indexOf("</thought>");
+            if (closeIdx !== -1) {
+              reasoningContent += remaining.substring(0, closeIdx);
+              remaining = remaining.substring(closeIdx + "</thought>".length);
+              nextInThoughtBlock = false;
+            } else {
+              reasoningContent += remaining;
+              remaining = "";
+            }
+          } else {
+            const openIdx = remaining.indexOf("<thought>");
+            if (openIdx !== -1) {
+              mainContent += remaining.substring(0, openIdx);
+              remaining = remaining.substring(openIdx + "<thought>".length);
+              nextInThoughtBlock = true;
+            } else {
+              mainContent += remaining;
+              remaining = "";
+            }
+          }
         }
-      } else if (
-        structuredKind === "message" ||
-        partType === "text" ||
-        (!!textChunk && !isProgressPartType) ||
-        (!partType && structuredKind !== "progress")
-      ) {
-        const streamingState = getState().streaming;
-        const rawReasoningLike = looksLikeReasoningTrace(textChunk, streamingState?.content || "");
-        const mixedChunk = splitMixedReasoningFromContent(textChunk);
+      }
+
+      const isReasoning = reasoningContent.length > 0;
+      const hasMainContent = mainContent.length > 0;
+
+      if (isReasoning || nextInThoughtBlock !== (streamingState?.inThoughtBlock ?? false)) {
+        if (reasoningContent.startsWith("<thought>")) {
+          reasoningContent = reasoningContent.substring("<thought>".length);
+        }
+        if (reasoningContent.endsWith("</thought>")) {
+          reasoningContent = reasoningContent.substring(0, reasoningContent.length - "</thought>".length);
+        }
+        const nextReasoning = sanitizeReasoningChunk(reasoningContent);
+        dispatch({
+          type: 'UPDATE_STREAMING_REASONING',
+          payload: { reasoning: nextReasoning || reasoningContent, append: true, inThoughtBlock: nextInThoughtBlock }
+        });
+      }
+
+      if (hasMainContent || (!isReasoning && (structuredKind === "message" || partType === "text" || (!!textChunk && !isProgressPartType) || (!partType && structuredKind !== "progress")))) {
+        let candidateChunk = hasMainContent ? mainContent : textChunk;
+        
+        const rawReasoningLike = looksLikeReasoningTrace(candidateChunk, streamingState?.content || "");
+        const mixedChunk = splitMixedReasoningFromContent(candidateChunk);
         if (rawReasoningLike && !mixedChunk) {
-          const reasoningLeak = sanitizeReasoningChunk(textChunk);
+          const reasoningLeak = sanitizeReasoningChunk(candidateChunk);
           if (reasoningLeak) {
             dispatch({
               type: "UPDATE_STREAMING_REASONING",
@@ -3639,7 +3685,6 @@ function handleStreamEvent(
           break;
         }
 
-        let candidateChunk = textChunk;
         if (mixedChunk) {
           const reasoningLeak = sanitizeReasoningChunk(mixedChunk.reasoning);
           if (reasoningLeak) {
@@ -4610,6 +4655,7 @@ function remapSubagentsToFinalMessageId(
 
 export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState) {
   let latestStreamingSnapshot: StreamingState | null = null;
+  let terminalErrorReached = false;
 
   return (event: MessageEvent) => {
     const data = asRecord(event.data);
@@ -4632,6 +4678,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     switch (type) {
       case "initState":
       case "init": {
+        terminalErrorReached = false;
         const state = asRecord(data.state) ?? data;
         const sessionId =
           asString(state.sessionId) || asString(state.currentSessionId) || null;
@@ -5016,19 +5063,24 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const messages =
           coalesceAdjacentAssistantHistoryMessages(normalizedMessages);
 
+        const chatHistorySessionId = asString(data.sessionId);
+        const currentState = getState();
+        const isSessionProcessing = !!(chatHistorySessionId &&
+          currentState.processingSessionIds.includes(chatHistorySessionId));
+
         latestStreamingSnapshot = null;
 
-        // Clear any stale streaming state and in-progress flag when history is
-        // loaded (extension open or session switch) so the UI starts clean.
+        // Clear any stale streaming state when history is loaded (extension open
+        // or session switch) so the UI starts clean. Preserve processing state
+        // if the session is currently being processed on the backend.
         dispatch({ type: "SET_STREAMING", payload: null });
-        dispatch({ type: "SET_PROCESSING", payload: false });
+        dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
         dispatch({ type: "CLEAR_MESSAGES" });
         dispatch({ type: "SET_MESSAGES", payload: messages });
         const canonicalMessages = getState().messages;
 
         // If the backend included a sessionId (e.g. on session switch), update it BEFORE
         // storing stats so RESET_SESSION_STATS writes under the correct key.
-        const chatHistorySessionId = asString(data.sessionId);
         if (chatHistorySessionId) {
           dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
           // Clear todo items from the previous session so stale tasks are not shown.
@@ -5179,6 +5231,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         const payload = asRecord(data.event) ?? data;
         const streamEventType = asString(payload.type) || "unknown";
+
+        // Reset terminal error flag on explicit stream start
+        if (streamEventType === "start" || streamEventType === "streamStart") {
+          terminalErrorReached = false;
+        }
+
         streamDebug("[OpenCode][webview] streamEvent received", {
           type: streamEventType,
           hasProperties: !!asRecord(payload.properties),
@@ -5186,7 +5244,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           structuredKind:
             asString(asRecord(payload.structured)?.kind) || "unknown",
         });
-        handleStreamEvent(dispatch, getState, payload);
+        handleStreamEvent(dispatch, getState, payload, terminalErrorReached);
         const streamingAfter = getState().streaming;
         if (streamingAfter) {
           latestStreamingSnapshot = streamingAfter;
@@ -5242,6 +5300,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
 
         latestStreamingSnapshot = null;
+        terminalErrorReached = true;
 
         // If we were in the middle of a stream, preserve it as a message so the user
         // can see partial output + the error banner + retry.
@@ -5394,11 +5453,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       case "queueExecutionStarted": {
-        dispatch({ type: "SET_EXECUTING_QUEUE", payload: true });
+        dispatch({ type: "SET_EXECUTING_QUEUE", payload: { sessionId: asString(data.sessionId), executing: true } });
         break;
       }
       case "queueExecutionFinished": {
-        dispatch({ type: "SET_EXECUTING_QUEUE", payload: false });
+        dispatch({ type: "SET_EXECUTING_QUEUE", payload: { sessionId: asString(data.sessionId), executing: false } });
         break;
       }
       case "quotaData":

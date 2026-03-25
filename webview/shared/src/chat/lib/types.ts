@@ -207,6 +207,7 @@ export interface StreamingState {
   model?: { modelID: string; providerID: string; name?: string };
   modelID?: string;
   providerID?: string;
+  inThoughtBlock?: boolean;
 }
 
 export interface MessageInfo {
@@ -265,6 +266,8 @@ export interface MessageStep {
   id?: string;
   /** Arrival-order sequence number, mirrors StreamingStep.streamSeq — used to replay interleaved timeline on reload */
   streamSeq?: number;
+  /** File path associated with this step, used for deduplication */
+  filePath?: string;
 }
 
 export interface InteractiveChoice {

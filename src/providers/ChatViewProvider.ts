@@ -8300,23 +8300,32 @@ export class ChatViewProvider
     return score;
   }
 
-  private prioritizePlanFileCandidates(candidates: Array<unknown>): string[] {
+  private prioritizePlanFileCandidates(candidates: Array<unknown>, explicitFiles?: Set<string>): string[] {
     const deduped: Array<{ value: string; score: number }> = [];
     const seen = new Set<string>();
 
     for (const candidate of candidates) {
       const normalized = this.normalizePlanFileReference(candidate);
-      if (!normalized || !this.isLikelyPlanMarkdownFile(normalized)) {
+      if (!normalized) {
         continue;
       }
       const dedupeKey = path.normalize(normalized);
+      const isExplicit = explicitFiles?.has(dedupeKey);
+
+      if (!isExplicit && !this.isLikelyPlanMarkdownFile(normalized)) {
+        continue;
+      }
+
       if (seen.has(dedupeKey)) {
         continue;
       }
       seen.add(dedupeKey);
+      
+      const score = isExplicit ? 1000 : this.getPlanFileCandidateScore(dedupeKey);
+
       deduped.push({
         value: dedupeKey,
-        score: this.getPlanFileCandidateScore(dedupeKey),
+        score,
       });
     }
 
@@ -8337,17 +8346,29 @@ export class ChatViewProvider
       return [];
     }
 
+    const explicitFiles = new Set<string>();
     const candidates: unknown[] = [];
+
+    const addExplicit = (val: unknown) => {
+      const normalized = this.normalizePlanFileReference(val);
+      if (normalized) {
+        explicitFiles.add(path.normalize(normalized));
+      }
+    };
+
+    addExplicit(planRecord.file);
     candidates.push(planRecord.file);
 
     const files = Array.isArray(planRecord.files) ? planRecord.files : [];
     for (const fileEntry of files) {
       if (typeof fileEntry === "string") {
+        addExplicit(fileEntry);
         candidates.push(fileEntry);
         continue;
       }
       if (fileEntry && typeof fileEntry === "object") {
         const record = this.asRecord(fileEntry);
+        addExplicit(this.firstNonEmptyString(record?.file, record?.path));
         candidates.push(record?.file, record?.path, record?.filename);
       }
     }
@@ -8362,7 +8383,7 @@ export class ChatViewProvider
       candidates.push(value);
     }
 
-    return this.prioritizePlanFileCandidates(candidates);
+    return this.prioritizePlanFileCandidates(candidates, explicitFiles);
   }
 
   private resolvePlanFileCandidates(planFile: string): string[] {
@@ -8533,6 +8554,15 @@ export class ChatViewProvider
     const normalizedPlanFile = this.normalizePlanFileReference(plan.file);
     const fileCandidates: string[] = [];
     const seenCandidates = new Set<string>();
+    const explicitFiles = new Set<string>();
+
+    const addExplicit = (value: string | undefined) => {
+      const normalized = this.normalizePlanFileReference(value);
+      if (normalized) {
+        explicitFiles.add(path.normalize(normalized));
+      }
+    };
+
     const addCandidate = (value: string | undefined) => {
       const normalized = this.normalizePlanFileReference(value);
       if (!normalized) {
@@ -8546,16 +8576,20 @@ export class ChatViewProvider
       fileCandidates.push(dedupeKey);
     };
 
+    addExplicit(plan.file);
     addCandidate(normalizedPlanFile);
     if (Array.isArray(plan.files)) {
       for (const fileEntry of plan.files) {
         if (typeof fileEntry === "string") {
+          addExplicit(fileEntry);
           addCandidate(fileEntry);
           continue;
         }
         if (fileEntry && typeof fileEntry === "object") {
           const rec = this.asRecord(fileEntry);
-          addCandidate(this.firstNonEmptyString(rec?.file, rec?.path));
+          const str = this.firstNonEmptyString(rec?.file, rec?.path);
+          addExplicit(str);
+          addCandidate(str);
         }
       }
     }
@@ -8564,7 +8598,7 @@ export class ChatViewProvider
     for (const v of this.extractMarkdownFileReferences(plan.summary)) addCandidate(v);
     for (const v of this.extractMarkdownFileReferences(plan.title)) addCandidate(v);
 
-    const prioritizedCandidates = this.prioritizePlanFileCandidates(fileCandidates);
+    const prioritizedCandidates = this.prioritizePlanFileCandidates(fileCandidates, explicitFiles);
 
     // File-backed plan payloads are source-of-truth. When any markdown filepath
     // is available, render exactly what is on disk (no summary fallback).

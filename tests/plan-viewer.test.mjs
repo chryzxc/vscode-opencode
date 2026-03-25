@@ -105,7 +105,7 @@ test('viewPlan enforces disk-first content when plan.file is present', () => {
   );
   assert.match(
     viewPlanBody,
-    /const prioritizedCandidates = this\.prioritizePlanFileCandidates\(fileCandidates\);/,
+    /const prioritizedCandidates = this\.prioritizePlanFileCandidates\(\s*fileCandidates,\s*explicitFiles\s*\);/,
     'handleViewPlan should rank candidate file paths before reading',
   );
   assert.match(

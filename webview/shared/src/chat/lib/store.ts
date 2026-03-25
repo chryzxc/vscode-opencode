@@ -100,7 +100,7 @@ export const initialState: AppState = {
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
-type StreamingReasoningPayload = { reasoning: string; append?: boolean };
+type StreamingReasoningPayload = { reasoning: string; append?: boolean; inThoughtBlock?: boolean };
 type StreamingStepUpdatePayload = {
   id?: string;
   callID?: string;
@@ -1152,6 +1152,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const queueForNew = newId
         ? getQueueForSession(state.queueBySessionId[newId], newId)
         : [];
+
+      // Check if the new session is currently processing to preserve loading state
+      const isNewSessionProcessing = newId && state.processingSessionIds.includes(newId);
+
       return {
         ...state,
         currentSessionId: action.payload,
@@ -1161,7 +1165,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         isQueueOpen: false,
         // Reset all transient per-session processing/streaming UI so states from
         // the previous session do not bleed into the newly active one.
-        isProcessing: false,
+        isProcessing: isNewSessionProcessing,
         isSteering: false,
         streaming: null,
         isCompacting: false,
@@ -1374,7 +1378,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       return {
         ...state,
-        streaming: { ...state.streaming, reasoning, reasoningEvents },
+        streaming: {
+          ...state.streaming,
+          reasoning,
+          reasoningEvents,
+          inThoughtBlock: action.payload.inThoughtBlock ?? state.streaming.inThoughtBlock,
+        },
       };
     }
     case "ADD_STREAMING_STEP": {
