@@ -28,6 +28,7 @@ import * as vscode from "vscode";
 import { OpencodeServerManager } from "./services/OpencodeServerManager";
 import { SessionService } from "./services/SessionService";
 import { ChatViewProvider } from "./providers/ChatViewProvider";
+import { ModelCapabilitiesService } from "./services/ModelCapabilitiesService";
 import { StatusBarProvider } from "./providers/StatusBarProvider";
 import { PlanViewProvider } from "./providers/PlanViewProvider";
 import { DiffReviewProvider } from "./providers/DiffReviewProvider";
@@ -125,10 +126,13 @@ export async function activate(context: vscode.ExtensionContext) {
     // WebView providers provide the UI for the extension. They must be registered
     // with VSCode before commands that use them can be invoked.
 
+    const modelCapabilitiesService = new ModelCapabilitiesService();
+
     chatViewProvider = new ChatViewProvider(
       context,
       serverManager,
       sessionService,
+      modelCapabilitiesService,
     );
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(
