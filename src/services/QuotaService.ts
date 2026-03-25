@@ -272,7 +272,7 @@ export class QuotaService extends EventEmitter {
     // ZAI
     if (auth?.["zai-coding-plan"]?.key) {
       tasks.push(
-        this.fetchZhipu(auth["zai-coding-plan"], "Z.AI", ZAI_USAGE_URL)
+        this.fetchZhipu(auth["zai-coding-plan"], "Z.ai Coding Plan", ZAI_USAGE_URL)
           .then((p) => {
             if (p) platforms.push(p);
           })

@@ -1500,12 +1500,8 @@ export class ChatViewProvider
     this.unsubscribe = this.streamService.subscribe(async (event) => {
 
       const eventSessionId = this.extractEventSessionId(event);
-      // We process all events for internal logic (tracking, persistence),
-      // but drop early if the stream event belongs to a different active session.
-      if (eventSessionId && this.currentSessionId && eventSessionId !== this.currentSessionId) {
-        return;
-      }
-
+      // Always run subagent tracking before any session-scoped early return so child
+      // session events are captured regardless of which session is active in the UI.
       const subagentUpdate = this.subagentTracker.consumeStreamEvent(event);
       if (subagentUpdate) {
         this.view?.webview.postMessage({
@@ -1515,6 +1511,12 @@ export class ChatViewProvider
         void this.persistSubagentUpdateSnapshot(subagentUpdate).catch((persistError) => {
           this.logger.warn("Failed to persist subagent stream snapshot", { err: persistError });
         });
+      }
+
+      // We process all events for internal logic (tracking, persistence),
+      // but drop early if the stream event belongs to a different active session.
+      if (eventSessionId && this.currentSessionId && eventSessionId !== this.currentSessionId) {
+        return;
       }
 
       // Track token usage from message.updated events
@@ -5613,7 +5615,18 @@ export class ChatViewProvider
   private extractStructuredOutput(
     messageLike: any,
   ): StructuredAssistantOutput | undefined {
-    if (!messageLike) return undefined;
+    const role = this.firstNonEmptyString(
+      messageLike.role,
+      messageLike.info?.role,
+      messageLike.properties?.role,
+    )?.toLowerCase();
+
+    if (role === "system") {
+      return {
+        responseType: "system",
+      } as any;
+    }
+
     const providerID = this.firstNonEmptyString(
       messageLike.info?.providerID,
       messageLike.providerID,
@@ -5741,12 +5754,23 @@ export class ChatViewProvider
     }
     const allowSyntheticFallbackError =
       options?.allowSyntheticFallbackError !== false;
+    const role = this.firstNonEmptyString(
+      message?.info?.role,
+      message?.role,
+    )?.toLowerCase();
+
+    if (role === "system") {
+      return {
+        ...message,
+        responseType: "system",
+        structuredOutput: {
+          responseType: "system",
+        },
+      };
+    }
+
     const structured = this.extractStructuredOutput(message);
     if (!structured) {
-      const role = this.firstNonEmptyString(
-        message?.info?.role,
-        message?.role,
-      )?.toLowerCase();
       const bodyText = this.extractMessageBodyText(message);
       if (role === "assistant" && bodyText) {
         const next: any = {

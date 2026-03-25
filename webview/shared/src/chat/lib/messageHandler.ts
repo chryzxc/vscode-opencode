@@ -2639,7 +2639,6 @@ function syncSubagentMapsIntoMessages(
   // Rebind orphaned summary groups (usually keyed by transient streaming IDs)
   // to the latest assistant message for the same session so cards survive
   // reload/session hydration even when final message IDs differ.
-  const fallbackSessionId = state.currentSessionId;
   const effectiveSummariesByParentMessageId: Record<string, SubagentSummary[]> = {
     ...allSummariesByParentMessageId,
   };
@@ -2653,41 +2652,9 @@ function syncSubagentMapsIntoMessages(
       continue;
     }
 
-    const targetSessionId =
-      summaries.find((summary) => summary.parentSessionId)?.parentSessionId ||
-      undefined;
-    const reboundParentMessageId = findLatestAssistantMessageIdForSession(
-      state.messages,
-      fallbackSessionId,
-      targetSessionId,
-    );
-    if (!reboundParentMessageId) {
-      continue;
-    }
-
-    const reboundSummaries = summaries.map((summary) => ({
-      ...summary,
-      parentMessageId: reboundParentMessageId,
-      parentSessionId:
-        summary.parentSessionId || targetSessionId || fallbackSessionId || "",
-    }));
-    effectiveSummariesByParentMessageId[reboundParentMessageId] =
-      mergeSubagentSummaries(
-        effectiveSummariesByParentMessageId[reboundParentMessageId],
-        reboundSummaries,
-      );
-
-    reboundSummaries.forEach((summary) => {
-      const detail = allDetailsById[summary.id];
-      if (!detail) {
-        return;
-      }
-      allDetailsById[summary.id] = {
-        ...detail,
-        parentMessageId: reboundParentMessageId,
-        parentSessionId: summary.parentSessionId,
-      };
-    });
+    // DISABLED: Rebounding subagents to the 'latest' message causes 'ghosting'
+    // where old subagents appear in new responses. Only allow direct ID matches.
+    continue;
   }
 
   const updatedMessages: Message[] = [];
@@ -3451,7 +3418,10 @@ function handleStreamEvent(
     (isPartUpdateEvent ? asRecord(properties) : null);
   const structuredRecord = asRecord(payload.structured);
   const structuredKind = asString(structuredRecord?.kind).toLowerCase();
-  const structuredText = asString(structuredRecord?.text);
+  const structuredText =
+    asString(structuredRecord?.assistantMessage) ||
+    asString(structuredRecord?.message) ||
+    asString(structuredRecord?.text);
   const structuredOutput =
     normalizeStructuredOutput(payload.structuredOutput) ??
     normalizeStructuredOutput((payload as UnknownRecord).structured_output) ??
@@ -3640,7 +3610,7 @@ function handleStreamEvent(
       const isReasoning = structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk;
       if (isReasoning) {
         const nextReasoning = sanitizeReasoningChunk(
-          reasoningChunk || structuredText || deltaChunk,
+          reasoningChunk || textChunk,
         );
         if (nextReasoning) {
           dispatch({
@@ -5052,9 +5022,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         // loaded (extension open or session switch) so the UI starts clean.
         dispatch({ type: "SET_STREAMING", payload: null });
         dispatch({ type: "SET_PROCESSING", payload: false });
-        // Clear transient top-level errors so they don't persist into a new chat/session.
-        dispatch({ type: "CLEAR_ERROR_MESSAGES" });
-
         dispatch({ type: "CLEAR_MESSAGES" });
         dispatch({ type: "SET_MESSAGES", payload: messages });
         const canonicalMessages = getState().messages;
@@ -5278,9 +5245,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
         // If we were in the middle of a stream, preserve it as a message so the user
         // can see partial output + the error banner + retry.
-        // NOTE: In that case, the error is shown via partialMessage.error inside
-        // AssistantMessage, so we must NOT also dispatch ADD_ERROR_MESSAGE — that
-        // would render a second, duplicate "Request Failed" banner above the message.
+        // The error is shown via partialMessage.error inside AssistantMessage,
+        // which renders the ErrorBanner at the bottom of the message.
         if (currentStreaming) {
           // If the streamed content is an AI internal monologue (tool-use narration like
           // "Let me search for...", "Let me read the file..."), it has no user-facing value.
@@ -5307,11 +5273,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             payload: [...messages, partialMessage],
           });
         } else {
-          // No active stream — show the error as a top-level banner since there is no
-          // message card to attach it to.
+          // No active stream — create an error-only message so the error banner
+          // appears at the bottom of the message instead of at the top of the chat.
+          const errorMessage: Message = {
+            id: `error-${Date.now()}`,
+            role: "assistant",
+            content: "",
+            error: errorMsg,
+            created: Date.now(),
+          };
+          const messages = getState().messages;
           dispatch({
-            type: "ADD_ERROR_MESSAGE",
-            payload: errorMsg,
+            type: "SET_MESSAGES",
+            payload: [...messages, errorMessage],
           });
         }
 
@@ -5398,6 +5372,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             payload: currentSessionId,
           });
         }
+        break;
+      }
+      case "SET_PROCESSING_SESSIONS": {
+        const sessionIds = asArray(data.payload, (item): item is string => typeof item === 'string');
+        dispatch({
+          type: "SET_PROCESSING_SESSIONS",
+          payload: sessionIds,
+        });
         break;
       }
       case "queueUpdate": {

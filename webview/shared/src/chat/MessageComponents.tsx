@@ -278,7 +278,7 @@ function messageBodyFromParts(parts?: MessagePart[]): string {
       if (isReasoningPart(part)) {
         return "";
       }
-      return part.text ?? part.content ?? "";
+      return part.assistantMessage ?? part.message ?? part.text ?? part.content ?? "";
     })
     .join("")
     .trim();
@@ -1337,11 +1337,9 @@ function buildDisplayEvents(
   return collapsed;
 }
 
-function isSystemPromptMessageContent(value: string): boolean {
-  return /^\[[\w-]+\]/.test(value) || value.includes("<system-reminder>") || value.includes("<!-- omo_internal_initiator -->");
-}
 
-const SystemMessage = memo(function SystemMessage({ content }: { content: string }) {
+
+export const SystemMessage = memo(function SystemMessage({ content }: { content: string }) {
   return (
     <div className="oc-message-enter mb-6 px-10 flex flex-col gap-1.5 opacity-60 hover:opacity-100 transition-opacity">
       <div className="flex items-center gap-2">
@@ -1394,9 +1392,6 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
     );
   }
 
-  if (isSystemPromptMessageContent(content)) {
-    return <SystemMessage content={content} />;
-  }
 
   if (!content && fileChips.length === 0 && !hasImages) {
     return null;
@@ -1863,12 +1858,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     : "";
   const isLiveStreamingCard = !message && !!streaming?.isActive;
   const responseBodyClass = isLiveStreamingCard
-    ? "w-full max-h-[340px] overflow-y-auto pr-1"
+    ? "w-full"
     : "w-full";
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
-  const showResponseSection = !isLiveStreamingCard && hasResponseContent;
+  const showResponseSection = hasResponseContent;
   const hasThinkingEvents = useMemo(
     () => displayEvents.some((event) => event.kind === "thinking"),
     [displayEvents],
@@ -1880,7 +1875,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   };
   const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     dispatch({ type: "SET_PROCESSING", payload: true });
-    dispatch({ type: "CLEAR_ERROR_MESSAGES" });
     const targetMessageIndex = state.messages.findIndex((candidate) => {
       if (messageId) {
         const candidateId = candidate.info?.id ?? candidate.id;

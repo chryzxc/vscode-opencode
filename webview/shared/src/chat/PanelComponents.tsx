@@ -1516,9 +1516,14 @@ export function ModelDropdown() {
         // Skip opencode platform in mapped providers since we have a dedicated persistent tab
         if (key.includes("opencode")) return null;
 
-        // Use the title first (e.g. "Z.ai Coding Plan") as it's more specific
-        if (p.title && !p.title.toLowerCase().includes("account quota")) {
-          return p.title;
+        // Always prefer title when available - it contains the specific plan name
+        if (p.title) {
+          // Strip common suffixes to get the clean provider name
+          const cleanedTitle = p.title
+            .replace(" Account Quota", "")
+            .replace(" account quota", "")
+            .trim();
+          return cleanedTitle;
         }
 
         // Fallback to specific normalization for known broad providers
@@ -1528,8 +1533,8 @@ export function ModelDropdown() {
         if (key === "copilot") return "GitHub Copilot";
         if (key === "google" || key === "google-gemini-cli") return "Google";
 
-        // Last resort: use platform name with generic suffix cleanup
-        return p.title?.replace(" Account Quota", "") ?? p.platform;
+        // Last resort: use platform name
+        return p.platform;
       })
       .filter((name): name is string => name !== null);
 
@@ -1621,7 +1626,9 @@ export function ModelDropdown() {
                     className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${
                       selectedTab === tab
                         ? "bg-oc-accent text-white"
-                        : "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
+                        : tab === "All"
+                          ? "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
+                          : "bg-oc-bg-soft text-oc-orange hover:bg-oc-panel-soft hover:text-oc-orange/80"
                     }`}
                   >
                     {tab}
@@ -3201,15 +3208,24 @@ export function QuotaMonitor() {
     : null;
 
   const toProviderName = (platform: string, title?: string) => {
-    if (title && title.includes("Account Quota")) {
-      return title;
+    // Prefer title when available - strip "Account Quota" suffix for cleaner display
+    if (title) {
+      const cleanedTitle = title
+        .replace(" Account Quota", "")
+        .replace(" account quota", "")
+        .trim();
+      return cleanedTitle || platform;
     }
+
+    // Fallback to specific normalization for known broad providers
     const key = platform.toLowerCase();
-    if (key.includes("openai")) return "OpenAI Account Quota";
-    if (key.includes("zai")) return "Z.ai Account Quota";
-    if (key.includes("zhipu")) return "Zhipu AI Account Quota";
-    if (key.includes("copilot")) return "GitHub Copilot Account Quota";
-    return title ?? `${platform} Account Quota`;
+    if (key.includes("openai")) return "OpenAI";
+    if (key.includes("zai")) return "Z.ai";
+    if (key.includes("zhipu")) return "Zhipu AI";
+    if (key.includes("copilot")) return "GitHub Copilot";
+
+    // Last resort: use platform name
+    return platform;
   };
 
   const barColor = (pct: number) => {

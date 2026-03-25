@@ -22,8 +22,8 @@ import { StreamingCard } from "./StreamingComponents";
 import {
   AssistantMessage,
   EmptyState,
-  ErrorBanner,
   PermissionCard,
+  SystemMessage,
   ThinkingBubble,
   UserMessage,
 } from "./MessageComponents";
@@ -36,18 +36,6 @@ type StreamViewportState = {
 };
 
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
-
-function isStructuredOutputFailureMessage(value?: string): boolean {
-  const normalized = (value || "").trim().toLowerCase();
-  if (!normalized) return false;
-  return (
-    normalized.includes("structured output error") ||
-    normalized.includes("empty structured payload") ||
-    normalized.includes("valid structured response") ||
-    normalized.includes("json_schema") ||
-    normalized.includes("structuredoutput")
-  );
-}
 
 function CompactionDivider({ at }: { at?: number }) {
   const label =
@@ -227,60 +215,6 @@ function ChatContent() {
             <EmptyState />
           ) : null}
 
-          {state.errorMessages.map((msg) => {
-            const retryWithoutStructuredOutput =
-              isStructuredOutputFailureMessage(msg);
-            if (retryWithoutStructuredOutput) {
-              return null;
-            }
-            return (
-              <ErrorBanner
-                key={`err-${msg}`}
-                message={msg}
-                retryLabel={
-                  retryWithoutStructuredOutput ? "Retry Without Structured Output" : "Retry"
-                }
-                retryHint={
-                  retryWithoutStructuredOutput
-                    ? "This will resend your last prompt as plain text (no json_schema)."
-                    : undefined
-                }
-                onRetry={() => {
-                  dispatch({ type: "SET_PROCESSING", payload: true });
-                  dispatch({ type: "CLEAR_ERROR_MESSAGES" });
-                  if (retryWithoutStructuredOutput) {
-                    const retryText = "Retrying without structured output...";
-                    const retryMessage: Message = {
-                      id: `retry-info-${Date.now()}`,
-                      role: "assistant",
-                      content: retryText,
-                      text: retryText,
-                      parts: [{ type: "text", text: retryText }],
-                      retryWithoutStructuredOutput: true,
-                      retryState: "retrying_without_structured_output",
-                      retryMessage: retryText,
-                      retryStartedAt: Date.now(),
-                      created: Date.now(),
-                    };
-                    const nextMessages = [...state.messages, retryMessage];
-                    dispatch({ type: "SET_MESSAGES", payload: nextMessages });
-                    if (state.currentSessionId) {
-                      vscode.postMessage({
-                        type: "persistAssistantMessage",
-                        sessionId: state.currentSessionId,
-                        message: retryMessage,
-                      });
-                    }
-                  }
-                  vscode.postMessage({
-                    type: "retryLastMessage",
-                    retryWithoutStructuredOutput,
-                  });
-                }}
-              />
-            );
-          })}
-
           {hasCompactedSegment ? (
             <div className="-mx-4 py-2">
               <div className="flex w-full items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-oc-text-muted">
@@ -347,6 +281,10 @@ function ChatContent() {
             let messageNode: JSX.Element;
             if (role === "user") {
               messageNode = <UserMessage message={msg} />;
+            } else if (role === "system" || msg.responseType === "system") {
+              messageNode = (
+                <SystemMessage content={msg.content ?? msg.text ?? ""} />
+              );
             } else if ((msg as Record<string, unknown>).type === "permission") {
               messageNode = <PermissionCard perm={msg} />;
             } else {

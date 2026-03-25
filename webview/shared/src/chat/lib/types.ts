@@ -234,6 +234,8 @@ export interface MessagePart {
   type?: string;
   text?: string;
   content?: string;
+  assistantMessage?: string;
+  message?: string;
   reasoning?: string;
   thought?: string;
   thinking?: string;
@@ -390,8 +392,10 @@ export interface SubagentDetail extends SubagentSummary {
 
 export interface Message {
   role?: string;
+  responseType?: StructuredResponseType;
   parts?: MessagePart[];
   text?: string;
+
   content?: string;
   rawResponse?: unknown;
   reasoningEvents?: ReasoningEvent[];

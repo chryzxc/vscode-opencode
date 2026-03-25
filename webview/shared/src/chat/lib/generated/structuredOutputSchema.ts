@@ -11,6 +11,7 @@ export type StructuredResponseType =
   | "subagents"
   | "question"
   | "todo_update"
+  | "system"
   | "data"
   | "error";
 
@@ -48,11 +49,12 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "subagents",
           "question",
           "todo_update",
+          "system",
           "data",
           "error",
         ],
         description:
-          "Primary response classifier for UI behavior. Must be one of the enum values and must never be empty. Use exactly one primary intent per turn: message for normal chat replies (including greetings), implementation_plan for implementation plan payloads (prefer plan.file when a markdown file is written, include plan.content when markdown text is available), progress_update for machine-readable progress steps, subagents for background-agent state, question for clarification prompts, todo_update for task checklist changes, data for structured data cards, and error for failures.",
+          "Primary response classifier for UI behavior. Must be one of the enum values and must never be empty. Use exactly one primary intent per turn: message for normal chat replies (including greetings), implementation_plan for implementation plan payloads (prefer plan.file when a markdown file is written, include plan.content when markdown text is available), progress_update for machine-readable progress steps, subagents for background-agent state, question for clarification prompts, todo_update for task checklist changes, system for top-level context or reminders, data for structured data cards, and error for failures.",
         examples: [
           "message",
           "implementation_plan",
@@ -60,10 +62,12 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "subagents",
           "question",
           "todo_update",
+          "system",
           "data",
           "error",
         ],
       },
+
       assistantMessage: {
         type: "string",
         minLength: 1,
