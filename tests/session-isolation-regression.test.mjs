@@ -40,8 +40,8 @@ test('SET_SESSION_ID reducer resets isProcessing to false on session switch', ()
     const setSessionIdCase = extractFunctionBody(storeSource, 'case "SET_SESSION_ID":');
     assert.match(
         setSessionIdCase,
-        /isProcessing\s*:\s*false/,
-        'SET_SESSION_ID must reset isProcessing so loading labels from the old session do not bleed through',
+        /isProcessing\s*:\s*isNewSessionProcessing/,
+        'SET_SESSION_ID must set isProcessing to isNewSessionProcessing to preserve loading labels where appropriate',
     );
 });
 

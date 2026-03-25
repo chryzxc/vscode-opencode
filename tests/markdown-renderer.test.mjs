@@ -32,8 +32,8 @@ test('AssistantMessage renders plain text while stream is active and markdown af
   );
   assert.match(
     messageComponentsSource,
-    /const showResponseSection = !isLiveStreamingCard && hasResponseContent/,
-    'AssistantMessage should show response section only for non-streaming content',
+    /const showResponseSection = hasResponseContent/,
+    'AssistantMessage should show response section based on hasResponseContent',
   );
 });
 

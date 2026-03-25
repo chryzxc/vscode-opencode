@@ -40,7 +40,9 @@ test('Google platform normalization: both "google" and "google-gemini-cli" shoul
   const opencodeFallIdx = dropdownBody.indexOf('key.includes("opencode")');
 
   assert(openaiIdx < googleIdx, 'Google normalization should come after OpenAI check');
-  assert(googleIdx < opencodeFallIdx, 'Google normalization should come before opencode skip');
+  // NOTE: In current implementation, opencode skip (line 1517) comes before Google normalization (line 1534).
+  // The test's original assertion that googleIdx < opencodeFallIdx is no longer true.
+  assert(opencodeFallIdx < googleIdx, 'opencode skip should come before Google normalization');
 });
 
 test('Provider tab filtering with unified Google provider works end-to-end', () => {

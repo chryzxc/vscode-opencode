@@ -226,6 +226,31 @@ function injectFileIcons(container: HTMLElement): void {
 
 
 /**
+ * Pre-processes markdown to fix numbered lists that have blank lines between items.
+ * This ensures that AI responses with formatted numbered lists render correctly.
+ *
+ * Example:
+ *   Input:  "1. First item\n\n2. Second item\n\n3. Third item"
+ *   Output: "1. First item\n2. Second item\n3. Third item"
+ *
+ * The regex matches:
+ * - Optional whitespace at the start of a line
+ * - A number followed by a period and space (the list marker)
+ * - Content after the marker
+ * - Optional whitespace at the end
+ * - One or more blank lines (followed by another list marker)
+ */
+function preprocessMarkdown(content: string): string {
+  // Remove blank lines between numbered list items
+  // This regex finds lines that start with "N. " pattern followed by blank lines
+  // and removes those blank lines to merge consecutive list items
+  return content.replace(
+    /(^|\n)(\d+\.\s+.*?)(?:\n\s*\n)+(?=\d+\.\s+)/gm,
+    '$1$2\n'
+  );
+}
+
+/**
  * A reusable, stylish Markdown renderer with syntax highlighting.
  */
 export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps>(({
@@ -259,11 +284,14 @@ export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps
     }
   }, [content, isPreParsed]);
 
+  // Pre-process markdown to fix numbered lists with blank lines
+  const processedContent = isPreParsed ? content : preprocessMarkdown(content || '');
+
   const html = isPreParsed
     ? content
     : isInline
-      ? marked.parseInline(content || '')
-      : marked.parse(content || '');
+      ? marked.parseInline(processedContent)
+      : marked.parse(processedContent);
 
   const Tag = isInline ? 'span' : 'div';
 
