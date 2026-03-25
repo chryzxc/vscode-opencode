@@ -761,9 +761,9 @@ export class ChatViewProvider
 
             // Fetch and send commands list for SkillsPanel
             // Load in background like models to avoid blocking bootstrap
-             void this.handleGetCommands().catch((error) => {
-               this.logger.warn("Background commands loading failed during ready bootstrap", { err: error });
-             });
+            void this.handleGetCommands().catch((error) => {
+              this.logger.warn("Background commands loading failed during ready bootstrap", { err: error });
+            });
 
             // Resolve the active session before sending initState so that
             // per-session settings (agent / model / thinking) are applied first.
@@ -1573,10 +1573,10 @@ export class ChatViewProvider
           structured?.kind || "unknown", // eventType
           responseContext, // context
         );
-        } catch (error) {
-          // Silently ignore logging errors to prevent stream interruption
-          this.logger.warn("Failed to log stream event", { err: error });
-        }
+      } catch (error) {
+        // Silently ignore logging errors to prevent stream interruption
+        this.logger.warn("Failed to log stream event", { err: error });
+      }
 
       // Forward todo_update stream events as todoUpdate postMessage to webview
       if (enrichedEvent?.structuredOutput?.responseType === "todo_update") {
@@ -1601,16 +1601,16 @@ export class ChatViewProvider
             continue;
           }
 
-            this.view?.webview.postMessage({
-              type: "todoUpdate",
-              action: "update",
-              item: {
-                id,
-                text,
-                status,
-                ...(sessionId ? { sessionId } : {}),
-              },
-            });
+          this.view?.webview.postMessage({
+            type: "todoUpdate",
+            action: "update",
+            item: {
+              id,
+              text,
+              status,
+              ...(sessionId ? { sessionId } : {}),
+            },
+          });
         }
         // Persist full todo snapshot for session after forwarding updates
         try {
@@ -1694,10 +1694,10 @@ export class ChatViewProvider
       // Stamp the active session ID onto every event so the webview can always
       // perform a reliable session-scoped filter even when the raw event payload
       // does not carry a sessionId field.
-       this.view?.webview.postMessage({
-         type: "streamEvent",
-         event: { ...enrichedEvent, sessionId: this.currentSessionId },
-       });
+      this.view?.webview.postMessage({
+        type: "streamEvent",
+        event: { ...enrichedEvent, sessionId: this.currentSessionId },
+      });
       if (this.shouldVerboseStreamDebug()) {
         this.logger.debug("streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
@@ -1736,17 +1736,17 @@ export class ChatViewProvider
             if (callID) {
               this.getDiffStats(filePath)
                 .then((stats) => {
-                   if (stats && this.view) {
-                     this.view.webview.postMessage({
-                       type: "streamEventEnrich",
-                       callID,
-                       diffStats: stats,
-                     });
-                   }
+                  if (stats && this.view) {
+                    this.view.webview.postMessage({
+                      type: "streamEventEnrich",
+                      callID,
+                      diffStats: stats,
+                    });
+                  }
                 })
-                 .catch((err) => {
-                   this.logger.error("Failed to get diff stats async", { err });
-                 });
+                .catch((err) => {
+                  this.logger.error("Failed to get diff stats async", { err });
+                });
             }
           }
         }
@@ -2955,32 +2955,24 @@ export class ChatViewProvider
       this.structuredOutputMode === "outputFormat"
         ? "outputFormat"
         : "format";
-    const primaryAttempt = await callPrompt(withSchema(primaryMode));
-    if (!primaryAttempt.error) {
-      return primaryAttempt;
+
+    // Try structured output with 1 retry (handled by API internally via retryCount)
+    const attempt = await callPrompt(withSchema(primaryMode));
+    if (!attempt.error) {
+      return attempt;
     }
 
-    if (!this.isStructuredFormatUnsupportedError(primaryAttempt.error)) {
-      return primaryAttempt;
-    }
-
-    const secondaryMode: "format" | "outputFormat" =
-      primaryMode === "format" ? "outputFormat" : "format";
-    const secondaryAttempt = await callPrompt(withSchema(secondaryMode));
-    if (!secondaryAttempt.error) {
-      this.structuredOutputMode = secondaryMode;
-      return secondaryAttempt;
-    }
-
-    if (this.isStructuredFormatUnsupportedError(secondaryAttempt.error)) {
+    // If structured output failed, immediately fall back to plain text
+    if (this.isStructuredFormatUnsupportedError(attempt.error)) {
       this.structuredOutputMode = "disabled";
       log.warn(
-        "Structured output format is not supported by this OpenCode server version. Falling back to plain prompts.",
+        "Structured output failed with this model. Falling back to plain text.",
       );
       return callPrompt(body as Record<string, unknown>);
     }
 
-    return secondaryAttempt;
+    // Return other errors as-is
+    return attempt;
   }
 
   private shouldUseStructuredOutput(
@@ -6199,7 +6191,7 @@ export class ChatViewProvider
   ): Promise<void> {
     // Cache for retry
     this.lastSendMessageArgs = { text, files, contexts, images, agent };
-    
+
     // We'll set processing state once we have a definitive session ID below
 
     this.logger.info("Processing request started", {
@@ -6384,7 +6376,7 @@ export class ChatViewProvider
 
       // Send the message using the SDK
       const startTime = Date.now();
-    const useStructuredOutput =
+      const useStructuredOutput =
         !retryWithoutStructuredOutput &&
         this.shouldUseStructuredOutput(
           (parts as Array<Record<string, unknown>>)
@@ -9899,10 +9891,10 @@ export class ChatViewProvider
         this.currentSessionId = sessionId;
       }
       return sessionId;
-        } catch (error) {
-          this.logger.error("Failed to resolve queue session ID", { err: error });
-          return undefined;
-        }
+    } catch (error) {
+      this.logger.error("Failed to resolve queue session ID", { err: error });
+      return undefined;
+    }
   }
 
   private enqueuePrompt(

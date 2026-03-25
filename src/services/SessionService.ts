@@ -53,6 +53,7 @@ import * as vscode from "vscode";
 import { OpencodeServerManager } from "./OpencodeServerManager";
 import type { Session } from "@opencode-ai/sdk";
 import { createLogger } from "../utils/Logger";
+import { restoreCheckpointIfPresent } from "./CheckpointRestore";
 
 const log = createLogger("SessionService");
 const MAX_CACHED_MESSAGES_PER_SESSION = 200;
@@ -1004,7 +1005,16 @@ export class SessionService {
   ) {
     // Start loading persisted state asynchronously
     // This ensures state is ready before we need it
-    this.initializationPromise = this.loadPersistedState();
+    // Try restoring any workspace-level checkpoint first (safe no-op)
+    this.initializationPromise = (async () => {
+      try {
+        await restoreCheckpointIfPresent(this.context);
+      } catch (e) {
+        // proceed even if restore fails; loadPersistedState will handle existing workspaceState
+        // We intentionally do not throw here to avoid breaking activation
+      }
+      await this.loadPersistedState();
+    })();
   }
 
   /**

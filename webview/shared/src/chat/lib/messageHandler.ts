@@ -1041,6 +1041,15 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     ];
   }
 
+  // Text-based fallback: detect numbered question lists in plain-text message responses
+  if (interactiveEvents.length === 0 && !isInteractiveResponseType) {
+    const text = assistantMessage || message || '';
+    const parsed = parseNumberedQuestionsFromText(text);
+    if (parsed.length >= 2) {
+      interactiveEvents = parsed;
+    }
+  }
+
   const subagentsRaw =
     sanitizedRec.subagents ?? (rec.spawnedSubagents as unknown);
   const normalizeSubagentStatus = (value: string): SubagentSummary['status'] => {
@@ -1232,6 +1241,33 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     subagents: subagents.length > 0 ? subagents : undefined,
     subagentsDelta
   };
+}
+
+function parseNumberedQuestionsFromText(text: string): StructuredInteractiveEvent[] {
+  if (!text) return [];
+  const lines = text.split('\n');
+  const events: StructuredInteractiveEvent[] = [];
+  let index = 0;
+  
+  for (const line of lines) {
+    const match = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (match) {
+      const questionText = match[1].trim();
+      if (questionText) {
+        events.push({
+          type: 'question',
+          id: `interactive-${Date.now()}-fallback-${index++}`,
+          title: "Question",
+          question: questionText,
+          options: [],
+          allowCustomInput: true,
+        });
+      }
+    }
+  }
+
+  // Only return if we found 2 or more numbered questions (to avoid false positives on normal lists)
+  return events.length >= 2 ? events : [];
 }
 
 // Normalize incoming todo-like records into a canonical Todo shape used by the

@@ -466,7 +466,7 @@ class Logger {
    */
   sessionEvent(
     category: string,
-    event: "create" | "load" | "switch" | "delete" | "persist",
+    event: "create" | "load" | "switch" | "delete" | "persist" | "rename",
     sessionId: string,
     context?: Record<string, unknown>,
   ): void {
@@ -534,7 +534,7 @@ export function createLogger(category: string) {
       logger.tokenUsage(category, providerId, inputTokens, outputTokens, context),
     serverEvent: (event: "start" | "stop" | "restart" | "error" | "connect" | "disconnect", context?: Record<string, unknown>) =>
       logger.serverEvent(category, event, context),
-    sessionEvent: (event: "create" | "load" | "switch" | "delete" | "persist", sessionId: string, context?: Record<string, unknown>) =>
+    sessionEvent: (event: "create" | "load" | "switch" | "delete" | "persist" | "rename", sessionId: string, context?: Record<string, unknown>) =>
       logger.sessionEvent(category, event, sessionId, context),
   };
 }

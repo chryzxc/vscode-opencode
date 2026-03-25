@@ -1,5 +1,5 @@
 import { Check, Copy, Sparkles, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { cn } from "@/utils";
@@ -30,6 +30,7 @@ export function SubagentDetailModal({
 	colorClass,
 }: SubagentDetailModalProps) {
 	const [copied, setCopied] = useState(false);
+	const timelineScrollRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
 		if (!isOpen) return;
@@ -41,6 +42,13 @@ export function SubagentDetailModal({
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
 	}, [isOpen, onClose]);
+
+	// Auto-scroll timeline to latest activity
+	useEffect(() => {
+		if (timelineScrollRef.current && detail.timelineEvents?.length > 0) {
+			timelineScrollRef.current.scrollTop = timelineScrollRef.current.scrollHeight;
+		}
+	}, [detail.timelineEvents?.length]);
 
 	if (!isOpen) return null;
 
@@ -188,7 +196,10 @@ export function SubagentDetailModal({
 						</div>
 					</div>
 
-					<div className="order-1 w-full shrink-0 max-h-[38vh] overflow-y-auto overflow-x-hidden border-b border-oc-border bg-oc-bg-soft/40 p-3 sm:p-4 lg:order-2 lg:max-h-none lg:w-80 lg:border-b-0 lg:border-l lg:p-5">
+					<div
+						ref={timelineScrollRef}
+						className="order-1 w-full shrink-0 max-h-[38vh] overflow-y-auto overflow-x-hidden border-b border-oc-border bg-oc-bg-soft/40 p-3 sm:p-4 lg:order-2 lg:max-h-none lg:w-80 lg:border-b-0 lg:border-l lg:p-5"
+					>
 						<div className="flex flex-col gap-4">
 							<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
 								Timeline ({detail.timelineEvents?.length || 0})

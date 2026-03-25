@@ -68,6 +68,13 @@ vscode-opencode/
 - Do not emit raw `[BACKGROUND TASK ...]` text for subagents when structured output fields can carry the same state.
 - Do not silently trim information density from the chat UI just to simplify layout.
 
+## GIT SAFETY — MANDATORY (ALL AGENTS)
+**NEVER run `git restore`, `git checkout -- <file>`, `git clean -f`, or any command that discards working tree changes without EXPLICIT user instruction.**
+- This repo is actively worked on by multiple agents across separate sessions. Unstaged changes may be in-progress work from another agent that has not yet been committed or stashed.
+- Before ANY git operation that could discard working tree state, run `git status` and `git diff --stat` first. If there are unstaged/untracked changes, STOP and ask the user what to do with them.
+- `git restore <file>` permanently destroys unstaged changes with no recovery path. This has caused irreversible loss of feature work in this project.
+- The only safe alternatives: `git stash` (preserves changes), or explicit user confirmation that discarding is intentional.
+
 ## UNIQUE STYLES
 - Providers are the enforcement layer for user-visible product contracts; services stay reusable and backend-lean.
 - The chat UI is feature-dense by design: sticky stats, right-side panels, queue controls, subagent detail, quotas, MCP/LSP status.

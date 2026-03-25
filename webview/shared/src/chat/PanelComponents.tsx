@@ -1512,17 +1512,23 @@ export function ModelDropdown() {
     const providers = (quotaData?.platforms ?? [])
       .map((p) => {
         const key = p.platform.toLowerCase();
-        // Specific normalization for known broad providers
+
+        // Skip opencode platform in mapped providers since we have a dedicated persistent tab
+        if (key.includes("opencode")) return null;
+
+        // Use the title first (e.g. "Z.ai Coding Plan") as it's more specific
+        if (p.title && !p.title.toLowerCase().includes("account quota")) {
+          return p.title;
+        }
+
+        // Fallback to specific normalization for known broad providers
         if (key === "openai") return "OpenAI";
         if (key === "zai") return "Z.ai";
         if (key === "zhipu") return "Zhipu AI";
         if (key === "copilot") return "GitHub Copilot";
         if (key === "google" || key === "google-gemini-cli") return "Google";
 
-        // Skip opencode platform in mapped providers since we have a dedicated persistent tab
-        if (key.includes("opencode")) return null;
-
-        // Fallback to title or platform name for other subscriptions (e.g. "Z.ai Coding Plan")
+        // Last resort: use platform name with generic suffix cleanup
         return p.title?.replace(" Account Quota", "") ?? p.platform;
       })
       .filter((name): name is string => name !== null);
@@ -2578,6 +2584,15 @@ export function InputWrapper() {
             </div>
 
             <div className="relative">
+              {Object.keys(pendingAnswers).length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-1.5 p-2 bg-[var(--oc-panel)] rounded-md border border-dashed border-[var(--oc-border)]">
+                  {Object.entries(pendingAnswers).map(([eventId, data], idx) => (
+                    <span key={eventId} className="rounded bg-[var(--oc-panel-soft)] px-1.5 py-0.5 text-[10px] text-[var(--oc-text-muted)] border border-[var(--oc-border-soft)]" title={data.text}>
+                      Q{idx + 1}: <span className="font-medium text-[var(--oc-text-soft)] truncate max-w-[120px] inline-block align-bottom">{data.text}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
                 <MarkdownRenderer
                   content={

@@ -117,11 +117,11 @@ function patchMessageRetryState(
   const nextParts =
     existingParts.length > 0
       ? existingParts.map((part, index) => {
-          if (index === 0 && (part.type === "text" || !part.type)) {
-            return { ...part, type: "text", text: retryMessage };
-          }
-          return part;
-        })
+        if (index === 0 && (part.type === "text" || !part.type)) {
+          return { ...part, type: "text", text: retryMessage };
+        }
+        return part;
+      })
       : [{ type: "text", text: retryMessage }];
   return {
     ...message,
@@ -1227,20 +1227,20 @@ function buildDisplayEvents(
       const fallbackEdit = Array.isArray(message?.edits)
         ? filePath
           ? message.edits.find(
-              (edit) =>
-                normalizePathForMatch(edit?.file) ===
-                normalizePathForMatch(filePath),
-            )
+            (edit) =>
+              normalizePathForMatch(edit?.file) ===
+              normalizePathForMatch(filePath),
+          )
           : message.edits[0]
         : undefined;
       const fallbackDiffStats =
         fallbackEdit &&
-        (typeof fallbackEdit.added === "number" ||
-          typeof fallbackEdit.deleted === "number")
+          (typeof fallbackEdit.added === "number" ||
+            typeof fallbackEdit.deleted === "number")
           ? {
-              added: Math.max(0, Number(fallbackEdit.added) || 0),
-              deleted: Math.max(0, Number(fallbackEdit.deleted) || 0),
-            }
+            added: Math.max(0, Number(fallbackEdit.added) || 0),
+            deleted: Math.max(0, Number(fallbackEdit.deleted) || 0),
+          }
           : undefined;
       const diffStats = event.diffStats || fallbackDiffStats;
 
@@ -1248,8 +1248,8 @@ function buildDisplayEvents(
       const summary = filePath
         ? fileName || filePath
         : parsed.summary ||
-          metaText ||
-          (parsed.label === "event" ? cleanedRawTitle : "");
+        metaText ||
+        (parsed.label === "event" ? cleanedRawTitle : "");
       const description =
         filePath || parsed.summary
           ? metaText
@@ -1260,7 +1260,7 @@ function buildDisplayEvents(
         filePath && fileName && filePath !== fileName ? filePath : undefined;
       const viewDiffFile =
         event.status === "done" &&
-        (diffStats || /edit|writ|modif|updat|patch/i.test(rawTitle))
+          (diffStats || /edit|writ|modif|updat|patch/i.test(rawTitle))
           ? filePath || message?.edits?.[0]?.file
           : undefined;
 
@@ -1283,6 +1283,19 @@ function buildDisplayEvents(
   const collapsed: DisplayEvent[] = [];
   for (const event of rawEvents) {
     const previous = collapsed[collapsed.length - 1];
+
+    if (previous && previous.kind === "thinking" && event.kind === "thinking") {
+      previous.updateCount += 1;
+      const prevDetail = previous.detail || "";
+      const currDetail = event.detail || "";
+      previous.detail = prevDetail && currDetail
+        ? `${prevDetail}\n\n${currDetail}`
+        : prevDetail || currDetail;
+      previous.summary = event.summary || previous.summary;
+      if (event.status === "done") previous.status = "done";
+      continue;
+    }
+
     const isDuplicate =
       !!previous &&
       previous.kind === event.kind &&
@@ -1477,11 +1490,11 @@ function getAgentName(
  */
 function getTokenInfo(message: Message | undefined):
   | {
-      input?: number;
-      output?: number;
-      reasoning?: number;
-      cache?: { read?: number; write?: number };
-    }
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: { read?: number; write?: number };
+  }
   | undefined {
   if (!message) {
     return undefined;
@@ -1810,9 +1823,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     const maxRawDebugChars = 30000;
     const withCap = (value: string): string =>
       value.length > maxRawDebugChars
-        ? `${value.slice(0, maxRawDebugChars)}\n...<truncated ${
-            value.length - maxRawDebugChars
-          } chars>`
+        ? `${value.slice(0, maxRawDebugChars)}\n...<truncated ${value.length - maxRawDebugChars
+        } chars>`
         : value;
     const raw = message?.rawResponse;
     if (typeof raw === "undefined") {
@@ -1840,14 +1852,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const plainTextFallback = message?.plainTextFallback === true;
   const plainTextFallbackTooltip = plainTextFallback
     ? [
-        message.plainTextFallbackMessage ||
-          "Structured output failed for this turn. Showing plain text response.",
-        message.plainTextFallbackReason
-          ? `Reason: ${message.plainTextFallbackReason}`
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n")
+      message.plainTextFallbackMessage ||
+      "Structured output failed for this turn. Showing plain text response.",
+      message.plainTextFallbackReason
+        ? `Reason: ${message.plainTextFallbackReason}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n")
     : "";
   const isLiveStreamingCard = !message && !!streaming?.isActive;
   const responseBodyClass = isLiveStreamingCard
@@ -2002,8 +2014,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         style={
                           agentColor
                             ? {
-                                color: agentColor,
-                              }
+                              color: agentColor,
+                            }
                             : undefined
                         }
                       >
@@ -2357,7 +2369,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
                       {!isStreamingActive &&
                         displayEvents.length >
-                          MAX_VISIBLE_COMPLETED_ACTIVITY && (
+                        MAX_VISIBLE_COMPLETED_ACTIVITY && (
                           <button
                             type="button"
                             className="mt-2 text-[11px] font-mono text-oc-accent hover:underline"
@@ -2371,8 +2383,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           >
                             {hasCompletedCondensedActivity
                               ? "Show " +
-                                hiddenActivityEventCount +
-                                " older events"
+                              hiddenActivityEventCount +
+                              " older events"
                               : "Show fewer events"}
                           </button>
                         )}
@@ -2410,44 +2422,44 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="text-oc-xs font-semibold text-oc-text-soft uppercase tracking-widest font-mono">
                           {plan.title || "Implementation Plan"}
+                        </div>
+                        {isRevisedPlan && (
+                          <span className="rounded bg-oc-blue/20 text-oc-blue px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                            Revised
+                          </span>
+                        )}
+                        {planStatus === "Executing" && (
+                          <span className="rounded bg-oc-green/20 text-oc-green px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                            Approved
+                          </span>
+                        )}
+                        {planStatus === "Revision Requested" && (
+                          <span className="rounded bg-oc-yellow/20 text-oc-yellow px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                            Revision Requested
+                          </span>
+                        )}
+                        {planStatus === "Draft" && (
+                          <span className="rounded border border-oc-border text-oc-text-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                            Draft
+                          </span>
+                        )}
                       </div>
-                      {isRevisedPlan && (
-                        <span className="rounded bg-oc-blue/20 text-oc-blue px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                          Revised
-                        </span>
-                      )}
-                      {planStatus === "Executing" && (
-                        <span className="rounded bg-oc-green/20 text-oc-green px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                          Approved
-                        </span>
-                      )}
-                      {planStatus === "Revision Requested" && (
-                        <span className="rounded bg-oc-yellow/20 text-oc-yellow px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                          Revision Requested
-                        </span>
-                      )}
-                      {planStatus === "Draft" && (
-                        <span className="rounded border border-oc-border text-oc-text-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                          Draft
-                        </span>
+                      {plan.file && (
+                        <div className="flex items-center gap-1.5 text-[11px] font-mono text-oc-text-muted">
+                          <FileIcon filePath={plan.file} />
+                          <span className="truncate">{plan.file}</span>
+                        </div>
                       )}
                     </div>
-                    {plan.file && (
-                      <div className="flex items-center gap-1.5 text-[11px] font-mono text-oc-text-muted">
-                        <FileIcon filePath={plan.file} />
-                        <span className="truncate">{plan.file}</span>
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    title="Core Feature: View Implementation Plan"
-                    onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
-                    className="oc-plan-btn shrink-0"
-                  >
-                    <FileTextIcon className="h-3 w-3" />
-                    View Plan
-                  </button>
+                    <button
+                      type="button"
+                      title="Core Feature: View Implementation Plan"
+                      onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
+                      className="oc-plan-btn shrink-0"
+                    >
+                      <FileTextIcon className="h-3 w-3" />
+                      View Plan
+                    </button>
                   </div>
                 </div>
               )}
@@ -2487,22 +2499,22 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 message.retryWithoutStructuredOutput === true ||
                 isStructuredOutputFailureMessage(message.error);
               return (
-            <ErrorBanner
-              message={message.error}
-              retryLabel={
-                retryWithoutStructuredOutput
-                  ? "Retry Without Structured Output"
-                  : "Retry"
-              }
-              retryHint={
-                retryWithoutStructuredOutput
-                  ? "This will resend your last prompt as plain text (no json_schema)."
-                  : undefined
-              }
-              onRetry={() => {
-                retryLastMessage(retryWithoutStructuredOutput);
-              }}
-            />
+                <ErrorBanner
+                  message={message.error}
+                  retryLabel={
+                    retryWithoutStructuredOutput
+                      ? "Retry Without Structured Output"
+                      : "Retry"
+                  }
+                  retryHint={
+                    retryWithoutStructuredOutput
+                      ? "This will resend your last prompt as plain text (no json_schema)."
+                      : undefined
+                  }
+                  onRetry={() => {
+                    retryLastMessage(retryWithoutStructuredOutput);
+                  }}
+                />
               );
             })()}
           </div>

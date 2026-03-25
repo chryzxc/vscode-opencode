@@ -116,3 +116,21 @@ test('WebView parser reads structured output from explicit channels and structur
     'stream parser should not parse generic content/text/output/result as structured payload',
   );
 });
+
+test('WebView parser uses text-based fallback for numbered questions when responseType is not question', () => {
+  const normalizeBody = extractFunctionBody(
+    messageHandlerSource,
+    'function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined',
+  );
+
+  assert.match(
+    normalizeBody,
+    /parseNumberedQuestionsFromText/,
+    'WebView should attempt text-based parsing for numbered questions'
+  );
+  assert.match(
+    normalizeBody,
+    /interactiveEvents\.length === 0/,
+    'Text-based parsing should only occur if no interactive events were explicitly provided'
+  );
+});
