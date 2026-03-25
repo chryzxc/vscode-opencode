@@ -686,12 +686,12 @@ export class ChatViewProvider
       savedModel.providerID &&
       savedModel.modelID
     ) {
-      console.log(
+      this.logger.info(
         `[ChatViewProvider] Loaded persisted model: ${savedModel.modelID} (${savedModel.providerID})`,
       );
       this.selectedModel = savedModel;
     } else if (savedModel) {
-      console.warn(
+      this.logger.warn(
         "[ChatViewProvider] Ignoring invalid persisted model selection. Expected {providerID, modelID}.",
       );
     }
@@ -702,7 +702,7 @@ export class ChatViewProvider
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void | Thenable<void> {
-    console.log("[ChatViewProvider] resolving webview view");
+    this.logger.info("[ChatViewProvider] resolving webview view");
     this.view = webviewView;
     this.isBootstrappingWebview = false;
     this.hasInitializedWebview = false;
@@ -749,10 +749,7 @@ export class ChatViewProvider
                 await this.reconcileSelectedModelSelection(models);
               })
               .catch((error) => {
-                console.warn(
-                  "[ChatViewProvider] Background model discovery failed during ready bootstrap:",
-                  error,
-                );
+                this.logger.warn("Background model discovery failed during ready bootstrap", { err: error });
               });
 
             // Sync default agent selection
@@ -763,12 +760,9 @@ export class ChatViewProvider
 
             // Fetch and send commands list for SkillsPanel
             // Load in background like models to avoid blocking bootstrap
-            void this.handleGetCommands().catch((error) => {
-              console.warn(
-                "[ChatViewProvider] Background commands loading failed during ready bootstrap:",
-                error,
-              );
-            });
+             void this.handleGetCommands().catch((error) => {
+               this.logger.warn("Background commands loading failed during ready bootstrap", { err: error });
+             });
 
             // Resolve the active session before sending initState so that
             // per-session settings (agent / model / thinking) are applied first.
@@ -800,22 +794,22 @@ export class ChatViewProvider
                 type: "thinkingLevelUpdate",
                 level: bootstrapThinkingLevel,
               });
-              // Fire-and-forget: fetch and broadcast current model capabilities on bootstrap
-              void this.modelCapabilitiesService
-                .getCapabilities(
-                  this.selectedModel?.providerID ?? "",
-                  this.selectedModel?.modelID ?? "",
-                )
-                .then((capability) => {
-                  this.view?.webview.postMessage({
-                    type: "modelCapabilityUpdate",
-                    capability: capability ?? null,
-                  });
-                })
-                .catch(() => {
-                  // Silently ignore capability fetch failures during bootstrap
-                });
             }
+            // Fire-and-forget: fetch and broadcast current model capabilities on bootstrap (unconditional)
+            void this.modelCapabilitiesService
+              .getCapabilities(
+                this.selectedModel?.providerID ?? "",
+                this.selectedModel?.modelID ?? "",
+              )
+              .then((capability) => {
+                this.view?.webview.postMessage({
+                  type: "modelCapabilityUpdate",
+                  capability: capability ?? null,
+                });
+              })
+              .catch(() => {
+                // Silently ignore capability fetch failures during bootstrap
+              });
 
             // Send initial budget status
             this.sendBudgetInfo();
@@ -1026,10 +1020,7 @@ export class ChatViewProvider
             } ||
             {};
           if (!incoming.providerID || !incoming.modelID) {
-            console.warn(
-              "[ChatViewProvider] Ignoring invalid model selection payload; providerID and modelID are required.",
-              incoming,
-            );
+            this.logger.warn("Ignoring invalid model selection payload; providerID and modelID are required.", { incoming });
             break;
           }
           let providerName: string | undefined = incoming.providerName;
@@ -1254,13 +1245,34 @@ export class ChatViewProvider
         case "log": {
           const { level, message: logMsg, category, context } = message;
           const prefix = category ? `[${category}]` : "[WebView]";
-          this.logger.log(
-            level || "info",
-            typeof logMsg === "string" && logMsg.length > 2000
-              ? `${logMsg.slice(0, 2000)}...[truncated ${logMsg.length - 2000} chars]`
-              : logMsg,
-            { ...context, source: prefix },
-          );
+          try {
+            const levelStr = (level || "info").toLowerCase();
+            const msgStr =
+              typeof logMsg === "string"
+                ? logMsg.length > 2000
+                  ? `${logMsg.slice(0, 2000)}...[truncated ${logMsg.length - 2000} chars]`
+                  : logMsg
+                : JSON.stringify(logMsg);
+            const ctx = { ...(context || {}), source: prefix };
+            switch (levelStr) {
+              case "error":
+                this.logger.error(msgStr, ctx as Record<string, unknown>);
+                break;
+              case "warn":
+                this.logger.warn(msgStr, ctx as Record<string, unknown>);
+                break;
+              case "debug":
+                this.logger.debug(msgStr, ctx as Record<string, unknown>);
+                break;
+              case "info":
+              default:
+                this.logger.info(msgStr, ctx as Record<string, unknown>);
+                break;
+            }
+          } catch (err) {
+            // If logging from webview fails, don't let it crash the provider
+            this.logger.warn("Failed to forward webview log message", { err });
+          }
           break;
         }
         case "refreshQuota": {
@@ -1325,7 +1337,7 @@ export class ChatViewProvider
                   messages: messages,
                 });
               } catch (err) {
-                console.error("Failed to load messages for retry", err);
+                this.logger.error("Failed to load messages for retry", { err });
               }
             }
             await this.handleSendMessage(
@@ -1478,14 +1490,9 @@ export class ChatViewProvider
           type: "subagentUpdate",
           ...subagentUpdate,
         });
-        void this.persistSubagentUpdateSnapshot(subagentUpdate).catch(
-          (persistError) => {
-            console.warn(
-              "[ChatViewProvider] Failed to persist subagent stream snapshot:",
-              persistError,
-            );
-          },
-        );
+        void this.persistSubagentUpdateSnapshot(subagentUpdate).catch((persistError) => {
+          this.logger.warn("Failed to persist subagent stream snapshot", { err: persistError });
+        });
       }
 
       // Track token usage from message.updated events
@@ -1544,10 +1551,10 @@ export class ChatViewProvider
           structured?.kind || "unknown", // eventType
           responseContext, // context
         );
-      } catch (error) {
-        // Silently ignore logging errors to prevent stream interruption
-        console.error("[ChatViewProvider] Failed to log stream event:", error);
-      }
+        } catch (error) {
+          // Silently ignore logging errors to prevent stream interruption
+          this.logger.warn("Failed to log stream event", { err: error });
+        }
 
       // Forward todo_update stream events as todoUpdate postMessage to webview
       if (enrichedEvent?.structuredOutput?.responseType === "todo_update") {
@@ -1658,7 +1665,7 @@ export class ChatViewProvider
             this.currentTodoItems = updatedItems;
           }
         } catch (err) {
-          console.warn("[ChatViewProvider] Failed to persist todo snapshot:", err);
+          this.logger.warn("Failed to persist todo snapshot", { err });
         }
       }
 
@@ -1670,7 +1677,7 @@ export class ChatViewProvider
          event: { ...enrichedEvent, sessionId: this.currentSessionId },
        });
       if (this.shouldVerboseStreamDebug()) {
-        console.log("[ChatViewProvider] streamEvent forwarded", {
+        this.logger.debug("streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
           kind: (enrichedEvent as any)?.structured?.kind || "unknown",
         });
@@ -1715,12 +1722,9 @@ export class ChatViewProvider
                      });
                    }
                 })
-                .catch((err) => {
-                  console.error(
-                    "[ChatViewProvider] Failed to get diff stats async:",
-                    err,
-                  );
-                });
+                 .catch((err) => {
+                   this.logger.error("Failed to get diff stats async", { err });
+                 });
             }
           }
         }
@@ -1838,7 +1842,7 @@ export class ChatViewProvider
         currentSessionId,
       });
     } catch (error) {
-      console.error("Failed to get sessions:", error);
+      this.logger.error("Failed to get sessions", { err: error });
     }
   }
 
@@ -1885,22 +1889,22 @@ export class ChatViewProvider
           type: "thinkingLevelUpdate",
           level: sessionThinkingLevel,
         });
-        // Fire-and-forget: fetch and broadcast current model capabilities on session load
-        void this.modelCapabilitiesService
-          .getCapabilities(
-            this.selectedModel?.providerID ?? "",
-            this.selectedModel?.modelID ?? "",
-          )
-          .then((capability) => {
-            this.view?.webview.postMessage({
-              type: "modelCapabilityUpdate",
-              capability: capability ?? null,
-            });
-          })
-          .catch(() => {
-            // Silently ignore capability fetch failures during session load
-          });
       }
+      // Fire-and-forget: fetch and broadcast current model capabilities on session load (unconditional)
+      void this.modelCapabilitiesService
+        .getCapabilities(
+          this.selectedModel?.providerID ?? "",
+          this.selectedModel?.modelID ?? "",
+        )
+        .then((capability) => {
+          this.view?.webview.postMessage({
+            type: "modelCapabilityUpdate",
+            capability: capability ?? null,
+          });
+        })
+        .catch(() => {
+          // Silently ignore capability fetch failures during session load
+        });
 
       // Reload history for the new session
       const rawMessages = await this.sessionService.getMessages(sessionId);
@@ -9800,8 +9804,9 @@ export class ChatViewProvider
       const fileUri = vscode.Uri.file(fullPath);
 
       await vscode.commands.executeCommand("vscode.open", fileUri);
-    } catch (error: any) {
-      vscode.window.showErrorMessage(`Failed to open file: ${error.message}`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : JSON.stringify(error);
+      vscode.window.showErrorMessage(`Failed to open file: ${msg}`);
     }
   }
 
@@ -9861,13 +9866,10 @@ export class ChatViewProvider
         this.currentSessionId = sessionId;
       }
       return sessionId;
-    } catch (error) {
-      console.error(
-        "[ChatViewProvider] Failed to resolve queue session ID:",
-        error,
-      );
-      return undefined;
-    }
+        } catch (error) {
+          this.logger.error("Failed to resolve queue session ID", { err: error });
+          return undefined;
+        }
   }
 
   private enqueuePrompt(
