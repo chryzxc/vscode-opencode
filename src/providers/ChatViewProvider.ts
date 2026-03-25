@@ -625,6 +625,7 @@ export class ChatViewProvider
   private readonly promptDebugBySession = new Map<string, Record<string, unknown>>();
   private readonly structuredValidationFailureCounters = new Map<string, number>();
   private readonly structuredOutputIncompatibleModelKeys = new Set<string>();
+  private capabilityFetchFailureCount = 0;
   private modelsFetchPromise: Promise<ChatModelOption[]> | null = null;
   private commandCatalog: ChatSlashCommand[] = [];
   private commandCatalogFetchedAt = 0;
@@ -808,7 +809,18 @@ export class ChatViewProvider
                 });
               })
               .catch(() => {
-                // Silently ignore capability fetch failures during bootstrap
+                // Minimal failure tracking for bootstrap capability fetches
+                try {
+                  this.capabilityFetchFailureCount = (this.capabilityFetchFailureCount || 0) + 1;
+                  if (this.capabilityFetchFailureCount >= 3) {
+                    vscode.window.showWarningMessage(
+                      "Could not fetch model capabilities. Thinking level control may be unavailable.",
+                    );
+                    this.capabilityFetchFailureCount = 0;
+                  }
+                } catch (e) {
+                  // best-effort only
+                }
               });
 
             // Send initial budget status
@@ -1062,6 +1074,7 @@ export class ChatViewProvider
               this.selectedModel.modelID,
             )
             .then(async (capability) => {
+              this.capabilityFetchFailureCount = 0;
               // Broadcast capability update (preserve existing behaviour)
               this.view?.webview.postMessage({
                 type: "modelCapabilityUpdate",
@@ -1079,9 +1092,7 @@ export class ChatViewProvider
                 const newVariants = capability?.variants;
                 const isStale =
                   persistedLevel &&
-                  newVariants &&
-                  newVariants.length > 0 &&
-                  !newVariants.includes(persistedLevel);
+                  (!Array.isArray(newVariants) || newVariants.length === 0 || !newVariants.includes(persistedLevel));
 
                 if (isStale) {
                   this.logger.warn("Clearing stale thinking level on model switch", {
@@ -1120,6 +1131,17 @@ export class ChatViewProvider
                 type: "modelCapabilityUpdate",
                 capability: null,
               });
+              try {
+                this.capabilityFetchFailureCount = (this.capabilityFetchFailureCount || 0) + 1;
+                if (this.capabilityFetchFailureCount >= 3) {
+                  vscode.window.showWarningMessage(
+                    "Could not fetch model capabilities. Thinking level control may be unavailable.",
+                  );
+                  this.capabilityFetchFailureCount = 0;
+                }
+              } catch (_) {
+                // best-effort only
+              }
             });
           break;
         }
@@ -1903,7 +1925,18 @@ export class ChatViewProvider
           });
         })
         .catch(() => {
-          // Silently ignore capability fetch failures during session load
+          // Minimal failure tracking for session-load capability fetches
+          try {
+            this.capabilityFetchFailureCount = (this.capabilityFetchFailureCount || 0) + 1;
+            if (this.capabilityFetchFailureCount >= 3) {
+              vscode.window.showWarningMessage(
+                "Could not fetch model capabilities. Thinking level control may be unavailable.",
+              );
+              this.capabilityFetchFailureCount = 0;
+            }
+          } catch (_) {
+            // best-effort only
+          }
         });
 
       // Reload history for the new session
