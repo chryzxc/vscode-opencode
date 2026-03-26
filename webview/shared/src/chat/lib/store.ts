@@ -328,7 +328,7 @@ function extractMessageTextForCanonical(message: Message): string {
   return textParts.join("\n").trim();
 }
 
-function isInternalTransportReminderMessage(message: Message): boolean {
+export function isInternalTransportReminderMessage(message: Message): boolean {
   const role = getMessageRoleForCanonical(message);
   if (role !== "user" && role !== "system") {
     return false;
@@ -339,17 +339,47 @@ function isInternalTransportReminderMessage(message: Message): boolean {
   if (!normalizedText) {
     return false;
   }
+
+  // Dynamic pattern matching: catch ANY message that starts with square brackets [like-this]
+  // or angle brackets <like-this> or comments <!-- like-this -->
+  // These are typically internal/system messages that should be rendered specially
+
   // Check for square-bracketed system messages at the start (e.g., [analyze-mode], [background task completed])
-  const bracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
-  const hasBracketPrefix = bracketPattern.test(normalizedText);
-  
-  return (
-    normalizedText.includes("<system-reminder>") ||
-    normalizedText.includes("<auto-slash-command>") ||
-    normalizedText.includes("<!-- omo_internal_initiator -->") ||
-    hasBracketPrefix ||
-    normalizedText.includes("background_output(task_id=")
-  );
+  const squareBracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
+  const hasSquareBracketPrefix = squareBracketPattern.test(normalizedText);
+
+  // Check for angle-bracketed system messages at the start (e.g., <auto-slash-command>, <system-reminder>)
+  const angleBracketPattern = /^<[a-z][a-z0-9_\-]*>/i;
+  const hasAngleBracketPrefix = angleBracketPattern.test(normalizedText);
+
+  // Check for comment-style system messages (e.g., <!-- omo_internal_initiator -->)
+  const commentPattern = /^<!--\s*[a-z][a-z0-9_\-]*/i;
+  const hasCommentPrefix = commentPattern.test(normalizedText);
+
+  return hasSquareBracketPrefix || hasAngleBracketPrefix || hasCommentPrefix;
+}
+
+// Simplified version that just checks text (for use in stream event handler)
+// Uses the same pattern matching logic as isInternalTransportReminderMessage
+export function hasSystemMessagePatternInText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  // Check for square-bracketed system messages at the start
+  const squareBracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
+  const hasSquareBracketPrefix = squareBracketPattern.test(trimmed);
+
+  // Check for angle-bracketed system messages at the start
+  const angleBracketPattern = /^<[a-z][a-z0-9_\-]*>/i;
+  const hasAngleBracketPrefix = angleBracketPattern.test(trimmed);
+
+  // Check for comment-style system messages
+  const commentPattern = /^<!--\s*[a-z][a-z0-9_\-]*/i;
+  const hasCommentPrefix = commentPattern.test(trimmed);
+
+  return hasSquareBracketPrefix || hasAngleBracketPrefix || hasCommentPrefix;
 }
 
 function hasAssistantPayloadForCanonical(message: Message): boolean {

@@ -1,6 +1,7 @@
 import type { Dispatch } from 'react';
 
 import type { AppAction } from './store';
+import { hasSystemMessagePatternInText } from './store';
 import type {
   AppState,
   BudgetInfo,
@@ -195,11 +196,38 @@ function looksLikeReasoningTrace(value: string, currentContent: string): boolean
     return false;
   }
 
-  // If substantial user-facing content is already underway, avoid reclassifying later chunks.
-  // Increased threshold from 40 to 200 to catch large reasoning chunks that leak early.
-  // Real user-facing responses are typically longer than 200 characters.
-  if (currentContent.trim().length > 200) {
-    return false;
+  // IMPORTANT: Don't disable reasoning detection based on content length
+  // This was causing reasoning to leak into the final response when it arrived
+  // after some real content had already started streaming. Instead, we use
+  // a more sophisticated check below to avoid reclassifying actual user content.
+  //
+  // Only skip detection if we have VERY substantial content (> 500 chars) AND
+  // the new chunk is clearly continuation content (not reasoning-like)
+  if (currentContent.trim().length > 500) {
+    // If we have a lot of content already, only classify as reasoning if
+    // the new chunk has VERY strong reasoning markers (high score)
+    const normalized = text.toLowerCase();
+    let score = 0;
+
+    const strongReasoningPhrases = [
+      "the user is asking",
+      "this is a straightforward informational question",
+      "not a request to implement",
+      "not related to their specific codebase",
+      "general question",
+      "i don't need to",
+    ];
+
+    strongReasoningPhrases.forEach((phrase) => {
+      if (normalized.includes(phrase)) {
+        score += 3;
+      }
+    });
+
+    // Require strong evidence (score >= 5) when we already have lots of content
+    if (score < 5) {
+      return false;
+    }
   }
 
   const normalized = text.toLowerCase();
@@ -3477,17 +3505,14 @@ function handleStreamEvent(
     asString(infoRecord?.role) ||
     asString(properties?.role) ||
     asString(partRecord?.role);
-  
-  // Note: System messages (like <auto-slash-command>) are now handled by
-  // converting their role from "user" to "system" in the canonicalization process.
-  // See canonicalizeMessagesForRender in store.ts
-  if (eventRole && eventRole === 'system') {
-    return; // System messages in stream events are ignored - they come via message history
-  }
-  
-  // Filter out other non-assistant roles
+
+  // Filter out non-assistant roles (system messages are handled in the switch cases below)
   if (eventRole && eventRole !== 'assistant') {
-    return;
+    // Don't filter out user messages - they may contain system message patterns
+    // that will be checked in the message.part.updated case
+    if (eventRole !== 'user') {
+      return;
+    }
   }
 
   const messageId =
@@ -3577,6 +3602,25 @@ function handleStreamEvent(
       if (!part) {
         dispatch({ type: 'SET_PROCESSING', payload: true });
         break;
+      }
+
+      // Check for system message patterns early (before any content processing)
+      // System messages like <auto-slash-command> come through as message.part.updated
+      // events with role="user" but should be rendered as system messages
+      const partText = asRichString(part.text) || asRichString(part.content) || '';
+      if (partText && hasSystemMessagePatternInText(partText)) {
+        const systemMessage: Message = {
+          role: 'system',
+          content: partText,
+          parts: [{ type: 'text', text: partText }],
+          time: { created: Date.now() },
+          info: { role: 'system', id: `sys-${Date.now()}` }
+        };
+        dispatch({
+          type: 'SET_MESSAGES',
+          payload: [...state.messages, systemMessage]
+        });
+        break; // Don't process this as regular content
       }
 
       const partType = normalizePartType(part.type);

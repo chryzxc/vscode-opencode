@@ -1339,15 +1339,29 @@ function buildDisplayEvents(
 
 
 
-export const SystemMessage = memo(function SystemMessage({ content }: { content: string }) {
+export const SystemMessage = memo(function SystemMessage({
+  content,
+  accentColor = "var(--oc-accent)",
+}: {
+  content: string;
+  accentColor?: string;
+}) {
   return (
-    <div className="oc-message-enter mb-6 px-10 flex flex-col gap-1.5 opacity-60 hover:opacity-100 transition-opacity">
-      <div className="flex items-center gap-2">
-        <Terminal className="h-2.5 w-2.5 text-oc-accent" />
-        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-oc-text-soft">Context</span>
-      </div>
-      <div className="pl-4 py-0.5 border-l border-oc-border/30 whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-oc-text-muted select-text max-h-[200px] overflow-y-auto">
-        {content}
+    <div className="oc-message-enter mb-6 px-8 sm:px-10">
+      <div className="opacity-90 transition-opacity hover:opacity-100">
+        <div
+          className="rounded-r-md border-l pr-2"
+          style={{
+            borderLeftColor: accentColor,
+            backgroundColor: `color-mix(in srgb, ${accentColor} 4%, transparent)`,
+          }}
+        >
+          <pre
+            className="max-h-[220px] overflow-y-auto whitespace-pre-wrap break-words bg-transparent py-1 pl-4 pr-2 font-mono text-[10.5px] leading-6 tracking-[0.01em] text-[#aeb7d8] select-text sm:pl-5"
+          >
+            {content}
+          </pre>
+        </div>
       </div>
     </div>
   );
@@ -2123,7 +2137,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 <span
                   className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-oc-border text-oc-text-muted"
                   title={plainTextFallbackTooltip}
-                  aria-label={plainTextFallbackTooltip}
                 >
                   <AlertCircle className="h-3.5 w-3.5 text-oc-yellow" />
                 </span>

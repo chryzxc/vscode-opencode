@@ -84,13 +84,15 @@ body.vscode-high-contrast-light {
   );
 
   /* Borders */
-  --oc-border: var(
-    --vscode-widget-border,
-    var(--vscode-panel-border, rgba(205, 214, 244, 0.08))
+  --oc-border: color-mix(
+    in srgb,
+    var(--vscode-widget-border, var(--vscode-panel-border, rgba(205, 214, 244, 0.08))) 52%,
+    transparent
   );
-  --oc-border-soft: var(
-    --vscode-panel-border,
-    var(--vscode-widget-border, rgba(205, 214, 244, 0.05))
+  --oc-border-soft: color-mix(
+    in srgb,
+    var(--vscode-panel-border, var(--vscode-widget-border, rgba(205, 214, 244, 0.05))) 34%,
+    transparent
   );
 
   /* Text */

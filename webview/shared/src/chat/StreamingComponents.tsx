@@ -144,21 +144,33 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
 export function StreamingCard({ isContiguous }: { isContiguous?: boolean }) {
   const { streaming, isProcessing } = useAppState();
 
-  // Show streaming card if:
-  // 1. Streaming state exists (regardless of content - show early)
-  // 2. AND either: processing is true, streaming is active, or there's any content
+  // Show streaming card if we have actual content (not just reasoning)
+  // Reasoning-only state is handled by ThinkingBubble instead
   const visible = useMemo(
-    () =>
-      !!streaming &&
-      (streaming.isActive ||
-        streaming.content.length > 0 ||
-        streaming.reasoning.length > 0 ||
-        streaming.steps.length > 0 ||
-        streaming.reasoningEvents.length > 0 ||
-        streaming.progressEvents.length > 0 ||
-        isProcessing ||
-        streaming.messageId ||
-        isContiguous),
+    () => {
+      if (!streaming) return false;
+
+      // Always show if we have real content
+      if (streaming.content.length > 0) return true;
+
+      // Show if we have steps/progress events (indicates work is happening)
+      if (streaming.steps.length > 0 || streaming.progressEvents.length > 0) return true;
+
+      // Show if actively streaming (even if content is empty yet - user is waiting)
+      if (streaming.isActive) return true;
+
+      // Show if processing but no streaming state yet (about to start)
+      if (isProcessing) return true;
+
+      // Show if we have a message ID (streaming started)
+      if (streaming.messageId) return true;
+
+      // Show if contiguous with previous message
+      if (isContiguous) return true;
+
+      // Don't show just because we have reasoning - that's handled by ThinkingBubble
+      return false;
+    },
     [streaming, isProcessing, isContiguous],
   );
 

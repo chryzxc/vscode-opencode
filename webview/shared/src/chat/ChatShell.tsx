@@ -67,6 +67,18 @@ function ChatContent() {
   const [showSkillInstaller, setShowSkillInstaller] = useState(false);
   const streamViewportRef = useRef(streamViewport);
 
+  const resolveAgentColor = (agentId?: string) => {
+    if (!agentId) return "var(--oc-accent)";
+
+    const match = state.availableAgents.find(
+      (agent) =>
+        agent.id === agentId ||
+        agent.name.toLowerCase() === agentId.toLowerCase(),
+    );
+
+    return match?.color ?? "var(--oc-accent)";
+  };
+
   // Keep ref current so message handler closure always reads latest state
   useEffect(() => {
     stateRef.current = state;
@@ -153,15 +165,7 @@ function ChatContent() {
         unseenUpdateCount: prev.unseenUpdateCount + 1,
       }));
     }
-  }, [
-    state.messages.length,
-    state.streaming?.messageId,
-    state.streaming?.content,
-    state.streaming?.reasoning,
-    state.streaming?.steps.length,
-    state.streaming?.edits.length,
-    state.streaming?.isActive,
-  ]);
+  }, [state.messages, state.streaming]);
 
   const isProcessingInCurrentSession =
     state.isProcessing &&
@@ -169,8 +173,18 @@ function ChatContent() {
       state.processingSessionIds.length === 0 ||
       state.processingSessionIds.includes(state.currentSessionId));
 
+  // Show thinking bubble when:
+  // 1. Processing but no streaming yet, OR
+  // 2. Streaming but only have reasoning (no actual content yet)
+  const hasOnlyReasoning =
+    state.streaming &&
+    state.streaming.reasoning &&
+    state.streaming.reasoning.trim().length > 0 &&
+    (!state.streaming.content || state.streaming.content.trim().length === 0);
+
   const showThinking =
-    isProcessingInCurrentSession && !state.streaming && !state.isCompacting;
+    (isProcessingInCurrentSession && !state.streaming && !state.isCompacting) ||
+    (hasOnlyReasoning && !state.isCompacting);
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
       ? Math.max(
@@ -282,8 +296,14 @@ function ChatContent() {
             if (role === "user") {
               messageNode = <UserMessage message={msg} />;
             } else if (role === "system" || msg.responseType === "system") {
+              const systemAgentId =
+                msg.info?.agent ?? state.streaming?.agent ?? state.selectedAgent;
+
               messageNode = (
-                <SystemMessage content={msg.content ?? msg.text ?? ""} />
+                <SystemMessage
+                  content={msg.content ?? msg.text ?? ""}
+                  accentColor={resolveAgentColor(systemAgentId)}
+                />
               );
             } else if ((msg as Record<string, unknown>).type === "permission") {
               messageNode = <PermissionCard perm={msg} />;
