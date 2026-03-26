@@ -9608,7 +9608,14 @@ export class ChatViewProvider
   private async handleGetLspStatus(): Promise<void> {
     try {
       const client = await this.serverManager.ensureRunning();
-      const res = await client.lsp.status();
+      const workspaceDir = this.getWorkspaceDirectory();
+
+      // Pass directory parameter to LSP status endpoint so the server
+      // can detect language servers for the current workspace
+      const res = workspaceDir
+        ? await client.lsp.status({ directory: workspaceDir })
+        : await client.lsp.status();
+
       const servers = Array.isArray(res.data) ? res.data : [];
 
       this.view?.webview.postMessage({
@@ -9616,7 +9623,10 @@ export class ChatViewProvider
         servers,
       });
 
-      log.info(`LSP status sent: ${servers.length} server(s)`);
+      log.info(
+        `LSP status sent: ${servers.length} server(s)` +
+          (workspaceDir ? ` for workspace: ${workspaceDir}` : ""),
+      );
     } catch (err) {
       log.error(
         "handleGetLspStatus failed",

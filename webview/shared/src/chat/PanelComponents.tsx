@@ -3863,24 +3863,41 @@ export function LspPanel() {
   const activeCount = lspServers.filter((s) => s.status === "connected").length;
   const hasServers = lspServers.length > 0;
 
+  const requestRefresh = () => {
+    vscode.postMessage({ type: "getLspStatus" });
+  };
+
   return (
     <div className="oc-lsp-panel border-t border-oc-border p-3 text-xs">
       <div className="mb-2 flex items-center justify-between">
         <div className="oc-panel-title">LSP Servers</div>
-        <Button
-          type="button"
-          aria-label={open ? "Collapse LSP" : "Expand LSP"}
-          onClick={() => setOpen((v) => !v)}
-          variant="ghost"
-          size="icon"
-          className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
-        >
-          {open ? (
-            <ChevronDown className="h-3 w-3" />
-          ) : (
-            <ChevronUp className="h-3 w-3" />
-          )}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            aria-label="Refresh LSP status"
+            onClick={requestRefresh}
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            title="Refresh LSP server status"
+          >
+            <RefreshCw className="h-3 w-3" />
+          </Button>
+          <Button
+            type="button"
+            aria-label={open ? "Collapse LSP" : "Expand LSP"}
+            onClick={() => setOpen((v) => !v)}
+            variant="ghost"
+            size="icon"
+            className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+          >
+            {open ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronUp className="h-3 w-3" />
+            )}
+          </Button>
+        </div>
       </div>
 
       {open ? (

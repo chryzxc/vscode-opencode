@@ -114,3 +114,95 @@ test('panel components use improved text colors for better readability', () => {
   assert.match(mcpBody, /opacity-80/, 'MCP panel should use moderate opacity for secondary text');
   assert.match(lspBody, /opacity-50/, 'LSP panel should use moderate opacity for secondary text');
 });
+
+test('LSP panel includes refresh button to manually reload server status', () => {
+  // Verify LSP panel has a refresh button that sends getLspStatus message.
+  const lspBody = extractFunctionBody(panelSource, 'export function LspPanel()');
+
+  assert.match(
+    lspBody,
+    /requestRefresh/,
+    'LSP panel should define requestRefresh function',
+  );
+
+  assert.match(
+    lspBody,
+    /getLspStatus/,
+    'LSP panel should send getLspStatus message',
+  );
+
+  assert.match(
+    lspBody,
+    /RefreshCw/,
+    'LSP panel refresh button should use RefreshCw icon',
+  );
+});
+
+test('LSP panel refresh button is positioned before collapse button', () => {
+  // Verify refresh button appears in the header controls section before collapse toggle.
+  const lspBody = extractFunctionBody(panelSource, 'export function LspPanel()');
+
+  // The controls div should contain both refresh and collapse buttons
+  assert.match(
+    lspBody,
+    /gap-1[\s\S]{0,500}<Button[\s\S]{0,500}onClick=\{requestRefresh\}[\s\S]{0,500}<Button[\s\S]{0,500}setOpen/,
+    'LSP panel should render refresh button before collapse button in controls div',
+  );
+});
+
+test('ChatViewProvider passes workspace directory to LSP status SDK call', () => {
+  // Verify that handleGetLspStatus retrieves workspace directory and passes it to the SDK.
+  const providerSource = readSource([
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+  ], 'ChatViewProvider.ts');
+
+  const lspHandler = extractFunctionBody(providerSource, 'private async handleGetLspStatus');
+
+  // Should call getWorkspaceDirectory to get the workspace path
+  assert.match(
+    lspHandler,
+    /getWorkspaceDirectory/,
+    'handleGetLspStatus should call getWorkspaceDirectory to retrieve workspace path',
+  );
+
+  // Should pass directory parameter conditionally to SDK
+  assert.match(
+    lspHandler,
+    /directory:\s*workspaceDir/,
+    'handleGetLspStatus should pass directory parameter to SDK when workspaceDir is available',
+  );
+});
+
+test('ChatViewProvider logs workspace directory in LSP status for debugging', () => {
+  // Verify that the LSP status log includes workspace directory for easier debugging.
+  const providerSource = readSource([
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+  ], 'ChatViewProvider.ts');
+
+  const lspHandler = extractFunctionBody(providerSource, 'private async handleGetLspStatus');
+
+  assert.match(
+    lspHandler,
+    /LSP status sent:[\s\S]*for workspace:/,
+    'handleGetLspStatus should log workspace directory in LSP status message for debugging',
+  );
+});
+
+test('ChatViewProvider handles getLspStatus webview message', () => {
+  // Verify that the getLspStatus message from webview triggers handleGetLspStatus.
+  const providerSource = readSource([
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+  ], 'ChatViewProvider.ts');
+
+  assert.match(
+    providerSource,
+    /case\s+["']getLspStatus["']:\s*[\s\S]*this\.handleGetLspStatus\(\)\.catch\(/,
+    'ChatViewProvider should handle getLspStatus message by calling handleGetLspStatus',
+  );
+
+  assert.match(
+    providerSource,
+    /case\s+["']getLspStatus["']:[\s\S]*log\.error\([\s\S]*["']handleGetLspStatus error["']/,
+    'getLspStatus handler should catch and log errors',
+  );
+});

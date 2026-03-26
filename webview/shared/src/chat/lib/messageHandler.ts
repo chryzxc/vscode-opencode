@@ -2155,6 +2155,12 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
         : message.parts
   };
 
+  // Preserve structuredOutput explicitly to ensure question data survives normalization
+  if (rec.structuredOutput || (rec as Record<string, unknown>).structured_output) {
+    (normalized as Record<string, unknown>).structuredOutput =
+      rec.structuredOutput || (rec as Record<string, unknown>).structured_output;
+  }
+
   const existingReasoningEvents = Array.isArray(message.reasoningEvents)
     ? message.reasoningEvents
     : [];
@@ -3604,22 +3610,53 @@ function handleStreamEvent(
         break;
       }
 
+      // DEBUG: Log all part updates to see what's happening
+      const currentPartType = normalizePartType(part.type);
+      const currentStructuredKind = asString(payload.structuredKind) || asString(properties?.structuredKind) || '';
+      console.log('[OpenCode][DEBUG] message.part.updated', { partType: currentPartType, structuredKind: currentStructuredKind, hasText: !!part.text, hasContent: !!part.content });
+
+      // Track if we're processing a reasoning part sequence
+      const currentStreamingState = getState().streaming;
+      const isInReasoningPart = currentStreamingState?.inReasoningPart || false;
+
+      // Detect start of reasoning part sequence
+      if (currentPartType === 'reasoning' || currentStructuredKind === 'thinking') {
+        console.log('[OpenCode][DEBUG] Starting reasoning part sequence - will drop all content');
+        dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: true } });
+      }
+
+      // Detect end of reasoning part (when we get a text part after reasoning)
+      if (isInReasoningPart && currentPartType === 'text' && currentStructuredKind === 'message') {
+        console.log('[OpenCode][DEBUG] Ending reasoning part sequence - will accept content again');
+        dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: false } });
+      }
+
       // Check for system message patterns early (before any content processing)
       // System messages like <auto-slash-command> come through as message.part.updated
       // events with role="user" but should be rendered as system messages
       const partText = asRichString(part.text) || asRichString(part.content) || '';
       if (partText && hasSystemMessagePatternInText(partText)) {
-        const systemMessage: Message = {
-          role: 'system',
-          content: partText,
-          parts: [{ type: 'text', text: partText }],
-          time: { created: Date.now() },
-          info: { role: 'system', id: `sys-${Date.now()}` }
-        };
-        dispatch({
-          type: 'SET_MESSAGES',
-          payload: [...state.messages, systemMessage]
-        });
+        // CRITICAL: Do NOT dispatch SET_MESSAGES during active streaming!
+        // During streaming, the AI response content is in state.streaming, not state.messages.
+        // Dispatching SET_MESSAGES with [...state.messages, systemMessage] would replace
+        // the messages array and lose the streaming content. Instead, we'll let system
+        // messages be added during messageResponse finalization.
+        if (!current) {
+          // Only add system messages directly if we're not currently streaming
+          const systemMessage: Message = {
+            role: 'system',
+            content: partText,
+            parts: [{ type: 'text', text: partText }],
+            time: { created: Date.now() },
+            info: { role: 'system', id: `sys-${Date.now()}` }
+          };
+          dispatch({
+            type: 'SET_MESSAGES',
+            payload: [...state.messages, systemMessage]
+          });
+        }
+        // If we ARE streaming, the system message will be captured and added
+        // during messageResponse finalization (via the message payload itself)
         break; // Don't process this as regular content
       }
 
@@ -3695,9 +3732,18 @@ function handleStreamEvent(
       let reasoningContent = "";
       let mainContent = "";
 
-      if (structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk) {
-        reasoningContent = reasoningChunk || textChunk;
-      } else if (typeof textChunk === "string") {
+      // SKIP CONTENT PROCESSING for reasoning parts, but allow all other event processing to continue
+      // This prevents reasoning from being rendered in the UI while still processing steps, tools, and interactive events
+      const isReasoningPart = partType === 'reasoning' || structuredKind === 'thinking' || isInReasoningPart;
+
+      if (isReasoningPart) {
+        console.log('[OpenCode][DEBUG] Skipping reasoning content processing (but steps/tools/interactive events will still be processed)', { partType, structuredKind, isInReasoningPart, reasoningLength: (reasoningChunk || textChunk || '').length });
+      }
+
+      if (!isReasoningPart) {
+        console.log('[OpenCode][DEBUG] Processing content', { partType, structuredKind, isInReasoningPart });
+
+        if (structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk) {
         let remaining = textChunk;
         while (remaining.length > 0) {
           if (nextInThoughtBlock) {
@@ -3741,7 +3787,9 @@ function handleStreamEvent(
         });
       }
 
-      if (hasMainContent || (!isReasoning && (structuredKind === "message" || partType === "text" || (!!textChunk && !isProgressPartType) || (!partType && structuredKind !== "progress")))) {
+      // Explicitly filter out reasoning/thinking parts to prevent them from being rendered as main content
+      // Even if reasoning wasn't detected by the patterns above, we should not render reasoning parts as content
+      if (hasMainContent || (!isReasoning && partType !== "reasoning" && structuredKind !== "thinking" && (structuredKind === "message" || partType === "text" || (!!textChunk && !isProgressPartType) || (!partType && structuredKind !== "progress")))) {
         let candidateChunk = hasMainContent ? mainContent : textChunk;
         
         const rawReasoningLike = looksLikeReasoningTrace(candidateChunk, streamingState?.content || "");
@@ -3813,6 +3861,7 @@ function handleStreamEvent(
           });
         }
       }
+      } // End of if (!isReasoningPart) - skip content processing for reasoning parts
 
       if (partType === 'step-start' && structuredKind !== 'thinking') {
         upsertStreamingStep(dispatch, getState, {
@@ -5049,8 +5098,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             }
           }
         }
+        let finalMessageId: string | null = null;
+        let streamingMessageId: string | null = null;
         if (normalizedMessage) {
-          const streamingMessageId =
+          streamingMessageId =
             currentStreaming?.messageId || snapshotMessageId;
           let sanitized = sanitizeAssistantMessageEcho(
             normalizedMessage,
@@ -5086,7 +5137,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             type: "SET_MESSAGES",
             payload: [...currentMessages, sanitized],
           });
-          const finalMessageId =
+          finalMessageId =
             asString(asRecord(sanitized.info)?.id) ||
             asString(sanitized.id) ||
             responseMessageId ||
@@ -5128,38 +5179,25 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           }
         }
-        latestStreamingSnapshot = null;
+        // Only clear streaming state if this messageResponse matches the current streaming message ID
+        // This prevents clearing streaming state when processing messageResponse events for
+        // system messages or other non-streaming messages that arrive during streaming
+        const isMatchingStreamingMessage =
+          streamingMessageId && finalMessageId && streamingMessageId === finalMessageId;
+
+        if (isMatchingStreamingMessage || !currentStreaming) {
+          latestStreamingSnapshot = null;
+        }
         dispatch({ type: "SET_PROCESSING", payload: false });
         dispatch({ type: "SET_STREAMING", payload: null });
         break;
       }
       case "chatHistory": {
         const rawMessages = asArray(data.messages, isMessage);
-        console.log('[DEBUG] ===== chatHistory received =====');
-        console.log('[DEBUG] Raw message count:', rawMessages.length);
-        
-        rawMessages.forEach((m, i) => {
-          const text = extractMessageText(m);
-          console.log(`[DEBUG] Message ${i}:`, {
-            role: (m as any).role,
-            id: (m as any).id,
-            hasAutoSlash: text?.includes('<auto-slash-command>'),
-            hasSystemReminder: text?.includes('<system-reminder>'),
-            contentLength: text?.length || 0,
-            contentPreview: text?.substring(0, 100),
-          });
-        });
-        
         const normalizedMessages = rawMessages
           .map((msg) => normalizeMessage(msg, null))
           .filter((msg): msg is Message => !!msg)
           .filter((msg) => isRenderableHistoryMessage(msg));
-        
-        console.log('[DEBUG] After normalization and filtering:', {
-          remainingCount: normalizedMessages.length,
-          filteredOut: rawMessages.length - normalizedMessages.length,
-        });
-        
         const messages =
           coalesceAdjacentAssistantHistoryMessages(normalizedMessages);
 

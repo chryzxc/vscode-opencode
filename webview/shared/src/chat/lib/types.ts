@@ -208,6 +208,8 @@ export interface StreamingState {
   modelID?: string;
   providerID?: string;
   inThoughtBlock?: boolean;
+  /** Track if currently processing a reasoning part to prevent content leakage */
+  inReasoningPart?: boolean;
 }
 
 export interface MessageInfo {

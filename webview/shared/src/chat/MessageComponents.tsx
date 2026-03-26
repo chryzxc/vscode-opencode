@@ -335,7 +335,28 @@ function getMessageContent(
   streaming?: StreamingState,
 ): string {
   if (streaming) {
-    return streaming.content;
+    // Filter out reasoning content from streaming content as a safety measure
+    // This catches any reasoning that leaked through the event handler
+    const content = streaming.content || '';
+    const hasReasoningEvents = streaming.reasoningEvents && streaming.reasoningEvents.length > 0;
+    const isInReasoningPart = streaming.inReasoningPart || false;
+
+    // If we're currently in a reasoning part or have reasoning events but no substantial real content, return empty
+    // This completely hides any leaked reasoning content from the UI
+    if (isInReasoningPart || (hasReasoningEvents && content.length < 100)) {
+      return '';
+    }
+
+    // Additional safety check: if content looks like reasoning monologue, filter it out
+    const trimmedContent = content.trim();
+    if (trimmedContent.length > 0 && trimmedContent.length < 200) {
+      const looksLikeReasoning = /The user (?:is asking|just said|keeps saying)|I (?:should|need|will|can|must)|Let me (?:check|read|search|look|find)|straightforward informational question|general question/i.test(trimmedContent);
+      if (looksLikeReasoning) {
+        return '';
+      }
+    }
+
+    return content;
   }
   if (!message) {
     return "";
