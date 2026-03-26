@@ -134,3 +134,44 @@ test('MarkdownRenderer imports vscode from the shared singleton', () => {
     'MarkdownRenderer must import the vscode singleton rather than acquiring a new instance.',
   );
 });
+
+// ── Numbered list preprocessing ───────────────────────────────────────────────
+
+test('MarkdownRenderer preprocesses markdown to remove blank lines between numbered list items', () => {
+  const preprocessBody = extractFunctionBody(markdownRendererSource, 'function preprocessMarkdown(');
+  assert.ok(
+    preprocessBody.includes('return content.replace'),
+    'MarkdownRenderer must export a preprocessMarkdown function that uses replace.',
+  );
+  assert.match(
+    preprocessBody,
+    /\\d\+\\\.\\s\+/,
+    'preprocessMarkdown must use a regex that matches numbered list markers (e.g., "1. ").',
+  );
+  assert.match(
+    preprocessBody,
+    /\\n\\s\*\\n/,
+    'preprocessMarkdown must match blank lines between list items.',
+  );
+  assert.match(
+    preprocessBody,
+    /\$1\$2\\n/,
+    'preprocessMarkdown must replace blank lines with single newlines to merge list items.',
+  );
+});
+
+test('MarkdownRenderer applies preprocessing when isPreParsed is false', () => {
+  assert.match(
+    markdownRendererSource,
+    /const\s+processedContent\s*=\s*isPreParsed\s*\?\s*content\s*:\s*preprocessMarkdown/,
+    'MarkdownRenderer must apply preprocessMarkdown when isPreParsed is false.',
+  );
+});
+
+test('MarkdownRenderer does NOT apply preprocessing when isPreParsed is true', () => {
+  assert.match(
+    markdownRendererSource,
+    /const\s+html\s*=\s*isPreParsed\s*\?\s*content\s*:/,
+    'MarkdownRenderer must skip preprocessing when isPreParsed is true.',
+  );
+});

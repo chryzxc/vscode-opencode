@@ -1346,7 +1346,7 @@ export const SystemMessage = memo(function SystemMessage({ content }: { content:
         <Terminal className="h-2.5 w-2.5 text-oc-accent" />
         <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-oc-text-soft">Context</span>
       </div>
-      <div className="pl-4 py-0.5 border-l border-oc-border/30 whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-oc-text-muted select-text">
+      <div className="pl-4 py-0.5 border-l border-oc-border/30 whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-oc-text-muted select-text max-h-[200px] overflow-y-auto">
         {content}
       </div>
     </div>

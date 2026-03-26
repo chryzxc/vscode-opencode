@@ -339,11 +339,15 @@ function isInternalTransportReminderMessage(message: Message): boolean {
   if (!normalizedText) {
     return false;
   }
+  // Check for square-bracketed system messages at the start (e.g., [analyze-mode], [background task completed])
+  const bracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
+  const hasBracketPrefix = bracketPattern.test(normalizedText);
+  
   return (
     normalizedText.includes("<system-reminder>") ||
+    normalizedText.includes("<auto-slash-command>") ||
     normalizedText.includes("<!-- omo_internal_initiator -->") ||
-    normalizedText.includes("[background task completed]") ||
-    normalizedText.includes("[all background tasks complete]") ||
+    hasBracketPrefix ||
     normalizedText.includes("background_output(task_id=")
   );
 }
@@ -381,6 +385,10 @@ function isAssistantMessageForCanonical(message: Message): boolean {
     return true;
   }
   if (role === "user") {
+    return false;
+  }
+  if (role === "system") {
+    // System messages should NOT be treated as assistant messages
     return false;
   }
   return hasAssistantPayloadForCanonical(message);
@@ -776,17 +784,75 @@ function canonicalizeMessagesForRender(messages: Message[]): Message[] {
     return [];
   }
 
-  const withoutInternalTransport = messages.filter(
-    (message) => !isInternalTransportReminderMessage(message),
-  );
-  const deduped = dedupeMirrorMessagesForCanonical(withoutInternalTransport);
+  // Convert internal transport messages (like <auto-slash-command>) to system role
+  // instead of filtering them out, so they display with SystemMessage component
+  const withConvertedRole = messages.map((message) => {
+    if (isInternalTransportReminderMessage(message)) {
+      // Create a new message object with system role
+      const info = asRecordLocal(message.info);
+      const converted: Message = {
+        ...message,
+        role: 'system',
+        responseType: 'system',
+        info: info ? { ...info, role: 'system' } : { role: 'system' },
+      };
+      
+      // Debug logging
+      console.log('[DEBUG] Converted to system role:', {
+        originalRole: (message as any).role,
+        originalInfoRole: (message as any).info?.role,
+        newRole: converted.role,
+        newInfoRole: converted.info?.role,
+        id: (message as any).id,
+        contentPreview: extractMessageTextForCanonical(message)?.substring(0, 100),
+      });
+      
+      return converted;
+    }
+    return message;
+  });
+  
+  const deduped = dedupeMirrorMessagesForCanonical(withConvertedRole);
+  
+  // Debug: log what we have after deduplication
+  console.log('[DEBUG] After deduplication:', {
+    totalCount: deduped.length,
+    allMessages: deduped.map((m, i) => ({
+      index: i,
+      role: (m as any).role,
+      id: (m as any).id,
+      hasAutoSlash: extractMessageTextForCanonical(m)?.includes('<auto-slash-command>'),
+      contentPreview: extractMessageTextForCanonical(m)?.substring(0, 80),
+    })),
+  });
+  
   const canonical: Message[] = [];
   let index = 0;
 
+  console.log('[DEBUG] Starting canonicalization loop:', {
+    totalMessages: deduped.length,
+    messages: deduped.map((m, i) => ({
+      index: i,
+      role: (m as any).role,
+      id: (m as any).id,
+      isAssistant: isAssistantMessageForCanonical(m),
+      contentPreview: extractMessageTextForCanonical(m)?.substring(0, 50),
+    })),
+  });
+
   while (index < deduped.length) {
     const current = deduped[index];
-    if (!isAssistantMessageForCanonical(current)) {
+    const isAssistant = isAssistantMessageForCanonical(current);
+
+    console.log(`[DEBUG] Processing message ${index}:`, {
+      role: (current as any).role,
+      isAssistant,
+      willAddToCanonical: !isAssistant,
+    });
+
+    if (!isAssistant) {
       canonical.push(current);
+      console.log(`[DEBUG] Added to canonical: message ${index} (role: ${(current as any).role})`);
       index += 1;
       continue;
     }
@@ -801,6 +867,13 @@ function canonicalizeMessagesForRender(messages: Message[]): Message[] {
     );
     index = cursor;
   }
+
+  console.log('[DEBUG] Final canonical messages:', {
+    totalCount: canonical.length,
+    systemMessages: canonical.filter(m => (m as any).role === 'system').length,
+    userMessages: canonical.filter(m => (m as any).role === 'user').length,
+    assistantMessages: canonical.filter(m => (m as any).role === 'assistant').length,
+  });
 
   return canonical;
 }
@@ -1193,7 +1266,31 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_AGENTS_LIST":
       return { ...state, availableAgents: action.payload };
     case "SET_MESSAGES": {
+      console.log('[DEBUG] SET_MESSAGES action:', {
+        inputCount: action.payload.length,
+        inputMessages: action.payload.map(m => ({
+          role: (m as any).role,
+          id: (m as any).id,
+          hasAutoSlash: extractMessageTextForCanonical(m)?.includes('<auto-slash-command>'),
+          hasSystemReminder: extractMessageTextForCanonical(m)?.includes('<system-reminder>'),
+          contentPreview: extractMessageTextForCanonical(m)?.substring(0, 80),
+        })),
+      });
+      
       const canonicalMessages = canonicalizeMessagesForRender(action.payload);
+      
+      console.log('[DEBUG] After canonicalization:', {
+        canonicalCount: canonicalMessages.length,
+        canonicalMessages: canonicalMessages.map(m => ({
+          role: (m as any).role,
+          responseType: (m as any).responseType,
+          id: (m as any).id,
+          hasAutoSlash: extractMessageTextForCanonical(m)?.includes('<auto-slash-command>'),
+          hasSystemReminder: extractMessageTextForCanonical(m)?.includes('<system-reminder>'),
+          contentPreview: extractMessageTextForCanonical(m)?.substring(0, 80),
+        })),
+      });
+      
       const resolvedDividerIndex = resolveCompactionDividerIndex(canonicalMessages, {
         compactionDividerIndex: state.compactionDividerIndex,
         compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,

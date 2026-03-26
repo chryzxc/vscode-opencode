@@ -195,8 +195,10 @@ function looksLikeReasoningTrace(value: string, currentContent: string): boolean
     return false;
   }
 
-  // If user-facing content is already underway, avoid reclassifying later chunks.
-  if (currentContent.trim().length > 40) {
+  // If substantial user-facing content is already underway, avoid reclassifying later chunks.
+  // Increased threshold from 40 to 200 to catch large reasoning chunks that leak early.
+  // Real user-facing responses are typically longer than 200 characters.
+  if (currentContent.trim().length > 200) {
     return false;
   }
 
@@ -211,6 +213,10 @@ function looksLikeReasoningTrace(value: string, currentContent: string): boolean
     "not related to their specific codebase",
     "create todos",
     "use explore",
+    "i'll help you with",
+    "let me start by",
+    "first, i need to",
+    "i should begin by",
   ];
   markerPhrases.forEach((phrase) => {
     if (normalized.includes(phrase)) {
@@ -230,6 +236,11 @@ function looksLikeReasoningTrace(value: string, currentContent: string): boolean
     )
   ) {
     score += 2;
+  }
+
+  // Also check for tool-use monologue patterns as a fallback
+  if (score < 3 && looksLikeToolUseMonologue(text)) {
+    return true;
   }
 
   return score >= 3;
@@ -2748,18 +2759,27 @@ function isInternalSystemReminderMessage(message: Message): boolean {
   }
 
   const normalizedText = text.toLowerCase();
+  
+  // Check for square-bracketed system messages at the start (e.g., [analyze-mode], [background task completed])
+  const bracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
+  const hasBracketPrefix = bracketPattern.test(text);
+  
   return (
     normalizedText.includes("<system-reminder>") ||
+    normalizedText.includes("<auto-slash-command>") ||
     normalizedText.includes("<!-- omo_internal_initiator -->") ||
+    hasBracketPrefix ||
     (normalizedText.includes("[search-model]") &&
       normalizedText.includes("maximize search effort"))
   );
 }
 
 function hasRenderableHistoryPayload(message: Message): boolean {
-  if (isInternalSystemReminderMessage(message)) {
-    return false;
-  }
+  // Don't filter out system reminder messages - they will be converted to system role
+  // and rendered with the SystemMessage component
+  // if (isInternalSystemReminderMessage(message)) {
+  //   return false;
+  // }
 
   const text = extractMessageText(message).trim();
   if (text.length > 0) {
@@ -3457,6 +3477,15 @@ function handleStreamEvent(
     asString(infoRecord?.role) ||
     asString(properties?.role) ||
     asString(partRecord?.role);
+  
+  // Note: System messages (like <auto-slash-command>) are now handled by
+  // converting their role from "user" to "system" in the canonicalization process.
+  // See canonicalizeMessagesForRender in store.ts
+  if (eventRole && eventRole === 'system') {
+    return; // System messages in stream events are ignored - they come via message history
+  }
+  
+  // Filter out other non-assistant roles
   if (eventRole && eventRole !== 'assistant') {
     return;
   }
@@ -4664,6 +4693,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     }
 
     const type = asString(data.type);
+    
+    // Debug log to verify logging is working
+    if (type === 'chatHistory' || type === 'initState') {
+      console.log('[DEBUG] ===== MessageHandler received event:', type, '====');
+    }
 
     // Set processing state BEFORE handling message types to ensure streaming state is created early.
     // Never bootstrap "in progress" UI from compaction lifecycle messages.
@@ -5056,10 +5090,32 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       case "chatHistory": {
-        const normalizedMessages = asArray(data.messages, isMessage)
+        const rawMessages = asArray(data.messages, isMessage);
+        console.log('[DEBUG] ===== chatHistory received =====');
+        console.log('[DEBUG] Raw message count:', rawMessages.length);
+        
+        rawMessages.forEach((m, i) => {
+          const text = extractMessageText(m);
+          console.log(`[DEBUG] Message ${i}:`, {
+            role: (m as any).role,
+            id: (m as any).id,
+            hasAutoSlash: text?.includes('<auto-slash-command>'),
+            hasSystemReminder: text?.includes('<system-reminder>'),
+            contentLength: text?.length || 0,
+            contentPreview: text?.substring(0, 100),
+          });
+        });
+        
+        const normalizedMessages = rawMessages
           .map((msg) => normalizeMessage(msg, null))
           .filter((msg): msg is Message => !!msg)
           .filter((msg) => isRenderableHistoryMessage(msg));
+        
+        console.log('[DEBUG] After normalization and filtering:', {
+          remainingCount: normalizedMessages.length,
+          filteredOut: rawMessages.length - normalizedMessages.length,
+        });
+        
         const messages =
           coalesceAdjacentAssistantHistoryMessages(normalizedMessages);
 

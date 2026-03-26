@@ -2047,6 +2047,19 @@ export class ChatViewProvider
       return [];
     }
 
+    // Debug: Log raw messages
+    this.logger.info('[DEBUG] processHistoryMessages input:', {
+      rawCount: rawMessages.length,
+      messages: rawMessages.map((m, i) => ({
+        index: i,
+        role: m?.role || m?.info?.role,
+        id: m?.id || m?.info?.id,
+        hasAutoSlash: this.extractMessageBodyText(m)?.includes('<auto-slash-command>'),
+        hasSystemReminder: this.extractMessageBodyText(m)?.includes('<system-reminder>'),
+        contentLength: this.extractMessageBodyText(m)?.length || 0,
+      }))
+    });
+
     const normalizedRawMessages = this.applySessionMessageOverrides(
       sessionId,
       rawMessages,
@@ -2066,6 +2079,11 @@ export class ChatViewProvider
         return this.enrichMessageWithPlan(structured);
       })
       .filter((message) => this.isRenderableHistoryMessage(message));
+    
+    this.logger.info('[DEBUG] processHistoryMessages output:', {
+      processedCount: processed.length,
+      filteredOut: normalizedRawMessages.length - processed.length,
+    });
 
     const deduped = this.dedupeMirrorHistoryMessages(processed);
     const mergedActivity = this.mergeAdjacentAssistantActivityMessages(deduped);
@@ -2519,9 +2537,11 @@ export class ChatViewProvider
       return false;
     }
 
-    if (this.isInternalSystemReminderMessage(message)) {
-      return false;
-    }
+    // Don't filter out system reminder messages - they will be converted to system role
+    // and rendered with the SystemMessage component
+    // if (this.isInternalSystemReminderMessage(message)) {
+    //   return false;
+    // }
 
     const text = this.extractMessageBodyText(message).trim();
     if (text.length > 0) {
@@ -2620,9 +2640,17 @@ export class ChatViewProvider
     }
 
     const normalized = text.toLowerCase();
+    const trimmed = text.trim();
+    
+    // Check for square-bracketed system messages at the start (e.g., [analyze-mode], [background task completed])
+    const bracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
+    const hasBracketPrefix = bracketPattern.test(trimmed);
+    
     return (
       normalized.includes("<system-reminder>") ||
+      normalized.includes("<auto-slash-command>") ||
       normalized.includes("<!-- omo_internal_initiator -->") ||
+      hasBracketPrefix ||
       (normalized.includes("[search-model]") &&
         normalized.includes("maximize search effort"))
     );

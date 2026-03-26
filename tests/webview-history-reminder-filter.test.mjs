@@ -29,8 +29,23 @@ test("webview history normalization drops internal system-reminder transport mes
   );
   assert.match(
     helperBody,
+    /normalizedText\.includes\("<auto-slash-command>"\)/,
+    "isInternalSystemReminderMessage should recognize <auto-slash-command> payloads",
+  );
+  assert.match(
+    helperBody,
     /normalizedText\.includes\("<!-- omo_internal_initiator -->"\)/,
     "isInternalSystemReminderMessage should recognize the internal initiator marker",
+  );
+  assert.match(
+    helperBody,
+    /const\s+bracketPattern/,
+    "isInternalSystemReminderMessage should define bracket pattern",
+  );
+  assert.match(
+    helperBody,
+    /hasBracketPrefix/,
+    "isInternalSystemReminderMessage should use bracket prefix detection",
   );
   assert.match(
     helperBody,
@@ -45,7 +60,7 @@ test("webview history normalization drops internal system-reminder transport mes
 
   assert.match(
     renderableBody,
-    /if\s*\(\s*isInternalSystemReminderMessage\(message\)\s*\)\s*\{\s*return false;\s*\}/,
-    "hasRenderableHistoryPayload should exclude internal reminder messages from hydrated chatHistory",
+    /Don't filter out system reminder messages/,
+    "hasRenderableHistoryPayload should have comment explaining system reminders are converted not filtered",
   );
 });

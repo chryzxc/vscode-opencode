@@ -1626,9 +1626,7 @@ export function ModelDropdown() {
                     className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${
                       selectedTab === tab
                         ? "bg-oc-accent text-white"
-                        : tab === "All"
-                          ? "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
-                          : "bg-oc-bg-soft text-oc-orange hover:bg-oc-panel-soft hover:text-oc-orange/80"
+                        : "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
                     }`}
                   >
                     {tab}

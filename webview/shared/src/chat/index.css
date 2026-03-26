@@ -1044,6 +1044,14 @@ body {
   padding-left: 1.5em;
 }
 
+.markdown-body ul {
+  list-style-type: disc;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+}
+
 .markdown-body li {
   margin: 0.2em 0;
 }

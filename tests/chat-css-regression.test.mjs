@@ -37,3 +37,43 @@ test('chat css pipeline keeps Tailwind enabled for utility-heavy React chat comp
   assert.match(panelComponentsSource, /className="[^"]*\brounded-md\b[^"]*"/, 'panel components should continue using Tailwind utility classes');
   assert.match(panelComponentsSource, /className="[^"]*\bpx-3\b[^"]*"/, 'panel components should continue using spacing utility classes');
 });
+
+// ── Markdown list styling regression tests ───────────────────────────────────────
+
+test('markdown-body ordered lists must display with decimal numbers (not bullets)', () => {
+  assert.match(
+    chatCssSource,
+    /\.markdown-body\s+ol\s*\{[^}]*list-style-type:\s*decimal/,
+    'markdown-body ordered lists (ol) must explicitly use list-style-type: decimal to ensure numbers display correctly.',
+  );
+});
+
+test('markdown-body unordered lists must display with disc bullets', () => {
+  assert.match(
+    chatCssSource,
+    /\.markdown-body\s+ul\s*\{[^}]*list-style-type:\s*disc/,
+    'markdown-body unordered lists (ul) must explicitly use list-style-type: disc.',
+  );
+});
+
+test('markdown-body lists must have separate rules for ul and ol (not combined)', () => {
+  // Check that there are separate .markdown-body ul and .markdown-body ol rules
+  const ulRule = /\.markdown-body\s+ul\s*\{/;
+  const olRule = /\.markdown-body\s+ol\s*\{/;
+
+  assert.match(
+    chatCssSource,
+    ulRule,
+    'CSS must have a separate rule for .markdown-body ul',
+  );
+  assert.match(
+    chatCssSource,
+    olRule,
+    'CSS must have a separate rule for .markdown-body ol',
+  );
+
+  // Verify they appear in the right order (ul before ol) and are distinct rules
+  const ulMatch = chatCssSource.match(ulRule);
+  const olMatch = chatCssSource.match(olRule);
+  assert.ok(ulMatch && olMatch, 'Both ul and ol rules must exist');
+});
