@@ -370,12 +370,14 @@ function ChatContent() {
       <aside className="oc-right-panel hidden w-[368px] shrink-0 overflow-y-auto self-stretch border-l border-oc-border bg-oc-panel [@media(min-width:1100px)]:block">
         <ActiveTaskPanel />
         <QuotaMonitor />
-        <TodoPanel />
+        {/* TEMPORARY: Hidden during modularization; keep TodoPanel implementation intact for later re-enable. */}
+        {false && <TodoPanel />}
         <McpPanel />
         <LspPanel />
         <SkillsPanel />
         <AgentsPanel />
-        <SettingsPanel />
+        {/* TEMPORARY: Hidden during modularization; keep SettingsPanel implementation intact for later re-enable. */}
+        {false && <SettingsPanel />}
       </aside>
 
       {/* Skill Installer Modal */}

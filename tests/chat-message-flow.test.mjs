@@ -85,6 +85,29 @@ test('error handler retains partial streaming response as a message', () => {
   assert.match(handlerBody, /error:\s*errorMsg/, 'partial message should include the error message');
 });
 
+test('timeout errors suppress low-signal stream fragments in partial error messages', () => {
+  const handlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+
+  assert.match(
+    messageHandlerSource,
+    /function\s+isLowSignalTimeoutFragment\(/,
+    'messageHandler should define low-signal timeout fragment detection helper',
+  );
+  assert.match(
+    handlerBody,
+    /const\s+suppressLowSignalTimeoutFragment\s*=\s*timeoutLikeError\s*&&\s*isLowSignalTimeoutFragment\(rawContent\)/,
+    'error handler should detect timeout-driven low-signal fragments (e.g., lone "me")',
+  );
+  assert.match(
+    handlerBody,
+    /content:\s*contentIsReasoningMonologue\s*\|\|\s*suppressLowSignalTimeoutFragment\s*\?\s*""\s*:\s*rawContent/s,
+    'error fallback should hide low-signal timeout fragments instead of rendering misleading assistant text',
+  );
+});
+
 test('AssistantMessage renders error banner and retry button when message has error', () => {
   assert.match(messageSource, /message\?\.error\s*&&\s*\(/, 'AssistantMessage should check for message error');
   assert.match(messageSource, /<ErrorBanner[\s\S]*message=\{message\.error\}[\s\S]*onRetry=\{/, 'AssistantMessage should render ErrorBanner with onRetry');

@@ -63,6 +63,7 @@ test('proceed flow forwards plan payload, returns status feedback, and sends exp
   assert.match(ctorBody, /type:\s*['"]planProceedStatus['"]/, 'plan provider should emit planProceedStatus messages for UI feedback');
   assert.match(chatProviderSource, /\$\{baseName\}_comments\.md/, 'plan proceed handler should persist reviewer comments next to the source plan file');
   assert.match(chatProviderSource, /resolvePlanFileCandidates\(providedSourceFile\)\[0\]/, 'plan proceed handler should resolve sourceFile against workspace paths');
+  assert.doesNotMatch(chatProviderSource, /buildFallbackPlanFilePath/, 'plan proceed flow should not fabricate fallback plan paths');
   assert.match(chatProviderSource, /Proceed on this plan\./, 'plan proceed handler should explicitly instruct AI to proceed on plan');
   assert.match(chatProviderSource, /\$\{planFilePath\}\\` is the source of truth\./, 'plan proceed handler should anchor execution to the attached source plan filename');
   assert.doesNotMatch(chatProviderSource, /createPlanFilename|createPlanCommentsFilename/, 'plan proceed handler should not generate legacy unique plan/comments filenames');
@@ -122,6 +123,11 @@ test('viewPlan enforces disk-first content when plan.file is present', () => {
     viewPlanBody,
     /if \(\s*!planData &&\s*prioritizedCandidates\.length === 0[\s\S]*plan\.content &&[\s\S]*typeof plan\.content === "string"\s*\)/,
     'structured plan.content fallback should only apply when no plan.file is provided',
+  );
+  assert.doesNotMatch(
+    viewPlanBody,
+    /persistPlan\(\s*plan\.content/,
+    'viewPlan content fallback should not auto-persist to extension-chosen paths',
   );
 });
 

@@ -15,6 +15,10 @@ const handlerSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'messageHandler.ts')],
   'messageHandler.ts',
 );
+const messageSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
+  'MessageComponents.tsx',
+);
 const typesSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'types.ts')],
   'types.ts',
@@ -125,6 +129,137 @@ test('input wrapper renders top popup choices and posts batchInteractiveResponse
   assert.match(inputBody, /event\.type === "message"/, 'popup should support message-type interactive events');
   assert.match(inputBody, /event\.options\.map\(/, 'question popup should render clickable option buttons');
   assert.match(inputBody, /type:\s*"batchInteractiveResponse"/, 'popup choice clicks should post batchInteractiveResponse');
+});
+
+test('interactive batch payload includes user-facing display text for persistence', () => {
+  const inputBody = extractFunctionBody(
+    panelSource,
+    'export function InputWrapper()',
+  );
+
+  assert.match(
+    inputBody,
+    /displayText/,
+    'batch interactive submit path should compute user-facing displayText',
+  );
+  assert.match(
+    inputBody,
+    /questionLabel/,
+    'batch interactive responses should include question labels for deterministic display reconstruction',
+  );
+  assert.match(
+    inputBody,
+    /type:\s*"batchInteractiveResponse"[\s\S]*displayText/s,
+    'batchInteractiveResponse payload should include displayText',
+  );
+});
+
+test('provider persists interactive answers as display text while preserving marker transport text', () => {
+  assert.match(
+    providerSource,
+    /message\?\.displayText/,
+    'provider should accept optional displayText from batchInteractiveResponse payloads',
+  );
+  assert.match(
+    providerSource,
+    /userFacingText/,
+    'provider interactive dispatch path should carry user-facing text separately from transport text',
+  );
+  assert.match(
+    providerSource,
+    /content:\s*persistedUserText[\s\S]*parts:\s*\[[\s\S]*text:\s*text/s,
+    'persisted user messages should store display content while keeping transport marker text in parts',
+  );
+});
+
+test('chat-history hydration reconstructs marker-only interactive user messages', () => {
+  assert.match(
+    handlerSource,
+    /function hydrateLegacyInteractiveUserMessages\(/,
+    'message handler should define legacy marker-only hydration reconstruction',
+  );
+  assert.match(
+    handlerSource,
+    /containsInteractiveMarker\(/,
+    'legacy hydration should detect marker-based interactive messages',
+  );
+  assert.match(
+    handlerSource,
+    /content:\s*displayText[\s\S]*text:\s*displayText/s,
+    'legacy hydration should restore question+answer display text on user messages',
+  );
+  assert.match(
+    handlerSource,
+    /hydrateLegacyInteractiveUserMessages\(messages\)/,
+    'chatHistory path should apply legacy interactive hydration fallback',
+  );
+  assert.match(
+    handlerSource,
+    /dedupeInteractiveUserHydrationMessages\(hydratedMessages\)/,
+    'chatHistory path should dedupe duplicate interactive user hydration messages',
+  );
+  assert.match(
+    handlerSource,
+    /function dedupeInteractiveUserHydrationMessages\(/,
+    'message handler should define interactive hydration dedupe helper',
+  );
+});
+
+test('assistant question responses prioritize question prompt in visible message body', () => {
+  assert.match(
+    messageSource,
+    /function questionPromptFromMessage\(/,
+    'assistant renderer should derive canonical question prompt from interactive payloads',
+  );
+  assert.match(
+    messageSource,
+    /return `\$\{questionPrompt\}\\n\\n\$\{baseContent\}`;/,
+    'question-first rendering should prepend prompt and keep assistant prose below it',
+  );
+  assert.match(
+    messageSource,
+    /isLowValueInteractiveBodyText\(/,
+    'assistant renderer should ignore low-value placeholder-only body text for question turns',
+  );
+});
+
+test('structured question contract supports dedicated assistant-bubble display prompt', () => {
+  const schemaSource = readSource(
+    [joinFromRoot('src', 'shared', 'structuredOutputSchema.ts')],
+    'structuredOutputSchema.ts',
+  );
+  assert.match(
+    schemaSource,
+    /displayPrompt:\s*{/,
+    'question schema should include displayPrompt for assistant bubble formatting',
+  );
+  assert.match(
+    providerSource,
+    /questionRecord\?\.displayPrompt/,
+    'provider should read question.displayPrompt when shaping question turns',
+  );
+  assert.match(
+    messageSource,
+    /question\?\.displayPrompt/,
+    'webview assistant renderer should prefer question.displayPrompt for visible question text',
+  );
+});
+
+test('structured plan file examples avoid hardcoded .sisyphus bias', () => {
+  const schemaSource = readSource(
+    [joinFromRoot('src', 'shared', 'structuredOutputSchema.ts')],
+    'structuredOutputSchema.ts',
+  );
+  assert.match(
+    schemaSource,
+    /\/workspace\/project\/plans\/todo-feature\.md/,
+    'plan.file examples should use neutral workspace plan paths',
+  );
+  assert.doesNotMatch(
+    schemaSource,
+    /\/\.sisyphus\/plans\//,
+    'structured output schema examples should not hardcode .sisyphus plan paths',
+  );
 });
 
 test('interactive event domain types are defined', () => {

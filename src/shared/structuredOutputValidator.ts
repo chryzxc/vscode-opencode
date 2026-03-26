@@ -260,6 +260,12 @@ export function validateStructuredOutput(
           : responseType === "question"
             ? "question"
             : "";
+      if (
+        typeof questionRecord.displayPrompt !== "undefined" &&
+        typeof questionRecord.displayPrompt !== "string"
+      ) {
+        errors.push("question.displayPrompt must be a string");
+      }
 
       if (
         typeof questionRecord.type === "string" &&
@@ -356,16 +362,15 @@ export function validateStructuredOutput(
   }
 
   if (responseType === "implementation_plan") {
-    // IMPORTANT CONTRACT: implementation plans may be represented by a disk file
-    // path only (plan.file) when the markdown was written by tools. Do not
-    // require plan.content here or the UI "View Plan" flow regresses.
+    // IMPORTANT CONTRACT: implementation plans must provide plan.file so the
+    // plan viewer/proceed flow can resolve the source-of-truth file path.
     const plan = asRecord(record.plan);
     const planContent =
       plan && typeof plan.content === "string" ? plan.content.trim() : "";
     const planFile =
       plan && typeof plan.file === "string" ? plan.file.trim() : "";
-    if (!planContent && !planFile) {
-      errors.push("implementation_plan requires plan.file or plan.content string");
+    if (!planFile) {
+      errors.push("implementation_plan requires plan.file string");
     }
     if (planContent && planFile) {
       errors.push("implementation_plan must not include plan.content when plan.file is provided. Omit plan.content to prevent overwriting.");

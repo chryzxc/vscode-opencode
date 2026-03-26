@@ -20,11 +20,11 @@ test("SystemMessage component has max-height constraint for long content", () =>
     "SystemMessage component should be exported",
   );
 
-  // Check for max-height class in the source
+  // Check for max-height class in the source (component uses 220px)
   assert.match(
     messageComponentsSource,
-    /max-h-\[200px\]/,
-    "SystemMessage content div should have max-height of 200px",
+    /max-h-\[220px\]/,
+    "SystemMessage content div should have max-height of 220px",
   );
 
   // Check for overflow-y-auto class in the source
@@ -37,7 +37,7 @@ test("SystemMessage component has max-height constraint for long content", () =>
   // Verify both classes appear in the SystemMessage component section
   assert.match(
     messageComponentsSource,
-    /SystemMessage[\s\S]*?max-h-\[200px\][\s\S]*?overflow-y-auto/,
+    /SystemMessage[\s\S]*?max-h-\[220px\][\s\S]*?overflow-y-auto/,
     "SystemMessage component should have both max-height and overflow-y-auto classes",
   );
 });
@@ -51,23 +51,13 @@ test("SystemMessage component maintains proper styling structure", () => {
   );
   assert.match(
     messageComponentsSource,
-    /SystemMessage[\s\S]*?opacity-60/,
-    "SystemMessage should have opacity-60 class",
+    /SystemMessage[\s\S]*?opacity-90/,
+    "SystemMessage should have opacity-90 class",
   );
   assert.match(
     messageComponentsSource,
     /SystemMessage[\s\S]*?hover:opacity-100/,
     "SystemMessage should have hover:opacity-100 class",
-  );
-  assert.match(
-    messageComponentsSource,
-    /SystemMessage[\s\S]*?<Terminal/,
-    "SystemMessage should render Terminal icon component",
-  );
-  assert.match(
-    messageComponentsSource,
-    /SystemMessage[\s\S]*?Context/,
-    "SystemMessage should display 'Context' label",
   );
   assert.match(
     messageComponentsSource,
@@ -83,5 +73,10 @@ test("SystemMessage component maintains proper styling structure", () => {
     messageComponentsSource,
     /SystemMessage[\s\S]*?\{content\}/,
     "SystemMessage should render the content prop",
+  );
+  assert.match(
+    messageComponentsSource,
+    /SystemMessage[\s\S]*?whitespace-pre-wrap/,
+    "SystemMessage content should preserve whitespace",
   );
 });

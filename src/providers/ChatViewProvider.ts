@@ -139,6 +139,7 @@ type QueuedPrompt = {
   sessionId: string;
   createdAt: number;
   text: string;
+  userFacingText?: string;
   files?: string[];
   contexts?: {
     file: string;
@@ -220,6 +221,13 @@ type StructuredProgressUpdate = {
   status?: "pending" | "done" | "error";
   meta?: string;
   filePath?: string;
+};
+
+type AssistantHistoryMarker = {
+  id?: string;
+  fingerprint?: string;
+  createdAt?: number;
+  richness: number;
 };
 
 type StructuredInteractiveChoice = {
@@ -927,10 +935,15 @@ export class ChatViewProvider
           }
 
           const composedPrompt = choiceText;
+          const userFacingText = this.firstNonEmptyString(
+            message?.displayText,
+            choiceText,
+          );
 
           await this.dispatchInteractiveResponse({
             sessionId: message?.sessionId,
             text: composedPrompt,
+            userFacingText,
             agent: message?.agent,
           });
           break;
@@ -940,6 +953,7 @@ export class ChatViewProvider
             eventId: string;
             eventType: string;
             text: string;
+            questionLabel?: string;
           }>;
           if (!responses || responses.length === 0) {
             break;
@@ -960,10 +974,29 @@ export class ChatViewProvider
           if (!composedPrompt) {
             break;
           }
+          const displayText = responses
+            .map((resp) => {
+              const answer = this.firstNonEmptyString(resp.text) || "";
+              if (!answer) {
+                return "";
+              }
+              const questionLabel = this.firstNonEmptyString(resp.questionLabel);
+              if (questionLabel) {
+                return `**${questionLabel}**\n${answer}`;
+              }
+              return answer;
+            })
+            .filter((value) => value.length > 0)
+            .join("\n\n");
+          const userFacingText = this.firstNonEmptyString(
+            message?.displayText,
+            displayText,
+          );
 
           await this.dispatchInteractiveResponse({
             sessionId: message?.sessionId,
             text: composedPrompt,
+            userFacingText,
             agent: message?.agent,
           });
           break;
@@ -2907,6 +2940,123 @@ export class ChatViewProvider
     );
   }
 
+  private getLatestAssistantHistoryMarker(
+    messages: any[],
+  ): AssistantHistoryMarker | undefined {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return undefined;
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      const role = this.firstNonEmptyString(candidate?.role, candidate?.info?.role)
+        ?.toLowerCase()
+        .trim();
+      if (role !== "assistant") {
+        continue;
+      }
+
+      return {
+        id: this.extractHistoryMessageId(candidate),
+        fingerprint: this.historyMessageFingerprint(candidate),
+        createdAt: this.historyMessageCreatedAt(candidate),
+        richness: this.historyMessageRichnessScore(candidate),
+      };
+    }
+
+    return undefined;
+  }
+
+  private hasAssistantHistoryAdvanced(
+    latest: AssistantHistoryMarker | undefined,
+    baseline: AssistantHistoryMarker | undefined,
+  ): boolean {
+    if (!latest) {
+      return false;
+    }
+    if (!baseline) {
+      return true;
+    }
+
+    if (latest.id && baseline.id && latest.id !== baseline.id) {
+      return true;
+    }
+    if (latest.id && !baseline.id) {
+      return true;
+    }
+
+    if (
+      latest.fingerprint &&
+      baseline.fingerprint &&
+      latest.fingerprint !== baseline.fingerprint
+    ) {
+      return true;
+    }
+    if (latest.fingerprint && !baseline.fingerprint) {
+      return true;
+    }
+
+    if (
+      typeof latest.createdAt === "number" &&
+      typeof baseline.createdAt === "number" &&
+      latest.createdAt > baseline.createdAt + 1000
+    ) {
+      return true;
+    }
+
+    return latest.richness > baseline.richness + 12;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async tryRecoverTimedOutResponse(
+    sessionId: string,
+    baselineAssistantMarker?: AssistantHistoryMarker,
+  ): Promise<boolean> {
+    const pollDelaysMs = [500, 1000, 1800, 2800, 4000];
+
+    for (const delayMs of pollDelaysMs) {
+      await this.sleep(delayMs);
+      const rawMessages = await this.sessionService.getMessages(sessionId);
+      const latestAssistantMarker =
+        this.getLatestAssistantHistoryMarker(rawMessages);
+      if (
+        !this.hasAssistantHistoryAdvanced(
+          latestAssistantMarker,
+          baselineAssistantMarker,
+        )
+      ) {
+        continue;
+      }
+
+      const processedMessages = this.processHistoryMessages(
+        rawMessages,
+        sessionId,
+      );
+      this.logHistoryRenderDiagnostics(
+        "timeout-recovery",
+        sessionId,
+        rawMessages,
+        processedMessages,
+      );
+      this.view?.webview.postMessage({
+        type: "chatHistory",
+        sessionId,
+        messages: processedMessages,
+      });
+      try {
+        await this.sendPersistedCompactionViewState(sessionId);
+      } catch {
+        // best effort only
+      }
+      return true;
+    }
+
+    return false;
+  }
+
   private getStructuredOutputFormat(): Record<string, unknown> {
     const topLevel = structuredOutputSchema as unknown as Record<string, unknown>;
     const schemaRecord = this.asRecord(topLevel.schema);
@@ -3489,12 +3639,24 @@ export class ChatViewProvider
   }
 
   private extractErrorMessage(error: unknown, fallback: string): string {
+    const candidates = this.collectNormalizedErrorMessages(error);
+    if (candidates.length === 0) {
+      return fallback;
+    }
+
+    const specific = candidates.find(
+      (candidate) => !this.isGenericErrorMessage(candidate),
+    );
+    return specific || candidates[0];
+  }
+
+  private collectNormalizedErrorMessages(error: unknown): string[] {
     const candidates = this.collectErrorMessageCandidates(error)
       .map((candidate) => this.normalizeErrorCandidate(candidate))
       .filter((candidate): candidate is string => Boolean(candidate));
 
     if (candidates.length === 0) {
-      return fallback;
+      return [];
     }
 
     const deduped: string[] = [];
@@ -3503,11 +3665,33 @@ export class ChatViewProvider
         deduped.push(candidate);
       }
     }
+    return deduped;
+  }
 
-    const specific = deduped.find(
-      (candidate) => !this.isGenericErrorMessage(candidate),
+  private extractDetailedErrorMessage(error: unknown, fallback: string): string {
+    const candidates = this.collectNormalizedErrorMessages(error);
+    if (candidates.length === 0) {
+      return fallback;
+    }
+
+    const primary =
+      candidates.find((candidate) => !this.isGenericErrorMessage(candidate)) ||
+      candidates[0];
+    const detailCandidates = candidates.filter(
+      (candidate) => candidate !== primary,
     );
-    return specific || deduped[0];
+    if (detailCandidates.length === 0) {
+      return primary;
+    }
+
+    const details = detailCandidates.slice(0, 4);
+    const remainingCount = detailCandidates.length - details.length;
+    const detailLines = details.map((detail) => `- ${detail}`);
+    if (remainingCount > 0) {
+      detailLines.push(`- (+${remainingCount} more detail(s))`);
+    }
+
+    return `${primary}\n\nDetails:\n${detailLines.join("\n")}`;
   }
 
   private shouldVerboseStreamDebug(): boolean {
@@ -3544,6 +3728,127 @@ export class ChatViewProvider
   private isInteractiveResponseType(value: unknown): boolean {
     const responseType = this.firstNonEmptyString(value)?.toLowerCase();
     return responseType === "question";
+  }
+
+  private formatQuestionPromptForAssistant(
+    prompt: string,
+    kind: "question" | "confirm" | "message" | "quick_actions" = "question",
+  ): string {
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      return "";
+    }
+    const hasQuestionPrefix =
+      /^(?:#{1,6}\s*)?(?:\*\*)?\s*(?:question|clarification)\s*[:\-]/i.test(
+        trimmed,
+      ) || /^question\b/i.test(trimmed);
+    const hasConfirmPrefix =
+      /^(?:#{1,6}\s*)?(?:\*\*)?\s*(?:confirm|confirmation|please confirm)\s*[:\-]/i.test(
+        trimmed,
+      );
+    if (hasQuestionPrefix || hasConfirmPrefix || kind === "message") {
+      return trimmed;
+    }
+    const prefix = kind === "confirm" ? "Please confirm" : "Question";
+    if (trimmed.includes("\n")) {
+      return `${prefix}:\n${trimmed}`;
+    }
+    return `${prefix}: ${trimmed}`;
+  }
+
+  private deriveQuestionPromptFromInteractivePayload(
+    interactiveEvents?: StructuredInteractiveEvent[],
+    questionPayload?: StructuredAssistantOutput["question"],
+  ): string | undefined {
+    const questionRecord = this.asRecord(questionPayload);
+    const explicitDisplayPrompt = this.firstNonEmptyString(
+      questionRecord?.displayPrompt,
+      questionRecord?.assistantPrompt,
+      questionRecord?.responseMessage,
+    );
+    if (explicitDisplayPrompt) {
+      return explicitDisplayPrompt;
+    }
+
+    if (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) {
+      for (const event of interactiveEvents) {
+        if (event.type === "question" || event.type === "confirm") {
+          const prompt = this.firstNonEmptyString(event.question, event.title);
+          if (prompt) {
+            return this.formatQuestionPromptForAssistant(prompt, event.type);
+          }
+        }
+        if (event.type === "message") {
+          const prompt = this.firstNonEmptyString(event.message, event.title);
+          if (prompt) {
+            return prompt;
+          }
+        }
+        if (event.type === "quick_actions") {
+          const prompt = this.firstNonEmptyString(event.title);
+          if (prompt) {
+            return this.formatQuestionPromptForAssistant(
+              prompt,
+              "quick_actions",
+            );
+          }
+        }
+      }
+    }
+
+    if (!questionRecord) {
+      return undefined;
+    }
+    const questionType = this.firstNonEmptyString(questionRecord.type)?.toLowerCase();
+    if (questionType === "message") {
+      return this.firstNonEmptyString(
+        questionRecord.message,
+        questionRecord.content,
+        questionRecord.question,
+        questionRecord.title,
+      );
+    }
+    if (questionType === "quick_actions" || questionType === "quick-actions") {
+      const prompt = this.firstNonEmptyString(
+        questionRecord.question,
+        questionRecord.title,
+        questionRecord.message,
+        questionRecord.content,
+      );
+      return prompt
+        ? this.formatQuestionPromptForAssistant(prompt, "quick_actions")
+        : undefined;
+    }
+    const prompt = this.firstNonEmptyString(
+      questionRecord.question,
+      questionRecord.message,
+      questionRecord.content,
+      questionRecord.title,
+    );
+    if (!prompt) {
+      return undefined;
+    }
+    return this.formatQuestionPromptForAssistant(
+      prompt,
+      questionType === "confirm" ? "confirm" : "question",
+    );
+  }
+
+  private isLowValueInteractiveBodyText(value: string): boolean {
+    const normalized = value.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!normalized) {
+      return true;
+    }
+    return (
+      normalized === "running question" ||
+      normalized === "question" ||
+      normalized === "question for you" ||
+      normalized === "quick input" ||
+      normalized === "awaiting your answer" ||
+      normalized === "awaiting your response" ||
+      normalized === "waiting for your answer" ||
+      normalized === "waiting for your response"
+    );
   }
 
   private isClarificationQuestionnaire(content: unknown): boolean {
@@ -5953,28 +6258,58 @@ export class ChatViewProvider
       structured.interactiveEvents.length > 0
     ) {
       next.interactiveEvents = structured.interactiveEvents;
-      const hasMessageBody =
-        (typeof next.content === "string" && next.content.trim().length > 0) ||
-        (Array.isArray(next.parts) &&
-          next.parts.some(
-            (part: any) =>
-              part?.type === "text" &&
-              typeof part?.text === "string" &&
-              part.text.trim().length > 0,
-          ));
-      if (!hasMessageBody) {
+      const questionPrompt = this.deriveQuestionPromptFromInteractivePayload(
+        structured.interactiveEvents,
+        structured.question,
+      );
+      const currentBodyText = this.extractMessageBodyText(next).trim();
+      const normalizeComparableText = (value: string): string =>
+        value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
+      const promptNorm = questionPrompt
+        ? normalizeComparableText(questionPrompt)
+        : "";
+      const bodyNorm = normalizeComparableText(currentBodyText);
+      let visibleInteractiveBody: string | undefined;
+
+      if (questionPrompt) {
+        if (
+          !currentBodyText ||
+          bodyNorm === promptNorm ||
+          this.isLowValueInteractiveBodyText(currentBodyText)
+        ) {
+          visibleInteractiveBody = questionPrompt;
+        } else if (promptNorm && bodyNorm.startsWith(promptNorm)) {
+          visibleInteractiveBody = currentBodyText;
+        } else {
+          visibleInteractiveBody = `${questionPrompt}\n\n${currentBodyText}`;
+        }
+      } else if (!currentBodyText) {
         const firstEvent = structured.interactiveEvents[0];
         if (firstEvent.type === "question" || firstEvent.type === "confirm") {
-          next.content = firstEvent.question;
-          const parts = Array.isArray(next.parts) ? [...next.parts] : [];
-          parts.push({ type: "text", text: firstEvent.question });
-          next.parts = parts;
+          visibleInteractiveBody = firstEvent.question;
         } else if (firstEvent.type === "message") {
-          next.content = firstEvent.message;
-          const parts = Array.isArray(next.parts) ? [...next.parts] : [];
-          parts.push({ type: "text", text: firstEvent.message });
-          next.parts = parts;
+          visibleInteractiveBody = firstEvent.message;
+        } else if (firstEvent.type === "quick_actions") {
+          visibleInteractiveBody = this.firstNonEmptyString(firstEvent.title);
         }
+      }
+
+      if (visibleInteractiveBody) {
+        next.content = visibleInteractiveBody;
+        const parts = Array.isArray(next.parts) ? [...next.parts] : [];
+        const textIndex = parts.findIndex((part: any) =>
+          this.isRenderableTextPart(part),
+        );
+        if (textIndex >= 0) {
+          parts[textIndex] = {
+            ...parts[textIndex],
+            type: "text",
+            text: visibleInteractiveBody,
+          };
+        } else {
+          parts.push({ type: "text", text: visibleInteractiveBody });
+        }
+        next.parts = parts;
       }
     }
 
@@ -6240,6 +6575,7 @@ export class ChatViewProvider
     recoveredContext?: RecoveredSessionContext,
     retryWithoutStructuredOutput = false,
     structuredFallbackReason?: string,
+    userFacingText?: string,
   ): Promise<void> {
     // Cache for retry
     this.lastSendMessageArgs = { text, files, contexts, images, agent };
@@ -6257,6 +6593,7 @@ export class ChatViewProvider
     let drainSessionId: string | undefined;
     const capturePromptDebug = this.shouldVerboseStreamDebug();
     let debugSessionId: string | undefined;
+    let baselineAssistantMarker: AssistantHistoryMarker | undefined;
     try {
       const normalizedImages = (images || [])
         .map((img) => {
@@ -6303,12 +6640,18 @@ export class ChatViewProvider
       const existingMessages = await this.sessionService.getMessages(
         session.id,
       );
+      baselineAssistantMarker =
+        this.getLatestAssistantHistoryMarker(existingMessages);
       const isNewSession = existingMessages.length === 0;
 
       // Save user message to local history immediately, unless this is a retry
       if (!isRetry) {
+        const persistedUserText =
+          this.firstNonEmptyString(userFacingText, text) || text;
         const userMessage = {
           role: "user" as const,
+          content: persistedUserText,
+          text: persistedUserText,
           parts: [
             {
               type: "text",
@@ -6487,13 +6830,20 @@ export class ChatViewProvider
       }
 
       if (response.error) {
+        const errorMessages = this.collectNormalizedErrorMessages(response.error);
         log.error("API error returned", {
           sessionId: session.id,
           error: response.error,
           status: response.response?.status,
+          errorMessages,
+        });
+        this.logger.error("Prompt request failed", {
+          sessionId: session.id,
+          status: response.response?.status,
+          errorMessages,
         });
 
-        let errorMessage = this.extractErrorMessage(
+        let errorMessage = this.extractDetailedErrorMessage(
           response.error,
           "Failed to send message",
         );
@@ -6509,6 +6859,22 @@ export class ChatViewProvider
             },
           );
           return;
+        }
+        if (this.isLikelyInteractiveAwaitTimeoutError(errorMessage)) {
+          const recovered = await this.tryRecoverTimedOutResponse(
+            session.id,
+            baselineAssistantMarker,
+          );
+          if (recovered) {
+            this.logger.info(
+              "Recovered timed out prompt from session history without user retry",
+              {
+                sessionId: session.id,
+                errorMessage,
+              },
+            );
+            return;
+          }
         }
 
         // Handle Session Not Found error (likely server restart)
@@ -6895,7 +7261,7 @@ export class ChatViewProvider
         });
       }
     } catch (error) {
-      const errorMessage = this.extractErrorMessage(
+      const errorMessage = this.extractDetailedErrorMessage(
         error,
         "Failed to send message",
       );
@@ -6912,8 +7278,37 @@ export class ChatViewProvider
         );
         return;
       }
+      if (
+        drainSessionId &&
+        this.isLikelyInteractiveAwaitTimeoutError(errorMessage)
+      ) {
+        const recovered = await this.tryRecoverTimedOutResponse(
+          drainSessionId,
+          baselineAssistantMarker,
+        );
+        if (recovered) {
+          this.logger.info(
+            "Recovered thrown timeout from session history without user retry",
+            {
+              sessionId: drainSessionId,
+              errorMessage,
+            },
+          );
+          return;
+        }
+      }
       vscode.window.showErrorMessage(`Failed to send message: ${errorMessage}`);
       console.error("Send message error:", error);
+      console.error("Send message error details:", {
+        sessionId: drainSessionId,
+        errorMessage,
+        errorMessages: this.collectNormalizedErrorMessages(error),
+      });
+      this.logger.error("Send message exception", {
+        sessionId: drainSessionId,
+        errorMessage,
+        errorMessages: this.collectNormalizedErrorMessages(error),
+      });
 
       // Show error in webview too
       this.view?.webview.postMessage({
@@ -7023,8 +7418,7 @@ export class ChatViewProvider
         primaryFile: resolvedPlanFile,
         files: mergedPlanFiles,
       });
-      const fallbackPlanFile =
-        resolvedPlanFile || this.buildFallbackPlanFilePath(resolvedPlanTitle);
+      const fallbackPlanFile = resolvedPlanFile;
 
       if (
         structuredPlanContent &&
@@ -7038,7 +7432,6 @@ export class ChatViewProvider
           this.persistPlan(
             structuredPlanContent,
             fallbackPlanFile,
-            resolvedPlanTitle,
           ).catch((err) => {
             console.error(
               "[ChatViewProvider] Failed to auto-persist structured plan:",
@@ -7206,9 +7599,7 @@ export class ChatViewProvider
         primaryFile: extractedPlanFiles[0],
         files: extractedPlanFiles,
       });
-      const fallbackPlanFile =
-        extractedPlanFiles[0] ||
-        this.buildFallbackPlanFilePath(resolvedPlanTitle);
+      const fallbackPlanFile = extractedPlanFiles[0];
 
       // PERSISTENCE: Automatically save the cleaned plan to disk.
       // This ensures handleViewPlan can read it even if the SDK didn't write it.
@@ -7221,7 +7612,6 @@ export class ChatViewProvider
           this.persistPlan(
             cleanPlanContent,
             fallbackPlanFile,
-            resolvedPlanTitle,
           ).catch((err) => {
             console.error(
               "[ChatViewProvider] Failed to auto-persist cleaned plan:",
@@ -7300,35 +7690,9 @@ export class ChatViewProvider
     return message;
   }
 
-  /**
-   * Automatically persists an implementation plan to the workspace
-   */
-  private buildFallbackPlanFilePath(explicitTitle?: string): string | undefined {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-      return undefined;
-    }
-
-    const normalizedTitle =
-      this.firstNonEmptyString(explicitTitle)?.trim() || "implementation plan";
-    const slug = normalizedTitle
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80);
-    const fileName = `${slug || "implementation-plan"}.md`;
-    return path.join(
-      workspaceFolders[0].uri.fsPath,
-      ".sisyphus",
-      "plans",
-      fileName,
-    );
-  }
-
   private async persistPlan(
     content: string,
     preferredPath?: string,
-    explicitTitle?: string,
   ): Promise<string | undefined> {
     try {
       const normalizedContent = this.firstNonEmptyString(content);
@@ -7341,8 +7705,7 @@ export class ChatViewProvider
         ? this.resolvePlanFileCandidates(normalizedPreferred)[0] ||
         path.normalize(normalizedPreferred)
         : undefined;
-      const resolvedPath =
-        resolvedPreferred || this.buildFallbackPlanFilePath(explicitTitle);
+      const resolvedPath = resolvedPreferred;
       if (!resolvedPath) {
         return undefined;
       }
@@ -7941,7 +8304,6 @@ export class ChatViewProvider
         planFilePath = await this.persistPlan(
           rawPlan,
           preferredPath,
-          rawPlan.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim(),
         );
       }
     } else {
@@ -7957,14 +8319,6 @@ export class ChatViewProvider
         planFilePath = diskPlan.resolvedPath;
         break;
       }
-    }
-
-    if (!planFilePath) {
-      planFilePath = await this.persistPlan(
-        rawPlan,
-        undefined,
-        rawPlan.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim(),
-      );
     }
 
     if (!planFilePath) {
@@ -8522,7 +8876,11 @@ export class ChatViewProvider
       return [];
     }
 
-    const patterns = ["**/.sisyphus/plans/*.md", "**/implementation_plan*.md"];
+    const patterns = [
+      "**/.sisyphus/plans/*.md",
+      "**/plans/*.md",
+      "**/implementation_plan*.md",
+    ];
     const excludes = "**/{node_modules,.git,dist,out,build}/**";
     const candidates: string[] = [];
     const seen = new Set<string>();
@@ -8671,32 +9029,18 @@ export class ChatViewProvider
     }
 
     // Fall back to structured output content only when no plan.file was
-    // provided. Persist it so the plan viewer/proceed flow has a real
-    // source-of-truth markdown path.
+    // provided. This allows viewing the plan content, but proceed requires a
+    // real source file path returned by the model.
     if (
       !planData &&
       prioritizedCandidates.length === 0 &&
       plan.content &&
       typeof plan.content === "string"
     ) {
-      const persistedPath = await this.persistPlan(
-        plan.content,
-        undefined,
-        this.firstNonEmptyString(plan.title),
-      );
-      if (persistedPath) {
-        const persisted = await this.readPlanFileFromDisk(persistedPath);
-        if (persisted) {
-          planData = persisted.content;
-          sourceFilePath = persisted.resolvedPath;
-        } else {
-          planData = plan.content;
-          sourceFilePath = path.normalize(persistedPath);
-        }
-      } else {
-        planData = plan.content;
-      }
-      console.log("[ChatViewProvider] Using persisted fallback plan content");
+      planData = plan.content;
+      this.logger.warn("Viewing plan from structured content without plan.file", {
+        source: "handleViewPlan",
+      });
     }
 
     // If we have plan data, show it
@@ -9950,6 +10294,7 @@ export class ChatViewProvider
     contexts?: any[],
     images?: any[],
     agent?: string,
+    userFacingText?: string,
   ): QueuedPrompt {
     this.queueItemSequence += 1;
     return {
@@ -9957,6 +10302,7 @@ export class ChatViewProvider
       sessionId,
       createdAt: Date.now(),
       text,
+      userFacingText,
       files,
       contexts,
       images,
@@ -10037,6 +10383,7 @@ export class ChatViewProvider
   private async dispatchInteractiveResponse(payload: {
     sessionId?: string;
     text?: string;
+    userFacingText?: string;
     agent?: string;
   }): Promise<void> {
     const text = typeof payload.text === "string" ? payload.text.trim() : "";
@@ -10067,6 +10414,7 @@ export class ChatViewProvider
       await this.schedulePromptDispatch("steer", {
         sessionId,
         text,
+        userFacingText: payload.userFacingText,
         agent: payload.agent,
       });
       return;
@@ -10079,6 +10427,11 @@ export class ChatViewProvider
       undefined,
       undefined,
       payload.agent,
+      false,
+      undefined,
+      false,
+      undefined,
+      payload.userFacingText,
     );
   }
 
@@ -10088,6 +10441,7 @@ export class ChatViewProvider
     payload: {
       sessionId?: string;
       text?: string;
+      userFacingText?: string;
       files?: string[];
       contexts?: any[];
       images?: any[];
@@ -10113,6 +10467,7 @@ export class ChatViewProvider
       payload.contexts,
       payload.images,
       payload.agent,
+      payload.userFacingText,
     );
     const atFront = effectiveMode !== "queue";
     this.enqueuePrompt(sessionId, prompt, atFront);
@@ -10150,6 +10505,7 @@ export class ChatViewProvider
     await this.schedulePromptDispatch(mode, {
       sessionId,
       text: queuedItem.text,
+      userFacingText: queuedItem.userFacingText,
       files: queuedItem.files,
       contexts: queuedItem.contexts,
       images: queuedItem.images,
@@ -10230,6 +10586,11 @@ export class ChatViewProvider
           nextItem.contexts,
           nextItem.images,
           nextItem.agent,
+          false,
+          undefined,
+          false,
+          undefined,
+          nextItem.userFacingText,
         );
       }
     } catch (error) {

@@ -103,6 +103,37 @@ test('ChatViewProvider includes sessionId when posting final/error response payl
   );
 });
 
+test('ChatViewProvider attempts timeout recovery before surfacing hard send errors', () => {
+  const sendMessageBody = extractFunctionBody(
+    chatProviderSource,
+    'private async handleSendMessage(',
+  );
+
+  assert.match(
+    sendMessageBody,
+    /isLikelyInteractiveAwaitTimeoutError\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*session\.id,\s*baselineAssistantMarker/s,
+    'response.error timeout path should try session-history recovery before showing an error banner',
+  );
+  assert.match(
+    sendMessageBody,
+    /drainSessionId[\s\S]*isLikelyInteractiveAwaitTimeoutError\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*drainSessionId,\s*baselineAssistantMarker/s,
+    'thrown timeout path should also try session-history recovery before surfacing a hard error',
+  );
+});
+
+test('ChatViewProvider builds detailed error text from error-cause chains', () => {
+  assert.match(
+    chatProviderSource,
+    /private\s+extractDetailedErrorMessage\(/,
+    'provider should expose a detailed error formatter that includes nested causes',
+  );
+  assert.match(
+    chatProviderSource,
+    /Details:\\n\$\{detailLines\.join\("\\n"\)\}/,
+    'detailed error formatter should include a Details section for user-visible diagnostics',
+  );
+});
+
 // SKIP: Feature not implemented - strictStructuredOutput parameter doesn't exist
 test.skip('ChatViewProvider enforces structured-output validation in strict send mode', () => {
   const sendMessageBody = extractFunctionBody(

@@ -54,7 +54,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "error",
         ],
         description:
-          "Primary response classifier for UI behavior. Must be one of the enum values and must never be empty. Use exactly one primary intent per turn: message for normal chat replies (including greetings), implementation_plan for implementation plan payloads (prefer plan.file when a markdown file is written, include plan.content when markdown text is available), progress_update for machine-readable progress steps, subagents for background-agent state, question for clarification prompts, todo_update for task checklist changes, system for top-level context or reminders, data for structured data cards, and error for failures.",
+          "Primary response classifier for UI behavior. Must be one of the enum values and must never be empty. Use exactly one primary intent per turn: message for normal chat replies (including greetings), implementation_plan for implementation plan payloads (plan.file is required and must point to the actual written markdown file), progress_update for machine-readable progress steps, subagents for background-agent state, question for clarification prompts, todo_update for task checklist changes, system for top-level context or reminders, data for structured data cards, and error for failures.",
         examples: [
           "message",
           "implementation_plan",
@@ -161,6 +161,14 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             description:
               "Prompt text shown to the user. Required for type='question' and type='confirm'.",
             examples: ["Which path should I implement first?"],
+          },
+          displayPrompt: {
+            type: "string",
+            description:
+              "Optional assistant-bubble text for responseType='question'. Use this for a chat-formatted question string that may differ from popup prompt wording/options (for example: 'Question: Which path should we use first?').",
+            examples: [
+              "Question: Which path should we use first?",
+            ],
           },
           multiSelect: {
             type: "boolean",
@@ -275,15 +283,16 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         description:
-          "Implementation plan payload for responseType='implementation_plan'. Include the full markdown filepath in plan.file when a plan file was written (absolute path preferred; workspace-relative path accepted) so View Plan can load the source-of-truth file. Keep user clarifications/questions out of plan.content.",
+          "Implementation plan payload for responseType='implementation_plan'. plan.file is required and must be the actual markdown filepath written by the model/tool flow (absolute path preferred; workspace-relative path accepted) so View Plan and Proceed can resolve the source-of-truth file. Keep user clarifications/questions out of plan.content.",
+        required: ["file"],
         examples: [
           {
-            file: "/workspace/project/.sisyphus/plans/todo-feature.md",
+            file: "/workspace/project/plans/todo-feature.md",
             title: "Todo Feature Implementation",
           },
           {
-            file: "E:\\Projects\\vscode-opencode\\.sisyphus\\plans\\auth-session-hardening.md",
-            files: ["E:\\Projects\\vscode-opencode\\.sisyphus\\plans\\auth-session-hardening.md"],
+            file: "C:\\Workspace\\project\\plans\\auth-session-hardening.md",
+            files: ["C:\\Workspace\\project\\plans\\auth-session-hardening.md"],
             title: "Auth Session Hardening",
             content: "## Plan\n1. Update schema\n2. Sync generated artifacts",
           },
@@ -292,7 +301,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           file: {
             type: "string",
             description:
-              "Full filepath of the implementation plan markdown written to the workspace (absolute path preferred, workspace-relative path accepted; examples: '/workspace/project/.sisyphus/plans/todo-feature.md' or 'E:\\\\Projects\\\\vscode-opencode\\\\.sisyphus\\\\plans\\\\todo-feature.md'). Set this to the same path the tool write used; do not emit placeholder values that were not actually written to disk. Omit if no file was written.",
+              "Full filepath of the implementation plan markdown written to the workspace (absolute path preferred, workspace-relative path accepted; examples: '/workspace/project/plans/todo-feature.md' or 'C:\\\\Workspace\\\\project\\\\plans\\\\todo-feature.md'). Set this to the same path the tool write used; do not emit placeholder values that were not actually written to disk. Omit if no file was written.",
           },
           files: {
             type: "array",
@@ -643,9 +652,9 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       },
       {
         responseType: "implementation_plan",
-        assistantMessage: "Implementation plan created at .sisyphus/plans/todo-feature.md.",
+        assistantMessage: "Implementation plan created at plans/todo-feature.md.",
         plan: {
-          file: ".sisyphus/plans/todo-feature.md",
+          file: "plans/todo-feature.md",
         },
       },
       {
@@ -663,6 +672,8 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         assistantMessage: "I need one clarification before proceeding.",
         question: {
           type: "question",
+          displayPrompt:
+            "Question: Which option should we use? (Select from the popup choices below.)",
           question: "Which option should we use?",
           options: [
             { label: "Strict schema", value: "strict" },

@@ -1209,7 +1209,9 @@ export function ActiveTaskPanel() {
           </MiniSection>
          )}
 
-         <MiniSection title="Context">
+        {/* TEMPORARY: Hidden during modularization; keep Context section implementation intact for later re-enable. */}
+        {false && (
+          <MiniSection title="Context">
           {/* Token usage bar */}
           <div className="mb-3">
             <div className="mb-1.5 flex flex-col gap-1.5">
@@ -1373,7 +1375,8 @@ export function ActiveTaskPanel() {
               </span>
             </div>
           </div>
-        </MiniSection>
+          </MiniSection>
+        )}
 
         <MiniSection title="Session">
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
@@ -2402,11 +2405,21 @@ export function InputWrapper() {
   const submitBatchResponses = (
     answers: Record<string, { text: string; eventType: string }>,
   ) => {
-    const batch = Object.entries(answers).map(([eventId, data]) => ({
-      eventId,
-      eventType: data.eventType,
-      text: data.text,
-    }));
+    const batch = Object.entries(answers).map(([eventId, data]) => {
+      const event = displayInteractiveEvents.find((e) => e.id === eventId);
+      const questionLabel =
+        event && "question" in event
+          ? event.question
+          : event && "message" in event
+            ? event.message
+            : event?.title || undefined;
+      return {
+        eventId,
+        eventType: data.eventType,
+        text: data.text,
+        questionLabel,
+      };
+    });
 
     const composedPrompt = batch
       .map(
@@ -2417,15 +2430,8 @@ export function InputWrapper() {
 
     const displayText = batch
       .map((resp) => {
-        const event = displayInteractiveEvents.find((e) => e.id === resp.eventId);
-        const questionText =
-          event && "question" in event
-            ? event.question
-            : event && "message" in event
-              ? event.message
-              : event?.title || null;
-        if (questionText) {
-          return `**${questionText}**\n${resp.text}`;
+        if (resp.questionLabel) {
+          return `**${resp.questionLabel}**\n${resp.text}`;
         }
         return resp.text;
       })
@@ -2484,6 +2490,7 @@ export function InputWrapper() {
       type: "batchInteractiveResponse",
       ...(currentSessionId ? { sessionId: currentSessionId } : {}),
       responses: batch,
+      displayText,
       agent: selectedAgent || null,
     });
 

@@ -1451,6 +1451,36 @@ function isLikelyInteractiveAwaitTimeout(message: string): boolean {
   );
 }
 
+function isLowSignalTimeoutFragment(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized.length <= 2) {
+    return true;
+  }
+
+  const compact = normalized
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!compact) {
+    return true;
+  }
+
+  if (
+    compact === "me" ||
+    compact === "let" ||
+    compact === "let me" ||
+    compact === "i" ||
+    compact === "ill"
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -3414,6 +3444,242 @@ function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
   return [];
 }
 
+function interactivePromptFromEvent(event: InteractiveEvent): string | undefined {
+  if (event.type === "question" || event.type === "confirm") {
+    return asOptionalString(event.question) || asOptionalString(event.title);
+  }
+  if (event.type === "message") {
+    return asOptionalString(event.message) || asOptionalString(event.title);
+  }
+  if (event.type === "quick_actions") {
+    return asOptionalString(event.title);
+  }
+  return undefined;
+}
+
+function containsInteractiveMarker(text: string): boolean {
+  return /\[interactive:[^:\]]+:[^\]]+\]/i.test(text);
+}
+
+function parseInteractiveMarkerResponses(
+  text: string,
+): Array<{ eventId: string; answer: string }> {
+  const responses: Array<{ eventId: string; answer: string }> = [];
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    const markerMatch = line.match(
+      /^\[interactive:[^:\]]+:([^\]]+)\]\s*(.*)$/i,
+    );
+    if (!markerMatch) {
+      continue;
+    }
+    const eventId = asString(markerMatch[1]).trim();
+    const answer = asString(markerMatch[2]).trim();
+    if (!eventId && !answer) {
+      continue;
+    }
+    responses.push({ eventId, answer });
+  }
+
+  return responses;
+}
+
+function hydrateLegacyInteractiveUserMessages(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return messages;
+  }
+
+  const questionByEventId = new Map<string, string>();
+  let changed = false;
+  const hydrated = messages.map((message) => {
+    const role = asString(message.role) || asString(asRecord(message.info)?.role);
+    if (role === "assistant") {
+      const events = interactiveEventsFromMessage(message);
+      events.forEach((event) => {
+        const eventId = asOptionalString(event.id);
+        const label = interactivePromptFromEvent(event);
+        if (eventId && label) {
+          questionByEventId.set(eventId, label);
+        }
+      });
+      return message;
+    }
+
+    if (role !== "user") {
+      return message;
+    }
+
+    const persistedVisibleText =
+      asOptionalString(message.content) || asOptionalString(message.text);
+    if (persistedVisibleText && !containsInteractiveMarker(persistedVisibleText)) {
+      return message;
+    }
+
+    const markerSource =
+      (persistedVisibleText && containsInteractiveMarker(persistedVisibleText)
+        ? persistedVisibleText
+        : undefined) ||
+      contentFromParts(Array.isArray(message.parts) ? message.parts : []);
+    if (!markerSource || !containsInteractiveMarker(markerSource)) {
+      return message;
+    }
+
+    const responses = parseInteractiveMarkerResponses(markerSource);
+    if (responses.length === 0) {
+      return message;
+    }
+
+    const displayText = responses
+      .map((response) => {
+        const answer = response.answer.trim();
+        const questionLabel = questionByEventId.get(response.eventId);
+        if (questionLabel && answer) {
+          return `**${questionLabel}**\n${answer}`;
+        }
+        if (questionLabel) {
+          return `**${questionLabel}**`;
+        }
+        return answer;
+      })
+      .filter((value) => value.length > 0)
+      .join("\n\n");
+
+    if (!displayText) {
+      return message;
+    }
+
+    changed = true;
+    return {
+      ...message,
+      content: displayText,
+      text: displayText,
+    };
+  });
+
+  return changed ? hydrated : messages;
+}
+
+function hasQuestionFormattingForInteractiveDisplay(text: string): boolean {
+  return /\*\*[^*]+\*\*/.test(text) || /^\s*(?:question|please confirm)\s*:/im.test(text);
+}
+
+function extractInteractiveAnswerSignature(message: Message): string | undefined {
+  const role = asString(message.role) || asString(asRecord(message.info)?.role);
+  if (role !== "user") {
+    return undefined;
+  }
+
+  const markerSourceCandidates = [
+    asOptionalString(message.content),
+    asOptionalString(message.text),
+    contentFromParts(Array.isArray(message.parts) ? message.parts : []),
+  ].filter((value): value is string => !!value);
+  const markerSource = markerSourceCandidates.find((value) =>
+    containsInteractiveMarker(value),
+  );
+  if (markerSource) {
+    const markerResponses = parseInteractiveMarkerResponses(markerSource);
+    if (markerResponses.length > 0) {
+      const joined = markerResponses
+        .map((item) => normalizeComparableText(item.answer))
+        .filter((item) => item.length > 0)
+        .join("\n");
+      return joined || undefined;
+    }
+  }
+
+  const visibleText =
+    asOptionalString(message.content) ||
+    asOptionalString(message.text) ||
+    contentFromParts(Array.isArray(message.parts) ? message.parts : []);
+  if (!visibleText || !hasQuestionFormattingForInteractiveDisplay(visibleText)) {
+    return undefined;
+  }
+
+  const lines = visibleText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const answerLines = lines.filter((line) => {
+    if (/^\*\*[^*]+\*\*$/.test(line)) {
+      return false;
+    }
+    if (/^(?:question|please confirm)\s*:/i.test(line)) {
+      return false;
+    }
+    return true;
+  });
+  if (answerLines.length === 0) {
+    return undefined;
+  }
+  return answerLines.map((line) => normalizeComparableText(line)).join("\n");
+}
+
+function interactiveUserMessageRichness(message: Message): number {
+  const visibleText =
+    asOptionalString(message.content) ||
+    asOptionalString(message.text) ||
+    contentFromParts(Array.isArray(message.parts) ? message.parts : []);
+  const markerSource = contentFromParts(Array.isArray(message.parts) ? message.parts : []);
+  let score = 0;
+  if (visibleText && hasQuestionFormattingForInteractiveDisplay(visibleText)) {
+    score += 50;
+  }
+  if (markerSource && containsInteractiveMarker(markerSource)) {
+    score += 20;
+  }
+  if (visibleText) {
+    score += Math.min(30, Math.floor(visibleText.length / 20));
+  }
+  return score;
+}
+
+function dedupeInteractiveUserHydrationMessages(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length <= 1) {
+    return messages;
+  }
+
+  const deduped: Message[] = [];
+  for (const message of messages) {
+    const role = asString(message.role) || asString(asRecord(message.info)?.role);
+    if (role !== "user") {
+      deduped.push(message);
+      continue;
+    }
+
+    const signature = extractInteractiveAnswerSignature(message);
+    if (!signature) {
+      deduped.push(message);
+      continue;
+    }
+
+    const previous = deduped.length > 0 ? deduped[deduped.length - 1] : undefined;
+    const previousRole = previous
+      ? asString(previous.role) || asString(asRecord(previous.info)?.role)
+      : "";
+    if (previous && previousRole === "user") {
+      const previousSignature = extractInteractiveAnswerSignature(previous);
+      if (previousSignature && previousSignature === signature) {
+        if (
+          interactiveUserMessageRichness(message) >
+          interactiveUserMessageRichness(previous)
+        ) {
+          deduped[deduped.length - 1] = message;
+        }
+        continue;
+      }
+    }
+
+    deduped.push(message);
+  }
+
+  return deduped;
+}
+
 function buildStreamingMessage(streaming: StreamingState): Message {
   const parts: any[] = [
     {
@@ -3636,27 +3902,22 @@ function handleStreamEvent(
       // events with role="user" but should be rendered as system messages
       const partText = asRichString(part.text) || asRichString(part.content) || '';
       if (partText && hasSystemMessagePatternInText(partText)) {
-        // CRITICAL: Do NOT dispatch SET_MESSAGES during active streaming!
-        // During streaming, the AI response content is in state.streaming, not state.messages.
-        // Dispatching SET_MESSAGES with [...state.messages, systemMessage] would replace
-        // the messages array and lose the streaming content. Instead, we'll let system
-        // messages be added during messageResponse finalization.
-        if (!current) {
-          // Only add system messages directly if we're not currently streaming
-          const systemMessage: Message = {
-            role: 'system',
-            content: partText,
-            parts: [{ type: 'text', text: partText }],
-            time: { created: Date.now() },
-            info: { role: 'system', id: `sys-${Date.now()}` }
-          };
-          dispatch({
-            type: 'SET_MESSAGES',
-            payload: [...state.messages, systemMessage]
-          });
-        }
-        // If we ARE streaming, the system message will be captured and added
-        // during messageResponse finalization (via the message payload itself)
+        // System messages should be added immediately to state.messages
+        // even during streaming. This is safe because:
+        // 1. Streaming content is in state.streaming, not state.messages
+        // 2. SET_MESSAGES with [...state.messages, systemMessage] preserves existing messages
+        // 3. This allows system messages to appear live during streaming
+        const systemMessage: Message = {
+          role: 'system',
+          content: partText,
+          parts: [{ type: 'text', text: partText }],
+          time: { created: Date.now() },
+          info: { role: 'system', id: `sys-${Date.now()}` }
+        };
+        dispatch({
+          type: 'SET_MESSAGES',
+          payload: [...state.messages, systemMessage]
+        });
         break; // Don't process this as regular content
       }
 
@@ -5200,6 +5461,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           .filter((msg) => isRenderableHistoryMessage(msg));
         const messages =
           coalesceAdjacentAssistantHistoryMessages(normalizedMessages);
+        const hydratedMessages = hydrateLegacyInteractiveUserMessages(messages);
+        const dedupedHydratedMessages =
+          dedupeInteractiveUserHydrationMessages(hydratedMessages);
 
         const chatHistorySessionId = asString(data.sessionId);
         const currentState = getState();
@@ -5214,7 +5478,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         dispatch({ type: "SET_STREAMING", payload: null });
         dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
         dispatch({ type: "CLEAR_MESSAGES" });
-        dispatch({ type: "SET_MESSAGES", payload: messages });
+        dispatch({ type: "SET_MESSAGES", payload: dedupedHydratedMessages });
         const canonicalMessages = getState().messages;
 
         // If the backend included a sessionId (e.g. on session switch), update it BEFORE
@@ -5449,16 +5713,22 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           // "Let me search for...", "Let me read the file..."), it has no user-facing value.
           // Suppress it so only the error banner is shown rather than garbled reasoning text.
           const rawContent = currentStreaming.content ?? "";
+          const timeoutLikeError = isLikelyInteractiveAwaitTimeout(errorMsg);
           const contentIsReasoningMonologue =
             looksLikeReasoningTrace(rawContent, "") ||
             looksLikeToolUseMonologue(rawContent);
+          const suppressLowSignalTimeoutFragment =
+            timeoutLikeError && isLowSignalTimeoutFragment(rawContent);
           const partialMessage: Message = {
             id: currentStreaming.messageId || `error-${Date.now()}`,
             role: "assistant",
             agent: currentStreaming.agent,
             modelID: currentStreaming.modelID,
             providerID: currentStreaming.providerID,
-            content: contentIsReasoningMonologue ? "" : rawContent,
+            content:
+              contentIsReasoningMonologue || suppressLowSignalTimeoutFragment
+                ? ""
+                : rawContent,
             reasoningEvents: currentStreaming.reasoningEvents,
             steps: currentStreaming.steps as any,
             created: Date.now(),

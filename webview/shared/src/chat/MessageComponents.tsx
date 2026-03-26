@@ -284,6 +284,150 @@ function messageBodyFromParts(parts?: MessagePart[]): string {
     .trim();
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function normalizeComparableText(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isLowValueInteractiveBodyText(value: string): boolean {
+  const normalized = normalizeComparableText(value);
+  if (!normalized) {
+    return true;
+  }
+  return (
+    normalized === "running question" ||
+    normalized === "question" ||
+    normalized === "question for you" ||
+    normalized === "quick input" ||
+    normalized === "awaiting your answer" ||
+    normalized === "awaiting your response" ||
+    normalized === "waiting for your answer" ||
+    normalized === "waiting for your response"
+  );
+}
+
+function formatQuestionPromptForAssistant(
+  prompt: string,
+  kind: "question" | "confirm" | "message" | "quick_actions" = "question",
+): string {
+  const trimmed = prompt.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const hasQuestionPrefix =
+    /^(?:#{1,6}\s*)?(?:\*\*)?\s*(?:question|clarification)\s*[:\-]/i.test(
+      trimmed,
+    ) || /^question\b/i.test(trimmed);
+  const hasConfirmPrefix =
+    /^(?:#{1,6}\s*)?(?:\*\*)?\s*(?:confirm|confirmation|please confirm)\s*[:\-]/i.test(
+      trimmed,
+    );
+  if (hasQuestionPrefix || hasConfirmPrefix || kind === "message") {
+    return trimmed;
+  }
+  const prefix = kind === "confirm" ? "Please confirm" : "Question";
+  if (trimmed.includes("\n")) {
+    return `${prefix}:\n${trimmed}`;
+  }
+  return `${prefix}: ${trimmed}`;
+}
+
+function questionPromptFromMessage(message?: Message): string | undefined {
+  if (!message) {
+    return undefined;
+  }
+
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured =
+    asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured_output) ||
+    asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured_output);
+  const question = asRecord(structured?.question);
+  const explicitDisplayPrompt = firstNonEmptyString(
+    question?.displayPrompt,
+    question?.assistantPrompt,
+    question?.responseMessage,
+  );
+  if (explicitDisplayPrompt) {
+    return explicitDisplayPrompt;
+  }
+
+  if (Array.isArray(message.interactiveEvents)) {
+    for (const event of message.interactiveEvents) {
+      if (event.type === "question" || event.type === "confirm") {
+        const prompt = firstNonEmptyString(event.question, event.title);
+        if (prompt) {
+          return formatQuestionPromptForAssistant(prompt, event.type);
+        }
+      }
+      if (event.type === "message") {
+        const prompt = firstNonEmptyString(event.message, event.title);
+        if (prompt) {
+          return prompt;
+        }
+      }
+      if (event.type === "quick_actions") {
+        const prompt = firstNonEmptyString(event.title);
+        if (prompt) {
+          return formatQuestionPromptForAssistant(prompt, "quick_actions");
+        }
+      }
+    }
+  }
+  if (!question) {
+    return undefined;
+  }
+  const questionType = firstNonEmptyString(question.type)?.toLowerCase();
+  if (questionType === "message") {
+    return firstNonEmptyString(
+      question.message,
+      question.content,
+      question.question,
+      question.title,
+    );
+  }
+  if (questionType === "quick_actions" || questionType === "quick-actions") {
+    const prompt = firstNonEmptyString(
+      question.question,
+      question.title,
+      question.message,
+      question.content,
+    );
+    return prompt
+      ? formatQuestionPromptForAssistant(prompt, "quick_actions")
+      : undefined;
+  }
+  const prompt = firstNonEmptyString(
+    question.question,
+    question.message,
+    question.content,
+    question.title,
+  );
+  if (!prompt) {
+    return undefined;
+  }
+  return formatQuestionPromptForAssistant(
+    prompt,
+    questionType === "confirm" ? "confirm" : "question",
+  );
+}
+
 
 function summaryText(message?: Message): string {
   // Check both nested info and top-level properties (for persisted messages)
@@ -367,12 +511,39 @@ function getMessageContent(
     message.text,
     summaryText(message),
   ];
-  return (
+  const baseContent =
     candidates.find(
       (candidate) =>
         typeof candidate === "string" && candidate.trim().length > 0,
-    ) ?? ""
-  );
+    ) ?? "";
+  const questionPrompt = questionPromptFromMessage(message);
+  if (!questionPrompt) {
+    return baseContent;
+  }
+
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured = asRecord(messageRec?.structuredOutput) || asRecord(infoRec?.structuredOutput);
+  const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
+  const isQuestionResponseType = responseType === "question";
+  const hasInteractiveEvents = Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0;
+  if (!isQuestionResponseType && !hasInteractiveEvents) {
+    return baseContent;
+  }
+
+  if (!baseContent || isLowValueInteractiveBodyText(baseContent)) {
+    return questionPrompt;
+  }
+
+  const promptNorm = normalizeComparableText(questionPrompt);
+  const bodyNorm = normalizeComparableText(baseContent);
+  if (!promptNorm || bodyNorm === promptNorm) {
+    return questionPrompt;
+  }
+  if (bodyNorm.startsWith(promptNorm)) {
+    return baseContent;
+  }
+  return `${questionPrompt}\n\n${baseContent}`;
 }
 
 type ThoughtItem = { key: string; text: string };
