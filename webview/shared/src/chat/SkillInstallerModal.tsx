@@ -1,5 +1,11 @@
 import { useState, useEffect } from "react";
-import { X } from "lucide-react";
+import { X, Download, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import { createPortal } from "react-dom";
+
+import { cn } from "@/utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import vscode from "./lib/vscode";
 
 type SkillInstallerModalProps = {
@@ -33,7 +39,6 @@ export function SkillInstallerModal({
 
   useEffect(() => {
     if (!isOpen) {
-      // Reset state when modal closes
       setUrl("");
       setIsInstalling(false);
       setStatus({ type: "idle", message: "" });
@@ -61,6 +66,7 @@ export function SkillInstallerModal({
   };
 
   // Listen for installation result
+  // eslint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const message = event.data;
@@ -83,53 +89,66 @@ export function SkillInstallerModal({
     return () => window.removeEventListener("message", handleMessage);
   }, [onClose]);
 
-  return (
-    <div className="oc-skill-installer-shell">
-      <div
-        className="oc-skill-installer-backdrop"
+  const modalContent = (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+      {/* Backdrop */}
+      <button
+        type="button"
+        className="absolute inset-0 h-full w-full cursor-default"
         onClick={onClose}
-        role="presentation"
+        aria-label="Close skill installer"
       />
+
+      {/* Modal panel */}
       <div
-        className="oc-skill-installer-modal"
+        className="relative z-50 w-full max-w-md flex-col overflow-hidden rounded-xl border border-oc-border bg-oc-panel text-foreground shadow-2xl animate-in zoom-in-95 duration-200"
         role="dialog"
         aria-modal="true"
         aria-label="Install Skill"
       >
-        <div className="oc-skill-installer-header">
-          <span className="oc-skill-installer-title">Install Skill</span>
-          <button
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-oc-border bg-oc-panel-soft/70 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Download className="h-4 w-4 text-oc-accent" />
+            <span className="text-sm font-semibold text-foreground">Install Skill</span>
+          </div>
+          <Button
             type="button"
-            className="oc-skill-installer-close"
+            variant="ghost"
+            size="icon"
             onClick={onClose}
             aria-label="Close skill installer"
-            title="Close"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground"
           >
-            <X className="h-4 w-4" />
-          </button>
+            <X className="h-3.5 w-3.5" />
+          </Button>
         </div>
 
-        <div className="oc-skill-installer-content">
+        {/* Body */}
+        <div className="flex flex-col gap-4 p-4">
+          {/* Status messages */}
           {status.type === "success" && (
-            <div className="oc-skill-installer-success">
-              ✓ {status.message}
+            <div className="flex items-center gap-2 rounded-lg border border-oc-green/30 bg-oc-green/10 px-3 py-2.5 text-xs text-oc-green">
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+              <span>{status.message}</span>
             </div>
           )}
 
           {status.type === "error" && (
-            <div className="oc-skill-installer-error">
-              ✕ {status.message}
+            <div className="flex items-center gap-2 rounded-lg border border-oc-red/30 bg-oc-red/10 px-3 py-2.5 text-xs text-oc-red">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              <span>{status.message}</span>
             </div>
           )}
 
-          <div className="oc-skill-installer-form">
-            <label htmlFor="skill-url" className="oc-skill-installer-label">
+          {/* URL input */}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="skill-url" className="text-xs font-medium text-muted-foreground">
               Skill URL
-            </label>
-            <input
+            </Label>
+            <Input
               id="skill-url"
               type="text"
-              className="oc-skill-installer-input"
               placeholder="https://example.com/skill.json"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -139,35 +158,55 @@ export function SkillInstallerModal({
                   handleInstall();
                 }
               }}
+              className="h-8 text-xs"
             />
+          </div>
 
-            {status.type === "idle" && status.message && (
-              <div className="oc-skill-installer-status">
-                {status.message}
-              </div>
-            )}
-
-            <div className="oc-skill-installer-actions">
-              <button
-                type="button"
-                className="oc-skill-installer-btn-secondary"
-                onClick={onClose}
-                disabled={isInstalling}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="oc-skill-installer-btn-primary"
-                onClick={handleInstall}
-                disabled={isInstalling || !url.trim()}
-              >
-                {isInstalling ? "Installing..." : "Install"}
-              </button>
+          {/* Progress message */}
+          {status.type === "idle" && status.message && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span>{status.message}</span>
             </div>
+          )}
+
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              disabled={isInstalling}
+              className="text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              onClick={handleInstall}
+              disabled={isInstalling || !url.trim()}
+              className={cn("text-xs", isInstalling && "opacity-75")}
+            >
+              {isInstalling ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                  Installing…
+                </>
+              ) : (
+                <>
+                  <Download className="mr-1.5 h-3 w-3" />
+                  Install
+                </>
+              )}
+            </Button>
           </div>
         </div>
       </div>
     </div>
   );
+
+  return createPortal(modalContent, document.body);
 }

@@ -64,14 +64,49 @@ export class SkillManagerService {
   }
 
   async dispose(): Promise<void> {
-    // Cleanup if needed
+    // Clear cache on dispose
+    this.skillsCache = null;
+    this.skillsCacheTime = 0;
   }
 
+  /**
+   * Clears the skills cache. Useful when skills are modified externally.
+   */
+  clearCache(): void {
+    this.skillsCache = null;
+    this.skillsCacheTime = 0;
+  }
+
+  // Add caching for skills to avoid repeated file reads
+  private skillsCache: SkillDefinition[] | null = null;
+  private skillsCacheTime: number = 0;
+  private readonly SKILLS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
   async listSkills(): Promise<SkillDefinition[]> {
+    // Return cache if fresh (even with expired cache, prefer stale cache over blocking)
+    if (this.skillsCache && Date.now() - this.skillsCacheTime < this.SKILLS_CACHE_TTL_MS) {
+      return this.skillsCache;
+    }
+
     if (!this.metadata) {
       await this.loadMetadata();
     }
 
+    // If we have cached skills (even if expired), return them immediately
+    // and refresh in background
+    if (this.skillsCache && this.skillsCache.length > 0) {
+      // Trigger background refresh without waiting
+      this.refreshSkillsCache().catch((error) => {
+        console.error('Failed to refresh skills cache:', error);
+      });
+      return this.skillsCache;
+    }
+
+    // No cache available, must load synchronously
+    return await this.refreshSkillsCache();
+  }
+
+  private async refreshSkillsCache(): Promise<SkillDefinition[]> {
     const skills: SkillDefinition[] = [];
     for (const [name, info] of Object.entries(this.metadata!.skills)) {
       try {
@@ -83,6 +118,8 @@ export class SkillManagerService {
         console.error(`Failed to load skill ${name}:`, error);
       }
     }
+    this.skillsCache = skills;
+    this.skillsCacheTime = Date.now();
     return skills;
   }
 
@@ -113,6 +150,10 @@ export class SkillManagerService {
     };
 
     await this.saveMetadata();
+
+    // Invalidate cache when skill is saved
+    this.skillsCache = null;
+    this.skillsCacheTime = 0;
   }
 
   async deleteSkill(name: string): Promise<void> {
@@ -135,6 +176,10 @@ export class SkillManagerService {
 
     delete this.metadata!.skills[name];
     await this.saveMetadata();
+
+    // Invalidate cache when skill is deleted
+    this.skillsCache = null;
+    this.skillsCacheTime = 0;
   }
 
   async updateSkill(name: string, updates: Partial<SkillDefinition>): Promise<void> {
@@ -145,6 +190,10 @@ export class SkillManagerService {
 
     const updatedSkill = { ...skill, ...updates, lastUpdated: new Date().toISOString() };
     await this.saveSkill(updatedSkill);
+
+    // Cache is already invalidated in saveSkill, but let's be explicit
+    this.skillsCache = null;
+    this.skillsCacheTime = 0;
   }
 
   validateSkill(skill: unknown): ValidationResult {
@@ -213,6 +262,7 @@ export class SkillManagerService {
 
       await this.saveSkill(skill);
 
+      // Cache is already invalidated in saveSkill
       onProgress?.({ stage: 'updating_metadata', percent: 90, message: 'Finalizing...' });
 
       return { success: true, skill };

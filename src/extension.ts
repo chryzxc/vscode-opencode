@@ -33,6 +33,8 @@ import { StatusBarProvider } from "./providers/StatusBarProvider";
 import { PlanViewProvider } from "./providers/PlanViewProvider";
 import { DiffReviewProvider } from "./providers/DiffReviewProvider";
 import { ConfigFilesProvider, type ConfigFile } from "./providers/ConfigFilesProvider";
+import { SkillManagementService } from "./services/SkillManagementService";
+import { SkillsPanelProvider } from "./providers/SkillsPanelProvider";
 import { createLogger, logger } from "./utils/Logger";
 
 const log = createLogger("Extension");
@@ -48,6 +50,7 @@ let serverManager: OpencodeServerManager;
 let sessionService: SessionService;
 let chatViewProvider: ChatViewProvider;
 let statusBarProvider: StatusBarProvider;
+let skillManagementService: SkillManagementService;
 
 /**
  * Activates the OpenCode VSCode extension.
@@ -112,6 +115,9 @@ export async function activate(context: vscode.ExtensionContext) {
     serverManager = new OpencodeServerManager(context);
     sessionService = new SessionService(context, serverManager);
     statusBarProvider = new StatusBarProvider(serverManager);
+    skillManagementService = new SkillManagementService(context);
+    await skillManagementService.initialize();
+
     context.subscriptions.push(
       serverManager.onStatusChange(() => {
         statusBarProvider.updateStatus();
@@ -136,6 +142,15 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.window.registerWebviewViewProvider(
         "opencode.chatView",
         chatViewProvider,
+      ),
+    );
+
+    // Register skills panel provider
+    const skillsPanelProvider = new SkillsPanelProvider(context.extensionUri, skillManagementService);
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider(
+        "opencode.skillsPanel",
+        skillsPanelProvider,
       ),
     );
 
@@ -453,6 +468,23 @@ export async function activate(context: vscode.ExtensionContext) {
       }),
     );
 
+    // ============================================================================
+    // Skills Management Commands
+    // ============================================================================
+    context.subscriptions.push(
+      vscode.commands.registerCommand("opencode.restartServer", async () => {
+        // Kill existing server processes
+        const { exec } = require('child_process');
+        exec('taskkill //F //IM opencode.exe', (error: any) => {
+          if (error && !error.message.includes('not found')) {
+            console.error('Failed to kill server:', error);
+          }
+          // Server will auto-restart on next command
+          vscode.window.showInformationMessage('OpenCode server will restart on next message');
+        });
+      }),
+    );
+
 
 
     // ============================================================================
@@ -518,6 +550,14 @@ export async function deactivate(): Promise<void> {
     }
   } catch (error) {
     log.warn("Failed to dispose ChatViewProvider", { error });
+  }
+
+  try {
+    if (skillManagementService) {
+      skillManagementService.dispose();
+    }
+  } catch (error) {
+    log.warn("Failed to dispose SkillManagementService", { error });
   }
 
   try {

@@ -34,6 +34,13 @@
           "id": "opencode.chatView",
           "name": "Chat",
           "icon": "resources/icon.svg"
+        },
+        {
+          "type": "webview",
+          "id": "opencode.skillsPanel",
+          "name": "Skills",
+          "icon": "resources/icon.svg",
+          "contextualTitle": "Skills Management"
         }
       ]
     },
@@ -65,6 +72,10 @@
       {
         "command": "opencode.refreshSkills",
         "title": "OpenCode: Refresh Skills"
+      },
+      {
+        "command": "opencode.restartServer",
+        "title": "OpenCode: Restart Server"
       }
     ],
     "keybindings": [
@@ -95,6 +106,12 @@
           "command": "opencode.sendSelection",
           "when": "editorHasSelection",
           "group": "opencode"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "opencode.restartServer",
+          "when": "opencode.enabled"
         }
       ]
     },

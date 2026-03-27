@@ -16,6 +16,7 @@ export default defineConfig({
         chat: path.resolve(__dirname, 'src/chat/index.tsx'),
         plan: path.resolve(__dirname, 'src/plan/index.tsx'),
         'diff-review': path.resolve(__dirname, 'src/diff-review/index.tsx'),
+        skills: path.resolve(__dirname, 'src/skills/index.tsx'),
       },
       output: {
         entryFileNames: '[name].js',

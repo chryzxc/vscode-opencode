@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "prebuild": "node ../../scripts/sync-structured-output-contract.mjs",
-    "build": "vite build",
+    "build": "vite build && node ../../scripts/merge-css.mjs",
     "dev": "vite"
   },
   "dependencies": {

@@ -1551,12 +1551,17 @@ export function ModelDropdown() {
     const groups = new Map<string, typeof availableModels>();
     const query = modelSearchQuery.toLowerCase();
 
-    availableModels
+    [...availableModels]
+      .sort((a, b) => {
+        const pA = a.providerName ?? a.providerID;
+        const pB = b.providerName ?? b.providerID;
+        if (pA !== pB) return pA.localeCompare(pB);
+        return a.name.localeCompare(b.name);
+      })
       .filter((model) => {
-        const matchesQuery =
-          `${model.providerID} ${model.name} ${model.modelID}`
-            .toLowerCase()
-            .includes(query);
+        const matchesQuery = `${model.name} ${model.modelID} ${model.providerName}`
+          .toLowerCase()
+          .includes(query);
 
         if (!matchesQuery) return false;
 
@@ -1565,7 +1570,6 @@ export function ModelDropdown() {
             return model.providerID === "opencode";
           }
           const providerName = model.providerName ?? model.providerID;
-          // Use exact match (case-insensitive) to prevent "Z.ai" tab from matching "Z.ai Coding Plan"
           return providerName.toLowerCase() === selectedTab.toLowerCase();
         }
 

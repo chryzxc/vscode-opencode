@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const panelSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
@@ -117,4 +117,14 @@ test('agent dropdown displays full agent names without truncation', () => {
   const labelSpan = agentLabelMatch[0];
   assert(!labelSpan.includes('truncate'), 'agent label should not have truncate class');
   assert(!labelSpan.includes('max-w-'), 'agent label should not have max-width constraint');
+});
+
+test('model dropdown sorts models by provider and then by name', () => {
+  // Verify sorting logic presence in the grouping memo.
+  const dropdownBody = extractFunctionBody(panelSource, 'export function ModelDropdown()');
+
+  assert.match(dropdownBody, /\.sort\(\(a,\s*b\)\s*=>\s*\{/, 'grouping memo should include sorting logic');
+  assert.match(dropdownBody, /a\.providerName\s*\?\?\s*a\.providerID/, 'should compare provider names/IDs');
+  assert.match(dropdownBody, /a\.name\.localeCompare\(b\.name\)/, 'should compare model names using localeCompare');
+  assert.match(dropdownBody, /pA\.localeCompare\(pB\)/, 'should compare provider names using localeCompare');
 });

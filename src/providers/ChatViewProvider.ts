@@ -638,7 +638,9 @@ export class ChatViewProvider
   private commandCatalog: ChatSlashCommand[] = [];
   private commandCatalogFetchedAt = 0;
   private commandCatalogFetchPromise: Promise<ChatSlashCommand[]> | null = null;
-  private readonly COMMAND_CATALOG_TTL_MS = 5 * 60 * 1000;
+  // Cache commands for 30 minutes since they rarely change
+  // This prevents slow server calls with 700+ skills
+  private readonly COMMAND_CATALOG_TTL_MS = 30 * 60 * 1000;
   private readonly compactingSessions = new Set<string>();
 
   /**
@@ -767,11 +769,13 @@ export class ChatViewProvider
             // Fetch and send full agents list to webview
             await this.handleGetAgents();
 
-            // Fetch and send commands list for SkillsPanel
-            // Load in background like models to avoid blocking bootstrap
-            void this.handleGetCommands().catch((error) => {
-              this.logger.warn("Background commands loading failed during ready bootstrap", { err: error });
-            });
+            // TEMPORARILY DISABLED: Fetch and send commands list for SkillsPanel
+            // This is loading 700+ skills and causing massive delays
+            // TODO: Re-enable after implementing proper pagination/lazy loading
+            // void this.handleGetCommands().catch((error) => {
+            //   this.logger.warn("Background commands loading failed during ready bootstrap", { err: error });
+            // });
+            this.logger.info("⚠️ [PERF] Command loading disabled temporarily (700+ skills bottleneck)");
 
             // Resolve the active session before sending initState so that
             // per-session settings (agent / model / thinking) are applied first.
@@ -1010,6 +1014,15 @@ export class ChatViewProvider
           this.subagentTracker.resetForSession(createdSession.id);
           await this.clearPersistedSubagentSnapshot(createdSession.id);
           this.sendQueueUpdate(createdSession.id);
+
+          // Always use "build" as the default agent for new sessions
+          // This prevents new sessions from inheriting an agent that was
+          // selected in a previous session (e.g., "Sisyphus (Ultraworker)")
+          this.selectedAgent = "build";
+          await this.persistSessionSettings(createdSession.id, {
+            agent: "build",
+          });
+
           await this.handleGetSessions(); // Update list
           this.refreshView();
 
@@ -1193,7 +1206,12 @@ export class ChatViewProvider
           break;
         }
         case "getCommands": {
-          await this.handleGetCommands();
+          // TEMPORARILY DISABLED: Skip command loading
+          this.logger.warn("⚠️ [PERF] getCommands message disabled temporarily");
+          this.view?.webview.postMessage({
+            type: "commandsList",
+            commands: [],
+          });
           break;
         }
         case "getModels": {
@@ -1531,6 +1549,15 @@ export class ChatViewProvider
 
     // Subscribe to stream events
     this.unsubscribe = this.streamService.subscribe(async (event) => {
+      // Log stream events for debugging
+      const eventRec = event as Record<string, unknown>;
+      const eventType = eventRec?.type || "unknown";
+      const structuredRec = eventRec?.structured as Record<string, unknown> | undefined;
+      const eventKind = structuredRec?.kind || "unknown";
+      this.logger.debug(`📡 [STREAM] Event received: ${eventType} (kind: ${eventKind})`, {
+        sessionId: this.extractEventSessionId(event),
+        hasStructured: !!structuredRec,
+      });
 
       const eventSessionId = this.extractEventSessionId(event);
       // Always run subagent tracking before any session-scoped early return so child
@@ -6582,12 +6609,15 @@ export class ChatViewProvider
 
     // We'll set processing state once we have a definitive session ID below
 
-    this.logger.info("Processing request started", {
+    const overallStartTime = Date.now();
+    this.logger.info("🚀 [TIMING] Message send started", {
+      messageLength: text.length,
       isRetry,
       hasFiles: !!files?.length,
       hasContexts: !!contexts?.length,
       hasImages: !!images?.length,
       agent,
+      timestamp: new Date().toISOString(),
     });
 
     let drainSessionId: string | undefined;
@@ -6612,13 +6642,21 @@ export class ChatViewProvider
         .filter((img): img is { dataUrl: string; filename: string } => !!img);
       const imageUrls = normalizedImages.map((img) => img.dataUrl);
 
+      const serverStartTime = Date.now();
+      this.logger.info("⏳ [TIMING] Calling ensureRunning()...");
       const client = await this.serverManager.ensureRunning();
+      this.logger.info(`✅ [TIMING] Server ready (${Date.now() - serverStartTime}ms)`);
+
+      const sessionStartTime = Date.now();
+      this.logger.info("⏳ [TIMING] Getting current session...");
       let session = await this.sessionService.getCurrentSession();
       if (this.currentSessionId && session.id !== this.currentSessionId) {
         session = await this.sessionService.switchSession(
           this.currentSessionId,
         );
       }
+      this.logger.info(`✅ [TIMING] Session ready (${Date.now() - sessionStartTime}ms): ${session.id}`);
+
       drainSessionId = session.id;
       this.processingSessionIds.add(drainSessionId);
       this.sendProcessingSessionsUpdate();
@@ -6637,9 +6675,13 @@ export class ChatViewProvider
         return;
       }
 
+      const messagesStartTime = Date.now();
+      this.logger.info("⏳ [TIMING] Loading existing messages...");
       const existingMessages = await this.sessionService.getMessages(
         session.id,
       );
+      this.logger.info(`✅ [TIMING] Messages loaded (${Date.now() - messagesStartTime}ms): ${existingMessages.length} messages`);
+
       baselineAssistantMarker =
         this.getLatestAssistantHistoryMarker(existingMessages);
       const isNewSession = existingMessages.length === 0;
@@ -6796,12 +6838,29 @@ export class ChatViewProvider
           useStructuredOutput,
         );
       }
+
+      const promptStartTime = Date.now();
+      this.logger.info("⏳ [TIMING] Sending prompt to server...", {
+        model: this.selectedModel.modelID,
+        agent: agent || this.selectedAgent,
+        partsCount: parts.length,
+      });
+
       const response = await this.promptWithStructuredOutput(
         client,
         session.id,
         promptBody,
         useStructuredOutput,
       );
+
+      const promptDuration = Date.now() - promptStartTime;
+      this.logger.info(`✅ [TIMING] Prompt response received (${promptDuration}ms)`, {
+        hasData: Boolean(response.data),
+        hasError: Boolean(response.error),
+        status: response.response?.status,
+        messageId: (response.data as any)?.info?.id,
+      });
+
       const duration = (Date.now() - startTime) / 1000;
       if (capturePromptDebug) {
         await this.logPromptResponsePayload(
@@ -7261,6 +7320,12 @@ export class ChatViewProvider
         });
       }
     } catch (error) {
+      const totalDuration = Date.now() - overallStartTime;
+      this.logger.error(`❌ [TIMING] Message failed after ${totalDuration}ms`, {
+        error: String(error),
+        sessionId: drainSessionId,
+      });
+
       const errorMessage = this.extractDetailedErrorMessage(
         error,
         "Failed to send message",
@@ -7316,6 +7381,12 @@ export class ChatViewProvider
         message: errorMessage,
       });
     } finally {
+      const totalDuration = Date.now() - overallStartTime;
+      this.logger.info(`🏁 [TIMING] Message processing completed in ${totalDuration}ms`, {
+        sessionId: drainSessionId,
+        timestamp: new Date().toISOString(),
+      });
+
       if (debugSessionId) {
         this.promptDebugBySession.delete(debugSessionId);
       }
@@ -8506,10 +8577,11 @@ export class ChatViewProvider
    * Refreshes the skills list in the webview
    */
   async refreshSkills(): Promise<void> {
-    const skills = await this.skillManager.listSkills();
+    // TEMPORARILY DISABLED: Don't load skills to avoid 700+ skills bottleneck
+    this.logger.warn("⚠️ [PERF] Skills loading disabled temporarily");
     this.view?.webview.postMessage({
       type: "mySkills",
-      skills,
+      skills: [], // Return empty array instead of loading all skills
     });
   }
 
@@ -8522,8 +8594,9 @@ export class ChatViewProvider
   }): Promise<void> {
     switch (message.type) {
       case "getMySkills": {
-        const skills = await this.skillManager.listSkills();
-        this.view?.webview.postMessage({ type: "mySkills", skills });
+        // TEMPORARILY DISABLED: Don't load skills to avoid 700+ skills bottleneck
+        this.logger.warn("⚠️ [PERF] getMySkills disabled temporarily");
+        this.view?.webview.postMessage({ type: "mySkills", skills: [] });
         break;
       }
 
@@ -9667,19 +9740,13 @@ export class ChatViewProvider
    * Uses a short-lived cache because commands are mostly static during a session.
    */
   private async handleGetCommands(): Promise<void> {
-    try {
-      const commands = await this.loadCommandCatalog();
-      this.view?.webview.postMessage({
-        type: "commandsList",
-        commands,
-      });
-    } catch (error) {
-      console.error("[ChatViewProvider] Failed to fetch command catalog:", error);
-      this.view?.webview.postMessage({
-        type: "commandsList",
-        commands: [],
-      });
-    }
+    // TEMPORARILY DISABLED: Skip command loading to avoid 700+ skills bottleneck
+    this.logger.warn("⚠️ [PERF] handleGetCommands disabled temporarily");
+    this.view?.webview.postMessage({
+      type: "commandsList",
+      commands: [], // Return empty instead of loading
+    });
+    return;
   }
 
   private async loadCommandCatalog(forceRefresh = false): Promise<ChatSlashCommand[]> {
@@ -9695,6 +9762,33 @@ export class ChatViewProvider
       return this.commandCatalogFetchPromise;
     }
 
+    // OPTIMIZATION: If we have cached commands (even if expired), return them immediately
+    // and refresh in background to avoid blocking the UI
+    if (this.commandCatalog.length > 0 && !forceRefresh) {
+      // Trigger background refresh without waiting
+      this.commandCatalogFetchPromise = (async () => {
+        try {
+          const client = await this.serverManager.ensureRunning();
+          const response = await client.command.list();
+          const rawItems = Array.isArray(response.data) ? response.data : [];
+          const commands: ChatSlashCommand[] = rawItems
+            .map((item) => this.normalizeSlashCommand(item))
+            .filter((item): item is ChatSlashCommand => !!item)
+            .sort((a, b) => a.name.localeCompare(b.name));
+
+          this.commandCatalog = commands;
+          this.commandCatalogFetchedAt = Date.now();
+          return commands;
+        } finally {
+          this.commandCatalogFetchPromise = null;
+        }
+      })();
+
+      // Return stale cache immediately
+      return this.commandCatalog;
+    }
+
+    // No cache available, fetch synchronously
     this.commandCatalogFetchPromise = (async () => {
       const client = await this.serverManager.ensureRunning();
       const response = await client.command.list();
