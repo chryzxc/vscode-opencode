@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const panelSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
@@ -62,7 +62,7 @@ test('ActiveTaskPanel renders Progress Updates section conditionally on isActive
   );
   assert.match(
     body,
-    /Thinking[\u2026\.]{1,3}/u,
+    /Thinking[\u2026.]{1,3}/u,
     'Progress Updates section must show a Thinking fallback when no steps are present',
   );
 });
