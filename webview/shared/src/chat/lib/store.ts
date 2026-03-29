@@ -47,6 +47,7 @@ export const initialState: AppState = {
   executingQueueSessionIds: new Set<string>(),
   isQueueOpen: false,
   isSidebarOpen: false,
+  isSessionModalOpen: false,
   sessionsList: [],
   processingSessionIds: [],
   sessionEdits: new Set<string>(),
@@ -100,7 +101,7 @@ export const initialState: AppState = {
 };
 
 type StreamingContentPayload = { content: string; append?: boolean };
-type StreamingReasoningPayload = { reasoning: string; append?: boolean; inThoughtBlock?: boolean };
+type StreamingReasoningPayload = { reasoning: string; append?: boolean; inThoughtBlock?: boolean; inReasoningPart?: boolean };
 type StreamingStepUpdatePayload = {
   id?: string;
   callID?: string;
@@ -158,6 +159,7 @@ export type AppAction =
   | { type: "SET_EXECUTING_QUEUE"; payload: { sessionId: string; executing: boolean } }
   | { type: "SET_QUEUE_OPEN"; payload: boolean }
   | { type: "SET_SIDEBAR_OPEN"; payload: boolean }
+  | { type: "SET_SESSION_MODAL_OPEN"; payload: boolean }
   | { type: "SET_MODEL_DROPDOWN_OPEN"; payload: boolean }
   | { type: "SET_AGENT_DROPDOWN_OPEN"; payload: boolean }
   | { type: "SET_THINKING_DROPDOWN_OPEN"; payload: boolean }
@@ -1585,6 +1587,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, isQueueOpen: action.payload };
     case "SET_SIDEBAR_OPEN":
       return { ...state, isSidebarOpen: action.payload };
+    case "SET_SESSION_MODAL_OPEN":
+      return { ...state, isSessionModalOpen: action.payload };
     case "SET_MODEL_DROPDOWN_OPEN":
       return { ...state, modelDropdownOpen: action.payload };
     case "SET_AGENT_DROPDOWN_OPEN":

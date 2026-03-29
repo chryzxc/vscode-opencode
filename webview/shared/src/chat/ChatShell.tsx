@@ -28,6 +28,7 @@ import {
   UserMessage,
 } from "./MessageComponents";
 import { SkillInstallerModal } from "./SkillInstallerModal";
+import { SessionModal } from "./components/SessionModal";
 import type { Message } from "./lib/types";
 
 type StreamViewportState = {
@@ -384,6 +385,12 @@ function ChatContent() {
       <SkillInstallerModal
         isOpen={showSkillInstaller}
         onClose={() => setShowSkillInstaller(false)}
+      />
+
+      {/* Session Modal */}
+      <SessionModal
+        isOpen={state.isSessionModalOpen}
+        onClose={() => dispatch({ type: "SET_SESSION_MODAL_OPEN", payload: false })}
       />
     </div>
   );

@@ -117,6 +117,34 @@ test('structured question outputs dispatch popup interactive state', () => {
   );
 });
 
+test('streaming question turns also synthesize assistant-bubble prompt text', () => {
+  assert.match(
+    handlerSource,
+    /function maybeInjectStreamingInteractiveContext\(/,
+    'message handler should define a helper that injects interactive prompt text into streaming content',
+  );
+  assert.match(
+    handlerSource,
+    /SET_INTERACTIVE_EVENTS[\s\S]*maybeInjectStreamingInteractiveContext\(/,
+    'streaming interactive-event paths should inject question context into the assistant bubble',
+  );
+  assert.match(
+    handlerSource,
+    /const toolInteractiveEvents = interactiveEventsFromToolQuestionPart\(part\);[\s\S]*maybeInjectStreamingInteractiveContext\(/s,
+    'tool-question streaming path should synthesize assistant prompt text from tool interactive events',
+  );
+  assert.match(
+    handlerSource,
+    /if \(eventRole === "user"\)[\s\S]*SET_PROCESSING[\s\S]*break;/s,
+    'stream handler should ignore regular user-role parts so they do not overwrite assistant streaming content',
+  );
+  assert.match(
+    handlerSource,
+    /looksLikeReasoningTrace\(trimmed,\s*""\)[\s\S]*looksLikeToolUseMonologue\(trimmed\)/s,
+    'interactive prompt replacement should also override leaked reasoning/tool-monologue content',
+  );
+});
+
 test('input wrapper renders top popup choices and posts batchInteractiveResponse', () => {
   const inputBody = extractFunctionBody(
     panelSource,

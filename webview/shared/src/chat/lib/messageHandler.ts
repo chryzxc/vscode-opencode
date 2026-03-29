@@ -1366,7 +1366,18 @@ function ingestNormalizedTodo(
 
 function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] {
   const events = structured?.interactiveEvents ?? [];
-  return events
+  // NOTE: contextMessage is the full AI conversational context shown as a header in the popup
+  // card. We prefer displayPrompt from the question sub-object, then assistantMessage at the
+  // top level. This is intentionally sourced once for all events (they belong to the same turn).
+  const structuredRec = asRecord(structured as UnknownRecord | undefined);
+  const questionObj = asRecord(structuredRec?.question);
+  const contextMessage: string | undefined =
+    asOptionalString(questionObj?.displayPrompt) ||
+    asOptionalString(questionObj?.assistantPrompt) ||
+    asOptionalString(structuredRec?.assistantMessage) ||
+    undefined;
+
+  const mapped = events
     .map((event, index) => {
       const id = event.id || `interactive-${Date.now()}-${index}`;
       if (event.type === 'confirm') {
@@ -1379,7 +1390,8 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
           title: event.title,
           question: event.question,
           confirmLabel: event.confirmLabel,
-          cancelLabel: event.cancelLabel
+          cancelLabel: event.cancelLabel,
+          contextMessage,
         } as InteractiveEvent;
       }
       if (event.type === 'quick_actions') {
@@ -1391,7 +1403,8 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
           type: 'quick_actions',
           id,
           title: event.title,
-          actions
+          actions,
+          contextMessage,
         } as InteractiveEvent;
       }
       if (event.type === 'question') {
@@ -1406,7 +1419,8 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
           question: event.question,
           options,
           multiSelect: event.multiSelect,
-          allowCustomInput: event.allowCustomInput
+          allowCustomInput: event.allowCustomInput,
+          contextMessage,
         } as InteractiveEvent;
       }
       if (event.type === 'message') {
@@ -1419,11 +1433,73 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
           title: event.title,
           message: event.message,
           dismissLabel: event.dismissLabel,
+          contextMessage,
         } as InteractiveEvent;
       }
       return undefined;
     })
     .filter((event): event is InteractiveEvent => !!event);
+
+  // Fallback: if no interactiveEvents were produced but the structured output has a
+  // question object, synthesize an interactive event from it. This handles the common
+  // case where the model populates only the question object without the interactiveEvents
+  // array (minimal valid question output).
+  if (mapped.length === 0 && questionObj) {
+    const questionText = asOptionalString(questionObj.question);
+    if (questionText) {
+      const qType = asOptionalString(questionObj.type)?.toLowerCase() || 'question';
+      const id = asOptionalString(questionObj.id) || `question-${Date.now()}`;
+      const title = asOptionalString(questionObj.title);
+      const options = Array.isArray(questionObj.options) ? questionObj.options : [];
+
+      if (qType === 'confirm') {
+        mapped.push({
+          type: 'confirm',
+          id,
+          title,
+          question: questionText,
+          confirmLabel: asOptionalString(questionObj.confirmLabel),
+          cancelLabel: asOptionalString(questionObj.cancelLabel),
+          contextMessage,
+        } as InteractiveEvent);
+      } else if (qType === 'quick_actions') {
+        const actions = Array.isArray(questionObj.actions) ? questionObj.actions : [];
+        if (actions.length > 0) {
+          mapped.push({
+            type: 'quick_actions',
+            id,
+            title,
+            actions,
+            contextMessage,
+          } as InteractiveEvent);
+        }
+      } else if (qType === 'message') {
+        mapped.push({
+          type: 'message',
+          id,
+          title,
+          message: asOptionalString(questionObj.message) || questionText,
+          dismissLabel: asOptionalString(questionObj.dismissLabel),
+          contextMessage,
+        } as InteractiveEvent);
+      } else {
+        // Default: question type — allow even without options (shows as free-form input
+        // or confirm-style depending on the popover UI).
+        mapped.push({
+          type: 'question',
+          id,
+          title,
+          question: questionText,
+          options: options.length >= 2 ? options : [],
+          multiSelect: !!questionObj.multiSelect,
+          allowCustomInput: options.length < 2 ? true : !!questionObj.allowCustomInput,
+          contextMessage,
+        } as InteractiveEvent);
+      }
+    }
+  }
+
+  return mapped;
 }
 
 function hasBlockingInteractiveEvents(events: InteractiveEvent[]): boolean {
@@ -1642,6 +1718,95 @@ function interactiveEventsFromToolQuestionPart(part: UnknownRecord): Interactive
       normalizeToolInteractiveEvent(record, `${baseId}-${index}`, rootTitle),
     )
     .filter((event): event is InteractiveEvent => !!event);
+}
+
+/**
+ * Synthesizes a human-readable context message from tool-triggered interactive events.
+ * Used when the AI calls the Question tool (no text in streaming.content) so the chat
+ * bubble shows the question context alongside the interactive popover.
+ */
+function synthesizeQuestionContextMessage(events: InteractiveEvent[]): string {
+  const questionEvents = events.filter(
+    (e) => e.type === 'question' || e.type === 'confirm',
+  ) as Array<{ type: string; question: string; title?: string }>;
+
+  if (questionEvents.length === 0) {
+    return '';
+  }
+
+  if (questionEvents.length === 1) {
+    const ev = questionEvents[0];
+    return ev.title ? `**${ev.title}**\n\n${ev.question}` : ev.question;
+  }
+
+  const intro = 'I have a few questions before proceeding:';
+  const lines = questionEvents.map((ev, i) => `${i + 1}. ${ev.question}`);
+  return `${intro}\n\n${lines.join('\n')}`;
+}
+
+function shouldOverrideStreamingContentWithInteractivePrompt(
+  content: string,
+  latestUserText = "",
+): boolean {
+  const trimmed = content.trim();
+  const normalized = normalizeComparableText(content).toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  const normalizedUserText = normalizeComparableText(latestUserText).toLowerCase();
+  if (normalizedUserText && normalized === normalizedUserText) {
+    return true;
+  }
+
+  if (
+    looksLikeReasoningTrace(trimmed, "") ||
+    looksLikeToolUseMonologue(trimmed)
+  ) {
+    return true;
+  }
+
+  return (
+    normalized === 'running question' ||
+    normalized === 'question' ||
+    normalized === 'question for you' ||
+    normalized === 'quick input' ||
+    normalized === 'awaiting your answer' ||
+    normalized === 'awaiting your response' ||
+    normalized === 'waiting for your answer' ||
+    normalized === 'waiting for your response'
+  );
+}
+
+function maybeInjectStreamingInteractiveContext(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  events: InteractiveEvent[],
+): void {
+  if (!Array.isArray(events) || events.length === 0) {
+    return;
+  }
+
+  const currentContent = asString(getState().streaming?.content);
+  const latestUserText = latestUserMessageText(getState());
+  if (
+    !shouldOverrideStreamingContentWithInteractivePrompt(
+      currentContent,
+      latestUserText,
+    )
+  ) {
+    return;
+  }
+
+  const synthesized = synthesizeQuestionContextMessage(events);
+  if (!synthesized) {
+    return;
+  }
+
+  dispatch({
+    type: 'UPDATE_STREAMING_CONTENT',
+    payload: { content: synthesized, append: false },
+  });
 }
 
 function inferredStepTitle(part: UnknownRecord): string {
@@ -2263,6 +2428,29 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     }
     if (fromParts.length > 0) {
       normalized.edits = fromParts;
+    }
+  }
+
+  // NOTE: When the AI triggers a question via a tool call (no text parts), content ends up
+  // empty. Synthesize a context message from the Question tool parts so the chat bubble
+  // always shows the question — during the live session AND after extension restart.
+  if (!normalized.content?.trim()) {
+    const questionParts = (sanitizedMergedParts as Array<unknown>).filter((p) => {
+      const pr = asRecord(p);
+      return !!pr && asString(pr.type).toLowerCase() === 'tool' && interactiveEventsFromToolQuestionPart(pr).length > 0;
+    });
+    if (questionParts.length > 0) {
+      const allEvents: InteractiveEvent[] = [];
+      for (const p of questionParts) {
+        const pr = asRecord(p);
+        if (pr) {
+          allEvents.push(...interactiveEventsFromToolQuestionPart(pr));
+        }
+      }
+      const synthesized = synthesizeQuestionContextMessage(allEvents);
+      if (synthesized) {
+        normalized.content = synthesized;
+      }
     }
   }
 
@@ -3727,13 +3915,25 @@ function handleStreamEvent(
   payload: UnknownRecord,
   terminalErrorReached: boolean
 ): void {
+  // Log every stream event for comprehensive debugging
+  const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
+  console.log(`[StreamEvent] ===== Handling Event: ${eventType} =====`, {
+    timestamp: new Date().toISOString(),
+    eventType,
+    payloadKeys: Object.keys(payload),
+    hasProperties: !!asRecord(payload.properties),
+    hasPart: !!asRecord(payload.part),
+    hasStructured: !!asRecord(payload.structured),
+    terminalErrorReached,
+  });
+
   // Ignore streaming parts after a terminal error to prevent showing both
   // error banner and active streaming state simultaneously
   if (terminalErrorReached) {
+    console.warn(`[StreamEvent] Ignoring event due to terminal error: ${eventType}`);
     return;
   }
 
-  const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
   const isPartUpdateEvent = eventType.startsWith("message.part.");
   const normalizedEventType = isPartUpdateEvent ? "message.part.updated" : eventType;
   const state = getState();
@@ -3869,9 +4069,16 @@ function handleStreamEvent(
     case 'message.part.updated':
     case 'message.part.added':
     case 'message.part.created': {
+      console.log(`[StreamEvent] Processing part event`, {
+        normalizedEventType,
+        messageId,
+        hasPart: !!asRecord(payload.part),
+        hasProperties: !!asRecord(payload.properties),
+      });
       const properties = asRecord(payload.properties);
       const part = asRecord(payload.part) ?? asRecord(properties?.part) ?? properties;
       if (!part) {
+        console.log(`[StreamEvent] No part data, setting processing=true`);
         dispatch({ type: 'SET_PROCESSING', payload: true });
         break;
       }
@@ -3886,14 +4093,17 @@ function handleStreamEvent(
       const isInReasoningPart = currentStreamingState?.inReasoningPart || false;
 
       // Detect start of reasoning part sequence
-      if (currentPartType === 'reasoning' || currentStructuredKind === 'thinking') {
+      const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking';
+      if (isReasoning) {
         console.log('[OpenCode][DEBUG] Starting reasoning part sequence - will drop all content');
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: true } });
       }
 
-      // Detect end of reasoning part (when we get a text part after reasoning)
-      if (isInReasoningPart && currentPartType === 'text' && currentStructuredKind === 'message') {
-        console.log('[OpenCode][DEBUG] Ending reasoning part sequence - will accept content again');
+      // Detect end of reasoning part (when we get ANY non-reasoning part after reasoning)
+      // This ensures that if the assistant skips the text part and goes straight to a tool call
+      // (e.g. for a question), we still reset the reasoning filter so the synthesized text is shown.
+      if (isInReasoningPart && !isReasoning) {
+        console.log(`[OpenCode][DEBUG] Ending reasoning part sequence - current part type is ${currentPartType}`);
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: false } });
       }
 
@@ -3919,6 +4129,13 @@ function handleStreamEvent(
           payload: [...state.messages, systemMessage]
         });
         break; // Don't process this as regular content
+      }
+
+      // Ignore regular user-role stream parts for assistant rendering.
+      // We still allow the system-pattern path above for transport notices.
+      if (eventRole === "user") {
+        dispatch({ type: "SET_PROCESSING", payload: true });
+        break;
       }
 
       const partType = normalizePartType(part.type);
@@ -3985,6 +4202,11 @@ function handleStreamEvent(
         hasBlockingInteractiveEvents(interactiveEvents);
       if (interactiveEvents.length > 0) {
         dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: interactiveEvents });
+        maybeInjectStreamingInteractiveContext(
+          dispatch,
+          getState,
+          interactiveEvents,
+        );
       }
 
       const streamingState = getState().streaming;
@@ -4237,6 +4459,16 @@ function handleStreamEvent(
             type: "SET_INTERACTIVE_EVENTS",
             payload: toolInteractiveEvents,
           });
+
+          // NOTE: When the AI triggers a question via tool call (not structured JSON), no text
+          // content is generated — streaming.content is empty. Inject a synthesized context
+          // message so the chat bubble shows the question alongside the popover.
+          maybeInjectStreamingInteractiveContext(
+            dispatch,
+            getState,
+            toolInteractiveEvents,
+          );
+
           if (hasBlockingInteractiveEvents(toolInteractiveEvents)) {
             dispatch({ type: "FINISH_STREAMING" });
             dispatch({ type: "SET_PROCESSING", payload: false });
@@ -4297,6 +4529,11 @@ function handleStreamEvent(
       break;
     }
     case 'message.updated': {
+      console.log(`[StreamEvent] Processing message.updated`, {
+        messageId,
+        finish: asBoolean(asRecord(payload.info)?.finish, false),
+        hasInfo: !!asRecord(payload.info),
+      });
       const info = asRecord(payload.info) ?? asRecord(payload.properties)?.info;
       const finish = info ? asBoolean((info as UnknownRecord).finish, false) : false;
 
@@ -4395,6 +4632,11 @@ function handleStreamEvent(
           hasBlockingInteractiveEvents(interactiveEvents);
         if (interactiveEvents.length > 0) {
           dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents });
+          maybeInjectStreamingInteractiveContext(
+            dispatch,
+            getState,
+            interactiveEvents,
+          );
         }
         if (hasBlockingInteractive && !finish) {
           dispatch({ type: "FINISH_STREAMING" });
@@ -4538,12 +4780,20 @@ function handleStreamEvent(
     }
     case 'session.error':
     case 'error': {
+      console.log(`[StreamEvent] Processing error event`, {
+        normalizedEventType,
+        errorMessage: asString(payload.message),
+      });
       dispatch({ type: 'SET_PROCESSING', payload: false });
       dispatch({ type: 'FINISH_STREAMING' });
       break;
     }
     case 'start':
     case 'streamStart': {
+      console.log(`[StreamEvent] Processing stream start`, {
+        messageId,
+        eventAgent: asString(infoRecord?.agent) || asString(payload.agent),
+      });
       // Extract model/agent metadata from the event payload or fall back to app state
       const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
       const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
@@ -4654,6 +4904,11 @@ function handleStreamEvent(
     case 'thinking': {
       const chunk =
         asString(payload.delta) || asString(payload.reasoning) || asString(payload.thinking) || asString(payload.text);
+      console.log(`[StreamEvent] Processing reasoning/thinking event`, {
+        normalizedEventType,
+        chunkLength: chunk.length,
+        preview: chunk.slice(0, 100),
+      });
       const sanitized = sanitizeReasoningChunk(chunk);
       if (sanitized) {
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: sanitized, append: true } });
@@ -4661,7 +4916,13 @@ function handleStreamEvent(
       break;
     }
     case 'stepStart': {
+      const stepTitle = asString(payload.title);
       const stepTypeRaw = asString(payload.stepType).toLowerCase();
+      console.log(`[StreamEvent] Processing stepStart`, {
+        normalizedEventType,
+        stepTitle,
+        stepType: stepTypeRaw,
+      });
       const step: StreamingStep = {
         id: asString(payload.id) || undefined,
         callID: asString(payload.callID) || undefined,
@@ -4681,6 +4942,10 @@ function handleStreamEvent(
       break;
     }
     case 'stepUpdate': {
+      console.log(`[StreamEvent] Processing stepUpdate`, {
+        normalizedEventType,
+        stepId: asString(payload.id) || asString(payload.callID),
+      });
       dispatch({
         type: 'UPDATE_STREAMING_STEP',
         payload: {
@@ -4696,6 +4961,11 @@ function handleStreamEvent(
       break;
     }
     case 'stepDone': {
+      console.log(`[StreamEvent] Processing stepDone`, {
+        normalizedEventType,
+        stepId: asString(payload.id) || asString(payload.callID),
+        stepStatus: asString(payload.status),
+      });
       dispatch({
         type: 'UPDATE_STREAMING_STEP',
         payload: {
@@ -4779,6 +5049,11 @@ function handleStreamEvent(
         hasBlockingInteractiveEvents(interactiveEvents);
       if (interactiveEvents.length > 0) {
         dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: interactiveEvents });
+        maybeInjectStreamingInteractiveContext(
+          dispatch,
+          getState,
+          interactiveEvents,
+        );
         consumed = true;
       }
 
@@ -4871,6 +5146,16 @@ function handleStreamEvent(
       break;
     }
   }
+
+  // Log completion of event handling
+  const finalState = getState();
+  console.log(`[StreamEvent] ===== Finished Processing: ${normalizedEventType} =====`, {
+    timestamp: new Date().toISOString(),
+    hasStreaming: !!finalState.streaming,
+    streamingContentLength: finalState.streaming?.content?.length || 0,
+    streamingReasoningLength: finalState.streaming?.reasoning?.length || 0,
+    streamingStepsCount: finalState.streaming?.steps?.length || 0,
+  });
 }
 
 function bindStreamingToParentMessageIdFromSubagents(
@@ -5043,15 +5328,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   return (event: MessageEvent) => {
     const data = asRecord(event.data);
     if (!data) {
+      console.warn('[MessageHandler] Received event with no data');
       return;
     }
 
     const type = asString(data.type);
-    
-    // Debug log to verify logging is working
-    if (type === 'chatHistory' || type === 'initState') {
-      console.log('[DEBUG] ===== MessageHandler received event:', type, '====');
-    }
+
+    // Log ALL events for comprehensive debugging
+    console.log(`[MessageHandler] ===== Received Event: ${type} =====`, {
+      timestamp: new Date().toISOString(),
+      eventType: type,
+      dataKeys: Object.keys(data),
+      fullData: data,
+    });
 
     // Set processing state BEFORE handling message types to ensure streaming state is created early.
     // Never bootstrap "in progress" UI from compaction lifecycle messages.

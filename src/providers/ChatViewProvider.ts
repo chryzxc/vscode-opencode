@@ -969,21 +969,6 @@ export class ChatViewProvider
               if (!answer) {
                 return "";
               }
-              const eventType = this.firstNonEmptyString(resp.eventType) || "event";
-              const eventId = this.firstNonEmptyString(resp.eventId) || "unknown";
-              return `[interactive:${eventType}:${eventId}] ${answer}`;
-            })
-            .filter((value) => value.length > 0)
-            .join("\n");
-          if (!composedPrompt) {
-            break;
-          }
-          const displayText = responses
-            .map((resp) => {
-              const answer = this.firstNonEmptyString(resp.text) || "";
-              if (!answer) {
-                return "";
-              }
               const questionLabel = this.firstNonEmptyString(resp.questionLabel);
               if (questionLabel) {
                 return `**${questionLabel}**\n${answer}`;
@@ -992,9 +977,12 @@ export class ChatViewProvider
             })
             .filter((value) => value.length > 0)
             .join("\n\n");
+          if (!composedPrompt) {
+            break;
+          }
           const userFacingText = this.firstNonEmptyString(
             message?.displayText,
-            displayText,
+            composedPrompt,
           );
 
           await this.dispatchInteractiveResponse({

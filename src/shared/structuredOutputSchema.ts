@@ -28,7 +28,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Assistant response contract for chat rendering. Return one JSON object only, with no prose before or after it. Always include assistantMessage as the user-facing text summary for this turn. Choose exactly one primary responseType per turn. Keep payloads schema-driven and do not mix incompatible intents in the same object.",
+      "Return one JSON object. Always include responseType and assistantMessage. RULES: (1) responseType='implementation_plan' when proposing/creating any multi-step plan — populate the plan object. (2) responseType='question' when asking questions, presenting choices, or needing user input — populate the question object. Even a minimal question object { question: 'text' } is valid and triggers the interactive UI. NEVER fall back to plain text for questions. (3) responseType='message' for everything else. assistantMessage is the chat bubble text for every turn.",
     additionalProperties: false,
     required: ["responseType", "assistantMessage"],
     properties: {
@@ -48,7 +48,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "error",
         ],
         description:
-          "Primary response classifier for UI behavior. Must be one of the enum values and must never be empty. Use exactly one primary intent per turn: message for normal chat replies (including greetings), implementation_plan for implementation plan payloads (plan.file is required and must point to the actual written markdown file), progress_update for machine-readable progress steps, subagents for background-agent state, question for clarification prompts, todo_update for task checklist changes, system for top-level context or reminders, data for structured data cards, and error for failures.",
+          "Classifier. implementation_plan: multi-step plans, code changes, refactors, migrations — populate plan object. When in doubt vs message, choose implementation_plan. question: asking questions, presenting choices, needing confirmation or user decisions — populate question object. Minimal valid: { question: 'text' }. When in doubt vs message, choose question. NEVER output questions as plain text — always use responseType='question'. message: normal replies, greetings, explanations. progress_update: execution steps. subagents: background agents. todo_update: task changes. system: context. data: structured cards. error: failures.",
         examples: [
           "message",
           "implementation_plan",
@@ -66,18 +66,18 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "string",
         minLength: 1,
         description:
-          "Required user-facing assistant response text for every turn, regardless of responseType. Keep this concise and actionable. Do not include policy/instruction analysis.",
+          "Required chat bubble text for every turn. For question: list all questions as a numbered summary. For implementation_plan: describe what the plan covers. Keep concise and actionable.",
         examples: [
           "Hello! How can I help?",
-          "I updated the parser and tests. Ready for review.",
+          "I updated the parser and tests.",
+          "I've created an implementation plan for the authentication refactor covering 8 files.",
+          "I need to clarify a few things before proceeding:\n1. Which approach?\n2. Include migration?",
         ],
       },
       message: {
         type: "string",
         minLength: 1,
-        description:
-          "Legacy compatibility alias for assistantMessage. Prefer assistantMessage for new outputs. For responseType='message', at least one of assistantMessage or message is required.",
-        examples: ["Hello!"],
+        description: "Legacy alias for assistantMessage. Prefer assistantMessage.",
       },
       reasoning: {
         type: "array",
@@ -132,157 +132,85 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       question: {
         type: "object",
         additionalProperties: true,
+        required: ["question"],
         description:
-          "Interactive payload for responseType='question'. Use this only when user input is required before proceeding. Keep implementation plan text out of this object.",
+          "Question payload for responseType='question'. Minimal valid: { question: 'your question' }. type defaults to 'question'. Add options[] for choices. The chat bubble shows assistantMessage (numbered question list); the popup shows question.question + options.",
         properties: {
           type: {
             type: "string",
             enum: ["question", "confirm", "quick_actions", "message"],
-            description:
-              "Interactive mode. question: choose from options, confirm: yes/no style confirmation, quick_actions: action buttons, message: non-blocking informational prompt.",
-            examples: ["question", "confirm"],
+            default: "question",
+            description: "Interactive mode. Defaults to 'question'. confirm: yes/no. quick_actions: action buttons.",
           },
           id: {
             type: "string",
-            description: "Optional stable interaction id for follow-up responses.",
+            description: "Optional stable interaction id.",
           },
           title: {
             type: "string",
-            description: "Optional short title shown above the interaction prompt.",
+            description: "Optional short title above the prompt.",
           },
           question: {
             type: "string",
-            description:
-              "Prompt text shown to the user. Required for type='question' and type='confirm'.",
-            examples: ["Which path should I implement first?"],
+            description: "Prompt text shown in the popup. Required. Keep short (one sentence).",
           },
           displayPrompt: {
             type: "string",
-            description:
-              "Optional assistant-bubble text for responseType='question'. Use this for a chat-formatted question string that may differ from popup prompt wording/options (for example: 'Question: Which path should we use first?').",
-            examples: [
-              "Question: Which path should we use first?",
-            ],
+            description: "Optional override for the chat bubble text instead of assistantMessage.",
           },
           multiSelect: {
             type: "boolean",
-            description: "Whether the user can select more than one option.",
+            description: "Allow selecting multiple options.",
           },
           allowCustomInput: {
             type: "boolean",
-            description:
-              "Whether free-form text input is allowed in addition to options.",
+            description: "Allow free-form text input.",
           },
           answer: {
             type: "string",
-            description:
-              "Optional suggested/default answer for the question prompt.",
-          },
-          answers: {
-            type: "array",
-            description:
-              "Optional suggested/default multi-select answers for the question prompt.",
-            items: { type: "string" },
+            description: "Optional default answer.",
           },
           options: {
             type: "array",
-            description:
-              "Choice list for type='question'. Provide at least two options unless allowCustomInput is true.",
-            examples: [
-              [
-                { label: "Use strict schema", value: "strict" },
-                { label: "Keep compatibility mode", value: "compat" },
-              ],
-            ],
+            description: "Choices for type='question'. Each needs a label.",
             items: {
               type: "object",
               additionalProperties: true,
+              required: ["label"],
               properties: {
-                id: {
-                  type: "string",
-                  description: "Optional stable option id.",
-                },
-                label: {
-                  type: "string",
-                  description: "User-visible option label.",
-                },
-                value: {
-                  type: "string",
-                  description: "Machine value returned when this option is selected.",
-                },
-                description: {
-                  type: "string",
-                  description: "Optional secondary text describing the option.",
-                },
+                label: { type: "string", description: "Option button text." },
+                value: { type: "string", description: "Value returned on select. Defaults to label." },
+                description: { type: "string", description: "Optional tooltip." },
               },
             },
           },
           actions: {
             type: "array",
-            description:
-              "Action button list for type='quick_actions'.",
-            examples: [
-              [
-                { label: "Apply fix", value: "apply_fix" },
-                { label: "Show diff", value: "show_diff" },
-              ],
-            ],
+            description: "Action buttons for type='quick_actions'.",
             items: {
               type: "object",
               additionalProperties: true,
+              required: ["label"],
               properties: {
-                id: {
-                  type: "string",
-                  description: "Optional stable action id.",
-                },
-                label: {
-                  type: "string",
-                  description: "Button text shown in UI.",
-                },
-                value: {
-                  type: "string",
-                  description: "Machine value returned when action is clicked.",
-                },
-                description: {
-                  type: "string",
-                  description: "Optional helper text for the action.",
-                },
+                label: { type: "string", description: "Button text." },
+                value: { type: "string", description: "Value returned on click." },
               },
             },
           },
-          confirmLabel: {
-            type: "string",
-            description: "Custom label for confirm button in type='confirm'.",
-          },
-          cancelLabel: {
-            type: "string",
-            description: "Custom label for cancel button in type='confirm'.",
-          },
-          dismissLabel: {
-            type: "string",
-            description: "Custom label for dismiss button in type='message'.",
-          },
-          message: {
-            type: "string",
-            description: "Message text for type='message'.",
-            examples: ["Done. Choose an option to continue."],
-          },
-          content: {
-            type: "string",
-            description: "Legacy alias for message text in type='message'.",
-          },
+          confirmLabel: { type: "string", description: "Custom confirm button label." },
+          cancelLabel: { type: "string", description: "Custom cancel button label." },
         },
       },
       plan: {
         type: "object",
         additionalProperties: true,
         description:
-          "Implementation plan payload for responseType='implementation_plan'. plan.file is required and must be the actual markdown filepath written by the model/tool flow (absolute path preferred; workspace-relative path accepted) so View Plan and Proceed can resolve the source-of-truth file. Keep user clarifications/questions out of plan.content.",
-        required: ["file"],
+          "CRITICAL: Implementation plan payload — MUST be populated when responseType='implementation_plan'. Conversely, when this object is populated, responseType MUST be 'implementation_plan'. At least one of plan.file or plan.content is required. If the plan was written to disk, set plan.file to the actual filepath. If the plan was proposed inline without writing a file, set plan.content with the full markdown. The UI renders a plan card below the assistantMessage showing plan.title, plan.file, and a 'View Plan' button that opens an interactive plan viewer. Keep user clarifications/questions out of this object — route those to the question field instead.",
         examples: [
           {
             file: "/workspace/project/plans/todo-feature.md",
             title: "Todo Feature Implementation",
+            summary: "Add todo CRUD with priority levels and due dates",
           },
           {
             file: "C:\\Workspace\\project\\plans\\auth-session-hardening.md",
@@ -290,12 +218,17 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             title: "Auth Session Hardening",
             content: "## Plan\n1. Update schema\n2. Sync generated artifacts",
           },
+          {
+            title: "API Rate Limiting",
+            content: "## Proposed Changes\n### 1. Add RateLimiter middleware\n- Create `src/middleware/rateLimiter.ts`\n- Configure per-route limits\n\n### 2. Update API routes\n- Apply middleware to all public endpoints\n\n### 3. Add tests\n- Unit tests for limiter logic\n- Integration tests for rate-limited routes",
+            summary: "Implement rate limiting across public API endpoints",
+          },
         ],
         properties: {
           file: {
             type: "string",
             description:
-              "Full filepath of the implementation plan markdown written to the workspace (absolute path preferred, workspace-relative path accepted; examples: '/workspace/project/plans/todo-feature.md' or 'C:\\\\Workspace\\\\project\\\\plans\\\\todo-feature.md'). Set this to the same path the tool write used; do not emit placeholder values that were not actually written to disk. Omit if no file was written.",
+              "Full filepath of the implementation plan markdown written to the workspace (absolute path preferred, workspace-relative path accepted; examples: '/workspace/project/plans/todo-feature.md' or 'C:\\\\Workspace\\\\project\\\\plans\\\\todo-feature.md'). Set this to the same path the tool write used; do not emit placeholder values that were not actually written to disk. Required when a plan file was written. Omit ONLY if no file was written (and provide plan.content instead).",
           },
           files: {
             type: "array",
@@ -306,8 +239,10 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           content: {
             type: "string",
             description:
-              "Markdown implementation plan content. IMPORTANT: Must NOT contain questions, clarifications, or choices. Questions must be moved to top-level 'question'. If you wrote the plan to disk using tools, you MUST omit this field to prevent overwriting your file.",
-            examples: ["## Plan\n1. Add canonical enum\n2. Update validator\n3. Run compile"],
+              "Markdown implementation plan content. Required when no plan.file was written (inline proposals). IMPORTANT: Must NOT contain questions, clarifications, or choices — route those to the top-level 'question' field. If you wrote the plan to disk using tools, you SHOULD omit this field to prevent stale content from overwriting the source-of-truth file.",
+            examples: [
+              "## Proposed Changes\n### 1. Update SessionService\n- Refactor token validation\n- Add refresh token rotation\n\n### 2. Update API middleware\n- Add token expiry checks\n\n### 3. Migration\n- Create migration script for existing sessions",
+            ],
           },
           // Note: runtime validator enforces mutual exclusivity between
           // question/interactive responseTypes and substantial plan content.
@@ -317,11 +252,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           title: {
             type: "string",
             description:
-              "Plan title shown in the implementation plan card and plan tab header (for example 'Todo Feature Implementation'). Prefer specific titles and avoid generic values like 'Summary'.",
+              "Plan title shown in the implementation plan card header and plan tab title. MUST be set when the plan object is populated. Use specific, descriptive titles (e.g. 'Todo Feature Implementation', 'Auth Session Hardening', 'API Rate Limiting'). Avoid generic values like 'Summary' or 'Plan'.",
           },
           summary: {
             type: "string",
-            description: "Optional high-level summary of the plan.",
+            description: "Optional high-level one-line summary of the plan scope and goals, shown as secondary text in the plan card.",
           },
         },
       },
@@ -646,9 +581,23 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       },
       {
         responseType: "implementation_plan",
-        assistantMessage: "Implementation plan created at plans/todo-feature.md.",
+        assistantMessage:
+          "I've created an implementation plan for the todo feature. The plan covers database schema changes, API endpoints, and frontend components with full test coverage.",
         plan: {
           file: "plans/todo-feature.md",
+          title: "Todo Feature Implementation",
+          summary: "Add todo CRUD with priority levels and due dates",
+        },
+      },
+      {
+        responseType: "implementation_plan",
+        assistantMessage:
+          "Here's my proposed plan for the authentication refactor. It covers session management updates, token validation hardening, and the migration path for existing sessions.",
+        plan: {
+          title: "Auth Session Refactoring",
+          content:
+            "## Proposed Changes\n### 1. Update SessionService\n- Refactor token validation\n\n### 2. Add migration script",
+          summary: "Refactor session management for token-based auth",
         },
       },
       {
@@ -663,12 +612,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       },
       {
         responseType: "question",
-        assistantMessage: "I need one clarification before proceeding.",
+        assistantMessage:
+          "I need a few clarifications before proceeding:\n1. Which schema mode should we use — strict or compatibility?\n2. Should we include backward-compatible migration support?",
         question: {
           type: "question",
-          displayPrompt:
-            "Question: Which option should we use? (Select from the popup choices below.)",
-          question: "Which option should we use?",
+          question: "Which schema mode should we use?",
           options: [
             { label: "Strict schema", value: "strict" },
             { label: "Compat schema", value: "compat" },

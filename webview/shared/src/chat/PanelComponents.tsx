@@ -14,6 +14,7 @@ import {
   MessageSquare,
   MoreHorizontal,
   Play,
+  Plus,
   RefreshCw,
   Search,
   Send,
@@ -335,6 +336,7 @@ export function StickyHeader() {
   const {
     currentSessionId,
     isSidebarOpen,
+    isSessionModalOpen,
     sessionStats,
     isProcessing: globalIsProcessing,
     processingSessionIds,
@@ -438,12 +440,22 @@ export function StickyHeader() {
           size="icon"
           className="oc-history-btn h-7 w-7"
           title="History"
-          aria-label="Open history sidebar"
+          aria-label="Open session history"
           onClick={() =>
-            dispatch({ type: "SET_SIDEBAR_OPEN", payload: !isSidebarOpen })
+            dispatch({ type: "SET_SESSION_MODAL_OPEN", payload: !isSessionModalOpen })
           }
         >
           <History className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="oc-new-chat-btn h-7 w-7"
+          title="New chat"
+          aria-label="Create new chat session"
+          onClick={() => vscode.postMessage({ type: "createSession" })}
+        >
+          <Plus className="h-3.5 w-3.5" />
         </Button>
         <div
           className="flex items-center gap-2 cursor-help"
@@ -2426,13 +2438,6 @@ export function InputWrapper() {
     });
 
     const composedPrompt = batch
-      .map(
-        (resp) =>
-          `[interactive:${resp.eventType || "event"}:${resp.eventId || "unknown"}] ${resp.text}`,
-      )
-      .join("\n");
-
-    const displayText = batch
       .map((resp) => {
         if (resp.questionLabel) {
           return `**${resp.questionLabel}**\n${resp.text}`;
@@ -2440,6 +2445,8 @@ export function InputWrapper() {
         return resp.text;
       })
       .join("\n\n");
+
+    const displayText = composedPrompt;
 
     const nextMessages = [...messages];
     if (hasRenderableStreamingPayload(streaming)) {
@@ -2610,15 +2617,29 @@ export function InputWrapper() {
                 </div>
               )}
               <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
-                <MarkdownRenderer
-                  content={
+                {(() => {
+                  const bodyText =
                     event.type === "quick_actions"
                       ? event.title || "Select an action"
                       : event.type === "message"
                         ? event.message
-                        : event.question
-                  }
-                />
+                        : event.question;
+                  const ctx = event.contextMessage?.trim();
+                  // Only show contextMessage if it differs substantially from the body text
+                  const showContext =
+                    ctx &&
+                    ctx.toLowerCase() !== bodyText?.toLowerCase()?.trim();
+                  return (
+                    <>
+                      {showContext && (
+                        <div className="mb-2 rounded bg-[var(--oc-panel)] border border-[var(--oc-border-soft)] px-2.5 py-2 text-[11px] text-[var(--oc-text-muted)] leading-relaxed">
+                          <MarkdownRenderer content={ctx} />
+                        </div>
+                      )}
+                      <MarkdownRenderer content={bodyText} />
+                    </>
+                  );
+                })()}
               </div>
 
               {isCustomMode ? (

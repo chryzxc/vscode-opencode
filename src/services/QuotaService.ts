@@ -28,6 +28,8 @@ const COPILOT_EDITOR_PLUGIN_VERSION = `copilot-chat/${COPILOT_VERSION}`;
 const COPILOT_USER_AGENT = `GitHubCopilotChat/${COPILOT_VERSION}`;
 
 const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const OPENAI_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
+const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ZHIPU_USAGE_URL = "https://bigmodel.cn/api/monitor/usage/quota/limit";
 const ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const GITHUB_API_BASE_URL = "https://api.github.com";
@@ -88,6 +90,15 @@ function readJsonFile<T>(filePath: string): T | null {
     return JSON.parse(raw) as T;
   } catch {
     return null;
+  }
+}
+
+function writeJsonFile<T>(filePath: string, data: T): boolean {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -360,9 +371,52 @@ export class QuotaService extends EventEmitter {
     if (!auth?.access) {
       return null;
     }
+
+    // Check if token is expired and refresh if needed
+    let token = auth.access;
+    const expired = auth?.expires
+      ? auth.expires < Date.now() - 60000  // 60s buffer
+      : true;
+
+    if (expired && auth?.refresh) {
+      try {
+        const refreshRaw = await httpsPost(
+          OPENAI_OAUTH_TOKEN_URL,
+          {
+            "Content-Type": "application/json",
+          },
+          JSON.stringify({
+            grant_type: "refresh_token",
+            refresh_token: auth.refresh,
+            client_id: OPENAI_CLIENT_ID,
+          }),
+        );
+        const refreshed = JSON.parse(refreshRaw);
+        if (refreshed.access_token) {
+          token = refreshed.access_token;
+
+          // Update auth.json with new tokens
+          const authData = readJsonFile<AuthData>(authPath);
+          if (authData?.openai) {
+            authData.openai.access = refreshed.access_token;
+            if (refreshed.refresh_token) {
+              authData.openai.refresh = refreshed.refresh_token;
+            }
+            if (refreshed.expires_in) {
+              authData.openai.expires = Date.now() + (refreshed.expires_in * 1000);
+            }
+            writeJsonFile(authPath, authData);
+          }
+        }
+      } catch (refreshError) {
+        // If refresh fails, continue with expired token (will fail with 401)
+        console.error('OpenAI token refresh failed:', refreshError);
+      }
+    }
+
     try {
       const raw = await httpsGet(OPENAI_USAGE_URL, {
-        Authorization: `Bearer ${auth.access}`,
+        Authorization: `Bearer ${token}`,
         "User-Agent": USER_AGENT,
         "Content-Type": "application/json",
       });

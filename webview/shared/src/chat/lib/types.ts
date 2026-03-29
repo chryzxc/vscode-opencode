@@ -292,6 +292,8 @@ export interface InteractiveQuestionEvent {
   allowCustomInput?: boolean;
   answer?: string;
   answers?: string[];
+  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt or assistantMessage. */
+  contextMessage?: string;
 }
 
 export interface InteractiveConfirmEvent {
@@ -302,6 +304,8 @@ export interface InteractiveConfirmEvent {
   question: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt or assistantMessage. */
+  contextMessage?: string;
 }
 
 export interface InteractiveQuickActionsEvent {
@@ -310,6 +314,8 @@ export interface InteractiveQuickActionsEvent {
   title?: string;
   uiCategory?: InteractiveUiCategory;
   actions: InteractiveChoice[];
+  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt or assistantMessage. */
+  contextMessage?: string;
 }
 
 export interface InteractiveMessageEvent {
@@ -319,6 +325,8 @@ export interface InteractiveMessageEvent {
   uiCategory?: InteractiveUiCategory;
   message: string;
   dismissLabel?: string;
+  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt or assistantMessage. */
+  contextMessage?: string;
 }
 
 export type InteractiveEvent =
@@ -547,6 +555,7 @@ export interface AppState {
   executingQueueSessionIds: Set<string>;
   isQueueOpen: boolean;
   isSidebarOpen: boolean;
+  isSessionModalOpen: boolean;
   sessionsList: Session[];
   processingSessionIds: string[];
   sessionEdits: Set<string>;

@@ -359,10 +359,19 @@ function questionPromptFromMessage(message?: Message): string | undefined {
     asRecord(infoRec?.structuredOutput) ||
     asRecord(infoRec?.structured_output);
   const question = asRecord(structured?.question);
+
+  // displayPrompt is the primary source-of-truth for the chat bubble text.
+  // Falls back to assistantMessage from the top-level structured output, which carries
+  // the full conversational context the model intended to show in the chat bubble.
   const explicitDisplayPrompt = firstNonEmptyString(
     question?.displayPrompt,
     question?.assistantPrompt,
     question?.responseMessage,
+    // NOTE: assistantMessage is intentionally checked here as a bubble-text fallback.
+    // This ensures the AI's full response text is visible in the chat bubble even when
+    // the model omits displayPrompt. Without this, the bubble shows only the popup question
+    // text (question.question), which is a short, incomplete snippet.
+    structured?.assistantMessage,
   );
   if (explicitDisplayPrompt) {
     return explicitDisplayPrompt;
@@ -485,18 +494,31 @@ function getMessageContent(
     const hasReasoningEvents = streaming.reasoningEvents && streaming.reasoningEvents.length > 0;
     const isInReasoningPart = streaming.inReasoningPart || false;
 
-    // If we're currently in a reasoning part or have reasoning events but no substantial real content, return empty
-    // This completely hides any leaked reasoning content from the UI
-    if (isInReasoningPart || (hasReasoningEvents && content.length < 100)) {
+    // NOTE: When streaming is no longer active (isActive === false), FINISH_STREAMING has already
+    // fired — this happens when a blocking interactive event (e.g. question) is detected mid-stream.
+    // At that point, streaming.content holds the final AI response text (e.g. "I have a few
+    // questions:"). We must NOT discard it based on length — it is the correct final content.
+    // Only apply the reasoning filter while the stream is still actively flowing.
+    const streamingFinished = !streaming.isActive;
+
+    if (isInReasoningPart) {
       return '';
     }
 
-    // Additional safety check: if content looks like reasoning monologue, filter it out
-    const trimmedContent = content.trim();
-    if (trimmedContent.length > 0 && trimmedContent.length < 200) {
-      const looksLikeReasoning = /The user (?:is asking|just said|keeps saying)|I (?:should|need|will|can|must)|Let me (?:check|read|search|look|find)|straightforward informational question|general question/i.test(trimmedContent);
-      if (looksLikeReasoning) {
-        return '';
+    if (!streamingFinished && hasReasoningEvents && content.length < 100) {
+      // Streaming is live and content is very short — likely reasoning leak, hide it.
+      return '';
+    }
+
+    // Additional safety check: if content looks like reasoning monologue, filter it out.
+    // Skip this check once streaming has finished — the content is already finalised.
+    if (!streamingFinished) {
+      const trimmedContent = content.trim();
+      if (trimmedContent.length > 0 && trimmedContent.length < 200) {
+        const looksLikeReasoning = /The user (?:is asking|just said|keeps saying)|I (?:should|need|will|can|must)|Let me (?:check|read|search|look|find)|straightforward informational question|general question/i.test(trimmedContent);
+        if (looksLikeReasoning) {
+          return '';
+        }
       }
     }
 
@@ -1539,7 +1561,7 @@ export const SystemMessage = memo(function SystemMessage({
   accentColor?: string;
 }) {
   return (
-    <div className="oc-message-enter mb-6 px-8 sm:px-10">
+    <div className="oc-message-enter mb-6 px-4">
       <div className="opacity-90 transition-opacity hover:opacity-100">
         <div
           className="rounded-r-md border-l pr-2"
