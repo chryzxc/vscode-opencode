@@ -17,7 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const storeSource = readSource(
     [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'store.ts')],

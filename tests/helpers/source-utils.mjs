@@ -32,7 +32,7 @@ export function extractFunctionBody(source, signature) {
     else if (c === '{') b++; else if (c === '}') b--;
   }
 
-  let bodyStart = -1;
+  let bodyStart = (b > 0 && p === 0) ? 0 : -1;
 
   for (let i = 0; i < trimmedSource.length; i++) {
     const char = trimmedSource[i];

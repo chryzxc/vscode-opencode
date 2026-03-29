@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { marked } from 'marked';
-import { readSource, joinFromRoot } from './helpers/source-utils.mjs';
+import { readSource, joinFromRoot } from '../helpers/source-utils.mjs';
 
 // Read the MarkdownRenderer source to extract the preprocessMarkdown function
 const markdownRendererSource = readSource(

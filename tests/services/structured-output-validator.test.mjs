@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const validatorSource = readSource(
   [joinFromRoot('src', 'shared', 'structuredOutputValidator.ts')],
@@ -17,9 +17,16 @@ const generatedWebviewValidatorSource = readSource(
 );
 
 test('structured output validator enforces responseType specific requirements', () => {
-  assert.match(validatorSource, /implementation_plan requires plan\.file string/, 'validator should enforce plan.file for implementation_plan');
-  assert.match(validatorSource, /must not include plan\.content when plan\.file is provided/, 'validator should mutually exclude plan.file and plan.content');
-  assert.match(validatorSource, /plan\.file must be a full markdown filepath/, 'validator should require full filepath for implementation_plan plan.file');
+  assert.match(
+    validatorSource,
+    /implementation_plan requires plan\.file or plan\.content string/,
+    'validator should enforce plan.file or plan.content for implementation_plan',
+  );
+  assert.match(
+    validatorSource,
+    /plan\.file must be a full markdown filepath/,
+    'validator should require full filepath for implementation_plan plan.file',
+  );
   assert.match(validatorSource, /subagents responseType requires subagents array/, 'validator should enforce subagents array for subagents responseType');
   assert.match(validatorSource, /question responseType requires question object or interactiveEvents/, 'validator should enforce question payload contract for question responseType');
   assert.match(validatorSource, /question requires question text/, 'validator should require question payload to include question text');

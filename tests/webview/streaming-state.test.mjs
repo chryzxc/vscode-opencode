@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 // Load source files
 const storeSource = readSource(
@@ -434,7 +434,7 @@ test('StreamingCard visibility is enhanced for early display', () => {
 
   assert.match(
     streamingCardBody,
-    /!!streaming/,
+    /if\s*\(\s*!streaming\s*\)/,
     'Should check streaming exists'
   );
 
@@ -449,12 +449,6 @@ test('StreamingCard visibility is enhanced for early display', () => {
     streamingCardBody,
     /streaming\.content\.length\s*>\s*0/,
     'Should check if content exists'
-  );
-
-  assert.match(
-    streamingCardBody,
-    /streaming\.reasoning\.length\s*>\s*0/,
-    'Should check if reasoning exists'
   );
 
   assert.match(

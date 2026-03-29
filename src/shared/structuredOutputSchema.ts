@@ -66,7 +66,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "string",
         minLength: 1,
         description:
-          "Required chat bubble text for every turn. For question: list all questions as a numbered summary. For implementation_plan: describe what the plan covers. Keep concise and actionable.",
+          "Required user-facing chat bubble text for every turn. For question: list all questions as a numbered summary. For implementation_plan: describe what the plan covers. Keep concise and actionable.",
         examples: [
           "Hello! How can I help?",
           "I updated the parser and tests.",
@@ -77,7 +77,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       message: {
         type: "string",
         minLength: 1,
-        description: "Legacy alias for assistantMessage. Prefer assistantMessage.",
+        description: "Legacy compatibility alias for assistantMessage. Prefer assistantMessage.",
       },
       reasoning: {
         type: "array",
@@ -173,6 +173,12 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           options: {
             type: "array",
             description: "Choices for type='question'. Each needs a label.",
+            examples: [
+              [
+                { label: "Option 1", value: "1" },
+                { label: "Option 2", value: "2" },
+              ],
+            ],
             items: {
               type: "object",
               additionalProperties: true,
@@ -632,6 +638,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         responseType: "data",
         assistantMessage: "Here is the structured data summary.",
         data: { cardType: "summary", status: "ok" },
+      },
+      {
+        responseType: "system",
+        assistantMessage: "System context updated.",
+        data: { context: "active_file", path: "src/extension.ts" },
       },
       {
         responseType: "error",

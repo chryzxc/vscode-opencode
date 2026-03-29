@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const sessionServiceSource = readSource(
   [joinFromRoot('src', 'services', 'SessionService.ts')],

@@ -369,11 +369,8 @@ export function validateStructuredOutput(
       plan && typeof plan.content === "string" ? plan.content.trim() : "";
     const planFile =
       plan && typeof plan.file === "string" ? plan.file.trim() : "";
-    if (!planFile) {
-      errors.push("implementation_plan requires plan.file string");
-    }
-    if (planContent && planFile) {
-      errors.push("implementation_plan must not include plan.content when plan.file is provided. Omit plan.content to prevent overwriting.");
+    if (!planContent && !planFile) {
+      errors.push("implementation_plan requires plan.file or plan.content string");
     }
     if (plan && typeof plan.content !== "undefined" && typeof plan.content !== "string") {
       errors.push("plan.content must be a string when provided");

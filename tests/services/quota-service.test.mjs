@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const quotaServiceSource = readSource(
   [joinFromRoot('src', 'services', 'QuotaService.ts')],
@@ -68,7 +68,7 @@ test('QuotaService implements OpenAI quota fetching', () => {
 
   // Verify HTTPS request
   assert.match(openaiBody, /const\s+raw\s*=\s*await\s+httpsGet\(OPENAI_USAGE_URL/, 'fetchOpenAI should make HTTPS GET request');
-  assert.match(openaiBody, /Authorization:\s*`Bearer\s*\$\{auth\.access\}`/, 'fetchOpenAI should use Bearer auth');
+  assert.match(openaiBody, /Authorization:\s*`Bearer\s*\$\{(auth\.access|token)\}`/, 'fetchOpenAI should use Bearer auth');
 
   // Verify weekly window parsing
   assert.match(openaiBody, /const\s+weeklyWindow\s*=/, 'fetchOpenAI should extract weekly window');

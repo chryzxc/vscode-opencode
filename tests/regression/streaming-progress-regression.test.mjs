@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const messageHandlerSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'messageHandler.ts')],
@@ -64,7 +64,7 @@ test('stream handler ignores non-assistant role events', () => {
 
   assert.match(
     streamBody,
-    /if \(eventRole && eventRole !== 'assistant'\) \{\s*return;\s*\}/,
+    /\/\/ Filter out non-assistant roles \(system messages are handled in the switch cases below\)\s*if \(eventRole && eventRole !== 'assistant'\) \{\s*\/\/ Don't filter out user messages - they may contain system message patterns[\s\S]*?if \(eventRole !== 'user'\) \{\s*return;\s*\}\s*\}/s,
     'stream handler should only process assistant stream events',
   );
 });
@@ -198,7 +198,7 @@ test('messageResponse remaps subagent parent message ids when stream and final i
 
   assert.match(
     messageHandlerSource,
-    /const streamingMessageId =\s*(?:currentStreaming\?\.messageId \|\| snapshotMessageId|snapshotMessageId \|\| currentStreaming\?\.messageId);/,
+    /streamingMessageId =\s*(?:currentStreaming\?\.messageId \|\| snapshotMessageId|snapshotMessageId \|\| currentStreaming\?\.messageId);/,
     'messageResponse should compute source subagent key from streaming/snapshot message id',
   );
   assert.match(

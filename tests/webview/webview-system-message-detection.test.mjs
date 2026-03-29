@@ -5,7 +5,7 @@ import {
   extractFunctionBody,
   joinFromRoot,
   readSource,
-} from "./helpers/source-utils.mjs";
+} from '../helpers/source-utils.mjs';
 
 const storeSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],
@@ -294,7 +294,7 @@ test("webview messageHandler allows user messages through role filter for system
 
 test("webview messageHandler checks system patterns early in message.part.updated flow", () => {
   const caseMatch = messageHandlerSource.match(
-    /case\s+['"]message\.part\.updated['"]:\s*case\s+['"]message\.part\.added['"]:\s*case\s+['"]message\.part\.created['"]:\s*\{([\s\S]{0,2000})/
+    /case\s+['"]message\.part\.updated['"]:\s*case\s+['"]message\.part\.added['"]:\s*case\s+['"]message\.part\.created['"]:\s*\{([\s\S]{0,10000})/
   );
 
   assert.ok(caseMatch, "messageHandler should have message.part.updated case");

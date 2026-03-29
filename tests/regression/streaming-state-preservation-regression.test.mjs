@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import {
   joinFromRoot,
   readSource,
-} from "./helpers/source-utils.mjs";
+} from '../helpers/source-utils.mjs';
 
 const messageHandlerSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],

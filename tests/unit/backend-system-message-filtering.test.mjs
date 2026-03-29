@@ -5,7 +5,7 @@ import {
   extractFunctionBody,
   joinFromRoot,
   readSource,
-} from "./helpers/source-utils.mjs";
+} from '../helpers/source-utils.mjs';
 
 const chatViewProviderSource = readSource(
   [joinFromRoot("src", "providers", "ChatViewProvider.ts")],

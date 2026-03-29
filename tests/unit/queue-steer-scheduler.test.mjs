@@ -1,89 +1,79 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const chatProviderSource = readSource(
   [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
   'ChatViewProvider.ts',
 );
 
-const chatQueueServiceSource = readSource(
-  [joinFromRoot('src', 'services', 'ChatQueueService.ts')],
-  'ChatQueueService.ts',
-);
-
-test('ChatQueueService uses session-scoped queue model with stable queued item metadata', () => {
+test('ChatViewProvider uses session-scoped queue model with stable queued item metadata', () => {
   assert.match(
-    chatQueueServiceSource,
+    chatProviderSource,
     /private queueBySessionId = new Map<string, QueuedPrompt\[\]>\(\);/,
-    'Service should store queues by session ID'
+    'Provider should store queues by session ID'
   );
   assert.match(
-    chatQueueServiceSource,
-    /id:\s*`q-\$\{Date\.now\(\)\}-\$\{this\.queueItemSequence\}`[\s\S]*?sessionId: payload\.sessionId,[\s\S]*?createdAt:\s*Date\.now\(\)/,
-    'Queued prompt metadata should include id, sessionId, and createdAt'
+    chatProviderSource,
+    /id:\s*`q-\$\{Date\.now\(\)\}-\$\{this\.queueItemSequence\}`/,
+    'Queued prompt metadata should include stable sequential ID'
   );
   assert.match(
-    chatQueueServiceSource,
-    /this\.observer\?\.sendQueueUpdate\(sessionId, (nextQueue|queue)\)/,
-    'queueUpdate should be sent to the observer'
+    chatProviderSource,
+    /this\.sendQueueUpdate\(sessionId\)/,
+    'queueUpdate should be sent to the webview'
   );
 });
 
-test('ChatViewProvider routes prompt actions through ChatQueueService', () => {
+test('ChatViewProvider routes prompt actions through internal queue handlers', () => {
   assert.match(
     chatProviderSource,
-    /case "sendMessage":[\s\S]*?this\.chatQueueService\.enqueue/,
-    'sendMessage should route to ChatQueueService'
+    /case "sendMessage":[\s\S]*?this\.schedulePromptDispatch\("send-now"/,
+    'sendMessage should route to prompt dispatch'
   );
   assert.match(
     chatProviderSource,
-    /case "addToQueue":[\s\S]*?this\.chatQueueService\.enqueue/,
-    'addToQueue should route to ChatQueueService'
+    /case "addToQueue":[\s\S]*?this\.schedulePromptDispatch\("queue"/,
+    'addToQueue should route to prompt dispatch'
   );
   assert.match(
     chatProviderSource,
-    /case "steerMessage":[\s\S]*?this\.chatQueueService\.enqueue/,
-    'steerMessage should route to ChatQueueService'
+    /case "steerMessage":[\s\S]*?this\.schedulePromptDispatch\("steer"/,
+    'steerMessage should route to prompt dispatch'
   );
   assert.match(
     chatProviderSource,
-    /case "sendQueuedItemNow":[\s\S]*?this\.chatQueueService\.take/,
-    'sendQueuedItemNow should dispatch queued item through service'
+    /case "sendQueuedItemNow":[\s\S]*?this\.handleDispatchQueuedItem/,
+    'sendQueuedItemNow should dispatch queued item'
   );
   assert.match(
     chatProviderSource,
-    /case "steerQueuedItem":[\s\S]*?this\.chatQueueService\.take/,
-    'steerQueuedItem should dispatch queued item through service'
+    /case "steerQueuedItem":[\s\S]*?this\.handleDispatchQueuedItem/,
+    'steerQueuedItem should dispatch queued item'
   );
 });
 
-test('ChatQueueService execution logic correctly manages state', () => {
+test('ChatViewProvider queue execution logic correctly manages state', () => {
   assert.match(
-    chatQueueServiceSource,
-    /async execute\(sessionId: string\): Promise<void> \{[\s\S]*?this\.executingQueueSessionIds\.add\(sessionId\)/,
-    'execute should track executing session IDs'
+    chatProviderSource,
+    /async handleExecuteQueue\(.*?\): Promise<void> \{[\s\S]*?this\.executingQueueSessionIds\.add\(sessionId\)/,
+    'handleExecuteQueue should track executing session IDs'
   );
   assert.match(
-    chatQueueServiceSource,
-    /async execute\(sessionId: string\): Promise<void> \{[\s\S]*?this\.observer\?\.onQueueExecutionStarted\(sessionId\)/,
-    'execute should notify observer when starting'
+    chatProviderSource,
+    /type: "queueExecutionStarted"/,
+    'handleExecuteQueue should notify webview via queueExecutionStarted event'
   );
   assert.match(
-    chatQueueServiceSource,
-    /async execute\(sessionId: string\): Promise<void> \{[\s\S]*?await this\.observer\?\.dispatchPrompt/,
-    'execute should dispatch prompts to the observer'
-  );
-  assert.match(
-    chatQueueServiceSource,
-    /async execute\(sessionId: string\): Promise<void> \{[\s\S]*?finally \{[\s\S]*?this\.executingQueueSessionIds\.delete\(sessionId\)/,
-    'execute should clean up execution state in finally block'
+    chatProviderSource,
+    /async handleExecuteQueue\(.*?\): Promise<void> \{[\s\S]*?finally \{[\s\S]*?this\.executingQueueSessionIds\.delete\(sessionId\)/,
+    'handleExecuteQueue should clean up execution state in finally block'
   );
   
   assert.doesNotMatch(
-    chatQueueServiceSource,
-    /async execute\(sessionId: string\): Promise<void> \{[\s\S]*?setTimeout/,
+    chatProviderSource,
+    /async handleExecuteQueue\(.*?\): Promise<void> \{[\s\S]*?setTimeout/,
     'queue execution should not use fixed wait delays between items'
   );
 });

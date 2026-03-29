@@ -61,7 +61,7 @@ describe('ConfigFilesProvider', () => {
   it('should scan directory and return JSON/JSONC files', async () => {
     // Import the class - we need to use dynamic import since it's TypeScript
     // For now, we'll test the concept
-    const { ConfigFilesProvider } = await import('../src/providers/ConfigFilesProvider.ts');
+    const { ConfigFilesProvider } = await import('../../src/providers/ConfigFilesProvider.ts');
     provider = new ConfigFilesProvider(testConfigDir);
     const files = await provider.scanFiles();
 
@@ -73,7 +73,7 @@ describe('ConfigFilesProvider', () => {
   });
 
   it('should filter out node_modules and .bak files', async () => {
-    const { ConfigFilesProvider } = await import('../src/providers/ConfigFilesProvider.ts');
+    const { ConfigFilesProvider } = await import('../../src/providers/ConfigFilesProvider.ts');
     provider = new ConfigFilesProvider(testConfigDir);
     const files = await provider.scanFiles();
 
@@ -84,7 +84,7 @@ describe('ConfigFilesProvider', () => {
   });
 
   it('should sort files alphabetically', async () => {
-    const { ConfigFilesProvider } = await import('../src/providers/ConfigFilesProvider.ts');
+    const { ConfigFilesProvider } = await import('../../src/providers/ConfigFilesProvider.ts');
     provider = new ConfigFilesProvider(testConfigDir);
     const files = await provider.scanFiles();
 
@@ -93,7 +93,7 @@ describe('ConfigFilesProvider', () => {
   });
 
   it('should include file metadata', async () => {
-    const { ConfigFilesProvider } = await import('../src/providers/ConfigFilesProvider.ts');
+    const { ConfigFilesProvider } = await import('../../src/providers/ConfigFilesProvider.ts');
     provider = new ConfigFilesProvider(testConfigDir);
     const files = await provider.scanFiles();
 
@@ -106,7 +106,7 @@ describe('ConfigFilesProvider', () => {
   });
 
   it('should save file with backup', async () => {
-    const { ConfigFilesProvider } = await import('../src/providers/ConfigFilesProvider.ts');
+    const { ConfigFilesProvider } = await import('../../src/providers/ConfigFilesProvider.ts');
     provider = new ConfigFilesProvider(testConfigDir);
 
     const testFile = path.join(testConfigDir, 'config1.json');
@@ -129,7 +129,7 @@ describe('ConfigFilesProvider', () => {
   });
 
   it('should validate JSON before saving', async () => {
-    const { ConfigFilesProvider } = await import('../src/providers/ConfigFilesProvider.ts');
+    const { ConfigFilesProvider } = await import('../../src/providers/ConfigFilesProvider.ts');
     provider = new ConfigFilesProvider(testConfigDir);
 
     const testFile = path.join(testConfigDir, 'config1.json');
@@ -143,14 +143,14 @@ describe('ConfigFilesProvider', () => {
   });
 
   it('should return config directory', async () => {
-    const { ConfigFilesProvider } = await import('../src/providers/ConfigFilesProvider.ts');
+    const { ConfigFilesProvider } = await import('../../src/providers/ConfigFilesProvider.ts');
     const customProvider = new ConfigFilesProvider(testConfigDir);
 
     assert.strictEqual(customProvider.getConfigDirectory(), testConfigDir);
   });
 
   it('should use default config directory when none provided', async () => {
-    const { ConfigFilesProvider } = await import('../src/providers/ConfigFilesProvider.ts');
+    const { ConfigFilesProvider } = await import('../../src/providers/ConfigFilesProvider.ts');
     const defaultProvider = new ConfigFilesProvider();
 
     const expectedDir = path.join(os.homedir(), '.config', 'opencode');

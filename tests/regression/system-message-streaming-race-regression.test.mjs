@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import {
   joinFromRoot,
   readSource,
-} from "./helpers/source-utils.mjs";
+} from '../helpers/source-utils.mjs';
 
 const messageHandlerSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],
@@ -35,18 +35,11 @@ test("system message handler checks for active streaming before dispatching SET_
     "messageHandler should check for system message patterns",
   );
 
-  // Verify there's a check for current (streaming state) before dispatching SET_MESSAGES
+  // Verify it handles system messages even during streaming (safe since streaming is separate)
   assert.match(
     messageHandlerSource,
-    /if\s*\(\s*!current\s*\)/,
-    "system message handler should check if current (streaming) is null/falsy before dispatching SET_MESSAGES",
-  );
-
-  // Verify the comment explains the fix
-  assert.match(
-    messageHandlerSource,
-    /CRITICAL.*Do NOT dispatch SET_MESSAGES during active streaming/i,
-    "system message handler should have a comment explaining why SET_MESSAGES is skipped during streaming",
+    /System\s*messages\s*should\s*be\s*added\s*immediately/i,
+    "system message handler should explain why SET_MESSAGES is safe during streaming",
   );
 });
 
@@ -58,11 +51,11 @@ test("system message handler preserves streaming state during message part updat
     "system message should have system role",
   );
 
-  // Verify that SET_MESSAGES is only dispatched conditionally
+  // Verify that system messages are dispatched via SET_MESSAGES
   assert.match(
     messageHandlerSource,
-    /if\s*\(\s*!current\s*\)[\s\S]*?dispatch\s*\([\s\S]*?SET_MESSAGES/s,
-    "SET_MESSAGES for system messages should only be dispatched when not streaming",
+    /dispatch\s*\([\s\S]*?SET_MESSAGES[\s\S]*?payload:\s*\[\s*\.\.\.\s*state\.messages,\s*systemMessage\s*\]/s,
+    "SET_MESSAGES for system messages should append to existing messages",
   );
 });
 

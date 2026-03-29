@@ -18,7 +18,7 @@ import {
   extractFunctionBody,
   joinFromRoot,
   readSource,
-} from "./helpers/source-utils.mjs";
+} from '../helpers/source-utils.mjs';
 
 const storeSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],

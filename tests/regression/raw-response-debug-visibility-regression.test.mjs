@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { joinFromRoot, readSource } from "./helpers/source-utils.mjs";
+import { joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const messageComponentsSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "MessageComponents.tsx")],

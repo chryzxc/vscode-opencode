@@ -349,7 +349,7 @@ export function SkillsShell() {
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="text"
-            placeholder="Search skills…"
+            placeholder="Search skills..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="h-7 pl-7 text-xs"
@@ -378,7 +378,7 @@ export function SkillsShell() {
             onClick={enableSelected}
             className="h-6 px-2 text-[11px] text-oc-green hover:bg-oc-green/10 hover:text-oc-green"
           >
-            Enable
+            Enable selected
           </Button>
           <Button
             variant="ghost"
@@ -386,7 +386,7 @@ export function SkillsShell() {
             onClick={disableSelected}
             className="h-6 px-2 text-[11px] text-oc-red hover:bg-oc-red/10 hover:text-oc-red"
           >
-            Disable
+            Disable selected
           </Button>
           <Button
             variant="ghost"
@@ -432,7 +432,7 @@ export function SkillsShell() {
         {skills.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
             <Layers className="h-8 w-8 text-muted-foreground opacity-40" />
-            <p className="text-xs text-muted-foreground">Loading skills…</p>
+            <p className="text-xs text-muted-foreground">Loading skills...</p>
           </div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">

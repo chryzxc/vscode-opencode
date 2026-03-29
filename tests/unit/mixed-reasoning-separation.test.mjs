@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as ts from "typescript";
 
-import { joinFromRoot, readSource } from "./helpers/source-utils.mjs";
+import { joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const messageHandlerSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { joinFromRoot, readSource } from './helpers/source-utils.mjs';
+import { joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const AUTO_GENERATED_HEADER_PREFIX = '// AUTO-GENERATED FILE. DO NOT EDIT.';
 

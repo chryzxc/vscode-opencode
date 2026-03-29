@@ -263,21 +263,21 @@ function asStringLocal(...values: unknown[]): string {
   return "";
 }
 
-function normalizeComparableTextLocal(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, " ").trim();
+export function normalizeComparableTextLocal(value: string): string {
+  return (value || "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-function getMessageRoleForCanonical(message: Message): string {
+export function getMessageRoleForCanonical(message: Message): string {
   const info = asRecordLocal(message.info);
-  return asStringLocal(message.role, info?.role).toLowerCase();
+  return (asStringLocal(message.role, info?.role) || "unknown").toLowerCase();
 }
 
-function getMessageIdForCanonical(message: Message): string {
+export function getMessageIdForCanonical(message: Message): string {
   const info = asRecordLocal(message.info);
   return asStringLocal(info?.id, message.id);
 }
 
-function getMessageCreatedAtForCanonical(message: Message): number | undefined {
+export function getMessageCreatedAtForCanonical(message: Message): number | undefined {
   const rec = asRecordLocal(message);
   const info = asRecordLocal(message.info);
   const infoTime = asRecordLocal(info?.time);
@@ -285,6 +285,7 @@ function getMessageCreatedAtForCanonical(message: Message): number | undefined {
   const candidates = [
     messageTime?.created,
     infoTime?.created,
+    rec?.created,
     rec?.createdAt,
     info?.createdAt,
   ];
@@ -296,7 +297,7 @@ function getMessageCreatedAtForCanonical(message: Message): number | undefined {
   return undefined;
 }
 
-function extractMessageTextForCanonical(message: Message): string {
+export function extractMessageTextForCanonical(message: Message): string {
   const rec = asRecordLocal(message);
   if (!rec) {
     return "";
@@ -349,15 +350,22 @@ export function isInternalTransportReminderMessage(message: Message): boolean {
 
   // Check for square-bracketed system messages at the start (e.g., [analyze-mode], [background task completed])
   const squareBracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
-  const hasSquareBracketPrefix = squareBracketPattern.test(normalizedText);
+  const hasSquareBracketPrefix =
+    squareBracketPattern.test(normalizedText) ||
+    normalizedText.includes("background_output(task_id=");
 
   // Check for angle-bracketed system messages at the start (e.g., <auto-slash-command>, <system-reminder>)
   const angleBracketPattern = /^<[a-z][a-z0-9_\-]*>/i;
-  const hasAngleBracketPrefix = angleBracketPattern.test(normalizedText);
+  const hasAngleBracketPrefix =
+    angleBracketPattern.test(normalizedText) ||
+    normalizedText.includes("<system-reminder>") ||
+    normalizedText.includes("<auto-slash-command>");
 
   // Check for comment-style system messages (e.g., <!-- omo_internal_initiator -->)
   const commentPattern = /^<!--\s*[a-z][a-z0-9_\-]*/i;
-  const hasCommentPrefix = commentPattern.test(normalizedText);
+  const hasCommentPrefix =
+    commentPattern.test(normalizedText) ||
+    normalizedText.includes("<!-- omo_internal_initiator -->");
 
   return hasSquareBracketPrefix || hasAngleBracketPrefix || hasCommentPrefix;
 }
@@ -385,7 +393,7 @@ export function hasSystemMessagePatternInText(text: string): boolean {
   return hasSquareBracketPrefix || hasAngleBracketPrefix || hasCommentPrefix;
 }
 
-function hasAssistantPayloadForCanonical(message: Message): boolean {
+export function hasAssistantPayloadForCanonical(message: Message): boolean {
   const rec = asRecordLocal(message);
   if (!rec) {
     return false;
@@ -427,7 +435,7 @@ function isAssistantMessageForCanonical(message: Message): boolean {
   return hasAssistantPayloadForCanonical(message);
 }
 
-function messageRichnessScoreForCanonical(message: Message): number {
+export function messageRichnessScoreForCanonical(message: Message): number {
   const rec = asRecordLocal(message);
   if (!rec) {
     return 0;
@@ -462,7 +470,7 @@ function messageRichnessScoreForCanonical(message: Message): number {
   return score;
 }
 
-function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
+export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
   const deduped: Message[] = [];
   for (const message of messages) {
     const id = getMessageIdForCanonical(message);
@@ -621,7 +629,7 @@ function appendUniqueEntries<T>(
   });
 }
 
-function coalesceAssistantRunForCanonical(run: Message[]): Message {
+export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   const base = { ...(run[run.length - 1] || run[0]) } as Message;
   const mergedParts: unknown[] = [];
   const seenPartKeys = new Set<string>();
@@ -814,29 +822,21 @@ function coalesceAssistantRunForCanonical(run: Message[]): Message {
   return base;
 }
 
-function canonicalizeMessagesForRender(messages: Message[]): Message[] {
+export function canonicalizeMessagesForRender(messages: Message[]): Message[] {
   if (!Array.isArray(messages) || messages.length === 0) {
     return [];
   }
 
-  // Convert internal transport messages (like <auto-slash-command>) to system role
-  // instead of filtering them out, so they display with SystemMessage component
-  const withConvertedRole = messages.map((message) => {
+  // Convert internal transport messages (like <system-reminder>) to system role
+  // for consistent deduplication and rendering handling.
+  const processed = messages.map((message) => {
     if (isInternalTransportReminderMessage(message)) {
-      // Create a new message object with system role
-      const info = asRecordLocal(message.info);
-      const converted: Message = {
-        ...message,
-        role: 'system',
-        responseType: 'system',
-        info: info ? { ...info, role: 'system' } : { role: 'system' },
-      };
-      return converted;
+      return { ...message, role: "system" };
     }
     return message;
   });
 
-  const deduped = dedupeMirrorMessagesForCanonical(withConvertedRole);
+  const deduped = dedupeMirrorMessagesForCanonical(processed);
 
   const canonical: Message[] = [];
   let index = 0;
@@ -896,7 +896,7 @@ function hasTodoPatchChanges(current: TodoItem, patch: Partial<TodoItem>): boole
   return false;
 }
 
-function upsertTodoItemArray(items: TodoItem[] | undefined, incoming: TodoItem): TodoItem[] {
+export function upsertTodoItemArray(items: TodoItem[] | undefined, incoming: TodoItem): TodoItem[] {
   const list = Array.isArray(items) ? [...items] : [];
   const idx = list.findIndex((it) => it.id === incoming.id);
 
@@ -1003,8 +1003,8 @@ function isDuplicateReasoningChunk(candidate: string, existing: string): boolean
     return true;
   }
 
-  if (candidateFingerprint.length < 32 || existingFingerprint.length < 32) {
-    return false;
+  if (candidateFingerprint === existingFingerprint) {
+    return true;
   }
   return (
     candidateFingerprint.includes(existingFingerprint) ||
@@ -1018,7 +1018,7 @@ type ReasoningMergeResult = {
   replaceLastEvent?: boolean;
 };
 
-function mergeStreamingReasoning(
+export function mergeStreamingReasoning(
   current: string,
   incoming: string,
   append?: boolean,
@@ -1047,7 +1047,27 @@ function mergeStreamingReasoning(
     return { reasoning: current };
   }
 
+  if (currentNorm.includes(incomingNorm)) {
+    return { reasoning: current };
+  }
+
+  if (incomingNorm.includes(currentNorm)) {
+    return {
+      reasoning: incoming,
+      eventChunk: incomingChunk,
+      replaceLastEvent: true,
+    };
+  }
+
   if (isDuplicateReasoningChunk(incomingNorm, currentNorm)) {
+    const candidateFingerprint = reasoningFingerprint(incomingNorm);
+    const existingFingerprint = reasoningFingerprint(currentNorm);
+    
+    // If fingerprints are identical, keep existing to prevent UI jitter
+    if (candidateFingerprint === existingFingerprint) {
+      return { reasoning: current };
+    }
+
     if (incomingNorm.length > currentNorm.length) {
       return {
         reasoning: incoming,
@@ -1056,17 +1076,6 @@ function mergeStreamingReasoning(
       };
     }
     return { reasoning: current };
-  }
-
-  if (
-    incomingNorm.length >= currentNorm.length + 16 &&
-    incomingNorm.includes(currentNorm)
-  ) {
-    return {
-      reasoning: incoming,
-      eventChunk: incomingChunk,
-      replaceLastEvent: true,
-    };
   }
 
   return {

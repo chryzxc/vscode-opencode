@@ -52,6 +52,7 @@ test('StructuredResponseType includes all required response types', () => {
   assert.ok(typeDefinition.includes('"question"'), 'Should include question type');
   assert.ok(typeDefinition.includes('"todo_update"'), 'Should include todo_update type');
   assert.ok(typeDefinition.includes('"data"'), 'Should include data type');
+  assert.ok(typeDefinition.includes('"system"'), 'Should include system type');
   assert.ok(typeDefinition.includes('"error"'), 'Should include error type');
   assert.ok(!typeDefinition.includes('"conversation"'), 'Should not include legacy conversation type');
 });
@@ -88,6 +89,7 @@ test('responseType enum includes all valid types', () => {
   assert.ok(enumValues.includes('"question"'), 'Enum should include question');
   assert.ok(enumValues.includes('"todo_update"'), 'Enum should include todo_update');
   assert.ok(enumValues.includes('"data"'), 'Enum should include data');
+  assert.ok(enumValues.includes('"system"'), 'Enum should include system');
   assert.ok(enumValues.includes('"error"'), 'Enum should include error');
   assert.ok(!enumValues.includes('"conversation"'), 'Enum should not include legacy conversation');
 });
@@ -100,6 +102,7 @@ test('schema defines top-level examples for all main response types', () => {
   assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"question"/, 'Should include question example');
   assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"todo_update"/, 'Should include todo_update example');
   assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"data"/, 'Should include data example');
+  assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"system"/, 'Should include system example');
   assert.match(schemaSource, /examples:\s*\[[\s\S]*responseType:\s*"error"/, 'Should include error example');
 });
 
@@ -113,7 +116,7 @@ test('schema includes field-level examples for ambiguous payloads', () => {
 
 test('todoItems and data payloads are defined for extended structured types', () => {
   assert.match(schemaSource, /todoItems:\s*{[\s\S]*?type:\s*"array"/, 'todoItems should be an array payload');
-  assert.match(schemaSource, /todoItems:[\s\S]*?status:[\s\S]*?enum:\s*\[[\s\S]*?"pending"[\s\S]*?"in_progress"[\s\S]*?"completed"[\s\S]*?"cancelled"[\s\S]*?\]/, 'todoItems status should include expected enum values');
+  assert.match(schemaSource, /todoItems:[\s\S]*?status:[\s\S]*?enum:\s*\[[\s\S]*?"pending"[\s\S]*?"in_progress"[\s\S]*?"completed"[\s\S]*?"cancelled"[\s\S]*?"failed"[\s\S]*?\]/, 'todoItems status should include expected enum values');
   assert.match(schemaSource, /data:\s*{[\s\S]*?type:\s*"object"/, 'data should be an object payload');
 });
 
@@ -140,7 +143,7 @@ test('progressUpdates property is defined', () => {
 
 test('question property is defined', () => {
   assert.match(schemaSource, /question:\s*{[\s\S]*?type:\s*"object"/, 'question should be object');
-  assert.match(schemaSource, /question:[\s\S]*?type:[\s\S]*?enum:\s*\[[\s\S]*?"question"[\s\S]*?\]/, 'question.type should have correct enum');
+  assert.match(schemaSource, /question:[\s\S]*?type:[\s\S]*?enum:\s*\[[\s\S]*?"question"[\s\S]*?"confirm"[\s\S]*?"quick_actions"[\s\S]*?"message"[\s\S]*?\]/, 'question.type should have correct enum');
 });
 
 test('question payload properties are defined', () => {
