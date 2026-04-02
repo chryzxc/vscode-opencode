@@ -29,6 +29,7 @@ vscode-opencode/
 | Diff review host | `src/providers/DiffReviewProvider.ts` | Review panel for VCS changes linked to sessions |
 | Server lifecycle | `src/services/OpencodeServerManager.ts` | Spawns `opencode serve`, tracks readiness/reconnect |
 | Session persistence | `src/services/SessionService.ts` | Active session state, storage, sync |
+| Session title generation | `src/services/TitleGeneratorService.ts` | Auto-generates session titles from first user message |
 | SSE streaming | `src/services/MessageStreamService.ts` | Event stream transport; feeds providers/tracker |
 | Subagent orchestration | `src/services/SubagentTracker.ts` | Parent/child task state and detail timeline assembly |
 | React chat entry | `webview/shared/src/chat/index.tsx` | Mounts chat shell into `#root` |
@@ -51,6 +52,11 @@ vscode-opencode/
 | `PlanParser` | class | `src/services/PlanParser.ts` | Parses `implementation_plan.md` into structured data |
 | `RequestBudgeter` | class | `src/services/RequestBudgeter.ts` | Daily allowance / warning logic |
 
+## CONFIGURATION
+| Setting | Type | Default | Description |
+|---------|------|-----------|------------|
+| `opencode.autoGenerateSessionTitle` | `boolean` | `true` | Automatically generate session title from first message |
+
 ## CONVENTIONS
 - Root build order is intentional: `structured-output:sync` → `webview:build` → `compile`. Do not reorder those steps.
 - `webview/shared/` is a real package boundary with its own `package.json`, Vite config, and Tailwind config.
@@ -59,6 +65,7 @@ vscode-opencode/
 - Structured-output handling must be schema/data-driven only; we do not want phrase-identification or prompt-text inference logic.
 - Implementation-plan contract: for `responseType="implementation_plan"`, treat `plan.file` as first-class (filepath-only payloads are valid and expected when the plan is written to disk). Do not require `plan.content` to render the plan card or enable `View Plan`.
 - Tests primarily use Node's built-in runner with `.test.mjs`; Vitest exists for targeted unit runs.
+- For newly added files, default to modular design: avoid creating large monolith files, split by responsibility early, and prefer adding small focused modules/components over extending a single file.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not remove or hide the sticky token/session stats header, implementation-plan affordances, or stop-request control without explicit user request.

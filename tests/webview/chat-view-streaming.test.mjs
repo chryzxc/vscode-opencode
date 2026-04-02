@@ -1,17 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readAllSources, readSource } from '../helpers/source-utils.mjs';
 
-const chatProviderSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+const chatProviderSource = readAllSources([joinFromRoot('src', 'providers', 'ChatViewProvider.ts'), joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'), joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'), joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'), joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'), joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'), joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts')],
   'ChatViewProvider.ts',
 );
 
 test('ChatViewProvider streams events to webview progressively', () => {
   const registerHandlersBody = extractFunctionBody(
-    chatProviderSource,
-    'resolveWebviewView(',
+    chatProviderSource, 'resolveWebviewView(',
   );
 
   assert.match(
@@ -47,8 +45,7 @@ test('ChatViewProvider streams events to webview progressively', () => {
 
 test('ChatViewProvider backfills missing stream event sessionId from active session', () => {
   const registerHandlersBody = extractFunctionBody(
-    chatProviderSource,
-    'resolveWebviewView(',
+    chatProviderSource, 'resolveWebviewView(',
   );
 
   assert.match(
@@ -156,8 +153,7 @@ test.skip('ChatViewProvider enforces structured-output validation in strict send
 
 test('ChatViewProvider records streaming token usage during message.updated events', () => {
   const registerHandlersBody = extractFunctionBody(
-    chatProviderSource,
-    'resolveWebviewView(',
+    chatProviderSource, 'resolveWebviewView(',
   );
 
   assert.match(
@@ -180,8 +176,7 @@ test('ChatViewProvider records streaming token usage during message.updated even
 
 test('ChatViewProvider emits subagent updates and async stream enrich payloads', () => {
   const registerHandlersBody = extractFunctionBody(
-    chatProviderSource,
-    'resolveWebviewView(',
+    chatProviderSource, 'resolveWebviewView(',
   );
 
   assert.match(

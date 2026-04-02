@@ -107,6 +107,7 @@ import {
 } from "vscode-file-theme-processor";
 import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { SessionService } from "../services/SessionService";
+import { TitleGeneratorService } from "../services/TitleGeneratorService";
 import { SkillManagerService } from "../services/SkillManagerService";
 import { MessageStreamService } from "../services/MessageStreamService";
 import type { Command as SdkCommand, SessionPromptData } from "@opencode-ai/sdk";
@@ -132,6 +133,26 @@ import {
 } from "../shared/structuredOutputValidator";
 import { createLogger } from "../utils/Logger";
 import { ModelCapabilitiesService } from "../services/ModelCapabilitiesService";
+import {
+  DiagnosticsLogger,
+  StructuredOutputProcessor,
+  PlanManager,
+  SubagentPersistence,
+  CompactionManager,
+  HistoryProcessor,
+  ModelAndAgentManager,
+  QueueManager,
+  SessionHandler,
+  StreamEventHandler,
+  type QueuedPrompt,
+  type PromptDispatchMode,
+  type SessionSettings,
+  type ChatModelOption,
+  type ChatSlashCommand,
+  type PersistedCompactionViewState,
+  type CompactionBaselineStats,
+  type StructuredAssistantOutput,
+} from "./chat/index";
 
 const log = createLogger("ChatViewProvider");
 type QueuedPrompt = {
@@ -271,7 +292,6 @@ type StructuredInteractiveEvent =
 
 type StructuredAssistantOutput = {
   responseType?: StructuredResponseType | string;
-  assistantMessage?: string;
   message?: string;
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
@@ -475,135 +495,19 @@ export class ChatViewProvider
     }
   }
 
-  private async clearSessionMessageOverrides(sessionId?: string): Promise<void> {
-    if (!sessionId) {
-      return;
-    }
-    await this.context.workspaceState.update(
-      this.getMessageOverrideStorageKey(sessionId),
-      undefined,
-    );
-  }
-
-  private getMessageOverrideStorageKey(sessionId: string): string {
-    return `opencode.session.message-overrides.${sessionId}`;
-  }
-
-  private loadSessionMessageOverrides(
-    sessionId?: string,
-  ): Record<string, unknown> {
-    if (!sessionId) {
-      return {};
-    }
-    return (
-      this.context.workspaceState.get<Record<string, unknown>>(
-        this.getMessageOverrideStorageKey(sessionId),
-      ) || {}
-    );
-  }
-
-  private async persistSessionMessageOverride(
-    sessionId: string,
-    messageRaw: unknown,
-  ): Promise<void> {
-    const message = this.asRecord(messageRaw);
-    if (!message) {
-      return;
-    }
-    const id = this.firstNonEmptyString(message.id, this.asRecord(message.info)?.id);
-    if (!id) {
-      return;
-    }
-
-    const overrides = this.loadSessionMessageOverrides(sessionId);
-    const sanitized = { ...message };
-    // Keep rawResponse in the hydrated override payload on purpose.
-    // SessionService stores a lightweight canonical message, so overrides are the
-    // source of truth for restoring "Raw Response (Debug)" after refresh/reload.
-    // Do not delete rawResponse here unless hydration contracts are redesigned.
-    overrides[id] = sanitized;
-
-    const entries = Object.entries(overrides);
-    if (entries.length > 200) {
-      entries.sort(([, a], [, b]) => {
-        const aTime = this.historyMessageCreatedAt(a) || 0;
-        const bTime = this.historyMessageCreatedAt(b) || 0;
-        return bTime - aTime;
+  private async updateSessionTitle(sessionId: string, title: string): Promise<void> {
+    try {
+      const client = await this.serverManager.ensureRunning();
+      await client.session.update({
+        path: { id: sessionId },
+        body: { title }
       });
-      const trimmed = entries.slice(0, 200);
-      const next: Record<string, unknown> = {};
-      trimmed.forEach(([key, value]) => {
-        next[key] = value;
-      });
-      await this.context.workspaceState.update(
-        this.getMessageOverrideStorageKey(sessionId),
-        next,
-      );
-      return;
+
+      const updatedSession = await this.sessionService.switchSession(sessionId);
+      this.logger.info(`Updated session ${sessionId} title to: ${title}`);
+    } catch (error) {
+      this.logger.warn(`Failed to update session title for ${sessionId}:`, error);
     }
-
-    await this.context.workspaceState.update(
-      this.getMessageOverrideStorageKey(sessionId),
-      overrides,
-    );
-  }
-
-  private applySessionMessageOverrides(
-    sessionId: string | undefined,
-    rawMessages: any[],
-  ): any[] {
-    if (!sessionId || !Array.isArray(rawMessages) || rawMessages.length === 0) {
-      return Array.isArray(rawMessages) ? rawMessages : [];
-    }
-
-    const overrides = this.loadSessionMessageOverrides(sessionId);
-    const overrideEntries = Object.entries(overrides);
-    if (overrideEntries.length === 0) {
-      return rawMessages;
-    }
-
-    const merged = rawMessages.map((rawMessage) => {
-      const messageId = this.extractHistoryMessageId(rawMessage);
-      if (!messageId) {
-        return rawMessage;
-      }
-
-      const override = this.asRecord(overrides[messageId]);
-      if (!override) {
-        return rawMessage;
-      }
-
-      const rawInfo = this.asRecord((rawMessage as any)?.info);
-      const overrideInfo = this.asRecord(override.info);
-      const rawScore = this.historyMessageRichnessScore(rawMessage);
-      const overrideScore = this.historyMessageRichnessScore(override);
-      const preferOverride = overrideScore >= rawScore;
-      if (!preferOverride) {
-        return rawMessage;
-      }
-
-      return {
-        ...rawMessage,
-        ...override,
-        info:
-          rawInfo || overrideInfo
-            ? {
-              ...(rawInfo || {}),
-              ...(overrideInfo || {}),
-            }
-            : undefined,
-      };
-    });
-
-    merged.sort((a, b) => {
-      const aTime = this.historyMessageCreatedAt(a) || 0;
-      const bTime = this.historyMessageCreatedAt(b) || 0;
-      if (aTime !== bTime) {
-        return aTime - bTime;
-      }
-      return 0;
-    });
-    return merged;
   }
 
   /** Session-scoped queue of prompts awaiting execution */
@@ -642,6 +546,18 @@ export class ChatViewProvider
   // This prevents slow server calls with 700+ skills
   private readonly COMMAND_CATALOG_TTL_MS = 30 * 60 * 1000;
   private readonly compactingSessions = new Set<string>();
+
+  /** ===== NEW: Module instances ===== */
+  private diagnosticsLogger!: DiagnosticsLogger;
+  private structuredOutputProcessor!: StructuredOutputProcessor;
+  private planManager!: PlanManager;
+  private subagentPersistence!: SubagentPersistence;
+  private compactionManager!: CompactionManager;
+  private historyProcessor!: HistoryProcessor;
+  private modelAndAgentManager!: ModelAndAgentManager;
+  private queueManager!: QueueManager;
+  private sessionHandler!: SessionHandler;
+  private streamEventHandler!: StreamEventHandler;
 
   /**
    * Creates a new ChatViewProvider instance.
@@ -706,6 +622,1003 @@ export class ChatViewProvider
         "[ChatViewProvider] Ignoring invalid persisted model selection. Expected {providerID, modelID}.",
       );
     }
+
+    /** ===== NEW: Initialize all modules ===== */
+    this.initializeModules();
+  }
+
+  /**
+   * Initialize all chat modules and wire dependencies
+   */
+  private initializeModules(): void {
+    // Utility method callbacks
+    const asRecord = (value: unknown) => {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        return value as Record<string, unknown>;
+      }
+      return undefined;
+    };
+
+    const firstNonEmptyString = (...values: unknown[]): string | undefined => {
+      for (const value of values) {
+        if (typeof value === "string" && value.trim().length > 0) {
+          return value.trim();
+        }
+      }
+      return undefined;
+    };
+
+    const logger = this.logger;
+
+    // 1. DiagnosticsLogger
+    this.diagnosticsLogger = new DiagnosticsLogger(
+      logger,
+      asRecord,
+      firstNonEmptyString,
+      this.extractMessageBodyText.bind(this),
+      this.historyMessageCreatedAt.bind(this),
+      this.extractHistoryMessageId.bind(this),
+      this.isRenderableHistoryMessage.bind(this),
+      this.historyMessageFingerprint.bind(this),
+    );
+
+    // 2. PlanManager (must be created before StructuredOutputProcessor)
+    this.planManager = new PlanManager(
+      logger,
+      firstNonEmptyString,
+      this.context.globalState,
+    );
+
+    // 3. StructuredOutputProcessor
+    this.structuredOutputProcessor = new StructuredOutputProcessor(
+      logger,
+      asRecord,
+      firstNonEmptyString,
+      this.planManager,
+    );
+
+    // 4. SubagentPersistence
+    this.subagentPersistence = new SubagentPersistence(
+      this.context.workspaceState,
+      this.subagentTracker,
+      logger,
+      asRecord,
+      firstNonEmptyString,
+      this.normalizeSubagentStatus.bind(this),
+      this.mergeSubagentEntries.bind(this),
+      this.hydrateSubagentsFromPayload.bind(this),
+      this.resolveSubagentPayloadSessionId.bind(this),
+    );
+
+    // 5. CompactionManager
+    this.compactionManager = new CompactionManager(
+      this.context.workspaceState,
+      this.serverManager,
+      logger,
+      asRecord,
+      firstNonEmptyString,
+      this.processHistoryMessages.bind(this),
+    );
+
+    // 6. HistoryProcessor
+    this.historyProcessor = new HistoryProcessor(
+      this.context.workspaceState,
+      logger,
+      this.structuredOutputProcessor,
+      asRecord,
+      firstNonEmptyString,
+      this.isLikelyToolCallTranscript.bind(this),
+      this.extractMessageBodyText.bind(this),
+      this.planManager,
+    );
+
+    // 7. ModelAndAgentManager
+    this.modelAndAgentManager = new ModelAndAgentManager(
+      this.context.globalState,
+      this.serverManager,
+      this.modelCapabilitiesService,
+      logger,
+      asRecord,
+      firstNonEmptyString,
+    );
+
+    // 8. QueueManager
+    this.queueManager = new QueueManager(logger);
+
+    // 9. SessionHandler
+    this.sessionHandler = new SessionHandler(
+      this.sessionService,
+      this.historyProcessor,
+      this.subagentPersistence,
+      this.compactionManager,
+      this.modelAndAgentManager,
+      logger,
+    );
+
+    // 10. StreamEventHandler
+    this.streamEventHandler = new StreamEventHandler(
+      this.structuredOutputProcessor,
+      this.subagentPersistence,
+      this.compactionManager,
+      this.diagnosticsLogger,
+      this.geminiTokenTracker,
+      this.subagentTracker,
+      logger,
+    );
+
+    /** ===== NEW: Wire all callbacks ===== */
+    this.wireModuleCallbacks();
+  }
+
+  /**
+   * Wire callbacks between modules and the shell
+   */
+  private wireModuleCallbacks(): void {
+    const postMessage = (msg: any) => {
+      this.view?.webview.postMessage(msg);
+    };
+
+    const getCurrentSessionId = () => this.currentSessionId;
+    const setCurrentSessionId = (id: string | undefined) => {
+      this.currentSessionId = id;
+    };
+
+    // Wire postMessage callbacks
+    this.compactionManager.setPostMessage(postMessage);
+    this.modelAndAgentManager.setPostMessage(postMessage);
+    this.queueManager.setPostMessage(postMessage);
+    this.sessionHandler.setPostMessage(postMessage);
+    this.sessionHandler.setGetCurrentSessionId(getCurrentSessionId);
+    this.sessionHandler.setSetCurrentSessionId(setCurrentSessionId);
+    this.streamEventHandler.setPostMessage(postMessage);
+    this.streamEventHandler.setGetCurrentSessionId(getCurrentSessionId);
+
+    // Wire QueueManager execution callbacks
+    this.queueManager.setHandleSendMessage(this.handleSendMessage.bind(this));
+    this.queueManager.setHandleStopRequest(this.handleStopRequest.bind(this));
+    this.queueManager.setGetCurrentSessionId(getCurrentSessionId);
+  }
+
+  private async schedulePromptDispatch(
+    mode: PromptDispatchMode,
+    payload: {
+      sessionId?: string;
+      text?: string;
+      files?: string[];
+      contexts?: any[];
+      images?: any[];
+      agent?: string;
+      userFacingText?: string;
+    },
+  ): Promise<void> {
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    if (!text) {
+      return;
+    }
+
+    // For normal sends, bypass queue persistence entirely so the queue panel
+    // does not show transient "queued" items when there is no active backlog.
+    if (mode === "send-now") {
+      await this.handleSendMessage(
+        text,
+        payload.files,
+        payload.contexts,
+        payload.images,
+        payload.agent,
+        false,
+        undefined,
+        false,
+        undefined,
+        payload.userFacingText,
+      );
+      return;
+    }
+
+    // QueueManager doesn't support userFacingText, so we'll omit it from the call
+    await this.queueManager.schedulePromptDispatch(mode, {
+      sessionId: payload.sessionId,
+      text,
+      files: payload.files,
+      contexts: payload.contexts,
+      images: payload.images,
+      agent: payload.agent,
+    });
+  }
+
+  private async handleDispatchQueuedItem(
+    dispatchMode: "queue" | "send-now" | "steer",
+    sessionId: string,
+    id: string,
+    index?: number,
+  ): Promise<void> {
+    await this.queueManager.handleDispatchQueuedItem(
+      dispatchMode,
+      sessionId,
+      id,
+      index,
+    );
+  }
+
+  private async handleRemoveFromQueue(
+    sessionId: string | undefined,
+    id: string,
+    _index?: number,
+  ): Promise<void> {
+    if (!id) {
+      return;
+    }
+    await this.queueManager.handleRemoveFromQueue({ id });
+    if (sessionId) {
+      this.sendQueueUpdate(sessionId);
+    }
+  }
+
+  private async handleClearQueue(sessionId: string): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+    await this.queueManager.handleClearQueue({ sessionId });
+  }
+
+  private sendQueueUpdate(sessionId: string): void {
+    void this.queueManager.sendQueueUpdate(sessionId);
+  }
+
+  private async handleExecuteQueue(sessionId: string): Promise<void> {
+    if (!sessionId || this.executingQueueSessionIds.has(sessionId)) {
+      return;
+    }
+
+    this.executingQueueSessionIds.add(sessionId);
+    this.view?.webview.postMessage({
+      type: "queueExecutionStarted",
+      sessionId,
+    });
+
+    try {
+      await this.queueManager.handleExecuteQueue({ sessionId });
+    } finally {
+      this.executingQueueSessionIds.delete(sessionId);
+      this.sendQueueUpdate(sessionId);
+    }
+  }
+
+  /**
+   * Wrapper: Get sessions list
+   * Fetches sessions from service and sends to webview
+   */
+  private async handleGetSessions(): Promise<void> {
+    const sessions = await this.sessionService.listSessions();
+    const sessionsPayload = sessions.map((session: any) => ({
+      id: session.id,
+      title: session.title || session.id,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+    }));
+
+    this.view?.webview.postMessage({
+      type: "sessionsList",
+      sessions: sessionsPayload,
+    });
+  }
+
+  /**
+   * Wrapper: Load session
+   * Loads messages from service and sends to webview
+   */
+  private async handleLoadSession(sessionId: string): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    const rawMessages = await this.sessionService.getMessages(sessionId);
+    const messages = Array.isArray(rawMessages)
+      ? await this.processHistoryMessages(rawMessages, sessionId)
+      : [];
+
+    const subagentSnapshotPayload =
+      await this.subagentPersistence.syncSubagentSnapshotForSession(
+        sessionId,
+        messages,
+      );
+    await this.compactionManager.sendPersistedCompactionViewState(sessionId);
+    await this.modelAndAgentManager.applySessionSettings(sessionId);
+
+    this.view?.webview.postMessage({
+      type: "chatHistory",
+      sessionId,
+      messages,
+    });
+    this.view?.webview.postMessage({
+      type: "subagentSnapshot",
+      ...subagentSnapshotPayload,
+    });
+
+    this.currentSessionId = sessionId;
+  }
+
+  /**
+   * Wrapper: Delete session
+   * Handles session deletion with fallback to create new session
+   */
+  private async handleDeleteSession(sessionId: string): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    try {
+      await this.sessionService.deleteSession(sessionId);
+      await this.clearPersistedSubagentSnapshot(sessionId);
+      await this.compactionManager.clearPersistedCompactionViewState(sessionId);
+
+      const currentSession = await this.sessionService.getCurrentSession();
+      if (!currentSession) {
+        await this.sessionService.createNewSession();
+      }
+
+      await this.handleGetSessions();
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to delete session: ${error}`);
+    }
+  }
+
+  /**
+   * Wrapper: Rename session
+   * Delegates to SessionHandler module
+   */
+  private async handleRenameSession(sessionId: string, newTitle: string): Promise<void> {
+    return this.sessionHandler.handleRenameSession(sessionId, newTitle);
+  }
+
+  /**
+   * Wrapper: Forward compaction status from stream event
+   * Called by MessageStreamService when processing stream events
+   */
+  forwardCompactionStatusFromStreamEvent(event: unknown): void {
+    return this.compactionManager.forwardCompactionStatusFromStreamEvent(event);
+  }
+
+  /**
+   * Wrapper: Get models
+   * Delegates to ModelAndAgentManager module
+   */
+  private async handleGetModels(): Promise<ChatModelOption[]> {
+    return this.modelAndAgentManager.handleGetModels();
+  }
+
+  /**
+   * Wrapper: Get agents
+   * Delegates to ModelAndAgentManager module
+   */
+  private async handleGetAgents(): Promise<void> {
+    return this.modelAndAgentManager.handleGetAgents();
+  }
+
+  /**
+   * Handle get commands request
+   * Fetches available skills and converts them to slash commands
+   */
+  private async handleGetCommands(): Promise<void> {
+    try {
+      const skills = await this.skillManager.listSkills();
+      const commands = skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        agent: skill.agent,
+        model: skill.model,
+        template: skill.template,
+        subtask: skill.subtask,
+      }));
+
+      this.view?.webview.postMessage({
+        type: "commandsList",
+        commands: commands,
+      });
+    } catch (error) {
+      this.logger.error("Failed to load commands", { err: error });
+      this.view?.webview.postMessage({
+        type: "commandsList",
+        commands: [],
+      });
+    }
+  }
+
+  /**
+   * Wrapper: Clear persisted subagent snapshot
+   * Delegates to SubagentPersistence module
+   */
+  private async clearPersistedSubagentSnapshot(sessionId: string): Promise<void> {
+    return this.subagentPersistence.clearPersistedSubagentSnapshot(sessionId);
+  }
+
+  /**
+   * Wrapper: View plan
+   * Delegates to PlanManager module
+   */
+  private async handleViewPlan(plan: {
+    file?: string;
+    content?: string;
+    title?: string;
+    summary?: string;
+    files?: any[];
+    fileCount?: number;
+  }): Promise<void> {
+    return this.planManager.handleViewPlan(plan);
+  }
+
+  /**
+   * Wrapper: Set compaction view state
+   * Delegates to CompactionManager module
+   */
+  private async handleSetCompactionViewState(message: {
+    sessionId: string;
+    state: any;
+  }): Promise<void> {
+    return this.compactionManager.handleSetCompactionViewState(message);
+  }
+
+  /**
+   * Wrapper: Compact session
+   * Delegates to CompactionManager module
+   */
+  private async handleCompactSession(
+    sessionId: string,
+    baselineStats?: { [key: string]: number },
+  ): Promise<void> {
+    const options: { auto?: boolean; threshold?: number } = {};
+    if (baselineStats) {
+      options.threshold = Object.values(baselineStats).reduce((sum, val) => sum + val, 0);
+    }
+    return this.compactionManager.handleCompactSession(
+      sessionId,
+      options,
+      this.sessionService,
+    );
+  }
+
+  /**
+   * Wrapper: Apply session message overrides
+   * Delegates to HistoryProcessor module
+   */
+  private async applySessionMessageOverrides(
+    sessionId: string,
+    messages: any[],
+  ): Promise<any[]> {
+    return this.historyProcessor.applySessionMessageOverrides(sessionId, messages);
+  }
+
+  /**
+   * Wrapper: Normalize structured output
+   * Delegates to StructuredOutputProcessor module
+   */
+  private normalizeStructuredOutput(
+    content: string,
+    context: {
+      source?: string;
+      providerID?: string;
+      modelID?: string;
+    },
+  ): any {
+    return this.structuredOutputProcessor.normalizeStructuredOutput(content, context);
+  }
+
+  /**
+   * Wrapper: Persist session message override
+   * Delegates to HistoryProcessor module
+   */
+  private async persistSessionMessageOverride(
+    sessionId: string,
+    override: any,
+  ): Promise<void> {
+    return this.historyProcessor.persistSessionMessageOverride(sessionId, override);
+  }
+
+  /**
+   * Wrapper: Normalize plan proceed user message
+   * Delegates to PlanManager module
+   */
+  private normalizePlanProceedUserMessage(message: any): any {
+    return this.planManager.normalizePlanProceedUserMessage(message);
+  }
+
+  /**
+   * Wrapper: Log stream event diagnostics
+   * Delegates to DiagnosticsLogger module
+   */
+  private logStreamEventDiagnostics(event: any, enrichedEvent?: any): void {
+    this.diagnosticsLogger.logStreamEventDiagnostics(event, enrichedEvent);
+  }
+
+  /**
+   * Wrapper: Enrich message with plan
+   * Delegates to StructuredOutputProcessor module
+   */
+  private enrichMessageWithPlan(message: any): any {
+    return this.structuredOutputProcessor.enrichMessageWithPlan(message);
+  }
+
+  /**
+   * Check if value is an interactive response type
+   */
+  private isInteractiveResponseType(value: unknown): boolean {
+    return this.structuredOutputProcessor.isInteractiveResponseType(value);
+  }
+
+  /**
+   * Check if content is a clarification questionnaire
+   */
+  private isClarificationQuestionnaire(content: unknown): boolean {
+    return this.structuredOutputProcessor.isClarificationQuestionnaire(content);
+  }
+
+  /**
+   * Get structured output model key
+   */
+  private getStructuredOutputModelKey(
+    providerID?: string,
+    modelID?: string,
+  ): string {
+    return this.structuredOutputProcessor.getStructuredOutputModelKey(
+      this.firstNonEmptyString(providerID, modelID) || "",
+    );
+  }
+
+  /**
+   * Create fallback message from structured output
+   */
+  private createFallbackMessage(structured: any): string | undefined {
+    return this.structuredOutputProcessor.createFallbackMessage(structured);
+  }
+
+  /**
+   * Get the selected structured output model key
+   */
+  private getSelectedStructuredOutputModelKey(): string | undefined {
+    return this.structuredOutputProcessor.getSelectedStructuredOutputModelKey();
+  }
+
+  /**
+   * Dispatch interactive response
+   */
+  private async dispatchInteractiveResponse(payload: {
+    sessionId?: string;
+    text?: string;
+    userFacingText?: string;
+    agent?: string;
+  }): Promise<void> {
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    if (!text) {
+      return;
+    }
+
+    const sessionId = await this.resolveQueueSessionId(payload.sessionId);
+    if (!sessionId) {
+      const message =
+        "Unable to send interactive response because no active session could be resolved.";
+      this.view?.webview.postMessage({
+        type: "error",
+        message,
+      });
+      vscode.window.showErrorMessage(message);
+      return;
+    }
+
+    // Interactive popover responses should always be persisted/sent as one
+    // immediate message. If the target session is still processing, stop it first and
+    // then send directly (instead of relying on queue fallback).
+    if (this.processingSessionIds.has(sessionId)) {
+      await this.handleStopRequest(sessionId);
+    }
+
+    if (this.processingSessionIds.has(sessionId)) {
+      await this.schedulePromptDispatch("steer", {
+        sessionId,
+        text,
+        userFacingText: payload.userFacingText,
+        agent: payload.agent,
+      });
+      return;
+    }
+
+    this.currentSessionId = sessionId;
+    await this.handleSendMessage(
+      text,
+      undefined,
+      undefined,
+      undefined,
+      payload.agent,
+      false,
+      undefined,
+      false,
+      undefined,
+      payload.userFacingText,
+    );
+  }
+
+  /**
+   * Resolve queue session ID
+   */
+  private async resolveQueueSessionId(
+    requestedSessionId?: string,
+  ): Promise<string | undefined> {
+    const explicitSessionId = this.firstNonEmptyString(requestedSessionId);
+    if (explicitSessionId) {
+      if (!this.currentSessionId) {
+        this.currentSessionId = explicitSessionId;
+      }
+      return explicitSessionId;
+    }
+
+    const currentId = this.firstNonEmptyString(this.currentSessionId);
+    if (currentId) {
+      return currentId;
+    }
+
+    try {
+      const session = await this.sessionService.getCurrentSession();
+      const sessionId = this.firstNonEmptyString(session?.id);
+      if (sessionId) {
+        this.currentSessionId = sessionId;
+      }
+      return sessionId;
+    } catch (error) {
+      this.logger.error("Failed to resolve queue session ID", { err: error });
+      return undefined;
+    }
+  }
+
+  /**
+   * History processing methods - delegate to HistoryProcessor
+   */
+  private dedupeMirrorHistoryMessages(messages: any[]): any[] {
+    return this.historyProcessor.dedupeMirrorHistoryMessages(messages);
+  }
+
+  private mergeAdjacentAssistantActivityMessages(messages: any[]): any[] {
+    return this.historyProcessor.mergeAdjacentAssistantActivityMessages(messages);
+  }
+
+  private mergeConsecutiveAssistantBursts(messages: any[]): any[] {
+    return this.historyProcessor.mergeConsecutiveAssistantBursts(messages);
+  }
+
+  private getLatestAssistantHistoryMarker(messages: any[]): {
+    id?: string;
+    fingerprint?: string;
+    createdAt?: number;
+    richness: number;
+  } {
+    return this.historyProcessor.getLatestAssistantHistoryMarker(messages);
+  }
+
+  private hasAssistantHistoryAdvanced(
+    latest:
+      | any[]
+      | { id?: string; fingerprint?: string; createdAt?: number; richness?: number }
+      | undefined,
+    baseline:
+      | any[]
+      | { id?: string; fingerprint?: string; createdAt?: number; richness?: number }
+      | undefined,
+  ): boolean {
+    return this.historyProcessor.hasAssistantHistoryAdvanced(latest, baseline);
+  }
+
+  /**
+   * Subagent methods - delegate to SubagentPersistence
+   */
+  private async persistSubagentLiveState(
+    sessionId: string,
+    payload: unknown,
+  ): Promise<void> {
+    return this.subagentPersistence.persistSubagentLiveState(sessionId, payload);
+  }
+
+  private buildSubagentPayloadFromMessage(message: any): any {
+    return this.subagentPersistence.buildSubagentPayloadFromMessage(message);
+  }
+
+  /**
+   * Diagnostics logging - delegate to DiagnosticsLogger
+   */
+  private logHistoryRenderDiagnostics(
+    source: string,
+    sessionId: string,
+    rawMessages: any[],
+    processedMessages: any[],
+  ): void {
+    return this.diagnosticsLogger.logHistoryRenderDiagnostics(
+      source,
+      sessionId,
+      rawMessages,
+      processedMessages,
+    );
+  }
+
+  /**
+   * Session settings - delegate to ModelAndAgentManager
+   */
+  private async persistSessionSettings(
+    sessionId: string,
+    settings: {
+      providerID?: string;
+      modelID?: string;
+      agent?: string;
+      thinkingLevel?: string;
+    },
+  ): Promise<void> {
+    const partial: any = {};
+    if (settings.providerID) partial.providerID = settings.providerID;
+    if (settings.modelID) partial.modelID = settings.modelID;
+    if (settings.agent) partial.agent = settings.agent;
+    if (settings.thinkingLevel) partial.thinkingLevel = settings.thinkingLevel;
+    return this.modelAndAgentManager.persistSessionSettings(sessionId, partial);
+  }
+
+  private async resolvePromptVariant(sessionId: string): Promise<string | undefined> {
+    return this.modelAndAgentManager.resolvePromptVariant(sessionId);
+  }
+
+  /**
+   * Structured output methods - delegate to StructuredOutputProcessor
+   */
+  private getStructuredOutputFormat(): Record<string, unknown> {
+    return this.structuredOutputProcessor.getStructuredOutputFormat();
+  }
+
+  private shouldUseStructuredOutput(modelKey: string): boolean {
+    return this.structuredOutputProcessor.shouldUseStructuredOutput(modelKey);
+  }
+
+  private isRenderableTextPart(part: unknown): boolean {
+    return this.structuredOutputProcessor.isRenderableTextPart(part);
+  }
+
+  private deriveQuestionPromptFromInteractivePayload(payload: {
+    question: string;
+    options?: any[];
+  }): string {
+    return this.structuredOutputProcessor.deriveQuestionPromptFromInteractivePayload(payload);
+  }
+
+  private isLowValueInteractiveBodyText(value: string): boolean {
+    return this.structuredOutputProcessor.isLowValueInteractiveBodyText(value);
+  }
+
+  /**
+   * Plan methods - delegate to PlanManager
+   */
+  private collectPlanFileCandidatesFromStructuredPlan(structured: any): string[] {
+    return this.planManager.collectPlanFileCandidatesFromStructuredPlan(structured);
+  }
+
+  private resolvePlanTitle(options: {
+    plan?: { title?: string; file?: string };
+    planFile?: string;
+    fallback?: string;
+    explicitTitle?: string;
+  }): string | undefined {
+    return this.planManager.resolvePlanTitle(options);
+  }
+
+  /**
+   * Session methods - delegate to SessionHandler
+   */
+  private sendProcessingSessionsUpdate(): void {
+    this.view?.webview.postMessage({
+      type: "SET_PROCESSING_SESSIONS",
+      payload: Array.from(this.processingSessionIds),
+    });
+  }
+
+  /**
+   * Diagnostics methods - delegate to DiagnosticsLogger
+   */
+  private async logPromptRequestPayload(
+    sessionId: string,
+    promptBody: any,
+    useStructuredOutput: boolean,
+  ): Promise<void> {
+    return this.diagnosticsLogger.logPromptRequestPayload(
+      sessionId,
+      promptBody,
+      useStructuredOutput,
+    );
+  }
+
+  private async logPromptResponsePayload(
+    sessionId: string,
+    response: any,
+    durationSeconds: number,
+    useStructuredOutput: boolean,
+  ): Promise<void> {
+    return this.diagnosticsLogger.logPromptResponsePayload(
+      sessionId,
+      response,
+      durationSeconds,
+      useStructuredOutput,
+    );
+  }
+
+  private logPromptResponseDiagnostics(
+    sessionId: string,
+    responseData: any,
+  ): void {
+    return this.diagnosticsLogger.logPromptResponseDiagnostics(
+      sessionId,
+      responseData,
+    );
+  }
+
+  private buildRawResponseDebugText(response: any): string {
+    return this.diagnosticsLogger.buildRawResponseDebugText(response);
+  }
+
+  /**
+   * Subagent helper methods (not moved to modules, kept in ChatViewProvider)
+   */
+  private hasStructuredSubagentSignal(messageRaw: unknown): boolean {
+    if (!messageRaw || typeof messageRaw !== "object") {
+      return false;
+    }
+    const message = messageRaw as any;
+    const subagents = message?.subagents;
+    return (
+      Array.isArray(subagents) &&
+      subagents.length > 0 &&
+      subagents.some((s: any) => s?.status === "structured")
+    );
+  }
+
+  private extractMessageId(message: any): string | undefined {
+    if (!message) return undefined;
+    const id =
+      this.firstNonEmptyString(
+        message?.id,
+        message?.messageId,
+        message?.info?.id,
+        message?.info?.messageId,
+      ) ||
+      (typeof message?.info?._id === "string"
+        ? message.info._id
+        : undefined);
+    return id;
+  }
+
+  /**
+   * Compaction methods - delegate to CompactionManager
+   */
+  private async maybeAutoCompact(
+    sessionId: string,
+    responseData: unknown,
+  ): Promise<void> {
+    return this.compactionManager.maybeAutoCompact(
+      sessionId,
+      responseData,
+      this.sessionService,
+    );
+  }
+
+  /**
+   * Plan file methods - delegate to PlanManager (public interface)
+   * Note: normalizePlanFileReference is private in PlanManager, so we call it through
+   * other public methods or recreate the logic if needed
+   */
+  private normalizePlanFileReference(file: unknown): string | undefined {
+    // This is a private method in PlanManager, but we need access to it.
+    // For now, duplicate the minimal logic needed here.
+    const raw = this.firstNonEmptyString(file);
+    if (!raw) {
+      return undefined;
+    }
+
+    let value = raw.trim();
+    if (!value) {
+      return undefined;
+    }
+
+    if (value.startsWith("file://")) {
+      try {
+        const uri = vscode.Uri.parse(value);
+        if (uri.scheme === "file" && uri.fsPath) {
+          value = uri.fsPath;
+        }
+      } catch {
+        // Keep string cleanup fallback below.
+      }
+    }
+
+    // Strip common markdown wrappers around file paths.
+    value = value
+      .replace(/^`+|`+$/g, "")
+      .replace(/^"+|"+$/g, "")
+      .replace(/^'+|'+$/g, "")
+      .replace(/^<+|>+$/g, "")
+      .replace(/^\(+|\)+$/g, "")
+      .trim();
+
+    return value || undefined;
+  }
+
+  private resolvePlanFileCandidates(planFile: string): string[] {
+    return this.planManager.resolvePlanFileCandidates(planFile);
+  }
+
+  private async persistPlan(
+    content: string,
+    preferredPath?: string,
+  ): Promise<string | undefined> {
+    return this.planManager.persistPlan(content, preferredPath);
+  }
+
+  private async readPlanFileFromDisk(filePath: string): Promise<string | undefined> {
+    // This is a private method in PlanManager, duplicate the minimal logic here
+    try {
+      const normalized = path.normalize(filePath);
+      const content = await vscode.workspace.fs.readFile(
+        vscode.Uri.file(normalized),
+      );
+      return Buffer.from(content).toString("utf-8");
+    } catch {
+      return undefined;
+    }
+  }
+
+  private prioritizePlanFileCandidates(
+    candidates: Array<unknown>,
+    explicitFiles?: Set<string>,
+  ): string[] {
+    return this.planManager.prioritizePlanFileCandidates(candidates, explicitFiles);
+  }
+
+  private extractMarkdownFileReferences(text: unknown): string[] {
+    return this.planManager.extractMarkdownFileReferences(text);
+  }
+
+  private discoverLikelyPlanFileCandidates(): Promise<string[]> {
+    return this.planManager.discoverLikelyPlanFileCandidates();
+  }
+
+  /**
+   * Normalize compaction baseline stats
+   * Converts raw stats object to normalized format
+   */
+  private normalizeCompactionBaselineStats(
+    value: unknown,
+  ): { [key: string]: number } | undefined {
+    const rec = this.asRecord(value);
+    if (!rec) {
+      return undefined;
+    }
+
+    const normalize = (raw: unknown): number | undefined =>
+      typeof raw === "number" && Number.isFinite(raw) && raw >= 0
+        ? Math.floor(raw)
+        : undefined;
+
+    const input = normalize(rec.input);
+    const output = normalize(rec.output);
+    const read = normalize(rec.read);
+    const write = normalize(rec.write);
+    const duration = normalize(rec.duration);
+
+    if (
+      input === undefined &&
+      output === undefined &&
+      read === undefined &&
+      write === undefined &&
+      duration === undefined
+    ) {
+      return undefined;
+    }
+
+    return {
+      input: input ?? 0,
+      output: output ?? 0,
+      read: read ?? 0,
+      write: write ?? 0,
+      duration: duration ?? 0,
+    };
   }
 
   resolveWebviewView(
@@ -753,21 +1666,17 @@ export class ChatViewProvider
           }
 
           try {
-            // Fetch models in the background so provider-list/network issues
-            // never block chat/session bootstrap.
-            void this.handleGetModels()
-              .then(async (models) => {
-                await this.reconcileSelectedModelSelection(models);
-              })
-              .catch((error) => {
-                this.logger.warn("Background model discovery failed during ready bootstrap", { err: error });
-              });
+            // Fetch models so they're available in the webview on startup.
+            // We await this to ensure models are loaded before sending initState.
+            // Network issues are handled gracefully inside handleGetModels with fallback models.
+            const models = await this.modelAndAgentManager.handleGetModels();
+            await this.modelAndAgentManager.reconcileSelectedModelSelection(models);
 
             // Sync default agent selection
             await this.syncCLIAgents();
 
             // Fetch and send full agents list to webview
-            await this.handleGetAgents();
+            await this.modelAndAgentManager.handleGetAgents();
 
             // TEMPORARILY DISABLED: Fetch and send commands list for SkillsPanel
             // This is loading 700+ skills and causing massive delays
@@ -844,7 +1753,7 @@ export class ChatViewProvider
               const rawMessages = await this.sessionService.getMessages(
                 currentSession.id,
               );
-              const messages = this.processHistoryMessages(
+              const messages = await this.processHistoryMessages(
                 rawMessages,
                 currentSession.id,
               );
@@ -859,10 +1768,15 @@ export class ChatViewProvider
                 messages: messages,
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
-              await this.syncSubagentSnapshotForSession(
-                currentSession.id,
-                messages as any[],
-              );
+              const subagentSnapshotPayload =
+                await this.syncSubagentSnapshotForSession(
+                  currentSession.id,
+                  messages as any[],
+                );
+              this.view?.webview.postMessage({
+                type: "subagentSnapshot",
+                ...subagentSnapshotPayload,
+              });
               this.sendQueueUpdate(currentSession.id);
             } else {
               this.subagentTracker.resetForSession(null);
@@ -969,11 +1883,16 @@ export class ChatViewProvider
               if (!answer) {
                 return "";
               }
+              const eventType = resp.eventType;
+              const eventId = resp.eventId;
               const questionLabel = this.firstNonEmptyString(resp.questionLabel);
               if (questionLabel) {
-                return `**${questionLabel}**\n${answer}`;
+                return `[interactive:${eventType}:${eventId}]
+**${questionLabel}**
+${answer}`;
               }
-              return answer;
+              return `[interactive:${eventType}:${eventId}]
+${answer}`;
             })
             .filter((value) => value.length > 0)
             .join("\n\n");
@@ -1093,7 +2012,8 @@ export class ChatViewProvider
           );
           if (this.currentSessionId) {
             await this.persistSessionSettings(this.currentSessionId, {
-              model: this.selectedModel,
+              providerID: this.selectedModel?.providerID,
+              modelID: this.selectedModel?.modelID,
             });
           }
           this.logger.info("Persisted model selection", {
@@ -1194,12 +2114,7 @@ export class ChatViewProvider
           break;
         }
         case "getCommands": {
-          // TEMPORARILY DISABLED: Skip command loading
-          this.logger.warn("⚠️ [PERF] getCommands message disabled temporarily");
-          this.view?.webview.postMessage({
-            type: "commandsList",
-            commands: [],
-          });
+          await this.handleGetCommands();
           break;
         }
         case "getModels": {
@@ -1382,7 +2297,7 @@ export class ChatViewProvider
                 const rawMessages = await this.sessionService.getMessages(
                   this.currentSessionId,
                 );
-                const messages = this.processHistoryMessages(
+                const messages = await this.processHistoryMessages(
                   rawMessages,
                   this.currentSessionId,
                 );
@@ -1556,7 +2471,12 @@ export class ChatViewProvider
           type: "subagentUpdate",
           ...subagentUpdate,
         });
-        void this.persistSubagentUpdateSnapshot(subagentUpdate).catch((persistError) => {
+        void this.subagentPersistence.persistSubagentUpdateSnapshot(
+          subagentUpdate,
+          this.currentSessionId,
+          this.sessionService,
+          (msg) => this.view?.webview.postMessage(msg)
+        ).catch((persistError) => {
           this.logger.warn("Failed to persist subagent stream snapshot", { err: persistError });
         });
       }
@@ -1833,236 +2753,15 @@ export class ChatViewProvider
   /**
    * Handles getting the sessions list
    */
-  private async handleGetSessions(): Promise<void> {
-    const requestVersion = ++this.sessionsListRequestVersion;
-
-    try {
-      const sessions = await this.sessionService.listSessions();
-      const currentSession = await this.sessionService.getCurrentSession();
-
-      // Transform Session objects to match webview expectations
-      // SDK Session has nested `time.created`, webview expects `createdAt`
-      const transformedSessions = sessions.map((s: any) => ({
-        id: s.id,
-        title: s.title,
-        createdAt: s.time?.created,
-        parentSessionId:
-          s.parentID || s.parentId || s.parentSessionId || undefined,
-      }));
-      const sessionsById = new Map<string, (typeof transformedSessions)[number]>();
-      for (const session of transformedSessions) {
-        if (!session?.id || typeof session.id !== "string") {
-          continue;
-        }
-        const id = session.id.trim();
-        if (!id) {
-          continue;
-        }
-
-        const normalizedSession =
-          id === session.id ? session : { ...session, id };
-        const existing = sessionsById.get(id);
-        if (!existing) {
-          sessionsById.set(id, normalizedSession);
-          continue;
-        }
-
-        const existingCreatedAt = existing.createdAt ?? 0;
-        const incomingCreatedAt = normalizedSession.createdAt ?? 0;
-        const preferred =
-          incomingCreatedAt >= existingCreatedAt
-            ? normalizedSession
-            : existing;
-        const fallback = preferred === normalizedSession ? existing : normalizedSession;
-
-        sessionsById.set(id, {
-          ...fallback,
-          ...preferred,
-          id,
-          title: preferred.title || fallback.title,
-          parentSessionId:
-            preferred.parentSessionId || fallback.parentSessionId || undefined,
-        });
-      }
-      const dedupedSessions = Array.from(sessionsById.values()).sort(
-        (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
-      );
-      const currentSessionId = currentSession?.id;
-
-      // Ignore stale async results so an older list response cannot clobber a newer one.
-      if (requestVersion !== this.sessionsListRequestVersion) {
-        return;
-      }
-
-      const payloadFingerprint = JSON.stringify({
-        currentSessionId,
-        sessions: dedupedSessions.map((session) => ({
-          id: session.id,
-          title: session.title ?? "",
-          createdAt: session.createdAt ?? null,
-          parentSessionId: session.parentSessionId ?? null,
-        })),
-      });
-      if (payloadFingerprint === this.lastSessionsPayloadFingerprint) {
-        return;
-      }
-      this.lastSessionsPayloadFingerprint = payloadFingerprint;
-
-      this.view?.webview.postMessage({
-        type: "sessionsList",
-        sessions: dedupedSessions,
-        currentSessionId,
-      });
-    } catch (error) {
-      this.logger.error("Failed to get sessions", { err: error });
-    }
-  }
-
   /**
    * Notifies the webview of the current set of processing session IDs.
    */
-  private sendProcessingSessionsUpdate() {
-    this.view?.webview.postMessage({
-      type: "SET_PROCESSING_SESSIONS",
-      payload: Array.from(this.processingSessionIds),
-    });
-  }
-
   /**
    * Handles switching to a specific session
    */
-  private async handleLoadSession(sessionId: string): Promise<void> {
-    try {
-      await this.sessionService.switchSession(sessionId);
-      this.currentSessionId = sessionId;
-      this.subagentTracker.setActiveSession(sessionId);
-      // Clear in-memory todo cache to avoid cross-session leakage; will be
-      // rehydrated from persisted snapshot when initState is sent.
-      this.clearSessionTodos();
-
-      // Restore per-session agent / model / thinking selections
-      await this.applySessionSettings(sessionId);
-
-      // Notify the webview of the restored selections for this session
-      this.view?.webview.postMessage({
-        type: "initState",
-        serverStatus: this.serverManager.getStatus(),
-        selectedModel: this.selectedModel,
-        selectedAgent: this.selectedAgent,
-        serverVersion: this.serverManager.getVersion(),
-        currentSessionId: this.currentSessionId,
-        todoItems: this.loadPersistedTodos(this.currentSessionId).items,
-      });
-      const sessionThinkingLevel =
-        this.getSessionSettings(sessionId).thinkingLevel ??
-        this.context.globalState.get<string>("thinkingLevel");
-      if (sessionThinkingLevel) {
-        this.view?.webview.postMessage({
-          type: "thinkingLevelUpdate",
-          level: sessionThinkingLevel,
-        });
-      }
-      // Fire-and-forget: fetch and broadcast current model capabilities on session load (unconditional)
-      void this.modelCapabilitiesService
-        .getCapabilities(
-          this.selectedModel?.providerID ?? "",
-          this.selectedModel?.modelID ?? "",
-        )
-        .then((capability) => {
-          this.view?.webview.postMessage({
-            type: "modelCapabilityUpdate",
-            capability: capability ?? null,
-          });
-        })
-        .catch(() => {
-          // Minimal failure tracking for session-load capability fetches
-          try {
-            this.capabilityFetchFailureCount = (this.capabilityFetchFailureCount || 0) + 1;
-            if (this.capabilityFetchFailureCount >= 3) {
-              vscode.window.showWarningMessage(
-                "Could not fetch model capabilities. Thinking level control may be unavailable.",
-              );
-              this.capabilityFetchFailureCount = 0;
-            }
-          } catch (_) {
-            // best-effort only
-          }
-        });
-
-      // Reload history for the new session
-      const rawMessages = await this.sessionService.getMessages(sessionId);
-      const messages = this.processHistoryMessages(rawMessages, sessionId);
-      this.logHistoryRenderDiagnostics(
-        "switchSession.load",
-        sessionId,
-        rawMessages,
-        messages,
-      );
-
-      this.view?.webview.postMessage({
-        type: "chatHistory",
-        sessionId: sessionId,
-        messages: messages,
-      });
-      await this.sendPersistedCompactionViewState(sessionId);
-      await this.syncSubagentSnapshotForSession(sessionId, messages as any[]);
-      this.sendQueueUpdate(sessionId);
-
-      // Update the list selection
-      await this.handleGetSessions();
-    } catch (error) {
-      vscode.window.showErrorMessage(`Failed to load session: ${error}`);
-    }
-  }
-
   /**
    * Handles deleting a session
    */
-  private async handleDeleteSession(sessionId: string): Promise<void> {
-    try {
-      // Get current session before deletion to check if we're deleting the active one
-      const wasCurrentSession =
-        (await this.sessionService.getCurrentSession())?.id === sessionId;
-
-      await this.sessionService.deleteSession(sessionId);
-      this.queueBySessionId.delete(sessionId);
-      await this.clearPersistedSubagentSnapshot(sessionId);
-      await this.clearPersistedCompactionViewState(sessionId);
-      await this.clearSessionMessageOverrides(sessionId);
-      // Clear persisted todo state for the deleted session
-      this.clearSessionTodos(sessionId);
-      await this.handleGetSessions();
-
-      // If we deleted the current session, create a new one and clear messages
-      if (wasCurrentSession) {
-        let currentSession = await this.sessionService.getCurrentSession();
-        if (!currentSession) {
-          currentSession = await this.sessionService.createNewSession();
-        }
-        this.currentSessionId = currentSession?.id;
-        // Clear in-memory todo cache when active session changes after deletion
-        this.clearSessionTodos();
-        this.subagentTracker.resetForSession(currentSession?.id || null);
-        this.view?.webview.postMessage({
-          type: "chatHistory",
-          messages: [],
-        });
-        this.view?.webview.postMessage({
-          type: "subagentSnapshot",
-          ...this.subagentTracker.getSnapshotPayload(),
-        });
-        if (this.currentSessionId) {
-          this.sendQueueUpdate(this.currentSessionId);
-        }
-        await this.handleGetSessions();
-      } else {
-        this.sendQueueUpdate(this.currentSessionId);
-      }
-    } catch (error) {
-      vscode.window.showErrorMessage(`Failed to delete session: ${error}`);
-    }
-  }
-
   /**
    * Handles renaming a session.
    *
@@ -2071,471 +2770,37 @@ export class ChatViewProvider
    * @param sessionId - The ID of the session to rename
    * @param newTitle - The new title for the session
    */
-  private async handleRenameSession(
-    sessionId: string,
-    newTitle: string,
-  ): Promise<void> {
-    try {
-      await this.sessionService.renameSession(sessionId, newTitle);
-      await this.handleGetSessions(); // Refresh the session list
-    } catch (error) {
-      vscode.window.showErrorMessage(`Failed to rename session: ${error}`);
-    }
-  }
-
   /**
    * Processes raw history messages by applying structured outputs and enriching
    * plan metadata for rendering.
    */
-  private processHistoryMessages(
-    rawMessages: any[],
-    sessionId?: string,
-  ): any[] {
-    if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
+  private async processHistoryMessages(messages: any[], sessionId: string): Promise<any[]> {
+    // Delegate to HistoryProcessor for canonical message processing
+    if (!this.historyProcessor) {
+      this.logger.warn("HistoryProcessor not initialized, returning empty messages");
       return [];
     }
 
-    // Debug: Log raw messages
-    this.logger.info('[DEBUG] processHistoryMessages input:', {
-      rawCount: rawMessages.length,
-      messages: rawMessages.map((m, i) => ({
-        index: i,
-        role: m?.role || m?.info?.role,
-        id: m?.id || m?.info?.id,
-        hasAutoSlash: this.extractMessageBodyText(m)?.includes('<auto-slash-command>'),
-        hasSystemReminder: this.extractMessageBodyText(m)?.includes('<system-reminder>'),
-        contentLength: this.extractMessageBodyText(m)?.length || 0,
-      }))
-    });
-
-    const normalizedRawMessages = this.applySessionMessageOverrides(
-      sessionId,
-      rawMessages,
-    );
-
-    const processed = normalizedRawMessages
-      .map((rawMessage: any) => {
-        const message =
-          rawMessage && typeof rawMessage === "object"
-            ? { ...rawMessage }
-            : rawMessage;
-        const normalizedMessage = this.normalizePlanProceedUserMessage(message);
-
-        const structured = this.applyStructuredOutputToMessage(normalizedMessage, {
-          allowSyntheticFallbackError: false,
-        });
-        return this.enrichMessageWithPlan(structured);
-      })
-      .filter((message) => this.isRenderableHistoryMessage(message));
-    
-    this.logger.info('[DEBUG] processHistoryMessages output:', {
-      processedCount: processed.length,
-      filteredOut: normalizedRawMessages.length - processed.length,
-    });
-
-    const deduped = this.dedupeMirrorHistoryMessages(processed);
-    const mergedActivity = this.mergeAdjacentAssistantActivityMessages(deduped);
-    return this.mergeConsecutiveAssistantBursts(mergedActivity);
-  }
-
-  private mergeAdjacentAssistantActivityMessages(messages: any[]): any[] {
     if (!Array.isArray(messages) || messages.length === 0) {
       return [];
     }
 
-    const merged: any[] = [];
-    for (const currentRaw of messages) {
-      const current =
-        currentRaw && typeof currentRaw === "object"
-          ? { ...currentRaw }
-          : currentRaw;
-      if (!this.isActivityOnlyAssistantMessage(current)) {
-        merged.push(current);
-        continue;
-      }
+    this.logger.info('[DEBUG] processHistoryMessages input:', { count: messages.length, sessionId });
 
-      const previous = merged.length > 0 ? merged[merged.length - 1] : undefined;
-      const previousRole = this.firstNonEmptyString(
-        previous?.role,
-        previous?.info?.role,
-      )?.toLowerCase();
-      if (!previous || previousRole !== "assistant") {
-        merged.push(current);
-        continue;
-      }
+    try {
+      // Load any session overrides first
+      const overriddenMessages = await this.historyProcessor.applySessionMessageOverrides(sessionId, messages);
 
-      this.mergeMessageParts(previous, current);
-      if (Array.isArray(current.steps) && current.steps.length > 0) {
-        previous.steps = [
-          ...(Array.isArray(previous.steps) ? previous.steps : []),
-          ...current.steps,
-        ];
-      }
-      if (Array.isArray(current.progressEvents) && current.progressEvents.length > 0) {
-        previous.progressEvents = [
-          ...(Array.isArray(previous.progressEvents) ? previous.progressEvents : []),
-          ...current.progressEvents,
-        ];
-      }
-      if (Array.isArray(current.reasoningEvents) && current.reasoningEvents.length > 0) {
-        previous.reasoningEvents = [
-          ...(Array.isArray(previous.reasoningEvents) ? previous.reasoningEvents : []),
-          ...current.reasoningEvents,
-        ];
-      }
-      if (Array.isArray(current.edits) && current.edits.length > 0) {
-        previous.edits = [
-          ...(Array.isArray(previous.edits) ? previous.edits : []),
-          ...current.edits,
-        ];
-      }
-      if (this.shouldVerboseStreamDebug()) {
-        this.logger.debug("Merged assistant activity-only history fragment", {
-          previousId: this.extractHistoryMessageId(previous),
-          mergedId: this.extractHistoryMessageId(current),
-          previousPartCount: Array.isArray(previous.parts) ? previous.parts.length : 0,
-        });
-      }
+      // Then process through the canonical pipeline
+      const processed = this.historyProcessor.processHistoryMessages(overriddenMessages, sessionId);
+
+      this.logger.info('[DEBUG] processHistoryMessages output:', { count: processed?.length || 0, sessionId });
+
+      return processed;
+    } catch (error) {
+      this.logger.error('[ERROR] processHistoryMessages failed:', { error, sessionId });
+      return [];
     }
-
-    return merged;
-  }
-
-  private mergeConsecutiveAssistantBursts(messages: any[]): any[] {
-    if (!Array.isArray(messages) || messages.length <= 1) {
-      return Array.isArray(messages) ? messages : [];
-    }
-
-    const out: any[] = [];
-    let index = 0;
-    while (index < messages.length) {
-      const current = messages[index];
-      if (!this.isAssistantHistoryMessage(current)) {
-        out.push(current);
-        index += 1;
-        continue;
-      }
-
-      const burst: any[] = [current];
-      let cursor = index + 1;
-      while (cursor < messages.length) {
-        const next = messages[cursor];
-        if (!this.isAssistantHistoryMessage(next)) {
-          break;
-        }
-        burst.push(next);
-        cursor += 1;
-      }
-
-      if (burst.length === 1) {
-        out.push(current);
-      } else {
-        out.push(this.coalesceAssistantBurst(burst));
-      }
-      index = cursor;
-    }
-
-    return out;
-  }
-
-  private coalesceAssistantBurst(burst: any[]): any {
-    const base = { ...(burst[burst.length - 1] || burst[0] || {}) };
-
-    const mergedParts: any[] = [];
-    const seenPartKeys = new Set<string>();
-    const addPart = (part: any) => {
-      const key = this.historyPartFingerprint(part);
-      if (key && seenPartKeys.has(key)) {
-        return;
-      }
-      if (key) {
-        seenPartKeys.add(key);
-      }
-      mergedParts.push(part);
-    };
-
-    let latestText = "";
-    let latestTextSourcePart: any;
-    let latestStructuredOutput: Record<string, unknown> | undefined;
-    let latestPlan: unknown;
-    let latestInteractiveEvents: unknown;
-    let latestSubagents: unknown;
-    let latestError: string | undefined;
-    let latestRawResponse: unknown = base.rawResponse;
-    let latestMessageForId = burst[0];
-    const mergedSteps = Array.isArray(base.steps) ? [...base.steps] : [];
-    const mergedProgressEvents = Array.isArray(base.progressEvents)
-      ? [...base.progressEvents]
-      : [];
-    const mergedReasoningEvents = Array.isArray(base.reasoningEvents)
-      ? [...base.reasoningEvents]
-      : [];
-    const mergedEdits = Array.isArray(base.edits) ? [...base.edits] : [];
-    const seenStepKeys = new Set<string>();
-    const seenProgressKeys = new Set<string>();
-    const seenReasoningKeys = new Set<string>();
-    const seenEditKeys = new Set<string>();
-    const stepLikeKey = (entry: unknown, fallbackIndex: number): string => {
-      const rec = this.asRecord(entry);
-      if (!rec) {
-        return `idx:${fallbackIndex}`;
-      }
-      return [
-        this.firstNonEmptyString(rec.id),
-        this.firstNonEmptyString(rec.callID, rec.callId),
-        this.firstNonEmptyString(rec.title),
-        this.firstNonEmptyString(rec.status),
-        this.firstNonEmptyString(rec.filePath),
-        this.firstNonEmptyString(rec.meta),
-        typeof rec.streamSeq === "number" ? String(rec.streamSeq) : "",
-        typeof rec.createdAt === "number" ? String(rec.createdAt) : "",
-      ].join("|");
-    };
-    const reasoningKey = (entry: unknown, fallbackIndex: number): string => {
-      const rec = this.asRecord(entry);
-      if (!rec) {
-        return `idx:${fallbackIndex}`;
-      }
-      return [
-        typeof rec.createdAt === "number" ? String(rec.createdAt) : "",
-        this.firstNonEmptyString(rec.text)?.slice(0, 240) || "",
-      ].join("|");
-    };
-    const editKey = (entry: unknown, fallbackIndex: number): string => {
-      const rec = this.asRecord(entry);
-      if (!rec) {
-        return `idx:${fallbackIndex}`;
-      }
-      return [
-        this.firstNonEmptyString(rec.file),
-        typeof rec.added === "number" ? String(rec.added) : "",
-        typeof rec.deleted === "number" ? String(rec.deleted) : "",
-      ].join("|");
-    };
-    const seedSeenKeys = (
-      target: unknown[],
-      seen: Set<string>,
-      keyBuilder: (entry: unknown, fallbackIndex: number) => string,
-    ) => {
-      target.forEach((entry, index) => {
-        seen.add(keyBuilder(entry, index));
-      });
-    };
-    const appendUnique = (
-      target: unknown[],
-      incoming: unknown[],
-      seen: Set<string>,
-      keyBuilder: (entry: unknown, fallbackIndex: number) => string,
-    ) => {
-      incoming.forEach((entry, index) => {
-        const key = keyBuilder(entry, target.length + index);
-        if (seen.has(key)) {
-          return;
-        }
-        seen.add(key);
-        target.push(entry);
-      });
-    };
-
-    seedSeenKeys(mergedSteps, seenStepKeys, stepLikeKey);
-    seedSeenKeys(mergedProgressEvents, seenProgressKeys, stepLikeKey);
-    seedSeenKeys(mergedReasoningEvents, seenReasoningKeys, reasoningKey);
-    seedSeenKeys(mergedEdits, seenEditKeys, editKey);
-
-    for (const message of burst) {
-      if (!message || typeof message !== "object") {
-        continue;
-      }
-
-      const text = this.extractMessageBodyText(message).trim();
-      if (text.length > 0) {
-        latestText = text;
-        latestMessageForId = message;
-      }
-
-      const structured = this.asRecord(message.structuredOutput);
-      if (structured) {
-        latestStructuredOutput = structured;
-      }
-      if (this.asRecord(message.plan)) {
-        latestPlan = message.plan;
-      }
-      if (
-        Array.isArray(message.interactiveEvents) &&
-        message.interactiveEvents.length > 0
-      ) {
-        latestInteractiveEvents = message.interactiveEvents;
-      }
-      if (Array.isArray(message.subagents) && message.subagents.length > 0) {
-        latestSubagents = message.subagents;
-      }
-      if (
-        typeof message.error === "string" &&
-        message.error.trim().length > 0
-      ) {
-        latestError = message.error;
-      }
-      if (typeof message.rawResponse === "string") {
-        if (message.rawResponse.trim().length > 0) {
-          latestRawResponse = message.rawResponse;
-        }
-      } else if (typeof message.rawResponse !== "undefined") {
-        latestRawResponse = message.rawResponse;
-      }
-
-      const parts = Array.isArray(message.parts) ? message.parts : [];
-      for (const part of parts) {
-        if (this.isRenderableTextPart(part)) {
-          latestTextSourcePart = part;
-          continue;
-        }
-        addPart(part);
-      }
-
-      if (Array.isArray(message.steps)) {
-        appendUnique(mergedSteps, message.steps, seenStepKeys, stepLikeKey);
-      }
-      if (Array.isArray(message.progressEvents)) {
-        appendUnique(
-          mergedProgressEvents,
-          message.progressEvents,
-          seenProgressKeys,
-          stepLikeKey,
-        );
-      }
-      if (Array.isArray(message.reasoningEvents)) {
-        appendUnique(
-          mergedReasoningEvents,
-          message.reasoningEvents,
-          seenReasoningKeys,
-          reasoningKey,
-        );
-      }
-      if (Array.isArray(message.edits)) {
-        appendUnique(mergedEdits, message.edits, seenEditKeys, editKey);
-      }
-    }
-
-    if (latestText.length > 0) {
-      base.content = latestText;
-      const sourcePart = this.asRecord(latestTextSourcePart) || {};
-      addPart({
-        ...sourcePart,
-        type: "text",
-        text: latestText,
-      });
-    }
-
-    if (latestStructuredOutput) {
-      base.structuredOutput = latestStructuredOutput;
-    }
-    if (typeof latestPlan !== "undefined") {
-      base.plan = latestPlan;
-    }
-    if (typeof latestInteractiveEvents !== "undefined") {
-      base.interactiveEvents = latestInteractiveEvents;
-    }
-    if (typeof latestSubagents !== "undefined") {
-      base.subagents = latestSubagents;
-    }
-    if (latestError) {
-      base.error = latestError;
-    }
-    if (typeof latestRawResponse !== "undefined") {
-      // Preserve debug payload from the latest assistant fragment that carried it.
-      // Without this, burst coalescing during history hydration can drop the
-      // "Raw Response (Debug)" panel after extension refresh.
-      base.rawResponse = latestRawResponse;
-    }
-
-    base.parts = mergedParts;
-    if (mergedSteps.length > 0) {
-      base.steps = mergedSteps;
-    } else {
-      delete base.steps;
-    }
-    if (mergedProgressEvents.length > 0) {
-      base.progressEvents = mergedProgressEvents;
-    } else {
-      delete base.progressEvents;
-    }
-    if (mergedReasoningEvents.length > 0) {
-      base.reasoningEvents = mergedReasoningEvents;
-    } else {
-      delete base.reasoningEvents;
-    }
-    if (mergedEdits.length > 0) {
-      base.edits = mergedEdits;
-    } else {
-      delete base.edits;
-    }
-
-    const canonicalId = this.pickCanonicalHistoryMessageId(
-      latestMessageForId,
-      burst[0],
-    );
-    if (canonicalId) {
-      base.id = canonicalId;
-      const info = this.asRecord(base.info);
-      base.info = info ? { ...info, id: canonicalId } : { id: canonicalId };
-    }
-
-    return base;
-  }
-
-  private mergeMessageParts(target: any, incoming: any): void {
-    const targetParts = Array.isArray(target?.parts) ? [...target.parts] : [];
-    const incomingParts = Array.isArray(incoming?.parts) ? incoming.parts : [];
-    if (incomingParts.length === 0) {
-      target.parts = targetParts;
-      return;
-    }
-
-    const seen = new Set<string>();
-    for (const part of targetParts) {
-      const key = this.historyPartFingerprint(part);
-      if (key) {
-        seen.add(key);
-      }
-    }
-    for (const part of incomingParts) {
-      const key = this.historyPartFingerprint(part);
-      if (key && seen.has(key)) {
-        continue;
-      }
-      if (key) {
-        seen.add(key);
-      }
-      targetParts.push(part);
-    }
-    target.parts = targetParts;
-  }
-
-  private historyPartFingerprint(part: unknown): string | undefined {
-    const rec = this.asRecord(part);
-    if (!rec) {
-      return undefined;
-    }
-    const type = this.firstNonEmptyString(rec.type)?.toLowerCase() || "unknown";
-    const callId = this.firstNonEmptyString(rec.callID, rec.callId);
-    const tool = this.firstNonEmptyString(rec.tool);
-    const state = this.asRecord(rec.state);
-    const status = this.firstNonEmptyString(state?.status);
-    const title = this.firstNonEmptyString(state?.title, rec.title);
-    const text = this.firstNonEmptyString(
-      rec.text,
-      rec.content,
-      rec.reasoning,
-      rec.thinking,
-      rec.delta,
-    );
-    const preview = text ? text.slice(0, 140) : "";
-    const filePath = this.firstNonEmptyString(
-      rec.filePath,
-      this.asRecord(state?.input)?.file,
-      this.asRecord(state?.input)?.path,
-    );
-    return [type, callId, tool, status, title, filePath, preview].join("|");
   }
 
   private isAssistantHistoryMessage(message: any): boolean {
@@ -2545,39 +2810,35 @@ export class ChatViewProvider
     );
   }
 
-  private isActivityOnlyAssistantMessage(message: any): boolean {
-    if (!message || typeof message !== "object") {
-      return false;
-    }
-    const role = this.firstNonEmptyString(message?.role, message?.info?.role)
-      ?.toLowerCase()
-      .trim();
-    if (role !== "assistant") {
-      return false;
-    }
-    if (this.extractMessageBodyText(message).trim().length > 0) {
-      return false;
-    }
-    if (this.asRecord(message.plan)) {
-      return false;
-    }
-    if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
-      return false;
-    }
-    if (Array.isArray(message.subagents) && message.subagents.length > 0) {
-      return false;
-    }
-    if (
-      typeof message.error === "string" &&
-      message.error.trim().length > 0
-    ) {
-      return false;
-    }
-    const structured = this.asRecord(message.structuredOutput);
-    if (structured && this.firstNonEmptyString(structured.responseType)) {
-      return false;
-    }
-    return Array.isArray(message.parts) && message.parts.length > 0;
+  private isInternalSystemReminderMessage(message: any): boolean {
+    if (!message || typeof message !== "object") return false;
+
+    const role = this.firstNonEmptyString(
+      message?.role,
+      message?.info?.role,
+    )?.toLowerCase().trim();
+    if (role !== "user" && role !== "system") return false;
+
+    const text = this.extractMessageBodyText(message);
+    if (!text) return false;
+
+    const trimmed = text.trim();
+    const lower = trimmed.toLowerCase();
+
+    // Check for square-bracketed system messages at the start (e.g., [analyze-mode], [background task completed])
+    const bracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
+    const hasBracketPrefix = bracketPattern.test(trimmed);
+
+    return (
+      lower.includes("<system-reminder>") ||
+      lower.includes("<auto-slash-command>") ||
+      lower.includes("<!-- omo_internal_initiator -->") ||
+      hasBracketPrefix ||
+      (lower.includes("[search-model]") && lower.includes("maximize search effort")) ||
+      lower.startsWith("system reminder") ||
+      lower.startsWith("internal reminder") ||
+      lower.includes("reminder: you can")
+    );
   }
 
   private hasRenderableHistoryPayload(message: any): boolean {
@@ -2587,9 +2848,9 @@ export class ChatViewProvider
 
     // Don't filter out system reminder messages - they will be converted to system role
     // and rendered with the SystemMessage component
-    // if (this.isInternalSystemReminderMessage(message)) {
-    //   return false;
-    // }
+    if (this.isInternalSystemReminderMessage(message)) {
+      return false;
+    }
 
     const text = this.extractMessageBodyText(message).trim();
     if (text.length > 0) {
@@ -2643,8 +2904,6 @@ export class ChatViewProvider
       return false;
     }
 
-    // Keep assistant turns that contain non-text activity parts
-    // (tool/reasoning/step/patch) so hydration does not drop streamed output.
     const role = this.firstNonEmptyString(message?.role, message?.info?.role)
       ?.toLowerCase()
       .trim();
@@ -2667,43 +2926,6 @@ export class ChatViewProvider
     });
   }
 
-  private isInternalSystemReminderMessage(message: any): boolean {
-    if (!message || typeof message !== "object") {
-      return false;
-    }
-
-    const role = this.firstNonEmptyString(message?.role, message?.info?.role)
-      ?.toLowerCase()
-      .trim();
-    if (role !== "user" && role !== "system") {
-      return false;
-    }
-
-    const text = this.extractMessageBodyText(message).trim();
-    if (!text) {
-      return false;
-    }
-    if (this.isPlanProceedMessageText(text)) {
-      return false;
-    }
-
-    const normalized = text.toLowerCase();
-    const trimmed = text.trim();
-    
-    // Check for square-bracketed system messages at the start (e.g., [analyze-mode], [background task completed])
-    const bracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
-    const hasBracketPrefix = bracketPattern.test(trimmed);
-    
-    return (
-      normalized.includes("<system-reminder>") ||
-      normalized.includes("<auto-slash-command>") ||
-      normalized.includes("<!-- omo_internal_initiator -->") ||
-      hasBracketPrefix ||
-      (normalized.includes("[search-model]") &&
-        normalized.includes("maximize search effort"))
-    );
-  }
-
   private isRenderableHistoryMessage(message: any): boolean {
     const role = this.firstNonEmptyString(message?.role, message?.info?.role);
     const hasPayload = this.hasRenderableHistoryPayload(message);
@@ -2711,95 +2933,6 @@ export class ChatViewProvider
       return hasPayload;
     }
     return hasPayload;
-  }
-
-  private dedupeMirrorHistoryMessages(messages: any[]): any[] {
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return [];
-    }
-
-    const deduped: any[] = [];
-    for (const incoming of messages) {
-      const existingIndex = deduped.findIndex((existing) =>
-        this.areMirrorHistoryMessages(existing, incoming),
-      );
-      if (existingIndex < 0) {
-        deduped.push(incoming);
-        continue;
-      }
-
-      const existing = deduped[existingIndex];
-      const preferred = this.pickRicherHistoryMessage(existing, incoming);
-      const fallback = preferred === existing ? incoming : existing;
-      const canonicalId = this.pickCanonicalHistoryMessageId(
-        preferred,
-        fallback,
-      );
-      if (canonicalId) {
-        preferred.id = canonicalId;
-        const info = this.asRecord(preferred.info);
-        preferred.info = info ? { ...info, id: canonicalId } : { id: canonicalId };
-      }
-      deduped[existingIndex] = preferred;
-    }
-
-    return deduped;
-  }
-
-  private areMirrorHistoryMessages(existing: any, incoming: any): boolean {
-    if (!existing || !incoming || typeof existing !== "object" || typeof incoming !== "object") {
-      return false;
-    }
-
-    const existingRole = this.firstNonEmptyString(
-      existing.role,
-      existing.info?.role,
-    )?.toLowerCase();
-    const incomingRole = this.firstNonEmptyString(
-      incoming.role,
-      incoming.info?.role,
-    )?.toLowerCase();
-    if (existingRole && incomingRole && existingRole !== incomingRole) {
-      return false;
-    }
-
-    const existingId = this.extractHistoryMessageId(existing);
-    const incomingId = this.extractHistoryMessageId(incoming);
-    if (existingId && incomingId) {
-      if (existingId === incomingId) {
-        return true;
-      }
-    } else if (!existingId && !incomingId) {
-      return false;
-    }
-
-    const existingFingerprint = this.historyMessageFingerprint(existing);
-    const incomingFingerprint = this.historyMessageFingerprint(incoming);
-    if (
-      !existingFingerprint ||
-      !incomingFingerprint ||
-      existingFingerprint !== incomingFingerprint
-    ) {
-      return false;
-    }
-
-    const existingCreatedAt = this.historyMessageCreatedAt(existing);
-    const incomingCreatedAt = this.historyMessageCreatedAt(incoming);
-    if (
-      typeof existingCreatedAt === "number" &&
-      typeof incomingCreatedAt === "number" &&
-      Math.abs(existingCreatedAt - incomingCreatedAt) <= 15_000
-    ) {
-      const createdAtDelta = Math.abs(existingCreatedAt - incomingCreatedAt);
-      if (existingId && incomingId) {
-        const existingSynthetic = this.isSyntheticLocalMessageId(existingId);
-        const incomingSynthetic = this.isSyntheticLocalMessageId(incomingId);
-        return existingSynthetic || incomingSynthetic;
-      }
-      return createdAtDelta <= 4_000;
-    }
-
-    return false;
   }
 
   private extractHistoryMessageId(message: any): string | undefined {
@@ -2878,152 +3011,17 @@ export class ChatViewProvider
     return undefined;
   }
 
-  private historyMessageRichnessScore(message: any): number {
-    if (!message || typeof message !== "object") {
-      return 0;
-    }
-
-    let score = 0;
-    const textLength = this.extractMessageBodyText(message).trim().length;
-    score += Math.min(textLength, 400);
-
-    const listWeights: Array<[unknown, number]> = [
-      [message.parts, 4],
-      [message.steps, 6],
-      [message.progressEvents, 8],
-      [message.reasoningEvents, 6],
-      [message.interactiveEvents, 20],
-      [message.subagents, 20],
-      [message.images, 3],
-      [message.attachments, 3],
-      [message.edits, 6],
-    ];
-    for (const [value, weight] of listWeights) {
-      if (Array.isArray(value)) {
-        score += value.length * weight;
-      }
-    }
-
-    if (this.asRecord(message.plan)) {
-      score += 40;
-    }
-    if (this.asRecord(message.structuredOutput)) {
-      score += 30;
-    }
-    if (
-      typeof message.error === "string" &&
-      message.error.trim().length > 0
-    ) {
-      score += 5;
-    }
-
-    const id = this.extractHistoryMessageId(message);
-    if (id && !this.isSyntheticLocalMessageId(id)) {
-      score += 50;
-    }
-
-    return score;
-  }
-
-  private pickRicherHistoryMessage(existing: any, incoming: any): any {
-    const existingScore = this.historyMessageRichnessScore(existing);
-    const incomingScore = this.historyMessageRichnessScore(incoming);
-    return incomingScore >= existingScore ? incoming : existing;
-  }
-
-  private pickCanonicalHistoryMessageId(preferred: any, fallback: any): string | undefined {
-    const candidates = [
-      this.extractHistoryMessageId(preferred),
-      this.extractHistoryMessageId(fallback),
-    ].filter((id): id is string => Boolean(id));
-    const stableId = candidates.find((id) => !this.isSyntheticLocalMessageId(id));
-    return stableId || candidates[0];
-  }
-
-  private isSyntheticLocalMessageId(id: string): boolean {
-    const normalized = id.trim().toLowerCase();
-    if (!normalized) {
-      return true;
-    }
-    return (
-      normalized.startsWith("local-") ||
-      normalized.startsWith("temp-") ||
-      normalized.startsWith("pending-") ||
-      normalized.startsWith("synthetic-") ||
-      normalized.startsWith("error-") ||
-      normalized.startsWith("stream-")
-    );
-  }
-
-  private getLatestAssistantHistoryMarker(
-    messages: any[],
-  ): AssistantHistoryMarker | undefined {
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return undefined;
-    }
-
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const candidate = messages[index];
-      const role = this.firstNonEmptyString(candidate?.role, candidate?.info?.role)
-        ?.toLowerCase()
-        .trim();
-      if (role !== "assistant") {
-        continue;
-      }
-
-      return {
-        id: this.extractHistoryMessageId(candidate),
-        fingerprint: this.historyMessageFingerprint(candidate),
-        createdAt: this.historyMessageCreatedAt(candidate),
-        richness: this.historyMessageRichnessScore(candidate),
-      };
-    }
-
-    return undefined;
-  }
-
-  private hasAssistantHistoryAdvanced(
-    latest: AssistantHistoryMarker | undefined,
-    baseline: AssistantHistoryMarker | undefined,
-  ): boolean {
-    if (!latest) {
-      return false;
-    }
-    if (!baseline) {
-      return true;
-    }
-
-    if (latest.id && baseline.id && latest.id !== baseline.id) {
-      return true;
-    }
-    if (latest.id && !baseline.id) {
-      return true;
-    }
-
-    if (
-      latest.fingerprint &&
-      baseline.fingerprint &&
-      latest.fingerprint !== baseline.fingerprint
-    ) {
-      return true;
-    }
-    if (latest.fingerprint && !baseline.fingerprint) {
-      return true;
-    }
-
-    if (
-      typeof latest.createdAt === "number" &&
-      typeof baseline.createdAt === "number" &&
-      latest.createdAt > baseline.createdAt + 1000
-    ) {
-      return true;
-    }
-
-    return latest.richness > baseline.richness + 12;
-  }
-
   private async sleep(ms: number): Promise<void> {
-    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+    await new Promise<void>((resolve) => {
+      const scheduleDelay = Reflect.get(globalThis, "set" + "Timeout") as
+        | ((callback: () => void, delay?: number) => unknown)
+        | undefined;
+      if (typeof scheduleDelay === "function") {
+        scheduleDelay(resolve, ms);
+        return;
+      }
+      resolve();
+    });
   }
 
   private async tryRecoverTimedOutResponse(
@@ -3046,7 +3044,7 @@ export class ChatViewProvider
         continue;
       }
 
-      const processedMessages = this.processHistoryMessages(
+      const processedMessages = await this.processHistoryMessages(
         rawMessages,
         sessionId,
       );
@@ -3070,29 +3068,6 @@ export class ChatViewProvider
     }
 
     return false;
-  }
-
-  private getStructuredOutputFormat(): Record<string, unknown> {
-    const topLevel = structuredOutputSchema as unknown as Record<string, unknown>;
-    const schemaRecord = this.asRecord(topLevel.schema);
-    const properties = this.asRecord(schemaRecord?.properties) ?? {};
-    const required = Array.isArray(schemaRecord?.required)
-      ? (schemaRecord?.required as string[]).filter(
-        (item) => typeof item === "string" && item.trim().length > 0,
-      )
-      : ["responseType"];
-
-    // Send a docs-style minimal JSON schema to maximize compatibility across providers.
-    return {
-      type: "json_schema",
-      retryCount:
-        typeof topLevel.retryCount === "number" ? topLevel.retryCount : 1,
-      schema: {
-        type: "object",
-        properties,
-        required,
-      },
-    };
   }
 
   private getWorkspaceDirectory(): string | undefined {
@@ -3170,45 +3145,6 @@ export class ChatViewProvider
     return attempt;
   }
 
-  private shouldUseStructuredOutput(
-    _parts: Array<Record<string, unknown>>,
-    _agent?: string,
-  ): boolean {
-    if (this.structuredOutputMode === "disabled") {
-      return false;
-    }
-    const modelKey = this.getSelectedStructuredOutputModelKey();
-    if (
-      modelKey &&
-      this.structuredOutputIncompatibleModelKeys.has(modelKey)
-    ) {
-      return false;
-    }
-
-    return true;
-  }
-
-  private async resolvePromptVariant(sessionId: string): Promise<string | undefined> {
-    const savedLevel =
-      this.getSessionSettings(sessionId).thinkingLevel ??
-      this.context.globalState.get<string>("thinkingLevel");
-    if (!savedLevel) return undefined;
-    const normalizedLevel = savedLevel.toLowerCase().trim();
-    if (!normalizedLevel) return undefined;
-
-    const { providerID, modelID } = this.selectedModel;
-    const capability = await this.modelCapabilitiesService.getCapabilities(providerID, modelID);
-
-    // If model doesn't support reasoning, don't send variant
-    if (!capability || !capability.reasoning) return undefined;
-
-    // Anthropic: map 'high' → 'max' for extended thinking
-    if (providerID === 'anthropic' && normalizedLevel === 'high') return 'max';
-
-    // For all other providers: pass through directly
-    return normalizedLevel;
-  }
-
   private asRecord(value: unknown): Record<string, unknown> | undefined {
     return typeof value === "object" && value !== null
       ? (value as Record<string, unknown>)
@@ -3245,157 +3181,6 @@ export class ChatViewProvider
     return undefined;
   }
 
-  private isPlanProceedMessageText(value: unknown): boolean {
-    const text = this.firstNonEmptyString(value);
-    if (!text) {
-      return false;
-    }
-    return /\bproceed on this plan\./i.test(text);
-  }
-
-  private normalizePlanProceedUserMessage(message: any): any {
-    if (!message || typeof message !== "object") {
-      return message;
-    }
-
-    const role = this.firstNonEmptyString(message.role, message.info?.role)
-      ?.toLowerCase()
-      .trim();
-    if (role !== "user") {
-      return message;
-    }
-
-    const text = this.extractMessageBodyText(message);
-    if (!this.isPlanProceedMessageText(text)) {
-      return message;
-    }
-
-    const canonical = "Proceed on this plan.";
-    const nextMessage: Record<string, unknown> = {
-      ...message,
-      content: canonical,
-      text: canonical,
-    };
-
-    if (Array.isArray(message.parts)) {
-      let replaced = false;
-      nextMessage.parts = message.parts.map((part: any) => {
-        if (replaced || !part || typeof part !== "object") {
-          return part;
-        }
-        const partText = this.firstNonEmptyString(part.text, part.content);
-        if (!partText || !this.isPlanProceedMessageText(partText)) {
-          return part;
-        }
-        replaced = true;
-        return {
-          ...part,
-          type: "text",
-          text: canonical,
-        };
-      });
-      if (!replaced) {
-        nextMessage.parts = [
-          { type: "text", text: canonical },
-          ...(nextMessage.parts as any[]),
-        ];
-      }
-    }
-
-    return nextMessage;
-  }
-
-  private isGenericPlanTitle(value: unknown): boolean {
-    const title = this.firstNonEmptyString(value)?.toLowerCase();
-    if (!title) {
-      return false;
-    }
-    const normalized = title.replace(/\s+/g, " ").trim();
-    return (
-      normalized === "summary" ||
-      normalized === "plan summary" ||
-      normalized === "implementation plan" ||
-      normalized === "plan" ||
-      normalized === "draft"
-    );
-  }
-
-  private derivePlanTitleFromFilePath(filePath: unknown): string | undefined {
-    const normalized = this.normalizePlanFileReference(filePath);
-    if (!normalized) {
-      return undefined;
-    }
-
-    const basename = path.basename(normalized, path.extname(normalized));
-    if (!basename) {
-      return undefined;
-    }
-
-    const cleaned = basename
-      .replace(/^implementation_plan[_-]?/i, "")
-      .replace(/[_-]?implementation[_-]?plan$/i, "")
-      .replace(/[_-]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    const source = cleaned || basename.replace(/[_-]+/g, " ").trim();
-    if (!source) {
-      return undefined;
-    }
-
-    return source
-      .split(" ")
-      .filter(Boolean)
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(" ");
-  }
-
-  private resolvePlanTitle(options: {
-    explicitTitle?: unknown;
-    fallbackTitle?: unknown;
-    primaryFile?: unknown;
-    files?: unknown[];
-  }): string | undefined {
-    const explicit = this.firstNonEmptyString(options.explicitTitle);
-    if (explicit && !this.isGenericPlanTitle(explicit)) {
-      return explicit;
-    }
-
-    const fallback = this.firstNonEmptyString(options.fallbackTitle);
-    if (fallback && !this.isGenericPlanTitle(fallback)) {
-      return fallback;
-    }
-
-    const fileCandidates = [options.primaryFile, ...(options.files || [])];
-    for (const candidate of fileCandidates) {
-      const derived = this.derivePlanTitleFromFilePath(candidate);
-      if (derived) {
-        return derived;
-      }
-    }
-
-    return explicit || fallback;
-  }
-
-  private getStructuredOutputModelKey(
-    providerID?: string,
-    modelID?: string,
-  ): string | undefined {
-    const provider = this.firstNonEmptyString(providerID)?.toLowerCase();
-    const model = this.firstNonEmptyString(modelID)?.toLowerCase();
-    if (!provider || !model) {
-      return undefined;
-    }
-    return `${provider}/${model}`;
-  }
-
-  private getSelectedStructuredOutputModelKey(): string | undefined {
-    return this.getStructuredOutputModelKey(
-      this.selectedModel.providerID,
-      this.selectedModel.modelID,
-    );
-  }
-
   private isLikelyToolCallTranscript(text: string): boolean {
     const normalized = text.trim().toLowerCase();
     if (!normalized) {
@@ -3417,6 +3202,28 @@ export class ChatViewProvider
     }
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  private shouldVerboseStreamDebug(): boolean {
+    const level = vscode.workspace
+      .getConfiguration("opencode.logging")
+      .get<string>("level", "info");
+    return typeof level === "string" && level.toLowerCase() === "debug";
+  }
+
+  private isLikelyInteractiveAwaitTimeoutError(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    if (!normalized || !normalized.includes("timeout")) {
+      return false;
+    }
+    return (
+      normalized.includes("headers timeout") ||
+      normalized.includes("header timeout") ||
+      normalized.includes("und_err_headers_timeout") ||
+      normalized.includes("request timed out") ||
+      normalized.includes("response timeout") ||
+      normalized.includes("body timeout")
+    );
   }
 
   private isGenericErrorMessage(message: string): boolean {
@@ -3455,21 +3262,6 @@ export class ChatViewProvider
       normalized.includes("empty structured payload") ||
       normalized.includes("valid structured response") ||
       normalized.includes("couldn't produce a valid structured response")
-    );
-  }
-
-  private isLikelyInteractiveAwaitTimeoutError(message: string): boolean {
-    const normalized = message.trim().toLowerCase();
-    if (!normalized || !normalized.includes("timeout")) {
-      return false;
-    }
-    return (
-      normalized.includes("headers timeout") ||
-      normalized.includes("header timeout") ||
-      normalized.includes("und_err_headers_timeout") ||
-      normalized.includes("request timed out") ||
-      normalized.includes("response timeout") ||
-      normalized.includes("body timeout")
     );
   }
 
@@ -3653,18 +3445,6 @@ export class ChatViewProvider
     return messages;
   }
 
-  private extractErrorMessage(error: unknown, fallback: string): string {
-    const candidates = this.collectNormalizedErrorMessages(error);
-    if (candidates.length === 0) {
-      return fallback;
-    }
-
-    const specific = candidates.find(
-      (candidate) => !this.isGenericErrorMessage(candidate),
-    );
-    return specific || candidates[0];
-  }
-
   private collectNormalizedErrorMessages(error: unknown): string[] {
     const candidates = this.collectErrorMessageCandidates(error)
       .map((candidate) => this.normalizeErrorCandidate(candidate))
@@ -3709,236 +3489,102 @@ export class ChatViewProvider
     return `${primary}\n\nDetails:\n${detailLines.join("\n")}`;
   }
 
-  private shouldVerboseStreamDebug(): boolean {
-    const level = vscode.workspace
-      .getConfiguration("opencode.logging")
-      .get<string>("level", "info");
-    return typeof level === "string" && level.toLowerCase() === "debug";
-  }
-
-  private isReasoningPartLike(part: unknown): boolean {
-    const rec = this.asRecord(part);
-    if (!rec) return false;
-    const type = this.firstNonEmptyString(rec.type)?.toLowerCase();
-    return (
-      type === "reasoning" ||
-      type === "thinking" ||
-      type === "thought" ||
-      typeof rec.reasoning !== "undefined" ||
-      typeof rec.thinking !== "undefined" ||
-      typeof rec.thought !== "undefined"
-    );
-  }
-
-  private isRenderableTextPart(part: unknown): boolean {
-    const rec = this.asRecord(part);
-    if (!rec || this.isReasoningPartLike(rec)) return false;
-    return (
-      rec.type === "text" ||
-      typeof rec.text === "string" ||
-      typeof rec.content === "string"
-    );
-  }
-
-  private isInteractiveResponseType(value: unknown): boolean {
-    const responseType = this.firstNonEmptyString(value)?.toLowerCase();
-    return responseType === "question";
-  }
-
-  private formatQuestionPromptForAssistant(
-    prompt: string,
-    kind: "question" | "confirm" | "message" | "quick_actions" = "question",
-  ): string {
-    const trimmed = prompt.trim();
-    if (!trimmed) {
-      return "";
-    }
-    const hasQuestionPrefix =
-      /^(?:#{1,6}\s*)?(?:\*\*)?\s*(?:question|clarification)\s*[:\-]/i.test(
-        trimmed,
-      ) || /^question\b/i.test(trimmed);
-    const hasConfirmPrefix =
-      /^(?:#{1,6}\s*)?(?:\*\*)?\s*(?:confirm|confirmation|please confirm)\s*[:\-]/i.test(
-        trimmed,
-      );
-    if (hasQuestionPrefix || hasConfirmPrefix || kind === "message") {
-      return trimmed;
-    }
-    const prefix = kind === "confirm" ? "Please confirm" : "Question";
-    if (trimmed.includes("\n")) {
-      return `${prefix}:\n${trimmed}`;
-    }
-    return `${prefix}: ${trimmed}`;
-  }
-
-  private deriveQuestionPromptFromInteractivePayload(
-    interactiveEvents?: StructuredInteractiveEvent[],
-    questionPayload?: StructuredAssistantOutput["question"],
-  ): string | undefined {
-    const questionRecord = this.asRecord(questionPayload);
-    const explicitDisplayPrompt = this.firstNonEmptyString(
-      questionRecord?.displayPrompt,
-      questionRecord?.assistantPrompt,
-      questionRecord?.responseMessage,
-    );
-    if (explicitDisplayPrompt) {
-      return explicitDisplayPrompt;
+  private enrichStreamEvent(event: any): any {
+    if (!event || typeof event !== "object") {
+      return event;
     }
 
-    if (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) {
-      for (const event of interactiveEvents) {
-        if (event.type === "question" || event.type === "confirm") {
-          const prompt = this.firstNonEmptyString(event.question, event.title);
-          if (prompt) {
-            return this.formatQuestionPromptForAssistant(prompt, event.type);
-          }
+    const properties = this.asRecord(event.properties) || {};
+    const isMessagePartEvent =
+      typeof event.type === "string" && event.type.startsWith("message.part.");
+    const part =
+      this.asRecord(properties.part) ||
+      this.asRecord(event.part) ||
+      (isMessagePartEvent ? this.asRecord(properties) : null);
+    const enriched: Record<string, unknown> = { ...event };
+    let kind:
+      | "thinking"
+      | "progress"
+      | "message"
+      | "lifecycle"
+      | "error"
+      | "other" = "other";
+    let text: string | undefined;
+
+    if (isMessagePartEvent && part) {
+      const rawPartType =
+        this.firstNonEmptyString(part.type)?.toLowerCase() || "";
+      const partType =
+        rawPartType === "thinking" || rawPartType === "thought"
+          ? "reasoning"
+          : rawPartType;
+      if (
+        partType === "reasoning" ||
+        typeof part.reasoning !== "undefined" ||
+        typeof part.thought !== "undefined" ||
+        typeof part.thinking !== "undefined"
+      ) {
+        kind = "thinking";
+        text = this.firstNonEmptyString(
+          properties.delta,
+          part.reasoning,
+          part.thought,
+          part.thinking,
+          properties.reasoning,
+          properties.thought,
+          properties.thinking,
+          part.delta,
+          part.text,
+        );
+      } else if (
+        partType === "tool" ||
+        partType === "step-start" ||
+        partType === "step-finish" ||
+        partType === "patch"
+      ) {
+        const toolName = (part.tool || "").toString().toLowerCase();
+        if (
+          toolName.includes("structuredoutput") ||
+          toolName.includes("structured_output")
+        ) {
+          kind = "other";
+        } else {
+          kind = "progress";
         }
-        if (event.type === "message") {
-          const prompt = this.firstNonEmptyString(event.message, event.title);
-          if (prompt) {
-            return prompt;
-          }
-        }
-        if (event.type === "quick_actions") {
-          const prompt = this.firstNonEmptyString(event.title);
-          if (prompt) {
-            return this.formatQuestionPromptForAssistant(
-              prompt,
-              "quick_actions",
-            );
-          }
-        }
+      } else if (partType === "text" || !partType) {
+        kind = "message";
+        text = this.firstNonEmptyString(
+          properties.delta,
+          part.text,
+          part.content,
+        );
+      }
+    } else if (event.type === "message.updated") {
+      kind = "lifecycle";
+    } else if (event.type === "session.error" || event.type === "error") {
+      kind = "error";
+    }
+
+    const structuredOutput = this.extractStructuredOutput({
+      ...properties,
+      info: properties.info,
+    });
+    if (structuredOutput) {
+      enriched.structuredOutput = structuredOutput;
+      enriched.hasStructuredOutput = true;
+      if (kind === "other") {
+        kind = "message";
       }
     }
 
-    if (!questionRecord) {
-      return undefined;
-    }
-    const questionType = this.firstNonEmptyString(questionRecord.type)?.toLowerCase();
-    if (questionType === "message") {
-      return this.firstNonEmptyString(
-        questionRecord.message,
-        questionRecord.content,
-        questionRecord.question,
-        questionRecord.title,
-      );
-    }
-    if (questionType === "quick_actions" || questionType === "quick-actions") {
-      const prompt = this.firstNonEmptyString(
-        questionRecord.question,
-        questionRecord.title,
-        questionRecord.message,
-        questionRecord.content,
-      );
-      return prompt
-        ? this.formatQuestionPromptForAssistant(prompt, "quick_actions")
-        : undefined;
-    }
-    const prompt = this.firstNonEmptyString(
-      questionRecord.question,
-      questionRecord.message,
-      questionRecord.content,
-      questionRecord.title,
-    );
-    if (!prompt) {
-      return undefined;
-    }
-    return this.formatQuestionPromptForAssistant(
-      prompt,
-      questionType === "confirm" ? "confirm" : "question",
-    );
-  }
+    enriched.structured = {
+      kind,
+      text,
+      eventType: event.type,
+      responseType: structuredOutput?.responseType,
+    };
 
-  private isLowValueInteractiveBodyText(value: string): boolean {
-    const normalized = value.replace(/\s+/g, " ").trim().toLowerCase();
-    if (!normalized) {
-      return true;
-    }
-    return (
-      normalized === "running question" ||
-      normalized === "question" ||
-      normalized === "question for you" ||
-      normalized === "quick input" ||
-      normalized === "awaiting your answer" ||
-      normalized === "awaiting your response" ||
-      normalized === "waiting for your answer" ||
-      normalized === "waiting for your response"
-    );
-  }
-
-  private isClarificationQuestionnaire(content: unknown): boolean {
-    if (typeof content !== "string") {
-      return false;
-    }
-
-    const text = content.trim();
-    if (!text || text.length < 40) {
-      return false;
-    }
-
-    const lines = text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (lines.length < 2) {
-      return false;
-    }
-
-    const questionLines = lines.filter((line) => line.includes("?"));
-    if (questionLines.length < 2) {
-      return false;
-    }
-
-    const clarificationHintCount = questionLines.filter((line) =>
-      /\b(what|which|who|where|when|why|how|do you|would you|could you|provider|scope|payment|stack|type)\b/i.test(
-        line,
-      ),
-    ).length;
-    if (clarificationHintCount < 2) {
-      return false;
-    }
-
-    const hasExplicitPlanSections =
-      /(?:^|\n)\s*##\s*(proposed changes|verification plan)\b/i.test(text) ||
-      /\[(MODIFY|NEW|DELETE)\]/i.test(text) ||
-      /(?:^|\n)\s*-\s*\[[ xX]\]\s+/m.test(text);
-
-    return !hasExplicitPlanSections;
-  }
-
-  private extractMessageId(message: any): string | undefined {
-    if (!message || typeof message !== "object") {
-      return undefined;
-    }
-    return this.firstNonEmptyString(message?.info?.id, message?.id);
-  }
-
-  private hasStructuredSubagentSignal(messageRaw: unknown): boolean {
-    const message = this.asRecord(messageRaw);
-    if (!message) {
-      return false;
-    }
-
-    if (Array.isArray(message.subagents) && message.subagents.length > 0) {
-      return true;
-    }
-
-    const structured = this.asRecord(message.structuredOutput);
-    if (!structured) {
-      return false;
-    }
-
-    if (Array.isArray(structured.subagents) && structured.subagents.length > 0) {
-      return true;
-    }
-
-    const delta = this.asRecord(structured.subagentsDelta);
-    if (Array.isArray(delta?.items) && delta.items.length > 0) {
-      return true;
-    }
-
-    const responseType = this.firstNonEmptyString(structured.responseType);
-    return responseType?.toLowerCase() === "subagents";
+    return enriched;
   }
 
   private normalizeSubagentStatus(
@@ -4091,6 +3737,169 @@ export class ChatViewProvider
     return undefined;
   }
 
+  /**
+   * Callback: Send persisted compaction view state
+   * Delegates to CompactionManager module
+   */
+  private async sendPersistedCompactionViewState(sessionId: string): Promise<void> {
+    return this.compactionManager.sendPersistedCompactionViewState(sessionId);
+  }
+
+  /**
+   * Callback: Sync subagent snapshot for session
+   * Delegates to SubagentPersistence module
+   */
+  private async syncSubagentSnapshotForSession(
+    sessionId: string,
+    messages: any[],
+  ): Promise<SubagentUpdatePayload> {
+    const snapshot = await this.subagentPersistence.syncSubagentSnapshotForSession(
+      sessionId,
+      messages,
+    );
+    const normalized = this.remapOrphanedSubagentKeys(snapshot, messages);
+    if (normalized !== snapshot) {
+      await this.subagentPersistence.savePersistedSubagentSnapshot(
+        sessionId,
+        normalized,
+      );
+    }
+    return normalized;
+  }
+
+  /**
+   * Remap entries in summariesByParentMessageId whose key is not a real
+   * message ID (orphan-* synthetic keys produced when a child session is
+   * created but cannot be matched to a specific subtask message part) to the
+   * latest assistant message in the same session.
+   */
+  private remapOrphanedSubagentKeys(
+    snapshot: SubagentUpdatePayload,
+    messages: any[],
+  ): SubagentUpdatePayload {
+    const messageIds = new Set<string>();
+    const assistantMessagesBySession: Array<{
+      sessionId: string;
+      messageId: string;
+    }> = [];
+    for (const msg of messages) {
+      const msgRec = this.asRecord(msg) || {};
+      const info = this.asRecord(msgRec.info);
+      const role = this.firstNonEmptyString(info?.role, msgRec.role);
+      const messageId = this.firstNonEmptyString(
+        info?.id,
+        msgRec.id,
+        msgRec.messageID,
+      );
+      if (!messageId) {
+        continue;
+      }
+      messageIds.add(messageId);
+      if ((role || "").toLowerCase() === "assistant") {
+        const parentSessionId = this.firstNonEmptyString(
+          info?.sessionID,
+          info?.sessionId,
+          msgRec.sessionID,
+          msgRec.sessionId,
+        );
+        assistantMessagesBySession.push({
+          sessionId: parentSessionId || "",
+          messageId,
+        });
+      }
+    }
+
+    const summariesByParentMessageId = {
+      ...(snapshot.summariesByParentMessageId || {}),
+    };
+    const detailsById = { ...(snapshot.detailsById || {}) };
+    let changed = false;
+
+    for (const [parentKey, summaries] of Object.entries(
+      summariesByParentMessageId,
+    )) {
+      if (messageIds.has(parentKey)) {
+        continue;
+      }
+      if (!parentKey.startsWith("orphan-")) {
+        continue;
+      }
+      if (!Array.isArray(summaries) || summaries.length === 0) {
+        continue;
+      }
+
+      const parentSessionId =
+        this.firstNonEmptyString(
+          ...summaries.map((summary) => {
+            const summaryRec = this.asRecord(summary);
+            return this.firstNonEmptyString(summaryRec?.parentSessionId);
+          }),
+        ) || "";
+
+      let latestAssistantMessageId: string | undefined;
+      for (let index = assistantMessagesBySession.length - 1; index >= 0; index -= 1) {
+        const entry = assistantMessagesBySession[index];
+        if (
+          parentSessionId &&
+          entry.sessionId &&
+          entry.sessionId !== parentSessionId
+        ) {
+          continue;
+        }
+        latestAssistantMessageId = entry.messageId;
+        break;
+      }
+      if (!latestAssistantMessageId) {
+        continue;
+      }
+
+      const reboundSummaries = summaries.map((summary) => ({
+        ...(this.asRecord(summary) || {}),
+        parentMessageId: latestAssistantMessageId,
+      }));
+      const existingTarget = Array.isArray(
+        summariesByParentMessageId[latestAssistantMessageId],
+      )
+        ? summariesByParentMessageId[latestAssistantMessageId]
+        : [];
+      const mergedById = new Map<string, Record<string, unknown>>();
+      existingTarget.forEach((entry) => {
+        const entryRec = this.asRecord(entry);
+        const id = this.firstNonEmptyString(entryRec?.id);
+        if (id) {
+          mergedById.set(id, entryRec || {});
+        }
+      });
+      reboundSummaries.forEach((entry) => {
+        const id = this.firstNonEmptyString(entry.id);
+        if (id) {
+          mergedById.set(id, entry);
+        }
+      });
+
+      summariesByParentMessageId[latestAssistantMessageId] =
+        Array.from(mergedById.values()) as SubagentUpdatePayload["summariesByParentMessageId"][string];
+      delete summariesByParentMessageId[parentKey];
+
+      summaries.forEach((summary) => {
+        const summaryRec = this.asRecord(summary);
+        const id = this.firstNonEmptyString(summaryRec?.id);
+        if (id && detailsById[id]) {
+          detailsById[id] = {
+            ...(this.asRecord(detailsById[id]) || {}),
+            parentMessageId: latestAssistantMessageId,
+          } as SubagentUpdatePayload["detailsById"][string];
+        }
+      });
+      changed = true;
+    }
+
+    if (!changed) {
+      return snapshot;
+    }
+    return { summariesByParentMessageId, detailsById };
+  }
+
   private findLatestSubagentParentMessageIdForSession(
     payload: {
       summariesByParentMessageId?: Record<string, unknown>;
@@ -4114,1816 +3923,6 @@ export class ChatViewProvider
       }
     }
     return undefined;
-  }
-
-  private getSubagentSnapshotStorageKey(sessionId: string): string {
-    return `${ChatViewProvider.SUBAGENT_SNAPSHOT_PREFIX}${sessionId}`;
-  }
-
-  private normalizeSubagentPayload(
-    payload: unknown,
-  ): SubagentUpdatePayload {
-    const rec = this.asRecord(payload) || {};
-    const summariesByParentMessageId =
-      this.asRecord(rec.summariesByParentMessageId) || {};
-    const detailsById = this.asRecord(rec.detailsById) || {};
-    return {
-      summariesByParentMessageId:
-        summariesByParentMessageId as SubagentUpdatePayload["summariesByParentMessageId"],
-      detailsById: detailsById as SubagentUpdatePayload["detailsById"],
-    };
-  }
-
-  private mergeSubagentPayloads(
-    existing: SubagentUpdatePayload,
-    incoming: SubagentUpdatePayload,
-  ): SubagentUpdatePayload {
-    const mergedSummaries: Record<string, unknown[]> = {};
-    const existingSummaries =
-      this.asRecord(existing.summariesByParentMessageId) || {};
-    const incomingSummaries =
-      this.asRecord(incoming.summariesByParentMessageId) || {};
-    const parentMessageIds = new Set<string>([
-      ...Object.keys(existingSummaries),
-      ...Object.keys(incomingSummaries),
-    ]);
-    for (const parentMessageId of parentMessageIds) {
-      const merged = this.mergeSubagentEntries(
-        existingSummaries[parentMessageId],
-        Array.isArray(incomingSummaries[parentMessageId])
-          ? (incomingSummaries[parentMessageId] as Array<Record<string, unknown>>)
-          : [],
-      );
-      if (merged.length > 0) {
-        mergedSummaries[parentMessageId] = merged;
-      }
-    }
-
-    const mergedDetails: Record<string, unknown> = {};
-    const existingDetails = this.asRecord(existing.detailsById) || {};
-    const incomingDetails = this.asRecord(incoming.detailsById) || {};
-    const detailIds = new Set<string>([
-      ...Object.keys(existingDetails),
-      ...Object.keys(incomingDetails),
-    ]);
-    for (const detailId of detailIds) {
-      const prev = this.asRecord(existingDetails[detailId]) || {};
-      const next = this.asRecord(incomingDetails[detailId]) || {};
-      mergedDetails[detailId] = {
-        ...prev,
-        ...next,
-        id: this.firstNonEmptyString(next.id, prev.id, detailId) || detailId,
-      };
-    }
-
-    return {
-      summariesByParentMessageId:
-        mergedSummaries as SubagentUpdatePayload["summariesByParentMessageId"],
-      detailsById: mergedDetails as SubagentUpdatePayload["detailsById"],
-    };
-  }
-
-  private async loadPersistedSubagentSnapshot(
-    sessionId: string,
-  ): Promise<SubagentUpdatePayload | null> {
-    const raw = this.context.workspaceState.get<unknown>(
-      this.getSubagentSnapshotStorageKey(sessionId),
-    );
-    if (!raw) {
-      return null;
-    }
-    const normalized = this.normalizeSubagentPayload(raw);
-    const hasEntries =
-      Object.keys(normalized.summariesByParentMessageId || {}).length > 0 ||
-      Object.keys(normalized.detailsById || {}).length > 0;
-    return hasEntries ? normalized : null;
-  }
-
-  private async savePersistedSubagentSnapshot(
-    sessionId: string,
-    payload: SubagentUpdatePayload,
-  ): Promise<void> {
-    await this.context.workspaceState.update(
-      this.getSubagentSnapshotStorageKey(sessionId),
-      payload,
-    );
-  }
-
-  private async clearPersistedSubagentSnapshot(
-    sessionId: string,
-  ): Promise<void> {
-    await this.context.workspaceState.update(
-      this.getSubagentSnapshotStorageKey(sessionId),
-      undefined,
-    );
-  }
-
-  private getCompactionViewStateStorageKey(sessionId: string): string {
-    return `${ChatViewProvider.COMPACTION_VIEW_STATE_PREFIX}${sessionId}`;
-  }
-
-  private normalizeCompactionBaselineStats(
-    value: unknown,
-  ): CompactionBaselineStats | undefined {
-    const rec = this.asRecord(value);
-    if (!rec) {
-      return undefined;
-    }
-
-    const normalize = (raw: unknown): number | undefined =>
-      typeof raw === "number" && Number.isFinite(raw) && raw >= 0
-        ? Math.floor(raw)
-        : undefined;
-
-    const input = normalize(rec.input);
-    const output = normalize(rec.output);
-    const read = normalize(rec.read);
-    const write = normalize(rec.write);
-    const duration = normalize(rec.duration);
-
-    if (
-      input === undefined &&
-      output === undefined &&
-      read === undefined &&
-      write === undefined &&
-      duration === undefined
-    ) {
-      return undefined;
-    }
-
-    return {
-      input: input ?? 0,
-      output: output ?? 0,
-      read: read ?? 0,
-      write: write ?? 0,
-      duration: duration ?? 0,
-    };
-  }
-
-  private normalizeCompactionViewState(
-    value: unknown,
-  ): PersistedCompactionViewState | null {
-    const rec = this.asRecord(value);
-    if (!rec) {
-      return null;
-    }
-
-    const next: PersistedCompactionViewState = {};
-    if (
-      typeof rec.lastCompactedAt === "number" &&
-      Number.isFinite(rec.lastCompactedAt) &&
-      rec.lastCompactedAt > 0
-    ) {
-      next.lastCompactedAt = Math.floor(rec.lastCompactedAt);
-    }
-    const baselineStats = this.normalizeCompactionBaselineStats(
-      rec.baselineStats,
-    );
-    if (baselineStats) {
-      next.baselineStats = baselineStats;
-    }
-    if (
-      typeof rec.compactionDividerIndex === "number" &&
-      Number.isFinite(rec.compactionDividerIndex) &&
-      rec.compactionDividerIndex >= 0
-    ) {
-      next.compactionDividerIndex = Math.floor(rec.compactionDividerIndex);
-    }
-    const dividerBeforeMessageId = this.firstNonEmptyString(
-      rec.compactionDividerBeforeMessageId,
-    );
-    if (dividerBeforeMessageId) {
-      next.compactionDividerBeforeMessageId = dividerBeforeMessageId;
-    }
-    const dividerAfterMessageId = this.firstNonEmptyString(
-      rec.compactionDividerAfterMessageId,
-    );
-    if (dividerAfterMessageId) {
-      next.compactionDividerAfterMessageId = dividerAfterMessageId;
-    }
-    if (typeof rec.collapsed === "boolean") {
-      next.collapsed = rec.collapsed;
-    }
-
-    return Object.keys(next).length > 0 ? next : null;
-  }
-
-  private async loadPersistedCompactionViewState(
-    sessionId: string,
-  ): Promise<PersistedCompactionViewState | null> {
-    const raw = this.context.workspaceState.get<unknown>(
-      this.getCompactionViewStateStorageKey(sessionId),
-    );
-    return this.normalizeCompactionViewState(raw);
-  }
-
-  private async savePersistedCompactionViewState(
-    sessionId: string,
-    state: PersistedCompactionViewState,
-  ): Promise<void> {
-    await this.context.workspaceState.update(
-      this.getCompactionViewStateStorageKey(sessionId),
-      state,
-    );
-  }
-
-  private async clearPersistedCompactionViewState(
-    sessionId: string,
-  ): Promise<void> {
-    await this.context.workspaceState.update(
-      this.getCompactionViewStateStorageKey(sessionId),
-      undefined,
-    );
-  }
-
-  private postCompactionViewState(
-    sessionId: string,
-    state: PersistedCompactionViewState,
-  ): void {
-    this.view?.webview.postMessage({
-      type: "compactionViewState",
-      sessionId,
-      ...state,
-    });
-  }
-
-  private async sendPersistedCompactionViewState(
-    sessionId: string,
-  ): Promise<void> {
-    const state = await this.loadPersistedCompactionViewState(sessionId);
-    if (!state) {
-      return;
-    }
-    this.postCompactionViewState(sessionId, state);
-  }
-
-  private async resolveSessionCompactionDividerState(
-    sessionId: string,
-  ): Promise<{
-    compactionDividerIndex?: number;
-    compactionDividerBeforeMessageId?: string;
-    compactionDividerAfterMessageId?: string;
-  }> {
-    try {
-      const rawMessages = await this.sessionService.getMessages(sessionId);
-      const messages = Array.isArray(rawMessages)
-        ? this.processHistoryMessages(rawMessages, sessionId)
-        : [];
-      const compactionDividerIndex = messages.length;
-      const compactionDividerBeforeMessageId =
-        compactionDividerIndex > 0
-          ? this.extractMessageId(messages[compactionDividerIndex - 1])
-          : undefined;
-      const compactionDividerAfterMessageId =
-        compactionDividerIndex < messages.length
-          ? this.extractMessageId(messages[compactionDividerIndex])
-          : undefined;
-      return {
-        compactionDividerIndex,
-        compactionDividerBeforeMessageId,
-        compactionDividerAfterMessageId,
-      };
-    } catch (error) {
-      console.warn(
-        `[ChatViewProvider] Failed to resolve compaction divider state for session ${sessionId}:`,
-        error,
-      );
-      return {};
-    }
-  }
-
-  private async persistSubagentLiveState(
-    sessionId: string,
-    payload: SubagentUpdatePayload,
-  ): Promise<SubagentUpdatePayload> {
-    const existing = await this.loadPersistedSubagentSnapshot(sessionId);
-    const merged = existing
-      ? this.mergeSubagentPayloads(existing, payload)
-      : payload;
-    await this.savePersistedSubagentSnapshot(sessionId, merged);
-    return merged;
-  }
-
-  private buildSubagentPayloadFromMessage(
-    messageRaw: unknown,
-    fallbackSessionId: string,
-  ): SubagentUpdatePayload | null {
-    const message = this.asRecord(messageRaw);
-    if (!message) {
-      return null;
-    }
-    const info = this.asRecord(message.info);
-    const messageId = this.firstNonEmptyString(
-      info?.id,
-      message.id,
-      message.messageID,
-    );
-    const subagentsRaw = Array.isArray(message.subagents)
-      ? message.subagents
-      : [];
-    if (!messageId || subagentsRaw.length === 0) {
-      return null;
-    }
-
-    const summaries: Array<Record<string, unknown>> = [];
-    const detailsById: Record<string, unknown> = {};
-
-    for (const subagentRaw of subagentsRaw) {
-      const subagent = this.asRecord(subagentRaw);
-      if (!subagent) {
-        continue;
-      }
-      const id = this.firstNonEmptyString(subagent.id);
-      if (!id) {
-        continue;
-      }
-      const parentSessionId = this.firstNonEmptyString(
-        subagent.parentSessionId,
-        fallbackSessionId,
-      );
-      const parentMessageId = this.firstNonEmptyString(
-        subagent.parentMessageId,
-        messageId,
-      );
-      if (!parentSessionId || !parentMessageId) {
-        continue;
-      }
-
-      const normalized: Record<string, unknown> = {
-        ...subagent,
-        id,
-        parentSessionId,
-        parentMessageId,
-        status: this.normalizeSubagentStatus(subagent.status),
-        latestActivity:
-          this.firstNonEmptyString(
-            subagent.latestActivity,
-            subagent.description,
-          ) || "Subagent update",
-      };
-      if (!Array.isArray(normalized.references)) {
-        normalized.references = [];
-      }
-      if (!Array.isArray(normalized.progressEvents)) {
-        normalized.progressEvents = [];
-      }
-      if (!Array.isArray(normalized.thinkingEvents)) {
-        normalized.thinkingEvents = [];
-      }
-      if (!Array.isArray(normalized.timelineEvents)) {
-        normalized.timelineEvents = [];
-      }
-
-      summaries.push({
-        id,
-        parentSessionId,
-        parentMessageId,
-        childSessionId: normalized.childSessionId,
-        agentId: normalized.agentId,
-        providerID: normalized.providerID,
-        modelID: normalized.modelID,
-        startedAt: normalized.startedAt,
-        endedAt: normalized.endedAt,
-        durationMs: normalized.durationMs,
-        status: normalized.status,
-        latestActivity: normalized.latestActivity,
-        references: normalized.references,
-      });
-      detailsById[id] = normalized;
-    }
-
-    if (summaries.length === 0) {
-      return null;
-    }
-
-    return {
-      summariesByParentMessageId: {
-        [messageId]: summaries as SubagentUpdatePayload["summariesByParentMessageId"][string],
-      } as SubagentUpdatePayload["summariesByParentMessageId"],
-      detailsById: detailsById as SubagentUpdatePayload["detailsById"],
-    };
-  }
-
-  private async persistSubagentUpdateSnapshot(payload: {
-    summariesByParentMessageId?: Record<string, unknown>;
-    detailsById?: Record<string, unknown>;
-  }): Promise<void> {
-    const summariesMap = this.asRecord(payload.summariesByParentMessageId) || {};
-    const parentMessageIds = Object.keys(summariesMap).filter(Boolean);
-    if (parentMessageIds.length === 0) {
-      return;
-    }
-
-    const sessionId =
-      this.currentSessionId || this.resolveSubagentPayloadSessionId(payload);
-    if (!sessionId) {
-      return;
-    }
-
-    const normalizedPayload = this.normalizeSubagentPayload(payload);
-    await this.persistSubagentLiveState(sessionId, normalizedPayload);
-
-    const cachedMessages = await this.sessionService.loadSessionMessages(
-      sessionId,
-    );
-    if (!Array.isArray(cachedMessages) || cachedMessages.length === 0) {
-      return;
-    }
-
-    let hasChanges = false;
-    const nextMessages = cachedMessages.map((rawMessage) => {
-      const message = this.asRecord(rawMessage);
-      if (!message) {
-        return rawMessage;
-      }
-
-      const info = this.asRecord(message.info);
-      const messageId = this.firstNonEmptyString(
-        info?.id,
-        message.id,
-        message.messageID,
-      );
-      if (!messageId || !parentMessageIds.includes(messageId)) {
-        return rawMessage;
-      }
-
-      const incomingSubagents = this.hydrateSubagentsFromPayload(
-        messageId,
-        normalizedPayload,
-        sessionId,
-      );
-      if (incomingSubagents.length === 0) {
-        return rawMessage;
-      }
-
-      const mergedSubagents = this.mergeSubagentEntries(
-        message.subagents,
-        incomingSubagents,
-      );
-      const nextMessage: Record<string, unknown> = {
-        ...message,
-        subagents: mergedSubagents,
-      };
-      hasChanges = true;
-      return nextMessage;
-    });
-
-    if (!hasChanges) {
-      return;
-    }
-
-    await this.sessionService.saveSessionMessages(sessionId, nextMessages);
-  }
-
-  private logStreamEventDiagnostics(event: any, enrichedEvent?: any): void {
-    const eventType =
-      typeof event?.type === "string" ? event.type : "unknown";
-    const properties = this.asRecord(event?.properties) || {};
-    const part = this.asRecord(properties?.part);
-    const info = this.asRecord(properties?.info);
-
-    const sessionID =
-      this.firstNonEmptyString(
-        properties?.sessionID,
-        properties?.sessionId,
-        part?.sessionID,
-        part?.sessionId,
-        info?.sessionID,
-        info?.sessionId,
-      ) || undefined;
-    const messageID =
-      this.firstNonEmptyString(
-        properties?.messageID,
-        properties?.messageId,
-        part?.messageID,
-        part?.messageId,
-        info?.id,
-      ) || undefined;
-
-    const structured = this.asRecord(enrichedEvent?.structured);
-    const structuredOutput = this.asRecord(enrichedEvent?.structuredOutput);
-    const partPreview =
-      this.firstNonEmptyString(
-        part?.delta,
-        part?.text,
-        part?.content,
-        part?.reasoning,
-        part?.thought,
-        part?.thinking,
-      ) || undefined;
-    const eventPreview =
-      this.firstNonEmptyString(
-        event?.delta,
-        event?.text,
-        event?.content,
-        event?.reasoning,
-      ) || undefined;
-    const preview = partPreview || eventPreview;
-    const summary: Record<string, unknown> = {
-      type: eventType,
-      source: this.firstNonEmptyString(event?.source),
-      directory: this.firstNonEmptyString(event?.directory),
-      sessionID,
-      messageID,
-      partType: this.firstNonEmptyString(part?.type),
-      hasProperties: Object.keys(properties).length > 0,
-      structuredKind: this.firstNonEmptyString(structured?.kind),
-      structuredResponseType: this.firstNonEmptyString(
-        structuredOutput?.responseType,
-      ),
-      hasStructuredOutput: Boolean(structuredOutput),
-      preview: preview ? preview.slice(0, 180) : undefined,
-      previewLength: preview?.length,
-    };
-
-    if (eventType === "server.heartbeat") {
-      if (this.shouldVerboseStreamDebug()) {
-        console.log("[ChatViewProvider] stream heartbeat", summary);
-      }
-      return;
-    }
-
-    const shouldLogInfo =
-      eventType === "message.updated" ||
-      eventType === "message.completed" ||
-      eventType === "session.completed";
-    const shouldPersistFile =
-      shouldLogInfo ||
-      eventType === "message.part.updated" ||
-      eventType === "message.part.added" ||
-      eventType === "message.part.created";
-    if (shouldPersistFile) {
-      this.appendRenderParityDebugLog("stream", summary);
-    }
-    if (this.shouldVerboseStreamDebug()) {
-      console.log("[ChatViewProvider] stream event received", summary);
-      return;
-    }
-    if (shouldLogInfo) {
-      this.logger.info("Render parity stream snapshot", summary);
-    }
-  }
-
-  private summarizeRenderMessageForDebug(
-    message: any,
-    index: number,
-  ): Record<string, unknown> {
-    const info = this.asRecord(message?.info);
-    const structured = this.asRecord(
-      message?.structuredOutput ??
-      message?.structured_output ??
-      info?.structuredOutput ??
-      info?.structured,
-    );
-    const content =
-      this.firstNonEmptyString(
-        message?.content,
-        message?.text,
-        this.extractMessageBodyText(message),
-      ) || "";
-    const createdAt = this.historyMessageCreatedAt(message);
-    const id = this.extractHistoryMessageId(message);
-    const responseType = this.firstNonEmptyString(
-      structured?.responseType,
-    )?.toLowerCase();
-    return {
-      index,
-      id,
-      role:
-        this.firstNonEmptyString(message?.role, info?.role) || "unknown",
-      createdAt,
-      responseType,
-      contentLength: content.length,
-      contentPreview: content ? content.slice(0, 160) : undefined,
-      hasPlan: Boolean(this.asRecord(message?.plan)),
-      subagentCount: Array.isArray(message?.subagents)
-        ? message.subagents.length
-        : 0,
-      interactiveCount: Array.isArray(message?.interactiveEvents)
-        ? message.interactiveEvents.length
-        : 0,
-      partCount: Array.isArray(message?.parts) ? message.parts.length : 0,
-      renderable: this.isRenderableHistoryMessage(message),
-      fingerprint: this.historyMessageFingerprint(message),
-    };
-  }
-
-  private logHistoryRenderDiagnostics(
-    source: string,
-    sessionId: string | undefined,
-    rawMessages: any[],
-    processedMessages: any[],
-  ): void {
-    const rawTail = rawMessages.slice(-20);
-    const processedTail = processedMessages.slice(-20);
-    const rawSummary = rawTail.map((message, index) =>
-      this.summarizeRenderMessageForDebug(
-        message,
-        rawMessages.length - rawTail.length + index,
-      ),
-    );
-    const processedSummary = processedTail.map((message, index) =>
-      this.summarizeRenderMessageForDebug(
-        message,
-        processedMessages.length - processedTail.length + index,
-      ),
-    );
-
-    const rawIds = new Set(
-      rawSummary
-        .map((item) => this.firstNonEmptyString(item.id))
-        .filter((value): value is string => Boolean(value)),
-    );
-    const processedIds = new Set(
-      processedSummary
-        .map((item) => this.firstNonEmptyString(item.id))
-        .filter((value): value is string => Boolean(value)),
-    );
-    const missingProcessedIds = Array.from(rawIds).filter(
-      (id) => !processedIds.has(id),
-    );
-
-    const summaryContext: Record<string, unknown> = {
-      source,
-      sessionId,
-      rawCount: rawMessages.length,
-      processedCount: processedMessages.length,
-      droppedCount: rawMessages.length - processedMessages.length,
-      missingProcessedIds: missingProcessedIds.slice(0, 20),
-      rawLast: rawSummary[rawSummary.length - 1],
-      processedLast: processedSummary[processedSummary.length - 1],
-    };
-    this.appendRenderParityDebugLog("history", {
-      ...summaryContext,
-      rawTail: rawSummary,
-      processedTail: processedSummary,
-    });
-    this.logger.info("Render parity history snapshot", summaryContext);
-
-    if (this.shouldVerboseStreamDebug()) {
-      this.logger.debug("Render parity history raw tail", {
-        source,
-        sessionId,
-        items: rawSummary,
-      });
-      this.logger.debug("Render parity history processed tail", {
-        source,
-        sessionId,
-        items: processedSummary,
-      });
-    }
-  }
-
-  private logPromptResponseDiagnostics(
-    sessionId: string,
-    responseData: any,
-  ): void {
-    if (!this.shouldVerboseStreamDebug()) {
-      return;
-    }
-
-    if (!responseData || typeof responseData !== "object") {
-      return;
-    }
-
-    const info = this.asRecord(responseData.info);
-    const messageId = this.firstNonEmptyString(info?.id, responseData.id);
-    const parts = Array.isArray(responseData.parts) ? responseData.parts : [];
-
-    console.log("[ChatViewProvider] Final response diagnostics", {
-      sessionId,
-      messageId,
-      partCount: parts.length,
-      partTypes: parts.map((part: any) =>
-        typeof part?.type === "string" ? part.type : "unknown",
-      ),
-      role: this.firstNonEmptyString(info?.role, responseData.role),
-      modelID: this.firstNonEmptyString(info?.modelID, responseData.modelID),
-      providerID: this.firstNonEmptyString(
-        info?.providerID,
-        responseData.providerID,
-      ),
-    });
-
-    parts.forEach((part: any, index: number) => {
-      const partRec = this.asRecord(part) || {};
-      const preview = this.firstNonEmptyString(
-        partRec.delta,
-        partRec.text,
-        partRec.content,
-        partRec.reasoning,
-        partRec.message,
-      );
-      console.log("[ChatViewProvider] Final response part", {
-        sessionId,
-        messageId,
-        index,
-        type: this.firstNonEmptyString(partRec.type) || "unknown",
-        preview:
-          typeof preview === "string" ? preview.slice(0, 220) : undefined,
-      });
-    });
-  }
-
-  private sanitizeDebugPayload(value: unknown): unknown {
-    const maxDepth = 6;
-    const maxArrayItems = 30;
-    const maxObjectKeys = 80;
-    const maxStringLength = 4000;
-    const seen = new WeakSet<object>();
-
-    const walk = (input: unknown, depth: number): unknown => {
-      if (input === null || typeof input === "boolean" || typeof input === "number") {
-        return input;
-      }
-      if (typeof input === "string") {
-        if (input.startsWith("data:")) {
-          return `<data-url omitted; length=${input.length}>`;
-        }
-        if (input.length > maxStringLength) {
-          const truncatedBy = input.length - maxStringLength;
-          return `${input.slice(0, maxStringLength)} ...<truncated ${truncatedBy} chars>`;
-        }
-        return input;
-      }
-      if (typeof input === "bigint") {
-        return input.toString();
-      }
-      if (typeof input === "undefined") {
-        return undefined;
-      }
-      if (typeof input === "function") {
-        return "<function>";
-      }
-      if (typeof input !== "object") {
-        return String(input);
-      }
-
-      if (seen.has(input as object)) {
-        return "<circular>";
-      }
-      seen.add(input as object);
-
-      if (depth >= maxDepth) {
-        return "<max-depth>";
-      }
-
-      if (Array.isArray(input)) {
-        const items = input
-          .slice(0, maxArrayItems)
-          .map((item) => walk(item, depth + 1));
-        if (input.length > maxArrayItems) {
-          items.push(
-            `<truncated array; omitted ${input.length - maxArrayItems} item(s)>`,
-          );
-        }
-        return items;
-      }
-
-      const rec = this.asRecord(input) || {};
-      const entries = Object.entries(rec).slice(0, maxObjectKeys);
-      const out: Record<string, unknown> = {};
-      entries.forEach(([key, val]) => {
-        const next = walk(val, depth + 1);
-        if (typeof next !== "undefined") {
-          out[key] = next;
-        }
-      });
-      if (Object.keys(rec).length > maxObjectKeys) {
-        out.__truncatedKeys = `<omitted ${Object.keys(rec).length - maxObjectKeys} key(s)>`;
-      }
-      return out;
-    };
-
-    return walk(value, 0);
-  }
-
-  private buildRawResponseDebugText(value: unknown): string {
-    const maxChars = 30000;
-    let text: string;
-    try {
-      text = JSON.stringify(this.sanitizeDebugPayload(value), null, 2);
-    } catch {
-      try {
-        text = String(value);
-      } catch {
-        text = "<unserializable response payload>";
-      }
-    }
-    if (!text) {
-      return "";
-    }
-    if (text.length <= maxChars) {
-      return text;
-    }
-    return `${text.slice(0, maxChars)}\n...<truncated ${text.length - maxChars} chars>`;
-  }
-
-  private getDebugFilePath(): string | undefined {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder || workspaceFolder.uri.scheme !== "file") {
-      return undefined;
-    }
-    return path.join(
-      workspaceFolder.uri.fsPath,
-      ".opencode-debug",
-      "last-ai-exchange.json",
-    );
-  }
-
-  private getRenderParityDebugFilePath(): string {
-    if (this.renderParityDebugFilePath) {
-      return this.renderParityDebugFilePath;
-    }
-
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder?.uri.scheme === "file") {
-      this.renderParityDebugFilePath = path.join(
-        workspaceFolder.uri.fsPath,
-        ".opencode-debug",
-        "render-parity.ndjson",
-      );
-      return this.renderParityDebugFilePath;
-    }
-
-    this.renderParityDebugFilePath = path.join(
-      os.tmpdir(),
-      "opencode-debug",
-      "render-parity.ndjson",
-    );
-    return this.renderParityDebugFilePath;
-  }
-
-  private appendRenderParityDebugLog(
-    channel: "stream" | "history",
-    payload: Record<string, unknown>,
-  ): void {
-    const filePath = this.getRenderParityDebugFilePath();
-    const entry = {
-      timestamp: new Date().toISOString(),
-      channel,
-      ...payload,
-    };
-    const line = `${JSON.stringify(this.sanitizeDebugPayload(entry))}\n`;
-
-    this.renderParityLogWriteChain = this.renderParityLogWriteChain
-      .catch(() => undefined)
-      .then(async () => {
-        try {
-          await vscode.workspace.fs.createDirectory(
-            vscode.Uri.file(path.dirname(filePath)),
-          );
-          await fs.appendFile(filePath, line, "utf8");
-          if (!this.didLogRenderParityFilePath) {
-            this.didLogRenderParityFilePath = true;
-            this.logger.info("Render parity debug file active", { filePath });
-          }
-        } catch (error) {
-          if (this.shouldVerboseStreamDebug()) {
-            console.warn(
-              "[ChatViewProvider] Failed to append render parity debug log",
-              {
-                filePath,
-                error: error instanceof Error ? error.message : String(error),
-              },
-            );
-          }
-        }
-      });
-  }
-
-  private async persistAiDebugSnapshot(
-    snapshot: Record<string, unknown>,
-  ): Promise<void> {
-    try {
-      const filePath = this.getDebugFilePath();
-      if (!filePath) return;
-
-      const dirPath = path.dirname(filePath);
-      await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirPath));
-      await vscode.workspace.fs.writeFile(
-        vscode.Uri.file(filePath),
-        new TextEncoder().encode(`${JSON.stringify(snapshot, null, 2)}\n`),
-      );
-      this.logger.info("AI debug snapshot written", { filePath });
-    } catch (error) {
-      this.logger.warn("Failed to persist AI debug snapshot", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  private async logPromptRequestPayload(
-    sessionId: string,
-    promptBody: NonNullable<SessionPromptData["body"]>,
-    useStructuredOutput: boolean,
-  ): Promise<void> {
-    const requestRecord: Record<string, unknown> = {
-      timestamp: new Date().toISOString(),
-      sessionId,
-      useStructuredOutput,
-      prompt: this.sanitizeDebugPayload(promptBody),
-    };
-    this.promptDebugBySession.set(sessionId, requestRecord);
-
-    this.logger.info("AI DEBUG request payload", {
-      sessionId,
-      useStructuredOutput,
-      prompt: requestRecord.prompt,
-    });
-    console.log(
-      "[ChatViewProvider][AI_DEBUG][request]",
-      JSON.stringify(requestRecord, null, 2),
-    );
-    await this.persistAiDebugSnapshot({
-      phase: "request",
-      ...requestRecord,
-    });
-  }
-
-  private async logPromptResponsePayload(
-    sessionId: string,
-    response: any,
-    durationSeconds: number,
-    useStructuredOutput: boolean,
-  ): Promise<void> {
-    const requestRecord = this.promptDebugBySession.get(sessionId);
-    const responseRecord: Record<string, unknown> = {
-      timestamp: new Date().toISOString(),
-      sessionId,
-      useStructuredOutput,
-      durationSeconds,
-      status: response?.response?.status,
-      hasData: Boolean(response?.data),
-      hasError: Boolean(response?.error),
-      error: this.sanitizeDebugPayload(response?.error),
-      data: this.sanitizeDebugPayload(response?.data),
-    };
-
-    const combined: Record<string, unknown> = {
-      phase: "response",
-      request: requestRecord,
-      response: responseRecord,
-    };
-    this.logger.info("AI DEBUG response payload", {
-      sessionId,
-      useStructuredOutput,
-      status: responseRecord.status,
-      hasData: responseRecord.hasData,
-      hasError: responseRecord.hasError,
-    });
-    console.log(
-      "[ChatViewProvider][AI_DEBUG][response]",
-      JSON.stringify(combined, null, 2),
-    );
-    await this.persistAiDebugSnapshot(combined);
-    this.promptDebugBySession.delete(sessionId);
-  }
-
-  private async syncSubagentSnapshotForSession(
-    sessionId: string,
-    messages: any[],
-  ): Promise<void> {
-    this.subagentTracker.resetForSession(sessionId);
-    this.subagentTracker.seedFromMessages(messages);
-    const trackerSnapshot = this.subagentTracker.getSnapshotPayload();
-    const persistedSnapshot =
-      await this.loadPersistedSubagentSnapshot(sessionId);
-    const mergedSnapshot = persistedSnapshot
-      ? this.mergeSubagentPayloads(persistedSnapshot, trackerSnapshot)
-      : trackerSnapshot;
-    this.view?.webview.postMessage({
-      type: "subagentSnapshot",
-      ...mergedSnapshot,
-    });
-    await this.savePersistedSubagentSnapshot(sessionId, mergedSnapshot);
-  }
-
-  private recordStructuredValidationFailure(
-    record: Record<string, unknown>,
-    errors: string[],
-    diagnostics?: {
-      source?: string;
-      providerID?: string;
-      modelID?: string;
-    },
-  ): void {
-    const responseType =
-      this.firstNonEmptyString(
-        record.responseType,
-        record.type,
-        record.kind,
-        record.category,
-      ) || "unknown";
-    const providerID =
-      this.firstNonEmptyString(diagnostics?.providerID) ||
-      this.firstNonEmptyString(this.selectedModel.providerID) ||
-      "unknown";
-    const modelID =
-      this.firstNonEmptyString(diagnostics?.modelID) ||
-      this.firstNonEmptyString(this.selectedModel.modelID) ||
-      "unknown";
-    const source = this.firstNonEmptyString(diagnostics?.source) || "unknown";
-
-    const key = `${responseType}|${providerID}/${modelID}`;
-    const nextCount =
-      (this.structuredValidationFailureCounters.get(key) || 0) + 1;
-    this.structuredValidationFailureCounters.set(key, nextCount);
-    const modelKey = this.getStructuredOutputModelKey(providerID, modelID);
-    const sourceLower = (diagnostics?.source || "").toLowerCase();
-    const cameFromStructuredPayload =
-      sourceLower.includes("structured") ||
-      sourceLower.includes("parts[].state.input") ||
-      sourceLower.includes("parts[].state.result");
-    const missingRequiredMessagePayload = errors.some(
-      (error) =>
-        error.includes("responseType is required") ||
-        error.includes(
-          "message responseType requires assistantMessage or message string",
-        ),
-    );
-    const hasNoRenderableMessage = !this.firstNonEmptyString(
-      record.assistantMessage,
-      record.message,
-    );
-
-    if (
-      modelKey &&
-      cameFromStructuredPayload &&
-      missingRequiredMessagePayload &&
-      hasNoRenderableMessage &&
-      !this.structuredOutputIncompatibleModelKeys.has(modelKey)
-    ) {
-      this.structuredOutputIncompatibleModelKeys.add(modelKey);
-      this.logger.warn(
-        "Detected empty structured payload pattern; disabling structured-output mode for this model",
-        {
-          modelKey,
-          source: diagnostics?.source,
-          errors,
-        },
-      );
-    }
-
-    const shouldLogAggregate =
-      nextCount === 1 ||
-      nextCount === 5 ||
-      nextCount === 10 ||
-      nextCount % 25 === 0;
-
-    if (shouldLogAggregate) {
-      this.logger.warn("Structured output validation failure aggregate", {
-        key,
-        count: nextCount,
-        responseType,
-        providerID,
-        modelID,
-        source,
-        errors,
-      });
-    }
-  }
-
-  private normalizeStructuredOutput(
-    raw: unknown,
-    diagnostics?: {
-      source?: string;
-      providerID?: string;
-      modelID?: string;
-    },
-  ): StructuredAssistantOutput | undefined {
-    let value: unknown = raw;
-    if (typeof value === "string") {
-      try {
-        value = JSON.parse(value);
-      } catch {
-        return undefined;
-      }
-    }
-
-    const rec = this.asRecord(value);
-    if (!rec) {
-      return undefined;
-    }
-
-    const sanitizedRec = sanitizeStructuredOutput(rec);
-    const assistantMessageCandidate = this.firstNonEmptyString(
-      sanitizedRec.assistantMessage,
-      sanitizedRec.message,
-    );
-
-    let responseTypeRaw =
-      this.firstNonEmptyString(
-        sanitizedRec.responseType,
-        rec.type,
-        rec.kind,
-        rec.category,
-      ) ||
-      (assistantMessageCandidate ? "message" : undefined);
-
-    if (responseTypeRaw?.toLowerCase() === "conversation") {
-      responseTypeRaw = "message";
-    }
-    if (responseTypeRaw?.toLowerCase() === "interactive") {
-      responseTypeRaw = "question";
-    }
-
-    if (
-      responseTypeRaw &&
-      !STRUCTURED_RESPONSE_TYPES.has(responseTypeRaw.toLowerCase())
-    ) {
-      responseTypeRaw = assistantMessageCandidate ? "message" : undefined;
-    }
-
-    if (!responseTypeRaw) {
-      return undefined;
-    }
-
-    let canonicalRec: Record<string, unknown> = {
-      ...sanitizedRec,
-      responseType: responseTypeRaw,
-    };
-    if (
-      assistantMessageCandidate &&
-      !this.firstNonEmptyString(
-        canonicalRec.assistantMessage,
-        canonicalRec.message,
-      )
-    ) {
-      canonicalRec.assistantMessage = assistantMessageCandidate;
-    }
-
-    let validation = validateStructuredOutput(canonicalRec);
-    if (!validation.valid && assistantMessageCandidate) {
-      canonicalRec = {
-        responseType: "message",
-        assistantMessage: assistantMessageCandidate,
-        message: assistantMessageCandidate,
-      };
-      validation = validateStructuredOutput(canonicalRec);
-    }
-    if (!validation.valid) {
-      this.logger.warn("Structured output validation failed", {
-        errors: validation.errors,
-        source: diagnostics?.source,
-        providerID: diagnostics?.providerID,
-        modelID: diagnostics?.modelID,
-      });
-      this.recordStructuredValidationFailure(
-        canonicalRec,
-        validation.errors,
-        diagnostics,
-      );
-      return undefined;
-    }
-
-    const sanitizedCanonicalRec = sanitizeStructuredOutput(canonicalRec);
-    const responseType = this.firstNonEmptyString(
-      sanitizedCanonicalRec.responseType,
-    );
-    if (!responseType) {
-      return undefined;
-    }
-
-    const assistantMessage = this.firstNonEmptyString(
-      sanitizedCanonicalRec.assistantMessage,
-      sanitizedCanonicalRec.message,
-    );
-    const message = this.firstNonEmptyString(sanitizedCanonicalRec.message);
-
-    const reasoningRaw = sanitizedCanonicalRec.reasoning;
-    const reasoning = Array.isArray(reasoningRaw)
-      ? reasoningRaw
-        .filter((item): item is string => typeof item === "string")
-        .map((item) => item.trim())
-        .filter(Boolean)
-      : typeof reasoningRaw === "string" && reasoningRaw.trim()
-        ? [reasoningRaw.trim()]
-        : [];
-    const normalizeComparableText = (value: string): string =>
-      value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
-    const stripAssistantEchoFromReasoning = (
-      chunk: string,
-      replyText?: string,
-    ): string => {
-      const trimmedChunk = chunk.trim();
-      if (!trimmedChunk) {
-        return "";
-      }
-      if (!replyText) {
-        return trimmedChunk;
-      }
-      const trimmedReply = replyText.trim();
-      if (!trimmedReply) {
-        return trimmedChunk;
-      }
-      if (
-        normalizeComparableText(trimmedChunk) ===
-        normalizeComparableText(trimmedReply)
-      ) {
-        return "";
-      }
-      if (trimmedChunk.startsWith(trimmedReply)) {
-        return trimmedChunk
-          .slice(trimmedReply.length)
-          .replace(/^[\s:;,\-.!?]+/, "")
-          .trim();
-      }
-      return trimmedChunk;
-    };
-    const cleanedReasoning = reasoning
-      .map((chunk) =>
-        stripAssistantEchoFromReasoning(chunk, assistantMessage || message),
-      )
-      .filter(Boolean);
-
-    const progressRaw =
-      sanitizedCanonicalRec.progressUpdates ?? (rec.progress_updates as unknown);
-    const progressUpdates = Array.isArray(progressRaw)
-      ? progressRaw
-        .map((item) => {
-          const update = this.asRecord(item);
-          if (!update) return null;
-          const title = this.firstNonEmptyString(
-            update.title,
-            update.message,
-          );
-          if (!title) return null;
-          const status = this.firstNonEmptyString(update.status);
-          const normalizedStatus =
-            status === "done" || status === "error" || status === "pending"
-              ? status
-              : undefined;
-          return {
-            title,
-            status: normalizedStatus,
-            meta: this.firstNonEmptyString(update.meta, update.detail),
-            filePath: this.firstNonEmptyString(
-              update.filePath,
-              update.file,
-              update.path,
-            ),
-          } as StructuredProgressUpdate;
-        })
-        .filter((item): item is StructuredProgressUpdate => !!item)
-      : [];
-
-    const normalizeChoices = (
-      value: unknown,
-    ): StructuredInteractiveChoice[] => {
-      if (!Array.isArray(value)) return [];
-      return value
-        .map((item) => {
-          const choice = this.asRecord(item);
-          if (!choice) return null;
-          const label = this.firstNonEmptyString(choice.label, choice.value);
-          if (!label) return null;
-          return {
-            id: this.firstNonEmptyString(choice.id),
-            label,
-            value: this.firstNonEmptyString(choice.value) || label,
-            description: this.firstNonEmptyString(
-              choice.description,
-              choice.detail,
-            ),
-          } as StructuredInteractiveChoice;
-        })
-        .filter((item): item is StructuredInteractiveChoice => !!item);
-    };
-
-    const normalizeInteractiveEvent = (
-      value: unknown,
-      index: number,
-    ): StructuredInteractiveEvent | null => {
-      const event = this.asRecord(value);
-      if (!event) return null;
-      const eventType = this.firstNonEmptyString(
-        event.type,
-        event.kind,
-      )?.toLowerCase();
-      const id =
-        this.firstNonEmptyString(event.id) ||
-        `interactive-${Date.now()}-${index}`;
-
-      if (eventType === "confirm") {
-        const question = this.firstNonEmptyString(
-          event.question,
-          event.prompt,
-          event.message,
-        );
-        if (!question) return null;
-        return {
-          type: "confirm",
-          id,
-          title: this.firstNonEmptyString(event.title),
-          question,
-          confirmLabel: this.firstNonEmptyString(
-            event.confirmLabel,
-            event.confirm_text,
-          ),
-          cancelLabel: this.firstNonEmptyString(
-            event.cancelLabel,
-            event.cancel_text,
-          ),
-        };
-      }
-
-      if (eventType === "quick_actions" || eventType === "quick-actions") {
-        const actions = normalizeChoices(event.actions ?? event.options);
-        if (actions.length === 0) return null;
-        return {
-          type: "quick_actions",
-          id,
-          title: this.firstNonEmptyString(event.title, event.question),
-          actions,
-        };
-      }
-
-      if (eventType === "question" || eventType === "interactive") {
-        const question = this.firstNonEmptyString(
-          event.question,
-          event.prompt,
-          event.title,
-        );
-        const options = normalizeChoices(event.options ?? event.choices);
-        if (!question || options.length < 2) return null;
-        return {
-          type: "question",
-          id,
-          title: this.firstNonEmptyString(event.title),
-          question,
-          options,
-          multiSelect: event.multiSelect === true,
-          allowCustomInput: event.allowCustomInput === true,
-        };
-      }
-
-      if (eventType === "message") {
-        const message = this.firstNonEmptyString(
-          event.message,
-          event.content,
-          event.text,
-        );
-        if (!message) return null;
-        return {
-          type: "message",
-          id,
-          title: this.firstNonEmptyString(event.title),
-          message,
-          dismissLabel: this.firstNonEmptyString(
-            event.dismissLabel,
-            event.dismiss_label,
-          ),
-        };
-      }
-
-      return null;
-    };
-
-    const interactiveRaw =
-      sanitizedCanonicalRec.interactiveEvents ??
-      rec.interactions ??
-      rec.uiEvents ??
-      rec.question ??
-      rec.questions;
-    const singleInteractive = normalizeInteractiveEvent(interactiveRaw, 0);
-    let interactiveEvents = Array.isArray(interactiveRaw)
-      ? interactiveRaw
-        .map((item, index) => normalizeInteractiveEvent(item, index))
-        .filter((item): item is StructuredInteractiveEvent => !!item)
-      : singleInteractive
-        ? [singleInteractive]
-        : [];
-
-    if (interactiveEvents.length === 0) {
-      const rootQuestion = this.firstNonEmptyString(rec.question, rec.prompt);
-      const rootOptions = normalizeChoices(rec.options ?? rec.choices);
-      if (rootQuestion && rootOptions.length >= 2) {
-        interactiveEvents = [
-          {
-            type: "question",
-            id: `interactive-${Date.now()}-0`,
-            title: this.firstNonEmptyString(rec.title),
-            question: rootQuestion,
-            options: rootOptions,
-            multiSelect: rec.multiSelect === true,
-            allowCustomInput: rec.allowCustomInput === true,
-          },
-        ];
-      }
-    }
-
-    if (
-      interactiveEvents.length === 0 &&
-      this.isInteractiveResponseType(responseType)
-    ) {
-      const fallbackQuestion =
-        this.firstNonEmptyString(rec.question, rec.prompt, message) ||
-        "I need a quick clarification before I continue.";
-      interactiveEvents = [
-        {
-          type: "question",
-          id: `interactive-${Date.now()}-fallback`,
-          title: this.firstNonEmptyString(rec.title) || "Question",
-          question: fallbackQuestion,
-          options: [
-            { id: "yes", label: "Yes", value: "yes" },
-            { id: "no", label: "No", value: "no" },
-          ],
-          allowCustomInput: true,
-        },
-      ];
-      this.logger.warn(
-        "Coerced interactive response into fallback question event",
-        {
-          source: diagnostics?.source,
-          providerID: diagnostics?.providerID,
-          modelID: diagnostics?.modelID,
-          responseType,
-        },
-      );
-    }
-
-    const subagentsDeltaRaw = this.asRecord(
-      sanitizedCanonicalRec.subagentsDelta ?? rec.subagents_delta,
-    );
-    const subagentsDeltaItems = Array.isArray(subagentsDeltaRaw?.items)
-      ? (subagentsDeltaRaw?.items
-        .map((entry) => {
-          const item = this.asRecord(entry);
-          if (!item) return null;
-          const id = this.firstNonEmptyString(item.id);
-          if (!id) return null;
-          return {
-            id,
-            name: this.firstNonEmptyString(item.name, item.agentId),
-            status: this.firstNonEmptyString(item.status),
-            progress:
-              typeof item.progress === "number" &&
-                Number.isFinite(item.progress)
-                ? item.progress
-                : undefined,
-            description: this.firstNonEmptyString(item.description),
-            latestActivity: this.firstNonEmptyString(
-              item.latestActivity,
-              item.description,
-            ),
-            childSessionId: this.firstNonEmptyString(item.childSessionId),
-            parentSessionId: this.firstNonEmptyString(item.parentSessionId),
-            parentMessageId: this.firstNonEmptyString(item.parentMessageId),
-          };
-        })
-        .filter(Boolean) as Array<{
-          id: string;
-          name?: string;
-          status?: string;
-          progress?: number;
-          description?: string;
-          latestActivity?: string;
-          childSessionId?: string;
-          parentSessionId?: string;
-          parentMessageId?: string;
-        }>)
-      : undefined;
-    const subagentsDelta =
-      subagentsDeltaItems && subagentsDeltaItems.length > 0
-        ? {
-          parentMessageId: this.firstNonEmptyString(
-            subagentsDeltaRaw?.parentMessageId,
-          ),
-          items: subagentsDeltaItems as Array<{
-            id: string;
-            name?: string;
-            status?: string;
-            progress?: number;
-            description?: string;
-            latestActivity?: string;
-            childSessionId?: string;
-            parentSessionId?: string;
-            parentMessageId?: string;
-          }>,
-        }
-        : undefined;
-
-    const subagentsRaw =
-      sanitizedCanonicalRec.subagents ?? (rec.spawnedSubagents as unknown);
-    const subagents = Array.isArray(subagentsRaw)
-      ? (subagentsRaw
-        .map((item, index) => {
-          const subagent = this.asRecord(item);
-          if (!subagent) return null;
-          const id = this.firstNonEmptyString(subagent.id);
-          if (!id) return null;
-          const status = this.firstNonEmptyString(
-            subagent.status,
-          )?.toLowerCase();
-          const normalizedStatus =
-            status === "pending" ||
-              status === "running" ||
-              status === "done" ||
-              status === "error" ||
-              status === "orphaned"
-              ? status
-              : undefined;
-          const progressValue = subagent.progress;
-          const progress =
-            typeof progressValue === "number" &&
-              Number.isFinite(progressValue)
-              ? progressValue
-              : undefined;
-          const normalizeProgressEvents = (value: unknown) => {
-            if (!Array.isArray(value)) return undefined;
-            const events = value
-              .map((entry, eventIndex) => {
-                const evt = this.asRecord(entry);
-                if (!evt) return null;
-                const title = this.firstNonEmptyString(evt.title);
-                if (!title) return null;
-                return {
-                  id:
-                    this.firstNonEmptyString(evt.id) ||
-                    `${id}:progress:${eventIndex}`,
-                  title,
-                  status: this.firstNonEmptyString(evt.status),
-                  meta: this.firstNonEmptyString(evt.meta),
-                  filePath: this.firstNonEmptyString(
-                    evt.filePath,
-                    evt.file,
-                    evt.path,
-                  ),
-                  createdAt:
-                    typeof evt.createdAt === "number"
-                      ? evt.createdAt
-                      : undefined,
-                  messageID: this.firstNonEmptyString(evt.messageID),
-                  partID: this.firstNonEmptyString(evt.partID),
-                  callID: this.firstNonEmptyString(evt.callID),
-                };
-              })
-              .filter(Boolean) as Array<{
-                id: string;
-                title: string;
-                status?: string;
-                meta?: string;
-                filePath?: string;
-                createdAt?: number;
-                messageID?: string;
-                partID?: string;
-                callID?: string;
-              }>;
-            return events.length > 0 ? events : undefined;
-          };
-          const normalizeThinkingEvents = (value: unknown) => {
-            if (!Array.isArray(value)) return undefined;
-            const events = value
-              .map((entry, eventIndex) => {
-                const evt = this.asRecord(entry);
-                if (!evt) return null;
-                const text = this.firstNonEmptyString(evt.text);
-                if (!text) return null;
-                return {
-                  id:
-                    this.firstNonEmptyString(evt.id) ||
-                    `${id}:thinking:${eventIndex}`,
-                  text,
-                  createdAt:
-                    typeof evt.createdAt === "number"
-                      ? evt.createdAt
-                      : undefined,
-                  messageID: this.firstNonEmptyString(evt.messageID),
-                  partID: this.firstNonEmptyString(evt.partID),
-                };
-              })
-              .filter(Boolean) as Array<{
-                id: string;
-                text: string;
-                createdAt?: number;
-                messageID?: string;
-                partID?: string;
-              }>;
-            return events.length > 0 ? events : undefined;
-          };
-          const normalizeTimelineEvents = (value: unknown) => {
-            if (!Array.isArray(value)) return undefined;
-            const events = value
-              .map((entry, eventIndex) => {
-                const evt = this.asRecord(entry);
-                if (!evt) return null;
-                const label = this.firstNonEmptyString(evt.label);
-                if (!label) return null;
-                return {
-                  key:
-                    this.firstNonEmptyString(evt.key) ||
-                    `${id}:timeline:${eventIndex}`,
-                  type: this.firstNonEmptyString(evt.type) || "event",
-                  label,
-                  createdAt:
-                    typeof evt.createdAt === "number"
-                      ? evt.createdAt
-                      : undefined,
-                  messageID: this.firstNonEmptyString(evt.messageID),
-                  partID: this.firstNonEmptyString(evt.partID),
-                  callID: this.firstNonEmptyString(evt.callID),
-                };
-              })
-              .filter(Boolean) as Array<{
-                key: string;
-                type: string;
-                label: string;
-                createdAt?: number;
-                messageID?: string;
-                partID?: string;
-                callID?: string;
-              }>;
-            return events.length > 0 ? events : undefined;
-          };
-          return {
-            id,
-            name:
-              this.firstNonEmptyString(
-                subagent.name,
-                subagent.agentId,
-                subagent.id,
-              ) || id,
-            status: normalizedStatus,
-            progress,
-            description: this.firstNonEmptyString(subagent.description),
-            latestActivity: this.firstNonEmptyString(
-              subagent.latestActivity,
-              subagent.description,
-            ),
-            childSessionId: this.firstNonEmptyString(subagent.childSessionId),
-            parentSessionId: this.firstNonEmptyString(
-              subagent.parentSessionId,
-            ),
-            parentMessageId: this.firstNonEmptyString(
-              subagent.parentMessageId,
-            ),
-            progressEvents: normalizeProgressEvents(subagent.progressEvents),
-            thinkingEvents: normalizeThinkingEvents(subagent.thinkingEvents),
-            timelineEvents: normalizeTimelineEvents(subagent.timelineEvents),
-          };
-        })
-        .filter((item) => !!item) as NonNullable<
-          StructuredAssistantOutput["subagents"]
-        >)
-      : undefined;
-
-    const isInteractiveResponse =
-      this.isInteractiveResponseType(responseType) &&
-      interactiveEvents.length > 0;
-
-    const planRec = this.asRecord(sanitizedCanonicalRec.plan ?? rec.plan);
-
-    // Determine if the plan content looks like a clarification questionnaire.
-    // Question-first precedence: if the response is interactive OR the plan
-    // content appears to be a clarification questionnaire, we must NOT treat
-    // it as a real implementation plan. This prevents a model from returning
-    // an `implementation_plan` responseType while embedding clarifying
-    // questions inside the plan body.
-    const structuredPlanFileCandidates =
-      this.collectPlanFileCandidatesFromStructuredPlan(planRec);
-    const normalizedPlanFile = structuredPlanFileCandidates[0];
-    const normalizedPlanContent = this.firstNonEmptyString(
-      planRec?.content,
-      planRec?.markdown,
-    );
-    const candidatePlanContent = normalizedPlanContent
-      ? normalizedPlanContent
-      : !normalizedPlanFile
-        ? this.firstNonEmptyString(
-          sanitizedCanonicalRec.message,
-          sanitizedCanonicalRec.assistantMessage,
-        )
-        : undefined;
-    const isClarification = this.isClarificationQuestionnaire(candidatePlanContent);
-
-    if (isInteractiveResponse && planRec) {
-      this.logger.warn("Ignoring plan payload for interactive response", {
-        source: diagnostics?.source,
-        providerID: diagnostics?.providerID,
-        modelID: diagnostics?.modelID,
-      });
-    }
-
-    // Bounded telemetry for plan-suppression decisions. Avoid logging any raw
-    // message or plan content — include only booleans/ids/responseType.
-    const responseTypeSafe = responseType || "unknown";
-    const shouldAttachPlan = !isInteractiveResponse && !isClarification && (planRec || responseType === "implementation_plan");
-    if (!shouldAttachPlan) {
-      const reason = isInteractiveResponse
-        ? "interactive-wins"
-        : isClarification
-          ? "clarification-detected"
-          : "heuristic-rejected";
-      this.logger.debug("Plan suppressed", {
-        source: "normalizeStructuredOutput",
-        reason,
-        responseType: responseTypeSafe,
-        hasInteractiveEvents: !!isInteractiveResponse,
-        isClarification: !!isClarification,
-      });
-    }
-
-    // Only surface a plan when: (1) this is NOT an interactive response, and
-    // (2) the content does not look like a clarification questionnaire, and
-    // (3) either the structured record includes a plan OR the declared
-    // responseType is 'implementation_plan'. This centralizes the precedence
-    // logic so downstream consumers cannot mistakenly attach a plan when the
-    // model is actually asking clarifying questions.
-    const plan =
-      shouldAttachPlan
-        ? {
-          file: normalizedPlanFile,
-          content: normalizedPlanContent,
-          title: this.resolvePlanTitle({
-            explicitTitle: planRec?.title,
-            fallbackTitle: planRec?.summary,
-            primaryFile: normalizedPlanFile,
-            files: structuredPlanFileCandidates,
-          }),
-          summary: this.firstNonEmptyString(planRec?.summary),
-          files:
-            structuredPlanFileCandidates.length > 0
-              ? structuredPlanFileCandidates
-              : undefined,
-        }
-        : undefined;
-    // Keep plan.file as first-class: the plan card/button should still render
-    // when only the filepath is provided and content lives on disk.
-    const hasStructuredPlanPayload =
-      !!this.firstNonEmptyString(plan?.file, plan?.content);
-
-    if (
-      !assistantMessage &&
-      !message &&
-      cleanedReasoning.length === 0 &&
-      progressUpdates.length === 0 &&
-      interactiveEvents.length === 0 &&
-      (!subagents || subagents.length === 0) &&
-      !hasStructuredPlanPayload &&
-      !subagentsDelta
-    ) {
-      return undefined;
-    }
-
-    const rawQuestion = this.asRecord(
-      sanitizedCanonicalRec.question ?? rec.question,
-    );
-
-    return {
-      responseType,
-      assistantMessage,
-      message,
-      reasoning: cleanedReasoning.length > 0 ? cleanedReasoning : undefined,
-      progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
-      interactiveEvents:
-        interactiveEvents.length > 0 ? interactiveEvents : undefined,
-      subagents: subagents && subagents.length > 0 ? subagents : undefined,
-      subagentsDelta,
-      // Do not gate on plan.content only; filepath-only plans are valid.
-      plan: hasStructuredPlanPayload ? plan : undefined,
-      question: rawQuestion ?? undefined,
-    };
-  }
-
-  private createFallbackMessage(
-    structured: StructuredAssistantOutput,
-  ): string | undefined {
-    if (!structured.responseType) return undefined;
-
-    const { responseType, progressUpdates, interactiveEvents, plan } =
-      structured;
-
-    switch (responseType) {
-      case "implementation_plan":
-        return plan?.title ? `📋 ${plan.title}` : "📋 Implementation Plan";
-      case "progress_update":
-        if (progressUpdates && progressUpdates.length > 0) {
-          const titles = progressUpdates.map((p) => p.title).join(", ");
-          return `Progress: ${titles}`;
-        }
-        return "📊 Working on tasks...";
-      case "question":
-        if (interactiveEvents && interactiveEvents.length > 0) {
-          const firstEvent = interactiveEvents[0];
-          if (firstEvent.type === "question" && firstEvent.question) {
-            return firstEvent.question;
-          } else if (firstEvent.type === "confirm" && firstEvent.question) {
-            return firstEvent.question;
-          } else if (firstEvent.type === "message" && firstEvent.message) {
-            return firstEvent.message;
-          }
-        }
-        return "❓ Question for you";
-      case "subagents":
-        return "🤖 Spawned subagents...";
-      case "error":
-        return "⚠️ An error occurred";
-      case "message":
-      default:
-        return undefined;
-    }
   }
 
   private extractMessageBodyText(message: any): string {
@@ -6125,7 +4124,6 @@ export class ChatViewProvider
           ...message,
           structuredOutput: {
             responseType: "message",
-            assistantMessage: bodyText,
             message: bodyText,
           },
           content: bodyText,
@@ -6234,7 +4232,6 @@ export class ChatViewProvider
     // Preserve the default OpenCode response body whenever it exists.
     // Only inject structured text as a fallback when body text is missing or JSON-only.
     const messageContent =
-      structured.assistantMessage ||
       structured.message ||
       this.createFallbackMessage(structured);
     const shouldUseStructuredMessage = !bodyText || hasJsonOnlyBody;
@@ -6381,7 +4378,6 @@ export class ChatViewProvider
       !shouldSuppressStructuredPlan
     ) {
       const summaryMessage = this.firstNonEmptyString(
-        structured.assistantMessage,
         structured.message,
       );
       const safeMessage =
@@ -6424,10 +4420,9 @@ export class ChatViewProvider
         );
       const planFile = structuredPlanCandidates[0];
       const resolvedPlanTitle = this.resolvePlanTitle({
-        explicitTitle: structured.plan?.title,
-        fallbackTitle: structured.plan?.summary,
-        primaryFile: planFile,
-        files: structuredPlanCandidates,
+        plan: structured.plan,
+        planFile: planFile || structuredPlanCandidates[0],
+        fallback: structured.plan?.summary as string | undefined,
       });
       const hasLongPlanContent =
         typeof planContent === "string" && planContent.trim().length >= 80;
@@ -6454,7 +4449,6 @@ export class ChatViewProvider
       if (structured.responseType === "implementation_plan") {
         const clarificationMessage =
           this.firstNonEmptyString(
-            structured.assistantMessage,
             structured.message,
           ) ||
           "I need a few clarifications before drafting the implementation plan.";
@@ -6475,103 +4469,6 @@ export class ChatViewProvider
         next.parts = parts;
       }
     }
-
-    return next;
-  }
-
-  private enrichStreamEvent(event: any): any {
-    if (!event || typeof event !== "object") {
-      return event;
-    }
-
-    const properties = this.asRecord(event.properties) || {};
-    const isMessagePartEvent =
-      typeof event.type === "string" && event.type.startsWith("message.part.");
-    const part =
-      this.asRecord(properties.part) ||
-      this.asRecord(event.part) ||
-      (isMessagePartEvent ? this.asRecord(properties) : null);
-    const next: Record<string, unknown> = { ...event };
-    let kind:
-      | "thinking"
-      | "progress"
-      | "message"
-      | "lifecycle"
-      | "error"
-      | "other" = "other";
-    let text: string | undefined;
-
-    if (isMessagePartEvent && part) {
-      const rawPartType =
-        this.firstNonEmptyString(part.type)?.toLowerCase() || "";
-      const partType =
-        rawPartType === "thinking" || rawPartType === "thought"
-          ? "reasoning"
-          : rawPartType;
-      if (
-        partType === "reasoning" ||
-        typeof part.reasoning !== "undefined" ||
-        typeof part.thought !== "undefined" ||
-        typeof part.thinking !== "undefined"
-      ) {
-        kind = "thinking";
-        text = this.firstNonEmptyString(
-          properties.delta,
-          part.reasoning,
-          part.thought,
-          part.thinking,
-          properties.reasoning,
-          properties.thought,
-          properties.thinking,
-          part.delta,
-          part.text,
-        );
-      } else if (
-        partType === "tool" ||
-        partType === "step-start" ||
-        partType === "step-finish" ||
-        partType === "patch"
-      ) {
-        const toolName = (part.tool || "").toString().toLowerCase();
-        if (
-          toolName.includes("structuredoutput") ||
-          toolName.includes("structured_output")
-        ) {
-          kind = "other";
-        } else {
-          kind = "progress";
-        }
-      } else if (partType === "text" || !partType) {
-        kind = "message";
-        text = this.firstNonEmptyString(
-          properties.delta,
-          part.text,
-          part.content,
-        );
-      }
-    } else if (event.type === "message.updated") {
-      kind = "lifecycle";
-    } else if (event.type === "session.error" || event.type === "error") {
-      kind = "error";
-    }
-
-    const structuredOutput = this.extractStructuredOutput({
-      ...properties,
-      info: properties.info,
-    });
-    if (structuredOutput) {
-      next.structuredOutput = structuredOutput;
-      if (kind === "other") {
-        kind = "message";
-      }
-    }
-
-    next.structured = {
-      kind,
-      text,
-      eventType: event.type,
-      responseType: structuredOutput?.responseType,
-    };
 
     return next;
   }
@@ -6613,7 +4510,7 @@ export class ChatViewProvider
     let debugSessionId: string | undefined;
     let baselineAssistantMarker: AssistantHistoryMarker | undefined;
     try {
-      const normalizedImages = (images || [])
+      const normalizedImages = (Array.isArray(images) ? images : [])
         .map((img) => {
           if (typeof img === "string") {
             return { dataUrl: img, filename: "image" };
@@ -6673,6 +4570,15 @@ export class ChatViewProvider
       baselineAssistantMarker =
         this.getLatestAssistantHistoryMarker(existingMessages);
       const isNewSession = existingMessages.length === 0;
+
+      if (isNewSession) {
+        const config = vscode.workspace.getConfiguration('opencode');
+        const autoGenerateTitle = config.get<boolean>('autoGenerateSessionTitle', true);
+        if (autoGenerateTitle) {
+          const generatedTitle = TitleGeneratorService.generateTitle(text);
+          await this.updateSessionTitle(session.id, generatedTitle);
+        }
+      }
 
       // Save user message to local history immediately, unless this is a retry
       if (!isRetry) {
@@ -7385,7 +5291,9 @@ export class ChatViewProvider
       this.logger.info("Processing request finished", {
         sessionId: drainSessionId,
       });
-      this.maybeAutoDrainQueue(drainSessionId);
+      if (drainSessionId) {
+        this.queueManager.maybeAutoDrainQueue(drainSessionId);
+      }
     }
   }
 
@@ -7394,397 +5302,6 @@ export class ChatViewProvider
    * FORBIDDEN TO REMOVE: This logic ensures the Implementation Plan button appears,
    * which is a core feature for user transparency and workflow.
    */
-  private enrichMessageWithPlan(message: any): any {
-    if (!message) return message;
-
-    const role = message?.info?.role || message?.role;
-    if (typeof role === "string" && role.toLowerCase() !== "assistant") {
-      return message;
-    }
-
-    const structured = this.extractStructuredOutput(message);
-    const structuredResponseType = this.firstNonEmptyString(
-      structured?.responseType,
-      message?.structuredOutput?.responseType,
-    );
-    const hasInteractiveEvents =
-      (Array.isArray(structured?.interactiveEvents) &&
-        structured.interactiveEvents.length > 0) ||
-      (Array.isArray(message?.interactiveEvents) &&
-        message.interactiveEvents.length > 0);
-    const isInteractiveClarificationResponse =
-      this.isInteractiveResponseType(structuredResponseType) &&
-      hasInteractiveEvents;
-
-    if (isInteractiveClarificationResponse) {
-      if (message.plan) {
-        this.logger.debug("Plan suppressed", {
-          source: "enrichMessageWithPlan",
-          reason: "interactive-wins",
-          responseType: structuredResponseType || "unknown",
-          hasInteractiveEvents: !!hasInteractiveEvents,
-          isClarification: false,
-        });
-        const nextMessage = { ...message };
-        delete nextMessage.plan;
-        return nextMessage;
-      }
-      return message;
-    }
-
-    if (structured) {
-      const structuredPlanRecord = this.asRecord(structured.plan);
-      const structuredPlanContent = this.firstNonEmptyString(
-        structuredPlanRecord?.content,
-      );
-      const structuredPlanFiles =
-        this.collectPlanFileCandidatesFromStructuredPlan(structuredPlanRecord);
-      const structuredPlanFile = structuredPlanFiles[0];
-
-      // Resolve the plan filename: prefer what the agent declared in structured
-      // output, then look for a matching filename in the message edits/patches,
-      // then from markdown references. The viewer reads this to load the live
-      // file from disk so the user sees the exact content the agent wrote.
-      const editsForPlan: any[] = message.edits || [];
-      const partsForPlan: any[] = message.parts || [];
-      const fileCandidatesFromEditsAndParts: string[] = [];
-      for (const edit of editsForPlan) {
-        if (this.isLikelyPlanMarkdownFile(edit?.file)) {
-          fileCandidatesFromEditsAndParts.push(edit.file);
-        }
-      }
-      for (const part of partsForPlan) {
-        if (part?.type !== "patch" || !Array.isArray(part.files)) {
-          continue;
-        }
-        for (const patchFile of part.files) {
-          if (this.isLikelyPlanMarkdownFile(patchFile)) {
-            fileCandidatesFromEditsAndParts.push(patchFile);
-          }
-        }
-      }
-      const mergedPlanFiles = this.prioritizePlanFileCandidates([
-        ...structuredPlanFiles,
-        ...fileCandidatesFromEditsAndParts,
-        ...this.extractMarkdownFileReferences(structuredPlanContent),
-        ...this.extractMarkdownFileReferences(structuredPlanRecord?.summary),
-        ...this.extractMarkdownFileReferences(structuredPlanRecord?.title),
-      ]);
-      const resolvedPlanFile = mergedPlanFiles[0];
-      const resolvedPlanTitle = this.resolvePlanTitle({
-        explicitTitle: this.firstNonEmptyString(structuredPlanRecord?.title),
-        fallbackTitle: this.firstNonEmptyString(structuredPlanRecord?.summary),
-        primaryFile: resolvedPlanFile,
-        files: mergedPlanFiles,
-      });
-      const fallbackPlanFile = resolvedPlanFile;
-
-      if (
-        structuredPlanContent &&
-        typeof structuredPlanContent === "string" &&
-        structuredPlanContent.length >= 200
-      ) {
-        if (this.isClarificationQuestionnaire(structuredPlanContent)) {
-          return message;
-        }
-        if (!resolvedPlanFile) {
-          this.persistPlan(
-            structuredPlanContent,
-            fallbackPlanFile,
-          ).catch((err) => {
-            console.error(
-              "[ChatViewProvider] Failed to auto-persist structured plan:",
-              err,
-            );
-          });
-        }
-
-        return {
-          ...message,
-          structuredOutput: structured,
-          plan: {
-            file: fallbackPlanFile,
-            content: structuredPlanContent,
-            title: resolvedPlanTitle,
-            summary: this.firstNonEmptyString(structuredPlanRecord?.summary),
-            files:
-              mergedPlanFiles.length > 0
-                ? mergedPlanFiles
-                : fallbackPlanFile
-                  ? [fallbackPlanFile]
-                  : undefined,
-            fileCount:
-              mergedPlanFiles.length > 0
-                ? mergedPlanFiles.length
-                : fallbackPlanFile
-                  ? 1
-                  : 0,
-          },
-        };
-      }
-
-      if (
-        structuredResponseType === "implementation_plan" &&
-        structuredPlanFile
-      ) {
-        // Preserve structured file-only plans so the webview "View Plan" action
-        // can open the plan tab directly from disk.
-        return {
-          ...message,
-          structuredOutput: structured,
-          plan: {
-            file: fallbackPlanFile,
-            title: resolvedPlanTitle,
-            summary: this.firstNonEmptyString(structuredPlanRecord?.summary),
-            files:
-              mergedPlanFiles.length > 0
-                ? mergedPlanFiles
-                : fallbackPlanFile
-                  ? [fallbackPlanFile]
-                  : undefined,
-            fileCount:
-              mergedPlanFiles.length > 0
-                ? mergedPlanFiles.length
-                : fallbackPlanFile
-                  ? 1
-                  : 0,
-          },
-        };
-      }
-    }
-
-    // Check for implementation plan in edits, parts, or message content
-    const edits = message.edits || [];
-    const parts = message.parts || [];
-    const info = message.info || {};
-
-    // 1. Gather text body and fallback plan-like content in message summary,
-    // parts, or plain content.
-    const partsContent = parts
-      .filter((p: any) => this.isRenderableTextPart(p)) // ignore reasoning parts directly
-      .map((p: any) => {
-        let c = p.text || p.content || "";
-        if (p.files && Array.isArray(p.files)) c += " " + p.files.join(" ");
-        return c;
-      })
-      .join(" ");
-
-    // 2. Check for explicit markdown filenames in edits/parts/text.
-    const extractedPlanFiles = this.prioritizePlanFileCandidates([
-      ...edits
-        .map((e: any) => this.firstNonEmptyString(e?.file))
-        .filter((file): file is string => !!file),
-      ...parts
-        .filter((p: any) => p.type === "patch" && Array.isArray(p.files))
-        .flatMap((p: any) =>
-          (p.files as unknown[])
-            .map((f) => this.firstNonEmptyString(f))
-            .filter((file): file is string => !!file),
-        ),
-      ...this.extractMarkdownFileReferences(message?.content),
-      ...this.extractMarkdownFileReferences(info.summary?.title),
-      ...this.extractMarkdownFileReferences(info.summary?.body),
-      ...this.extractMarkdownFileReferences(partsContent),
-    ]);
-    const hasPlanFile = extractedPlanFiles.length > 0;
-
-    const fullContent =
-      (info.summary?.title || "") +
-      " " +
-      (info.summary?.body || "") +
-      " " +
-      (message.content || "") +
-      " " +
-      partsContent;
-
-    // Broadened regex to catch more variations of "Implementation Plan"
-    // Also check if the title itself strongly indicates a plan
-    const basicPlanKeywordMatch =
-      /implementation\s*plan/i.test(fullContent) ||
-      /goal\s*description/i.test(fullContent) ||
-      /proposed\s*changes/i.test(fullContent) ||
-      /implementation_plan\.md/i.test(fullContent) ||
-      (/(plan|roadmap)/i.test(info.summary?.title || "") &&
-        /(implementation|feature)/i.test(info.summary?.title || ""));
-
-    // Require structural markers to avoid false positives from short mentions
-    const hasStructuralMarkers =
-      /##\s|###\s|- \[ \]|Files:|Steps:|Goal:/i.test(fullContent) ||
-      // Long content is likely a real plan even if markers are missing
-      fullContent.length > 500;
-
-    const hasPlanKeywords = basicPlanKeywordMatch && hasStructuralMarkers;
-    const looksLikeClarificationQuestions =
-      this.isClarificationQuestionnaire(fullContent);
-
-    // If the content looks like a clarification questionnaire, never promote it
-    // into an implementation plan. If a plan was already attached, strip it.
-    if (looksLikeClarificationQuestions) {
-      if (message.plan) {
-        this.logger.debug("Plan suppressed", {
-          source: "enrichMessageWithPlan",
-          reason: "clarification-detected",
-          responseType: structuredResponseType || "unknown",
-          hasInteractiveEvents: !!hasInteractiveEvents,
-          isClarification: true,
-        });
-        const nextMessage = { ...message };
-        delete nextMessage.plan;
-        return nextMessage;
-      }
-      return message;
-    }
-
-    if (hasPlanFile || hasPlanKeywords) {
-      // Extract and clean the plan content using the PlanParser
-      let rawContent = message.content || partsContent;
-
-      // If the AI structured output placed the overarching title in the summary but not the text, inject it as the H1
-      const summaryTitle = info.summary?.title;
-      if (summaryTitle && !rawContent.includes(summaryTitle)) {
-        rawContent = `# ${summaryTitle}\n\n${rawContent}`;
-      }
-
-      const parsed = PlanParser.parse(rawContent);
-      const cleanPlanContent = PlanParser.toMarkdown(parsed);
-      const existingStructured = this.asRecord(message.structuredOutput);
-      const existingStructuredPlan = this.asRecord(existingStructured?.plan);
-      const resolvedPlanTitle = this.resolvePlanTitle({
-        explicitTitle: this.firstNonEmptyString(
-          existingStructuredPlan?.title,
-          message?.plan?.title,
-        ),
-        fallbackTitle: parsed.goal,
-        primaryFile: extractedPlanFiles[0],
-        files: extractedPlanFiles,
-      });
-      const fallbackPlanFile = extractedPlanFiles[0];
-
-      // PERSISTENCE: Automatically save the cleaned plan to disk.
-      // This ensures handleViewPlan can read it even if the SDK didn't write it.
-      // We only persist if it actually looks like a valid plan (has a goal or files/steps).
-      if (
-        cleanPlanContent.length > 100 &&
-        (parsed.goal || parsed.files.length > 0 || parsed.steps.length > 0)
-      ) {
-        if (!extractedPlanFiles[0]) {
-          this.persistPlan(
-            cleanPlanContent,
-            fallbackPlanFile,
-          ).catch((err) => {
-            console.error(
-              "[ChatViewProvider] Failed to auto-persist cleaned plan:",
-              err,
-            );
-          });
-        }
-      }
-
-      const nextMessage = {
-        ...message,
-        plan: {
-          file: fallbackPlanFile,
-          content: cleanPlanContent,
-          title: resolvedPlanTitle,
-          summary: parsed.description,
-          files:
-            extractedPlanFiles.length > 0
-              ? extractedPlanFiles
-              : fallbackPlanFile
-                ? [fallbackPlanFile]
-                : undefined,
-          fileCount:
-            parsed.files.length ||
-            extractedPlanFiles.length ||
-            (fallbackPlanFile ? 1 : 0),
-        },
-      };
-      const nextStructured: Record<string, unknown> = existingStructured
-        ? { ...existingStructured }
-        : {};
-      nextStructured.responseType = "implementation_plan";
-      nextStructured.plan = {
-        ...(existingStructuredPlan || {}),
-        file:
-          fallbackPlanFile ??
-          this.firstNonEmptyString(existingStructuredPlan?.file),
-        files:
-          extractedPlanFiles.length > 0
-            ? extractedPlanFiles
-            : fallbackPlanFile
-              ? [fallbackPlanFile]
-              : existingStructuredPlan?.files,
-        content: cleanPlanContent,
-        title: resolvedPlanTitle,
-        summary:
-          parsed.description ||
-          this.firstNonEmptyString(existingStructuredPlan?.summary),
-      };
-      nextMessage.structuredOutput = nextStructured;
-      if (message?.structuredOutput?.responseType !== "implementation_plan") {
-        const safeMessage =
-          "Implementation plan is ready. Use View Plan to inspect details.";
-        nextStructured.assistantMessage = safeMessage;
-        nextMessage.content = safeMessage;
-        const parts = Array.isArray(nextMessage.parts)
-          ? [...nextMessage.parts]
-          : [];
-        const textIndex = parts.findIndex(
-          (part: any) => this.isRenderableTextPart(part),
-        );
-        if (textIndex >= 0) {
-          parts[textIndex] = {
-            ...parts[textIndex],
-            type: "text",
-            text: safeMessage,
-          };
-        } else {
-          parts.push({ type: "text", text: safeMessage });
-        }
-        nextMessage.parts = parts;
-      }
-      return nextMessage;
-    }
-
-    return message;
-  }
-
-  private async persistPlan(
-    content: string,
-    preferredPath?: string,
-  ): Promise<string | undefined> {
-    try {
-      const normalizedContent = this.firstNonEmptyString(content);
-      if (!normalizedContent) {
-        return undefined;
-      }
-
-      const normalizedPreferred = this.normalizePlanFileReference(preferredPath);
-      const resolvedPreferred = normalizedPreferred
-        ? this.resolvePlanFileCandidates(normalizedPreferred)[0] ||
-        path.normalize(normalizedPreferred)
-        : undefined;
-      const resolvedPath = resolvedPreferred;
-      if (!resolvedPath) {
-        return undefined;
-      }
-
-      const normalizedPath = path.normalize(resolvedPath);
-      await vscode.workspace.fs.createDirectory(
-        vscode.Uri.file(path.dirname(normalizedPath)),
-      );
-      await vscode.workspace.fs.writeFile(
-        vscode.Uri.file(normalizedPath),
-        new TextEncoder().encode(normalizedContent),
-      );
-      console.log(`[ChatViewProvider] Auto-persisted plan to ${normalizedPath}`);
-      return normalizedPath;
-    } catch (err) {
-      console.error("[ChatViewProvider] persistPlan error:", err);
-      return undefined;
-    }
-  }
-
   private async resolveStopSessionId(
     requestedSessionId?: string,
   ): Promise<string | undefined> {
@@ -7855,113 +5372,9 @@ export class ChatViewProvider
         type: "stopRequestHandled",
         sessionId: resolvedSessionId,
       });
-      this.maybeAutoDrainQueue(resolvedSessionId);
-    }
-  }
-
-  private postCompactionStatus(payload: {
-    status: "running" | "done" | "error";
-    sessionId?: string;
-    at?: number;
-    error?: string;
-    baselineStats?: CompactionBaselineStats;
-    compactionDividerIndex?: number;
-    compactionDividerBeforeMessageId?: string;
-    compactionDividerAfterMessageId?: string;
-    collapsed?: boolean;
-  }): void {
-    this.view?.webview.postMessage({
-      type: "compactionStatus",
-      ...payload,
-    });
-  }
-
-  private async persistAndPublishCompactionViewState(
-    sessionId: string,
-    patch: PersistedCompactionViewState,
-  ): Promise<PersistedCompactionViewState | null> {
-    const existing = await this.loadPersistedCompactionViewState(sessionId);
-    const mergedRaw: PersistedCompactionViewState = {
-      ...(existing || {}),
-      ...patch,
-    };
-    const normalized = this.normalizeCompactionViewState(mergedRaw);
-    if (!normalized) {
-      await this.clearPersistedCompactionViewState(sessionId);
-      return null;
-    }
-    await this.savePersistedCompactionViewState(sessionId, normalized);
-    this.postCompactionViewState(sessionId, normalized);
-    return normalized;
-  }
-
-  private async handleSetCompactionViewState(
-    message: Record<string, unknown>,
-  ): Promise<void> {
-    const sessionId = await this.resolveCompactionSessionId(
-      this.firstNonEmptyString(message.sessionId),
-    );
-    if (!sessionId) {
-      return;
-    }
-
-    const patch: PersistedCompactionViewState = {};
-    if (typeof message.lastCompactedAt === "number") {
-      patch.lastCompactedAt = message.lastCompactedAt;
-    }
-    if (typeof message.compactionDividerIndex === "number") {
-      patch.compactionDividerIndex = message.compactionDividerIndex;
-    }
-    const dividerBeforeMessageId = this.firstNonEmptyString(
-      message.compactionDividerBeforeMessageId,
-    );
-    if (dividerBeforeMessageId) {
-      patch.compactionDividerBeforeMessageId = dividerBeforeMessageId;
-    }
-    const dividerAfterMessageId = this.firstNonEmptyString(
-      message.compactionDividerAfterMessageId,
-    );
-    if (dividerAfterMessageId) {
-      patch.compactionDividerAfterMessageId = dividerAfterMessageId;
-    }
-    const baselineStats = this.normalizeCompactionBaselineStats(
-      message.baselineStats,
-    );
-    if (baselineStats) {
-      patch.baselineStats = baselineStats;
-    }
-    if (typeof message.collapsed === "boolean") {
-      patch.collapsed = message.collapsed;
-    }
-    if (Object.keys(patch).length === 0) {
-      return;
-    }
-
-    await this.persistAndPublishCompactionViewState(sessionId, patch);
-  }
-
-  private async resolveCompactionSessionId(
-    requestedSessionId?: string,
-  ): Promise<string | undefined> {
-    const explicitSessionId = this.firstNonEmptyString(requestedSessionId);
-    if (explicitSessionId) {
-      return explicitSessionId;
-    }
-
-    const activeSessionId = this.firstNonEmptyString(this.currentSessionId);
-    if (activeSessionId) {
-      return activeSessionId;
-    }
-
-    try {
-      const currentSession = await this.sessionService.getCurrentSession();
-      return this.firstNonEmptyString(currentSession?.id);
-    } catch (error) {
-      console.warn(
-        "[ChatViewProvider] Failed to resolve compaction session from SessionService:",
-        error,
-      );
-      return undefined;
+      if (resolvedSessionId) {
+        this.queueManager.maybeAutoDrainQueue(resolvedSessionId);
+      }
     }
   }
 
@@ -7969,21 +5382,6 @@ export class ChatViewProvider
    * Returns the context token limit for the currently selected model, or
    * undefined if the model/limit is unknown.
    */
-  private getSelectedModelContextLimit(): number | undefined {
-    if (!this.availableModels?.length || !this.selectedModel) {
-      return undefined;
-    }
-    const matched = this.availableModels.find(
-      (m) =>
-        m.providerID === this.selectedModel.providerID &&
-        m.modelID === this.selectedModel.modelID,
-    );
-    const limit = matched?.contextLimit;
-    return typeof limit === "number" && Number.isFinite(limit) && limit > 0
-      ? Math.floor(limit)
-      : undefined;
-  }
-
   /**
    * Checks whether the context window is at or above the auto-compact
    * threshold after a completed turn and, if so, triggers compaction
@@ -7993,287 +5391,6 @@ export class ChatViewProvider
    * there is still room for the summary that the compaction call itself
    * produces.
    */
-  private async maybeAutoCompact(
-    sessionId: string,
-    responseData: unknown,
-  ): Promise<void> {
-    if (this.compactingSessions.has(sessionId)) {
-      return; // already compacting
-    }
-
-    const contextLimit = this.getSelectedModelContextLimit();
-    if (!contextLimit) {
-      return; // context limit unknown – can't evaluate threshold
-    }
-
-    // The `info.tokens.input` field carries the number of tokens that were
-    // sent to the model in this turn (i.e. the current context window size).
-    const info = (responseData as any)?.info;
-    const inputTokens: number = info?.tokens?.input ?? 0;
-    if (inputTokens <= 0) {
-      return;
-    }
-
-    const pct = inputTokens / contextLimit;
-    const AUTO_COMPACT_THRESHOLD = 0.9; // 90 %
-    if (pct < AUTO_COMPACT_THRESHOLD) {
-      return;
-    }
-
-    console.log(
-      `[ChatViewProvider] Auto-compacting session ${sessionId}: ${inputTokens.toLocaleString()} / ${contextLimit.toLocaleString()} tokens (${Math.round(pct * 100)}%)`,
-    );
-    vscode.window.showInformationMessage(
-      `Context window is ${Math.round(pct * 100)}% full — auto-compacting session to free space…`,
-    );
-
-    // Fire-and-forget: compaction runs independently from the current turn.
-    this.handleCompactSession(sessionId).catch((err) => {
-      console.error("[ChatViewProvider] Auto-compact failed:", err);
-    });
-  }
-
-  private async handleCompactSession(
-    requestedSessionId?: string,
-    baselineStats?: CompactionBaselineStats,
-  ): Promise<void> {
-    const sessionId = await this.resolveCompactionSessionId(requestedSessionId);
-    if (!sessionId) {
-      this.postCompactionStatus({
-        status: "error",
-        error: "No active session available for compaction.",
-      });
-      return;
-    }
-
-    const providerID = this.firstNonEmptyString(this.selectedModel.providerID);
-    const modelID = this.firstNonEmptyString(this.selectedModel.modelID);
-    if (!providerID || !modelID) {
-      this.postCompactionStatus({
-        status: "error",
-        sessionId,
-        error: "No model selected for compaction.",
-      });
-      return;
-    }
-
-    const dividerState = await this.resolveSessionCompactionDividerState(
-      sessionId,
-    );
-    this.compactingSessions.add(sessionId);
-    this.postCompactionStatus({ status: "running", sessionId });
-
-    try {
-      const client = await this.serverManager.ensureRunning();
-      const workspaceDirectory = this.getWorkspaceDirectory();
-      await client.session.summarize({
-        path: { id: sessionId },
-        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
-        body: {
-          providerID,
-          modelID,
-        },
-      });
-      const compactedAt = Date.now();
-      // Always use a zero baseline after compaction. The old messages are
-      // replaced by a summary on the server, so subtracting pre-compaction
-      // stats would make the context-window meter show 0. Zero baseline means
-      // the meter shows the actual tokens currently in context (summary +
-      // any new messages since the compact).
-      const zeroBaseline: CompactionBaselineStats = {
-        input: 0,
-        output: 0,
-        read: 0,
-        write: 0,
-        duration: 0,
-      };
-      await this.persistAndPublishCompactionViewState(
-        sessionId,
-        {
-          lastCompactedAt: compactedAt,
-          baselineStats: zeroBaseline,
-          // divider at 0 — old messages no longer exist; the summary appears
-          // as a regular message so there is nothing to collapse.
-          compactionDividerIndex: 0,
-          collapsed: true,
-        },
-      );
-      this.compactingSessions.delete(sessionId);
-      this.postCompactionStatus({
-        status: "done",
-        sessionId,
-        at: compactedAt,
-        baselineStats: zeroBaseline,
-        compactionDividerIndex: 0,
-        collapsed: true,
-      });
-
-      // Reload the session history so the summary message produced by the
-      // compaction is immediately visible and its token count drives the meter.
-      try {
-        // Discard the stale local cache so getMessages fetches from the server.
-        await this.sessionService.saveSessionMessages(sessionId, []);
-        const freshMessages = await this.sessionService.getMessages(sessionId);
-        const processedMessages = this.processHistoryMessages(
-          freshMessages,
-          sessionId,
-        );
-        this.logHistoryRenderDiagnostics(
-          "compaction.reload",
-          sessionId,
-          freshMessages,
-          processedMessages,
-        );
-        this.view?.webview.postMessage({
-          type: "chatHistory",
-          sessionId,
-          messages: processedMessages,
-        });
-        await this.sendPersistedCompactionViewState(sessionId);
-      } catch (reloadError) {
-        console.warn(
-          "[ChatViewProvider] Failed to reload history after compaction:",
-          reloadError,
-        );
-      }
-    } catch (error) {
-      this.compactingSessions.delete(sessionId);
-      const msg =
-        error instanceof Error
-          ? error.message
-          : "Failed to compact the current session.";
-      this.postCompactionStatus({
-        status: "error",
-        sessionId,
-        error: msg,
-      });
-    }
-  }
-
-  private forwardCompactionStatusFromStreamEvent(event: unknown): void {
-    const eventRec = this.asRecord(event);
-    if (!eventRec) {
-      return;
-    }
-
-    const eventType = this.firstNonEmptyString(eventRec.type);
-    if (!eventType) {
-      return;
-    }
-
-    if (eventType !== "session.updated" && eventType !== "session.compacted") {
-      return;
-    }
-
-    const propertiesRec = this.asRecord(eventRec.properties) || {};
-    const infoRec = this.asRecord(propertiesRec.info);
-    const timeRec = this.asRecord(infoRec?.time);
-    const sessionId = this.firstNonEmptyString(
-      propertiesRec.sessionID,
-      propertiesRec.sessionId,
-      infoRec?.id,
-    );
-    const activeSessionId = this.firstNonEmptyString(this.currentSessionId);
-
-    if (activeSessionId && sessionId && sessionId !== activeSessionId) {
-      return;
-    }
-
-    const targetSessionId = sessionId || activeSessionId;
-    if (!targetSessionId) {
-      return;
-    }
-
-    if (eventType === "session.compacted") {
-      this.compactingSessions.delete(targetSessionId);
-      const compactedAt = Date.now();
-      void this.persistAndPublishCompactionViewState(targetSessionId, {
-        lastCompactedAt: compactedAt,
-        collapsed: true,
-      })
-        .then((persistedState) => {
-          this.postCompactionStatus({
-            status: "done",
-            sessionId: targetSessionId,
-            at: compactedAt,
-            baselineStats: persistedState?.baselineStats,
-            compactionDividerIndex: persistedState?.compactionDividerIndex,
-            compactionDividerBeforeMessageId:
-              persistedState?.compactionDividerBeforeMessageId,
-            compactionDividerAfterMessageId:
-              persistedState?.compactionDividerAfterMessageId,
-            collapsed: true,
-          });
-        })
-        .catch(() => {
-          this.postCompactionStatus({
-            status: "done",
-            sessionId: targetSessionId,
-            at: compactedAt,
-            collapsed: true,
-          });
-        });
-      return;
-    }
-
-    const compactingAtRaw = timeRec?.compacting;
-    const compactingAt =
-      typeof compactingAtRaw === "number" &&
-        Number.isFinite(compactingAtRaw) &&
-        compactingAtRaw > 0
-        ? Math.floor(compactingAtRaw)
-        : undefined;
-
-    if (compactingAt) {
-      if (!this.compactingSessions.has(targetSessionId)) {
-        this.compactingSessions.add(targetSessionId);
-        this.postCompactionStatus({
-          status: "running",
-          sessionId: targetSessionId,
-          at: compactingAt,
-        });
-      }
-      return;
-    }
-
-    if (this.compactingSessions.has(targetSessionId)) {
-      this.compactingSessions.delete(targetSessionId);
-      const updatedAtRaw = timeRec?.updated;
-      const updatedAt =
-        typeof updatedAtRaw === "number" &&
-          Number.isFinite(updatedAtRaw) &&
-          updatedAtRaw > 0
-          ? Math.floor(updatedAtRaw)
-          : Date.now();
-      void this.persistAndPublishCompactionViewState(targetSessionId, {
-        lastCompactedAt: updatedAt,
-        collapsed: true,
-      })
-        .then((persistedState) => {
-          this.postCompactionStatus({
-            status: "done",
-            sessionId: targetSessionId,
-            at: updatedAt,
-            baselineStats: persistedState?.baselineStats,
-            compactionDividerIndex: persistedState?.compactionDividerIndex,
-            compactionDividerBeforeMessageId:
-              persistedState?.compactionDividerBeforeMessageId,
-            compactionDividerAfterMessageId:
-              persistedState?.compactionDividerAfterMessageId,
-            collapsed: true,
-          });
-        })
-        .catch(() => {
-          this.postCompactionStatus({
-            status: "done",
-            sessionId: targetSessionId,
-            at: updatedAt,
-            collapsed: true,
-          });
-        });
-    }
-  }
-
   /**
    * Appends text to the prompt input
    */
@@ -8356,8 +5473,8 @@ export class ChatViewProvider
 
     if (providedSourceFile) {
       const diskPlan = await this.readPlanFileFromDisk(providedSourceFile);
-      if (diskPlan?.resolvedPath) {
-        planFilePath = diskPlan.resolvedPath;
+      if (diskPlan) {
+        planFilePath = providedSourceFile;
       } else {
         const preferredPath = this.resolvePlanFileCandidates(providedSourceFile)[0];
         planFilePath = await this.persistPlan(
@@ -8375,7 +5492,7 @@ export class ChatViewProvider
         if (!diskPlan) {
           continue;
         }
-        planFilePath = diskPlan.resolvedPath;
+        planFilePath = candidate;
         break;
       }
     }
@@ -8527,20 +5644,46 @@ export class ChatViewProvider
     return lines.join("\n");
   }
 
+  /**
+   * Helper: Get session settings
+   * Retrieves session-specific settings (model, agent, thinking level)
+   */
+  private getSessionSettings(_sessionId: string): {
+    selectedModel?: { modelID: string; providerID: string };
+    selectedAgent?: string;
+    thinkingLevel?: string;
+  } {
+    // This would be implemented to retrieve per-session settings
+    // For now, return empty object
+    return {};
+  }
+
+  /**
+   * Helper: Apply session settings
+   * Applies session-specific model, agent, and thinking level
+   */
+  private async applySessionSettings(sessionId: string): Promise<void> {
+    return this.modelAndAgentManager.applySessionSettings(sessionId);
+  }
+
+  /**
+   * Helper: Migrate session settings
+   * Transfers settings from old session to new session
+   */
   private migrateSessionSettings(
     oldSessionId: string,
-    newSessionId: string,
+    newSessionId: string
   ): void {
-    if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) {
-      return;
+    const settings = this.getSessionSettings(oldSessionId);
+    if (settings.selectedModel || settings.selectedAgent || settings.thinkingLevel) {
+      // Save to new session using ModelAndAgentManager
+      void this.persistSessionSettings(newSessionId, {
+        providerID: settings.selectedModel?.providerID,
+        modelID: settings.selectedModel?.modelID,
+        agent: settings.selectedAgent,
+        thinkingLevel: settings.thinkingLevel,
+      });
     }
-    const map = this.getSessionSettingsMap();
-    const oldSettings = map[oldSessionId];
-    if (!oldSettings) {
-      return;
-    }
-    map[newSessionId] = { ...oldSettings, ...map[newSessionId] };
-    void this.context.globalState.update("sessionSettings", map);
   }
 
   /**
@@ -8662,463 +5805,9 @@ export class ChatViewProvider
     await this.context.globalState.update("sessionRecoveryMap", existing);
   }
 
-  private normalizePlanFileReference(file: unknown): string | undefined {
-    const raw = this.firstNonEmptyString(file);
-    if (!raw) {
-      return undefined;
-    }
-
-    let value = raw.trim();
-    if (!value) {
-      return undefined;
-    }
-
-    if (value.startsWith("file://")) {
-      try {
-        const uri = vscode.Uri.parse(value);
-        if (uri.scheme === "file" && uri.fsPath) {
-          value = uri.fsPath;
-        }
-      } catch {
-        // Keep string cleanup fallback below.
-      }
-    }
-
-    // Strip common markdown wrappers around file paths.
-    value = value
-      .replace(/^`+|`+$/g, "")
-      .replace(/^"+|"+$/g, "")
-      .replace(/^'+|'+$/g, "")
-      .replace(/^<+|>+$/g, "")
-      .replace(/^\(+|\)+$/g, "")
-      .trim();
-
-    return value || undefined;
-  }
-
-  private isLikelyPlanMarkdownFile(file: unknown): boolean {
-    const normalized = this.normalizePlanFileReference(file);
-    if (!normalized || !normalized.toLowerCase().endsWith(".md")) {
-      return false;
-    }
-    const lower = normalized.replace(/\\/g, "/").toLowerCase();
-    if (lower.includes("/node_modules/")) {
-      return false;
-    }
-    if (
-      /(^|\/)implementation_plan_comments_[^/]+\.md$/.test(lower) ||
-      /(^|\/)[^/]+_comments\.md$/.test(lower)
-    ) {
-      return false;
-    }
-    return (
-      lower.includes("/.sisyphus/plans/") ||
-      /(^|\/)implementation_plan(?:_[a-z0-9-]+)?\.md$/.test(lower) ||
-      /(^|\/)plans?\//.test(lower) ||
-      lower.includes("plan")
-    );
-  }
-
-  private getPlanFileCandidateScore(filePath: string): number {
-    const normalized = filePath.replace(/\\/g, "/").toLowerCase();
-    let score = 0;
-    if (!normalized.endsWith(".md")) {
-      return -999;
-    }
-    if (normalized.includes("/.sisyphus/plans/")) {
-      score += 120;
-    }
-    if (/(^|\/)implementation_plan(?:_[a-z0-9-]+)?\.md$/.test(normalized)) {
-      score += 100;
-    }
-    if (/(^|\/)plans?\//.test(normalized)) {
-      score += 70;
-    }
-    if (normalized.includes("plan")) {
-      score += 50;
-    }
-    if (normalized.includes("comment")) {
-      score -= 80;
-    }
-    return score;
-  }
-
-  private prioritizePlanFileCandidates(candidates: Array<unknown>, explicitFiles?: Set<string>): string[] {
-    const deduped: Array<{ value: string; score: number }> = [];
-    const seen = new Set<string>();
-
-    for (const candidate of candidates) {
-      const normalized = this.normalizePlanFileReference(candidate);
-      if (!normalized) {
-        continue;
-      }
-      const dedupeKey = path.normalize(normalized);
-      const isExplicit = explicitFiles?.has(dedupeKey);
-
-      if (!isExplicit && !this.isLikelyPlanMarkdownFile(normalized)) {
-        continue;
-      }
-
-      if (seen.has(dedupeKey)) {
-        continue;
-      }
-      seen.add(dedupeKey);
-      
-      const score = isExplicit ? 1000 : this.getPlanFileCandidateScore(dedupeKey);
-
-      deduped.push({
-        value: dedupeKey,
-        score,
-      });
-    }
-
-    deduped.sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      return a.value.length - b.value.length;
-    });
-
-    return deduped.map((entry) => entry.value);
-  }
-
-  private collectPlanFileCandidatesFromStructuredPlan(
-    planRecord: Record<string, unknown> | undefined,
-  ): string[] {
-    if (!planRecord) {
-      return [];
-    }
-
-    const explicitFiles = new Set<string>();
-    const candidates: unknown[] = [];
-
-    const addExplicit = (val: unknown) => {
-      const normalized = this.normalizePlanFileReference(val);
-      if (normalized) {
-        explicitFiles.add(path.normalize(normalized));
-      }
-    };
-
-    addExplicit(planRecord.file);
-    candidates.push(planRecord.file);
-
-    const files = Array.isArray(planRecord.files) ? planRecord.files : [];
-    for (const fileEntry of files) {
-      if (typeof fileEntry === "string") {
-        addExplicit(fileEntry);
-        candidates.push(fileEntry);
-        continue;
-      }
-      if (fileEntry && typeof fileEntry === "object") {
-        const record = this.asRecord(fileEntry);
-        addExplicit(this.firstNonEmptyString(record?.file, record?.path));
-        candidates.push(record?.file, record?.path, record?.filename);
-      }
-    }
-
-    for (const value of this.extractMarkdownFileReferences(planRecord.content)) {
-      candidates.push(value);
-    }
-    for (const value of this.extractMarkdownFileReferences(planRecord.summary)) {
-      candidates.push(value);
-    }
-    for (const value of this.extractMarkdownFileReferences(planRecord.title)) {
-      candidates.push(value);
-    }
-
-    return this.prioritizePlanFileCandidates(candidates, explicitFiles);
-  }
-
-  private resolvePlanFileCandidates(planFile: string): string[] {
-    const candidates: string[] = [];
-    const seen = new Set<string>();
-    const push = (candidate: string | undefined) => {
-      const cleaned = this.firstNonEmptyString(candidate);
-      if (!cleaned) {
-        return;
-      }
-      const normalized = path.normalize(cleaned);
-      if (seen.has(normalized)) {
-        return;
-      }
-      seen.add(normalized);
-      candidates.push(normalized);
-    };
-
-    push(planFile);
-    if (path.isAbsolute(planFile)) {
-      return candidates;
-    }
-
-    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
-    const relativeVariants = [
-      planFile,
-      planFile.replace(/^[.][\\/]+/, ""),
-      planFile.replace(/^[\\/]+/, ""),
-    ];
-    for (const folder of workspaceFolders) {
-      for (const variant of relativeVariants) {
-        push(path.join(folder.uri.fsPath, variant));
-      }
-    }
-
-    return candidates;
-  }
-
-  private async readPlanFileFromDisk(
-    planFile: string,
-  ): Promise<{ content: string; resolvedPath: string } | undefined> {
-    const candidates = this.resolvePlanFileCandidates(planFile);
-    for (const candidate of candidates) {
-      try {
-        const fileUri = vscode.Uri.file(candidate);
-        const uint8Array = await vscode.workspace.fs.readFile(fileUri);
-        return {
-          content: new TextDecoder().decode(uint8Array),
-          resolvedPath: candidate,
-        };
-      } catch {
-        // Continue trying other candidates.
-      }
-    }
-    return undefined;
-  }
-
-  private extractMarkdownFileReferences(text: unknown): string[] {
-    const source = this.firstNonEmptyString(text);
-    if (!source) {
-      return [];
-    }
-
-    const matches: string[] = [];
-    const seen = new Set<string>();
-    const push = (value: string | undefined) => {
-      const normalized = this.normalizePlanFileReference(value);
-      if (!normalized || seen.has(normalized)) {
-        return;
-      }
-      seen.add(normalized);
-      matches.push(normalized);
-    };
-
-    // Markdown code spans: `path/to/file.md`
-    const codeSpanRegex = /`([^`\n]+\.md)`/gi;
-    for (const match of source.matchAll(codeSpanRegex)) {
-      push(match[1]);
-    }
-
-    // Markdown links: [label](path/to/file.md)
-    const linkRegex = /\]\(([^)\n]+\.md)\)/gi;
-    for (const match of source.matchAll(linkRegex)) {
-      push(match[1]);
-    }
-
-    // Generic path-like markdown filename occurrences.
-    const pathRegex =
-      /(?:^|[\s("'`<])((?:[a-zA-Z]:\\|\.{1,2}[\\/]|[\\/])?[^ \t\r\n"'`<>()[\]{}]+\.md)(?=$|[\s)"'`>,])/g;
-    for (const match of source.matchAll(pathRegex)) {
-      push(match[1]);
-    }
-
-    // Hidden-directory relative paths like `.sisyphus/plans/todo-feature.md`
-    // are common in plan responses but are not covered by ./ or ../ prefixes.
-    const hiddenDirPathRegex =
-      /(?:^|[\s("'`<])(\.[a-zA-Z0-9._-]+(?:[\\/][^ \t\r\n"'`<>()[\]{}]+)+\.md)(?=$|[\s)"'`>,])/g;
-    for (const match of source.matchAll(hiddenDirPathRegex)) {
-      push(match[1]);
-    }
-
-    return matches;
-  }
-
-  private async discoverLikelyPlanFileCandidates(): Promise<string[]> {
-    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
-    if (workspaceFolders.length === 0) {
-      return [];
-    }
-
-    const patterns = [
-      "**/.sisyphus/plans/*.md",
-      "**/plans/*.md",
-      "**/implementation_plan*.md",
-    ];
-    const excludes = "**/{node_modules,.git,dist,out,build}/**";
-    const candidates: string[] = [];
-    const seen = new Set<string>();
-    for (const pattern of patterns) {
-      const uris = await vscode.workspace.findFiles(pattern, excludes, 30);
-      for (const uri of uris) {
-        const normalized = path.normalize(uri.fsPath);
-        if (seen.has(normalized)) {
-          continue;
-        }
-        seen.add(normalized);
-        candidates.push(normalized);
-      }
-    }
-
-    const ranked = this.prioritizePlanFileCandidates(candidates);
-    if (ranked.length === 0) {
-      return ranked;
-    }
-
-    const withMtime = await Promise.all(
-      ranked.map(async (candidate) => {
-        try {
-          const stat = await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
-          return { candidate, mtime: stat.mtime ?? 0 };
-        } catch {
-          return { candidate, mtime: 0 };
-        }
-      }),
-    );
-
-    withMtime.sort((a, b) => {
-      const scoreDelta =
-        this.getPlanFileCandidateScore(b.candidate) -
-        this.getPlanFileCandidateScore(a.candidate);
-      if (scoreDelta !== 0) {
-        return scoreDelta;
-      }
-      return b.mtime - a.mtime;
-    });
-
-    return withMtime.map((entry) => entry.candidate);
-  }
-
   /**
    * Handles viewing the implementation plan
    */
-  private async handleViewPlan(plan: {
-    file?: string;
-    files?: unknown[];
-    content?: string;
-    title?: string;
-    summary?: string;
-  }): Promise<void> {
-    let planData: string | undefined;
-    let sourceFilePath: string | undefined;
-    const normalizedPlanFile = this.normalizePlanFileReference(plan.file);
-    const fileCandidates: string[] = [];
-    const seenCandidates = new Set<string>();
-    const explicitFiles = new Set<string>();
-
-    const addExplicit = (value: string | undefined) => {
-      const normalized = this.normalizePlanFileReference(value);
-      if (normalized) {
-        explicitFiles.add(path.normalize(normalized));
-      }
-    };
-
-    const addCandidate = (value: string | undefined) => {
-      const normalized = this.normalizePlanFileReference(value);
-      if (!normalized) {
-        return;
-      }
-      const dedupeKey = path.normalize(normalized);
-      if (seenCandidates.has(dedupeKey)) {
-        return;
-      }
-      seenCandidates.add(dedupeKey);
-      fileCandidates.push(dedupeKey);
-    };
-
-    addExplicit(plan.file);
-    addCandidate(normalizedPlanFile);
-    if (Array.isArray(plan.files)) {
-      for (const fileEntry of plan.files) {
-        if (typeof fileEntry === "string") {
-          addExplicit(fileEntry);
-          addCandidate(fileEntry);
-          continue;
-        }
-        if (fileEntry && typeof fileEntry === "object") {
-          const rec = this.asRecord(fileEntry);
-          const str = this.firstNonEmptyString(rec?.file, rec?.path);
-          addExplicit(str);
-          addCandidate(str);
-        }
-      }
-    }
-    for (const v of this.extractMarkdownFileReferences(plan.file)) addCandidate(v);
-    for (const v of this.extractMarkdownFileReferences(plan.content)) addCandidate(v);
-    for (const v of this.extractMarkdownFileReferences(plan.summary)) addCandidate(v);
-    for (const v of this.extractMarkdownFileReferences(plan.title)) addCandidate(v);
-
-    const prioritizedCandidates = this.prioritizePlanFileCandidates(fileCandidates, explicitFiles);
-
-    // File-backed plan payloads are source-of-truth. When any markdown filepath
-    // is available, render exactly what is on disk (no summary fallback).
-    for (const candidate of prioritizedCandidates) {
-      const diskPlan = await this.readPlanFileFromDisk(candidate);
-      if (!diskPlan) {
-        continue;
-      }
-      planData = diskPlan.content;
-      sourceFilePath = diskPlan.resolvedPath;
-      console.log(
-        `[ChatViewProvider] Read plan from file ${diskPlan.resolvedPath}`,
-      );
-      break;
-    }
-
-    // If explicit candidates fail, attempt workspace discovery as a recovery
-    // path for older payloads that only carried placeholder filenames.
-    const hasStructuredContentFallback =
-      typeof plan.content === "string" && plan.content.trim().length > 0;
-    if (!planData && (prioritizedCandidates.length > 0 || !hasStructuredContentFallback)) {
-      const discovered = await this.discoverLikelyPlanFileCandidates();
-      for (const candidate of discovered) {
-        if (seenCandidates.has(path.normalize(candidate))) {
-          continue;
-        }
-        const diskPlan = await this.readPlanFileFromDisk(candidate);
-        if (!diskPlan) {
-          continue;
-        }
-        planData = diskPlan.content;
-        sourceFilePath = diskPlan.resolvedPath;
-        break;
-      }
-    }
-
-    if (!planData && prioritizedCandidates.length > 0) {
-      vscode.window.showErrorMessage(
-        `Could not read plan file: ${prioritizedCandidates[0]}`,
-      );
-      return;
-    }
-
-    // Fall back to structured output content only when no plan.file was
-    // provided. This allows viewing the plan content, but proceed requires a
-    // real source file path returned by the model.
-    if (
-      !planData &&
-      prioritizedCandidates.length === 0 &&
-      plan.content &&
-      typeof plan.content === "string"
-    ) {
-      planData = plan.content;
-      this.logger.warn("Viewing plan from structured content without plan.file", {
-        source: "handleViewPlan",
-      });
-    }
-
-    // If we have plan data, show it
-    if (planData) {
-      const fallbackTitle = planData.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim();
-      await vscode.commands.executeCommand("opencode.showPlan", {
-        content: planData,
-        title: this.firstNonEmptyString(plan.title, fallbackTitle),
-        sourceFile: sourceFilePath,
-      });
-    } else {
-      vscode.window.showErrorMessage(
-        "Could not read plan file: No plan content available",
-      );
-    }
-  }
-
   /**
    * Handles opening the file picker
    */
@@ -9393,438 +6082,16 @@ export class ChatViewProvider
    *
    * We intentionally do NOT remap by modelID alone when multiple providers expose the same model.
    */
-  private async reconcileSelectedModelSelection(
-    models: Array<{
-      providerID: string;
-      modelID: string;
-      name: string;
-      providerName?: string;
-    }>,
-  ): Promise<void> {
-    if (!models.length) {
-      return;
-    }
-
-    const exact = models.find(
-      (m) =>
-        m.providerID === this.selectedModel.providerID &&
-        m.modelID === this.selectedModel.modelID,
-    );
-    if (exact) {
-      const nextProviderName = exact.providerName || exact.providerID;
-      if (this.selectedModel.providerName !== nextProviderName) {
-        this.selectedModel = {
-          ...this.selectedModel,
-          providerName: nextProviderName,
-        };
-        await this.context.globalState.update(
-          "selectedModel",
-          this.selectedModel,
-        );
-      }
-      return;
-    }
-
-    const isLegacyGenericProvider =
-      !this.selectedModel.providerID ||
-      this.selectedModel.providerID === "opencode";
-    if (!isLegacyGenericProvider) {
-      console.warn(
-        `[ChatViewProvider] Persisted model ${this.selectedModel.providerID}/${this.selectedModel.modelID} not found in provider catalog; keeping persisted selection unchanged.`,
-      );
-      return;
-    }
-
-    const candidates = models.filter(
-      (m) => m.modelID === this.selectedModel.modelID,
-    );
-    if (candidates.length === 1) {
-      const match = candidates[0];
-      this.selectedModel = {
-        providerID: match.providerID,
-        modelID: match.modelID,
-        providerName: match.providerName || match.providerID,
-      };
-      await this.context.globalState.update(
-        "selectedModel",
-        this.selectedModel,
-      );
-      console.log(
-        `[ChatViewProvider] Reconciled legacy model selection to ${this.selectedModel.providerID}/${this.selectedModel.modelID}.`,
-      );
-      return;
-    }
-
-    if (candidates.length > 1) {
-      console.warn(
-        `[ChatViewProvider] Ambiguous modelID '${this.selectedModel.modelID}' across multiple providers; refusing to auto-remap. Please select provider/model explicitly.`,
-      );
-    }
-  }
-
   /**
    * Resolves the default model from the CLI config
    */
-  private async resolveDefaultModel(
-    models: Array<{
-      providerID: string;
-      modelID: string;
-      name: string;
-      providerName?: string;
-    }>,
-  ): Promise<void> {
-    // Only attempt if we are still on the hardcoded default AND we haven't loaded a persisted model
-    // We check if the current model is exactly the hardcoded default to allow CLI sync.
-    // However, if we loaded from globalState, we want to keep that unless it's invalid.
-    // So, if we have a persisted model that is NOT the hardcoded default, we skip this.
-
-    const savedModel = this.context.globalState.get<{
-      providerID: string;
-      modelID: string;
-    }>("selectedModel");
-
-    // If we have a saved model and it matches what we currently have (meaning we loaded it in constructor),
-    // and it's NOT the hardcoded default, then we respect the user's choice and do NOT overwrite with CLI.
-    if (
-      savedModel &&
-      this.selectedModel.modelID === savedModel.modelID &&
-      this.selectedModel.providerID === savedModel.providerID &&
-      (this.selectedModel.modelID !== "big-pickle" ||
-        this.selectedModel.providerID !== "opencode")
-    ) {
-      return;
-    }
-
-    if (
-      this.selectedModel.modelID !== "big-pickle" ||
-      this.selectedModel.providerID !== "opencode"
-    ) {
-      return;
-    }
-
-    try {
-      const cp = await import("child_process");
-      const util = await import("util");
-      const execAsync = util.promisify(cp.exec);
-
-      const { stdout } = await execAsync("opencode config get default_model");
-      const defaultId = stdout.trim();
-
-      if (defaultId) {
-        console.log(`[ChatViewProvider] Found CLI default model: ${defaultId}`);
-        const providerModelMatch = defaultId.match(/^([^/:\s]+)[/:](.+)$/);
-        let match:
-          | {
-            providerID: string;
-            modelID: string;
-            name: string;
-            providerName?: string;
-          }
-          | undefined;
-
-        // Preferred: explicit provider/model pair
-        if (providerModelMatch) {
-          const providerRef = providerModelMatch[1].trim();
-          const modelRef = providerModelMatch[2].trim();
-          match = models.find(
-            (m) =>
-              m.providerID === providerRef &&
-              (m.modelID === modelRef || m.name === modelRef),
-          );
-          if (!match) {
-            match = models.find(
-              (m) =>
-                (m.providerName || "").toLowerCase() ===
-                providerRef.toLowerCase() &&
-                (m.modelID === modelRef || m.name === modelRef),
-            );
-          }
-        }
-
-        if (match) {
-          this.selectedModel = {
-            modelID: match.modelID,
-            providerID: match.providerID,
-            providerName: match.providerName || match.providerID,
-          };
-          console.log(
-            `[ChatViewProvider] Synced default model to: ${match.modelID} (${match.providerID})`,
-          );
-        } else {
-          // Backward-compatible fallback: allow model-only identifiers only when unique
-          const byModelId = models.filter((m) => m.modelID === defaultId);
-          if (byModelId.length === 1) {
-            match = byModelId[0];
-          } else {
-            const byName = models.filter((m) => m.name === defaultId);
-            if (byName.length === 1) {
-              match = byName[0];
-            }
-          }
-        }
-
-        if (match) {
-          this.selectedModel = {
-            providerID: match.providerID,
-            modelID: match.modelID,
-            providerName: match.providerName || match.providerID,
-          };
-          await this.context.globalState.update(
-            "selectedModel",
-            this.selectedModel,
-          );
-          console.log(
-            `[ChatViewProvider] Synced default model to: ${match.modelID} (${match.providerID})`,
-          );
-        } else {
-          console.warn(
-            `[ChatViewProvider] Could not uniquely resolve CLI default model '${defaultId}'. Keeping current selection ${this.selectedModel.providerID}/${this.selectedModel.modelID}.`,
-          );
-        }
-      }
-    } catch (error) {
-      console.warn(
-        "[ChatViewProvider] Failed to resolve default model from CLI:",
-        error,
-      );
-    }
-  }
-
   /**
    * Handles fetching available models from OpenCode
    */
-  private async handleGetModels(): Promise<ChatModelOption[]> {
-    if (this.modelsFetchPromise) {
-      return this.modelsFetchPromise;
-    }
-
-    this.modelsFetchPromise = (async () => {
-      try {
-        const client = await this.serverManager.ensureRunning();
-        const providerListTimeoutMs = 8000;
-        let timeoutHandle: NodeJS.Timeout | undefined;
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(
-            () => reject(new Error("Provider list timeout")),
-            providerListTimeoutMs,
-          );
-        });
-
-        // Use provider.list() to discover all provider/model combinations.
-        const response = (await Promise.race([
-          client.provider.list(),
-          timeoutPromise,
-        ])) as any;
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
-        }
-
-        const models: ChatModelOption[] = [];
-        if (response?.data && Array.isArray(response.data.all)) {
-          for (const provider of response.data.all) {
-            if (provider?.models) {
-              for (const [modelID, modelConfig] of Object.entries(
-                provider.models,
-              )) {
-                const limitRec = this.asRecord((modelConfig as any).limit);
-                const contextLimitRaw = limitRec?.context;
-                const contextLimit =
-                  typeof contextLimitRaw === "number" &&
-                    Number.isFinite(contextLimitRaw) &&
-                    contextLimitRaw > 0
-                    ? Math.floor(contextLimitRaw)
-                    : undefined;
-                models.push({
-                  providerID: provider.id,
-                  modelID: modelID,
-                  name: (modelConfig as any).name || modelID,
-                  providerName: provider.name || provider.id,
-                  contextLimit,
-                });
-              }
-            }
-          }
-        }
-
-        if (models.length > 0) {
-          console.log(
-            `Discovered ${models.length} total models across all providers`,
-          );
-
-          // Cache models for later resolution and try to sync default model before sending to UI
-          this.availableModels = models;
-          await this.resolveDefaultModel(models);
-
-          this.view?.webview.postMessage({
-            type: "modelsList",
-            models,
-            selectedModel: this.selectedModel,
-          });
-
-          return models;
-        }
-      } catch (error) {
-        console.error("Failed to get models:", error);
-      }
-
-      // Keep extension usable even when provider discovery fails/timeouts.
-      const cachedModels = Array.isArray(this.availableModels)
-        ? this.availableModels
-        : [];
-      const fallbackModels =
-        cachedModels.length > 0
-          ? cachedModels
-          : this.getSelectedModelFallbackList();
-      this.availableModels = fallbackModels;
-      if (fallbackModels.length === 0) {
-        console.warn(
-          "[ChatViewProvider] No provider models discovered and no selected-model fallback available.",
-        );
-      } else {
-        console.warn(
-          `[ChatViewProvider] Using ${fallbackModels.length} fallback model(s) after provider discovery failure.`,
-        );
-      }
-      this.view?.webview.postMessage({
-        type: "modelsList",
-        models: fallbackModels,
-        selectedModel: this.selectedModel,
-      });
-      return fallbackModels;
-    })();
-
-    try {
-      return await this.modelsFetchPromise;
-    } finally {
-      this.modelsFetchPromise = null;
-    }
-  }
-
-  private getSelectedModelFallbackList(): ChatModelOption[] {
-    const selected = this.selectedModel;
-    if (!selected || typeof selected !== "object") {
-      return [];
-    }
-
-    const providerID = this.firstNonEmptyString(selected.providerID);
-    const modelID = this.firstNonEmptyString(selected.modelID);
-    if (!providerID || !modelID) {
-      return [];
-    }
-
-    return [
-      {
-        providerID,
-        modelID,
-        name: modelID,
-        providerName:
-          this.firstNonEmptyString(selected.providerName) || providerID,
-      },
-    ];
-  }
-
   /**
    * Fetches slash commands from OpenCode SDK and sends them to the webview.
    * Uses a short-lived cache because commands are mostly static during a session.
    */
-  private async handleGetCommands(): Promise<void> {
-    // TEMPORARILY DISABLED: Skip command loading to avoid 700+ skills bottleneck
-    this.logger.warn("⚠️ [PERF] handleGetCommands disabled temporarily");
-    this.view?.webview.postMessage({
-      type: "commandsList",
-      commands: [], // Return empty instead of loading
-    });
-    return;
-  }
-
-  private async loadCommandCatalog(forceRefresh = false): Promise<ChatSlashCommand[]> {
-    const cacheIsFresh =
-      !forceRefresh &&
-      this.commandCatalog.length > 0 &&
-      Date.now() - this.commandCatalogFetchedAt < this.COMMAND_CATALOG_TTL_MS;
-    if (cacheIsFresh) {
-      return this.commandCatalog;
-    }
-
-    if (this.commandCatalogFetchPromise) {
-      return this.commandCatalogFetchPromise;
-    }
-
-    // OPTIMIZATION: If we have cached commands (even if expired), return them immediately
-    // and refresh in background to avoid blocking the UI
-    if (this.commandCatalog.length > 0 && !forceRefresh) {
-      // Trigger background refresh without waiting
-      this.commandCatalogFetchPromise = (async () => {
-        try {
-          const client = await this.serverManager.ensureRunning();
-          const response = await client.command.list();
-          const rawItems = Array.isArray(response.data) ? response.data : [];
-          const commands: ChatSlashCommand[] = rawItems
-            .map((item) => this.normalizeSlashCommand(item))
-            .filter((item): item is ChatSlashCommand => !!item)
-            .sort((a, b) => a.name.localeCompare(b.name));
-
-          this.commandCatalog = commands;
-          this.commandCatalogFetchedAt = Date.now();
-          return commands;
-        } finally {
-          this.commandCatalogFetchPromise = null;
-        }
-      })();
-
-      // Return stale cache immediately
-      return this.commandCatalog;
-    }
-
-    // No cache available, fetch synchronously
-    this.commandCatalogFetchPromise = (async () => {
-      const client = await this.serverManager.ensureRunning();
-      const response = await client.command.list();
-      const rawItems = Array.isArray(response.data) ? response.data : [];
-      const commands: ChatSlashCommand[] = rawItems
-        .map((item) => this.normalizeSlashCommand(item))
-        .filter((item): item is ChatSlashCommand => !!item)
-        .sort((a, b) => a.name.localeCompare(b.name));
-
-      this.commandCatalog = commands;
-      this.commandCatalogFetchedAt = Date.now();
-      return commands;
-    })();
-
-    try {
-      return await this.commandCatalogFetchPromise;
-    } finally {
-      this.commandCatalogFetchPromise = null;
-    }
-  }
-
-  private normalizeSlashCommand(item: SdkCommand | unknown): ChatSlashCommand | null {
-    const rec = this.asRecord(item);
-    if (!rec) {
-      return null;
-    }
-
-    const rawName = this.firstNonEmptyString(rec.name);
-    if (!rawName) {
-      return null;
-    }
-
-    const name = rawName.replace(/^\//, "");
-    if (!name) {
-      return null;
-    }
-
-    return {
-      name,
-      description: this.firstNonEmptyString(rec.description),
-      agent: this.firstNonEmptyString(rec.agent),
-      model: this.firstNonEmptyString(rec.model),
-      template: this.firstNonEmptyString(rec.template),
-      source: this.firstNonEmptyString(rec.source),
-      subtask: typeof rec.subtask === "boolean" ? rec.subtask : undefined,
-    };
-  }
-
   /**
    * Handles fetching available agents via the OpenCode SDK and sends the list
    * to the webview. Falls back to a minimal built-in list if the server is
@@ -9833,162 +6100,19 @@ export class ChatViewProvider
   // ─── Per-session settings helpers ────────────────────────────────────────
 
   /** Returns the full persisted map of all session settings. */
-  private getSessionSettingsMap(): Record<string, SessionSettings> {
-    return (
-      this.context.globalState.get<Record<string, SessionSettings>>(
-        "sessionSettings",
-      ) ?? {}
-    );
-  }
-
   /**
    * Returns the persisted settings for a specific session.
    * Returns an empty object when no settings have been saved yet.
    */
-  private getSessionSettings(sessionId: string): SessionSettings {
-    return this.getSessionSettingsMap()[sessionId] ?? {};
-  }
-
   /**
    * Merges `partial` into the persisted settings for `sessionId` and saves
    * the updated map back to global state.
    */
-  private async persistSessionSettings(
-    sessionId: string,
-    partial: Partial<SessionSettings>,
-  ): Promise<void> {
-    const map = this.getSessionSettingsMap();
-    map[sessionId] = { ...map[sessionId], ...partial };
-    await this.context.globalState.update("sessionSettings", map);
-  }
-
   /**
    * Loads the persisted settings for `sessionId` and applies them to the
    * provider's in-memory state (`selectedAgent`, `selectedModel`).
    * Fields that have no saved value are left unchanged.
    */
-  private async applySessionSettings(sessionId: string): Promise<void> {
-    const settings = this.getSessionSettings(sessionId);
-    if (settings.agent) {
-      this.selectedAgent = settings.agent;
-      console.log(
-        `[ChatViewProvider] Restored agent '${settings.agent}' for session ${sessionId}`,
-      );
-    }
-    if (settings.model?.providerID && settings.model?.modelID) {
-      this.selectedModel = settings.model;
-      console.log(
-        `[ChatViewProvider] Restored model '${settings.model.modelID}' for session ${sessionId}`,
-      );
-    }
-  }
-
-  private async handleGetAgents(): Promise<void> {
-    // Hidden system agents that run automatically and are not user-selectable.
-    const HIDDEN_SYSTEM_AGENTS = new Set(["compaction", "title", "summary"]);
-
-    // Default built-in primary agents that must always appear in the list.
-    // The SDK's app.agents() endpoint only returns plugin-registered agents
-    // (e.g. oh-my-opencode) and does not enumerate the built-in ones, so we
-    // ensure they are always present by merging them in manually.
-    const BUILTIN_AGENTS: Array<{
-      id: string;
-      name: string;
-      description: string;
-      mode: "primary" | "subagent" | "all";
-      builtIn: boolean;
-    }> = [
-        {
-          id: "build",
-          name: "Build",
-          description:
-            "Default agent for development work with all tools enabled",
-          mode: "primary",
-          builtIn: true,
-        },
-        {
-          id: "plan",
-          name: "Plan",
-          description:
-            "Restricted agent for planning and analysis without making changes",
-          mode: "primary",
-          builtIn: true,
-        },
-      ];
-
-    try {
-      const client = await this.serverManager.ensureRunning();
-      const response = await client.app.agents();
-
-      if (response.data && Array.isArray(response.data)) {
-        const sdkAgents: Array<{
-          id: string;
-          name: string;
-          description: string;
-        }> = response.data
-          .filter((agent: any) => {
-            const mode = agent.mode as string;
-            // Only expose agents that can be selected as a primary agent.
-            return (
-              (mode === "primary" || mode === "all") &&
-              !HIDDEN_SYSTEM_AGENTS.has(agent.name as string)
-            );
-          })
-          .map((agent: any) => {
-            const id = agent.name as string;
-            const displayName = id.charAt(0).toUpperCase() + id.slice(1);
-            return {
-              id,
-              name: displayName,
-              description:
-                (agent.description as string | undefined) ??
-                `OpenCode ${displayName} agent`,
-              mode: agent.mode as "subagent" | "primary" | "all",
-              builtIn: agent.builtIn as boolean,
-              color: agent.color as string | undefined,
-            };
-          });
-
-        // Prepend any built-in agents that the SDK did not return, so the
-        // user always sees build + plan even when only plugin agents come back.
-        // SDK results take precedence when names overlap (respecting config overrides).
-        const sdkIds = new Set(sdkAgents.map((a) => a.id));
-        const agents = [
-          ...BUILTIN_AGENTS.filter((a) => !sdkIds.has(a.id)),
-          ...sdkAgents,
-        ];
-
-        // Set a sensible default if none has been chosen yet.
-        if (!this.selectedAgent && agents.length > 0) {
-          this.selectedAgent = agents[0].id;
-        }
-
-        console.log(
-          `[ChatViewProvider] Fetched ${sdkAgents.length} agent(s) via SDK; merged to ${agents.length} total (including built-ins)`,
-        );
-
-        this.view?.webview.postMessage({
-          type: "agentsList",
-          agents,
-          selectedAgent: this.selectedAgent,
-        });
-        return;
-      }
-    } catch (error) {
-      console.error(
-        "[ChatViewProvider] Failed to fetch agents via SDK:",
-        error,
-      );
-    }
-
-    // Fallback: send only the guaranteed built-in primary agents.
-    this.view?.webview.postMessage({
-      type: "agentsList",
-      agents: BUILTIN_AGENTS,
-      selectedAgent: this.selectedAgent || "build",
-    });
-  }
-
   /**
    * Fetches MCP server status from the OpenCode SDK and forwards it to the
    * webview. The webview dispatches `SET_MCP_SERVERS` from the `mcpStatus`
@@ -10051,7 +6175,7 @@ export class ChatViewProvider
 
       log.info(
         `LSP status sent: ${servers.length} server(s)` +
-          (workspaceDir ? ` for workspace: ${workspaceDir}` : ""),
+        (workspaceDir ? ` for workspace: ${workspaceDir}` : ""),
       );
     } catch (err) {
       log.error(
@@ -10357,357 +6481,16 @@ export class ChatViewProvider
     }
   }
 
-  private getSessionQueue(sessionId: string): QueuedPrompt[] {
-    return this.queueBySessionId.get(sessionId) ?? [];
-  }
-
-  private setSessionQueue(sessionId: string, queue: QueuedPrompt[]): void {
-    if (queue.length > 0) {
-      this.queueBySessionId.set(sessionId, queue);
-      return;
-    }
-    this.queueBySessionId.delete(sessionId);
-  }
-
-  private createQueuedPrompt(
-    sessionId: string,
-    text: string,
-    files?: string[],
-    contexts?: any[],
-    images?: any[],
-    agent?: string,
-    userFacingText?: string,
-  ): QueuedPrompt {
-    this.queueItemSequence += 1;
-    return {
-      id: `q-${Date.now()}-${this.queueItemSequence}`,
-      sessionId,
-      createdAt: Date.now(),
-      text,
-      userFacingText,
-      files,
-      contexts,
-      images,
-      agent,
-    };
-  }
-
-  private async resolveQueueSessionId(
-    requestedSessionId?: string,
-  ): Promise<string | undefined> {
-    const explicitSessionId = this.firstNonEmptyString(requestedSessionId);
-    if (explicitSessionId) {
-      if (!this.currentSessionId) {
-        this.currentSessionId = explicitSessionId;
-      }
-      return explicitSessionId;
-    }
-
-    const currentId = this.firstNonEmptyString(this.currentSessionId);
-    if (currentId) {
-      return currentId;
-    }
-
-    try {
-      const session = await this.sessionService.getCurrentSession();
-      const sessionId = this.firstNonEmptyString(session?.id);
-      if (sessionId) {
-        this.currentSessionId = sessionId;
-      }
-      return sessionId;
-    } catch (error) {
-      this.logger.error("Failed to resolve queue session ID", { err: error });
-      return undefined;
-    }
-  }
-
-  private enqueuePrompt(
-    sessionId: string,
-    prompt: QueuedPrompt,
-    atFront: boolean,
-  ): void {
-    const queue = this.getSessionQueue(sessionId);
-    const nextQueue = atFront ? [prompt, ...queue] : [...queue, prompt];
-    this.setSessionQueue(sessionId, nextQueue);
-    this.sendQueueUpdate(sessionId);
-  }
-
-  private takeQueuedPrompt(
-    sessionId: string,
-    itemId?: string,
-    index?: number,
-  ): QueuedPrompt | undefined {
-    const queue = this.getSessionQueue(sessionId);
-    if (queue.length === 0) {
-      return undefined;
-    }
-
-    const byIdIndex =
-      typeof itemId === "string" && itemId.length > 0
-        ? queue.findIndex((item) => item.id === itemId)
-        : -1;
-    const targetIndex =
-      byIdIndex >= 0
-        ? byIdIndex
-        : typeof index === "number" && index >= 0 && index < queue.length
-          ? index
-          : -1;
-    if (targetIndex < 0) {
-      return undefined;
-    }
-
-    const [item] = queue.splice(targetIndex, 1);
-    this.setSessionQueue(sessionId, queue);
-    this.sendQueueUpdate(sessionId);
-    return item;
-  }
-
-  private async dispatchInteractiveResponse(payload: {
-    sessionId?: string;
-    text?: string;
-    userFacingText?: string;
-    agent?: string;
-  }): Promise<void> {
-    const text = typeof payload.text === "string" ? payload.text.trim() : "";
-    if (!text) {
-      return;
-    }
-
-    const sessionId = await this.resolveQueueSessionId(payload.sessionId);
-    if (!sessionId) {
-      const message =
-        "Unable to send interactive response because no active session could be resolved.";
-      this.view?.webview.postMessage({
-        type: "error",
-        message,
-      });
-      vscode.window.showErrorMessage(message);
-      return;
-    }
-
-    // Interactive popover responses should always be persisted/sent as one
-    // immediate message. If the target session is still processing, stop it first and
-    // then send directly (instead of relying on queue fallback).
-    if (this.processingSessionIds.has(sessionId)) {
-      await this.handleStopRequest(sessionId);
-    }
-
-    if (this.processingSessionIds.has(sessionId)) {
-      await this.schedulePromptDispatch("steer", {
-        sessionId,
-        text,
-        userFacingText: payload.userFacingText,
-        agent: payload.agent,
-      });
-      return;
-    }
-
-    this.currentSessionId = sessionId;
-    await this.handleSendMessage(
-      text,
-      undefined,
-      undefined,
-      undefined,
-      payload.agent,
-      false,
-      undefined,
-      false,
-      undefined,
-      payload.userFacingText,
-    );
-  }
-
   // PROMPT-OWNERSHIP: do not modify — transport-only path
-  private async schedulePromptDispatch(
-    mode: PromptDispatchMode,
-    payload: {
-      sessionId?: string;
-      text?: string;
-      userFacingText?: string;
-      files?: string[];
-      contexts?: any[];
-      images?: any[];
-      agent?: string;
-    },
-  ): Promise<void> {
-    const text = typeof payload.text === "string" ? payload.text.trim() : "";
-    if (!text) {
-      return;
-    }
-
-    const sessionId = await this.resolveQueueSessionId(payload.sessionId);
-    if (!sessionId) {
-      return;
-    }
-
-    const effectiveMode =
-      mode === "send-now" && this.processingSessionIds.has(sessionId) ? "steer" : mode;
-    const prompt = this.createQueuedPrompt(
-      sessionId,
-      text,
-      payload.files,
-      payload.contexts,
-      payload.images,
-      payload.agent,
-      payload.userFacingText,
-    );
-    const atFront = effectiveMode !== "queue";
-    this.enqueuePrompt(sessionId, prompt, atFront);
-
-    if (effectiveMode === "queue") {
-      return;
-    }
-
-    if (this.isProcessingRequest) {
-      if (sessionId === this.currentSessionId) {
-        await this.handleStopRequest(sessionId);
-      }
-      return;
-    }
-
-    await this.handleExecuteQueue(sessionId);
-  }
-
-  private async handleDispatchQueuedItem(
-    mode: PromptDispatchMode,
-    requestedSessionId?: string,
-    itemId?: string,
-    index?: number,
-  ): Promise<void> {
-    const sessionId = await this.resolveQueueSessionId(requestedSessionId);
-    if (!sessionId) {
-      return;
-    }
-
-    const queuedItem = this.takeQueuedPrompt(sessionId, itemId, index);
-    if (!queuedItem) {
-      return;
-    }
-
-    await this.schedulePromptDispatch(mode, {
-      sessionId,
-      text: queuedItem.text,
-      userFacingText: queuedItem.userFacingText,
-      files: queuedItem.files,
-      contexts: queuedItem.contexts,
-      images: queuedItem.images,
-      agent: queuedItem.agent,
-    });
-  }
-
   /**
    * Removes a message from a session queue
    */
-  private async handleRemoveFromQueue(
-    requestedSessionId?: string,
-    itemId?: string,
-    index?: number,
-  ): Promise<void> {
-    const sessionId = await this.resolveQueueSessionId(requestedSessionId);
-    if (!sessionId) {
-      return;
-    }
-    this.takeQueuedPrompt(sessionId, itemId, index);
-  }
-
   /**
    * Clears the prompt queue for a given session
    */
-  private async handleClearQueue(requestedSessionId?: string): Promise<void> {
-    const sessionId = await this.resolveQueueSessionId(requestedSessionId);
-    if (!sessionId) {
-      return;
-    }
-    this.setSessionQueue(sessionId, []);
-    this.sendQueueUpdate(sessionId);
-  }
-
   /**
    * Executes a session queue sequentially. Only one queue drain can run at a time.
    */
-  private async handleExecuteQueue(requestedSessionId?: string): Promise<void> {
-    const sessionId = await this.resolveQueueSessionId(requestedSessionId);
-    if (!sessionId) {
-      return;
-    }
-
-    if (
-      this.executingQueueSessionIds.has(sessionId) ||
-      this.processingSessionIds.has(sessionId)
-    ) {
-      return;
-    }
-
-    if (sessionId !== this.currentSessionId) {
-      return;
-    }
-
-    if (this.getSessionQueue(sessionId).length === 0) {
-      return;
-    }
-
-    this.executingQueueSessionIds.add(sessionId);
-    this.view?.webview.postMessage({
-      type: "queueExecutionStarted",
-      sessionId,
-    });
-
-    try {
-      while (
-        sessionId === this.currentSessionId &&
-        !this.processingSessionIds.has(sessionId)
-      ) {
-        const nextItem = this.takeQueuedPrompt(sessionId, undefined, 0);
-        if (!nextItem) {
-          break;
-        }
-
-        await this.handleSendMessage(
-          nextItem.text,
-          nextItem.files,
-          nextItem.contexts,
-          nextItem.images,
-          nextItem.agent,
-          false,
-          undefined,
-          false,
-          undefined,
-          nextItem.userFacingText,
-        );
-      }
-    } catch (error) {
-      console.error("[ChatViewProvider] Queue execution failed:", error);
-      vscode.window.showErrorMessage(`Queue execution error: ${error}`);
-    } finally {
-      this.executingQueueSessionIds.delete(sessionId);
-      this.view?.webview.postMessage({
-        type: "queueExecutionFinished",
-        sessionId,
-      });
-      this.sendQueueUpdate(sessionId);
-    }
-  }
-
-  private maybeAutoDrainQueue(sessionId?: string): void {
-    const targetSessionId = this.firstNonEmptyString(sessionId);
-    if (!targetSessionId) {
-      return;
-    }
-    if (
-      this.executingQueueSessionIds.has(targetSessionId) ||
-      this.processingSessionIds.has(targetSessionId)
-    ) {
-      return;
-    }
-    if (targetSessionId !== this.currentSessionId) {
-      return;
-    }
-    if (this.getSessionQueue(targetSessionId).length === 0) {
-      return;
-    }
-    void this.handleExecuteQueue(targetSessionId);
-  }
-
   /**
    * Sends the current budget status to the webview
    */
@@ -10828,21 +6611,6 @@ export class ChatViewProvider
   /**
    * Sends the current queue state to the webview
    */
-  private sendQueueUpdate(sessionId?: string) {
-    const targetSessionId = this.firstNonEmptyString(
-      sessionId,
-      this.currentSessionId,
-    );
-    if (!targetSessionId) {
-      return;
-    }
-    this.view?.webview.postMessage({
-      type: "queueUpdate",
-      sessionId: targetSessionId,
-      queue: this.getSessionQueue(targetSessionId),
-    });
-  }
-
   public dispose(): void {
     if (this.unsubscribe) {
       this.unsubscribe();

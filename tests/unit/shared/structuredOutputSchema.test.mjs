@@ -68,7 +68,7 @@ test('structuredOutputSchema has correct top-level structure', () => {
 test('schema object has correct structure', () => {
   assert.match(schemaSource, /schema:\s*{[\s\S]*?type:\s*"object"/, 'Schema should have type: "object"');
   assert.match(schemaSource, /additionalProperties:\s*false/, 'Schema should disallow unknown top-level fields');
-  assert.match(schemaSource, /required:\s*\[[\s\S]*?"responseType"[\s\S]*?\]/, 'Schema should require responseType');
+  assert.match(schemaSource, /required:\s*\["responseType"\]/, 'Top-level schema should only require responseType');
 });
 
 test('responseType property has correct definition', () => {
@@ -107,7 +107,7 @@ test('schema defines top-level examples for all main response types', () => {
 });
 
 test('schema includes field-level examples for ambiguous payloads', () => {
-  assert.match(schemaSource, /assistantMessage:[\s\S]*?examples:/, 'assistantMessage should include examples');
+  assert.match(schemaSource, /message:[\s\S]*?examples:/, 'message should include examples');
   assert.match(schemaSource, /options:[\s\S]*?examples:/, 'question.options should include examples');
   assert.match(schemaSource, /content:[\s\S]*?examples:/, 'plan.content should include examples');
   assert.match(schemaSource, /todoItems:[\s\S]*?examples:/, 'todoItems should include examples');
@@ -120,14 +120,9 @@ test('todoItems and data payloads are defined for extended structured types', ()
   assert.match(schemaSource, /data:\s*{[\s\S]*?type:\s*"object"/, 'data should be an object payload');
 });
 
-test('assistantMessage property is defined', () => {
-  assert.match(schemaSource, /assistantMessage:\s*{[\s\S]*?type:\s*"string"/, 'assistantMessage should be string');
-  assert.match(schemaSource, /assistantMessage:[\s\S]*?description:[\s\S]*?"Required user-facing/, 'assistantMessage should have description');
-});
-
-test('message property is defined as legacy alias', () => {
+test('message property is defined as primary assistant text', () => {
   assert.match(schemaSource, /message:\s*{[\s\S]*?type:\s*"string"/, 'message should be string');
-  assert.match(schemaSource, /message:[\s\S]*?Legacy compatibility alias for assistantMessage/, 'message should indicate it is legacy');
+  assert.match(schemaSource, /message:[\s\S]*?Optional user-facing chat bubble text/, 'message should describe assistant chat bubble text');
 });
 
 test('reasoning property is defined as array of strings', () => {

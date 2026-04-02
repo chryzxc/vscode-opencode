@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource, readAllSources } from '../helpers/source-utils.mjs';
 
-const chatProviderSource = readSource([
+const chatProviderSource = readAllSources([
   joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
 ], 'ChatViewProvider.ts');
 

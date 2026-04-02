@@ -1,14 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource, readAllSources } from '../helpers/source-utils.mjs';
 
-const extensionSource = readSource(
+const extensionSource = readAllSources(
   [joinFromRoot('src', 'extension.ts')],
   'extension.ts',
 );
 const chatViewProviderSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+  [
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'types.ts')
+  ],
   'ChatViewProvider.ts',
 );
 const messageStreamServiceSource = readSource(
@@ -232,37 +245,35 @@ test.skip('chat streaming/finalization remains session-scoped across session swi
   );
 });
 
-// SKIP: Implementation has changed - processingSessionsUpdate case may not exist or work differently
-test.skip('processingSessionsUpdate can end loading fallback without clearing streaming snapshot', () => {
+test('processing session updates clear stale active-session loading fallback without clearing streaming snapshot', () => {
   const createHandlerBody = extractFunctionBody(
     messageHandlerSource,
     'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
   );
-  const processingSessionsCase =
-    /case "processingSessionsUpdate"\s*:\s*\{[\s\S]*?break;\s*\}/.exec(
-      createHandlerBody,
-    )?.[0] ?? "";
+  const processingSessionsCase = /case "sessionsListUpdate":[\s\S]*?case "queueUpdate":/.exec(
+    createHandlerBody,
+  )?.[0] ?? "";
 
   assert.ok(
     processingSessionsCase.length > 0,
-    'processingSessionsUpdate case block should be present in createMessageHandler',
+    'processing session update case block should be present in createMessageHandler',
   );
 
   assert.match(
     processingSessionsCase,
     /SET_PROCESSING_SESSIONS[\s\S]*SET_STEERING[\s\S]*payload:\s*false[\s\S]*SET_PROCESSING[\s\S]*payload:\s*false/s,
-    'processingSessionsUpdate should clear steering/processing when active session is no longer processing',
+    'processing session update should clear steering/processing when active session is no longer processing',
   );
 
   assert.match(
     processingSessionsCase,
     /stateAfterProcessingUpdate\.streaming\?\.isActive[\s\S]*FINISH_STREAMING/s,
-    'processingSessionsUpdate should finish active streaming as a fallback finalization path',
+    'processing session update should finish active streaming as a fallback finalization path',
   );
 
   assert.doesNotMatch(
     processingSessionsCase,
     /SET_STREAMING[\s\S]*payload:\s*null/s,
-    'processingSessionsUpdate fallback should not clear streaming snapshot content',
+    'processing session update fallback should not clear streaming snapshot content',
   );
 });

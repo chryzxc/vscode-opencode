@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource, readAllSources } from '../helpers/source-utils.mjs';
 
-const messageHandlerSource = readSource(
+const messageHandlerSource = readAllSources(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'messageHandler.ts')],
   'messageHandler.ts',
 );
@@ -59,8 +59,21 @@ test('todo panel renders status icons and empty-state fallback', () => {
 // RED: will pass after Task 1 implementation (provider + reducer + schema + initState)
 test('provider should forward todo_update stream events as todoUpdate postMessage to webview', () => {
   // Verify extension host forwards structured todo_update stream events into the webview
-  const chatProviderSource = readSource(
-    [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+  const chatProviderSource = readAllSources(
+    [
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'types.ts')
+  ],
     'ChatViewProvider.ts',
   );
 

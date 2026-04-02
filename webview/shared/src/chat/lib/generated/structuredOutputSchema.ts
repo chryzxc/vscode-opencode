@@ -34,9 +34,9 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return one JSON object. Always include responseType and assistantMessage. RULES: (1) responseType='implementation_plan' when proposing/creating any multi-step plan — populate the plan object. (2) responseType='question' when asking questions, presenting choices, or needing user input — populate the question object. Even a minimal question object { question: 'text' } is valid and triggers the interactive UI. NEVER fall back to plain text for questions. (3) responseType='message' for everything else. assistantMessage is the chat bubble text for every turn.",
+      "Return one JSON object. Always include responseType. RULES: (1) responseType='implementation_plan' when proposing/creating any multi-step plan — populate the plan object. (2) responseType='question' when asking questions, presenting choices, or needing user input — populate the question object WITH explicit choices. question.options must include at least two options for question flows. NEVER fall back to plain text for questions. (3) responseType='message' for everything else.",
     additionalProperties: false,
-    required: ["responseType", "assistantMessage"],
+    required: ["responseType"],
     properties: {
       responseType: {
         type: "string",
@@ -54,7 +54,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "error",
         ],
         description:
-          "Classifier. implementation_plan: multi-step plans, code changes, refactors, migrations — populate plan object. When in doubt vs message, choose implementation_plan. question: asking questions, presenting choices, needing confirmation or user decisions — populate question object. Minimal valid: { question: 'text' }. When in doubt vs message, choose question. NEVER output questions as plain text — always use responseType='question'. message: normal replies, greetings, explanations. progress_update: execution steps. subagents: background agents. todo_update: task changes. system: context. data: structured cards. error: failures.",
+          "Classifier. implementation_plan: multi-step plans, code changes, refactors, migrations — populate plan object. When in doubt vs message, choose implementation_plan. question: asking questions, presenting choices, needing confirmation or user decisions — populate question object with explicit choices. Required for question flows: question.options with at least two options. When in doubt vs message, choose question. NEVER output questions as plain text — always use responseType='question'. message: normal replies, greetings, explanations. progress_update: execution steps. subagents: background agents. todo_update: task changes. system: context. data: structured cards. error: failures.",
         examples: [
           "message",
           "implementation_plan",
@@ -68,11 +68,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         ],
       },
 
-      assistantMessage: {
+      message: {
         type: "string",
         minLength: 1,
         description:
-          "Required user-facing chat bubble text for every turn. For question: list all questions as a numbered summary. For implementation_plan: describe what the plan covers. Keep concise and actionable.",
+          "Optional user-facing chat bubble text. For responseType='message', this is the primary rendered assistant content.",
         examples: [
           "Hello! How can I help?",
           "I updated the parser and tests.",
@@ -80,16 +80,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           "I need to clarify a few things before proceeding:\n1. Which approach?\n2. Include migration?",
         ],
       },
-      message: {
-        type: "string",
-        minLength: 1,
-        description: "Legacy compatibility alias for assistantMessage. Prefer assistantMessage.",
-      },
       reasoning: {
         type: "array",
         items: { type: "string" },
         description:
-          "Optional thinking trace for the UI thinking timeline. Keep this separate from assistantMessage and do not duplicate assistantMessage text.",
+          "Optional thinking trace for the UI thinking timeline. Keep this separate from message and do not duplicate message text.",
       },
       progressUpdates: {
         type: "array",
@@ -140,7 +135,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         additionalProperties: true,
         required: ["question"],
         description:
-          "Question payload for responseType='question'. Minimal valid: { question: 'your question' }. type defaults to 'question'. Add options[] for choices. The chat bubble shows assistantMessage (numbered question list); the popup shows question.question + options.",
+          "Question payload for responseType='question'. type defaults to 'question'. For type='question', options[] is required with at least two choices. The chat bubble and popup both use question.question unless question.displayPrompt is provided.",
         properties: {
           type: {
             type: "string",
@@ -162,7 +157,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
           displayPrompt: {
             type: "string",
-            description: "Optional override for the chat bubble text instead of assistantMessage.",
+            description: "Optional override for the chat bubble text instead of message.",
           },
           multiSelect: {
             type: "boolean",
@@ -217,7 +212,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         description:
-          "CRITICAL: Implementation plan payload — MUST be populated when responseType='implementation_plan'. Conversely, when this object is populated, responseType MUST be 'implementation_plan'. At least one of plan.file or plan.content is required. If the plan was written to disk, set plan.file to the actual filepath. If the plan was proposed inline without writing a file, set plan.content with the full markdown. The UI renders a plan card below the assistantMessage showing plan.title, plan.file, and a 'View Plan' button that opens an interactive plan viewer. Keep user clarifications/questions out of this object — route those to the question field instead.",
+          "CRITICAL: Implementation plan payload — MUST be populated when responseType='implementation_plan'. Conversely, when this object is populated, responseType MUST be 'implementation_plan'. At least one of plan.file or plan.content is required. If the plan was written to disk, set plan.file to the actual filepath. If the plan was proposed inline without writing a file, set plan.content with the full markdown. The UI renders a plan card below the message showing plan.title, plan.file, and a 'View Plan' button that opens an interactive plan viewer. Keep user clarifications/questions out of this object — route those to the question field instead.",
         examples: [
           {
             file: "/workspace/project/plans/todo-feature.md",
@@ -558,7 +553,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         description:
-          "Error metadata for responseType='error'. Include user-safe message text in error.message and/or assistantMessage.",
+          "Error metadata for responseType='error'. Include user-safe message text in error.message and/or message.",
         examples: [
           {
             message: "Schema validation failed.",
@@ -589,11 +584,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
     examples: [
       {
         responseType: "message",
-        assistantMessage: "Hello! How can I help?",
+        message: "Hello! How can I help?",
       },
       {
         responseType: "implementation_plan",
-        assistantMessage:
+        message:
           "I've created an implementation plan for the todo feature. The plan covers database schema changes, API endpoints, and frontend components with full test coverage.",
         plan: {
           file: "plans/todo-feature.md",
@@ -603,7 +598,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       },
       {
         responseType: "implementation_plan",
-        assistantMessage:
+        message:
           "Here's my proposed plan for the authentication refactor. It covers session management updates, token validation hardening, and the migration path for existing sessions.",
         plan: {
           title: "Auth Session Refactoring",
@@ -614,18 +609,16 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       },
       {
         responseType: "progress_update",
-        assistantMessage: "Progress update: compile step completed.",
+        message: "Progress update: compile step completed.",
         progressUpdates: [{ title: "Running compile", status: "done" }],
       },
       {
         responseType: "subagents",
-        assistantMessage: "Subagents are running in the background.",
+        message: "Subagents are running in the background.",
         subagents: [{ id: "agent-1", name: "Worker", status: "running" }],
       },
       {
         responseType: "question",
-        assistantMessage:
-          "I need a few clarifications before proceeding:\n1. Which schema mode should we use — strict or compatibility?\n2. Should we include backward-compatible migration support?",
         question: {
           type: "question",
           question: "Which schema mode should we use?",
@@ -637,22 +630,22 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       },
       {
         responseType: "todo_update",
-        assistantMessage: "I updated the task checklist.",
+        message: "I updated the task checklist.",
         todoItems: [{ id: "todo-1", text: "Update tests", status: "pending" }],
       },
       {
         responseType: "data",
-        assistantMessage: "Here is the structured data summary.",
+        message: "Here is the structured data summary.",
         data: { cardType: "summary", status: "ok" },
       },
       {
         responseType: "system",
-        assistantMessage: "System context updated.",
+        message: "System context updated.",
         data: { context: "active_file", path: "src/extension.ts" },
       },
       {
         responseType: "error",
-        assistantMessage: "I hit an error while processing your request.",
+        message: "I hit an error while processing your request.",
         error: {
           message: "Unable to parse output.",
           code: "PARSE_ERROR",

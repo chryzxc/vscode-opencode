@@ -1,10 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { joinFromRoot, readAllSources, readSource } from '../helpers/source-utils.mjs';
 
-const chatProviderSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+const chatProviderSource = readAllSources([joinFromRoot('src', 'providers', 'ChatViewProvider.ts'), joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'), joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'), joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'), joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'), joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'), joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts')],
   'ChatViewProvider.ts',
 );
 
@@ -51,6 +50,19 @@ test('ChatViewProvider routes prompt actions through internal queue handlers', (
     chatProviderSource,
     /case "steerQueuedItem":[\s\S]*?this\.handleDispatchQueuedItem/,
     'steerQueuedItem should dispatch queued item'
+  );
+});
+
+test('ChatViewProvider send-now dispatch bypasses queue persistence', () => {
+  assert.match(
+    chatProviderSource,
+    /if \(mode === "send-now"\)[\s\S]*?await this\.handleSendMessage\(/,
+    'send-now should execute handleSendMessage directly',
+  );
+  assert.match(
+    chatProviderSource,
+    /if \(mode === "send-now"\)[\s\S]*?return;[\s\S]*?this\.queueManager\.schedulePromptDispatch\(/,
+    'queueManager scheduling should only happen after the send-now early return path',
   );
 });
 

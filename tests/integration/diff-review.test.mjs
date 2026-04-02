@@ -15,9 +15,7 @@ const diffShellSource = readSource(
 
 test('diff review HTML wiring injects diff payload and required bundled assets', () => {
   // Verify diff review webview receives bootstrap payload and compiled assets.
-  const htmlBody = extractFunctionBody(
-    diffProviderSource,
-    'private _getHtmlForWebview(webview: vscode.Webview, data: DiffData)',
+  const htmlBody = extractFunctionBody(diffProviderSource, '_getHtmlForWebview(webview: vscode.Webview, data: DiffData)',
   );
 
   assert.match(htmlBody, /window\.__DIFF_DATA__\s*=\s*\$\{diffDataJson\}/, 'diff review webview must inject __DIFF_DATA__ payload');

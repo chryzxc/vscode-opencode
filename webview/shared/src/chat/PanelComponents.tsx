@@ -347,6 +347,7 @@ export function StickyHeader() {
     messages,
     compactionBaselineStats,
     compactionDividerIndex,
+    sessionsList,
   } = useAppState();
   const dispatch = useAppDispatch();
   const isProcessing = isProcessingInCurrentSession(
@@ -419,6 +420,13 @@ export function StickyHeader() {
       : 0;
 
   const sessionLabel = currentSessionId ? currentSessionId.slice(0, 8) : "new";
+
+  // Get current session title
+  const currentSession = currentSessionId
+    ? sessionsList.find((s) => s.id === currentSessionId)
+    : undefined;
+  const sessionTitle = currentSession?.title || "Untitled chat";
+
   const taskName =
     isProcessing || streaming ? "Active request" : "No active task";
   const taskStatus =
@@ -457,77 +465,7 @@ export function StickyHeader() {
         >
           <Plus className="h-3.5 w-3.5" />
         </Button>
-        <div
-          className="flex items-center gap-2 cursor-help"
-          title={`${pct}% context used (${totalUsed.toLocaleString()} / ${maxContext.toLocaleString()} tokens)`}
-        >
-          <div className="oc-agent-icon relative flex items-center justify-center">
-            <CircularProgress pct={pct} size={22} strokeWidth={2.5} />
-            <div className="absolute inset-0 flex items-center justify-center opacity-40">
-              <Zap className="h-2.5 w-2.5" />
-            </div>
-          </div>
-          <span className="oc-title">OpenCode</span>
-        </div>
-        <span className="oc-session-chip">ses_{sessionLabel}</span>
-      </div>
-
-      {/* Token stats center - FORBIDDEN TO REMOVE */}
-      <div className="oc-header-center items-center gap-3 font-mono text-xs opacity-60">
-        <div className="flex items-center gap-1.5">
-          <span className="opacity-70 text-xs uppercase tracking-wider">
-            Tokens
-          </span>
-          <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
-            {(sessionStats.input + sessionStats.output || 0).toLocaleString()}
-          </span>
-        </div>
-        <div className="flex items-center gap-1 text-xs opacity-80">
-          <span className="text-[var(--oc-text-soft)]">
-            {sessionStats.input}i
-          </span>
-          <span className="opacity-30">·</span>
-          <span className="text-[var(--oc-text-soft)]">
-            {sessionStats.output}o
-          </span>
-          {sessionStats.read > 0 && (
-            <>
-              <span className="opacity-30">·</span>
-              <span className="text-[var(--oc-text-soft)]">
-                {sessionStats.read}r
-              </span>
-            </>
-          )}
-          {sessionStats.write > 0 && (
-            <>
-              <span className="opacity-30">·</span>
-              <span className="text-[var(--oc-text-soft)]">
-                {sessionStats.write}w
-              </span>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="oc-header-right ml-auto flex items-center gap-1.5">
-        <span className="oc-task-pill">TASK</span>
-        <span className="oc-task-name text-xs text-[var(--oc-text-soft)] opacity-80">
-          {taskName}
-        </span>
-        <span
-          className={`oc-status-pill ${
-            taskStatus === "IDLE"
-              ? "idle"
-              : taskStatus === "PENDING"
-                ? "pending"
-                : "running"
-          }`}
-        >
-          {taskStatus}
-        </span>
-        <span className="oc-duration text-[var(--oc-text-soft)] opacity-70">
-          {durationLabel}
-        </span>
+        <span className="oc-title text-sm font-medium">{sessionTitle}</span>
       </div>
     </div>
   );
@@ -4138,7 +4076,9 @@ export function SkillsPanel() {
 export function AgentsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const { availableAgents } = useAppState();
+  const dispatch = useAppDispatch();
 
   const hasAgents = availableAgents.length > 0;
   const builtInCount = availableAgents.filter((a) => a.builtIn).length;
@@ -4154,6 +4094,14 @@ export function AgentsPanel() {
       }
       return next;
     });
+  }
+
+  function handleRefresh() {
+    setIsRefreshing(true);
+    dispatch({ type: "SET_AGENTS_LIST", payload: [] });
+    vscode.postMessage({ type: "getAgents" });
+    // Set a timeout to reset the loading state if it takes too long
+    setTimeout(() => setIsRefreshing(false), 3000);
   }
 
   function modeBadgeClass(mode: string | undefined) {
@@ -4174,20 +4122,36 @@ export function AgentsPanel() {
           />
           <span>Agents</span>
         </div>
-        <Button
-          type="button"
-          aria-label={open ? "Collapse Agents" : "Expand Agents"}
-          onClick={() => setOpen((v) => !v)}
-          variant="ghost"
-          size="icon"
-          className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
-        >
-          {open ? (
-            <ChevronDown className="h-3 w-3" />
-          ) : (
-            <ChevronUp className="h-3 w-3" />
-          )}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            aria-label="Refresh agents"
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            title="Refresh agents list"
+          >
+            <RefreshCw
+              className={`h-3 w-3 ${isRefreshing ? "animate-spin" : ""}`}
+            />
+          </Button>
+          <Button
+            type="button"
+            aria-label={open ? "Collapse Agents" : "Expand Agents"}
+            onClick={() => setOpen((v) => !v)}
+            variant="ghost"
+            size="icon"
+            className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+          >
+            {open ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronUp className="h-3 w-3" />
+            )}
+          </Button>
+        </div>
       </div>
 
       {open ? (

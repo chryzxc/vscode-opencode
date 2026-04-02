@@ -70,4 +70,22 @@ test('ChatShell implements smart auto-follow pause and jump-to-latest control', 
     /Jump to latest\s*\(\{streamViewport\.unseenUpdateCount\}\)/,
     'chat shell should render a jump-to-latest control with unseen update count',
   );
+  assert.match(
+    chatShellSource,
+    /new MutationObserver\(/,
+    'chat shell should observe DOM mutations so follow-mode stays pinned while streaming cards expand',
+  );
+  assert.match(
+    chatShellSource,
+    /root\.scrollTop\s*=\s*root\.scrollHeight/,
+    'chat shell should force-scroll to the latest edge when follow-mode is enabled',
+  );
+});
+
+test('AssistantMessage live streaming card does not clamp its height', () => {
+  assert.doesNotMatch(
+    messageSource,
+    /max-h-\[72vh\]\s+overflow-hidden/,
+    'streaming assistant card should not clip subagent sections while content grows',
+  );
 });

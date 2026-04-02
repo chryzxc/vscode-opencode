@@ -237,7 +237,6 @@ export interface MessagePart {
   type?: string;
   text?: string;
   content?: string;
-  assistantMessage?: string;
   message?: string;
   reasoning?: string;
   thought?: string;
@@ -292,7 +291,7 @@ export interface InteractiveQuestionEvent {
   allowCustomInput?: boolean;
   answer?: string;
   answers?: string[];
-  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt or assistantMessage. */
+  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt. */
   contextMessage?: string;
 }
 
@@ -304,7 +303,7 @@ export interface InteractiveConfirmEvent {
   question: string;
   confirmLabel?: string;
   cancelLabel?: string;
-  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt or assistantMessage. */
+  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt. */
   contextMessage?: string;
 }
 
@@ -314,7 +313,7 @@ export interface InteractiveQuickActionsEvent {
   title?: string;
   uiCategory?: InteractiveUiCategory;
   actions: InteractiveChoice[];
-  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt or assistantMessage. */
+  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt. */
   contextMessage?: string;
 }
 
@@ -325,7 +324,7 @@ export interface InteractiveMessageEvent {
   uiCategory?: InteractiveUiCategory;
   message: string;
   dismissLabel?: string;
-  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt or assistantMessage. */
+  /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt. */
   contextMessage?: string;
 }
 

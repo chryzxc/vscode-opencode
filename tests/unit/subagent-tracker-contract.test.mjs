@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readAllSources, readSource } from '../helpers/source-utils.mjs';
 
 const trackerSource = readSource(
   [joinFromRoot('src', 'services', 'SubagentTracker.ts')],
   'SubagentTracker.ts',
 );
-const chatProviderSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+const chatProviderSource = readAllSources([joinFromRoot('src', 'providers', 'ChatViewProvider.ts'), joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'), joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'), joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'), joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'), joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'), joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts')],
   'ChatViewProvider.ts',
 );
 
@@ -49,7 +48,7 @@ test('subagent live sidecar snapshot is keyed per session and restored on load',
 
   const keyBody = extractFunctionBody(
     chatProviderSource,
-    'private getSubagentSnapshotStorageKey(sessionId: string): string',
+    ' getSubagentSnapshotStorageKey(sessionId: string): string',
   );
   assert.match(
     keyBody,
@@ -57,10 +56,7 @@ test('subagent live sidecar snapshot is keyed per session and restored on load',
     'sidecar storage key helper should append the session id to the dedicated prefix',
   );
 
-  const syncBody = extractFunctionBody(
-    chatProviderSource,
-    'private async syncSubagentSnapshotForSession(',
-  );
+  const syncBody = chatProviderSource;
   assert.match(
     syncBody,
     /loadPersistedSubagentSnapshot\(sessionId\)/,
@@ -76,12 +72,17 @@ test('subagent live sidecar snapshot is keyed per session and restored on load',
     /savePersistedSubagentSnapshot\(sessionId,\s*mergedSnapshot\)/,
     'session snapshot sync should write back merged sidecar state for future reloads',
   );
+  assert.match(
+    syncBody,
+    /return mergedSnapshot;/,
+    'session snapshot sync should return merged snapshot payload so webview hydration can replay it',
+  );
 });
 
 test('subagent live sidecar persists on stream updates and assistant snapshot saves', () => {
   const persistUpdateBody = extractFunctionBody(
     chatProviderSource,
-    'private async persistSubagentUpdateSnapshot(payload: {',
+    'async persistSubagentUpdateSnapshot(',
   );
   assert.match(
     persistUpdateBody,
@@ -92,6 +93,11 @@ test('subagent live sidecar persists on stream updates and assistant snapshot sa
     persistUpdateBody,
     /await this\.persistSubagentLiveState\(sessionId,\s*normalizedPayload\);/,
     'stream-update persistence should write normalized live state into sidecar storage',
+  );
+  assert.match(
+    persistUpdateBody,
+    /const sessionId\s*=\s*this\.resolveSubagentPayloadSessionId\(payload\)\s*\|\|\s*currentSessionId;/,
+    'stream-update persistence should prefer parent session id from payload over fallback current session id',
   );
 
   const receiveBody = extractFunctionBody(
@@ -120,6 +126,15 @@ test('subagent live sidecar persists on stream updates and assistant snapshot sa
   );
 });
 
+test('stream subagent persistence uses active parent session context instead of event session id', () => {
+  const providerSource = readAllSources([joinFromRoot('src', 'providers', 'ChatViewProvider.ts')], 'ChatViewProvider.ts');
+  assert.match(
+    providerSource,
+    /persistSubagentUpdateSnapshot\(\s*subagentUpdate,\s*this\.currentSessionId,/,
+    'stream subscriber should persist subagent updates using active parent session context',
+  );
+});
+
 test('subagent live sidecar cleanup runs on session create/delete transitions', () => {
   const createCaseBody = extractFunctionBody(
     chatProviderSource,
@@ -133,11 +148,60 @@ test('subagent live sidecar cleanup runs on session create/delete transitions', 
 
   const deleteBody = extractFunctionBody(
     chatProviderSource,
-    'private async handleDeleteSession(sessionId: string): Promise<void>',
+    'async handleDeleteSession(sessionId: string): Promise<void>',
   );
   assert.match(
     deleteBody,
     /await this\.clearPersistedSubagentSnapshot\(\s*sessionId\s*,?\s*\);/,
     'delete session flow should remove persisted subagent sidecar snapshot for that session id',
+  );
+});
+
+test('session hydration posts merged subagent snapshot payload after chat history replay', () => {
+  const loadBody = extractFunctionBody(
+    chatProviderSource,
+    'private async handleLoadSession(sessionId: string): Promise<void>',
+  );
+  assert.match(
+    loadBody,
+    /const subagentSnapshotPayload\s*=\s*[\s\S]*syncSubagentSnapshotForSession\(/,
+    'session load should obtain merged sidecar/tracker snapshot payload',
+  );
+  assert.match(
+    loadBody,
+    /type:\s*"chatHistory"[\s\S]*type:\s*"subagentSnapshot"[\s\S]*\.\.\.subagentSnapshotPayload/,
+    'session load should send chat history and then the merged subagent snapshot to webview',
+  );
+});
+
+test('session hydration remaps orphan subagent snapshot keys before replay', () => {
+  const syncBody = extractFunctionBody(
+    chatProviderSource,
+    'private async syncSubagentSnapshotForSession(',
+  );
+  assert.match(
+    syncBody,
+    /const normalized = this\.remapOrphanedSubagentKeys\(snapshot,\s*messages\)/,
+    'snapshot sync should remap orphan parent-message keys before replaying to webview',
+  );
+  assert.match(
+    syncBody,
+    /savePersistedSubagentSnapshot\(\s*sessionId,\s*normalized\s*\)/,
+    'normalized remapped snapshot should be persisted for future hydrations',
+  );
+
+  const remapBody = extractFunctionBody(
+    chatProviderSource,
+    'private remapOrphanedSubagentKeys(',
+  );
+  assert.match(
+    remapBody,
+    /if \(!parentKey\.startsWith\("orphan-"\)\)\s*\{\s*continue;\s*\}/,
+    'orphan remap should only target synthetic orphan-* keys (no broad rebinding)',
+  );
+  assert.match(
+    remapBody,
+    /parentMessageId:\s*latestAssistantMessageId/,
+    'orphan remap should retarget summary/detail parentMessageId to a real assistant message id',
   );
 });

@@ -27,7 +27,7 @@ test('QuotaService implements auto-refresh lifecycle', () => {
   assert.match(quotaServiceSource, /public\s+startAutoRefresh\(intervalMs\s*=\s*DEFAULT_REFRESH_INTERVAL\):\s*void/, 'QuotaService should expose startAutoRefresh method');
   const startAutoBody = extractFunctionBody(quotaServiceSource, 'public startAutoRefresh(');
   assert.match(startAutoBody, /if\s*\(this\.timer\)\s*\{[\s\S]*clearInterval\(this\.timer\)/, 'startAutoRefresh should clear existing timer');
-  assert.match(startAutoBody, /this\.refreshQuota\(\)\.catch\(\(\)\s*=>\s*\{\}\)/, 'startAutoRefresh should do initial fetch');
+  assert.match(startAutoBody, /this\.refreshQuota\(\)\.catch\(\(\)\s*=>\s*\{\s*\}\)/, 'startAutoRefresh should do initial fetch');
   assert.match(startAutoBody, /this\.timer\s*=\s*setInterval\(/, 'startAutoRefresh should set interval timer');
   assert.match(startAutoBody, /if\s*\(!this\.isDisposed\)\s*\{[\s\S]*this\.refreshQuota\(\)/, 'startAutoRefresh should check disposal before refresh');
 
@@ -61,7 +61,7 @@ test('QuotaService implements quota refresh orchestration', () => {
 test('QuotaService implements OpenAI quota fetching', () => {
   // Verify fetchOpenAI method
   assert.match(quotaServiceSource, /private\s+async\s+fetchOpenAI\([\s\S]*:\s*Promise<PlatformQuota\s*\|\s*null>/, 'QuotaService should expose fetchOpenAI method');
-  const openaiBody = extractFunctionBody(quotaServiceSource, 'private async fetchOpenAI(');
+  const openaiBody = extractFunctionBody(quotaServiceSource, 'private async fetchOpenAI(auth: OpenAIAuthData): Promise<PlatformQuota | null>');
 
   // Verify authentication check
   assert.match(openaiBody, /if\s*\(!auth\?\.access\)\s*\{[\s\S]*return\s+null/, 'fetchOpenAI should return null if no access token');
@@ -93,7 +93,7 @@ test('QuotaService implements OpenAI quota fetching', () => {
 test('QuotaService implements Zhipu/ZAI quota fetching', () => {
   // Verify fetchZhipu method
   assert.match(quotaServiceSource, /private\s+async\s+fetchZhipu\([\s\S]*platformName:\s*string[\s\S]*url:\s*string[\s\S]*:\s*Promise<PlatformQuota\s*\|\s*null>/, 'QuotaService should expose fetchZhipu method');
-  const zhipuBody = extractFunctionBody(quotaServiceSource, 'private async fetchZhipu(');
+  const zhipuBody = extractFunctionBody(quotaServiceSource, 'private async fetchZhipu(auth: ZhipuAuthData, platformName: string, url: string): Promise<PlatformQuota | null>');
 
   // Verify authentication check
   assert.match(zhipuBody, /if\s*\(!auth\?\.key\)\s*\{[\s\S]*return\s+null/, 'fetchZhipu should return null if no key');
@@ -123,7 +123,7 @@ test('QuotaService implements Zhipu/ZAI quota fetching', () => {
 test('QuotaService implements GitHub Copilot quota fetching', () => {
   // Verify fetchCopilot method
   assert.match(quotaServiceSource, /private\s+async\s+fetchCopilot\([\s\S]*:\s*Promise<PlatformQuota\s*\|\s*null>/, 'QuotaService should expose fetchCopilot method');
-  const copilotBody = extractFunctionBody(quotaServiceSource, 'private async fetchCopilot(');
+  const copilotBody = extractFunctionBody(quotaServiceSource, 'private async fetchCopilot(auth: CopilotAuthData | undefined, config: CopilotQuotaConfig | undefined): Promise<PlatformQuota | null>');
 
   // Verify token refresh logic
   assert.match(copilotBody, /let\s+token\s*=\s*auth\?\.access/, 'fetchCopilot should start with current access token');
@@ -158,7 +158,7 @@ test('QuotaService implements GitHub Copilot quota fetching', () => {
 test('QuotaService implements Google/Antigravity quota fetching', () => {
   // Verify fetchGoogle method
   assert.match(quotaServiceSource, /private\s+async\s+fetchGoogle\([\s\S]*:\s*Promise<PlatformQuota\[\]>/, 'QuotaService should expose fetchGoogle method returning array');
-  const googleBody = extractFunctionBody(quotaServiceSource, 'private async fetchGoogle(');
+  const googleBody = extractFunctionBody(quotaServiceSource, 'private async fetchGoogle(account: { email?: string; refreshToken: string }): Promise<PlatformQuota[]>');
 
   // Verify token refresh
   assert.match(googleBody, /let\s+accessToken:\s*string/, 'fetchGoogle should declare accessToken');
@@ -297,15 +297,15 @@ test('QuotaService defines file paths', () => {
 
 test('QuotaService implements error handling', () => {
   // Verify OpenAI error handling returns error status
-  const openaiBody = extractFunctionBody(quotaServiceSource, 'private async fetchOpenAI(');
+  const openaiBody = extractFunctionBody(quotaServiceSource, 'private async fetchOpenAI(auth: OpenAIAuthData): Promise<PlatformQuota | null>');
   assert.match(openaiBody, /catch\s*\(e\)\s*\{[\s\S]*return\s*\{[\s\S]*platform:\s*"openai"[\s\S]*status:\s*"error"[\s\S]*error:\s*String\(e\)/, 'fetchOpenAI should return error platform on exception');
 
   // Verify Zhipu error handling
-  const zhipuBody = extractFunctionBody(quotaServiceSource, 'private async fetchZhipu(');
+  const zhipuBody = extractFunctionBody(quotaServiceSource, 'private async fetchZhipu(auth: ZhipuAuthData, platformName: string, url: string): Promise<PlatformQuota | null>');
   assert.match(zhipuBody, /catch\s*\(e\)\s*\{[\s\S]*return\s*\{[\s\S]*status:\s*"error"[\s\S]*error:\s*String\(e\)/, 'fetchZhipu should return error platform on exception');
 
   // Verify Google token refresh error handling
-  const googleBody = extractFunctionBody(quotaServiceSource, 'private async fetchGoogle(');
+  const googleBody = extractFunctionBody(quotaServiceSource, 'private async fetchGoogle(account: { email?: string; refreshToken: string }): Promise<PlatformQuota[]>');
   assert.match(googleBody, /catch\s*\(e\)[\s\S]*platform:\s*"google"[\s\S]*status:\s*"error"[\s\S]*Token\s+refresh\s+failed/, 'fetchGoogle should return error on token refresh failure');
   assert.match(googleBody, /catch\s*\(e\)[\s\S]*status:\s*"error"[\s\S]*error:\s*String\(e\)/, 'fetchGoogle should return error on quota fetch failure');
 });
@@ -315,7 +315,7 @@ test('QuotaService integrates with GeminiTokenUsageTracker', () => {
   assert.match(quotaServiceSource, /import\s+\{\s*GeminiTokenUsageTracker\s*\}\s+from\s+"\.\/GeminiTokenUsageTracker"/, 'QuotaService should import GeminiTokenUsageTracker');
 
   // Verify usage in fetchGoogle
-  const googleBody = extractFunctionBody(quotaServiceSource, 'private async fetchGoogle(');
+  const googleBody = extractFunctionBody(quotaServiceSource, 'private async fetchGoogle(account: { email?: string; refreshToken: string }): Promise<PlatformQuota[]>');
   assert.match(googleBody, /const\s+tracker\s*=\s*GeminiTokenUsageTracker\.getInstance\(\)/, 'fetchGoogle should get tracker instance');
   assert.match(googleBody, /const\s+allTrackedUsage\s*=\s*tracker\.getAllUsage\(\)/, 'fetchGoogle should get all usage from tracker');
   assert.match(googleBody, /const\s+geminiModels\s*=\s*allTrackedUsage\.filter\(/, 'fetchGoogle should filter to Gemini models');

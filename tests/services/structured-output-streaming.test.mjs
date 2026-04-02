@@ -1,10 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource, readAllSources } from '../helpers/source-utils.mjs';
 
-const chatProviderSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+const chatProviderSource = readAllSources(
+  [
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'types.ts')
+  ],
   'ChatViewProvider.ts',
 );
 const messageHandlerSource = readSource(
@@ -18,9 +31,7 @@ const structuredSchemaSource = readSource(
 
 // SKIP: Implementation has changed - structured output transport negotiation is different
 test.skip('chat provider negotiates structured json transport and caches per model', () => {
-  const helperBody = extractFunctionBody(
-    chatProviderSource,
-    'private async promptWithStructuredOutput(',
+  const helperBody = extractFunctionBody(chatProviderSource, 'promptWithStructuredOutput(',
   );
 
   assert.match(structuredSchemaSource, /type:\s*["']json_schema["']/, 'schema should use json_schema transport');
@@ -41,9 +52,7 @@ test.skip('chat provider validates transport by structured payload signal', () =
     /private hasStructuredOutputTransportSignal\(messageLike: unknown\): boolean/,
     'provider should detect structured payload transport signals before caching mode',
   );
-  const helperBody = extractFunctionBody(
-    chatProviderSource,
-    'private async promptWithStructuredOutput(',
+  const helperBody = extractFunctionBody(chatProviderSource, 'promptWithStructuredOutput(',
   );
   assert.match(
     helperBody,
@@ -88,9 +97,7 @@ test.skip('chat provider applies strict structured error fallback without hardco
 
 // SKIP: Implementation has changed
 test.skip('chat provider enriches streaming events with structured metadata', () => {
-  const enrichBody = extractFunctionBody(
-    chatProviderSource,
-    'private enrichStreamEvent(event: any): any',
+  const enrichBody = extractFunctionBody(chatProviderSource, 'enrichStreamEvent(event: any): any',
   );
 
   assert.match(enrichBody, /kind\s*=\s*"thinking"/, 'stream enrichment should classify thinking events');
@@ -118,9 +125,7 @@ test.skip('chat provider keeps reasoning parts intact when applying structured o
 });
 
 test.skip('chat provider uses structured assistant message as source of truth', () => {
-  const applyBody = extractFunctionBody(
-    chatProviderSource,
-    'private applyStructuredOutputToMessage(',
+  const applyBody = extractFunctionBody(chatProviderSource, 'applyStructuredOutputToMessage(',
   );
 
   assert.match(
@@ -152,9 +157,7 @@ test.skip('chat provider enables structured output for all prompts when schema m
     'provider should cache transport mode per model',
   );
 
-  const shouldUseBody = extractFunctionBody(
-    chatProviderSource,
-    'private shouldUseStructuredOutput(',
+  const shouldUseBody = extractFunctionBody(chatProviderSource, 'shouldUseStructuredOutput(',
   );
   assert.match(
     shouldUseBody,
@@ -169,9 +172,7 @@ test.skip('chat provider enables structured output for all prompts when schema m
 });
 
 test.skip('chat provider does not coerce malformed question payloads into synthetic options', () => {
-  const normalizeBody = extractFunctionBody(
-    chatProviderSource,
-    'private normalizeStructuredOutput(',
+  const normalizeBody = extractFunctionBody(chatProviderSource, 'normalizeStructuredOutput(',
   );
 
   assert.doesNotMatch(

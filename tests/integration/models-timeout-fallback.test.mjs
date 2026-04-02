@@ -1,21 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  extractFunctionBody,
-  joinFromRoot,
-  readSource,
-} from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource, readAllSources } from '../helpers/source-utils.mjs';
 
-const chatProviderSource = readSource(
-  [joinFromRoot("src", "providers", "ChatViewProvider.ts")],
-  "ChatViewProvider.ts",
+const chatProviderSource = readAllSources(
+  [
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'types.ts')
+  ],
+  'ChatViewProvider.ts'
 );
 
 test("handleGetModels falls back to cached/selected model after provider list timeout", () => {
+  // After refactoring, handleGetModels implementation is in ModelAndAgentManager module
+  // Use specific signature without 'private' to match the module, not the wrapper
   const body = extractFunctionBody(
     chatProviderSource,
-    "private async handleGetModels(): Promise<ChatModelOption[]>",
+    "  async handleGetModels(): Promise<ChatModelOption[]>",
   );
 
   assert.match(
@@ -48,7 +59,7 @@ test("handleGetModels falls back to cached/selected model after provider list ti
 test("selected model fallback list provides a usable model entry", () => {
   const body = extractFunctionBody(
     chatProviderSource,
-    "private getSelectedModelFallbackList(): ChatModelOption[]",
+    "getSelectedModelFallbackList(): ChatModelOption[]",
   );
 
   assert.match(

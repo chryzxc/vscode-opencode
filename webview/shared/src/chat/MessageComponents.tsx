@@ -278,7 +278,7 @@ function messageBodyFromParts(parts?: MessagePart[]): string {
       if (isReasoningPart(part)) {
         return "";
       }
-      return part.assistantMessage ?? part.message ?? part.text ?? part.content ?? "";
+      return part.message ?? part.text ?? part.content ?? "";
     })
     .join("")
     .trim();
@@ -328,22 +328,7 @@ function formatQuestionPromptForAssistant(
   if (!trimmed) {
     return "";
   }
-  const hasQuestionPrefix =
-    /^(?:#{1,6}\s*)?(?:\*\*)?\s*(?:question|clarification)\s*[:\-]/i.test(
-      trimmed,
-    ) || /^question\b/i.test(trimmed);
-  const hasConfirmPrefix =
-    /^(?:#{1,6}\s*)?(?:\*\*)?\s*(?:confirm|confirmation|please confirm)\s*[:\-]/i.test(
-      trimmed,
-    );
-  if (hasQuestionPrefix || hasConfirmPrefix || kind === "message") {
-    return trimmed;
-  }
-  const prefix = kind === "confirm" ? "Please confirm" : "Question";
-  if (trimmed.includes("\n")) {
-    return `${prefix}:\n${trimmed}`;
-  }
-  return `${prefix}: ${trimmed}`;
+  return trimmed;
 }
 
 function questionPromptFromMessage(message?: Message): string | undefined {
@@ -360,21 +345,49 @@ function questionPromptFromMessage(message?: Message): string | undefined {
     asRecord(infoRec?.structured_output);
   const question = asRecord(structured?.question);
 
-  // displayPrompt is the primary source-of-truth for the chat bubble text.
-  // Falls back to assistantMessage from the top-level structured output, which carries
-  // the full conversational context the model intended to show in the chat bubble.
+  // displayPrompt is the primary source-of-truth for question chat bubble text.
   const explicitDisplayPrompt = firstNonEmptyString(
     question?.displayPrompt,
     question?.assistantPrompt,
     question?.responseMessage,
-    // NOTE: assistantMessage is intentionally checked here as a bubble-text fallback.
-    // This ensures the AI's full response text is visible in the chat bubble even when
-    // the model omits displayPrompt. Without this, the bubble shows only the popup question
-    // text (question.question), which is a short, incomplete snippet.
-    structured?.assistantMessage,
   );
   if (explicitDisplayPrompt) {
     return explicitDisplayPrompt;
+  }
+
+  if (question) {
+    const questionType = firstNonEmptyString(question.type)?.toLowerCase();
+    if (questionType === "message") {
+      return firstNonEmptyString(
+        question.message,
+        question.content,
+        question.question,
+        question.title,
+      );
+    }
+    if (questionType === "quick_actions" || questionType === "quick-actions") {
+      const prompt = firstNonEmptyString(
+        question.question,
+        question.title,
+        question.message,
+        question.content,
+      );
+      return prompt
+        ? formatQuestionPromptForAssistant(prompt, "quick_actions")
+        : undefined;
+    }
+    const prompt = firstNonEmptyString(
+      question.question,
+      question.message,
+      question.content,
+      question.title,
+    );
+    if (prompt) {
+      return formatQuestionPromptForAssistant(
+        prompt,
+        questionType === "confirm" ? "confirm" : "question",
+      );
+    }
   }
 
   if (Array.isArray(message.interactiveEvents)) {
@@ -399,42 +412,7 @@ function questionPromptFromMessage(message?: Message): string | undefined {
       }
     }
   }
-  if (!question) {
-    return undefined;
-  }
-  const questionType = firstNonEmptyString(question.type)?.toLowerCase();
-  if (questionType === "message") {
-    return firstNonEmptyString(
-      question.message,
-      question.content,
-      question.question,
-      question.title,
-    );
-  }
-  if (questionType === "quick_actions" || questionType === "quick-actions") {
-    const prompt = firstNonEmptyString(
-      question.question,
-      question.title,
-      question.message,
-      question.content,
-    );
-    return prompt
-      ? formatQuestionPromptForAssistant(prompt, "quick_actions")
-      : undefined;
-  }
-  const prompt = firstNonEmptyString(
-    question.question,
-    question.message,
-    question.content,
-    question.title,
-  );
-  if (!prompt) {
-    return undefined;
-  }
-  return formatQuestionPromptForAssistant(
-    prompt,
-    questionType === "confirm" ? "confirm" : "question",
-  );
+  return undefined;
 }
 
 
@@ -548,9 +526,22 @@ function getMessageContent(
   const structured = asRecord(messageRec?.structuredOutput) || asRecord(infoRec?.structuredOutput);
   const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
   const isQuestionResponseType = responseType === "question";
+  const isMessageResponseType = responseType === "message";
   const hasInteractiveEvents = Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0;
+  if (isMessageResponseType) {
+    const structuredMessage = firstNonEmptyString(structured?.message);
+    if (structuredMessage) {
+      return structuredMessage;
+    }
+  }
   if (!isQuestionResponseType && !hasInteractiveEvents) {
     return baseContent;
+  }
+
+  // For explicit question turns, render only the canonical question prompt in the
+  // assistant bubble (no assistantMessage/body concatenation).
+  if (isQuestionResponseType) {
+    return questionPrompt;
   }
 
   if (!baseContent || isLowValueInteractiveBodyText(baseContent)) {
@@ -2091,7 +2082,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
-  const showResponseSection = hasResponseContent;
+  const showResponseSection = hasResponseContent || !!plan;
   const hasThinkingEvents = useMemo(
     () => displayEvents.some((event) => event.kind === "thinking"),
     [displayEvents],
@@ -2201,7 +2192,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       <div
         className={cn(
           "oc-msg-assistant",
-          isLiveStreamingCard && "max-h-[72vh] overflow-hidden",
         )}
         ref={messageBodyRef}
       >

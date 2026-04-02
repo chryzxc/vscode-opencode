@@ -1,14 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource, readAllSources } from '../helpers/source-utils.mjs';
 
-const messageStreamSource = readSource(
+const messageStreamSource = readAllSources(
   [joinFromRoot('src', 'services', 'MessageStreamService.ts')],
   'MessageStreamService.ts',
 );
-const chatProviderSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+const chatProviderSource = readAllSources(
+  [
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'types.ts')
+  ],
   'ChatViewProvider.ts',
 );
 
@@ -83,7 +96,7 @@ test('MessageStreamService uses AbortController for proper cancellation', () => 
 test('MessageStreamService notifies all callbacks with error isolation', () => {
   // Verify callback dispatch continues even if individual callbacks fail
   assert.match(messageStreamSource, /private notifyCallbacks\(event: StreamEvent\): void/, 'MessageStreamService should have private notifyCallbacks method');
-  const notifyBody = extractFunctionBody(messageStreamSource, 'private notifyCallbacks(event: StreamEvent): void');
+  const notifyBody = extractFunctionBody(messageStreamSource, 'notifyCallbacks(event: StreamEvent): void');
 
   assert.match(notifyBody, /this\.callbacks\.forEach\(\(callback\)\s*=>\s*\{/, 'notifyCallbacks should iterate through all callbacks');
   assert.match(notifyBody, /try\s*\{[\s\S]*callback\(event\)/, 'notifyCallbacks should call callback in try block');
@@ -92,9 +105,7 @@ test('MessageStreamService notifies all callbacks with error isolation', () => {
 });
 
 test('MessageStreamService normalizes GlobalEvent wrappers from SDK', () => {
-  const normalizeBody = extractFunctionBody(
-    messageStreamSource,
-    'private normalizeIncomingEvent(rawEvent: unknown): StreamEvent | null',
+  const normalizeBody = extractFunctionBody(messageStreamSource, 'normalizeIncomingEvent(rawEvent: unknown): StreamEvent | null',
   );
 
   assert.match(

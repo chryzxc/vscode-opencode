@@ -1,21 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  extractFunctionBody,
-  joinFromRoot,
-  readSource,
-} from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readAllSources, } from '../helpers/source-utils.mjs';
 
-const chatProviderSource = readSource(
-  [joinFromRoot("src", "providers", "ChatViewProvider.ts")],
-  "ChatViewProvider.ts",
-);
+const chatProviderSource = readAllSources([
+  joinFromRoot("src", "providers", "ChatViewProvider.ts"),
+  joinFromRoot("src", "providers", "chat", "HistoryProcessor.ts"),
+  joinFromRoot("src", "providers", "chat", "PlanManager.ts"),
+  joinFromRoot("src", "providers", "chat", "StructuredOutputProcessor.ts"),
+], "Chat modularized logic");
 
 test("history hydration reuses canonical processing path and disables synthetic fallback errors", () => {
-  const processBody = extractFunctionBody(
-    chatProviderSource,
-    "private processHistoryMessages(",
+  const processBody = extractFunctionBody(chatProviderSource, 'processHistoryMessages(rawMessages: any[], sessionId: string): any[]',
   );
 
   assert.match(
@@ -51,9 +47,7 @@ test("history hydration reuses canonical processing path and disables synthetic 
 });
 
 test("assistant burst coalescing keeps latest base and dedupes timeline arrays", () => {
-  const coalesceBody = extractFunctionBody(
-    chatProviderSource,
-    "private coalesceAssistantBurst(burst: any[]): any",
+  const coalesceBody = extractFunctionBody(chatProviderSource, 'private coalesceAssistantBurst(burst: any[]): any',
   );
 
   assert.match(
@@ -83,10 +77,68 @@ test("assistant burst coalescing keeps latest base and dedupes timeline arrays",
   );
 });
 
-test("session override persistence intentionally keeps rawResponse debug payload", () => {
-  const persistOverrideBody = extractFunctionBody(
+test("assistant burst coalescing avoids collapsing distinct assistant replies", () => {
+  const burstBody = extractFunctionBody(
     chatProviderSource,
-    "private async persistSessionMessageOverride(",
+    'private mergeConsecutiveAssistantBursts(messages: any[]): any[]',
+  );
+  const guardBody = extractFunctionBody(
+    chatProviderSource,
+    'private shouldMergeAssistantBurstMessages(previous: any, next: any): boolean',
+  );
+
+  assert.match(
+    burstBody,
+    /!this\.shouldMergeAssistantBurstMessages\(previous,\s*message\)/,
+    "mergeConsecutiveAssistantBursts should split bursts when messages are not part of the same assistant turn",
+  );
+  assert.match(
+    guardBody,
+    /if \(!previousActivityOnly && !nextActivityOnly\)\s*\{\s*return false;\s*\}/,
+    "burst merge guard should not collapse two content-bearing assistant replies",
+  );
+  assert.match(
+    guardBody,
+    /return Boolean\(previousId && nextId && previousId === nextId\);/,
+    "burst merge guard should only merge assistant entries that share the same message id",
+  );
+
+  const adjacentActivityBody = extractFunctionBody(
+    chatProviderSource,
+    'private mergeAdjacentAssistantActivityMessages(messages: any[]): any[]',
+  );
+  assert.match(
+    adjacentActivityBody,
+    /lastId === currentId/,
+    "adjacent activity merge should only combine fragments that share the same message id",
+  );
+});
+
+test("history timestamps parse numeric created fields instead of falling back to Date.now", () => {
+  const createdAtBody = extractFunctionBody(
+    chatProviderSource,
+    'private historyMessageCreatedAt(message: any): number | undefined',
+  );
+
+  assert.match(
+    createdAtBody,
+    /infoTime\?\.created/,
+    "historyMessageCreatedAt should read info.time.created numeric timestamps",
+  );
+  assert.match(
+    createdAtBody,
+    /typeof candidate === "number" && Number\.isFinite\(candidate\)/,
+    "historyMessageCreatedAt should preserve numeric timestamps without string coercion",
+  );
+  assert.doesNotMatch(
+    createdAtBody,
+    /return Date\.now\(\);/,
+    "historyMessageCreatedAt should not default to Date.now which can collapse unrelated hydration turns",
+  );
+});
+
+test("session override persistence intentionally keeps rawResponse debug payload", () => {
+  const persistOverrideBody = extractFunctionBody(chatProviderSource, 'persistSessionMessageOverride(',
   );
 
   assert.doesNotMatch(
@@ -97,9 +149,7 @@ test("session override persistence intentionally keeps rawResponse debug payload
 });
 
 test("final assistant response persists debug override payload for refresh parity", () => {
-  const sendBody = extractFunctionBody(
-    chatProviderSource,
-    "private async handleSendMessage(",
+  const sendBody = extractFunctionBody(chatProviderSource, 'private async handleSendMessage(',
   );
 
   assert.match(
@@ -110,9 +160,7 @@ test("final assistant response persists debug override payload for refresh parit
 });
 
 test("structured-output fallback synthesis can be disabled for session reload normalization", () => {
-  const applyBody = extractFunctionBody(
-    chatProviderSource,
-    "private applyStructuredOutputToMessage(",
+  const applyBody = extractFunctionBody(chatProviderSource, 'private applyStructuredOutputToMessage(',
   );
 
   assert.match(
@@ -128,13 +176,9 @@ test("structured-output fallback synthesis can be disabled for session reload no
 });
 
 test("mirror-deduper preserves intentional idless repeats while merging synthetic/local mirrors", () => {
-  const mirrorBody = extractFunctionBody(
-    chatProviderSource,
-    "private areMirrorHistoryMessages(existing: any, incoming: any): boolean",
+  const mirrorBody = extractFunctionBody(chatProviderSource, 'private areMirrorHistoryMessages(a: any, b: any): boolean',
   );
-  const canonicalIdBody = extractFunctionBody(
-    chatProviderSource,
-    "private pickCanonicalHistoryMessageId(preferred: any, fallback: any): string | undefined",
+  const canonicalIdBody = extractFunctionBody(chatProviderSource, 'private pickCanonicalHistoryMessageId(messages: any[]): string | undefined',
   );
 
   assert.match(
@@ -155,13 +199,9 @@ test("mirror-deduper preserves intentional idless repeats while merging syntheti
 });
 
 test("history hydration filters internal system-reminder transport messages", () => {
-  const renderableBody = extractFunctionBody(
-    chatProviderSource,
-    "private hasRenderableHistoryPayload(message: any): boolean",
+  const renderableBody = extractFunctionBody(chatProviderSource, 'private hasRenderableHistoryPayload(message: any): boolean',
   );
-  const helperBody = extractFunctionBody(
-    chatProviderSource,
-    "private isInternalSystemReminderMessage(message: any): boolean",
+  const helperBody = extractFunctionBody(chatProviderSource, 'private isInternalSystemReminderMessage(message: any): boolean',
   );
 
   assert.match(
@@ -171,23 +211,23 @@ test("history hydration filters internal system-reminder transport messages", ()
   );
   assert.match(
     helperBody,
-    /normalized\.includes\("<system-reminder>"\)/,
+    /lower\.includes\("<system-reminder>"\)/,
     "internal reminder detector should recognize <system-reminder> wrapper payloads",
   );
   assert.match(
     helperBody,
-    /normalized\.includes\("<!-- omo_internal_initiator -->"\)/,
+    /lower\.includes\("<!-- omo_internal_initiator -->"\)/,
     "internal reminder detector should recognize internal initiator marker payloads",
   );
   assert.match(
     helperBody,
-    /normalized\.includes\("\[search-model\]"\)\s*&&[\s\S]*normalized\.includes\("maximize search effort"\)/,
+    /lower\.includes\("\[search-model\]"\)\s*&&[\s\S]*lower\.includes\("maximize search effort"\)/,
     "internal reminder detector should recognize search-model reminder payloads",
   );
   assert.match(
     helperBody,
-    /if\s*\(\s*this\.isPlanProceedMessageText\(text\)\s*\)\s*\{\s*return false;\s*\}/,
-    "internal reminder detector should preserve plan proceed confirmations",
+    /if \(role !== "user" && role !== "system"\) return false;/,
+    "internal reminder detector should ignore non-user/non-system roles",
   );
 
 });

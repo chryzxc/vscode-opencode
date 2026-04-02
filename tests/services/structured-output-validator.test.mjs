@@ -30,7 +30,8 @@ test('structured output validator enforces responseType specific requirements', 
   assert.match(validatorSource, /subagents responseType requires subagents array/, 'validator should enforce subagents array for subagents responseType');
   assert.match(validatorSource, /question responseType requires question object or interactiveEvents/, 'validator should enforce question payload contract for question responseType');
   assert.match(validatorSource, /question requires question text/, 'validator should require question payload to include question text');
-  assert.match(validatorSource, /question interactive payload requires at least two options unless allowCustomInput is true/, 'validator should require question payload to include options unless custom input is enabled');
+  assert.match(validatorSource, /question interactive payload requires at least two options/, 'validator should require question payload to include explicit choices');
+  assert.match(validatorSource, /question responseType requires choices: provide at least two options/, 'validator should enforce choices for responseType question');
   assert.match(validatorSource, /interactiveEvents must be an array/, 'validator should validate interactiveEvents compatibility shape');
   assert.match(validatorSource, /progress_update responseType requires progressUpdates array/, 'validator should enforce progressUpdates array for progress_update responseType');
   assert.match(validatorSource, /todo_update responseType requires todoItems array/, 'validator should enforce todoItems array for todo_update responseType');
@@ -41,15 +42,33 @@ test('structured output validator recognizes subagentsDelta contract', () => {
   assert.match(validatorSource, /subagentsDelta requires items array/, 'validator should enforce subagentsDelta items array');
 });
 
-test('structured output validator enforces assistantMessage typing and message payload requirement', () => {
+test('structured output sanitizer lifts top-level question options in development payloads', () => {
   assert.match(
     validatorSource,
-    /assistantMessage must be a string/,
-    'validator should validate assistantMessage string type',
+    /typeof value\.options !== "undefined"/,
+    'sanitizer should read top-level options when normalizing question string payloads',
   );
   assert.match(
     validatorSource,
-    /message responseType requires assistantMessage or message string/,
+    /typeof value\.choices !== "undefined"/,
+    'sanitizer should read top-level choices as a fallback option source',
+  );
+  assert.match(
+    validatorSource,
+    /value\.actions/,
+    'sanitizer should read top-level actions as a fallback option source',
+  );
+  assert.match(
+    generatedWebviewValidatorSource,
+    /typeof value\.options !== "undefined"/,
+    'generated webview sanitizer should mirror top-level option lifting behavior',
+  );
+});
+
+test('structured output validator enforces message payload requirement', () => {
+  assert.match(
+    validatorSource,
+    /message responseType requires message string/,
     'validator should require an explicit user-facing message for message responseType',
   );
   assert.match(

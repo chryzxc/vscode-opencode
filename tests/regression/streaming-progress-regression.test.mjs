@@ -203,8 +203,13 @@ test('messageResponse remaps subagent parent message ids when stream and final i
   );
   assert.match(
     messageHandlerSource,
-    /remapSubagentsToFinalMessageId\(\s*dispatch,\s*getState,\s*streamingMessageId,\s*finalMessageId,\s*\)/s,
-    'messageResponse should rebind subagent summaries/details to the finalized assistant message id',
+    /activeSubagentParentMessageIds\s*=\s*new Set<string>\(\);/,
+    'message handler should track active subagent parent ids across a streaming run',
+  );
+  assert.match(
+    messageHandlerSource,
+    /remapSubagentsToFinalMessageId\(\s*dispatch,\s*getState,\s*\[\s*streamingMessageId,\s*\.\.\.Array\.from\(activeSubagentParentMessageIds\)\s*\],\s*finalMessageId,\s*\)/s,
+    'messageResponse should rebind subagent summaries/details from all active parent ids to the finalized assistant message id',
   );
 });
 

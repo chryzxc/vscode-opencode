@@ -8,9 +8,9 @@ export class PlanViewProvider {
   private readonly _context: vscode.ExtensionContext;
   private readonly _extensionUri: vscode.Uri;
   private _disposables: vscode.Disposable[] = [];
-  // Simple in-memory store for comments keyed by planId (fallback key 'default')
+  // Simple in-memory store for comments keyed by planId with fallback key 'default'
   // Keep comments as a simple local structure to avoid cross-package import issues
-  private _commentsByPlan: Map<string, { id: string; anchor: { startLine: number; endLine: number; selectedText: string; surroundingText?: string }; text: string; createdAt: number; resolved?: boolean }[]> = new Map();
+  private _commentsByPlan: Map<string, { id: string; anchor: { startLine: number; endLine: number; selectedText: string; surroundingText?: string }; text: string; createdAt: number; resolved?: boolean }[]> = new Map;
 
   private _currentContent: string;
   private _currentTitle: string;

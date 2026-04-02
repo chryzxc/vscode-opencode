@@ -10,7 +10,7 @@ describe('normalizeMessage', () => {
       content: 'Test message',
       structuredOutput: {
         responseType: 'question',
-        assistantMessage: 'Test question',
+        message: 'Test question',
         interactiveEvents: [{
           type: 'question',
           id: 'test-1',
@@ -52,7 +52,7 @@ describe('normalizeMessage', () => {
 
     (inputMessage as Record<string, unknown>).structured_output = {
       responseType: 'question',
-      assistantMessage: 'Test question',
+      message: 'Test question',
       interactiveEvents: [{
         type: 'question',
         id: 'test-2',
@@ -101,7 +101,7 @@ describe('normalizeMessage', () => {
       parts: [{ type: 'text', text: 'Test message' }],
       structuredOutput: {
         responseType: 'question',
-        assistantMessage: 'Test question',
+        message: 'Test question',
         interactiveEvents: [{
           type: 'question',
           id: 'test-3',
@@ -143,7 +143,7 @@ describe('normalizeMessage', () => {
       content: 'Original content',
       structuredOutput: {
         responseType: 'question',
-        assistantMessage: 'Test question',
+        message: 'Test question',
         interactiveEvents: [{
           type: 'question',
           id: 'test-4',
@@ -190,7 +190,7 @@ describe('structuredOutput preservation - Integration Tests', () => {
       content: 'Question for user',
       structuredOutput: {
         responseType: 'question',
-        assistantMessage: 'Please choose an option:',
+        message: 'Please choose an option:',
         interactiveEvents: [{
           type: 'question',
           id: 'q1',
@@ -241,7 +241,7 @@ describe('structuredOutput preservation - Integration Tests', () => {
       content: 'Base message',
       structuredOutput: {
         responseType: 'question',
-        assistantMessage: 'Base question',
+        message: 'Base question',
         interactiveEvents: [{
           type: 'question',
           id: 'q-base',

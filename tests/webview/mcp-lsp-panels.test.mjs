@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource, readAllSources } from '../helpers/source-utils.mjs';
 
-const chatShellSource = readSource(
+const chatShellSource = readAllSources(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
   'ChatShell.tsx',
 );

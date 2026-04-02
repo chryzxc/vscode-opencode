@@ -20,6 +20,256 @@
 			"presentation": {
 				"reveal": "never"
 			}
+		},
+		{
+			"label": "run-bsm-tests",
+			"type": "shell",
+			"command": "node --test tests/unit/backend-system-message-filtering.test.mjs",
+			"isBackground": false
+		},
+		{
+			"label": "run-bsm-tests-ps",
+			"type": "shell",
+			"command": "node --test tests\\unit\\backend-system-message-filtering.test.mjs",
+			"isBackground": false
+		},
+		{
+			"label": "verify-regression-hydration",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/regression/session-hydration-rendering-regression.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:streaming-progress-regression",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/regression/streaming-progress-regression.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:targeted-regression-batch",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/regression/system-message-deduplication-regression.test.mjs",
+				"tests/regression/system-message-streaming-race-regression.test.mjs",
+				"tests/services/quota-service.test.mjs",
+				"tests/unit/queue-steer-scheduler.test.mjs",
+				"tests/unit/shared/structuredOutputSchema.test.mjs",
+				"tests/unit/shared/structuredOutputValidator.test.mjs",
+				"tests/webview/skills-panel.test.mjs",
+				"tests/webview/streaming-state.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:targeted-regression-batch",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/regression/system-message-deduplication-regression.test.mjs",
+				"tests/regression/system-message-streaming-race-regression.test.mjs",
+				"tests/services/quota-service.test.mjs",
+				"tests/unit/queue-steer-scheduler.test.mjs",
+				"tests/unit/shared/structuredOutputSchema.test.mjs",
+				"tests/unit/shared/structuredOutputValidator.test.mjs",
+				"tests/webview/skills-panel.test.mjs",
+				"tests/webview/streaming-state.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:full-suite",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:system-message-contracts",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/webview/system-message-streaming.test.mjs",
+				"tests/regression/system-message-streaming-race-regression.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:full-suite",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:plan-viewer",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/webview/plan-viewer.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:plan-viewer",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/webview/plan-viewer.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:plan-viewer",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/webview/plan-viewer.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:full-suite",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:interactive-events-contract",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/webview/interactive-events-contract.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:interactive-and-streaming-contracts",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/webview/interactive-events-contract.test.mjs",
+				"tests/webview/chat-view-streaming.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:interactive-and-streaming-contracts",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/webview/interactive-events-contract.test.mjs",
+				"tests/webview/chat-view-streaming.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:full-suite",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:remaining-unit-contracts",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/unit/subagent-tracker-contract.test.mjs",
+				"tests/unit/subagent-ui-contract.test.mjs",
+				"tests/unit/system-prompt-and-structured-output-parsing.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:remaining-unit-contracts",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/unit/subagent-tracker-contract.test.mjs",
+				"tests/unit/subagent-ui-contract.test.mjs",
+				"tests/unit/system-prompt-and-structured-output-parsing.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:remaining-unit-contracts",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/unit/subagent-tracker-contract.test.mjs",
+				"tests/unit/subagent-ui-contract.test.mjs",
+				"tests/unit/system-prompt-and-structured-output-parsing.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:full-suite",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:last-three-contracts",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/regression/session-hydration-rendering-regression.test.mjs",
+				"tests/unit/providers/ChatViewProvider.unit.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "verify:session-hydration-regression",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"tests/regression/session-hydration-rendering-regression.test.mjs"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test:full-suite",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			],
+			"isBackground": false
 		}
 	]
 }

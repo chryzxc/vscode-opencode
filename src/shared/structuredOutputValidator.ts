@@ -32,6 +32,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function countValidChoiceOptions(value: unknown): number {
+  const options = Array.isArray(value) ? value : [];
+  return options.filter((option) => {
+    if (!option || typeof option !== "object") {
+      return false;
+    }
+    const optionRecord = option as Record<string, unknown>;
+    return (
+      isNonEmptyString(optionRecord.label) ||
+      isNonEmptyString(optionRecord.value)
+    );
+  }).length;
+}
+
 function isQualifiedMarkdownPath(value: string): boolean {
   const candidate = value.trim();
   if (!candidate || !/\.md$/i.test(candidate)) {
@@ -83,13 +97,6 @@ export function validateStructuredOutput(
     if (!RESPONSE_TYPES.has(responseType)) {
       errors.push(`Unsupported responseType: ${responseType}`);
     }
-  }
-
-  if (
-    typeof record.assistantMessage !== "undefined" &&
-    typeof record.assistantMessage !== "string"
-  ) {
-    errors.push("assistantMessage must be a string");
   }
 
   if (
@@ -197,23 +204,10 @@ export function validateStructuredOutput(
               `interactiveEvents[${index}] question event requires question text`,
             );
           }
-          const allowCustomInput = eventRecord.allowCustomInput === true;
-          const options = Array.isArray(eventRecord.options)
-            ? eventRecord.options
-            : [];
-          const validOptionCount = options.filter((option) => {
-            if (!option || typeof option !== "object") {
-              return false;
-            }
-            const optionRecord = option as Record<string, unknown>;
-            return (
-              isNonEmptyString(optionRecord.label) ||
-              isNonEmptyString(optionRecord.value)
-            );
-          }).length;
-          if (!allowCustomInput && validOptionCount < 2) {
+          const validOptionCount = countValidChoiceOptions(eventRecord.options);
+          if (validOptionCount < 2) {
             errors.push(
-              `interactiveEvents[${index}] question interactive event requires at least two options`,
+              `interactiveEvents[${index}] question event requires at least two options`,
             );
           }
         }
@@ -294,24 +288,10 @@ export function validateStructuredOutput(
           errors.push("question.answers must be an array of strings");
         }
 
-        const allowCustomInput = questionRecord.allowCustomInput === true;
-        const options = Array.isArray(questionRecord.options)
-          ? questionRecord.options
-          : [];
-        const validOptionCount = options.filter((option) => {
-          if (!option || typeof option !== "object") {
-            return false;
-          }
-          const optionRecord = option as Record<string, unknown>;
-          return (
-            isNonEmptyString(optionRecord.label) ||
-            isNonEmptyString(optionRecord.value)
-          );
-        }).length;
-
-        if (!allowCustomInput && validOptionCount < 2) {
+        const validOptionCount = countValidChoiceOptions(questionRecord.options);
+        if (validOptionCount < 2) {
           errors.push(
-            "question interactive payload requires at least two options unless allowCustomInput is true",
+            "question interactive payload requires at least two options",
           );
         }
       }
@@ -443,6 +423,31 @@ export function validateStructuredOutput(
     ) {
       errors.push("question responseType requires question object or interactiveEvents");
     }
+
+    const questionRecord = asRecord(record.question);
+    const questionType = asString(questionRecord?.type).trim() || "question";
+    const questionOptionCount =
+      questionType === "question"
+        ? countValidChoiceOptions(questionRecord?.options)
+        : 0;
+    const interactiveQuestionOptionCount = Array.isArray(record.interactiveEvents)
+      ? record.interactiveEvents.reduce((maxCount, entry) => {
+          const eventRecord = asRecord(entry);
+          if (!eventRecord || asString(eventRecord.type) !== "question") {
+            return maxCount;
+          }
+          return Math.max(maxCount, countValidChoiceOptions(eventRecord.options));
+        }, 0)
+      : 0;
+
+    if (
+      questionOptionCount < 2 &&
+      interactiveQuestionOptionCount < 2
+    ) {
+      errors.push(
+        "question responseType requires choices: provide at least two options in question.options or interactiveEvents[].options",
+      );
+    }
   }
 
   if (responseType === "progress_update") {
@@ -504,17 +509,13 @@ export function validateStructuredOutput(
   }
 
   if (responseType === "message") {
-    const assistantMessage =
-      typeof record.assistantMessage === "string" && record.assistantMessage.trim().length > 0
-        ? record.assistantMessage
-        : undefined;
-    const legacyMessage =
+    const messageText =
       typeof record.message === "string" && record.message.trim().length > 0
         ? record.message
         : undefined;
-    if (!assistantMessage && !legacyMessage) {
+    if (!messageText) {
       errors.push(
-        "message responseType requires assistantMessage or message string",
+        "message responseType requires message string",
       );
     }
   }
@@ -525,22 +526,48 @@ export function validateStructuredOutput(
       errorRecord && isNonEmptyString(errorRecord.message)
         ? errorRecord.message
         : undefined;
-    const assistantMessage =
-      typeof record.assistantMessage === "string" && record.assistantMessage.trim().length > 0
-        ? record.assistantMessage
-        : undefined;
-    const legacyMessage =
+    const messageText =
       typeof record.message === "string" && record.message.trim().length > 0
         ? record.message
         : undefined;
-    if (!errorMessage && !assistantMessage && !legacyMessage) {
+    if (!errorMessage && !messageText) {
       errors.push(
-        "error responseType requires error.message or assistantMessage/message",
+        "error responseType requires error.message or message",
       );
     }
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Normalize question options to ensure allowCustomInput is set correctly
+ * and handle JSON-stringified options arrays
+ */
+function normalizeQuestionOptions(
+  question: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized = { ...question };
+
+  // Handle JSON-stringified options array
+  let options = normalized.options;
+  if (typeof options === "string") {
+    try {
+      options = JSON.parse(options);
+    } catch {
+      // If parsing fails, treat as empty array
+      options = [];
+    }
+  }
+
+  // Ensure options is an array
+  if (!Array.isArray(options)) {
+    options = [];
+  }
+
+  normalized.options = options;
+
+  return normalized;
 }
 
 export function sanitizeStructuredOutput(
@@ -557,5 +584,105 @@ export function sanitizeStructuredOutput(
       sanitized[key] = value[key];
     }
   });
+
+  // Handle malformed question structure where responseType is "question"
+  // but question is a string instead of an object
+  const responseType = isNonEmptyString(sanitized.responseType)
+    ? String(sanitized.responseType).toLowerCase()
+    : "";
+
+  if (responseType === "question") {
+    // If question is a string, convert it to a proper question object
+    if (typeof sanitized.question === "string" && sanitized.question.trim()) {
+      const questionText = String(sanitized.question).trim();
+      const questionObj: Record<string, unknown> = {
+        type: "question",
+        question: questionText,
+      };
+
+      // Move top-level option-like fields into the question object.
+      // In development, models may still emit question/options at the top level.
+      const rawQuestionOptions =
+        typeof sanitized.options !== "undefined"
+          ? sanitized.options
+          : typeof value.options !== "undefined"
+            ? value.options
+            : typeof sanitized.choices !== "undefined"
+              ? sanitized.choices
+              : typeof value.choices !== "undefined"
+                ? value.choices
+                : typeof sanitized.actions !== "undefined"
+                  ? sanitized.actions
+                  : value.actions;
+
+      if (typeof rawQuestionOptions === "string") {
+        try {
+          questionObj.options = JSON.parse(rawQuestionOptions);
+        } catch {
+          questionObj.options = [];
+        }
+      } else if (Array.isArray(rawQuestionOptions)) {
+        questionObj.options = rawQuestionOptions;
+      }
+
+      // Copy other question-related fields (title, id, etc.)
+      if (sanitized.title) {
+        questionObj.title = sanitized.title;
+      }
+      if (sanitized.id) {
+        questionObj.id = sanitized.id;
+      }
+
+      sanitized.question = questionObj;
+      // Remove top-level option aliases as they're now in the question object
+      delete sanitized.options;
+      delete sanitized.choices;
+      delete sanitized.actions;
+    }
+
+    // Normalize top-level question object
+    if (typeof sanitized.question === "object" && sanitized.question !== null) {
+      sanitized.question = normalizeQuestionOptions(
+        sanitized.question as Record<string, unknown>,
+      );
+    }
+  }
+
+  // Normalize interactiveEvents array
+  // Handle JSON-stringified interactiveEvents array
+  let interactiveEvents = sanitized.interactiveEvents;
+  if (typeof interactiveEvents === "string") {
+    try {
+      interactiveEvents = JSON.parse(interactiveEvents);
+    } catch {
+      // If parsing fails, treat as empty array
+      interactiveEvents = [];
+    }
+  }
+
+  // Ensure interactiveEvents is an array
+  if (!Array.isArray(interactiveEvents)) {
+    interactiveEvents = [];
+  }
+
+  sanitized.interactiveEvents = interactiveEvents;
+
+  sanitized.interactiveEvents = interactiveEvents.map((event) => {
+    if (!event || typeof event !== "object") {
+      return event;
+    }
+    const eventRecord = event as Record<string, unknown>;
+    const eventType = isNonEmptyString(eventRecord.type)
+      ? eventRecord.type
+      : "";
+
+    // Normalize question-type events
+    if (eventType === "question") {
+      return normalizeQuestionOptions(eventRecord);
+    }
+
+    return event;
+  });
+
   return sanitized;
 }

@@ -1,47 +1,48 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  extractFunctionBody,
-  joinFromRoot,
-  readSource,
-} from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readAllSources } from '../helpers/source-utils.mjs';
 
-const chatViewProviderSource = readSource(
-  [joinFromRoot("src", "providers", "ChatViewProvider.ts")],
+const chatViewProviderSource = readAllSources(
+  [
+    joinFromRoot("src", "providers", "ChatViewProvider.ts"),
+    joinFromRoot("src", "providers", "chat", "DiagnosticsLogger.ts"),
+    joinFromRoot("src", "providers", "chat", "StructuredOutputProcessor.ts"),
+    joinFromRoot("src", "providers", "chat", "PlanManager.ts"),
+    joinFromRoot("src", "providers", "chat", "SubagentPersistence.ts"),
+    joinFromRoot("src", "providers", "chat", "CompactionManager.ts"),
+    joinFromRoot("src", "providers", "chat", "HistoryProcessor.ts"),
+    joinFromRoot("src", "providers", "chat", "ModelAndAgentManager.ts"),
+    joinFromRoot("src", "providers", "chat", "QueueManager.ts"),
+    joinFromRoot("src", "providers", "chat", "SessionHandler.ts"),
+    joinFromRoot("src", "providers", "chat", "StreamEventHandler.ts"),
+    joinFromRoot("src", "providers", "chat", "types.ts")
+  ],
   "ChatViewProvider.ts",
 );
 
 test("backend ChatViewProvider filters internal system reminder messages from history", () => {
-  const isInternalBody = extractFunctionBody(
-    chatViewProviderSource,
-    "private isInternalSystemReminderMessage(message: any): boolean",
-  );
+  const isInternalBody = extractFunctionBody(chatViewProviderSource, 'isInternalSystemReminderMessage(');
 
   // Test that all internal system reminder patterns are detected
   assert.match(
     isInternalBody,
-    /const\s+normalized\s*=\s*text\.toLowerCase\(\)/,
+    /const\s+lower\s*=\s*trimmed\.toLowerCase\(\)/,
     "isInternalSystemReminderMessage should normalize text to lowercase",
   );
   assert.match(
     isInternalBody,
-    /const\s+trimmed\s*=\s*text\.trim\(\)/,
-    "isInternalSystemReminderMessage should trim whitespace from text",
-  );
-  assert.match(
-    isInternalBody,
-    /normalized\.includes\("<system-reminder>"\)/,
+    /lower\.includes\("<system-reminder>"\)/,
     "isInternalSystemReminderMessage should recognize <system-reminder> payloads",
   );
   assert.match(
     isInternalBody,
-    /normalized\.includes\("<auto-slash-command>"\)/,
+    /lower\.includes\("<auto-slash-command>"\)/,
     "isInternalSystemReminderMessage should recognize <auto-slash-command> payloads",
   );
   assert.match(
     isInternalBody,
-    /normalized\.includes\("<!-- omo_internal_initiator -->"\)/,
+    /lower\.includes\("<!-- omo_internal_initiator -->"\)/,
     "isInternalSystemReminderMessage should recognize the internal initiator marker",
   );
   assert.match(
@@ -56,17 +57,12 @@ test("backend ChatViewProvider filters internal system reminder messages from hi
   );
   assert.match(
     isInternalBody,
-    /hasBracketPrefix/,
-    "isInternalSystemReminderMessage should use bracket prefix detection",
-  );
-  assert.match(
-    isInternalBody,
     /bracketPattern\.test/,
     "isInternalSystemReminderMessage should test text against bracket pattern",
   );
   assert.match(
     isInternalBody,
-    /normalized\.includes\("\[search-model\]"\)\s*&&[\s\S]*normalized\.includes\("maximize search effort"\)/,
+    /lower\.includes\("\[search-model\]"\)\s*&&[\s\S]*lower\.includes\("maximize search effort"\)/,
     "isInternalSystemReminderMessage should recognize search-model reminder payloads",
   );
 });
@@ -74,7 +70,7 @@ test("backend ChatViewProvider filters internal system reminder messages from hi
 test("backend ChatViewProvider logs debug information for message processing", () => {
   const processHistoryBody = extractFunctionBody(
     chatViewProviderSource,
-    "private processHistoryMessages(",
+    'async processHistoryMessages(messages: any[], sessionId: string): Promise<any[]> {',
   );
 
   assert.match(
@@ -90,16 +86,8 @@ test("backend ChatViewProvider logs debug information for message processing", (
 });
 
 test("backend ChatViewProvider does not filter internal system reminders from renderable history", () => {
-  const hasRenderableBody = extractFunctionBody(
-    chatViewProviderSource,
-    "private hasRenderableHistoryPayload(message: any): boolean",
-  );
+  const hasRenderableBody = extractFunctionBody(chatViewProviderSource, 'hasRenderableHistoryPayload(');
 
-  assert.match(
-    hasRenderableBody,
-    /\/\/\s*Don't filter out system reminder messages/,
-    "hasRenderableHistoryPayload should have comment explaining system reminders are not filtered",
-  );
   assert.match(
     hasRenderableBody,
     /\/\/\s*Don't filter out system reminder messages/,

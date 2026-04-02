@@ -802,11 +802,37 @@ type StructuredSubagent = {
 
 type StructuredOutput = {
   responseType?: StructuredResponseType | string;
-  assistantMessage?: string;
   message?: string;
+  plan?: {
+    file?: string;
+    files?: unknown[];
+    content?: string;
+    title?: string;
+    summary?: string;
+    fileCount?: number;
+  };
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
   interactiveEvents?: StructuredInteractiveEvent[];
+  question?: {
+    type?: string;
+    id?: string;
+    title?: string;
+    question?: string;
+    text?: string;
+    multiSelect?: boolean;
+    allowCustomInput?: boolean;
+    options?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
+    choices?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
+    actions?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    dismissLabel?: string;
+    message?: string;
+    content?: string;
+    displayPrompt?: string;
+    assistantPrompt?: string;
+  };
   subagents?: StructuredSubagent[];
   subagentsDelta?: {
     parentMessageId?: string;
@@ -842,11 +868,31 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     rawResponseType.toLowerCase() === "interactive"
       ? "question"
       : rawResponseType;
-  const assistantMessage =
-    asString(sanitizedRec.assistantMessage) ||
+  const messageText =
     asString(sanitizedRec.message) ||
+    asString((rec as UnknownRecord).message) ||
     undefined;
-  const message = asString(sanitizedRec.message) || undefined;
+  const planRec = asRecord(sanitizedRec.plan) ?? asRecord(rec.plan);
+  const normalizedPlan = planRec
+    ? {
+      file: asString(planRec.file) || undefined,
+      files: Array.isArray(planRec.files) ? planRec.files : undefined,
+      content: asString(planRec.content) || undefined,
+      title: asString(planRec.title) || undefined,
+      summary: asString(planRec.summary) || undefined,
+      fileCount:
+        typeof planRec.fileCount === "number" && Number.isFinite(planRec.fileCount)
+          ? planRec.fileCount
+          : undefined,
+    }
+    : undefined;
+  const hasNormalizedPlan =
+    !!normalizedPlan &&
+    !!(
+      normalizedPlan.file ||
+      normalizedPlan.content ||
+      (Array.isArray(normalizedPlan.files) && normalizedPlan.files.length > 0)
+    );
 
   const reasoningRaw =
     sanitizedRec.reasoning;
@@ -891,7 +937,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   };
   const cleanedReasoning = reasoning
     .map((chunk) =>
-      stripAssistantEchoFromReasoning(chunk, assistantMessage || message),
+      stripAssistantEchoFromReasoning(chunk, messageText),
     )
     .filter(Boolean);
 
@@ -925,10 +971,18 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     : [];
 
   const normalizeChoices = (raw: unknown): InteractiveChoice[] => {
-    if (!Array.isArray(raw)) {
+    let candidate = raw;
+    if (typeof candidate === "string") {
+      try {
+        candidate = JSON.parse(candidate);
+      } catch {
+        return [];
+      }
+    }
+    if (!Array.isArray(candidate)) {
       return [];
     }
-    return raw
+    return candidate
       .map((item) => {
         const option = asRecord(item);
         if (!option) {
@@ -1027,8 +1081,15 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     return undefined;
   };
 
+  const normalizedQuestion = asRecord(sanitizedRec.question) ?? asRecord(rec.question);
+  const sanitizedInteractiveEvents = Array.isArray(sanitizedRec.interactiveEvents)
+    ? sanitizedRec.interactiveEvents
+    : undefined;
   const interactiveRaw =
-    sanitizedRec.interactiveEvents ??
+    (sanitizedInteractiveEvents && sanitizedInteractiveEvents.length > 0
+      ? sanitizedInteractiveEvents
+      : undefined) ??
+    normalizedQuestion ??
     rec.interactions ??
     rec.uiEvents ??
     rec.question ??
@@ -1038,23 +1099,50 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     ? interactiveRaw
       .map((event, index) => normalizeInteractiveEvent(event, index))
       .filter((event): event is StructuredInteractiveEvent => !!event)
-    : singleInteractive
+      : singleInteractive
       ? [singleInteractive]
       : [];
 
+  const rootQuestion =
+    asString(normalizedQuestion?.question) ||
+    asString(normalizedQuestion?.text) ||
+    asString(rec.question) ||
+    asString(rec.prompt);
+  const questionOptionSource = (() => {
+    const normalizedSource =
+      normalizedQuestion?.options ?? normalizedQuestion?.choices;
+    if (Array.isArray(normalizedSource)) {
+      if (normalizedSource.length > 0) {
+        return normalizedSource;
+      }
+    } else if (
+      typeof normalizedSource === "string" &&
+      normalizedSource.trim().length > 0
+    ) {
+      return normalizedSource;
+    }
+    return rec.options ?? rec.choices ?? rec.actions;
+  })();
+  const rootOptions = normalizeChoices(questionOptionSource);
+  const rootAllowCustomInput =
+    normalizedQuestion?.allowCustomInput === true || rec.allowCustomInput === true;
+  const rootMultiSelect =
+    normalizedQuestion?.multiSelect === true || rec.multiSelect === true;
+
   if (interactiveEvents.length === 0) {
-    const rootQuestion = asString(rec.question) || asString(rec.prompt);
-    const rootOptions = normalizeChoices(rec.options ?? rec.choices);
     if (rootQuestion && rootOptions.length >= 2) {
       interactiveEvents = [
         {
           type: 'question',
           id: `interactive-${Date.now()}-0`,
-          title: asString(rec.title) || undefined,
+          title:
+            asString(normalizedQuestion?.title) ||
+            asString(rec.title) ||
+            undefined,
           question: rootQuestion,
           options: rootOptions,
-          multiSelect: rec.multiSelect === true,
-          allowCustomInput: rec.allowCustomInput === true
+          multiSelect: rootMultiSelect,
+          allowCustomInput: rootAllowCustomInput
         }
       ];
     }
@@ -1063,28 +1151,39 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   const isInteractiveResponseType = responseType === 'question';
   if (interactiveEvents.length === 0 && isInteractiveResponseType) {
     const fallbackQuestion =
-      asString(rec.question) ||
-      asString(rec.prompt) ||
-      message ||
+      rootQuestion ||
+      messageText ||
       "I need a quick clarification before I continue.";
     interactiveEvents = [
       {
         type: 'question',
         id: `interactive-${Date.now()}-fallback`,
-        title: asString(rec.title) || "Question",
+        title:
+          asString(normalizedQuestion?.title) ||
+          asString(rec.title) ||
+          "Question",
         question: fallbackQuestion,
-        options: [
-          { id: "yes", label: "Yes", value: "yes" },
-          { id: "no", label: "No", value: "no" },
-        ],
-        allowCustomInput: true,
+        options:
+          rootQuestion && rootOptions.length < 2
+            ? []
+            : rootOptions.length >= 2
+            ? rootOptions
+            : [
+              { id: "yes", label: "Yes", value: "yes" },
+              { id: "no", label: "No", value: "no" },
+            ],
+        multiSelect: rootMultiSelect,
+        allowCustomInput:
+          rootQuestion && rootOptions.length < 2
+            ? true
+            : rootAllowCustomInput || !rootQuestion,
       },
     ];
   }
 
   // Text-based fallback: detect numbered question lists in plain-text message responses
   if (interactiveEvents.length === 0 && !isInteractiveResponseType) {
-    const text = assistantMessage || message || '';
+    const text = messageText || '';
     const parsed = parseNumberedQuestionsFromText(text);
     if (parsed.length >= 2) {
       interactiveEvents = parsed;
@@ -1261,8 +1360,9 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
       : undefined;
 
   if (
-    !assistantMessage &&
-    !message &&
+    !messageText &&
+    !normalizedQuestion &&
+    !hasNormalizedPlan &&
     cleanedReasoning.length === 0 &&
     progressUpdates.length === 0 &&
     interactiveEvents.length === 0 &&
@@ -1274,11 +1374,12 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
 
   return {
     responseType,
-    assistantMessage,
-    message,
+    message: messageText,
+    plan: hasNormalizedPlan ? normalizedPlan : undefined,
     reasoning: cleanedReasoning.length > 0 ? cleanedReasoning : undefined,
     progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
     interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined,
+    question: normalizedQuestion as StructuredOutput['question'] | undefined,
     subagents: subagents.length > 0 ? subagents : undefined,
     subagentsDelta
   };
@@ -1289,7 +1390,7 @@ function parseNumberedQuestionsFromText(text: string): StructuredInteractiveEven
   const lines = text.split('\n');
   const events: StructuredInteractiveEvent[] = [];
   let index = 0;
-  
+
   for (const line of lines) {
     const match = line.match(/^\s*\d+\.\s+(.+)$/);
     if (match) {
@@ -1367,14 +1468,13 @@ function ingestNormalizedTodo(
 function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] {
   const events = structured?.interactiveEvents ?? [];
   // NOTE: contextMessage is the full AI conversational context shown as a header in the popup
-  // card. We prefer displayPrompt from the question sub-object, then assistantMessage at the
+  // card. We prefer displayPrompt from the question sub-object.
   // top level. This is intentionally sourced once for all events (they belong to the same turn).
   const structuredRec = asRecord(structured as UnknownRecord | undefined);
   const questionObj = asRecord(structuredRec?.question);
   const contextMessage: string | undefined =
     asOptionalString(questionObj?.displayPrompt) ||
     asOptionalString(questionObj?.assistantPrompt) ||
-    asOptionalString(structuredRec?.assistantMessage) ||
     undefined;
 
   const mapped = events
@@ -1445,7 +1545,9 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
   // case where the model populates only the question object without the interactiveEvents
   // array (minimal valid question output).
   if (mapped.length === 0 && questionObj) {
-    const questionText = asOptionalString(questionObj.question);
+    const questionText =
+      asOptionalString(questionObj.question) ||
+      asOptionalString(questionObj.text);
     if (questionText) {
       const qType = asOptionalString(questionObj.type)?.toLowerCase() || 'question';
       const id = asOptionalString(questionObj.id) || `question-${Date.now()}`;
@@ -1482,17 +1584,15 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
           dismissLabel: asOptionalString(questionObj.dismissLabel),
           contextMessage,
         } as InteractiveEvent);
-      } else {
-        // Default: question type — allow even without options (shows as free-form input
-        // or confirm-style depending on the popover UI).
+      } else if (options.length >= 2) {
         mapped.push({
           type: 'question',
           id,
           title,
           question: questionText,
-          options: options.length >= 2 ? options : [],
+          options,
           multiSelect: !!questionObj.multiSelect,
-          allowCustomInput: options.length < 2 ? true : !!questionObj.allowCustomInput,
+          allowCustomInput: !!questionObj.allowCustomInput,
           contextMessage,
         } as InteractiveEvent);
       }
@@ -1558,10 +1658,18 @@ function isLowSignalTimeoutFragment(content: string): boolean {
 }
 
 function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
-  if (!Array.isArray(raw)) {
+  let candidate = raw;
+  if (typeof candidate === "string") {
+    try {
+      candidate = JSON.parse(candidate);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(candidate)) {
     return [];
   }
-  return raw
+  return candidate
     .map((item) => {
       const rec = asRecord(item);
       if (!rec) {
@@ -2350,10 +2458,65 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
         : message.parts
   };
 
-  // Preserve structuredOutput explicitly to ensure question data survives normalization
-  if (rec.structuredOutput || (rec as Record<string, unknown>).structured_output) {
-    (normalized as Record<string, unknown>).structuredOutput =
-      rec.structuredOutput || (rec as Record<string, unknown>).structured_output;
+  const isImplementationPlanPlaceholderBody = (value: string): boolean => {
+    const normalizedValue = normalizeComparableText(value);
+    if (!normalizedValue) {
+      return false;
+    }
+    return (
+      normalizedValue === "implementation plan is ready. use view plan to inspect details." ||
+      normalizedValue === "implementation plan is ready. use view plan to inspect details"
+    );
+  };
+
+  // Preserve a normalized structured output payload so question/options data
+  // survives message normalization even when the source uses legacy field names.
+  const normalizedStructuredOutput =
+    normalizeStructuredOutput(rec.structuredOutput) ??
+    normalizeStructuredOutput((rec as Record<string, unknown>).structured_output) ??
+    normalizeStructuredOutput(asRecord(rec.info)?.structuredOutput) ??
+    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured_output) ??
+    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured);
+  if (normalizedStructuredOutput) {
+    (normalized as Record<string, unknown>).structuredOutput = normalizedStructuredOutput;
+    if (!normalized.responseType && normalizedStructuredOutput.responseType) {
+      normalized.responseType = normalizedStructuredOutput.responseType as StructuredResponseType;
+    }
+    if (
+      (!normalized.plan || typeof normalized.plan !== "object") &&
+      normalizedStructuredOutput.plan &&
+      typeof normalizedStructuredOutput.plan === "object"
+    ) {
+      normalized.plan = {
+        ...normalizedStructuredOutput.plan,
+      };
+    }
+    if (
+      (!Array.isArray(normalized.interactiveEvents) ||
+        normalized.interactiveEvents.length === 0)
+    ) {
+      const structuredInteractiveEvents = toInteractiveEvents(
+        normalizedStructuredOutput,
+      );
+      if (structuredInteractiveEvents.length > 0) {
+        normalized.interactiveEvents = structuredInteractiveEvents;
+      }
+    }
+  }
+
+  const responseType = firstNonEmptyString(
+    normalized.responseType,
+    normalizedStructuredOutput?.responseType,
+  )?.toLowerCase();
+  if (responseType === "implementation_plan" && normalized.plan) {
+    const summaryFromPlan = asString(normalized.plan.summary).trim();
+    const currentContent = asString(normalized.content).trim();
+    if (
+      summaryFromPlan &&
+      (!currentContent || isImplementationPlanPlaceholderBody(currentContent))
+    ) {
+      normalized.content = summaryFromPlan;
+    }
   }
 
   const existingReasoningEvents = Array.isArray(message.reasoningEvents)
@@ -2434,6 +2597,16 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   // NOTE: When the AI triggers a question via a tool call (no text parts), content ends up
   // empty. Synthesize a context message from the Question tool parts so the chat bubble
   // always shows the question — during the live session AND after extension restart.
+  if (!normalized.content?.trim()) {
+    const structuredEvents = Array.isArray(normalized.interactiveEvents)
+      ? normalized.interactiveEvents
+      : [];
+    const synthesized = synthesizeQuestionContextMessage(structuredEvents);
+    if (synthesized) {
+      normalized.content = synthesized;
+    }
+  }
+
   if (!normalized.content?.trim()) {
     const questionParts = (sanitizedMergedParts as Array<unknown>).filter((p) => {
       const pr = asRecord(p);
@@ -2763,6 +2936,273 @@ function hydrateSubagentSummary(
   };
 }
 
+function latestSubagentEventTimestamp(detail: SubagentDetail): number | undefined {
+  const candidates: number[] = [];
+  if (Array.isArray(detail.thinkingEvents)) {
+    detail.thinkingEvents.forEach((event) => {
+      if (typeof event.createdAt === "number" && Number.isFinite(event.createdAt)) {
+        candidates.push(event.createdAt);
+      }
+    });
+  }
+  if (Array.isArray(detail.progressEvents)) {
+    detail.progressEvents.forEach((event) => {
+      if (typeof event.createdAt === "number" && Number.isFinite(event.createdAt)) {
+        candidates.push(event.createdAt);
+      }
+    });
+  }
+  if (Array.isArray(detail.timelineEvents)) {
+    detail.timelineEvents.forEach((event) => {
+      if (typeof event.createdAt === "number" && Number.isFinite(event.createdAt)) {
+        candidates.push(event.createdAt);
+      }
+    });
+  }
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  return Math.max(...candidates);
+}
+
+function messageCompletedAt(message: Message): number | undefined {
+  const info = asRecord(message.info);
+  const infoTime = asRecord(info?.time);
+  const topTime = asRecord((message as unknown as UnknownRecord).time);
+  const candidates = [
+    asOptionalNumber(infoTime?.completed),
+    asOptionalNumber(infoTime?.updated),
+    asOptionalNumber(info?.duration),
+    asOptionalNumber(topTime?.completed),
+    asOptionalNumber(topTime?.updated),
+    asOptionalNumber((message as unknown as UnknownRecord).completed),
+    asOptionalNumber((message as unknown as UnknownRecord).createdAt),
+    asOptionalNumber(message.created),
+  ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  return Math.max(...candidates);
+}
+
+type SubagentPresentationPolicy = {
+  mode: "stream" | "hydration";
+  sessionProcessing?: boolean;
+  liveParentMessageIds?: Set<string>;
+};
+
+function isAssistantMessageFinalized(message: Message | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+  const role = (message.role || asString(asRecord(message.info)?.role) || "").toLowerCase();
+  if (role && role !== "assistant") {
+    return false;
+  }
+
+  const info = asRecord(message.info);
+  const infoTime = asRecord(info?.time);
+  const topTime = asRecord((message as unknown as UnknownRecord).time);
+  const completedAt =
+    asOptionalNumber(infoTime?.completed) ??
+    asOptionalNumber(topTime?.completed) ??
+    asOptionalNumber((message as unknown as UnknownRecord).completed);
+  if (typeof completedAt === "number" && Number.isFinite(completedAt) && completedAt > 0) {
+    return true;
+  }
+
+  const finish = asString(info?.finish).toLowerCase();
+  if (finish === "done" || finish === "stop" || finish === "tool-calls" || finish === "error") {
+    return true;
+  }
+
+  if (typeof message.content === "string" && message.content.trim().length > 0) {
+    return true;
+  }
+  if (Array.isArray(message.parts) && message.parts.length > 0) {
+    return true;
+  }
+  return false;
+}
+
+function shouldFreezeSubagentForPresentation(
+  detail: SubagentDetail,
+  message: Message | undefined,
+  policy: SubagentPresentationPolicy | undefined,
+  explicitFreezeFlag?: boolean,
+): boolean {
+  if (explicitFreezeFlag === true) {
+    return true;
+  }
+  if (!policy || policy.mode !== "hydration") {
+    return false;
+  }
+
+  const status = detail.status;
+  if (status !== "pending" && status !== "running" && status !== "orphaned") {
+    return false;
+  }
+
+  if (policy.liveParentMessageIds?.has(detail.parentMessageId)) {
+    return false;
+  }
+
+  if (isAssistantMessageFinalized(message)) {
+    return true;
+  }
+
+  return policy.sessionProcessing !== true;
+}
+
+function normalizeHydratedSubagentDetail(
+  detail: SubagentDetail,
+  message: Message | undefined,
+  freezeIncompleteStatuses: boolean,
+): SubagentDetail {
+  if (!freezeIncompleteStatuses) {
+    return detail;
+  }
+
+  const status = detail.status;
+  if (status !== "pending" && status !== "running" && status !== "orphaned") {
+    return detail;
+  }
+
+  const completedAt =
+    (typeof detail.endedAt === "number" && Number.isFinite(detail.endedAt)
+      ? detail.endedAt
+      : undefined) ??
+    (message ? messageCompletedAt(message) : undefined) ??
+    latestSubagentEventTimestamp(detail) ??
+    detail.startedAt;
+  const startedAt =
+    typeof detail.startedAt === "number" && Number.isFinite(detail.startedAt)
+      ? detail.startedAt
+      : undefined;
+  const durationMs =
+    typeof startedAt === "number" && typeof completedAt === "number"
+      ? Math.max(0, completedAt - startedAt)
+      : detail.durationMs;
+
+  const normalized: SubagentDetail = {
+    ...detail,
+    status: "done",
+    endedAt: typeof completedAt === "number" ? completedAt : detail.endedAt,
+    durationMs,
+  };
+  if (
+    !normalized.latestActivity ||
+    normalized.latestActivity.trim().toLowerCase() === "running" ||
+    normalized.latestActivity.trim().toLowerCase() === "pending" ||
+    normalized.latestActivity.trim().toLowerCase() === "orphaned"
+  ) {
+    normalized.latestActivity = "Completed";
+  }
+  return normalized;
+}
+
+function normalizeHydratedSubagentSummary(
+  summary: SubagentSummary,
+  detail: SubagentDetail | undefined,
+  message: Message | undefined,
+  freezeIncompleteStatuses: boolean,
+): SubagentSummary {
+  if (!freezeIncompleteStatuses) {
+    return summary;
+  }
+  const normalizedDetail = normalizeHydratedSubagentDetail(
+    detail
+      ? detail
+      : ({
+          ...(summary as SubagentDetail),
+          thinkingEvents: [],
+          progressEvents: [],
+          timelineEvents: [],
+        } as SubagentDetail),
+    message,
+    true,
+  );
+  return {
+    ...summary,
+    status: normalizedDetail.status,
+    startedAt:
+      typeof normalizedDetail.startedAt === "number"
+        ? normalizedDetail.startedAt
+        : summary.startedAt,
+    endedAt:
+      typeof normalizedDetail.endedAt === "number"
+        ? normalizedDetail.endedAt
+        : summary.endedAt,
+    durationMs:
+      typeof normalizedDetail.durationMs === "number"
+        ? normalizedDetail.durationMs
+        : summary.durationMs,
+    latestActivity: normalizedDetail.latestActivity || summary.latestActivity,
+  };
+}
+
+function normalizeHydratedSubagentMaps(
+  summariesByParentMessageId: Record<string, SubagentSummary[]>,
+  detailsById: Record<string, SubagentDetail>,
+  messages: Message[],
+  freezeIncompleteStatuses: boolean,
+  policy?: SubagentPresentationPolicy,
+): {
+  summariesByParentMessageId: Record<string, SubagentSummary[]>;
+  detailsById: Record<string, SubagentDetail>;
+} {
+  if (!freezeIncompleteStatuses && (!policy || policy.mode !== "hydration")) {
+    return { summariesByParentMessageId, detailsById };
+  }
+
+  const messageById = new Map<string, Message>();
+  messages.forEach((message) => {
+    const id = getMessageId(message);
+    if (id) {
+      messageById.set(id, message);
+    }
+  });
+
+  const normalizedDetailsById: Record<string, SubagentDetail> = {};
+  for (const [detailId, detail] of Object.entries(detailsById)) {
+    const message = messageById.get(detail.parentMessageId);
+    const freeze = shouldFreezeSubagentForPresentation(
+      detail,
+      message,
+      policy,
+      freezeIncompleteStatuses,
+    );
+    normalizedDetailsById[detailId] = normalizeHydratedSubagentDetail(
+      detail,
+      message,
+      freeze,
+    );
+  }
+
+  const normalizedSummariesByParentMessageId: Record<string, SubagentSummary[]> = {};
+  for (const [parentMessageId, summaries] of Object.entries(summariesByParentMessageId)) {
+    const message = messageById.get(parentMessageId);
+    normalizedSummariesByParentMessageId[parentMessageId] = summaries.map((summary) =>
+      normalizeHydratedSubagentSummary(
+        summary,
+        normalizedDetailsById[summary.id] ?? detailsById[summary.id],
+        message,
+        shouldFreezeSubagentForPresentation(
+          normalizedDetailsById[summary.id] ?? (detailsById[summary.id] as SubagentDetail),
+          message,
+          policy,
+          freezeIncompleteStatuses,
+        ),
+      ),
+    );
+  }
+
+  return {
+    summariesByParentMessageId: normalizedSummariesByParentMessageId,
+    detailsById: normalizedDetailsById,
+  };
+}
+
 function areSubagentListsEquivalent(
   previous: SubagentDetail[] | undefined,
   next: SubagentDetail[],
@@ -2876,6 +3316,7 @@ function syncSubagentMapsIntoMessages(
   summariesByParentMessageId: Record<string, SubagentSummary[]>,
   detailsById: Record<string, SubagentDetail>,
   mode: "merge" | "replace",
+  options?: { freezeIncompleteStatuses?: boolean; presentationPolicy?: SubagentPresentationPolicy },
 ): void {
   const state = getState();
   const allSummariesByParentMessageId =
@@ -2933,8 +3374,20 @@ function syncSubagentMapsIntoMessages(
     if (!Array.isArray(summaries) || summaries.length === 0) {
       return message;
     }
+    const freezeIncompleteStatuses =
+      options?.freezeIncompleteStatuses === true ||
+      policyAwareFreeze(
+        summaries,
+        allDetailsById,
+        message,
+        options?.presentationPolicy,
+      );
     const hydratedSubagents = summaries.map((summary) =>
-      hydrateSubagentSummary(summary, allDetailsById),
+      normalizeHydratedSubagentDetail(
+        hydrateSubagentSummary(summary, allDetailsById),
+        message,
+        freezeIncompleteStatuses,
+      ),
     );
     if (areSubagentListsEquivalent(message.subagents, hydratedSubagents)) {
       return message;
@@ -3011,11 +3464,11 @@ function isInternalSystemReminderMessage(message: Message): boolean {
   }
 
   const normalizedText = text.toLowerCase();
-  
+
   // Check for square-bracketed system messages at the start (e.g., [analyze-mode], [background task completed])
   const bracketPattern = /^\[[a-z][a-z0-9_\- ]*\]/i;
   const hasBracketPrefix = bracketPattern.test(text);
-  
+
   return (
     normalizedText.includes("<system-reminder>") ||
     normalizedText.includes("<auto-slash-command>") ||
@@ -3054,6 +3507,9 @@ function hasRenderableHistoryPayload(message: Message): boolean {
     Array.isArray(message.interactiveEvents) &&
     message.interactiveEvents.length > 0
   ) {
+    return true;
+  }
+  if (interactiveEventsFromMessage(message).length > 0) {
     return true;
   }
   if (Array.isArray(message.reasoningEvents) && message.reasoningEvents.length > 0) {
@@ -3624,12 +4080,65 @@ function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
     normalizeStructuredOutput(rec.structuredOutput) ??
     normalizeStructuredOutput((rec as UnknownRecord).structured_output) ??
     normalizeStructuredOutput(asRecord(rec.info)?.structuredOutput) ??
-    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured_output);
+    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured_output) ??
+    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured);
   const fromStructured = toInteractiveEvents(structured);
   if (fromStructured.length > 0) {
     return fromStructured;
   }
+
+  const infoRec = asRecord(rec.info);
+  const topLevelResponseType =
+    asString(rec.responseType) ||
+    asString(infoRec?.responseType) ||
+    asString(asRecord(rec.structuredOutput)?.responseType) ||
+    asString(asRecord(rec.structured_output)?.responseType);
+  const hasQuestionLikePayload =
+    topLevelResponseType.toLowerCase() === "question" ||
+    typeof rec.question !== "undefined" ||
+    typeof infoRec?.question !== "undefined";
+  if (hasQuestionLikePayload) {
+    const fallbackStructured = normalizeStructuredOutput({
+      responseType: topLevelResponseType || "question",
+      question: rec.question ?? infoRec?.question,
+      options:
+        (rec as UnknownRecord).options ??
+        (infoRec as UnknownRecord | null)?.options,
+      choices:
+        (rec as UnknownRecord).choices ??
+        (infoRec as UnknownRecord | null)?.choices,
+      actions:
+        (rec as UnknownRecord).actions ??
+        (infoRec as UnknownRecord | null)?.actions,
+      interactiveEvents:
+        (rec as UnknownRecord).interactiveEvents ??
+        (infoRec as UnknownRecord | null)?.interactiveEvents,
+    });
+    const fromTopLevel = toInteractiveEvents(fallbackStructured);
+    if (fromTopLevel.length > 0) {
+      return fromTopLevel;
+    }
+  }
   return [];
+}
+
+function policyAwareFreeze(
+  summaries: SubagentSummary[],
+  detailsById: Record<string, SubagentDetail>,
+  message: Message,
+  policy?: SubagentPresentationPolicy,
+): boolean {
+  if (!policy || policy.mode !== "hydration") {
+    return false;
+  }
+  return summaries.some((summary) =>
+    shouldFreezeSubagentForPresentation(
+      hydrateSubagentSummary(summary, detailsById),
+      message,
+      policy,
+      false,
+    ),
+  );
 }
 
 function interactivePromptFromEvent(event: InteractiveEvent): string | undefined {
@@ -3898,6 +4407,7 @@ function buildStreamingMessage(streaming: StreamingState): Message {
     progressEvents: canonicalSteps,
     steps: canonicalSteps,
     edits: streaming.edits.map((file) => ({ file })),
+    interactiveEvents: streaming.interactiveEvents,
     info: {
       id: streaming.messageId ?? undefined,
       agent: streaming.agent,
@@ -3948,7 +4458,6 @@ function handleStreamEvent(
   const structuredRecord = asRecord(payload.structured);
   const structuredKind = asString(structuredRecord?.kind).toLowerCase();
   const structuredText =
-    asString(structuredRecord?.assistantMessage) ||
     asString(structuredRecord?.message) ||
     asString(structuredRecord?.text);
   const structuredOutput =
@@ -3957,7 +4466,8 @@ function handleStreamEvent(
     normalizeStructuredOutput(properties?.structuredOutput) ??
     normalizeStructuredOutput((properties as UnknownRecord | null)?.structured_output) ??
     normalizeStructuredOutput(infoRecord?.structuredOutput) ??
-    normalizeStructuredOutput((infoRecord as UnknownRecord | null)?.structured_output);
+    normalizeStructuredOutput((infoRecord as UnknownRecord | null)?.structured_output) ??
+    normalizeStructuredOutput((infoRecord as UnknownRecord | null)?.structured);
   const eventSessionId =
     asString(payload.sessionId) ||
     asString(payload.sessionID) ||
@@ -4113,10 +4623,11 @@ function handleStreamEvent(
       const partText = asRichString(part.text) || asRichString(part.content) || '';
       if (partText && hasSystemMessagePatternInText(partText)) {
         // System messages should be added immediately to state.messages
-        // even during streaming. This is safe because:
-        // 1. Streaming content is in state.streaming, not state.messages
-        // 2. SET_MESSAGES with [...state.messages, systemMessage] preserves existing messages
-        // 3. This allows system messages to appear live during streaming
+        // even during streaming, because streaming content is isolated.
+        // Streaming content is in state.streaming, not state.messages,
+        // and SET_MESSAGES with [...state.messages, systemMessage] preserves existing messages.
+        // We still gate dispatch behind !current to avoid race-condition overwrites while
+        // an assistant stream is active; deferred merge occurs during finalization.
         const systemMessage: Message = {
           role: 'system',
           content: partText,
@@ -4124,10 +4635,12 @@ function handleStreamEvent(
           time: { created: Date.now() },
           info: { role: 'system', id: `sys-${Date.now()}` }
         };
-        dispatch({
-          type: 'SET_MESSAGES',
-          payload: [...state.messages, systemMessage]
-        });
+        if (!current) {
+          dispatch({
+            type: 'SET_MESSAGES',
+            payload: [...state.messages, systemMessage]
+          });
+        }
         break; // Don't process this as regular content
       }
 
@@ -4227,123 +4740,123 @@ function handleStreamEvent(
         console.log('[OpenCode][DEBUG] Processing content', { partType, structuredKind, isInReasoningPart });
 
         if (structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk) {
-        let remaining = textChunk;
-        while (remaining.length > 0) {
-          if (nextInThoughtBlock) {
-            const closeIdx = remaining.indexOf("</thought>");
-            if (closeIdx !== -1) {
-              reasoningContent += remaining.substring(0, closeIdx);
-              remaining = remaining.substring(closeIdx + "</thought>".length);
-              nextInThoughtBlock = false;
+          let remaining = textChunk;
+          while (remaining.length > 0) {
+            if (nextInThoughtBlock) {
+              const closeIdx = remaining.indexOf("</thought>");
+              if (closeIdx !== -1) {
+                reasoningContent += remaining.substring(0, closeIdx);
+                remaining = remaining.substring(closeIdx + "</thought>".length);
+                nextInThoughtBlock = false;
+              } else {
+                reasoningContent += remaining;
+                remaining = "";
+              }
             } else {
-              reasoningContent += remaining;
-              remaining = "";
-            }
-          } else {
-            const openIdx = remaining.indexOf("<thought>");
-            if (openIdx !== -1) {
-              mainContent += remaining.substring(0, openIdx);
-              remaining = remaining.substring(openIdx + "<thought>".length);
-              nextInThoughtBlock = true;
-            } else {
-              mainContent += remaining;
-              remaining = "";
+              const openIdx = remaining.indexOf("<thought>");
+              if (openIdx !== -1) {
+                mainContent += remaining.substring(0, openIdx);
+                remaining = remaining.substring(openIdx + "<thought>".length);
+                nextInThoughtBlock = true;
+              } else {
+                mainContent += remaining;
+                remaining = "";
+              }
             }
           }
         }
-      }
 
-      const isReasoning = reasoningContent.length > 0;
-      const hasMainContent = mainContent.length > 0;
+        const isReasoning = reasoningContent.length > 0;
+        const hasMainContent = mainContent.length > 0;
 
-      if (isReasoning || nextInThoughtBlock !== (streamingState?.inThoughtBlock ?? false)) {
-        if (reasoningContent.startsWith("<thought>")) {
-          reasoningContent = reasoningContent.substring("<thought>".length);
-        }
-        if (reasoningContent.endsWith("</thought>")) {
-          reasoningContent = reasoningContent.substring(0, reasoningContent.length - "</thought>".length);
-        }
-        const nextReasoning = sanitizeReasoningChunk(reasoningContent);
-        dispatch({
-          type: 'UPDATE_STREAMING_REASONING',
-          payload: { reasoning: nextReasoning || reasoningContent, append: true, inThoughtBlock: nextInThoughtBlock }
-        });
-      }
-
-      // Explicitly filter out reasoning/thinking parts to prevent them from being rendered as main content
-      // Even if reasoning wasn't detected by the patterns above, we should not render reasoning parts as content
-      if (hasMainContent || (!isReasoning && partType !== "reasoning" && structuredKind !== "thinking" && (structuredKind === "message" || partType === "text" || (!!textChunk && !isProgressPartType) || (!partType && structuredKind !== "progress")))) {
-        let candidateChunk = hasMainContent ? mainContent : textChunk;
-        
-        const rawReasoningLike = looksLikeReasoningTrace(candidateChunk, streamingState?.content || "");
-        const mixedChunk = splitMixedReasoningFromContent(candidateChunk);
-        if (rawReasoningLike && !mixedChunk) {
-          const reasoningLeak = sanitizeReasoningChunk(candidateChunk);
-          if (reasoningLeak) {
-            dispatch({
-              type: "UPDATE_STREAMING_REASONING",
-              payload: { reasoning: reasoningLeak, append: true },
-            });
+        if (isReasoning || nextInThoughtBlock !== (streamingState?.inThoughtBlock ?? false)) {
+          if (reasoningContent.startsWith("<thought>")) {
+            reasoningContent = reasoningContent.substring("<thought>".length);
           }
-          dispatch({ type: "SET_PROCESSING", payload: true });
-          break;
+          if (reasoningContent.endsWith("</thought>")) {
+            reasoningContent = reasoningContent.substring(0, reasoningContent.length - "</thought>".length);
+          }
+          const nextReasoning = sanitizeReasoningChunk(reasoningContent);
+          dispatch({
+            type: 'UPDATE_STREAMING_REASONING',
+            payload: { reasoning: nextReasoning || reasoningContent, append: true, inThoughtBlock: nextInThoughtBlock }
+          });
         }
 
-        if (mixedChunk) {
-          const reasoningLeak = sanitizeReasoningChunk(mixedChunk.reasoning);
-          if (reasoningLeak) {
-            dispatch({
-              type: "UPDATE_STREAMING_REASONING",
-              payload: { reasoning: reasoningLeak, append: true },
-            });
-          }
-          candidateChunk = mixedChunk.content;
-        }
+        // Explicitly filter out reasoning/thinking parts to prevent them from being rendered as main content
+        // Even if reasoning wasn't detected by the patterns above, we should not render reasoning parts as content
+        if (hasMainContent || (!isReasoning && partType !== "reasoning" && structuredKind !== "thinking" && (structuredKind === "message" || partType === "text" || (!!textChunk && !isProgressPartType) || (!partType && structuredKind !== "progress")))) {
+          let candidateChunk = hasMainContent ? mainContent : textChunk;
 
-        if (looksLikeReasoningTrace(candidateChunk, streamingState?.content || "")) {
-          const reasoningLeak = sanitizeReasoningChunk(candidateChunk);
-          if (reasoningLeak) {
-            dispatch({
-              type: "UPDATE_STREAMING_REASONING",
-              payload: { reasoning: reasoningLeak, append: true },
-            });
-          }
-          dispatch({ type: "SET_PROCESSING", payload: true });
-          break;
-        }
-        // Ignore id-like echoes that can appear before assistant output begins.
-        if (isOpaqueIdLike(candidateChunk.trim())) {
-          dispatch({ type: "SET_PROCESSING", payload: true });
-          break;
-        }
-        const contentEmpty = !streamingState || !streamingState.content.trim();
-        const cleanedChunk = contentEmpty
-          ? stripLeadingUserEcho(candidateChunk, getState())
-          : candidateChunk;
-        if (cleanedChunk) {
-          const contentPatch = resolveStreamingContentUpdate(
-            streamingState?.content || '',
-            cleanedChunk,
-            !!deltaChunk,
-          );
-          if (!contentPatch) {
+          const rawReasoningLike = looksLikeReasoningTrace(candidateChunk, streamingState?.content || "");
+          const mixedChunk = splitMixedReasoningFromContent(candidateChunk);
+          if (rawReasoningLike && !mixedChunk) {
+            const reasoningLeak = sanitizeReasoningChunk(candidateChunk);
+            if (reasoningLeak) {
+              dispatch({
+                type: "UPDATE_STREAMING_REASONING",
+                payload: { reasoning: reasoningLeak, append: true },
+              });
+            }
             dispatch({ type: "SET_PROCESSING", payload: true });
             break;
           }
-          streamDebug("[OpenCode][stream] message.part.updated chunk", {
-            messageId,
-            eventType,
-            partType,
-            append: contentPatch.append,
-            length: cleanedChunk.length,
-            preview: cleanedChunk.slice(0, 80),
-          });
-          dispatch({
-            type: "UPDATE_STREAMING_CONTENT",
-            payload: { content: contentPatch.content, append: contentPatch.append },
-          });
+
+          if (mixedChunk) {
+            const reasoningLeak = sanitizeReasoningChunk(mixedChunk.reasoning);
+            if (reasoningLeak) {
+              dispatch({
+                type: "UPDATE_STREAMING_REASONING",
+                payload: { reasoning: reasoningLeak, append: true },
+              });
+            }
+            candidateChunk = mixedChunk.content;
+          }
+
+          if (looksLikeReasoningTrace(candidateChunk, streamingState?.content || "")) {
+            const reasoningLeak = sanitizeReasoningChunk(candidateChunk);
+            if (reasoningLeak) {
+              dispatch({
+                type: "UPDATE_STREAMING_REASONING",
+                payload: { reasoning: reasoningLeak, append: true },
+              });
+            }
+            dispatch({ type: "SET_PROCESSING", payload: true });
+            break;
+          }
+          // Ignore id-like echoes that can appear before assistant output begins.
+          if (isOpaqueIdLike(candidateChunk.trim())) {
+            dispatch({ type: "SET_PROCESSING", payload: true });
+            break;
+          }
+          const contentEmpty = !streamingState || !streamingState.content.trim();
+          const cleanedChunk = contentEmpty
+            ? stripLeadingUserEcho(candidateChunk, getState())
+            : candidateChunk;
+          if (cleanedChunk) {
+            const contentPatch = resolveStreamingContentUpdate(
+              streamingState?.content || '',
+              cleanedChunk,
+              !!deltaChunk,
+            );
+            if (!contentPatch) {
+              dispatch({ type: "SET_PROCESSING", payload: true });
+              break;
+            }
+            streamDebug("[OpenCode][stream] message.part.updated chunk", {
+              messageId,
+              eventType,
+              partType,
+              append: contentPatch.append,
+              length: cleanedChunk.length,
+              preview: cleanedChunk.slice(0, 80),
+            });
+            dispatch({
+              type: "UPDATE_STREAMING_CONTENT",
+              payload: { content: contentPatch.content, append: contentPatch.append },
+            });
+          }
         }
-      }
       } // End of if (!isReasoningPart) - skip content processing for reasoning parts
 
       if (partType === 'step-start' && structuredKind !== 'thinking') {
@@ -4562,8 +5075,17 @@ function handleStreamEvent(
           });
         }
 
+        const structuredQuestionRecord = asRecord(
+          (structuredOutput as UnknownRecord).question,
+        );
+        const structuredQuestionText =
+          asString(structuredQuestionRecord?.displayPrompt) ||
+          asString(structuredQuestionRecord?.question) ||
+          asString(structuredQuestionRecord?.message) ||
+          asString(structuredQuestionRecord?.content);
         const structuredMessage =
-          structuredOutput.assistantMessage || structuredOutput.message;
+          structuredQuestionText ||
+          structuredOutput.message;
         if (structuredMessage) {
           const streamingState = getState().streaming;
           const rawReasoningLike = looksLikeReasoningTrace(structuredMessage, streamingState?.content || "");
@@ -5217,6 +5739,7 @@ function collectHydratedSubagentsFromState(
 function mergeSubagentsIntoMessage(
   message: Message,
   hydratedFromState: SubagentDetail[],
+  options?: { freezeIncompleteStatuses?: boolean; presentationPolicy?: SubagentPresentationPolicy },
 ): Message {
   if (hydratedFromState.length === 0) {
     return message;
@@ -5258,34 +5781,63 @@ function mergeSubagentsIntoMessage(
 
   return {
     ...message,
-    subagents: Array.from(mergedById.values()),
+    subagents: Array.from(mergedById.values()).map((detail) =>
+      normalizeHydratedSubagentDetail(
+        detail,
+        message,
+        shouldFreezeSubagentForPresentation(
+          detail,
+          message,
+          options?.presentationPolicy,
+          options?.freezeIncompleteStatuses,
+        ),
+      ),
+    ),
   };
 }
 
 function remapSubagentsToFinalMessageId(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
-  streamingMessageId: string | null,
+  sourceMessageIds: Array<string | null | undefined>,
   finalMessageId: string | null,
 ): void {
-  if (
-    !streamingMessageId ||
-    !finalMessageId ||
-    streamingMessageId === finalMessageId
-  ) {
+  if (!finalMessageId) {
     return;
   }
 
   const state = getState();
-  const source = state.subagentsByParentMessageId[streamingMessageId];
-  if (!Array.isArray(source) || source.length === 0) {
+  const uniqueSourceIds = Array.from(
+    new Set(
+      sourceMessageIds.filter(
+        (value): value is string =>
+          typeof value === "string" &&
+          value.length > 0 &&
+          value !== finalMessageId,
+      ),
+    ),
+  );
+  if (uniqueSourceIds.length === 0) {
     return;
   }
 
-  const updatedSource = source.map((entry) => ({
-    ...entry,
-    parentMessageId: finalMessageId,
-  }));
+  const mergedSourceById = new Map<string, SubagentSummary>();
+  for (const sourceMessageId of uniqueSourceIds) {
+    const source = state.subagentsByParentMessageId[sourceMessageId];
+    if (!Array.isArray(source) || source.length === 0) {
+      continue;
+    }
+    source.forEach((entry) => {
+      mergedSourceById.set(entry.id, {
+        ...entry,
+        parentMessageId: finalMessageId,
+      });
+    });
+  }
+  const updatedSource = Array.from(mergedSourceById.values());
+  if (updatedSource.length === 0) {
+    return;
+  }
   const existingTarget = Array.isArray(
     state.subagentsByParentMessageId[finalMessageId],
   )
@@ -5324,6 +5876,23 @@ function remapSubagentsToFinalMessageId(
 export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState) {
   let latestStreamingSnapshot: StreamingState | null = null;
   let terminalErrorReached = false;
+  let activeSubagentParentMessageIds = new Set<string>();
+
+  const trackActiveSubagentParentIds = (
+    summariesByParentMessageId: Record<string, SubagentSummary[]>,
+  ) => {
+    Object.entries(summariesByParentMessageId).forEach(
+      ([parentMessageId, summaries]) => {
+        if (
+          parentMessageId &&
+          Array.isArray(summaries) &&
+          summaries.length > 0
+        ) {
+          activeSubagentParentMessageIds.add(parentMessageId);
+        }
+      },
+    );
+  };
 
   return (event: MessageEvent) => {
     const data = asRecord(event.data);
@@ -5356,6 +5925,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       case "initState":
       case "init": {
         terminalErrorReached = false;
+        activeSubagentParentMessageIds = new Set<string>();
         const state = asRecord(data.state) ?? data;
         const sessionId =
           asString(state.sessionId) || asString(state.currentSessionId) || null;
@@ -5664,12 +6234,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             null;
           const hydratedSubagentsFromState = collectHydratedSubagentsFromState(
             getState(),
-            [provisionalFinalMessageId, streamingMessageId],
+            [
+              provisionalFinalMessageId,
+              streamingMessageId,
+              ...Array.from(activeSubagentParentMessageIds),
+            ],
           );
           if (hydratedSubagentsFromState.length > 0) {
             sanitized = mergeSubagentsIntoMessage(
               sanitized,
               hydratedSubagentsFromState,
+              {
+                freezeIncompleteStatuses: false,
+                presentationPolicy: { mode: "stream", sessionProcessing: true },
+              },
             );
           }
           if (
@@ -5695,7 +6273,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           remapSubagentsToFinalMessageId(
             dispatch,
             getState,
-            streamingMessageId,
+            [streamingMessageId, ...Array.from(activeSubagentParentMessageIds)],
             finalMessageId,
           );
           const { summariesByParentMessageId, detailsById } =
@@ -5737,12 +6315,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
         if (isMatchingStreamingMessage || !currentStreaming) {
           latestStreamingSnapshot = null;
+          activeSubagentParentMessageIds = new Set<string>();
         }
         dispatch({ type: "SET_PROCESSING", payload: false });
         dispatch({ type: "SET_STREAMING", payload: null });
         break;
       }
       case "chatHistory": {
+        terminalErrorReached = false;
         const rawMessages = asArray(data.messages, isMessage);
         const normalizedMessages = rawMessages
           .map((msg) => normalizeMessage(msg, null))
@@ -5753,11 +6333,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const hydratedMessages = hydrateLegacyInteractiveUserMessages(messages);
         const dedupedHydratedMessages =
           dedupeInteractiveUserHydrationMessages(hydratedMessages);
+        activeSubagentParentMessageIds = new Set<string>();
 
         const chatHistorySessionId = asString(data.sessionId);
         const currentState = getState();
         const isSessionProcessing = !!(chatHistorySessionId &&
           currentState.processingSessionIds.includes(chatHistorySessionId));
+        const hydrationPresentationPolicy: SubagentPresentationPolicy = {
+          mode: "hydration",
+          sessionProcessing: isSessionProcessing,
+        };
 
         latestStreamingSnapshot = null;
 
@@ -5767,8 +6352,29 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         dispatch({ type: "SET_STREAMING", payload: null });
         dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
         dispatch({ type: "CLEAR_MESSAGES" });
-        dispatch({ type: "SET_MESSAGES", payload: dedupedHydratedMessages });
-        const canonicalMessages = getState().messages;
+        const stabilizedHydratedMessages = dedupedHydratedMessages.map((message) => {
+          if (!Array.isArray(message.subagents) || message.subagents.length === 0) {
+            return message;
+          }
+          return {
+            ...message,
+            subagents: message.subagents.map((subagent) =>
+              normalizeHydratedSubagentDetail(
+                subagent,
+                message,
+                shouldFreezeSubagentForPresentation(
+                  subagent,
+                  message,
+                  hydrationPresentationPolicy,
+                ),
+              ),
+            ),
+          };
+        });
+        dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages });
+        // Use the just-normalized hydration snapshot directly. Reading getState()
+        // immediately after dispatch can observe stale messages in the same tick.
+        const canonicalMessages = stabilizedHydratedMessages;
 
         // If the backend included a sessionId (e.g. on session switch), update it BEFORE
         // storing stats so RESET_SESSION_STATS writes under the correct key.
@@ -5792,16 +6398,29 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         });
         dispatch({ type: "RESET_SESSION_STATS", payload: stats });
         dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
-        const { summariesByParentMessageId, detailsById } =
+        const extractedHydratedSubagents =
           extractSubagentsFromMessages(canonicalMessages);
-        if (Object.keys(summariesByParentMessageId).length > 0) {
+        const normalizedHydratedSubagents = normalizeHydratedSubagentMaps(
+          extractedHydratedSubagents.summariesByParentMessageId,
+          extractedHydratedSubagents.detailsById,
+          canonicalMessages,
+          false,
+          hydrationPresentationPolicy,
+        );
+        if (
+          Object.keys(normalizedHydratedSubagents.summariesByParentMessageId)
+            .length > 0
+        ) {
           dispatch({
             type: "UPSERT_SUBAGENT_SUMMARIES",
-            payload: summariesByParentMessageId,
+            payload: normalizedHydratedSubagents.summariesByParentMessageId,
           });
         }
-        if (Object.keys(detailsById).length > 0) {
-          dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
+        if (Object.keys(normalizedHydratedSubagents.detailsById).length > 0) {
+          dispatch({
+            type: "UPSERT_SUBAGENT_DETAIL",
+            payload: normalizedHydratedSubagents.detailsById,
+          });
         }
         let latestInteractive: InteractiveEvent[] = [];
         for (let index = canonicalMessages.length - 1; index >= 0; index -= 1) {
@@ -5816,6 +6435,24 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             break;
           }
         }
+        if (latestInteractive.length === 0 && canonicalMessages.length > 0) {
+          const lastMessage = canonicalMessages[canonicalMessages.length - 1];
+          const lastRec = asRecord(lastMessage);
+          const lastInfo = asRecord(lastRec?.info);
+          const lastStructured =
+            asRecord(lastRec?.structuredOutput) ||
+            asRecord(lastRec?.structured_output) ||
+            asRecord(lastInfo?.structuredOutput) ||
+            asRecord(lastInfo?.structured_output) ||
+            asRecord(lastInfo?.structured);
+          const lastResponseType =
+            asString(lastRec?.responseType) ||
+            asString(lastInfo?.responseType) ||
+            asString(lastStructured?.responseType);
+          if (lastResponseType.toLowerCase() === "question") {
+            latestInteractive = interactiveEventsFromMessage(lastMessage);
+          }
+        }
         dispatch({
           type: "SET_INTERACTIVE_EVENTS",
           payload: latestInteractive,
@@ -5824,6 +6461,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       case "subagentSnapshot": {
+        const snapshotPolicy: SubagentPresentationPolicy = {
+          mode: "hydration",
+          sessionProcessing: getState().processing,
+        };
         const summariesByParentMessageId = normalizeSubagentSummaryMap(
           data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
         );
@@ -5839,83 +6480,145 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         // from persisted messages. Avoid clobbering those restored cards.
         if (!hasSnapshotSubagents) {
           const fallback = extractSubagentsFromMessages(getState().messages);
+          const normalizedFallback = normalizeHydratedSubagentMaps(
+            fallback.summariesByParentMessageId,
+            fallback.detailsById,
+            getState().messages,
+            false,
+            snapshotPolicy,
+          );
           if (
-            Object.keys(fallback.summariesByParentMessageId).length > 0 ||
-            Object.keys(fallback.detailsById).length > 0
+            Object.keys(normalizedFallback.summariesByParentMessageId).length >
+              0 ||
+            Object.keys(normalizedFallback.detailsById).length > 0
           ) {
+            trackActiveSubagentParentIds(
+              normalizedFallback.summariesByParentMessageId,
+            );
             dispatch({
               type: "UPSERT_SUBAGENT_SUMMARIES",
-              payload: fallback.summariesByParentMessageId,
+              payload: normalizedFallback.summariesByParentMessageId,
             });
             dispatch({
               type: "UPSERT_SUBAGENT_DETAIL",
-              payload: fallback.detailsById,
+              payload: normalizedFallback.detailsById,
             });
             syncSubagentMapsIntoMessages(
               dispatch,
               getState,
-              fallback.summariesByParentMessageId,
-              fallback.detailsById,
+              normalizedFallback.summariesByParentMessageId,
+              normalizedFallback.detailsById,
               "merge",
+              {
+                freezeIncompleteStatuses: false,
+                presentationPolicy: snapshotPolicy,
+              },
             );
             break;
           }
         }
+        const normalizedSnapshot = normalizeHydratedSubagentMaps(
+          summariesByParentMessageId,
+          detailsById,
+          getState().messages,
+          false,
+          snapshotPolicy,
+        );
+        trackActiveSubagentParentIds(
+          normalizedSnapshot.summariesByParentMessageId,
+        );
         dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
-        if (Object.keys(summariesByParentMessageId).length > 0) {
+        if (
+          Object.keys(normalizedSnapshot.summariesByParentMessageId).length > 0
+        ) {
           dispatch({
             type: "UPSERT_SUBAGENT_SUMMARIES",
-            payload: summariesByParentMessageId,
+            payload: normalizedSnapshot.summariesByParentMessageId,
           });
         }
-        if (Object.keys(detailsById).length > 0) {
-          dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
+        if (Object.keys(normalizedSnapshot.detailsById).length > 0) {
+          dispatch({
+            type: "UPSERT_SUBAGENT_DETAIL",
+            payload: normalizedSnapshot.detailsById,
+          });
         }
         bindStreamingToParentMessageIdFromSubagents(
           dispatch,
           getState,
-          summariesByParentMessageId,
+          normalizedSnapshot.summariesByParentMessageId,
         );
         syncSubagentMapsIntoMessages(
           dispatch,
           getState,
-          summariesByParentMessageId,
-          detailsById,
+          normalizedSnapshot.summariesByParentMessageId,
+          normalizedSnapshot.detailsById,
           "replace",
+          {
+            freezeIncompleteStatuses: false,
+            presentationPolicy: snapshotPolicy,
+          },
         );
         break;
       }
       case "subagentUpdate": {
+        const streamPolicy: SubagentPresentationPolicy = {
+          mode: "stream",
+          sessionProcessing: getState().processing,
+          liveParentMessageIds:
+            getState().streaming?.messageId
+              ? new Set([getState().streaming?.messageId as string])
+              : undefined,
+        };
         const summariesByParentMessageId = normalizeSubagentSummaryMap(
           data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
         );
         const detailsById = normalizeSubagentDetailMap(
           data.detailsById ?? data.subagentDetailsById,
         );
-        if (Object.keys(summariesByParentMessageId).length > 0) {
+        const normalizedUpdate = normalizeHydratedSubagentMaps(
+          summariesByParentMessageId,
+          detailsById,
+          getState().messages,
+          false,
+          streamPolicy,
+        );
+        trackActiveSubagentParentIds(
+          normalizedUpdate.summariesByParentMessageId,
+        );
+        if (Object.keys(normalizedUpdate.summariesByParentMessageId).length > 0) {
           dispatch({
             type: "UPSERT_SUBAGENT_SUMMARIES",
-            payload: summariesByParentMessageId,
+            payload: normalizedUpdate.summariesByParentMessageId,
           });
         }
-        if (Object.keys(detailsById).length > 0) {
-          dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
+        if (Object.keys(normalizedUpdate.detailsById).length > 0) {
+          dispatch({
+            type: "UPSERT_SUBAGENT_DETAIL",
+            payload: normalizedUpdate.detailsById,
+          });
         }
         bindStreamingToParentMessageIdFromSubagents(
           dispatch,
           getState,
-          summariesByParentMessageId,
+          normalizedUpdate.summariesByParentMessageId,
         );
         syncSubagentMapsIntoMessages(
           dispatch,
           getState,
-          summariesByParentMessageId,
-          detailsById,
+          normalizedUpdate.summariesByParentMessageId,
+          normalizedUpdate.detailsById,
           "merge",
+          {
+            freezeIncompleteStatuses: false,
+            presentationPolicy: streamPolicy,
+          },
         );
         break;
       }
       case "streamEvent": {
+        if (terminalErrorReached && getState().isProcessing) {
+          terminalErrorReached = false;
+        }
         const streamingBefore = getState().streaming;
         if (streamingBefore) {
           latestStreamingSnapshot = streamingBefore;
@@ -6130,12 +6833,47 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         break;
       }
+      case "userMessageAppended": {
+        terminalErrorReached = false;
+        const message = data.message as Message;
+        if (message && typeof message === "object") {
+          // Get current state and append the new message
+          const currentMessages = getState().messages || [];
+          dispatch({
+            type: "SET_MESSAGES",
+            payload: [...currentMessages, message],
+          });
+        }
+        break;
+      }
+      case "sessionsListUpdate":
       case "SET_PROCESSING_SESSIONS": {
-        const sessionIds = asArray(data.payload, (item): item is string => typeof item === 'string');
+        const rawSessionIds =
+          type === "sessionsListUpdate" ? data.processingSessionIds : data.payload;
+        const sessionIds = asArray(
+          rawSessionIds,
+          (item): item is string => typeof item === "string",
+        );
         dispatch({
           type: "SET_PROCESSING_SESSIONS",
           payload: sessionIds,
         });
+        const stateAfterProcessingUpdate = getState();
+        const activeSessionId = stateAfterProcessingUpdate.currentSessionId;
+        const isActiveSessionStillProcessing = !!(
+          activeSessionId && sessionIds.includes(activeSessionId)
+        );
+        if (!isActiveSessionStillProcessing) {
+          if (stateAfterProcessingUpdate.isSteering) {
+            dispatch({ type: "SET_STEERING", payload: false });
+          }
+          if (stateAfterProcessingUpdate.isProcessing) {
+            dispatch({ type: "SET_PROCESSING", payload: false });
+          }
+          if (stateAfterProcessingUpdate.streaming?.isActive) {
+            dispatch({ type: "FINISH_STREAMING" });
+          }
+        }
         break;
       }
       case "queueUpdate": {
@@ -6266,12 +7004,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             type: "SET_MODEL_CAPABILITY",
             payload: capRec
               ? {
-                  reasoning: Boolean(capRec.reasoning),
-                  variants: Array.isArray(capRec.variants)
-                    ? (capRec.variants as string[])
-                    : undefined,
-                  thinkingConfig: capRec.thinkingConfig as Record<string, unknown> | undefined,
-                }
+                reasoning: Boolean(capRec.reasoning),
+                variants: Array.isArray(capRec.variants)
+                  ? (capRec.variants as string[])
+                  : undefined,
+                thinkingConfig: capRec.thinkingConfig as Record<string, unknown> | undefined,
+              }
               : null,
           });
         } catch (e) {

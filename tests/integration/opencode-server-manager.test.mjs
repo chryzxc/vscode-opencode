@@ -24,7 +24,7 @@ test('OpencodeServerManager broadcasts status changes via EventEmitter', () => {
   // Verify status change event emission
   assert.match(serverManagerSource, /private _onStatusChange = new vscode\.EventEmitter<ServerStatus>\(\)/, 'OpencodeServerManager should have status change EventEmitter');
   assert.match(serverManagerSource, /public readonly onStatusChange = this\._onStatusChange\.event/, 'OpencodeServerManager should expose onStatusChange event stream');
-  const setStatusBody = extractFunctionBody(serverManagerSource, 'private setStatus(status: ServerStatus): void');
+  const setStatusBody = extractFunctionBody(serverManagerSource, 'setStatus(status: ServerStatus): void');
 
   assert.match(setStatusBody, /if\s*\(this\._status !== status\)/, 'setStatus should only fire event if status actually changes');
   assert.match(setStatusBody, /this\._onStatusChange\.fire\(status\)/, 'setStatus should fire event with new status');
@@ -34,7 +34,7 @@ test('OpencodeServerManager implements lazy connection with fast path for existi
   // Verify ensureRunning serializes startup and delegates to ensureRunningInternal
   assert.match(serverManagerSource, /async ensureRunning\(\): Promise<OpencodeClient>/, 'OpencodeServerManager should expose ensureRunning method');
   const ensureBody = extractFunctionBody(serverManagerSource, 'async ensureRunning(): Promise<OpencodeClient>');
-  const ensureInternalBody = extractFunctionBody(serverManagerSource, 'private async ensureRunningInternal(): Promise<OpencodeClient>');
+  const ensureInternalBody = extractFunctionBody(serverManagerSource, 'ensureRunningInternal(): Promise<OpencodeClient>');
 
   assert.match(ensureBody, /if\s*\(this\.startupPromise\)\s*\{\s*return this\.startupPromise;\s*\}/, 'ensureRunning should reuse in-flight startup promise');
   assert.match(ensureBody, /this\.startupPromise = this\.ensureRunningInternal\(\)/, 'ensureRunning should delegate startup work to ensureRunningInternal');
@@ -47,7 +47,7 @@ test('OpencodeServerManager implements lazy connection with fast path for existi
 
 test('OpencodeServerManager handles stale client connections', () => {
   // Verify detection and handling of dead client connections
-  const ensureBody = extractFunctionBody(serverManagerSource, 'private async ensureRunningInternal(): Promise<OpencodeClient>');
+  const ensureBody = extractFunctionBody(serverManagerSource, 'ensureRunningInternal(): Promise<OpencodeClient>');
 
   assert.match(ensureBody, /log\.warn\("Detected stale client connection; restarting server client"/, 'ensureRunning should warn about stale connections');
   assert.match(ensureBody, /this\.client = null/, 'ensureRunning should clear stale client');
@@ -56,9 +56,9 @@ test('OpencodeServerManager handles stale client connections', () => {
 });
 
 test('OpencodeServerManager requires health/version success before trusting reused ports', () => {
-  const ensureBody = extractFunctionBody(serverManagerSource, 'private async ensureRunningInternal(): Promise<OpencodeClient>');
-  const connectBody = extractFunctionBody(serverManagerSource, 'private async connectToServer(): Promise<OpencodeClient>');
-  const fetchVersionBody = extractFunctionBody(serverManagerSource, 'private async fetchVersion(options?: { requireHealthy?: boolean }): Promise<boolean>');
+  const ensureBody = extractFunctionBody(serverManagerSource, 'ensureRunningInternal(): Promise<OpencodeClient>');
+  const connectBody = extractFunctionBody(serverManagerSource, 'connectToServer(): Promise<OpencodeClient>');
+  const fetchVersionBody = extractFunctionBody(serverManagerSource, 'fetchVersion(options?: { requireHealthy?: boolean }): Promise<boolean>');
 
   assert.match(ensureBody, /const healthy = await this\.fetchVersion\(\)/, 'ensureRunningInternal should health-check existing connected clients');
   assert.match(ensureBody, /if\s*\(healthy\)\s*\{\s*return this\.client;\s*\}/, 'ensureRunningInternal should only reuse existing client when health check succeeds');
@@ -73,7 +73,7 @@ test('OpencodeServerManager requires health/version success before trusting reus
 
 test('OpencodeServerManager connects to configured port if available', () => {
   // Verify connection to user-configured port before starting new server
-  const ensureBody = extractFunctionBody(serverManagerSource, 'private async ensureRunningInternal(): Promise<OpencodeClient>');
+  const ensureBody = extractFunctionBody(serverManagerSource, 'ensureRunningInternal(): Promise<OpencodeClient>');
 
   assert.match(ensureBody, /const configuredPort = config\.get<number>\("serverPort",\s*0\)/, 'ensureRunning should read serverPort from config');
   assert.match(ensureBody, /if\s*\(configuredPort > 0\)/, 'ensureRunning should check if configured port is set');
@@ -87,7 +87,7 @@ test('OpencodeServerManager connects to configured port if available', () => {
 
 test('OpencodeServerManager spawns server process with workspace context', () => {
   // Verify server process spawning with correct working directory
-  const startBody = extractFunctionBody(serverManagerSource, 'private async startServer(): Promise<OpencodeClient>');
+  const startBody = extractFunctionBody(serverManagerSource, 'startServer(): Promise<OpencodeClient>');
 
   assert.match(startBody, /this\.port = await this\.findAvailablePort\(\)/, 'startServer should find available port');
   assert.match(startBody, /const workspaceFolder = vscode\.workspace\.workspaceFolders\?\.\[0\]/, 'startServer should get workspace folder');
@@ -99,7 +99,7 @@ test('OpencodeServerManager spawns server process with workspace context', () =>
 
 test('OpencodeServerManager detects server readiness via stdout parsing', () => {
   // Verify server ready detection from stdout
-  const startBody = extractFunctionBody(serverManagerSource, 'private async startServer(): Promise<OpencodeClient>');
+  const startBody = extractFunctionBody(serverManagerSource, 'startServer(): Promise<OpencodeClient>');
 
   assert.match(startBody, /spawnedProcess\.stdout\?\.on\("data",\s*\(data\)\s*=>/, 'startServer should listen to stdout');
   assert.match(startBody, /if\s*\(output\.includes\("Server running"\)\s*\|\|\s*output\.includes\("listening"\)\)/, 'startServer should detect ready keyword in output');
@@ -111,7 +111,7 @@ test('OpencodeServerManager detects server readiness via stdout parsing', () => 
 test('OpencodeServerManager implements port reachability check', () => {
   // Verify TCP socket-based port checking
   assert.match(serverManagerSource, /private async isPortReachable\(port: number\): Promise<boolean>/, 'OpencodeServerManager should have isPortReachable method');
-  const reachBody = extractFunctionBody(serverManagerSource, 'private async isPortReachable(port: number): Promise<boolean>');
+  const reachBody = extractFunctionBody(serverManagerSource, 'isPortReachable(port: number): Promise<boolean>');
 
   assert.match(reachBody, /const socket = new net\.Socket\(\)/, 'isPortReachable should create TCP socket');
   assert.match(reachBody, /socket\.setTimeout\(800\)/, 'isPortReachable should set 800ms timeout');
@@ -123,7 +123,7 @@ test('OpencodeServerManager implements port reachability check', () => {
 
 test('OpencodeServerManager implements auto-reconnect on unexpected exit', () => {
   // Verify auto-reconnect scheduling after server crash
-  const startBody = extractFunctionBody(serverManagerSource, 'private async startServer(): Promise<OpencodeClient>');
+  const startBody = extractFunctionBody(serverManagerSource, 'startServer(): Promise<OpencodeClient>');
 
   assert.match(startBody, /spawnedProcess\.on\("exit",\s*\(code\)\s*=>/, 'startServer should handle process exit');
   assert.match(startBody, /if\s*\(!this\.isDisposed && code !== 0 && !this\.reconnectTimer\)/, 'startServer should schedule reconnect if unexpected exit');
@@ -134,7 +134,7 @@ test('OpencodeServerManager implements auto-reconnect on unexpected exit', () =>
 
 test('OpencodeServerManager implements server startup timeout', () => {
   // Verify 10-second timeout for server startup
-  const startBody = extractFunctionBody(serverManagerSource, 'private async startServer(): Promise<OpencodeClient>');
+  const startBody = extractFunctionBody(serverManagerSource, 'startServer(): Promise<OpencodeClient>');
 
   assert.match(startBody, /let startupTimeout: NodeJS\.Timeout \| null = null/, 'startServer should track startup timeout');
   assert.match(startBody, /startupTimeout = setTimeout/, 'startServer should set timeout handler');
@@ -146,7 +146,7 @@ test('OpencodeServerManager implements server startup timeout', () => {
 
 test('OpencodeServerManager handles missing CLI with user-friendly message', () => {
   // Verify ENOENT error handling
-  const startBody = extractFunctionBody(serverManagerSource, 'private async startServer(): Promise<OpencodeClient>');
+  const startBody = extractFunctionBody(serverManagerSource, 'startServer(): Promise<OpencodeClient>');
 
   assert.match(startBody, /spawnedProcess\.on\("error",\s*\(error\)\s*=>/, 'startServer should handle spawn errors');
   assert.match(startBody, /if\s*\(error\.message\.includes\("ENOENT"\)\)/, 'startServer should detect ENOENT error');
@@ -157,9 +157,7 @@ test('OpencodeServerManager handles missing CLI with user-friendly message', () 
 
 test('OpencodeServerManager implements cross-platform process cleanup', () => {
   // Verify Windows-specific process tree killing in helper + dispose wiring
-  const terminateBody = extractFunctionBody(
-    serverManagerSource,
-    'private terminateProcessTree(serverProcess: cp.ChildProcess): void',
+  const terminateBody = extractFunctionBody(serverManagerSource, 'terminateProcessTree(serverProcess: cp.ChildProcess): void',
   );
   const disposeBody = extractFunctionBody(serverManagerSource, 'dispose()');
 
@@ -177,7 +175,7 @@ test('OpencodeServerManager implements cross-platform process cleanup', () => {
 test('OpencodeServerManager implements dynamic port allocation', () => {
   // Verify port 0 binding for OS-assigned port
   assert.match(serverManagerSource, /private async findAvailablePort\(\): Promise<number>/, 'OpencodeServerManager should have findAvailablePort method');
-  const portBody = extractFunctionBody(serverManagerSource, 'private async findAvailablePort(): Promise<number>');
+  const portBody = extractFunctionBody(serverManagerSource, 'findAvailablePort(): Promise<number>');
 
   assert.match(portBody, /const server = net\.createServer\(\)/, 'findAvailablePort should create TCP server');
   assert.match(portBody, /server\.listen\(0,\s*\(\)\s*=>/, 'findAvailablePort should listen on port 0');
@@ -187,7 +185,7 @@ test('OpencodeServerManager implements dynamic port allocation', () => {
 
 test('OpencodeServerManager implements server output logging with budget', () => {
   // Verify log budget to prevent disk bloat
-  const startBody = extractFunctionBody(serverManagerSource, 'private async startServer(): Promise<OpencodeClient>');
+  const startBody = extractFunctionBody(serverManagerSource, 'startServer(): Promise<OpencodeClient>');
 
   assert.match(startBody, /const stdoutLogState = \{\s*loggedChars:\s*0,\s*suppressed:\s*false\s*\}/, 'startServer should track stdout log state');
   assert.match(startBody, /const stderrLogState = \{\s*loggedChars:\s*0,\s*suppressed:\s*false\s*\}/, 'startServer should track stderr log state');
@@ -211,9 +209,7 @@ test('OpencodeServerManager derives workspace directory for SDK client header', 
     /private getWorkspaceDirectory\(\): string \| undefined/,
     'OpencodeServerManager should expose workspace-directory helper',
   );
-  const helperBody = extractFunctionBody(
-    serverManagerSource,
-    'private getWorkspaceDirectory(): string | undefined',
+  const helperBody = extractFunctionBody(serverManagerSource, 'getWorkspaceDirectory(): string | undefined',
   );
   assert.match(
     helperBody,

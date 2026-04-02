@@ -12,10 +12,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource, readAllSources } from '../helpers/source-utils.mjs';
 
 // Load source files
-const storeSource = readSource(
+const storeSource = readAllSources(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'store.ts')],
   'store.ts',
 );
@@ -32,7 +32,20 @@ const streamingComponentsSource = readSource(
   'StreamingComponents.tsx',
 );
 const chatViewProviderSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+  [
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'),
+    joinFromRoot('src', 'providers', 'chat', 'types.ts')
+  ],
   'ChatViewProvider.ts',
 );
 
@@ -481,8 +494,7 @@ test('ChatViewProvider has logger with error handling', () => {
 
   // Verify logger is initialized in constructor
   const constructorBody = extractFunctionBody(
-    chatViewProviderSource,
-    'constructor('
+    chatViewProviderSource, 'constructor('
   );
 
   assert.ok(constructorBody, 'Constructor should exist');

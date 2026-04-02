@@ -1,0 +1,47 @@
+not ok 12 - tests\\integration\\file-icon-theme.test.mjs
+not ok 13 - tests\\integration\\models-timeout-fallback.test.mjs
+not ok 14 - tests\\integration\\opencode-server-manager.test.mjs
+not ok 209 - provider compaction view state contract persists divider message anchors
+not ok 210 - provider derives divider anchors when compacting and emits them in done status
+not ok 239 - history hydration reuses canonical processing path and disables synthetic fallback errors
+not ok 240 - assistant burst coalescing keeps latest base and dedupes timeline arrays
+not ok 242 - final assistant response persists debug override payload for refresh parity
+not ok 243 - structured-output fallback synthesis can be disabled for session reload normalization
+not ok 244 - mirror-deduper preserves intentional idless repeats while merging synthetic/local mirrors
+not ok 245 - history hydration filters internal system-reminder transport messages
+not ok 252 - ChatViewProvider.extractEventSessionId checks all SSE event locations
+not ok 296 - subagent structured output falls back to compact summary text
+not ok 36 - tests\\services\\message-stream-service.test.mjs
+not ok 37 - tests\\services\\quota-service.test.mjs
+not ok 310 - RequestBudgeter implements request enforcement
+not ok 314 - RequestBudgeter implements usage statistics
+not ok 39 - tests\\services\\session-crud.test.mjs
+not ok 391 - backend ChatViewProvider logs debug information for message processing
+not ok 412 - ChatViewProvider uses session-scoped queue model with stable queued item metadata
+not ok 413 - ChatViewProvider routes prompt actions through internal queue handlers
+not ok 414 - ChatViewProvider queue execution logic correctly manages state
+not ok 48 - tests\\unit\\services\\MessageStreamService.test.mjs
+not ok 49 - tests\\unit\\services\\SessionService.test.mjs
+not ok 50 - tests\\unit\\services\\SubagentTracker.test.mjs
+not ok 482 - subagent live sidecar snapshot is keyed per session and restored on load
+not ok 483 - subagent live sidecar persists on stream updates and assistant snapshot saves
+not ok 484 - subagent live sidecar cleanup runs on session create/delete transitions
+not ok 488 - structured output supports explicit subagents response type and extraction
+not ok 491 - ChatViewProvider structured extraction reads explicit structured channels only
+not ok 492 - provider and webview normalize structured output with strict validation before sanitize
+not ok 493 - ChatViewProvider suppresses StructuredOutput tool call rows from UI activity
+not ok 600 - handleLoadSession clears in-memory todos and posts rehydrated todo snapshot
+not ok 622 - ChatViewProvider streams events to webview progressively
+not ok 624 - ChatViewProvider logs final prompt response diagnostics when non-streaming fallback occurs
+not ok 625 - ChatViewProvider emits webview error when response has no data payload
+not ok 626 - ChatViewProvider includes sessionId when posting final/error response payloads
+not ok 627 - ChatViewProvider attempts timeout recovery before surfacing hard send errors
+not ok 628 - ChatViewProvider builds detailed error text from error-cause chains
+not ok 638 - provider accepts interactive responses from webview
+not ok 649 - structured question contract supports dedicated assistant-bubble display prompt
+not ok 706 - plan viewer supports interactive comment mutation events and updates comments stream
+not ok 707 - proceed flow forwards plan payload, returns status feedback, and sends explicit proceed-on-plan prompt
+not ok 708 - plan viewer read-path has error fallback for unreadable plan files
+not ok 709 - viewPlan enforces disk-first content when plan.file is present
+not ok 711 - chat provider routes viewPlan to handleViewPlan
+not ok 712 - enrichMessageWithPlan cleanses background noise from perceived plans

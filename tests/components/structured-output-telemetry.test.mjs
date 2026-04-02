@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const providerSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
-  'ChatViewProvider.ts',
+  [joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts')],
+  'StructuredOutputProcessor.ts',
 );
 
 test('chat provider tracks structured validation failure counters by responseType/provider/model', () => {
@@ -19,9 +19,7 @@ test('chat provider tracks structured validation failure counters by responseTyp
     /private recordStructuredValidationFailure\(/,
     'provider should define structured validation failure telemetry helper',
   );
-  const helperBody = extractFunctionBody(
-    providerSource,
-    'private recordStructuredValidationFailure(',
+  const helperBody = extractFunctionBody(providerSource, 'recordStructuredValidationFailure(',
   );
   assert.match(
     helperBody,
@@ -36,9 +34,7 @@ test('chat provider tracks structured validation failure counters by responseTyp
 });
 
 test('normalizeStructuredOutput forwards validation failures to telemetry', () => {
-  const normalizeBody = extractFunctionBody(
-    providerSource,
-    'private normalizeStructuredOutput(',
+  const normalizeBody = extractFunctionBody(providerSource, 'normalizeStructuredOutput(',
   );
   assert.match(
     normalizeBody,

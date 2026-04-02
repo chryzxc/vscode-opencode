@@ -1,10 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readAllSources, readSource } from '../helpers/source-utils.mjs';
 
-const providerSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+const providerSource = readAllSources([joinFromRoot('src', 'providers', 'ChatViewProvider.ts'), joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'), joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'), joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'), joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'), joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'), joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts')],
   'ChatViewProvider.ts',
 );
 const panelSource = readSource(
@@ -114,6 +113,57 @@ test('structured question outputs dispatch popup interactive state', () => {
     providerSource,
     /Coerced question response into fallback question event/,
     'provider should not coerce malformed question responses into synthetic fallback events',
+  );
+});
+
+test('webview question normalization preserves question payloads from info.structured source', () => {
+  assert.match(
+    handlerSource,
+    /const normalizedQuestion = asRecord\(sanitizedRec\.question\) \?\? asRecord\(rec\.question\);/,
+    'message handler should preserve sanitized question payloads for interactive rendering',
+  );
+  assert.match(
+    handlerSource,
+    /normalizeStructuredOutput\(\(asRecord\(rec\.info\) as UnknownRecord \| null\)\?\.structured\)/,
+    'interactive event extraction should support info.structured payloads',
+  );
+  assert.match(
+    handlerSource,
+    /rootQuestion && rootOptions\.length < 2[\s\S]*\? \[\]/,
+    'question fallback should keep free-form question input when options are unavailable',
+  );
+});
+
+test('implementation_plan normalization preserves plan card payload and summary across stream and hydration', () => {
+  assert.match(
+    handlerSource,
+    /type StructuredOutput = \{[\s\S]*plan\?: \{[\s\S]*file\?: string;[\s\S]*summary\?: string;[\s\S]*\};/s,
+    'structured output shape should include plan payload fields for implementation plans',
+  );
+  assert.match(
+    handlerSource,
+    /const planRec = asRecord\(sanitizedRec\.plan\) \?\? asRecord\(rec\.plan\);/,
+    'normalizeStructuredOutput should parse plan from sanitized and raw structured payloads',
+  );
+  assert.match(
+    handlerSource,
+    /!normalizedQuestion &&[\s\S]*!hasNormalizedPlan &&[\s\S]*cleanedReasoning\.length === 0/s,
+    'normalizeStructuredOutput should not drop plan-only structured payloads',
+  );
+  assert.match(
+    handlerSource,
+    /if \(\s*\(!normalized\.plan \|\| typeof normalized\.plan !== "object"\)[\s\S]*normalizedStructuredOutput\.plan[\s\S]*normalized\.plan = \{[\s\S]*\.\.\.normalizedStructuredOutput\.plan/s,
+    'normalizeMessage should hydrate message.plan from structured output when top-level plan is absent',
+  );
+  assert.match(
+    handlerSource,
+    /responseType === "implementation_plan"[\s\S]*summaryFromPlan[\s\S]*isImplementationPlanPlaceholderBody\(currentContent\)[\s\S]*normalized\.content = summaryFromPlan;/s,
+    'normalizeMessage should render implementation plan summary instead of generic placeholder text',
+  );
+  assert.match(
+    messageSource,
+    /const showResponseSection = hasResponseContent \|\| !!plan;/,
+    'assistant message renderer should display response section when a plan card exists, even without body content',
   );
 });
 
@@ -231,6 +281,44 @@ test('chat-history hydration reconstructs marker-only interactive user messages'
     /function dedupeInteractiveUserHydrationMessages\(/,
     'message handler should define interactive hydration dedupe helper',
   );
+  assert.match(
+    handlerSource,
+    /if \(latestInteractive\.length === 0 && canonicalMessages\.length > 0\)[\s\S]*lastResponseType\.toLowerCase\(\) === "question"[\s\S]*latestInteractive = interactiveEventsFromMessage\(lastMessage\);/s,
+    'chatHistory should restore popover when the latest hydrated message is a question',
+  );
+  assert.match(
+    handlerSource,
+    /const stabilizedHydratedMessages = dedupedHydratedMessages\.map\([\s\S]*const canonicalMessages = stabilizedHydratedMessages;/s,
+    'chatHistory should build canonical hydrated messages from the normalized/deduped hydration pipeline',
+  );
+  assert.match(
+    handlerSource,
+    /if \(normalizedStructuredOutput\) \{[\s\S]*toInteractiveEvents\(\s*normalizedStructuredOutput,\s*\)[\s\S]*normalized\.interactiveEvents = structuredInteractiveEvents;/s,
+    'normalizeMessage should materialize structured interactive events so hydration keeps popovers renderable',
+  );
+  assert.match(
+    handlerSource,
+    /if \(!normalized\.content\?\.trim\(\)\) \{[\s\S]*synthesizeQuestionContextMessage\(structuredEvents\)/s,
+    'normalizeMessage should synthesize assistant question text from structured interactive events when content is empty',
+  );
+  assert.match(
+    handlerSource,
+    /if \(interactiveEventsFromMessage\(message\)\.length > 0\) \{\s*return true;\s*\}/,
+    'renderable-history guard should keep structured interactive-only messages during hydration',
+  );
+});
+
+test('stream handling clears stale terminal error guard once a new request is processing', () => {
+  assert.match(
+    handlerSource,
+    /if \(terminalErrorReached && getState\(\)\.isProcessing\) \{\s*terminalErrorReached = false;\s*\}/,
+    'streamEvent path should clear stale terminal-error lock when a new request starts processing',
+  );
+  assert.match(
+    handlerSource,
+    /case "chatHistory": \{[\s\S]*terminalErrorReached = false;/s,
+    'chatHistory hydration should reset terminal error guard for resumed sessions',
+  );
 });
 
 test('assistant question responses prioritize question prompt in visible message body', () => {
@@ -241,8 +329,8 @@ test('assistant question responses prioritize question prompt in visible message
   );
   assert.match(
     messageSource,
-    /return `\$\{questionPrompt\}\\n\\n\$\{baseContent\}`;/,
-    'question-first rendering should prepend prompt and keep assistant prose below it',
+    /if \(isQuestionResponseType\) \{[\s\S]*return questionPrompt;[\s\S]*\}/s,
+    'question responses should render only questionPrompt in the assistant bubble',
   );
   assert.match(
     messageSource,

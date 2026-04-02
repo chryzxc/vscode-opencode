@@ -1057,7 +1057,7 @@ export class SessionService {
     // Create the session
     const response = await client.session.create({
       body: {
-        title: title || `Session ${new Date().toLocaleTimeString()}`,
+        title: title || "Untitled chat",
       },
     });
 

@@ -148,6 +148,42 @@ function ChatContent() {
   }, []);
 
   useEffect(() => {
+    const root = messagesScrollRef.current;
+    if (!root) return;
+
+    let rafId: number | null = null;
+    const scheduleFollow = () => {
+      if (!streamViewportRef.current.isFollowing) {
+        return;
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        root.scrollTop = root.scrollHeight;
+      });
+    };
+
+    const observer = new MutationObserver(() => {
+      scheduleFollow();
+    });
+
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+
+    return () => {
+      observer.disconnect();
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (streamViewportRef.current.isFollowing) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
       if (streamViewportRef.current.unseenUpdateCount > 0) {

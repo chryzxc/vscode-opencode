@@ -1,9 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractFunctionBody, joinFromRoot, readSource } from '../../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readAllSources } from '../../helpers/source-utils.mjs';
 
-const chatProviderSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+const chatProviderSource = readAllSources([joinFromRoot('src', 'providers', 'ChatViewProvider.ts'), joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'), joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'), joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'), joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'), joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'), joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts')],
   'ChatViewProvider.ts',
 );
 
@@ -18,16 +17,16 @@ function extractCaseBlock(source, caseLabel) {
     const altLabelIndex = source.indexOf(`case '${caseLabel}':`);
     if (altLabelIndex === -1) return '';
   }
-  
-  const startIndex = source.indexOf(`case "${caseLabel}":`) === -1 
-    ? source.indexOf(`case '${caseLabel}':`) 
+
+  const startIndex = source.indexOf(`case "${caseLabel}":`) === -1
+    ? source.indexOf(`case '${caseLabel}':`)
     : source.indexOf(`case "${caseLabel}":`);
 
   const searchSnippet = source.slice(startIndex);
   // Find the first opening brace or the start of the next line
   const firstBrace = searchSnippet.indexOf('{');
   const firstBreak = searchSnippet.indexOf('break;');
-  
+
   if (firstBrace !== -1 && (firstBreak === -1 || firstBrace < firstBreak)) {
     // It's a braced block, use standard extraction from the brace
     return extractFunctionBody(searchSnippet, searchSnippet.slice(0, firstBrace));
@@ -65,8 +64,8 @@ test('ChatViewProvider.ready handler logic', () => {
   const readyBody = extractCaseBlock(chatProviderSource, 'ready');
 
   assert.match(readyBody, /type:\s*["']initState["']/, 'Ready flow must send initState');
-  assert.match(readyBody, /this\.handleGetModels\(\)/, 'Ready flow must trigger model discovery');
-  assert.match(readyBody, /this\.handleGetAgents\(\)/, 'Ready flow must trigger agent discovery');
+  assert.match(readyBody, /this\.modelAndAgentManager\.handleGetModels\(\)/, 'Ready flow must trigger model discovery');
+  assert.match(readyBody, /this\.modelAndAgentManager\.handleGetAgents\(\)/, 'Ready flow must trigger agent discovery');
   assert.match(readyBody, /this\.sessionService\.getCurrentSession\(\)/, 'Ready flow must resolve current session');
   assert.match(readyBody, /this\.sendBudgetInfo\(\)/, 'Ready flow must send budget info');
   assert.match(readyBody, /type:\s*["']chatHistory["']/, 'Ready flow must send chat history');
@@ -94,23 +93,55 @@ test('ChatViewProvider.handleSendMessage core logic', () => {
 test('ChatViewProvider.handleExecuteQueue core logic', () => {
   const executeQueueBody = extractFunctionBody(
     chatProviderSource,
-    'private async handleExecuteQueue(',
+    'async maybeAutoDrainQueue(',
   );
 
   assert.match(executeQueueBody, /this\.executingQueueSessionIds\.add\(sessionId\)/, 'Must track executing session');
   assert.match(executeQueueBody, /while\s*\(/, 'Must loop through queue');
-  assert.match(executeQueueBody, /this\.handleSendMessage\(/, 'Must call handleSendMessage for items');
+  assert.match(executeQueueBody, /await this\.handleSendMessage\(/, 'Must call handleSendMessage for items');
   assert.match(executeQueueBody, /this\.executingQueueSessionIds\.delete\(sessionId\)/, 'Must cleanup tracking');
 });
 
 test('ChatViewProvider.schedulePromptDispatch core logic', () => {
   const dispatchBody = extractFunctionBody(
     chatProviderSource,
-    'private async schedulePromptDispatch(',
+    'async schedulePromptDispatch(',
   );
 
-  assert.match(dispatchBody, /this\.enqueuePrompt\(/, 'Dispatch must enqueue prompt');
-  assert.match(dispatchBody, /this\.handleExecuteQueue\(/, 'Dispatch must trigger queue execution');
+  assert.match(dispatchBody, /if \(mode === "send-now"\)/, 'send-now should have a direct dispatch branch');
+  assert.match(dispatchBody, /await this\.handleSendMessage\(/, 'send-now should call handleSendMessage directly');
+  assert.match(dispatchBody, /await this\.queueManager\.schedulePromptDispatch\(/, 'non-send-now modes should still delegate to QueueManager');
+});
+
+test('ChatViewProvider.applyStructuredOutputToMessage uses structured.message as canonical text', () => {
+  const applyBody = extractFunctionBody(
+    chatProviderSource,
+    'private applyStructuredOutputToMessage(',
+  );
+
+  assert.match(
+    applyBody,
+    /const messageContent =[\s\S]*structured\.message \|\|[\s\S]*this\.createFallbackMessage\(structured\);/s,
+    'applyStructuredOutputToMessage should derive assistant text from structured.message only',
+  );
+});
+
+test('ChatViewProvider.sendProcessingSessionsUpdate publishes active processing sessions', () => {
+  const updateBody = extractFunctionBody(
+    chatProviderSource,
+    'private sendProcessingSessionsUpdate(): void',
+  );
+
+  assert.match(
+    updateBody,
+    /type:\s*["']SET_PROCESSING_SESSIONS["']/,
+    'sendProcessingSessionsUpdate should emit SET_PROCESSING_SESSIONS event',
+  );
+  assert.match(
+    updateBody,
+    /payload:\s*Array\.from\(this\.processingSessionIds\)/,
+    'sendProcessingSessionsUpdate should use ChatViewProvider processingSessionIds as payload',
+  );
 });
 
 test('ChatViewProvider handles stream events via subscription callback', () => {
@@ -136,7 +167,7 @@ test('ChatViewProvider handles stream events via subscription callback', () => {
 test('ChatViewProvider.handleGetSessions logic', () => {
   const getSessionsBody = extractFunctionBody(
     chatProviderSource,
-    'private async handleGetSessions(): Promise<void> {',
+    'async handleGetSessions(): Promise<void> {',
   );
 
   assert.match(getSessionsBody, /this\.sessionService\.listSessions\(\)/, 'Must fetch sessions from service');
@@ -146,17 +177,17 @@ test('ChatViewProvider.handleGetSessions logic', () => {
 test('ChatViewProvider.handleLoadSession logic', () => {
   const loadSessionBody = extractFunctionBody(
     chatProviderSource,
-    'private async handleLoadSession(sessionId: string): Promise<void> {',
+    'async handleLoadSession(',
   );
 
-  assert.match(loadSessionBody, /this\.sessionService\.switchSession\(/, 'Must switch session in service');
-  assert.match(loadSessionBody, /type:\s*["']initState["']/, 'Must send initState to webview');
+  assert.match(loadSessionBody, /this\.sessionService\.loadSessionMessages\(/, 'Must load messages from service');
+  assert.match(loadSessionBody, /type:\s*["']chatHistory["']/, 'Must send chatHistory to webview');
 });
 
 test('ChatViewProvider.handleStopRequest logic', () => {
   const stopRequestBody = extractFunctionBody(
     chatProviderSource,
-    'private async handleStopRequest(sessionId?: string): Promise<void> {',
+    'async handleStopRequest(sessionId?: string): Promise<void> {',
   );
 
   assert.match(stopRequestBody, /client\.session\.abort\(/, 'Must abort the session via client');
@@ -165,8 +196,7 @@ test('ChatViewProvider.handleStopRequest logic', () => {
 
 test('ChatViewProvider initializes all required services in constructor', () => {
   const ctorBody = extractFunctionBody(
-    chatProviderSource,
-    'constructor(',
+    chatProviderSource, 'constructor(',
   );
 
   const services = [

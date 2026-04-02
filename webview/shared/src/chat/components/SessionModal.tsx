@@ -190,7 +190,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
 
       {/* Modal panel */}
       <div
-        className="relative z-50 w-full max-w-md flex-col overflow-hidden rounded-xl border border-oc-border bg-oc-panel text-foreground shadow-2xl animate-in zoom-in-95 duration-200 max-h-[80vh]"
+        className="relative z-50 flex w-full max-w-md flex-col overflow-hidden rounded-xl border border-oc-border bg-oc-panel text-foreground shadow-2xl animate-in zoom-in-95 duration-200 max-h-[80vh]"
         role="dialog"
         aria-modal="true"
         aria-label="Sessions"
@@ -244,7 +244,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
         </div>
 
         {/* Session List */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
+        <div className="flex flex-1 min-h-0 overflow-y-auto px-3 py-2">
           {filteredSessions.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
               {searchQuery ? (

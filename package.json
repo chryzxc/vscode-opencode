@@ -174,7 +174,12 @@
           "default": 0.9,
           "minimum": 0.5,
           "maximum": 0.99,
-          "description": "Fraction of the model context limit at which auto-compaction fires (0.9 = 90%)"
+          "description": "Fraction of model context limit at which auto-compaction fires (0.9 = 90%)"
+        },
+        "opencode.autoGenerateSessionTitle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically generate session title from first message"
         }
       }
     }
@@ -184,13 +189,17 @@
     "vscode:prepublish": "npm run build",
     "compile": "node esbuild.config.js",
     "watch": "node esbuild.config.js --watch",
+    "dev": "node scripts/dev-simple.mjs",
+    "dev:full": "node scripts/dev-hotreload.mjs",
     "webview:build": "npm run structured-output:sync && npm --prefix webview/shared run build",
     "webview:watch": "npm --prefix webview/shared run build -- --watch",
     "structured-output:sync": "node scripts/sync-structured-output-contract.mjs",
     "structured-output:check": "node scripts/sync-structured-output-contract.mjs --check",
     "test": "node --test tests/**/*.test.mjs",
+    "test:ts": "tsx node --test tests/**/*.test.ts",
     "test:webview-regression": "node --test tests/**/*.test.mjs",
-    "lint": "eslint src --ext ts",
+    "typecheck": "tsc --noEmit src/providers/ChatViewProvider.ts",
+    "lint": "npm run typecheck && eslint src --ext ts",
     "package": "npx @vscode/vsce package"
   },
   "devDependencies": {
@@ -200,6 +209,7 @@
     "@typescript-eslint/parser": "^6.13.0",
     "esbuild": "^0.19.8",
     "eslint": "^8.54.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.3.2"
   },
   "dependencies": {

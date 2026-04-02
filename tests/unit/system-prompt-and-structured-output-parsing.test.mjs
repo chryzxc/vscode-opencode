@@ -1,10 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readAllSources, readSource } from '../helpers/source-utils.mjs';
 
-const providerSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+const providerSource = readAllSources([joinFromRoot('src', 'providers', 'ChatViewProvider.ts'), joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'), joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'), joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'), joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'), joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'), joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts')],
   'ChatViewProvider.ts',
 );
 
@@ -24,10 +23,7 @@ test('ChatViewProvider does not inject wrapper system prompts in send path', () 
 });
 
 test('ChatViewProvider removes legacy system-instruction helpers and does not strip message text', () => {
-  const processHistoryBody = extractFunctionBody(
-    providerSource,
-    'private processHistoryMessages(',
-  );
+  const processHistoryBody = providerSource;
 
   assert.doesNotMatch(processHistoryBody, /stripLegacyInstruction/, 'history processor should not strip prompt prefixes');
   assert.doesNotMatch(providerSource, /private stripLegacyInstruction\(/, 'provider should not define stripLegacyInstruction helper');
@@ -64,7 +60,7 @@ test('ChatViewProvider structured extraction reads explicit structured channels 
 test('provider and webview normalize structured output with strict validation before sanitize', () => {
   const providerNormalizeBody = extractFunctionBody(
     providerSource,
-    'private normalizeStructuredOutput(',
+    'normalizeStructuredOutput(\n    raw: unknown,',
   );
   const webviewNormalizeBody = extractFunctionBody(
     messageHandlerSource,
@@ -83,14 +79,12 @@ test('ChatViewProvider suppresses StructuredOutput tool call rows from UI activi
     providerSource,
     'private applyStructuredOutputToMessage(',
   );
-  const enrichBody = extractFunctionBody(
-    providerSource,
-    'private enrichStreamEvent(event: any): any',
+  const enrichBody = extractFunctionBody(providerSource, 'enrichStreamEvent(event: any): any',
   );
 
   assert.match(applyBody, /part\.type === "tool"/, 'applyStructuredOutputToMessage should inspect tool rows');
   assert.match(applyBody, /toolName\.includes\("structuredoutput"\)/, 'applyStructuredOutputToMessage should hide StructuredOutput tool rows');
-  assert.match(enrichBody, /kind = "other"/, 'stream enrichment should classify StructuredOutput tool rows as other');
+  assert.match(enrichBody, /enriched\.hasStructuredOutput = true/, 'stream enrichment should mark structured payloads for downstream handling');
 });
 
 test('WebView parser reads structured output from explicit channels and structured tool outputs only', () => {

@@ -119,14 +119,6 @@ test('validateStructuredOutput validates responseType', () => {
   assert.match(fnBody, /Unsupported responseType:/, 'Should include responseType in error message');
 });
 
-test('validateStructuredOutput validates assistantMessage type', () => {
-  const fnBody = extractFunctionBody('export function validateStructuredOutput(');
-
-  assert.match(fnBody, /typeof record\.assistantMessage !== "undefined"/, 'Should check if assistantMessage is defined');
-  assert.match(fnBody, /typeof record\.assistantMessage !== "string"/, 'Should check assistantMessage type');
-  assert.match(fnBody, /assistantMessage must be a string/, 'Should include assistantMessage error message');
-});
-
 test('validateStructuredOutput validates message type', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
@@ -273,15 +265,10 @@ test('validateStructuredOutput validates message responseType', () => {
   const fnBody = extractFunctionBody('export function validateStructuredOutput(');
 
   assert.match(fnBody, /if \(responseType === "message"\)/, 'Should check for message responseType');
-
-  assert.match(fnBody, /const assistantMessage =/, 'Should extract assistantMessage');
-  assert.match(fnBody, /typeof record\.assistantMessage === "string" && record\.assistantMessage\.trim\(\)\.length > 0/, 'Should validate assistantMessage is non-empty string');
-
-  assert.match(fnBody, /const legacyMessage =/, 'Should extract legacy message');
-  assert.match(fnBody, /typeof record\.message === "string" && record\.message\.trim\(\)\.length > 0/, 'Should validate legacy message is non-empty string');
-
-  assert.match(fnBody, /if \(!assistantMessage && !legacyMessage\)/, 'Should check at least one message exists');
-  assert.match(fnBody, /message responseType requires assistantMessage or message string/, 'Should include message responseType error');
+  assert.match(fnBody, /const messageText =/, 'Should extract message');
+  assert.match(fnBody, /typeof record\.message === "string" && record\.message\.trim\(\)\.length > 0/, 'Should validate message is non-empty string');
+  assert.match(fnBody, /if \(!messageText\)/, 'Should require message');
+  assert.match(fnBody, /message responseType requires message string/, 'Should include message responseType error');
 });
 
 test('validateStructuredOutput returns validation result', () => {
@@ -344,7 +331,6 @@ test('validator handles all edge cases in validation', () => {
 
 test('validator provides detailed error messages with context', () => {
   // Errors should include field names
-  assert.match(validatorSource, /assistantMessage must be a string/, 'Error should include field name');
   assert.match(validatorSource, /message must be a string/, 'Error should include field name');
   assert.match(validatorSource, /plan must be an object/, 'Error should include field name');
 
@@ -387,10 +373,10 @@ test('validator handles all response type specific requirements', () => {
   assert.match(validatorSource, /data responseType requires data object/, 'Should enforce data responseType requirements');
 
   // message
-  assert.match(validatorSource, /message responseType requires assistantMessage or message string/, 'Should enforce message requirements');
+  assert.match(validatorSource, /message responseType requires message string/, 'Should enforce message requirements');
   assert.doesNotMatch(
     validatorSource,
-    /message\/conversation responseType requires assistantMessage or message string/,
+    /message\/conversation responseType requires message string/,
     'Should not include legacy conversation wording in canonical validation errors',
   );
 });

@@ -240,10 +240,10 @@ export class QuotaService extends EventEmitter {
       clearInterval(this.timer);
     }
     // Initial fetch
-    this.refreshQuota().catch(() => {});
+    this.refreshQuota().catch(() => { });
     this.timer = setInterval(() => {
       if (!this.isDisposed) {
-        this.refreshQuota().catch(() => {});
+        this.refreshQuota().catch(() => { });
       }
     }, intervalMs);
   }
@@ -261,7 +261,7 @@ export class QuotaService extends EventEmitter {
           .then((p) => {
             if (p) platforms.push(p);
           })
-          .catch(() => {}),
+          .catch(() => { }),
       );
     }
 
@@ -276,7 +276,7 @@ export class QuotaService extends EventEmitter {
           .then((p) => {
             if (p) platforms.push(p);
           })
-          .catch(() => {}),
+          .catch(() => { }),
       );
     }
 
@@ -287,7 +287,7 @@ export class QuotaService extends EventEmitter {
           .then((p) => {
             if (p) platforms.push(p);
           })
-          .catch(() => {}),
+          .catch(() => { }),
       );
     }
 
@@ -302,7 +302,7 @@ export class QuotaService extends EventEmitter {
           .then((p) => {
             if (p) platforms.push(p);
           })
-          .catch(() => {}),
+          .catch(() => { }),
       );
     }
 
@@ -316,7 +316,7 @@ export class QuotaService extends EventEmitter {
             .then((ps) => {
               if (ps) platforms.push(...ps);
             })
-            .catch(() => {}),
+            .catch(() => { }),
         );
       }
     }
@@ -365,9 +365,7 @@ export class QuotaService extends EventEmitter {
 
   // â”€â”€ Platform fetchers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  private async fetchOpenAI(
-    auth: OpenAIAuthData,
-  ): Promise<PlatformQuota | null> {
+  private async fetchOpenAI(auth: OpenAIAuthData): Promise<PlatformQuota | null> {
     if (!auth?.access) {
       return null;
     }
@@ -428,8 +426,8 @@ export class QuotaService extends EventEmitter {
         json?.rate_limit?.weekly_window ?? json?.rate_limit?.secondary_window;
       if (weeklyWindow && typeof weeklyWindow === "object") {
         const usedPercent = Number(weeklyWindow.used_percent ?? 0);
+        const remain = percentBar(100 - usedPercent);
         const remainRaw = 100 - usedPercent;
-        const remain = percentBar(remainRaw);
         const resetAfterSeconds = Number(weeklyWindow.reset_after_seconds ?? 0);
 
         quotas.push({
@@ -439,8 +437,8 @@ export class QuotaService extends EventEmitter {
           resetLabel:
             resetAfterSeconds > 0
               ? formatResetFromTimestampMs(
-                  Date.now() + resetAfterSeconds * 1000,
-                )
+                Date.now() + resetAfterSeconds * 1000,
+              )
               : undefined,
         });
       }
@@ -462,8 +460,8 @@ export class QuotaService extends EventEmitter {
           resetLabel:
             resetAfterSeconds > 0
               ? formatResetFromTimestampMs(
-                  Date.now() + resetAfterSeconds * 1000,
-                )
+                Date.now() + resetAfterSeconds * 1000,
+              )
               : undefined,
         });
       }
@@ -537,11 +535,7 @@ export class QuotaService extends EventEmitter {
     }
   }
 
-  private async fetchZhipu(
-    auth: ZhipuAuthData,
-    platformName: string,
-    url: string,
-  ): Promise<PlatformQuota | null> {
+  private async fetchZhipu(auth: ZhipuAuthData, platformName: string, url: string): Promise<PlatformQuota | null> {
     if (!auth?.key) {
       return null;
     }
@@ -617,10 +611,7 @@ export class QuotaService extends EventEmitter {
     }
   }
 
-  private async fetchCopilot(
-    auth: CopilotAuthData | undefined,
-    config: CopilotQuotaConfig | undefined,
-  ): Promise<PlatformQuota | null> {
+  private async fetchCopilot(auth: CopilotAuthData | undefined, config: CopilotQuotaConfig | undefined): Promise<PlatformQuota | null> {
     // Refresh token if expired
     let token = auth?.access;
     const expired = auth?.expires
@@ -763,10 +754,7 @@ export class QuotaService extends EventEmitter {
     }
   }
 
-  private async fetchGoogle(account: {
-    email?: string;
-    refreshToken: string;
-  }): Promise<PlatformQuota[]> {
+  private async fetchGoogle(account: { email?: string; refreshToken: string }): Promise<PlatformQuota[]> {
     // Refresh access token
     let accessToken: string;
     try {

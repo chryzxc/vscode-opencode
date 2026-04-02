@@ -1,12 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readAllSources, readSource } from '../helpers/source-utils.mjs';
 
-const chatProviderSource = readSource(
-  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
-  'ChatViewProvider.ts',
-);
+const chatProviderSource = readAllSources([
+  joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
+  joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'),
+], 'ChatViewProvider (Modularized)');
 const messageSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
   'MessageComponents.tsx',
@@ -14,10 +23,8 @@ const messageSource = readSource(
 
 test('plan detection enriches assistant messages from plan files and structured plan content', () => {
   // Verify the core enrichMessageWithPlan heuristic and output contract.
-  const enrichBody = extractFunctionBody(
-    chatProviderSource,
-    'private enrichMessageWithPlan(message: any): any',
-  );
+  // After refactoring, the implementation is in StructuredOutputProcessor module
+  const enrichBody = extractFunctionBody(chatProviderSource, '  enrichMessageWithPlan(message: any): any');
 
   assert.match(
     enrichBody,
@@ -42,28 +49,23 @@ test('plan detection enriches assistant messages from plan files and structured 
 
 test('plan detection preserves safety guards and persistence behavior', () => {
   // Verify false-positive and failure-path guards remain in place.
-  const enrichBody = extractFunctionBody(
-    chatProviderSource,
-    'private enrichMessageWithPlan(message: any): any',
-  );
+  // After refactoring, the implementation is in StructuredOutputProcessor module
+  const enrichBody = extractFunctionBody(chatProviderSource, '  enrichMessageWithPlan(message: any): any');
 
   assert.match(enrichBody, /if\s*\(!message\)\s*return\s+message;/, 'plan detection should no-op on empty messages');
   assert.match(enrichBody, /(?:planContent|cleanPlanContent|structuredPlanContent)\.length\s*[<>]=\s*(?:100|200)/, 'plan detection should have length guards for plan responses');
-  assert.match(enrichBody, /this\.persistPlan\(\s*(?:planContent|cleanPlanContent|structuredPlanContent)[\s\S]*?\)\.catch\(/, 'plan detection should attempt plan persistence with error handling');
+  assert.match(enrichBody, /this\.(?:planManager\.)?persistPlan\(\s*(?:planContent|cleanPlanContent|structuredPlanContent)[\s\S]*?\)\.catch\(/, 'plan detection should attempt plan persistence with error handling');
   assert.match(enrichBody, /return\s+message;/, 'plan detection should return the original message when no valid plan is found');
 });
 
 test('plan detection avoids classifying clarification questionnaires as implementation plans', () => {
   assert.match(
     chatProviderSource,
-    /private isClarificationQuestionnaire\(content: unknown\): boolean/,
+    /isClarificationQuestionnaire\(content: unknown\): boolean/,
     'provider should define clarification-questionnaire guard helper',
   );
 
-  const enrichBody = extractFunctionBody(
-    chatProviderSource,
-    'private enrichMessageWithPlan(message: any): any',
-  );
+  const enrichBody = extractFunctionBody(chatProviderSource, '  enrichMessageWithPlan(message: any): any');
   assert.match(
     enrichBody,
     /isInteractiveClarificationResponse/,
@@ -85,10 +87,7 @@ test('plan detection avoids classifying clarification questionnaires as implemen
 });
 
 test('enrichMessageWithPlan must short-circuit clarification questionnaires before heuristic plan matching', () => {
-  const enrichBody = extractFunctionBody(
-    chatProviderSource,
-    'private enrichMessageWithPlan(message: any): any',
-  );
+  const enrichBody = extractFunctionBody(chatProviderSource, '  enrichMessageWithPlan(message: any): any');
 
   const idxClarify = enrichBody.indexOf('isClarificationQuestionnaire(');
   const idxKeyword = enrichBody.indexOf('basicPlanKeywordMatch');
@@ -101,10 +100,7 @@ test('enrichMessageWithPlan must short-circuit clarification questionnaires befo
 });
 
 test('enrichMessageWithPlan still produces a plan card for genuine plans', () => {
-  const enrichBody = extractFunctionBody(
-    chatProviderSource,
-    'private enrichMessageWithPlan(message: any): any',
-  );
+  const enrichBody = extractFunctionBody(chatProviderSource, '  enrichMessageWithPlan(message: any): any');
 
   const idxBranch = enrichBody.indexOf('if (hasPlanFile || hasPlanKeywords)');
   // Ensure the fallback plan detection branch exists and assigns a plan object
@@ -128,15 +124,12 @@ test('questionnaire-like content with plan keywords is not enriched as a plan', 
   // Ensure the provider helper exists and classifies this text as a clarification questionnaire
   assert.match(
     chatProviderSource,
-    /private isClarificationQuestionnaire\(content: unknown\): boolean/,
+    /isClarificationQuestionnaire\(content: unknown\): boolean/,
     'provider should define clarification-questionnaire guard helper',
   );
 
   // Check that the heuristic would detect plan keywords if not for the questionnaire guard
-  const enrichBody = extractFunctionBody(
-    chatProviderSource,
-    'private enrichMessageWithPlan(message: any): any',
-  );
+  const enrichBody = extractFunctionBody(chatProviderSource, '  enrichMessageWithPlan(message: any): any');
   assert.ok(
     enrichBody.indexOf('basicPlanKeywordMatch') !== -1,
     'enrichMessageWithPlan should include basicPlanKeywordMatch heuristic',
