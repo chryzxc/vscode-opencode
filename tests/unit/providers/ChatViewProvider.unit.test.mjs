@@ -180,8 +180,36 @@ test('ChatViewProvider.handleLoadSession logic', () => {
     'async handleLoadSession(',
   );
 
-  assert.match(loadSessionBody, /this\.sessionService\.loadSessionMessages\(/, 'Must load messages from service');
+  assert.match(loadSessionBody, /this\.sessionService\.(getMessages|loadSessionMessages)\(/, 'Must load messages from service');
   assert.match(loadSessionBody, /type:\s*["']chatHistory["']/, 'Must send chatHistory to webview');
+});
+
+test('ChatViewProvider.handleLoadSession shows loading state', () => {
+  const loadSessionBody = extractFunctionBody(
+    chatProviderSource,
+    'async handleLoadSession(',
+  );
+
+  assert.match(
+    loadSessionBody,
+    /this\.processingSessionIds\.add\(sessionId\)/,
+    'Must add sessionId to processing state at start'
+  );
+  assert.match(
+    loadSessionBody,
+    /this\.sendProcessingSessionsUpdate\(\)/,
+    'Must send processing state update to webview'
+  );
+  assert.match(
+    loadSessionBody,
+    /finally\s*\{[\s\S]*this\.processingSessionIds\.delete\(sessionId\)/s,
+    'Must remove sessionId from processing state in finally block'
+  );
+  assert.match(
+    loadSessionBody,
+    /finally\s*\{[\s\S]*this\.sendProcessingSessionsUpdate\(\)/s,
+    'Must send processing state update in finally block'
+  );
 });
 
 test('ChatViewProvider.handleStopRequest logic', () => {

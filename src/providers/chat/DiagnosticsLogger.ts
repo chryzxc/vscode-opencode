@@ -11,6 +11,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs/promises";
 import * as os from "os";
+import { createLogger } from "../../utils/Logger";
 
 export class DiagnosticsLogger {
   private renderParityLogWriteChain: Promise<void> = Promise.resolve();
@@ -19,7 +20,7 @@ export class DiagnosticsLogger {
   private readonly promptDebugBySession = new Map<string, Record<string, unknown>>();
 
   constructor(
-    private logger: ReturnType<typeof import("../utils/Logger").createLogger>,
+    private logger: ReturnType<typeof createLogger>,
     private asRecord: (value: unknown) => Record<string, unknown> | undefined,
     private firstNonEmptyString: (...values: unknown[]) => string | undefined,
     private extractMessageBodyText: (message: any) => string,
@@ -94,7 +95,7 @@ export class DiagnosticsLogger {
 
     if (eventType === "server.heartbeat") {
       if (this.shouldVerboseStreamDebug()) {
-        console.log("[ChatViewProvider] stream heartbeat", summary);
+        this.logger.debug("Stream heartbeat", summary);
       }
       return;
     }
@@ -112,7 +113,7 @@ export class DiagnosticsLogger {
       this.appendRenderParityDebugLog("stream", summary);
     }
     if (this.shouldVerboseStreamDebug()) {
-      console.log("[ChatViewProvider] stream event received", summary);
+      this.logger.debug("Stream event received", summary);
       return;
     }
     if (shouldLogInfo) {
@@ -145,26 +146,44 @@ export class DiagnosticsLogger {
     const responseType = this.firstNonEmptyString(
       structured?.responseType,
     )?.toLowerCase();
+
+    // Create a compact, debug-friendly summary
+    const role =
+      this.firstNonEmptyString(message?.role, info?.role) || "unknown";
+    const partCount = Array.isArray(message?.parts) ? message.parts.length : 0;
+    const interactiveCount = Array.isArray(message?.interactiveEvents)
+      ? message.interactiveEvents.length
+      : 0;
+
+    // Build a compact type string showing message type
+    let typeStr = role;
+    if (responseType && responseType !== 'message') {
+      typeStr += `/${responseType}`;
+    }
+    if (interactiveCount > 0) {
+      typeStr += ` [+${interactiveCount} interactive]`;
+    } else if (partCount > 0) {
+      typeStr += ` [+${partCount} parts]`;
+    }
+
     return {
-      index,
-      id,
-      role:
-        this.firstNonEmptyString(message?.role, info?.role) || "unknown",
-      createdAt,
-      responseType,
-      contentLength: content.length,
-      contentPreview: content ? content.slice(0, 160) : undefined,
-      hasPlan: Boolean(this.asRecord(message?.plan)),
-      subagentCount: Array.isArray(message?.subagents)
-        ? message.subagents.length
-        : 0,
-      interactiveCount: Array.isArray(message?.interactiveEvents)
-        ? message.interactiveEvents.length
-        : 0,
-      partCount: Array.isArray(message?.parts) ? message.parts.length : 0,
-      renderable: this.isRenderableHistoryMessage(message),
-      fingerprint: this.historyMessageFingerprint(message),
+      i: index, // Compact: index
+      id: id ? id.slice(-8) : 'no-id', // Compact: last 8 chars of ID
+      type: typeStr, // Compact: role + type info combined
+      len: content.length, // Compact: content length
+      renderable: this.isRenderableHistoryMessage(message) ? '✓' : '✗', // Compact: checkmark
+      preview: content ? content.slice(0, 80) + (content.length > 80 ? '...' : '') : '', // Compact: shorter preview
     };
+  }
+
+  /**
+   * Get a compact one-line string representation for quick log scanning
+   */
+  summarizeRenderMessageCompact(message: any, index: number): string {
+    const summary = this.summarizeRenderMessageForDebug(message, index);
+    const { i, id, type, len, renderable, preview } = summary as any;
+    const previewStr = preview ? `"${preview}"` : '';
+    return `[${i}] ${id} ${type} ${len} chars ${renderable} ${previewStr}`.trim();
   }
 
   /**
@@ -205,30 +224,38 @@ export class DiagnosticsLogger {
       (id) => !processedIds.has(id),
     );
 
+    // Generate compact log lines for easier debugging
+    const rawCompact = rawTail.map((msg, i) =>
+      this.summarizeRenderMessageCompact(msg, rawMessages.length - rawTail.length + i)
+    );
+    const processedCompact = processedTail.map((msg, i) =>
+      this.summarizeRenderMessageCompact(msg, processedMessages.length - processedTail.length + i)
+    );
+
     const summaryContext: Record<string, unknown> = {
       source,
       sessionId,
-      rawCount: rawMessages.length,
-      processedCount: processedMessages.length,
-      droppedCount: rawMessages.length - processedMessages.length,
-      missingProcessedIds: missingProcessedIds.slice(0, 20),
-      rawLast: rawSummary[rawSummary.length - 1],
-      processedLast: processedSummary[processedSummary.length - 1],
+      stats: `${rawMessages.length} raw → ${processedMessages.length} processed (${rawMessages.length - processedMessages.length} dropped)`,
+      missing: missingProcessedIds.length > 0 ? missingProcessedIds.map(id => id.slice(-8)).join(', ') : 'none',
+      rawTail: rawCompact,
+      processedTail: processedCompact,
     };
+
     this.appendRenderParityDebugLog("history", {
       ...summaryContext,
-      rawTail: rawSummary,
-      processedTail: processedSummary,
+      rawTailVerbose: rawSummary,
+      processedTailVerbose: processedSummary,
     });
-    this.logger.info("Render parity history snapshot", summaryContext);
+
+    this.logger.info("History render parity", summaryContext);
 
     if (this.shouldVerboseStreamDebug()) {
-      this.logger.debug("Render parity history raw tail", {
+      this.logger.debug("History raw tail (verbose)", {
         source,
         sessionId,
         items: rawSummary,
       });
-      this.logger.debug("Render parity history processed tail", {
+      this.logger.debug("History processed tail (verbose)", {
         source,
         sessionId,
         items: processedSummary,
@@ -255,7 +282,7 @@ export class DiagnosticsLogger {
     const messageId = this.firstNonEmptyString(info?.id, responseData.id);
     const parts = Array.isArray(responseData.parts) ? responseData.parts : [];
 
-    console.log("[ChatViewProvider] Final response diagnostics", {
+    this.logger.debug("Final response diagnostics", {
       sessionId,
       messageId,
       partCount: parts.length,
@@ -279,7 +306,7 @@ export class DiagnosticsLogger {
         partRec.reasoning,
         partRec.message,
       );
-      console.log("[ChatViewProvider] Final response part", {
+      this.logger.debug("Final response part", {
         sessionId,
         messageId,
         index,
@@ -460,13 +487,10 @@ export class DiagnosticsLogger {
           }
         } catch (error) {
           if (this.shouldVerboseStreamDebug()) {
-            console.warn(
-              "[ChatViewProvider] Failed to append render parity debug log",
-              {
-                filePath,
-                error: error instanceof Error ? error.message : String(error),
-              },
-            );
+            this.logger.warn("Failed to append render parity debug log", {
+              filePath,
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
         }
       });
@@ -517,10 +541,10 @@ export class DiagnosticsLogger {
       useStructuredOutput,
       prompt: requestRecord.prompt,
     });
-    console.log(
-      "[ChatViewProvider][AI_DEBUG][request]",
-      JSON.stringify(requestRecord, null, 2),
-    );
+    this.logger.debug("AI DEBUG request payload", {
+      sessionId,
+      useStructuredOutput,
+    });
     await this.persistAiDebugSnapshot({
       phase: "request",
       ...requestRecord,
@@ -561,10 +585,13 @@ export class DiagnosticsLogger {
       hasData: responseRecord.hasData,
       hasError: responseRecord.hasError,
     });
-    console.log(
-      "[ChatViewProvider][AI_DEBUG][response]",
-      JSON.stringify(combined, null, 2),
-    );
+    this.logger.debug("AI DEBUG response payload", {
+      sessionId,
+      useStructuredOutput,
+      status: responseRecord.status,
+      hasData: responseRecord.hasData,
+      hasError: responseRecord.hasError,
+    });
     await this.persistAiDebugSnapshot(combined);
     this.promptDebugBySession.delete(sessionId);
   }

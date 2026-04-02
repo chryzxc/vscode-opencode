@@ -45,3 +45,26 @@ export function formatDuration(ms: number): string {
   const s = Math.floor((ms % 60_000) / 1000);
   return `${m}m ${s}s`;
 }
+
+/**
+ * Extracts the filename from a file path, handling both Unix and Windows path separators.
+ * This is type-safe and works with relative, absolute, and UNC paths.
+ *
+ * @param filePath - The file path to extract the filename from
+ * @returns The filename (basename) of the file, or the original path if no separator is found
+ *
+ * @example
+ * ```ts
+ * getFilename('/path/to/file.md') // 'file.md'
+ * getFilename('C:\\path\\to\\file.md') // 'file.md'
+ * getFilename('./relative/path.ts') // 'path.ts'
+ * getFilename('simple-file.txt') // 'simple-file.txt'
+ * ```
+ */
+export function getFilename(filePath: string): string {
+  if (!filePath) return '';
+  // Split by both forward slash and backslash to handle Unix and Windows paths
+  const segments = filePath.split(/[/\\]/);
+  // Get the last segment (filename)
+  return segments[segments.length - 1] || filePath;
+}

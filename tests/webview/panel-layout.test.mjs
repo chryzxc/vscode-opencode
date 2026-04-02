@@ -48,3 +48,45 @@ test('thinking, model, and agent controls post selection events and expose commo
   assert.match(modelBody, /vscode\.postMessage\(\{[\s\S]*type:\s*["']selectModel["']/, 'model dropdown should post selectModel when a model is picked');
   assert.match(agentBody, /vscode\.postMessage\(\{\s*type:\s*["']selectAgent["'],\s*agent:\s*agent\.id\s*\}\)/, 'agent dropdown should post selectAgent when an agent is picked');
 });
+
+test('history sidebar shows loading state when switching sessions', () => {
+  // Verify that conversation items show a loading spinner during session switches
+  const historyBody = extractFunctionBody(panelSource, 'export function HistorySidebar()');
+
+  assert.match(
+    historyBody,
+    /processingSessionIds/s,
+    'HistorySidebar should access processingSessionIds from app state'
+  );
+  assert.match(
+    historyBody,
+    /isProcessing\s*=\s*processingSessionIds\?\.includes\(session\.id\)/s,
+    'HistorySidebar should check if session is in processing state'
+  );
+  assert.match(
+    historyBody,
+    /isProcessing\s*\?[\s\S]*Loader2[\s\S]*animate-spin/s,
+    'HistorySidebar should show Loader2 spinner when session is processing'
+  );
+});
+
+test('conversation area shows full-page loading state when switching sessions', () => {
+  // Verify that the main conversation area shows a loading spinner during session switches
+  const chatContentBody = extractFunctionBody(chatShellSource, 'function ChatContent()');
+
+  assert.match(
+    chatContentBody,
+    /isSwitchingSession.*state\.switchingSessionId.*state\.currentSessionId/s,
+    'ChatContent should detect when current session is being switched'
+  );
+  assert.match(
+    chatContentBody,
+    /isSwitchingSession\s*\?[\s\S]*flex h-full items-center justify-center[\s\S]*Loader2[\s\S]*Loading conversation/s,
+    'ChatContent should show centered loading spinner when switching sessions'
+  );
+  assert.match(
+    chatContentBody,
+    /state\.messages\.length\s*>\s*0/s,
+    'Loading state should only activate when there are existing messages'
+  );
+});

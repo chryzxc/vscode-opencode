@@ -24,7 +24,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
-import { cn } from "@/utils";
+import { cn, getFilename } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ImagePreviewModal } from "./ImagePreviewModal";
@@ -313,6 +313,12 @@ function isLowValueInteractiveBodyText(value: string): boolean {
     normalized === "question" ||
     normalized === "question for you" ||
     normalized === "quick input" ||
+    normalized === "wants" ||
+    normalized === "want" ||
+    normalized === "wants to" ||
+    normalized === "ask" ||
+    normalized === "asks" ||
+    normalized === "asking" ||
     normalized === "awaiting your answer" ||
     normalized === "awaiting your response" ||
     normalized === "waiting for your answer" ||
@@ -2655,10 +2661,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </span>
                         )}
                       </div>
-                      {plan.file && (
+                      {plan.file ? (
                         <div className="flex items-center gap-1.5 text-[11px] font-mono text-oc-text-muted">
                           <FileIcon filePath={plan.file} />
-                          <span className="truncate">{plan.file}</span>
+                          <span className="truncate" title={plan.file}>{plan.file}</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 text-[11px] font-mono text-oc-text-muted/50 italic">
+                          (no file)
                         </div>
                       )}
                     </div>

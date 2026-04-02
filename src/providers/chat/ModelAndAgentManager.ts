@@ -188,7 +188,9 @@ export class ModelAndAgentManager {
         }
 
         if (models.length > 0) {
-          console.log(`Discovered ${models.length} total models across all providers`);
+          this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, "Discovered models across all providers", {
+            count: models.length,
+          });
           this.availableModels = models;
           await this.resolveDefaultModel(models);
 
@@ -232,7 +234,7 @@ export class ModelAndAgentManager {
           error: String(error),
         });
 
-        console.error("Failed to get models:", error);
+        this.logger.error(LoggingCategories.MODEL_AGENT_MANAGER, "Failed to get models", {}, error as Error);
       }
 
       const cachedModels = Array.isArray(this.availableModels) ? this.availableModels : [];
@@ -240,9 +242,11 @@ export class ModelAndAgentManager {
       this.availableModels = fallbackModels;
 
       if (fallbackModels.length === 0) {
-        console.warn("[ModelAndAgentManager] No provider models discovered");
+        this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "No provider models discovered");
       } else {
-        console.warn(`[ModelAndAgentManager] Using ${fallbackModels.length} fallback model(s)`);
+        this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Using fallback models", {
+          count: fallbackModels.length,
+        });
       }
 
       this.postMessage({
@@ -319,9 +323,10 @@ export class ModelAndAgentManager {
       !this.selectedModel.providerID ||
       this.selectedModel.providerID === "opencode";
     if (!isLegacyGenericProvider) {
-      console.warn(
-        `[ModelAndAgentManager] Persisted model ${this.selectedModel.providerID}/${this.selectedModel.modelID} not found in provider catalog`,
-      );
+      this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Persisted model not found in provider catalog", {
+        providerId: this.selectedModel.providerID,
+        modelId: this.selectedModel.modelID,
+      });
       return;
     }
 
@@ -334,16 +339,18 @@ export class ModelAndAgentManager {
         providerName: match.providerName || match.providerID,
       };
       await this.globalState.update("selectedModel", this.selectedModel);
-      console.log(
-        `[ModelAndAgentManager] Reconciled legacy model selection to ${this.selectedModel.providerID}/${this.selectedModel.modelID}`,
-      );
+      this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, "Reconciled legacy model selection", {
+        providerId: this.selectedModel.providerID,
+        modelId: this.selectedModel.modelID,
+      });
       return;
     }
 
     if (candidates.length > 1) {
-      console.warn(
-        `[ModelAndAgentManager] Ambiguous modelID '${this.selectedModel.modelID}' across multiple providers`,
-      );
+      this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Ambiguous modelID across multiple providers", {
+        modelId: this.selectedModel.modelID,
+        candidateCount: candidates.length,
+      });
     }
   }
 
@@ -380,7 +387,9 @@ export class ModelAndAgentManager {
       const defaultId = stdout.trim();
 
       if (defaultId) {
-        console.log(`[ModelAndAgentManager] Found CLI default model: ${defaultId}`);
+        this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, "Found CLI default model", {
+          defaultId,
+        });
         const providerModelMatch = defaultId.match(/^([^/:\s]+)[/:](.+)$/);
         let match: ChatModelOption | undefined;
 
@@ -408,17 +417,20 @@ export class ModelAndAgentManager {
             providerName: match.providerName || match.providerID,
           };
           await this.globalState.update("selectedModel", this.selectedModel);
-          console.log(
-            `[ModelAndAgentManager] Synced default model to: ${match.modelID} (${match.providerID})`,
-          );
+          this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, "Synced default model from CLI", {
+            modelId: match.modelID,
+            providerId: match.providerID,
+          });
         } else {
-          console.warn(
-            `[ModelAndAgentManager] Could not uniquely resolve CLI default model '${defaultId}'`,
-          );
+          this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Could not uniquely resolve CLI default model", {
+            defaultId,
+          });
         }
       }
     } catch (error) {
-      console.warn("[ModelAndAgentManager] Failed to resolve default model from CLI:", error);
+      this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Failed to resolve default model from CLI", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -534,9 +546,11 @@ export class ModelAndAgentManager {
           this.selectedAgent = agents[0].id;
         }
 
-        console.log(
-          `[ModelAndAgentManager] Fetched ${sdkAgents.length} agent(s) via SDK; merged to ${agents.length} total (including built-ins)`,
-        );
+        this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, "Fetched agents via SDK", {
+          sdkAgentCount: sdkAgents.length,
+          totalAgentCount: agents.length,
+          builtinAgentCount: BUILTIN_AGENTS.length,
+        });
 
         this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, 'Agents fetched successfully', {
           correlationId,
@@ -719,11 +733,18 @@ export class ModelAndAgentManager {
     const settings = this.getSessionSettings(sessionId);
     if (settings.agent) {
       this.selectedAgent = settings.agent;
-      console.log(`[ModelAndAgentManager] Restored agent '${settings.agent}' for session ${sessionId}`);
+      this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, "Restored agent for session", {
+        sessionId,
+        agent: settings.agent,
+      });
     }
     if (settings.model?.providerID && settings.model?.modelID) {
       this.selectedModel = settings.model;
-      console.log(`[ModelAndAgentManager] Restored model '${settings.model.modelID}' for session ${sessionId}`);
+      this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, "Restored model for session", {
+        sessionId,
+        modelId: settings.model.modelID,
+        providerId: settings.model.providerID,
+      });
     }
   }
 

@@ -432,6 +432,30 @@ test('SubagentTracker implements reasoning text sanitization', () => {
   );
 });
 
+test('SubagentTracker implements activity label sanitization for subagent UI text', () => {
+  assert.match(
+    trackerSource,
+    /function\s+sanitizeActivityLabel\(/,
+    'Should define sanitizeActivityLabel function'
+  );
+
+  const sanitizeActivityBody = extractFunctionBody(
+    trackerSource,
+    'function sanitizeActivityLabel('
+  );
+
+  assert.match(
+    sanitizeActivityBody,
+    /isOpaqueIdLike\(/,
+    'sanitizeActivityLabel should filter opaque IDs'
+  );
+  assert.match(
+    sanitizeActivityBody,
+    /replace\(/,
+    'sanitizeActivityLabel should normalize whitespace'
+  );
+});
+
 test('SubagentTracker implements progress status normalization', () => {
   assert.match(
     trackerSource,
@@ -487,6 +511,70 @@ test('SubagentTracker implements event clamping', () => {
     clampEventsBody,
     /events\.slice\(events\.length\s*-\s*max\)/,
     'clampEvents should slice to keep most recent events'
+  );
+});
+
+test('SubagentTracker deduplicates noisy timeline events', () => {
+  const pushTimelineBody = extractFunctionBody(
+    trackerSource,
+    'private pushTimeline('
+  );
+
+  assert.match(
+    pushTimelineBody,
+    /sanitizeActivityLabel\(/,
+    'pushTimeline should sanitize labels before appending'
+  );
+  assert.match(
+    pushTimelineBody,
+    /previous\.type === normalizedEvent\.type[\s\S]*previous\.label === normalizedEvent\.label/s,
+    'pushTimeline should collapse repeated timeline events with same type/label'
+  );
+});
+
+test('SubagentTracker merges progress events by callID and avoids duplicate rows', () => {
+  const pushProgressBody = extractFunctionBody(
+    trackerSource,
+    'private pushProgress('
+  );
+
+  assert.match(
+    pushProgressBody,
+    /normalizedEvent\.callID/,
+    'pushProgress should consider callID for merging tool progress updates'
+  );
+  assert.match(
+    pushProgressBody,
+    /detail\.progressEvents\.findIndex\(/,
+    'pushProgress should merge existing progress entries that share callID'
+  );
+  assert.match(
+    pushProgressBody,
+    /entry\.callID === normalizedEvent\.callID/,
+    'pushProgress should match progress rows by callID'
+  );
+  assert.match(
+    pushProgressBody,
+    /previous\.title === normalizedEvent\.title[\s\S]*previous\.status === normalizedEvent\.status/s,
+    'pushProgress should skip consecutive duplicate progress events'
+  );
+});
+
+test('SubagentTracker suppresses low-signal text timeline spam', () => {
+  const handlePartBody = extractFunctionBody(
+    trackerSource,
+    'private handleMessagePartUpdated('
+  );
+
+  assert.match(
+    handlePartBody,
+    /partType === "text"/,
+    'handleMessagePartUpdated should treat text parts specially'
+  );
+  assert.match(
+    handlePartBody,
+    /!\(partType === "text" && !progress && !thinkingText\.trim\(\)\)/,
+    'text-only deltas without progress/thinking should not create timeline entries'
   );
 });
 

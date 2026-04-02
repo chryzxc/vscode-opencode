@@ -156,6 +156,14 @@ function sanitizeReasoningText(value: string): string {
   return value;
 }
 
+function sanitizeActivityLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || isOpaqueIdLike(trimmed)) {
+    return "";
+  }
+  return trimmed.replace(/\s+/g, " ");
+}
+
 function normalizeProgressStatus(value: unknown): "pending" | "done" | "error" {
   const status = asString(value).toLowerCase();
   if (
@@ -714,8 +722,28 @@ export class SubagentTracker {
     detail: SubagentDetail,
     event: SubagentTimelineEvent,
   ): void {
+    const label = sanitizeActivityLabel(event.label);
+    if (!label) {
+      return;
+    }
+    const normalizedEvent: SubagentTimelineEvent = {
+      ...event,
+      label,
+    };
+    const previous = detail.timelineEvents[detail.timelineEvents.length - 1];
+    if (
+      previous &&
+      previous.type === normalizedEvent.type &&
+      previous.label === normalizedEvent.label
+    ) {
+      previous.createdAt = Math.max(previous.createdAt, normalizedEvent.createdAt);
+      previous.messageID = normalizedEvent.messageID || previous.messageID;
+      previous.partID = normalizedEvent.partID || previous.partID;
+      previous.callID = normalizedEvent.callID || previous.callID;
+      return;
+    }
     detail.timelineEvents = clampEvents(
-      [...detail.timelineEvents, event],
+      [...detail.timelineEvents, normalizedEvent],
       MAX_TIMELINE_EVENTS,
     );
   }
@@ -734,8 +762,51 @@ export class SubagentTracker {
     detail: SubagentDetail,
     event: SubagentProgressEvent,
   ): void {
+    const title = sanitizeActivityLabel(event.title);
+    if (!title) {
+      return;
+    }
+    const normalizedEvent: SubagentProgressEvent = {
+      ...event,
+      title,
+      meta: sanitizeActivityLabel(event.meta || "") || undefined,
+    };
+    if (normalizedEvent.callID) {
+      const existingIndex = detail.progressEvents.findIndex(
+        (entry) => entry.callID === normalizedEvent.callID,
+      );
+      if (existingIndex >= 0) {
+        const existing = detail.progressEvents[existingIndex];
+        detail.progressEvents[existingIndex] = {
+          ...existing,
+          ...normalizedEvent,
+          id: existing.id || normalizedEvent.id,
+          createdAt: Math.max(existing.createdAt, normalizedEvent.createdAt),
+          status:
+            normalizedEvent.status === "error"
+              ? "error"
+              : normalizedEvent.status === "done" || existing.status === "done"
+                ? "done"
+                : "pending",
+          title: normalizedEvent.title || existing.title,
+          meta: normalizedEvent.meta || existing.meta,
+          filePath: normalizedEvent.filePath || existing.filePath,
+        };
+        return;
+      }
+    }
+    const previous = detail.progressEvents[detail.progressEvents.length - 1];
+    if (
+      previous &&
+      previous.title === normalizedEvent.title &&
+      previous.status === normalizedEvent.status &&
+      previous.filePath === normalizedEvent.filePath &&
+      previous.meta === normalizedEvent.meta
+    ) {
+      return;
+    }
     detail.progressEvents = clampEvents(
-      [...detail.progressEvents, event],
+      [...detail.progressEvents, normalizedEvent],
       MAX_PROGRESS_EVENTS,
     );
   }
@@ -876,22 +947,25 @@ export class SubagentTracker {
       detail.latestActivity = progress.title;
     }
 
-    const eventLabel =
-      progress?.title || thinkingText.trim() || `${partType || "part"} updated`;
-    this.pushTimeline(detail, {
-      key: this.makeTimelineKey(
-        partType || "part",
-        messageId,
-        partId,
+    const eventLabel = sanitizeActivityLabel(
+      progress?.title || thinkingText.trim() || `${partType || "part"} updated`,
+    );
+    if (eventLabel && !(partType === "text" && !progress && !thinkingText.trim())) {
+      this.pushTimeline(detail, {
+        key: this.makeTimelineKey(
+          partType || "part",
+          messageId,
+          partId,
+          createdAt,
+        ),
+        type: partType || "part",
+        label: eventLabel,
         createdAt,
-      ),
-      type: partType || "part",
-      label: eventLabel,
-      createdAt,
-      messageID: messageId,
-      partID: partId,
-      callID: asString(part.callID) || undefined,
-    });
+        messageID: messageId,
+        partID: partId,
+        callID: asString(part.callID) || undefined,
+      });
+    }
     this.addReference(detail, {
       messageID: messageId,
       partID: partId,
@@ -1288,9 +1362,13 @@ export class SubagentTracker {
 
     const delta = asString(properties.delta);
     if (partType && delta) {
+      const deltaLabel = sanitizeActivityLabel(delta);
+      if (!deltaLabel) {
+        return null;
+      }
       return {
         id: `${asString(part.id) || partType}:${createdAt}`,
-        title: `${partType}: ${delta}`,
+        title: `${partType}: ${deltaLabel}`,
         status: "pending",
         createdAt,
         callID,

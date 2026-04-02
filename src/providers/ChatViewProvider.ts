@@ -94,294 +94,64 @@
  * @see webview/shared/src/chat/index.tsx for frontend implementation
  */
 
-import * as vscode from "vscode";
-import * as path from "path";
-import * as os from "os";
+import type { SessionPromptData } from "@opencode-ai/sdk" with { "resolution-mode": "import" };
 import * as cp from "child_process";
-import * as fs from "fs/promises";
+import * as path from "path";
+import * as vscode from "vscode";
 import {
-  FileThemeProcessor,
   CssGenerator,
+  FileThemeProcessor,
   FileThemeProcessorObserver,
   FileThemeProcessorState,
 } from "vscode-file-theme-processor";
-import { OpencodeServerManager } from "../services/OpencodeServerManager";
-import { SessionService } from "../services/SessionService";
-import { TitleGeneratorService } from "../services/TitleGeneratorService";
-import { SkillManagerService } from "../services/SkillManagerService";
+import type { TokenUsage } from "../services/GeminiTokenUsageTracker";
+import { GeminiTokenUsageTracker } from "../services/GeminiTokenUsageTracker";
 import { MessageStreamService } from "../services/MessageStreamService";
-import type { Command as SdkCommand, SessionPromptData } from "@opencode-ai/sdk";
+import { ModelCapabilitiesService } from "../services/ModelCapabilitiesService";
+import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { QuotaService } from "../services/QuotaService";
 import { RequestBudgeter } from "../services/RequestBudgeter";
-import { ConfigFilesProvider } from "./ConfigFilesProvider";
-import type { ConfigFile } from "./ConfigFilesProvider";
+import { SessionService } from "../services/SessionService";
+import { SkillManagerService } from "../services/SkillManagerService";
 import {
   SubagentTracker,
   type SubagentUpdatePayload,
 } from "../services/SubagentTracker";
-import { GeminiTokenUsageTracker } from "../services/GeminiTokenUsageTracker";
-import type { TokenUsage } from "../services/GeminiTokenUsageTracker";
-import { PlanViewProvider } from "./PlanViewProvider";
-import { PlanParser } from "../services/PlanParser";
-import {
-  structuredOutputSchema,
-  StructuredResponseType as StructuredResponseTypeDefinition,
-} from "../shared/structuredOutputSchema";
-import {
-  sanitizeStructuredOutput,
-  validateStructuredOutput,
-} from "../shared/structuredOutputValidator";
+import { TitleGeneratorService } from "../services/TitleGeneratorService";
 import { createLogger } from "../utils/Logger";
-import { ModelCapabilitiesService } from "../services/ModelCapabilitiesService";
+import { LoggingCategories } from "../utils/LoggingSchema";
 import {
-  DiagnosticsLogger,
-  StructuredOutputProcessor,
-  PlanManager,
-  SubagentPersistence,
   CompactionManager,
+  DiagnosticsLogger,
   HistoryProcessor,
   ModelAndAgentManager,
+  PlanManager,
   QueueManager,
   SessionHandler,
   StreamEventHandler,
-  type QueuedPrompt,
-  type PromptDispatchMode,
-  type SessionSettings,
+  StructuredOutputProcessor,
+  SubagentPersistence,
+  type AssistantHistoryMarker,
   type ChatModelOption,
   type ChatSlashCommand,
-  type PersistedCompactionViewState,
-  type CompactionBaselineStats,
-  type StructuredAssistantOutput,
+  type PlanProceedComment,
+  type PromptDispatchMode,
+  type QueuedPrompt,
+  type RecoveredSessionContext,
+  type StructuredAssistantOutput
 } from "./chat/index";
+import type { ConfigFile } from "./ConfigFilesProvider";
+import { ConfigFilesProvider } from "./ConfigFilesProvider";
+import { PlanViewProvider } from "./PlanViewProvider";
 
 const log = createLogger("ChatViewProvider");
-type QueuedPrompt = {
-  id: string;
-  sessionId: string;
-  createdAt: number;
-  text: string;
-  userFacingText?: string;
-  files?: string[];
-  contexts?: {
-    file: string;
-    lineInfo: string;
-    content: string;
-    languageId: string;
-  }[];
-  images?: {
-    dataUrl: string;
-    filename?: string;
-  }[];
-  agent?: string;
-};
 
-type PromptDispatchMode = "queue" | "steer" | "send-now";
-
-type PlanProceedComment = {
-  id: string;
-  anchor: {
-    startLine: number;
-    endLine: number;
-    selectedText: string;
-    surroundingText?: string;
-  };
-  text: string;
-  createdAt: number;
-};
-
-type SessionSettings = {
-  agent?: string;
-  model?: { providerID: string; modelID: string; providerName?: string };
-  thinkingLevel?: string;
-};
-
-type RecoveredSessionContext = {
-  previousSessionId: string;
-  transcript: string;
-};
-
-type StructuredResponseType = StructuredResponseTypeDefinition;
-
-type ChatSlashCommand = {
-  name: string;
-  description?: string;
-  agent?: string;
-  model?: string;
-  template?: string;
-  source?: string;
-  subtask?: boolean;
-};
-
-type ChatModelOption = {
-  providerID: string;
-  modelID: string;
-  name: string;
-  providerName: string;
-  contextLimit?: number;
-};
-
-type CompactionBaselineStats = {
-  input: number;
-  output: number;
-  read: number;
-  write: number;
-  duration: number;
-};
-
-type PersistedCompactionViewState = {
-  lastCompactedAt?: number;
-  baselineStats?: CompactionBaselineStats;
-  compactionDividerIndex?: number;
-  compactionDividerBeforeMessageId?: string;
-  compactionDividerAfterMessageId?: string;
-  collapsed?: boolean;
-};
-
-type StructuredProgressUpdate = {
-  title: string;
-  status?: "pending" | "done" | "error";
-  meta?: string;
-  filePath?: string;
-};
-
-type AssistantHistoryMarker = {
-  id?: string;
-  fingerprint?: string;
-  createdAt?: number;
-  richness: number;
-};
-
-type StructuredInteractiveChoice = {
-  id?: string;
-  label: string;
-  value?: string;
-  description?: string;
-};
-
-type StructuredInteractiveEvent =
-  | {
-    type: "question";
-    id?: string;
-    title?: string;
-    question: string;
-    options: StructuredInteractiveChoice[];
-    multiSelect?: boolean;
-    allowCustomInput?: boolean;
-  }
-  | {
-    type: "confirm";
-    id?: string;
-    title?: string;
-    question: string;
-    confirmLabel?: string;
-    cancelLabel?: string;
-  }
-  | {
-    type: "quick_actions";
-    id?: string;
-    title?: string;
-    actions: StructuredInteractiveChoice[];
-  }
-  | {
-    type: "message";
-    id?: string;
-    title?: string;
-    message: string;
-    dismissLabel?: string;
-  };
-
-type StructuredAssistantOutput = {
-  responseType?: StructuredResponseType | string;
-  message?: string;
-  reasoning?: string[];
-  progressUpdates?: StructuredProgressUpdate[];
-  interactiveEvents?: StructuredInteractiveEvent[];
-  subagents?: Array<{
-    id: string;
-    name: string;
-    status?: string;
-    progress?: number;
-    description?: string;
-    latestActivity?: string;
-    childSessionId?: string;
-    parentSessionId?: string;
-    parentMessageId?: string;
-    timelineEvents?: Array<{
-      key?: string;
-      type?: string;
-      label?: string;
-      createdAt?: number;
-      messageID?: string;
-      partID?: string;
-      callID?: string;
-    }>;
-    progressEvents?: Array<{
-      id?: string;
-      title?: string;
-      status?: string;
-      meta?: string;
-      filePath?: string;
-      createdAt?: number;
-      messageID?: string;
-      partID?: string;
-      callID?: string;
-    }>;
-    thinkingEvents?: Array<{
-      id?: string;
-      text?: string;
-      createdAt?: number;
-      messageID?: string;
-      partID?: string;
-    }>;
-  }>;
-  subagentsDelta?: {
-    parentMessageId?: string;
-    items: Array<{
-      id: string;
-      name?: string;
-      status?: string;
-      progress?: number;
-      description?: string;
-      latestActivity?: string;
-      childSessionId?: string;
-      parentSessionId?: string;
-      parentMessageId?: string;
-    }>;
-  };
-  plan?: {
-    file?: string;
-    content?: string;
-    title?: string;
-    summary?: string;
-    files?: any[]; // To match ImplementationPlan structure
-    fileCount?: number;
-  };
-  question?: {
-    type?: string;
-    id?: string;
-    title?: string;
-    question?: string;
-    multiSelect?: boolean;
-    allowCustomInput?: boolean;
-    options?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
-    actions?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
-    confirmLabel?: string;
-    cancelLabel?: string;
-    dismissLabel?: string;
-    message?: string;
-    content?: string;
-  };
-};
-
-const STRUCTURED_RESPONSE_TYPES = new Set(
-  (
-    (
-      structuredOutputSchema.schema.properties as {
-        responseType?: { enum?: string[] };
-      }
-    ).responseType?.enum ?? []
-  ).map((value) => value.toLowerCase()),
-);
+// All types (QueuedPrompt, PromptDispatchMode, SessionSettings, ChatModelOption,
+// ChatSlashCommand, PersistedCompactionViewState, CompactionBaselineStats,
+// StructuredProgressUpdate, AssistantHistoryMarker, StructuredInteractiveChoice,
+// StructuredInteractiveEvent, StructuredAssistantOutput, PlanProceedComment,
+// RecoveredSessionContext) and constants (STRUCTURED_RESPONSE_TYPES) are now
+// imported from ./chat/index
 
 /**
  * Provides the chat interface webview for the OpenCode extension.
@@ -471,10 +241,14 @@ export class ChatViewProvider
   /** Currently selected agent (primary agent used for new sessions) */
   private selectedAgent: string = "build";
 
+  /** Current chat mode (e.g., 'chat', 'agent', etc.) */
+  private currentMode: string = "chat";
+
   /** ID of the session currently active in the webview (undefined until first bootstrap) */
   private currentSessionId: string | undefined;
   private currentTodoItems: unknown[] = [];
   private awaitingInteractiveAnswer = false;
+  private interactiveResponseTransitionUntil = 0;
 
   private getTodoStorageKey(sessionId: string): string {
     return `opencode.session.todos.${sessionId}`;
@@ -796,9 +570,19 @@ export class ChatViewProvider
       return;
     }
 
+    const sessionId = await this.resolveQueueSessionId(payload.sessionId);
+    if (!sessionId) {
+      return;
+    }
+
+    const effectiveMode =
+      mode === "send-now" && this.processingSessionIds.has(sessionId)
+        ? "steer"
+        : mode;
+
     // For normal sends, bypass queue persistence entirely so the queue panel
     // does not show transient "queued" items when there is no active backlog.
-    if (mode === "send-now") {
+    if (effectiveMode === "send-now") {
       await this.handleSendMessage(
         text,
         payload.files,
@@ -814,15 +598,35 @@ export class ChatViewProvider
       return;
     }
 
-    // QueueManager doesn't support userFacingText, so we'll omit it from the call
-    await this.queueManager.schedulePromptDispatch(mode, {
-      sessionId: payload.sessionId,
+    const promptId = `q-${Date.now()}-${this.queueItemSequence}`;
+    this.queueItemSequence += 1;
+    const prompt: QueuedPrompt = {
+      id: promptId,
+      sessionId,
+      createdAt: Date.now(),
       text,
+      userFacingText: payload.userFacingText,
       files: payload.files,
       contexts: payload.contexts,
       images: payload.images,
       agent: payload.agent,
-    });
+    };
+
+    this.queueManager.enqueuePrompt(prompt, effectiveMode !== "queue");
+    this.sendQueueUpdate(sessionId);
+
+    if (effectiveMode === "queue") {
+      return;
+    }
+
+    if (this.isProcessingRequest) {
+      if (sessionId === this.currentSessionId) {
+        await this.handleStopRequest(sessionId);
+      }
+      return;
+    }
+
+    await this.handleExecuteQueue(sessionId);
   }
 
   private async handleDispatchQueuedItem(
@@ -911,30 +715,128 @@ export class ChatViewProvider
       return;
     }
 
-    const rawMessages = await this.sessionService.getMessages(sessionId);
-    const messages = Array.isArray(rawMessages)
-      ? await this.processHistoryMessages(rawMessages, sessionId)
-      : [];
+    // Add to processing state to show loading indicator in UI
+    this.processingSessionIds.add(sessionId);
+    this.sendProcessingSessionsUpdate();
 
-    const subagentSnapshotPayload =
-      await this.subagentPersistence.syncSubagentSnapshotForSession(
+    try {
+      // CRITICAL: Switch the active session in SessionService
+      // This updates the service's internal state and persists it
+      await this.sessionService.switchSession(sessionId);
+      this.currentSessionId = sessionId;
+      this.subagentTracker.setActiveSession(sessionId);
+      // Clear in-memory todo cache to avoid cross-session leakage
+      this.clearSessionTodos(sessionId);
+
+      // Restore per-session agent / model / thinking selections
+      await this.modelAndAgentManager.applySessionSettings(sessionId);
+
+      // Notify the webview of the restored selections for this session
+      this.view?.webview.postMessage({
+        type: "initState",
+        serverStatus: this.serverManager.getStatus(),
+        selectedModel: this.modelAndAgentManager.getSelectedModel(),
+        selectedAgent: this.modelAndAgentManager.getSelectedAgent(),
+        serverVersion: this.serverManager.getVersion(),
+        currentSessionId: this.currentSessionId,
+        todoItems: this.loadPersistedTodos(this.currentSessionId).items,
+      });
+
+      const sessionThinkingLevel =
+        this.modelAndAgentManager.getSessionSettings(sessionId).thinkingLevel ??
+        this.context.globalState.get<string>("thinkingLevel");
+      if (sessionThinkingLevel) {
+        this.view?.webview.postMessage({
+          type: "thinkingLevelUpdate",
+          level: sessionThinkingLevel,
+        });
+      }
+
+      // Fire-and-forget: fetch and broadcast current model capabilities on session load
+      void this.modelCapabilitiesService
+        .getCapabilities(
+          this.modelAndAgentManager.getSelectedModel()?.providerID ?? "",
+          this.modelAndAgentManager.getSelectedModel()?.modelID ?? "",
+        )
+        .then((capability) => {
+          this.view?.webview.postMessage({
+            type: "modelCapabilityUpdate",
+            capability: capability ?? null,
+          });
+        })
+        .catch(() => {
+          // Minimal failure tracking for session-load capability fetches
+          try {
+            this.capabilityFetchFailureCount = (this.capabilityFetchFailureCount || 0) + 1;
+            if (this.capabilityFetchFailureCount >= 3) {
+              vscode.window.showWarningMessage(
+                "Could not fetch model capabilities. Thinking level control may be unavailable.",
+              );
+              this.capabilityFetchFailureCount = 0;
+            }
+          } catch (_) {
+            // best-effort only
+          }
+        });
+
+      // Reload history for the new session
+      const rawMessages = await this.sessionService.getMessages(sessionId);
+
+      this.logger.info('[handleLoadSession] Fetched raw messages', {
         sessionId,
-        messages,
-      );
-    await this.compactionManager.sendPersistedCompactionViewState(sessionId);
-    await this.modelAndAgentManager.applySessionSettings(sessionId);
+        rawCount: rawMessages?.length || 0,
+        isRawMessagesArray: Array.isArray(rawMessages)
+      });
 
-    this.view?.webview.postMessage({
-      type: "chatHistory",
-      sessionId,
-      messages,
-    });
-    this.view?.webview.postMessage({
-      type: "subagentSnapshot",
-      ...subagentSnapshotPayload,
-    });
+      const messages = Array.isArray(rawMessages)
+        ? await this.processHistoryMessages(rawMessages, sessionId)
+        : [];
 
-    this.currentSessionId = sessionId;
+      this.logger.info('[handleLoadSession] Processed messages', {
+        sessionId,
+        processedCount: messages.length,
+        willSendToWebview: true
+      });
+
+      const subagentSnapshotPayload =
+        await this.subagentPersistence.syncSubagentSnapshotForSession(
+          sessionId,
+          messages,
+        );
+      await this.compactionManager.sendPersistedCompactionViewState(sessionId);
+
+      // DEBUG: Log messages before sending to webview
+      const planMessages = messages.filter((m: any) => m?.plan);
+      console.log('🔍 [ChatViewProvider] Sending messages to webview:', {
+        totalMessages: messages.length,
+        planMessagesCount: planMessages.length,
+        samplePlanMessage: planMessages[0] ? {
+          hasPlan: !!planMessages[0].plan,
+          planKeys: planMessages[0].plan ? Object.keys(planMessages[0].plan) : [],
+          planFile: planMessages[0].plan?.file,
+          planValue: planMessages[0].plan
+        } : null
+      });
+
+      this.view?.webview.postMessage({
+        type: "chatHistory",
+        sessionId: sessionId,
+        messages: messages,
+      });
+      this.view?.webview.postMessage({
+        type: "subagentSnapshot",
+        ...subagentSnapshotPayload,
+      });
+
+      // Update the list selection
+      await this.handleGetSessions();
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to load session: ${error}`);
+    } finally {
+      // Remove from processing state regardless of success or error
+      this.processingSessionIds.delete(sessionId);
+      this.sendProcessingSessionsUpdate();
+    }
   }
 
   /**
@@ -999,8 +901,28 @@ export class ChatViewProvider
    * Fetches available skills and converts them to slash commands
    */
   private async handleGetCommands(): Promise<void> {
+    this.logger.info('[handleGetCommands] Starting to fetch skills');
+
     try {
+      // CRITICAL: Ensure skillManager is initialized before listing skills
+      // The initialize() call in the constructor is fire-and-forget, so we need to ensure it completes
+      try {
+        await this.skillManager.initialize();
+        this.logger.info('[handleGetCommands] skillManager initialization completed');
+      } catch (initError) {
+        this.logger.warn('[handleGetCommands] skillManager initialization failed (may have already initialized)', {
+          error: initError instanceof Error ? initError.message : String(initError)
+        });
+      }
+
+      this.logger.info('[handleGetCommands] Calling skillManager.listSkills()');
       const skills = await this.skillManager.listSkills();
+
+      this.logger.info('[handleGetCommands] Fetched skills', {
+        count: skills.length,
+        skillNames: skills.map(s => s.name)
+      });
+
       const commands = skills.map((skill) => ({
         name: skill.name,
         description: skill.description,
@@ -1010,16 +932,74 @@ export class ChatViewProvider
         subtask: skill.subtask,
       }));
 
-      this.view?.webview.postMessage({
+      this.logger.info('[handleGetCommands] Mapped skills to commands', {
+        skillsCount: skills.length,
+        commandsCount: commands.length,
+        skillsPreview: skills.slice(0, 3).map(s => ({ name: s.name, hasDesc: !!s.description })),
+        commandsPreview: commands.slice(0, 3).map(c => ({ name: c.name, hasDesc: !!c.description }))
+      });
+
+      this.logger.info('[handleGetCommands] Sending commands to webview', {
+        commandCount: commands.length,
+        commands: commands.map(c => ({ name: c.name, desc: c.description }))
+      });
+
+      // CRITICAL: Check if view is available before sending message
+      if (!this.view) {
+        this.logger.error('[handleGetCommands] Cannot send commands - webview is not available');
+        throw new Error('Webview not available');
+      }
+
+      if (!this.view.webview) {
+        this.logger.error('[handleGetCommands] Cannot send commands - webview.webview is not available');
+        throw new Error('Webview.webview not available');
+      }
+
+      const message = {
         type: "commandsList",
         commands: commands,
+      };
+
+      this.logger.info('[handleGetCommands] Preparing to post message', {
+        messageType: message.type,
+        commandsCount: message.commands.length,
+        commandsPreview: message.commands.slice(0, 3).map(c => c.name)
       });
+
+      try {
+        const result = this.view.webview.postMessage(message);
+        this.logger.info('[handleGetCommands] postMessage returned', {
+          success: result,
+          result: String(result)
+        });
+
+        if (!result) {
+          this.logger.error('[handleGetCommands] postMessage returned false - webview may not be ready');
+        }
+      } catch (postError) {
+        this.logger.error('[handleGetCommands] postMessage threw an error', {
+          error: postError instanceof Error ? postError.message : String(postError),
+          stack: postError instanceof Error ? postError.stack : undefined
+        });
+        throw postError;
+      }
+
+      this.logger.info('[handleGetCommands] Message posted to webview successfully');
     } catch (error) {
-      this.logger.error("Failed to load commands", { err: error });
-      this.view?.webview.postMessage({
-        type: "commandsList",
-        commands: [],
+      this.logger.error('[handleGetCommands] Failed to load commands', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
       });
+
+      // Still send empty commands array to frontend even on error
+      if (this.view?.webview) {
+        this.view.webview.postMessage({
+          type: "commandsList",
+          commands: [],
+        });
+      } else {
+        this.logger.error('[handleGetCommands] Cannot send error response - webview not available');
+      }
     }
   }
 
@@ -1203,21 +1183,15 @@ export class ChatViewProvider
       return;
     }
 
-    // Interactive popover responses should always be persisted/sent as one
-    // immediate message. If the target session is still processing, stop it first and
-    // then send directly (instead of relying on queue fallback).
+    if (this.awaitingInteractiveAnswer) {
+      // Allow the in-flight interactive wait turn to settle without surfacing
+      // expected transport timeouts as hard request failures.
+      this.interactiveResponseTransitionUntil = Date.now() + 15000;
+    }
+    // If a generation is still running (including interactive wait), stop it before
+    // sending this direct reply so the next request doesn't race/hang behind the prior turn.
     if (this.processingSessionIds.has(sessionId)) {
       await this.handleStopRequest(sessionId);
-    }
-
-    if (this.processingSessionIds.has(sessionId)) {
-      await this.schedulePromptDispatch("steer", {
-        sessionId,
-        text,
-        userFacingText: payload.userFacingText,
-        agent: payload.agent,
-      });
-      return;
     }
 
     this.currentSessionId = sessionId;
@@ -1640,8 +1614,17 @@ export class ChatViewProvider
 
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(async (message) => {
-      switch (message.type) {
+      const { type } = message;
+
+      // Log all UI interactions for debugging
+      this.logger.logUIInteraction('ChatView', type, message.type, message as Record<string, unknown>);
+
+      switch (type) {
         case "ready": {
+          this.logger.debug(`${LoggingCategories.UI_INTERACTION} Webview ready`, {
+            viewType: 'chat',
+          });
+
           if (this.isBootstrappingWebview) {
             break;
           }
@@ -1812,14 +1795,36 @@ export class ChatViewProvider
         }
         case "sendMessage":
         case "sendPrompt": {
-          await this.schedulePromptDispatch("send-now", {
-            sessionId: message.sessionId,
-            text: message.text,
-            files: message.files,
-            contexts: message.contexts,
-            images: message.images,
-            agent: message.agent,
+          const correlationId = this.logger.startFeatureFlow('send-message', {
+            hasFiles: message.files?.length > 0,
+            hasImages: message.images?.length > 0,
+            textLength: message.text?.length,
           });
+
+          this.logger.info(`${LoggingCategories.UI_INTERACTION} User initiated message send`, {
+            correlationId,
+            hasFiles: message.files?.length > 0,
+            hasImages: message.images?.length > 0,
+            textLength: message.text?.length,
+          });
+
+          try {
+            await this.schedulePromptDispatch("send-now", {
+              sessionId: message.sessionId,
+              text: message.text,
+              files: message.files,
+              contexts: message.contexts,
+              images: message.images,
+              agent: message.agent,
+            });
+            this.logger.endFeatureFlow(correlationId, { success: true });
+          } catch (err) {
+            this.logger.error(
+              `${LoggingCategories.UI_INTERACTION} Failed to send message`,
+              { correlationId, error: (err as Error).message }
+            );
+            this.logger.endFeatureFlow(correlationId, { success: false });
+          }
           break;
         }
         case "persistAssistantMessage": {
@@ -1852,6 +1857,7 @@ export class ChatViewProvider
             break;
           }
 
+          // FIX: Send just the choice text, no special formatting
           const composedPrompt = choiceText;
           const userFacingText = this.firstNonEmptyString(
             message?.displayText,
@@ -1871,34 +1877,33 @@ export class ChatViewProvider
             eventId: string;
             eventType: string;
             text: string;
-            questionLabel?: string;
+            questionText?: string;
           }>;
           if (!responses || responses.length === 0) {
             break;
           }
 
+          // Preserve question context in the prompt so model-side continuation
+          // is grounded, while the webview controls user-facing rendering text.
           const composedPrompt = responses
-            .map((resp) => {
+            .map((resp, index) => {
               const answer = this.firstNonEmptyString(resp.text) || "";
               if (!answer) {
                 return "";
               }
-              const eventType = resp.eventType;
-              const eventId = resp.eventId;
-              const questionLabel = this.firstNonEmptyString(resp.questionLabel);
-              if (questionLabel) {
-                return `[interactive:${eventType}:${eventId}]
-**${questionLabel}**
-${answer}`;
+              const question = this.firstNonEmptyString(resp.questionText) || "";
+              if (!question) {
+                return `Answer ${index + 1}: ${answer}`;
               }
-              return `[interactive:${eventType}:${eventId}]
-${answer}`;
+              return `Question ${index + 1}: ${question}\nAnswer: ${answer}`;
             })
             .filter((value) => value.length > 0)
             .join("\n\n");
+
           if (!composedPrompt) {
             break;
           }
+
           const userFacingText = this.firstNonEmptyString(
             message?.displayText,
             composedPrompt,
@@ -1914,37 +1919,68 @@ ${answer}`;
         }
         case "newSession":
         case "createSession": {
-          const createdSession = await this.sessionService.createNewSession();
-          this.currentSessionId = createdSession.id;
-          // Clear in-memory todo cache for the newly created session.
-          this.clearSessionTodos();
-          this.subagentTracker.resetForSession(createdSession.id);
-          await this.clearPersistedSubagentSnapshot(createdSession.id);
-          this.sendQueueUpdate(createdSession.id);
+          const correlationId = this.logger.startFeatureFlow('create-session');
 
-          // Always use "build" as the default agent for new sessions
-          // This prevents new sessions from inheriting an agent that was
-          // selected in a previous session (e.g., "Sisyphus (Ultraworker)")
-          this.selectedAgent = "build";
-          await this.persistSessionSettings(createdSession.id, {
-            agent: "build",
+          this.logger.info(`${LoggingCategories.UI_INTERACTION} User creating new session`, {
+            correlationId,
           });
 
-          await this.handleGetSessions(); // Update list
-          this.refreshView();
+          try {
+            const createdSession = await this.sessionService.createNewSession();
+            this.currentSessionId = createdSession.id;
+            this.logger.info(`${LoggingCategories.UI_INTERACTION} New session created`, {
+              correlationId,
+              sessionId: createdSession.id,
+            });
+            this.logger.endFeatureFlow(correlationId, {
+              success: true,
+              sessionId: createdSession.id,
+            });
 
-          // Clear webview messages
-          this.view?.webview.postMessage({
-            type: "chatHistory",
-            messages: [],
-          });
-          this.view?.webview.postMessage({
-            type: "subagentSnapshot",
-            ...this.subagentTracker.getSnapshotPayload(),
-          });
+            // Clear in-memory todo cache for the newly created session.
+            this.clearSessionTodos();
+            this.subagentTracker.resetForSession(createdSession.id);
+            await this.clearPersistedSubagentSnapshot(createdSession.id);
+            this.sendQueueUpdate(createdSession.id);
+
+            // Always use "build" as the default agent for new sessions
+            // This prevents new sessions from inheriting an agent that was
+            // selected in a previous session (e.g., "Sisyphus (Ultraworker)")
+            this.selectedAgent = "build";
+            await this.persistSessionSettings(createdSession.id, {
+              agent: "build",
+            });
+
+            await this.handleGetSessions(); // Update list
+            this.refreshView();
+
+            // Clear webview messages
+            this.view?.webview.postMessage({
+              type: "chatHistory",
+              messages: [],
+            });
+            this.view?.webview.postMessage({
+              type: "subagentSnapshot",
+              ...this.subagentTracker.getSnapshotPayload(),
+            });
+          } catch (error) {
+            this.logger.error(
+              `${LoggingCategories.UI_INTERACTION} Failed to create session`,
+              { correlationId, error: (error as Error).message }
+            );
+            this.logger.endFeatureFlow(correlationId, { success: false });
+          }
           break;
         }
         case "viewPlan": {
+          this.logger.logUIInteraction('ChatView', 'view-plan', message.plan, {
+            planFile: message.plan,
+          });
+
+          this.logger.info(`${LoggingCategories.UI_INTERACTION} User viewing plan`, {
+            planFile: message.plan,
+          });
+
           if (message.plan) {
             await this.handleViewPlan(message.plan);
           }
@@ -2101,7 +2137,21 @@ ${answer}`;
         }
         case "selectAgent":
         case "setAgent": {
+          const oldAgent = this.selectedAgent;
           this.selectedAgent = message.agent;
+
+          this.logger.logStateChange(
+            'selected-agent',
+            oldAgent,
+            message.agent,
+            'user-selection'
+          );
+
+          this.logger.info(`${LoggingCategories.UI_INTERACTION} User selected agent`, {
+            fromAgent: oldAgent,
+            toAgent: message.agent,
+          });
+
           if (this.currentSessionId) {
             await this.persistSessionSettings(this.currentSessionId, {
               agent: message.agent,
@@ -2114,6 +2164,7 @@ ${answer}`;
           break;
         }
         case "getCommands": {
+          this.logger.info('[onDidReceiveMessage] Received getCommands message');
           await this.handleGetCommands();
           break;
         }
@@ -2128,7 +2179,26 @@ ${answer}`;
         case "loadSession":
         case "openSession":
         case "switchSession": {
-          await this.handleLoadSession(message.sessionId);
+          const correlationId = this.logger.startFeatureFlow('switch-session', {
+            targetSessionId: message.sessionId,
+          });
+
+          this.logger.info(`${LoggingCategories.UI_INTERACTION} User switching session`, {
+            correlationId,
+            fromSessionId: this.currentSessionId,
+            toSessionId: message.sessionId,
+          });
+
+          try {
+            await this.handleLoadSession(message.sessionId);
+            this.logger.endFeatureFlow(correlationId, { success: true });
+          } catch (error) {
+            this.logger.error(
+              `${LoggingCategories.UI_INTERACTION} Failed to switch session`,
+              { correlationId, fromSessionId: this.currentSessionId, toSessionId: message.sessionId, error: (error as Error).message }
+            );
+            this.logger.endFeatureFlow(correlationId, { success: false });
+          }
           break;
         }
         case "deleteSession": {
@@ -2270,6 +2340,30 @@ ${answer}`;
               type: "thinkingLevelUpdate",
               level,
             });
+          }
+          break;
+        }
+        case "toggleMode": {
+          const correlationId = this.logger.startFeatureFlow('toggle-mode', {
+            fromMode: this.currentMode,
+            toMode: message.mode,
+          });
+
+          this.logger.info(LoggingCategories.UI_INTERACTION, 'User toggled chat mode', {
+            correlationId,
+            fromMode: this.currentMode,
+            toMode: message.mode,
+          });
+
+          try {
+            await this.handleToggleMode(message.mode);
+            this.logger.endFeatureFlow(correlationId, { success: true });
+          } catch (error) {
+            this.logger.error(LoggingCategories.UI_INTERACTION, 'Failed to toggle mode', {
+              correlationId,
+              error: (error as Error).message,
+            });
+            this.logger.endFeatureFlow(correlationId, { success: false });
           }
           break;
         }
@@ -2447,6 +2541,11 @@ ${answer}`;
         case "validateSkill":
           await this.handleSkillMessage(message);
           break;
+        default: {
+          this.logger.debug(`${LoggingCategories.UI_INTERACTION} Unhandled message type`, {
+            messageType: type,
+          });
+        }
       }
     });
 
@@ -2782,6 +2881,7 @@ ${answer}`;
     }
 
     if (!Array.isArray(messages) || messages.length === 0) {
+      this.logger.warn('[processHistoryMessages] No messages to process', { sessionId, count: messages?.length });
       return [];
     }
 
@@ -2791,15 +2891,18 @@ ${answer}`;
       // Load any session overrides first
       const overriddenMessages = await this.historyProcessor.applySessionMessageOverrides(sessionId, messages);
 
+      this.logger.info('[DEBUG] After applySessionMessageOverrides:', { count: overriddenMessages?.length || 0 });
+
       // Then process through the canonical pipeline
       const processed = this.historyProcessor.processHistoryMessages(overriddenMessages, sessionId);
 
       this.logger.info('[DEBUG] processHistoryMessages output:', { count: processed?.length || 0, sessionId });
 
-      return processed;
+      return processed || [];
     } catch (error) {
-      this.logger.error('[ERROR] processHistoryMessages failed:', { error, sessionId });
-      return [];
+      this.logger.error('[ERROR] processHistoryMessages failed:', { error: error instanceof Error ? error.message : String(error), sessionId, stack: error instanceof Error ? error.stack : undefined });
+      // Return original messages as fallback
+      return messages;
     }
   }
 
@@ -3226,6 +3329,17 @@ ${answer}`;
     );
   }
 
+  private shouldSuppressInteractiveAwaitTimeout(message: string): boolean {
+    if (!this.isLikelyInteractiveAwaitTimeoutError(message)) {
+      return false;
+    }
+    return this.awaitingInteractiveAnswer || this.isInInteractiveResponseTransition();
+  }
+
+  private isInInteractiveResponseTransition(): boolean {
+    return Date.now() <= this.interactiveResponseTransitionUntil;
+  }
+
   private isGenericErrorMessage(message: string): boolean {
     const normalized = message.trim().toLowerCase();
     return (
@@ -3262,6 +3376,13 @@ ${answer}`;
       normalized.includes("empty structured payload") ||
       normalized.includes("valid structured response") ||
       normalized.includes("couldn't produce a valid structured response")
+    );
+  }
+
+  private isLikelyInteractiveTransportFailure(message: string): boolean {
+    return (
+      this.isLikelyInteractiveAwaitTimeoutError(message) ||
+      this.isGenericErrorMessage(message)
     );
   }
 
@@ -4097,6 +4218,11 @@ ${answer}`;
     // field, so checking only at the !bodyText branch is insufficient.
     const messageInfoError = message?.info?.error ?? message?.error;
     if (messageInfoError?.name === "MessageAbortedError") {
+      if (this.isInInteractiveResponseTransition()) {
+        // Interactive answer submit intentionally aborts the previous waiting turn.
+        // Preserve rendered content and avoid a misleading "response stopped" banner.
+        return { ...message, aborted: false };
+      }
       return { ...message, aborted: true };
     }
     const allowSyntheticFallbackError =
@@ -4195,6 +4321,17 @@ ${answer}`;
       this.isInteractiveResponseType(structured.responseType) &&
       Array.isArray(structured.interactiveEvents) &&
       structured.interactiveEvents.length > 0;
+
+    // DEBUG: Check structured object immediately after extraction
+    console.log('🔍 [ChatViewProvider] Structured object after extraction:', {
+      responseType: structured.responseType,
+      hasPlan: 'plan' in structured,
+      planKeys: structured.plan ? Object.keys(structured.plan) : [],
+      planValue: structured.plan,
+      planFile: structured.plan?.file,
+      allStructuredKeys: Object.keys(structured)
+    });
+
     const structuredPlanContent =
       this.firstNonEmptyString(structured.plan?.content) || "";
     const shouldSuppressStructuredPlan =
@@ -4204,6 +4341,17 @@ ${answer}`;
       ...message,
       structuredOutput: structured,
     };
+
+    // DEBUG: Log immediately after creating next object
+    console.log('🔍 [applyStructuredOutputToMessage] next object created:', {
+      messageId: next.id,
+      hasStructuredOutput: 'structuredOutput' in next,
+      structuredOutputResponseType: next.structuredOutput?.responseType,
+      structuredOutputHasPlan: next.structuredOutput?.plan ? 'yes' : 'no',
+      structuredOutputPlanFile: next.structuredOutput?.plan?.file,
+      originalMessageHasPlan: 'plan' in message,
+      originalMessagePlanFile: message.plan?.file
+    });
 
     if (Array.isArray(next.parts)) {
       next.parts = next.parts.filter((part: any) => {
@@ -4419,6 +4567,18 @@ ${answer}`;
           this.asRecord(structured.plan),
         );
       const planFile = structuredPlanCandidates[0];
+
+      // DEBUG: Log plan file extraction
+      console.log('🔍 [ChatViewProvider] Plan file extraction:', {
+        hasStructuredPlan: !!structured.plan,
+        structuredPlanKeys: structured.plan ? Object.keys(structured.plan) : [],
+        structuredPlanFile: structured.plan?.file,
+        candidatesCount: structuredPlanCandidates.length,
+        candidates: structuredPlanCandidates,
+        planFile: planFile,
+        planFileUndefined: planFile === undefined
+      });
+
       const resolvedPlanTitle = this.resolvePlanTitle({
         plan: structured.plan,
         planFile: planFile || structuredPlanCandidates[0],
@@ -4439,6 +4599,34 @@ ${answer}`;
               ? structuredPlanCandidates
               : undefined,
         };
+
+        // DEBUG: Log the final plan object being set
+        console.log('🔍 [ChatViewProvider] Plan object set on next:', {
+          hasPlan: !!next.plan,
+          planFile: next.plan?.file,
+          planKeys: next.plan ? Object.keys(next.plan) : [],
+          fullPlanObject: next.plan ? JSON.stringify(next.plan, null, 2) : 'undefined'
+        });
+
+        // DEBUG: Try to serialize the entire next object to check for circular references
+        try {
+          const serialized = JSON.stringify(next);
+          console.log('🔍 [ChatViewProvider] Message serialization successful:', {
+            serializedLength: serialized.length,
+            hasPlanInSerialized: '"plan"' in serialized,
+            planSubstring: serialized.includes('"file"') ? serialized.substring(serialized.indexOf('"plan"'), serialized.indexOf('"plan"') + 200) : 'NOT FOUND'
+          });
+        } catch (e) {
+          console.log('🔍 [ChatViewProvider] Message serialization FAILED:', e);
+        }
+      } else {
+        console.log('🔍 [ChatViewProvider] Plan NOT set - condition failed:', {
+          hasLongPlanContent,
+          planFile,
+          planFileUndefined: planFile === undefined,
+          hasLongPlanContentFalse: !hasLongPlanContent,
+          noPlanFile: !planFile
+        });
       }
     }
 
@@ -4800,10 +4988,7 @@ ${answer}`;
           response.error,
           "Failed to send message",
         );
-        if (
-          this.awaitingInteractiveAnswer &&
-          this.isLikelyInteractiveAwaitTimeoutError(errorMessage)
-        ) {
+        if (this.shouldSuppressInteractiveAwaitTimeout(errorMessage)) {
           this.logger.info(
             "Suppressing timeout error while awaiting interactive response",
             {
@@ -4813,7 +4998,7 @@ ${answer}`;
           );
           return;
         }
-        if (this.isLikelyInteractiveAwaitTimeoutError(errorMessage)) {
+        if (this.isLikelyInteractiveTransportFailure(errorMessage)) {
           const recovered = await this.tryRecoverTimedOutResponse(
             session.id,
             baselineAssistantMarker,
@@ -4827,6 +5012,31 @@ ${answer}`;
               },
             );
             return;
+          }
+          if (
+            !isRetry &&
+            (this.awaitingInteractiveAnswer ||
+              this.isInInteractiveResponseTransition())
+          ) {
+            this.logger.warn(
+              "Interactive response transport failed; retrying once with existing payload",
+              {
+                sessionId: session.id,
+                errorMessage,
+              },
+            );
+            return this.handleSendMessage(
+              text,
+              files,
+              contexts,
+              images,
+              agent,
+              true,
+              recoveredContext,
+              retryWithoutStructuredOutput,
+              structuredFallbackReason,
+              userFacingText,
+            );
           }
         }
 
@@ -5146,6 +5356,17 @@ ${answer}`;
           rawResponse,
         };
 
+        // DEBUG: Log right after creating debugMessage
+        console.log('🔍 [ChatViewProvider] debugMessage created:', {
+          hasPlan: 'plan' in debugMessage,
+          planFile: debugMessage.plan?.file,
+          planKeys: debugMessage.plan ? Object.keys(debugMessage.plan) : [],
+          hasStructuredOutput: 'structuredOutput' in debugMessage,
+          structuredOutputResponseType: debugMessage.structuredOutput?.responseType,
+          structuredOutputHasPlan: debugMessage.structuredOutput?.plan ? 'yes' : 'no',
+          structuredOutputPlanFile: debugMessage.structuredOutput?.plan?.file
+        });
+
         // Persist canonical assistant message without raw debug payload so
         // session storage/write path stays lightweight.
         await this.sessionService.appendMessage(session.id, {
@@ -5170,6 +5391,31 @@ ${answer}`;
             session.id,
             snapshotFromFinalMessage,
           );
+        }
+
+        // DEBUG: Log message right before sending to webview
+        console.log('🔍 [ChatViewProvider] SENDING message to webview:', {
+          hasPlan: 'plan' in debugMessage,
+          planKeys: debugMessage.plan ? Object.keys(debugMessage.plan) : [],
+          planFile: debugMessage.plan?.file,
+          messageType: debugMessage.type,
+          messageResponse: debugMessage.responseType,
+          structuredOutputResponseType: debugMessage.structuredOutput?.responseType,
+          fullMessageKeys: Object.keys(debugMessage)
+        });
+
+        // Try to serialize to check for circular references
+        try {
+          const serialized = JSON.stringify(debugMessage);
+          console.log('🔍 [ChatViewProvider] Serialization check:', {
+            success: true,
+            length: serialized.length,
+            hasPlanInSerialized: serialized.includes('"plan"'),
+            hasFileInSerialized: serialized.includes('"file"'),
+            planSubstring: serialized.includes('"plan"') ? serialized.substring(serialized.indexOf('"plan"'), Math.min(serialized.indexOf('"plan"') + 300, serialized.length)) : 'NOT FOUND'
+          });
+        } catch (e) {
+          console.log('🔍 [ChatViewProvider] Serialization FAILED:', e);
         }
 
         this.view?.webview.postMessage({
@@ -5224,10 +5470,7 @@ ${answer}`;
         error,
         "Failed to send message",
       );
-      if (
-        this.awaitingInteractiveAnswer &&
-        this.isLikelyInteractiveAwaitTimeoutError(errorMessage)
-      ) {
+      if (this.shouldSuppressInteractiveAwaitTimeout(errorMessage)) {
         this.logger.info(
           "Suppressing thrown timeout while awaiting interactive response",
           {
@@ -5239,7 +5482,7 @@ ${answer}`;
       }
       if (
         drainSessionId &&
-        this.isLikelyInteractiveAwaitTimeoutError(errorMessage)
+        this.isLikelyInteractiveTransportFailure(errorMessage)
       ) {
         const recovered = await this.tryRecoverTimedOutResponse(
           drainSessionId,
@@ -5254,6 +5497,31 @@ ${answer}`;
             },
           );
           return;
+        }
+        if (
+          !isRetry &&
+          (this.awaitingInteractiveAnswer ||
+            this.isInInteractiveResponseTransition())
+        ) {
+          this.logger.warn(
+            "Thrown interactive transport failure; retrying once with existing payload",
+            {
+              sessionId: drainSessionId,
+              errorMessage,
+            },
+          );
+          return this.handleSendMessage(
+            text,
+            files,
+            contexts,
+            images,
+            agent,
+            true,
+            recoveredContext,
+            retryWithoutStructuredOutput,
+            structuredFallbackReason,
+            userFacingText,
+          );
         }
       }
       vscode.window.showErrorMessage(`Failed to send message: ${errorMessage}`);
@@ -5292,7 +5560,7 @@ ${answer}`;
         sessionId: drainSessionId,
       });
       if (drainSessionId) {
-        this.queueManager.maybeAutoDrainQueue(drainSessionId);
+        void this.handleExecuteQueue(drainSessionId);
       }
     }
   }
@@ -5373,7 +5641,7 @@ ${answer}`;
         sessionId: resolvedSessionId,
       });
       if (resolvedSessionId) {
-        this.queueManager.maybeAutoDrainQueue(resolvedSessionId);
+        void this.handleExecuteQueue(resolvedSessionId);
       }
     }
   }
@@ -5890,6 +6158,23 @@ ${answer}`;
       "workbench.action.openSettings",
       "@ext:OpenCode.opencode-vscode",
     );
+  }
+
+  /**
+   * Handle mode toggle with logging
+   */
+  private async handleToggleMode(newMode: string): Promise<void> {
+    const oldMode = this.currentMode;
+    this.currentMode = newMode;
+
+    // Only log the state change here, not in the message handler
+    this.logger.logStateChange('current-mode', oldMode, newMode, 'mode-toggle');
+
+    // Send mode update to webview
+    this.view?.webview.postMessage({
+      type: 'modeChanged',
+      mode: newMode,
+    });
   }
 
   /**

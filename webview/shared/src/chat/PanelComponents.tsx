@@ -290,6 +290,12 @@ function hasRenderableStreamingPayload(
   if (Array.isArray(streaming.edits) && streaming.edits.length > 0) {
     return true;
   }
+  if (
+    Array.isArray(streaming.interactiveEvents) &&
+    streaming.interactiveEvents.length > 0
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -301,15 +307,15 @@ function buildAssistantMessageFromStreaming(streaming: StreamingState): Message 
   const canonicalSteps =
     Array.isArray(streaming.steps) && streaming.steps.length > 0
       ? streaming.steps.map((step) => ({
-          id: step.id,
-          callID: step.callID,
-          type: step.type,
-          title: step.title,
-          status: step.status,
-          meta: step.meta,
-          diffStats: step.diffStats,
-          streamSeq: step.streamSeq,
-        }))
+        id: step.id,
+        callID: step.callID,
+        type: step.type,
+        title: step.title,
+        status: step.status,
+        meta: step.meta,
+        diffStats: step.diffStats,
+        streamSeq: step.streamSeq,
+      }))
       : [];
 
   return {
@@ -317,6 +323,9 @@ function buildAssistantMessageFromStreaming(streaming: StreamingState): Message 
     role: "assistant",
     content,
     parts,
+    interactiveEvents: Array.isArray(streaming.interactiveEvents)
+      ? streaming.interactiveEvents
+      : undefined,
     reasoningEvents: streaming.reasoningEvents,
     progressEvents: canonicalSteps,
     steps: canonicalSteps,
@@ -390,11 +399,11 @@ export function StickyHeader() {
 
   const effectiveBaseline = compactionBaselineStats
     ? {
-        input: compactionBaselineStats.input,
-        output: compactionBaselineStats.output,
-        read: compactionBaselineStats.read,
-        write: compactionBaselineStats.write,
-      }
+      input: compactionBaselineStats.input,
+      output: compactionBaselineStats.output,
+      read: compactionBaselineStats.read,
+      write: compactionBaselineStats.write,
+    }
     : derivedBaseline;
 
   const contextStats = useMemo(
@@ -617,9 +626,8 @@ export function HistorySidebar() {
 
   return (
     <aside
-      className={`oc-history-sidebar absolute bottom-0 left-0 top-0 z-20 flex w-[280px] flex-col border-r border-oc-border bg-oc-bg-soft transition-transform duration-200 ease-in-out ${
-        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
-      }`}
+      className={`oc-history-sidebar absolute bottom-0 left-0 top-0 z-20 flex w-[280px] flex-col border-r border-oc-border bg-oc-bg-soft transition-transform duration-200 ease-in-out ${isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
       style={{ boxShadow: isSidebarOpen ? "4px 0 24px rgba(0,0,0,0.18)" : "none" }}
     >
       <div className="flex shrink-0 items-center justify-between px-3.5 pt-3.5 pb-2">
@@ -769,16 +777,14 @@ export function HistorySidebar() {
                       </div>
                     ) : (
                       <div
-                        className={`flex items-stretch rounded-md transition-all ${
-                          isActive
+                        className={`flex items-stretch rounded-md transition-all ${isActive
                             ? "bg-oc-accent-soft"
                             : "hover:bg-oc-panel"
-                        }`}
+                          }`}
                       >
                         <div
-                          className={`w-[3px] shrink-0 self-stretch rounded-l-md transition-colors ${
-                            isActive ? "bg-oc-accent" : "bg-transparent"
-                          }`}
+                          className={`w-[3px] shrink-0 self-stretch rounded-l-md transition-colors ${isActive ? "bg-oc-accent" : "bg-transparent"
+                            }`}
                         />
                         <button
                           type="button"
@@ -793,9 +799,8 @@ export function HistorySidebar() {
                               <Loader2 className="h-3 w-3 shrink-0 animate-spin text-oc-accent" aria-label="Processing" />
                             ) : null}
                             <span
-                              className={`truncate text-[12px] font-medium leading-tight ${
-                                isActive ? "text-oc-text" : "text-oc-text-soft"
-                              }`}
+                              className={`truncate text-[12px] font-medium leading-tight ${isActive ? "text-oc-text" : "text-oc-text-soft"
+                                }`}
                             >
                               {session.title || "Untitled chat"}
                             </span>
@@ -861,23 +866,20 @@ function MiniSection({
         className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs rounded-none"
       >
         <span
-          className={`inline-block h-1.5 w-1.5 rounded-full transition-colors ${
-            open ? "bg-oc-accent" : "bg-oc-border-soft"
-          }`}
+          className={`inline-block h-1.5 w-1.5 rounded-full transition-colors ${open ? "bg-oc-accent" : "bg-oc-border-soft"
+            }`}
         />
         <span
-          className={`font-mono text-xs uppercase tracking-widest font-semibold ${
-            open
+          className={`font-mono text-xs uppercase tracking-widest font-semibold ${open
               ? "text-[var(--oc-text-soft)]"
               : "text-[var(--oc-text-soft)] opacity-70"
-          }`}
+            }`}
         >
           {title}
         </span>
         <span
-          className={`ml-auto transition-transform ${
-            open ? "rotate-0" : "-rotate-90"
-          }`}
+          className={`ml-auto transition-transform ${open ? "rotate-0" : "-rotate-90"
+            }`}
         >
           <ChevronDown className="h-3 w-3 text-[var(--oc-text-soft)] opacity-70" />
         </span>
@@ -970,11 +972,11 @@ export function ActiveTaskPanel() {
     () =>
       compactionBaselineStats
         ? {
-            input: compactionBaselineStats.input,
-            output: compactionBaselineStats.output,
-            read: compactionBaselineStats.read,
-            write: compactionBaselineStats.write,
-          }
+          input: compactionBaselineStats.input,
+          output: compactionBaselineStats.output,
+          read: compactionBaselineStats.read,
+          write: compactionBaselineStats.write,
+        }
         : derivedCompactionBaselineStats,
     [compactionBaselineStats, derivedCompactionBaselineStats],
   );
@@ -1038,7 +1040,7 @@ export function ActiveTaskPanel() {
   const liveProgressSteps = useMemo(() => {
     const source =
       Array.isArray(streaming?.progressEvents) &&
-      streaming.progressEvents.length > 0
+        streaming.progressEvents.length > 0
         ? streaming.progressEvents
         : Array.isArray(streaming?.steps)
           ? streaming.steps
@@ -1092,9 +1094,8 @@ export function ActiveTaskPanel() {
       <div className="border-b border-oc-border px-3 py-2.5">
         <div className="flex items-center gap-2">
           <div
-            className={`h-1.5 w-1.5 rounded-full ${
-              isActive ? "bg-oc-accent animate-pulse" : "bg-oc-border-soft"
-            }`}
+            className={`h-1.5 w-1.5 rounded-full ${isActive ? "bg-oc-accent animate-pulse" : "bg-oc-border-soft"
+              }`}
           />
           <div className="oc-panel-title">Active Task</div>
         </div>
@@ -1137,11 +1138,10 @@ export function ActiveTaskPanel() {
                       )}
                     </span>
                     <span
-                      className={`min-w-0 flex-1 leading-relaxed ${
-                        step.status === "pending"
+                      className={`min-w-0 flex-1 leading-relaxed ${step.status === "pending"
                           ? "text-oc-text"
                           : "text-[var(--oc-text-soft)] opacity-80"
-                      }`}
+                        }`}
                     >
                       <span className="block break-words whitespace-pre-wrap">
                         {step.title}
@@ -1157,174 +1157,172 @@ export function ActiveTaskPanel() {
               </div>
             )}
           </MiniSection>
-         )}
+        )}
 
         {/* TEMPORARY: Hidden during modularization; keep Context section implementation intact for later re-enable. */}
         {false && (
           <MiniSection title="Context">
-          {/* Token usage bar */}
-          <div className="mb-3">
-            <div className="mb-1.5 flex flex-col gap-1.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs font-semibold text-[var(--oc-text-soft)] uppercase tracking-wider">
-                    Tokens Used
-                  </span>
-                  {hasCompactionBaseline && (
-                    <span className="rounded-full bg-oc-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-oc-text-muted">
-                      Since compact
+            {/* Token usage bar */}
+            <div className="mb-3">
+              <div className="mb-1.5 flex flex-col gap-1.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-semibold text-[var(--oc-text-soft)] uppercase tracking-wider">
+                      Tokens Used
                     </span>
+                    {hasCompactionBaseline && (
+                      <span className="rounded-full bg-oc-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-oc-text-muted">
+                        Since compact
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums tracking-wider ${pct > 90
+                        ? "bg-red-500/15 text-red-500"
+                        : pct > 75
+                          ? "bg-amber-500/15 text-amber-500"
+                          : "bg-oc-green/15 text-oc-green"
+                      }`}
+                  >
+                    {pct}%
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 opacity-70">
+                  <span className="font-mono tabular-nums text-[11px] text-[var(--oc-text-soft)]">
+                    {total.toLocaleString()} /{" "}
+                    <span
+                      title={
+                        usingContextFallback
+                          ? "Context limit is estimated; model metadata unavailable"
+                          : undefined
+                      }
+                      className={
+                        usingContextFallback
+                          ? "underline decoration-oc-border decoration-dashed underline-offset-2 cursor-help"
+                          : ""
+                      }
+                    >
+                      {maxContext.toLocaleString()}
+                    </span>
+                  </span>
+                  {usingContextFallback && (
+                    <span className="text-[10px] text-oc-text-muted">~est</span>
                   )}
                 </div>
-                <div
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums tracking-wider ${
-                    pct > 90
-                      ? "bg-red-500/15 text-red-500"
-                      : pct > 75
-                        ? "bg-amber-500/15 text-amber-500"
-                        : "bg-oc-green/15 text-oc-green"
-                  }`}
-                >
-                  {pct}%
-                </div>
               </div>
-              <div className="flex items-center gap-1.5 opacity-70">
-                <span className="font-mono tabular-nums text-[11px] text-[var(--oc-text-soft)]">
-                  {total.toLocaleString()} /{" "}
-                  <span
-                    title={
-                      usingContextFallback
-                        ? "Context limit is estimated; model metadata unavailable"
-                        : undefined
-                    }
-                    className={
-                      usingContextFallback
-                        ? "underline decoration-oc-border decoration-dashed underline-offset-2 cursor-help"
-                        : ""
+              <div className="h-1 w-full overflow-hidden rounded-full bg-oc-border">
+                <div
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{
+                    width: `${pct}%`,
+                    background:
+                      pct > 80
+                        ? "linear-gradient(90deg, #f0883e, #f85149)"
+                        : pct > 50
+                          ? "linear-gradient(90deg, #d29922, #f0883e)"
+                          : "linear-gradient(90deg, #1f6feb, #58a6ff)",
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Compaction Controls */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-[var(--oc-text-soft)] opacity-80">
+                    Session compaction
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {!isCompacting && compactedAtLabel ? (
+                    <span className="rounded-full bg-oc-border-soft px-1.5 py-0.5 text-[9px] font-mono tracking-wider text-oc-text-muted opacity-80">
+                      {compactedAtLabel}
+                    </span>
+                  ) : null}
+                  {isCompacting ? (
+                    <span className="animate-pulse rounded-full bg-oc-accent-soft px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-oc-accent">
+                      Compacting...
+                    </span>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="chip"
+                    size="chip"
+                    className="h-5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider"
+                    disabled={compactDisabled}
+                    onClick={() =>
+                      vscode.postMessage({
+                        type: "compactSession",
+                        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+                        baselineStats: {
+                          input: Math.max(0, Math.floor(sessionStats.input || 0)),
+                          output: Math.max(0, Math.floor(sessionStats.output || 0)),
+                          read: Math.max(0, Math.floor(sessionStats.read || 0)),
+                          write: Math.max(0, Math.floor(sessionStats.write || 0)),
+                          duration: Math.max(
+                            0,
+                            Math.floor(sessionStats.duration || 0),
+                          ),
+                        },
+                      })
                     }
                   >
-                    {maxContext.toLocaleString()}
-                  </span>
-                </span>
-                {usingContextFallback && (
-                  <span className="text-[10px] text-oc-text-muted">~est</span>
-                )}
+                    Compact
+                  </Button>
+                </div>
               </div>
+              {!isCompacting && compactionError ? (
+                <div className="mt-1.5 text-[10px] text-oc-red">
+                  {compactionError}
+                </div>
+              ) : null}
             </div>
-            <div className="h-1 w-full overflow-hidden rounded-full bg-oc-border">
-              <div
-                className="h-full rounded-full transition-all duration-300"
-                style={{
-                  width: `${pct}%`,
-                  background:
-                    pct > 80
-                      ? "linear-gradient(90deg, #f0883e, #f85149)"
-                      : pct > 50
-                        ? "linear-gradient(90deg, #d29922, #f0883e)"
-                        : "linear-gradient(90deg, #1f6feb, #58a6ff)",
-                }}
-              />
-            </div>
-          </div>
 
-          {/* Compaction Controls */}
-          <div className="mb-4">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-[var(--oc-text-soft)] opacity-80">
-                  Session compaction
+            <div className="mb-2 h-px w-full bg-oc-border opacity-50" />
+
+            {/* Detailed Token Stats */}
+            <div className="space-y-1.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[var(--oc-text-soft)] opacity-80">Input</span>
+                <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+                  {contextStats.input.toLocaleString()}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
-                {!isCompacting && compactedAtLabel ? (
-                  <span className="rounded-full bg-oc-border-soft px-1.5 py-0.5 text-[9px] font-mono tracking-wider text-oc-text-muted opacity-80">
-                    {compactedAtLabel}
-                  </span>
-                ) : null}
-                {isCompacting ? (
-                  <span className="animate-pulse rounded-full bg-oc-accent-soft px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-oc-accent">
-                    Compacting...
-                  </span>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="chip"
-                  size="chip"
-                  className="h-5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider"
-                  disabled={compactDisabled}
-                  onClick={() =>
-                    vscode.postMessage({
-                      type: "compactSession",
-                      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
-                      baselineStats: {
-                        input: Math.max(0, Math.floor(sessionStats.input || 0)),
-                        output: Math.max(0, Math.floor(sessionStats.output || 0)),
-                        read: Math.max(0, Math.floor(sessionStats.read || 0)),
-                        write: Math.max(0, Math.floor(sessionStats.write || 0)),
-                        duration: Math.max(
-                          0,
-                          Math.floor(sessionStats.duration || 0),
-                        ),
-                      },
-                    })
-                  }
+              <div className="flex items-center justify-between">
+                <span className="text-[var(--oc-text-soft)] opacity-80">Output</span>
+                <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+                  {contextStats.output.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[var(--oc-text-soft)] opacity-80">Cache hits</span>
+                <span
+                  className={`font-mono tabular-nums transition-colors duration-300 ${contextStats.read > 0
+                      ? "text-oc-green font-semibold"
+                      : "text-[var(--oc-text-soft)]"
+                    }`}
                 >
-                  Compact
-                </Button>
+                  {contextStats.read.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[var(--oc-text-soft)] opacity-80">
+                  Cache writes
+                </span>
+                <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+                  {contextStats.write.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-1 border-t border-oc-border mt-2">
+                <span className="text-[var(--oc-text-soft)] opacity-80">Duration</span>
+                <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+                  {sessionStats.duration >= 1000
+                    ? `${(sessionStats.duration / 1000).toFixed(1)}s`
+                    : `${Math.round(sessionStats.duration)}ms`}
+                </span>
               </div>
             </div>
-            {!isCompacting && compactionError ? (
-              <div className="mt-1.5 text-[10px] text-oc-red">
-                {compactionError}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="mb-2 h-px w-full bg-oc-border opacity-50" />
-
-          {/* Detailed Token Stats */}
-          <div className="space-y-1.5 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Input</span>
-              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
-                {contextStats.input.toLocaleString()}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Output</span>
-              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
-                {contextStats.output.toLocaleString()}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Cache hits</span>
-              <span
-                className={`font-mono tabular-nums transition-colors duration-300 ${
-                  contextStats.read > 0
-                    ? "text-oc-green font-semibold"
-                    : "text-[var(--oc-text-soft)]"
-                }`}
-              >
-                {contextStats.read.toLocaleString()}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
-                Cache writes
-              </span>
-              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
-                {contextStats.write.toLocaleString()}
-              </span>
-            </div>
-            <div className="flex items-center justify-between pt-1 border-t border-oc-border mt-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">Duration</span>
-              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
-                {sessionStats.duration >= 1000
-                  ? `${(sessionStats.duration / 1000).toFixed(1)}s`
-                  : `${Math.round(sessionStats.duration)}ms`}
-              </span>
-            </div>
-          </div>
           </MiniSection>
         )}
 
@@ -1359,9 +1357,8 @@ export function ActiveTaskPanel() {
                 Date started
               </span>
               <span
-                className={`font-mono tabular-nums ${
-                  isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)]"
-                }`}
+                className={`font-mono tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)]"
+                  }`}
               >
                 {startedLabel}
               </span>
@@ -1371,11 +1368,10 @@ export function ActiveTaskPanel() {
                 Status
               </span>
               <span
-                className={`font-mono text-xs uppercase tracking-wider font-semibold ${
-                  isActive
+                className={`font-mono text-xs uppercase tracking-wider font-semibold ${isActive
                     ? "text-oc-accent"
                     : "text-[var(--oc-text-soft)] opacity-70"
-                }`}
+                  }`}
               >
                 {isActive ? "ACTIVE" : "IDLE"}
               </span>
@@ -1557,9 +1553,8 @@ export function ModelDropdown() {
           <span>{label}</span>
         </div>
         <ChevronDown
-          className={`h-3 w-3 shrink-0 transition-transform ${
-            modelDropdownOpen ? "rotate-180" : ""
-          }`}
+          className={`h-3 w-3 shrink-0 transition-transform ${modelDropdownOpen ? "rotate-180" : ""
+            }`}
         />
       </Button>
       {modelDropdownOpen && (
@@ -1580,11 +1575,10 @@ export function ModelDropdown() {
                     key={tab}
                     type="button"
                     onClick={() => setSelectedTab(tab)}
-                    className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${
-                      selectedTab === tab
+                    className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${selectedTab === tab
                         ? "bg-oc-accent text-white"
                         : "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
-                    }`}
+                      }`}
                   >
                     {tab}
                   </button>
@@ -1606,11 +1600,10 @@ export function ModelDropdown() {
                     <button
                       key={`${model.providerID}-${model.modelID}`}
                       type="button"
-                      className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
-                        isCurrent
+                      className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${isCurrent
                           ? "bg-oc-accent-soft text-oc-accent"
                           : "hover:bg-oc-panel-soft"
-                      }`}
+                        }`}
                       onClick={() => {
                         dispatch({
                           type: "SET_SELECTED_MODEL",
@@ -1720,9 +1713,8 @@ export function AgentDropdown() {
           <span>{label}</span>
         </div>
         <ChevronDown
-          className={`h-3 w-3 shrink-0 transition-transform ${
-            agentDropdownOpen ? "rotate-180" : ""
-          }`}
+          className={`h-3 w-3 shrink-0 transition-transform ${agentDropdownOpen ? "rotate-180" : ""
+            }`}
         />
       </Button>
       {agentDropdownOpen && (
@@ -1752,11 +1744,10 @@ export function AgentDropdown() {
               <button
                 key={agent.id}
                 type="button"
-                className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
-                  selectedAgent === agent.id
+                className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${selectedAgent === agent.id
                     ? "bg-oc-accent-soft text-oc-accent"
                     : "hover:bg-oc-panel-soft"
-                }`}
+                  }`}
                 onClick={() => {
                   dispatch({ type: "SET_SELECTED_AGENT", payload: agent.id });
                   dispatch({ type: "SET_AGENT_DROPDOWN_OPEN", payload: false });
@@ -2065,24 +2056,52 @@ export function InputWrapper() {
   const suggestionsContainerRef = useRef<HTMLDivElement>(null);
 
   const filteredCommands = useMemo(() => {
+    console.log('[filteredCommands] useMemo called', {
+      slashTrigger,
+      availableCommandsCount: availableCommands.length,
+      availableCommandsNames: availableCommands.map(c => c.name)
+    });
+
     if (!slashTrigger) {
+      console.log('[filteredCommands] No slash trigger, returning empty array');
       return [] as SlashCommand[];
     }
 
     const query = slashTrigger.query.trim().toLowerCase();
     const base = availableCommands || [];
+    console.log('[filteredCommands] Filtering commands', {
+      query,
+      baseCount: base.length,
+      baseNames: base.map(c => c.name)
+    });
+
     if (!query) {
+      console.log('[filteredCommands] No query, returning all commands', base.length);
       return base;
     }
 
-    return base.filter((command) => {
+    const filtered = base.filter((command) => {
       const name = command.name.toLowerCase();
       return name.includes(query);
     });
+
+    console.log('[filteredCommands] Filtered result', {
+      filteredCount: filtered.length,
+      filteredNames: filtered.map(c => c.name)
+    });
+
+    return filtered;
   }, [slashTrigger, availableCommands]);
 
   useEffect(() => {
+    console.log('[slashCommand useEffect] Trigger check', {
+      hasSlashTrigger: !!slashTrigger,
+      commandsLoaded,
+      alreadyRequested: commandsRequestedRef.current
+    });
+
     if (slashTrigger && !commandsLoaded && !commandsRequestedRef.current) {
+      console.log('[slashCommand useEffect] Requesting commands');
       commandsRequestedRef.current = true;
       vscode.postMessage({ type: "getCommands" });
     }
@@ -2187,18 +2206,18 @@ export function InputWrapper() {
 
   const applyMentionSuggestion = (suggestion: FileResult) => {
     if (!mentionTrigger) return;
-    
+
     // Convert suggestion to a ContextItem
     const contextItem: ContextItem = {
       file: suggestion.path,
       lineInfo: "",
       content: "", // Content can be fetched downstream or attached implicitly
     };
-    
+
     const isAlreadySelected = selectedContexts.some(
       (c) => c.file === contextItem.file && c.lineInfo === contextItem.lineInfo
     );
-    
+
     if (!isAlreadySelected) {
       dispatch({
         type: "SET_SELECTED_CONTEXTS",
@@ -2208,7 +2227,7 @@ export function InputWrapper() {
 
     const before = inputValue.slice(0, mentionTrigger.replaceFrom);
     const after = inputValue.slice(mentionTrigger.replaceTo);
-    const nextValue = `${before}${after}`; 
+    const nextValue = `${before}${after}`;
 
     dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
     setMentionTrigger(null);
@@ -2361,29 +2380,41 @@ export function InputWrapper() {
   ) => {
     const batch = Object.entries(answers).map(([eventId, data]) => {
       const event = displayInteractiveEvents.find((e) => e.id === eventId);
-      const questionLabel =
-        event && "question" in event
+      const questionText =
+        event?.type === "question" || event?.type === "confirm"
           ? event.question
-          : event && "message" in event
-            ? event.message
-            : event?.title || undefined;
+          : event?.type === "quick_actions"
+            ? event.title || "Select an action"
+            : event?.type === "message"
+              ? event.message || event.title || "Acknowledge"
+              : event?.title || "";
       return {
         eventId,
         eventType: data.eventType,
         text: data.text,
-        questionLabel,
+        questionText,
       };
     });
 
+    // Include question context with answers so the model can ground follow-up turns,
+    // and render a UX-friendly user bubble that mirrors what was answered.
     const composedPrompt = batch
-      .map((resp) => {
-        if (resp.questionLabel) {
-          return `**${resp.questionLabel}**\n${resp.text}`;
+      .map((resp, index) => {
+        const answer = (resp.text || "").trim();
+        const question = (resp.questionText || "").trim();
+        if (!answer) {
+          return "";
         }
-        return resp.text;
+        if (!question) {
+          return `Answer ${index + 1}: ${answer}`;
+        }
+        return `Question ${index + 1}: ${question}\nAnswer: ${answer}`;
       })
+      .filter((line) => line.length > 0)
       .join("\n\n");
 
+    // Keep user bubble text aligned with the exact prompt sent upstream so
+    // "Question N" and "Answer" labels remain visible after submit/hydration.
     const displayText = composedPrompt;
 
     const nextMessages = [...messages];
@@ -2392,21 +2423,21 @@ export function InputWrapper() {
       const frozenMessageId = frozenAssistant.info?.id || frozenAssistant.id;
       const alreadyPresent = frozenMessageId
         ? nextMessages.some(
-            (message) =>
-              (message.info?.id || message.id || null) === frozenMessageId,
-          )
+          (message) =>
+            (message.info?.id || message.id || null) === frozenMessageId,
+        )
         : nextMessages.some((message) => {
-            const role = message.role || message.info?.role;
-            return (
-              role === "assistant" &&
-              (message.content || "").trim() ===
-                (frozenAssistant.content || "").trim() &&
-              (message.steps?.length || 0) ===
-                (frozenAssistant.steps?.length || 0) &&
-              (message.reasoningEvents?.length || 0) ===
-                (frozenAssistant.reasoningEvents?.length || 0)
-            );
-          });
+          const role = message.role || message.info?.role;
+          return (
+            role === "assistant" &&
+            (message.content || "").trim() ===
+            (frozenAssistant.content || "").trim() &&
+            (message.steps?.length || 0) ===
+            (frozenAssistant.steps?.length || 0) &&
+            (message.reasoningEvents?.length || 0) ===
+            (frozenAssistant.reasoningEvents?.length || 0)
+          );
+        });
 
       if (!alreadyPresent) {
         nextMessages.push(frozenAssistant);
@@ -2432,8 +2463,39 @@ export function InputWrapper() {
       payload: nextMessages,
     });
 
+    // Dismiss all events that were part of this batch immediately to prevent stale popover UI.
+    // Be defensive: some legacy/hydrated events may have missing/unstable IDs.
+    const respondedEventIds = new Set(batch.map((resp) => String(resp.eventId)));
+    const normalize = (value: string | undefined) => (value || "").trim().toLowerCase();
+    dispatch({
+      type: "SET_INTERACTIVE_EVENTS",
+      payload: interactiveEvents.filter((item) => {
+        const itemId = String((item as { id?: string }).id ?? "");
+        if (itemId && respondedEventIds.has(itemId)) {
+          return false;
+        }
+        const itemPrompt =
+          item.type === "question" || item.type === "confirm"
+            ? item.question
+            : item.type === "quick_actions"
+              ? item.title || "Select an action"
+              : item.type === "message"
+                ? item.message || item.title || "Acknowledge"
+                : item.title || "";
+        const itemPromptNorm = normalize(itemPrompt);
+        const matchedByContent = batch.some(
+          (resp) =>
+            normalize(resp.eventType) === normalize(item.type) &&
+            normalize(resp.questionText) === itemPromptNorm,
+        );
+        return !matchedByContent;
+      }),
+    });
+
     dispatch({ type: "SET_STREAMING", payload: null });
-    dispatch({ type: "SET_PROCESSING", payload: false });
+    // Immediately show loading state for interactive submissions instead of waiting
+    // for the extension host round-trip to publish processing-session updates.
+    dispatch({ type: "SET_PROCESSING", payload: true });
 
     vscode.postMessage({
       type: "batchInteractiveResponse",
@@ -2443,14 +2505,11 @@ export function InputWrapper() {
       agent: selectedAgent || null,
     });
 
-    // Dismiss all events that were part of this batch
-    batch.forEach((resp) => {
-      dispatch({ type: "DISMISS_INTERACTIVE_EVENT", payload: resp.eventId });
-    });
-
     // Reset state
     setPendingAnswers({});
     setCurrentInteractiveIndex(0);
+    setIsCustomMode(false);
+    setCustomValue("");
   };
 
   const stopRequest = () =>
@@ -2615,7 +2674,7 @@ export function InputWrapper() {
                       }
                     >
                       {currentInteractiveIndex === displayInteractiveEvents.length - 1 &&
-                      Object.keys(pendingAnswers).length > 0
+                        Object.keys(pendingAnswers).length > 0
                         ? `Submit All (${Object.keys(pendingAnswers).length + 1} answers)`
                         : "Submit"}
                     </button>
@@ -2866,7 +2925,7 @@ export function InputWrapper() {
                   e.preventDefault();
                   applyCommandSuggestion(
                     filteredCommands[selectedCommandIndex] ||
-                      filteredCommands[0],
+                    filteredCommands[0],
                   );
                   return;
                 }
@@ -2880,17 +2939,17 @@ export function InputWrapper() {
               if (mentionTrigger && showFileSuggestions) {
                 if (e.key === "ArrowDown" && fileSuggestions.length > 0) {
                   e.preventDefault();
-                  dispatch({ 
-                    type: "SET_SUGGESTION_INDEX", 
-                    payload: Math.min(selectedSuggestionIndex + 1, fileSuggestions.length - 1) 
+                  dispatch({
+                    type: "SET_SUGGESTION_INDEX",
+                    payload: Math.min(selectedSuggestionIndex + 1, fileSuggestions.length - 1)
                   });
                   return;
                 }
                 if (e.key === "ArrowUp" && fileSuggestions.length > 0) {
                   e.preventDefault();
-                  dispatch({ 
-                    type: "SET_SUGGESTION_INDEX", 
-                    payload: Math.max(selectedSuggestionIndex - 1, 0) 
+                  dispatch({
+                    type: "SET_SUGGESTION_INDEX",
+                    payload: Math.max(selectedSuggestionIndex - 1, 0)
                   });
                   return;
                 }
@@ -2935,9 +2994,8 @@ export function InputWrapper() {
                   <button
                     key={command.name}
                     type="button"
-                    className={`oc-suggestion-item ${
-                      index === selectedCommandIndex ? "active" : ""
-                    }`}
+                    className={`oc-suggestion-item ${index === selectedCommandIndex ? "active" : ""
+                      }`}
                     onMouseEnter={() => setSelectedCommandIndex(index)}
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => applyCommandSuggestion(command)}
@@ -2974,9 +3032,8 @@ export function InputWrapper() {
                 <button
                   key={suggestion.path}
                   type="button"
-                  className={`oc-suggestion-item ${
-                    index === selectedSuggestionIndex ? "active" : ""
-                  }`}
+                  className={`oc-suggestion-item ${index === selectedSuggestionIndex ? "active" : ""
+                    }`}
                   onMouseEnter={() => dispatch({ type: "SET_SUGGESTION_INDEX", payload: index })}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => applyMentionSuggestion(suggestion)}
@@ -3094,7 +3151,7 @@ export function ThinkingLevelControl() {
     if (!thinkingLevel || !localVariants.includes(thinkingLevel)) {
       dispatch({ type: "SET_THINKING_LEVEL", payload: localVariants[0] as ThinkingLevel });
     }
-  }, [ (localVariants || []).join(","), thinkingLevel, dispatch]);
+  }, [(localVariants || []).join(","), thinkingLevel, dispatch]);
 
   if (!modelCapability || !modelCapability.reasoning) return null;
 
@@ -3112,16 +3169,15 @@ export function ThinkingLevelControl() {
         }
         aria-label="Set thinking level"
       >
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span className="opacity-60">Think</span>
-            <span className="font-medium text-oc-accent">
-              {displayLabel(thinkingLevel)}
-            </span>
-          </div>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="opacity-60">Think</span>
+          <span className="font-medium text-oc-accent">
+            {displayLabel(thinkingLevel)}
+          </span>
+        </div>
         <ChevronDown
-          className={`h-3 w-3 shrink-0 transition-transform ${
-            thinkingDropdownOpen ? "rotate-180" : ""
-          }`}
+          className={`h-3 w-3 shrink-0 transition-transform ${thinkingDropdownOpen ? "rotate-180" : ""
+            }`}
         />
       </Button>
       {thinkingDropdownOpen && (
@@ -3131,11 +3187,10 @@ export function ThinkingLevelControl() {
               <button
                 key={level}
                 type="button"
-                className={`oc-popover-item w-full rounded-lg px-3 py-2 text-left transition-colors ${
-                  thinkingLevel === level
+                className={`oc-popover-item w-full rounded-lg px-3 py-2 text-left transition-colors ${thinkingLevel === level
                     ? "bg-oc-accent-soft text-oc-accent"
                     : "hover:bg-oc-panel-soft"
-                }`}
+                  }`}
                 onClick={() => setLevel(level)}
               >
                 <div className="flex items-center justify-between">
@@ -3220,9 +3275,8 @@ export function QuotaMonitor() {
             onClick={handleRefresh}
           >
             <RefreshCw
-              className={`mr-1 h-3.5 w-3.5 ${
-                quotaIsRefreshing ? "animate-spin" : ""
-              }`}
+              className={`mr-1 h-3.5 w-3.5 ${quotaIsRefreshing ? "animate-spin" : ""
+                }`}
             />
             Refresh
           </Button>
@@ -3392,13 +3446,12 @@ export function QuotaMonitor() {
                             </div>
                             <Badge
                               variant="accent"
-                              className={`font-mono text-[10px] uppercase h-5 px-1.5 border-none ${
-                                budgetInfo.warningLevel === "critical"
+                              className={`font-mono text-[10px] uppercase h-5 px-1.5 border-none ${budgetInfo.warningLevel === "critical"
                                   ? "bg-oc-red/10 text-oc-red"
                                   : budgetInfo.warningLevel === "warning"
                                     ? "bg-[#d29922]/10 text-[#d29922]"
                                     : "bg-oc-accent/10 text-oc-accent"
-                              }`}
+                                }`}
                             >
                               {budgetInfo.warningLevel}
                             </Badge>
@@ -3423,8 +3476,8 @@ export function QuotaMonitor() {
                                   background: barColor(
                                     budgetInfo.dailyAllowance > 0
                                       ? (budgetInfo.remainingToday /
-                                          budgetInfo.dailyAllowance) *
-                                          100
+                                        budgetInfo.dailyAllowance) *
+                                      100
                                       : 100,
                                   ),
                                 }}
@@ -3439,18 +3492,17 @@ export function QuotaMonitor() {
                                 Available
                               </div>
                               <div
-                                className={`text-sm font-bold leading-tight ${
-                                  budgetInfo.warningLevel === "critical"
+                                className={`text-sm font-bold leading-tight ${budgetInfo.warningLevel === "critical"
                                     ? "text-oc-red"
                                     : budgetInfo.warningLevel === "warning"
                                       ? "text-[#d29922]"
                                       : "text-oc-accent"
-                                }`}
+                                  }`}
                               >
                                 {budgetInfo.availableToday}
                               </div>
                               {budgetInfo.availableToday >
-                              budgetInfo.dailyAllowance ? (
+                                budgetInfo.dailyAllowance ? (
                                 <div className="mt-0.5 text-[9px] font-medium text-oc-accent/70 leading-none">
                                   +
                                   {budgetInfo.availableToday -
@@ -3596,8 +3648,7 @@ export function TodoPanel() {
                   className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-panel-soft p-2"
                 >
                   <div
-                    className={`text-[14px] leading-none mt-0.5 ${
-                      t.status === "failed"
+                    className={`text-[14px] leading-none mt-0.5 ${t.status === "failed"
                         ? "text-oc-red"
                         : t.status === "completed"
                           ? "text-oc-green"
@@ -3606,7 +3657,7 @@ export function TodoPanel() {
                             : t.status === "pending"
                               ? "text-[#d29922]"
                               : "text-[var(--oc-text-soft)]"
-                    }`}
+                      }`}
                   >
                     {statusIcon(t.status)}
                   </div>
@@ -3885,11 +3936,10 @@ export function LspPanel() {
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span
-                      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
-                        server.status === "connected"
+                      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${server.status === "connected"
                           ? "bg-[var(--oc-green)]"
                           : "bg-[var(--oc-red)]"
-                      }`}
+                        }`}
                       aria-hidden="true"
                     />
                     <span className="truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
@@ -3929,17 +3979,45 @@ export function LspPanel() {
 export function SkillsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const { availableCommands, commandsLoaded, serverStatus } = useAppState();
+  const dispatch = useAppDispatch();
 
   const hasSkills = availableCommands.length > 0;
+
+  // Debug logging to track state changes
+  useEffect(() => {
+    console.log('[SkillsPanel] State updated', {
+      availableCommandsCount: availableCommands.length,
+      commandsLoaded,
+      serverStatus,
+      hasSkills,
+      commandNames: availableCommands.map(c => c.name)
+    });
+  }, [availableCommands, commandsLoaded, serverStatus, hasSkills]);
 
   // Load commands on mount if server is ready and commands not yet loaded
   // This ensures SkillsPanel shows data immediately on desktop ≥1100px
   useEffect(() => {
+    console.log('[SkillsPanel] useEffect triggered', {
+      serverStatus,
+      commandsLoaded,
+      shouldFetch: serverStatus === "running" && !commandsLoaded
+    });
+
     if (serverStatus === "running" && !commandsLoaded) {
+      console.log('[SkillsPanel] Sending getCommands message');
       vscode.postMessage({ type: "getCommands" });
     }
   }, [serverStatus, commandsLoaded]);
+
+  function handleRefresh() {
+    console.log('[SkillsPanel] Manual refresh triggered');
+    setIsRefreshing(true);
+    dispatch({ type: "SET_COMMANDS_LIST", payload: [] });
+    vscode.postMessage({ type: "getCommands" });
+    setTimeout(() => setIsRefreshing(false), 3000);
+  }
 
   function toggleSkill(name: string) {
     setExpandedSkills((prev) => {
@@ -3968,20 +4046,33 @@ export function SkillsPanel() {
             </span>
           )}
         </div>
-        <Button
-          type="button"
-          aria-label={open ? "Collapse Skills" : "Expand Skills"}
-          onClick={() => setOpen((v) => !v)}
-          variant="ghost"
-          size="icon"
-          className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
-        >
-          {open ? (
-            <ChevronDown className="h-3 w-3" />
-          ) : (
-            <ChevronUp className="h-3 w-3" />
-          )}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            aria-label="Refresh Skills"
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+          >
+            <RefreshCw className={`h-3 w-3 ${isRefreshing ? "animate-spin" : ""}`} />
+          </Button>
+          <Button
+            type="button"
+            aria-label={open ? "Collapse Skills" : "Expand Skills"}
+            onClick={() => setOpen((v) => !v)}
+            variant="ghost"
+            size="icon"
+            className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+          >
+            {open ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronUp className="h-3 w-3" />
+            )}
+          </Button>
+        </div>
       </div>
 
       {open ? (
@@ -4798,7 +4889,7 @@ export function SettingsPanel() {
 
   const recentSaveStatus =
     opencodeConfigSaveStatus &&
-    Date.now() - opencodeConfigSaveStatus.savedAt < 120000
+      Date.now() - opencodeConfigSaveStatus.savedAt < 120000
       ? opencodeConfigSaveStatus
       : undefined;
 
@@ -4853,11 +4944,10 @@ export function SettingsPanel() {
 
         {recentSaveStatus ? (
           <div
-            className={`rounded-md border p-2 text-[11px] flex items-start gap-2 ${
-              recentSaveStatus.success
+            className={`rounded-md border p-2 text-[11px] flex items-start gap-2 ${recentSaveStatus.success
                 ? "border-oc-green/30 bg-oc-green/10 text-oc-green"
                 : "border-oc-red/30 bg-oc-red/10 text-oc-red"
-            }`}
+              }`}
           >
             {recentSaveStatus.success ? (
               <Check className="h-3.5 w-3.5 shrink-0 mt-0.5" />

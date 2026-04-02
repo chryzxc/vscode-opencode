@@ -109,6 +109,10 @@ export class SessionHandler {
     this.sendProcessingSessionsUpdate();
 
     try {
+      // CRITICAL: Switch the active session in SessionService
+      // This updates the service's internal state and persists it
+      await this.sessionService.switchSession(sessionId);
+
       const rawMessages = await this.sessionService.loadSessionMessages(sessionId);
       const messages = Array.isArray(rawMessages)
         ? this.historyProcessor.processHistoryMessages(rawMessages, sessionId)

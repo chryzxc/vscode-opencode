@@ -60,6 +60,8 @@
  */
 
 import { OpencodeServerManager } from './OpencodeServerManager';
+import { createLogger } from '../utils/Logger';
+import { LoggingCategories } from '../utils/LoggingSchema';
 import * as vscode from "vscode";
 
 /**
@@ -148,6 +150,9 @@ export class MessageStreamService {
 
   /** Reconnect timer (prevents stacked retries after repeated failures) */
   private reconnectTimer: NodeJS.Timeout | null = null;
+
+  /** Structured logger */
+  private logger = createLogger(LoggingCategories.STREAM_HANDLER);
 
   /**
    * Dedupes mirrored events when both /event and /global/event are active.
@@ -287,9 +292,7 @@ export class MessageStreamService {
     const abortSignal = this.abortController.signal;
     const startTime = Date.now();
 
-    console.log(
-      `[MessageStreamService] Starting SDK-based SSE listener`,
-    );
+    this.logger.info("Starting SDK-based SSE listener");
 
     try {
       const client = await this.serverManager.ensureRunning();
@@ -300,9 +303,9 @@ export class MessageStreamService {
               .replace(/\/+$/, "")
           : undefined;
       if (workspaceDirectory) {
-        console.log(
-          `[MessageStreamService] Workspace directory for stream filtering: ${workspaceDirectory}`,
-        );
+        this.logger.debug("Workspace directory for stream filtering", {
+          workspaceDirectory,
+        });
       }
       const eventSubscribeOptions = workspaceDirectory
         ? {
@@ -313,7 +316,7 @@ export class MessageStreamService {
             const eventHints = this.extractEventTypeHints(data);
             const eventType = eventHints[0];
             if (!this.isHeartbeatEvent(eventType) && this.shouldVerboseStreamDebug()) {
-              console.log("[MessageStreamService] /event SSE frame", {
+              this.logger.debug("/event SSE frame", {
                 eventType: eventType || "unknown",
                 eventName:
                   typeof rec?.event === "string" ? rec.event : undefined,
@@ -328,7 +331,7 @@ export class MessageStreamService {
             }
           },
           onSseError: (error: unknown) => {
-            console.error("[MessageStreamService] /event SSE callback error:", error);
+            this.logger.error("/event SSE callback error", {}, error as Error);
           },
         }
         : {
@@ -338,7 +341,7 @@ export class MessageStreamService {
             const eventHints = this.extractEventTypeHints(data);
             const eventType = eventHints[0];
             if (!this.isHeartbeatEvent(eventType) && this.shouldVerboseStreamDebug()) {
-              console.log("[MessageStreamService] /event SSE frame", {
+              this.logger.debug("/event SSE frame", {
                 eventType: eventType || "unknown",
                 eventName:
                   typeof rec?.event === "string" ? rec.event : undefined,
@@ -353,10 +356,10 @@ export class MessageStreamService {
             }
           },
           onSseError: (error: unknown) => {
-            console.error("[MessageStreamService] /event SSE callback error:", error);
+            this.logger.error("/event SSE callback error", {}, error as Error);
           },
         };
-      console.log("[MessageStreamService] Subscribing to /event", {
+      this.logger.info("Subscribing to /event", {
         directory: workspaceDirectory,
       });
       let events;
@@ -395,9 +398,9 @@ export class MessageStreamService {
         // });
       }
 
-      console.log(
-        `[MessageStreamService] Connection established in ${Date.now() - startTime}ms`,
-      );
+      this.logger.performance("Connection established", Date.now() - startTime, {
+        endpoint: "/event",
+      });
 
       const streamTasks: Array<Promise<void>> = [
         this.consumeEventStream(
@@ -410,9 +413,7 @@ export class MessageStreamService {
       ];
       if (client.global && typeof client.global.event === "function") {
         try {
-          console.log(
-            "[MessageStreamService] Subscribing to /global/event (fallback channel)",
-          );
+          this.logger.info("Subscribing to /global/event (fallback channel)");
           const globalEvents = await client.global.event({
             onSseEvent: (sseEvent: unknown) => {
               const rec = this.asRecord(sseEvent);
@@ -420,7 +421,7 @@ export class MessageStreamService {
               const eventHints = this.extractEventTypeHints(data);
               const eventType = eventHints[0];
               if (!this.isHeartbeatEvent(eventType) && this.shouldVerboseStreamDebug()) {
-                console.log("[MessageStreamService] /global/event SSE frame", {
+                this.logger.debug("/global/event SSE frame", {
                   eventType: eventType || "unknown",
                   eventName:
                     typeof rec?.event === "string" ? rec.event : undefined,
@@ -435,10 +436,7 @@ export class MessageStreamService {
               }
             },
             onSseError: (error: unknown) => {
-              console.error(
-                "[MessageStreamService] /global/event SSE callback error:",
-                error,
-              );
+              this.logger.error("/global/event SSE callback error", {}, error as Error);
             },
           });
           streamTasks.push(
@@ -451,10 +449,9 @@ export class MessageStreamService {
             ),
           );
         } catch (globalEventError) {
-          console.warn(
-            "[MessageStreamService] Failed to subscribe to /global/event fallback:",
-            globalEventError,
-          );
+          this.logger.warn("Failed to subscribe to /global/event fallback", {
+            error: globalEventError instanceof Error ? globalEventError.message : String(globalEventError),
+          });
         }
       }
 
@@ -467,11 +464,11 @@ export class MessageStreamService {
       }
     } catch (error: any) {
       if (error.name === "AbortError" || abortSignal.aborted) {
-        console.log("[MessageStreamService] Listening aborted");
+        this.logger.info("Listening aborted");
         return;
       }
 
-      console.error("[MessageStreamService] SSE stream error:", error);
+      this.logger.error("SSE stream error", {}, error);
       // Auto-reconnect after 5 seconds
       if (this.reconnectTimer) {
         return;
@@ -479,7 +476,9 @@ export class MessageStreamService {
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
         if (this.callbacks.size > 0) {
-          this.startListening().catch(console.error);
+          this.startListening().catch((err) => {
+            this.logger.error("Auto-reconnect failed", {}, err as Error);
+          });
         }
       }, 5000);
     }
@@ -538,15 +537,13 @@ export class MessageStreamService {
     for await (const rawEvent of stream) {
       if (abortSignal.aborted) {
         if (verboseDebug) {
-          console.log(`[MessageStreamService] ${source} listener aborted via signal`);
+          this.logger.debug(`${source} listener aborted via signal`);
         }
         break;
       }
 
       if (!firstChunkLogged && verboseDebug) {
-        console.log(
-          `[MessageStreamService] First event (${source}) received in ${Date.now() - startTime}ms`,
-        );
+        this.logger.performance(`First event (${source}) received`, Date.now() - startTime);
         firstChunkLogged = true;
       }
 
@@ -554,15 +551,13 @@ export class MessageStreamService {
         const normalizedEvent = this.normalizeIncomingEvent(rawEvent);
         if (!normalizedEvent) {
           const eventTypeHints = this.extractEventTypeHints(rawEvent);
-          console.warn(
-            `[MessageStreamService] Skipping unknown event shape from ${source}:`,
-            {
-              eventTypeHints,
-              rawEvent: verboseDebug
-                ? this.sanitizeForLogging(rawEvent)
-                : undefined,
-            },
-          );
+          this.logger.warn("Skipping unknown event shape", {
+            source,
+            eventTypeHints,
+            rawEvent: verboseDebug
+              ? this.sanitizeForLogging(rawEvent)
+              : undefined,
+          });
           continue;
         }
 
@@ -570,7 +565,7 @@ export class MessageStreamService {
           const properties = this.asRecord(normalizedEvent.properties);
           const part = this.asRecord(properties?.part);
           const info = this.asRecord(properties?.info);
-          console.log("[MessageStreamService] Incoming stream event", {
+          this.logger.debug("Incoming stream event", {
             source,
             type: normalizedEvent.type,
             directory:
@@ -611,14 +606,12 @@ export class MessageStreamService {
               ? ((normalizedEvent as Record<string, unknown>).directory as string)
               : undefined;
           if (verboseDebug) {
-            console.log(
-              `[MessageStreamService] Ignoring event from ${source} due to directory mismatch`,
-              {
-                type: normalizedEvent.type,
-                eventDirectory,
-                workspaceDirectory,
-              },
-            );
+            this.logger.debug("Ignoring event due to directory mismatch", {
+              source,
+              type: normalizedEvent.type,
+              eventDirectory,
+              workspaceDirectory,
+            });
           }
           continue;
         }
@@ -630,7 +623,7 @@ export class MessageStreamService {
 
         if (this.isDuplicateEvent(eventWithSource)) {
           if (!this.isHeartbeatEvent(eventWithSource.type) && verboseDebug) {
-            console.log("[MessageStreamService] Dropped duplicate event", {
+            this.logger.debug("Dropped duplicate event", {
               source,
               type: eventWithSource.type,
             });
@@ -640,10 +633,7 @@ export class MessageStreamService {
 
         this.notifyCallbacks(eventWithSource);
       } catch (error) {
-        console.error(
-          `[MessageStreamService] Failed to process event from ${source}:`,
-          error,
-        );
+        this.logger.error("Failed to process event", { source }, error as Error);
       }
     }
   }
@@ -1144,7 +1134,7 @@ export class MessageStreamService {
         callback(event);
       } catch (error) {
         // Log but don't throw - one bad callback shouldn't break everything
-        console.error("Callback error:", error);
+        this.logger.error("Callback error in subscriber", {}, error as Error);
       }
     });
   }

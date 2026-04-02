@@ -557,6 +557,7 @@ export interface AppState {
   isSessionModalOpen: boolean;
   sessionsList: Session[];
   processingSessionIds: string[];
+  switchingSessionId: string | null;
   sessionEdits: Set<string>;
   sessionStats: SessionStats;
   sessionsStatsById?: Record<string, SessionStats>;

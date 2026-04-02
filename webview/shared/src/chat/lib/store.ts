@@ -50,6 +50,7 @@ export const initialState: AppState = {
   isSessionModalOpen: false,
   sessionsList: [],
   processingSessionIds: [],
+  switchingSessionId: null as string | null,
   sessionEdits: new Set<string>(),
   sessionStats: {
     input: 0,
@@ -126,6 +127,7 @@ export type AppAction =
   | { type: "SET_STEERING"; payload: boolean }
   | { type: "SET_SESSIONS_LIST"; payload: Session[] }
   | { type: "SET_PROCESSING_SESSIONS"; payload: string[] }
+  | { type: "SET_SWITCHING_SESSION"; payload: string | null }
   | { type: "ADD_SESSION_EDIT"; payload: string }
   | { type: "CLEAR_SESSION_EDITS" }
   | { type: "UPDATE_SESSION_STATS"; payload: Partial<SessionStats> }
@@ -261,6 +263,23 @@ function asStringLocal(...values: unknown[]): string {
     }
   }
   return "";
+}
+
+function hasBlockingInteractiveEventsLocal(
+  events: InteractiveEvent[] | undefined,
+): boolean {
+  if (!Array.isArray(events) || events.length === 0) {
+    return false;
+  }
+  return events.some((event) => {
+    const type = (event?.type || "").toLowerCase();
+    return (
+      type === "question" ||
+      type === "confirm" ||
+      type === "quick_actions" ||
+      type === "quick-actions"
+    );
+  });
 }
 
 export function normalizeComparableTextLocal(value: string): string {
@@ -1251,6 +1270,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, serverStatus: action.payload };
     case "SET_PROCESSING_SESSIONS":
       return { ...state, processingSessionIds: action.payload };
+    case "SET_SWITCHING_SESSION":
+      return { ...state, switchingSessionId: action.payload };
     case "SET_SERVER_VERSION":
       return { ...state, serverVersion: action.payload };
     case "SET_SELECTED_MODEL":
@@ -1290,6 +1311,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "CLEAR_MESSAGES":
       return { ...state, messages: [] };
     case "SET_PROCESSING":
+      // If a blocking interactive prompt is already visible and streaming is no
+      // longer active, ignore stale attempts to flip processing back on.
+      // This prevents the UI from jumping back to loading while waiting for
+      // the user's interactive answer.
+      if (
+        action.payload &&
+        hasBlockingInteractiveEventsLocal(state.interactiveEvents) &&
+        (!state.streaming || state.streaming.isActive === false)
+      ) {
+        return { ...state, isProcessing: false, isSteering: false };
+      }
       // When processing starts, create an empty streaming state so the StreamingCard is visible immediately
       // instead of showing the "Thinking..." bubble
       if (action.payload && (!state.streaming || !state.streaming.isActive)) {

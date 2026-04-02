@@ -31,8 +31,13 @@ test("history hydration reuses canonical processing path and disables synthetic 
   );
   assert.match(
     processBody,
-    /const\s+deduped\s*=\s*this\.dedupeMirrorHistoryMessages\(processed\);/,
-    "processHistoryMessages should dedupe mirror local/server entries before merge/coalescing",
+    /const\s+ordered\s*=\s*this\.orderHistoryMessagesChronologically\(processed\);/,
+    "processHistoryMessages should first stabilize chronological order before dedupe",
+  );
+  assert.match(
+    processBody,
+    /const\s+deduped\s*=\s*this\.dedupeMirrorHistoryMessages\(ordered\);/,
+    "processHistoryMessages should dedupe mirror local/server entries after chronological stabilization",
   );
   assert.match(
     processBody,

@@ -198,15 +198,59 @@ export class HistoryProcessor {
       })
       .filter((message) => this.isRenderableHistoryMessage(message));
 
-    const deduped = this.dedupeMirrorHistoryMessages(processed);
+    const ordered = this.orderHistoryMessagesChronologically(processed);
+    const deduped = this.dedupeMirrorHistoryMessages(ordered);
     const mergedActivity = this.mergeAdjacentAssistantActivityMessages(deduped);
     return this.mergeConsecutiveAssistantBursts(mergedActivity);
+  }
+
+  private orderHistoryMessagesChronologically(messages: any[]): any[] {
+    if (!Array.isArray(messages) || messages.length <= 1) {
+      return messages;
+    }
+
+    const decorated = messages.map((message, index) => ({
+      message,
+      index,
+      createdAt: this.historyMessageCreatedAt(message),
+      role: this.firstNonEmptyString(
+        message?.role,
+        message?.info?.role,
+        message?.sender,
+      )?.toLowerCase(),
+    }));
+
+    decorated.sort((a, b) => {
+      if (
+        typeof a.createdAt === "number" &&
+        Number.isFinite(a.createdAt) &&
+        typeof b.createdAt === "number" &&
+        Number.isFinite(b.createdAt)
+      ) {
+        if (a.createdAt !== b.createdAt) {
+          return a.createdAt - b.createdAt;
+        }
+
+        // For same-timestamp turns, keep user input ahead of assistant output.
+        if (a.role === "user" && b.role === "assistant") {
+          return -1;
+        }
+        if (a.role === "assistant" && b.role === "user") {
+          return 1;
+        }
+      }
+
+      // Preserve original order when timestamps are unavailable/ambiguous.
+      return a.index - b.index;
+    });
+
+    return decorated.map((entry) => entry.message);
   }
 
   /**
    * Merge adjacent assistant activity messages
    */
-  private mergeAdjacentAssistantActivityMessages(messages: any[]): any[] {
+  public mergeAdjacentAssistantActivityMessages(messages: any[]): any[] {
     const result: any[] = [];
     for (const message of messages) {
       if (!this.isActivityOnlyAssistantMessage(message)) {
@@ -236,7 +280,7 @@ export class HistoryProcessor {
   /**
    * Merge consecutive assistant bursts
    */
-  private mergeConsecutiveAssistantBursts(messages: any[]): any[] {
+  public mergeConsecutiveAssistantBursts(messages: any[]): any[] {
     const result: any[] = [];
     let currentBurst: any[] = [];
 
@@ -421,6 +465,15 @@ export class HistoryProcessor {
     if (this.isInternalSystemReminderMessage(message)) {
       return false;
     }
+
+    // FIX: Check assistant messages with parts FIRST, before any other checks.
+    // This ensures question-type messages with parts but no text content are preserved.
+    // Prevents regression where assistant messages disappear after session restart.
+    const role = message.role || message.info?.role;
+    if (role === "assistant" && Array.isArray(message.parts) && message.parts.length > 0) {
+      return true;
+    }
+
     if (this.extractMessageBodyText(message)?.trim()) return true;
     if (message.structuredOutput) return true;
     if (Array.isArray(message.subagents) && message.subagents.length > 0) return true;
@@ -487,7 +540,7 @@ export class HistoryProcessor {
   /**
    * Dedupe mirror history messages
    */
-  private dedupeMirrorHistoryMessages(messages: any[]): any[] {
+  public dedupeMirrorHistoryMessages(messages: any[]): any[] {
     const seen = new Set<string>();
     return messages.filter((message) => {
       const fingerprint = this.historyMessageFingerprint(message);
@@ -659,7 +712,7 @@ export class HistoryProcessor {
   /**
    * Get latest assistant history marker
    */
-  private getLatestAssistantHistoryMarker(messages: any[]): {
+  public getLatestAssistantHistoryMarker(messages: any[]): {
     id?: string;
     fingerprint?: string;
     createdAt?: number;
@@ -698,7 +751,7 @@ export class HistoryProcessor {
   /**
    * Check if assistant history has advanced
    */
-  private hasAssistantHistoryAdvanced(
+  public hasAssistantHistoryAdvanced(
     currentMessages: any[] | { id?: string; fingerprint?: string; createdAt?: number; richness?: number } | undefined,
     previousMessages: any[] | { id?: string; fingerprint?: string; createdAt?: number; richness?: number } | undefined,
   ): boolean {

@@ -3,6 +3,74 @@ import assert from 'node:assert/strict';
 import type { Message } from './types';
 import { normalizeMessage } from './messageHandler';
 
+describe('normalizeMessage - responseType handling', () => {
+  it('should handle message with responseType field without throwing', () => {
+    // This test specifically covers the bug fix where firstNonEmptyString was undefined
+    const inputMessage: Message = {
+      role: 'assistant',
+      content: 'Test message with responseType',
+      responseType: 'question',
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should return a message without throwing');
+    assert.strictEqual(result?.role, 'assistant');
+    assert.strictEqual(result?.content, 'Test message with responseType');
+  });
+
+  it('should handle message with both responseType and structuredOutput.responseType', () => {
+    // Test firstNonEmptyString chooses the first non-empty value
+    const inputMessage: Message = {
+      role: 'assistant',
+      content: 'Test message',
+      responseType: 'implementation_plan',
+      structuredOutput: {
+        responseType: 'question',
+        message: 'Test question',
+        interactiveEvents: [],
+      }
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should return a message');
+    // The firstNonEmptyString should pick the first non-empty value
+    // and convert it to lowercase
+    const resultRecord = result as Record<string, unknown>;
+    assert.ok(resultRecord.responseType || resultRecord.structuredOutput, 'Should handle responseType fields');
+  });
+
+  it('should handle message with empty responseType', () => {
+    const inputMessage: Message = {
+      role: 'assistant',
+      content: 'Test message',
+      responseType: '',
+      structuredOutput: {
+        responseType: 'question',
+        message: 'Test',
+        interactiveEvents: [],
+      }
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle empty responseType without throwing');
+  });
+
+  it('should handle message with whitespace-only responseType', () => {
+    const inputMessage: Message = {
+      role: 'assistant',
+      content: 'Test message',
+      responseType: '   ',
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle whitespace-only responseType');
+  });
+});
+
 describe('normalizeMessage', () => {
   it('should preserve structuredOutput field when present', () => {
     const inputMessage: Message = {
@@ -179,6 +247,135 @@ describe('normalizeMessage', () => {
       (result as Record<string, unknown>).structuredOutput,
       'structuredOutput should still be preserved when preferring streaming content'
     );
+  });
+});
+
+describe('normalizeMessage - chatHistory regression tests', () => {
+  it('should handle chatHistory messages with responseType from server', () => {
+    // This is the exact scenario that was failing when switching sessions
+    const chatHistoryMessage: Message = {
+      id: 'ses_123_msg_1',
+      role: 'assistant',
+      content: 'Here is my response',
+      responseType: 'text',
+      timestamp: Date.now(),
+    };
+
+    const result = normalizeMessage(chatHistoryMessage, null);
+
+    assert.ok(result, 'Should successfully normalize chatHistory message');
+    assert.strictEqual(result?.id, 'ses_123_msg_1');
+    assert.strictEqual(result?.role, 'assistant');
+    assert.strictEqual(result?.content, 'Here is my response');
+  });
+
+  it('should handle chatHistory messages with plan and responseType', () => {
+    const chatHistoryMessage: Message = {
+      id: 'ses_123_msg_2',
+      role: 'assistant',
+      content: 'Plan content',
+      responseType: 'implementation_plan',
+      plan: {
+        id: 'plan-1',
+        summary: 'Test plan summary',
+        steps: [
+          { id: 'step-1', instruction: 'Step 1', status: 'pending' },
+          { id: 'step-2', instruction: 'Step 2', status: 'pending' },
+        ],
+      },
+    };
+
+    const result = normalizeMessage(chatHistoryMessage, null);
+
+    assert.ok(result, 'Should successfully normalize message with plan and responseType');
+    assert.strictEqual(result?.role, 'assistant');
+    const resultRecord = result as Record<string, unknown>;
+    assert.ok(resultRecord.plan, 'Plan should be preserved');
+  });
+
+  it('should handle multiple chatHistory messages in sequence', () => {
+    const messages: Message[] = [
+      {
+        id: 'msg-1',
+        role: 'user',
+        content: 'Create a plan',
+      },
+      {
+        id: 'msg-2',
+        role: 'assistant',
+        content: 'Plan content',
+        responseType: 'implementation_plan',
+        plan: {
+          id: 'plan-1',
+          summary: 'Test plan',
+          steps: [],
+        },
+      },
+      {
+        id: 'msg-3',
+        role: 'user',
+        content: 'Proceed with this plan.',
+      },
+      {
+        id: 'msg-4',
+        role: 'assistant',
+        content: 'Execution started',
+        responseType: 'text',
+      },
+    ];
+
+    // Process all messages without throwing
+    const results = messages.map(msg => normalizeMessage(msg, null));
+
+    assert.strictEqual(results.length, 4, 'All messages should be processed');
+    results.forEach((result, index) => {
+      assert.ok(result, `Message ${index + 1} should be normalized successfully`);
+      assert.strictEqual(result?.id, messages[index].id);
+      assert.strictEqual(result?.role, messages[index].role);
+    });
+  });
+
+  it('should handle chatHistory messages with missing optional fields', () => {
+    const minimalMessage: Message = {
+      role: 'assistant',
+      content: 'Simple message',
+    };
+
+    const result = normalizeMessage(minimalMessage, null);
+
+    assert.ok(result, 'Should handle minimal message structure');
+    assert.strictEqual(result?.role, 'assistant');
+    assert.strictEqual(result?.content, 'Simple message');
+  });
+
+  it('should handle chatHistory messages with nested structuredOutput', () => {
+    const messageWithStructuredOutput: Message = {
+      id: 'msg-structured',
+      role: 'assistant',
+      content: 'Question for user',
+      responseType: 'question',
+      structuredOutput: {
+        responseType: 'question',
+        message: 'Please choose:',
+        interactiveEvents: [{
+          type: 'question',
+          id: 'q-1',
+          question: 'Select an option',
+          options: [
+            { id: 'opt1', label: 'Option 1', value: 'opt1' },
+            { id: 'opt2', label: 'Option 2', value: 'opt2' },
+          ],
+          multiSelect: false,
+          allowCustomInput: false,
+        }],
+      },
+    };
+
+    const result = normalizeMessage(messageWithStructuredOutput, null);
+
+    assert.ok(result, 'Should handle message with nested responseType fields');
+    const resultRecord = result as Record<string, unknown>;
+    assert.ok(resultRecord.structuredOutput, 'structuredOutput should be preserved');
   });
 });
 

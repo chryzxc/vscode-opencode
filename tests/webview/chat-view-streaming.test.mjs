@@ -100,7 +100,7 @@ test('ChatViewProvider includes sessionId when posting final/error response payl
   );
 });
 
-test('ChatViewProvider attempts timeout recovery before surfacing hard send errors', () => {
+test('ChatViewProvider attempts interactive transport recovery before surfacing hard send errors', () => {
   const sendMessageBody = extractFunctionBody(
     chatProviderSource,
     'private async handleSendMessage(',
@@ -108,13 +108,18 @@ test('ChatViewProvider attempts timeout recovery before surfacing hard send erro
 
   assert.match(
     sendMessageBody,
-    /isLikelyInteractiveAwaitTimeoutError\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*session\.id,\s*baselineAssistantMarker/s,
-    'response.error timeout path should try session-history recovery before showing an error banner',
+    /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*session\.id,\s*baselineAssistantMarker/s,
+    'response.error interactive transport-failure path should try session-history recovery before showing an error banner',
   );
   assert.match(
     sendMessageBody,
-    /drainSessionId[\s\S]*isLikelyInteractiveAwaitTimeoutError\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*drainSessionId,\s*baselineAssistantMarker/s,
-    'thrown timeout path should also try session-history recovery before surfacing a hard error',
+    /drainSessionId[\s\S]*isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*drainSessionId,\s*baselineAssistantMarker/s,
+    'thrown interactive transport-failure path should also try session-history recovery before surfacing a hard error',
+  );
+  assert.match(
+    chatProviderSource,
+    /isGenericErrorMessage\(message\)/,
+    'interactive transport-failure detection should include generic fetch/network failures',
   );
 });
 

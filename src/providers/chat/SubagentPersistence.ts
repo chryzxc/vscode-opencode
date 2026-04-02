@@ -6,6 +6,7 @@
  * Extracted from ChatViewProvider.ts (~250 lines)
  */
 
+import * as vscode from "vscode";
 import type { SubagentTracker } from "../../services/SubagentTracker";
 import type { SubagentUpdatePayload } from "../../services/SubagentTracker";
 

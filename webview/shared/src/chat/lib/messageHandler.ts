@@ -48,6 +48,18 @@ function streamDebug(...args: unknown[]): void {
   }
 }
 
+/**
+ * Returns the first non-empty string from the provided values, or undefined if all are empty.
+ */
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -1212,7 +1224,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
         if (!evt) {
           return null;
         }
-        const title = asString(evt.title);
+        const title = sanitizeSubagentLabel(asString(evt.title));
         if (!title) {
           return null;
         }
@@ -1233,7 +1245,8 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
         } as SubagentProgressEvent;
       })
       .filter((item): item is SubagentProgressEvent => !!item);
-    return events.length > 0 ? events : undefined;
+    const normalized = normalizeSubagentProgressEventsForPresentation(events);
+    return normalized.length > 0 ? normalized : undefined;
   };
   const normalizeSubagentThinkingEvents = (
     raw: unknown,
@@ -1276,7 +1289,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
         if (!evt) {
           return null;
         }
-        const label = asString(evt.label);
+        const label = sanitizeSubagentLabel(asString(evt.label));
         if (!label) {
           return null;
         }
@@ -1291,7 +1304,8 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
         } as SubagentTimelineEvent;
       })
       .filter((item): item is SubagentTimelineEvent => !!item);
-    return events.length > 0 ? events : undefined;
+    const normalized = normalizeSubagentTimelineEventsForPresentation(events);
+    return normalized.length > 0 ? normalized : undefined;
   };
   const subagents = Array.isArray(subagentsRaw)
     ? subagentsRaw
@@ -1310,7 +1324,10 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
           status: asString(subagent.status) ? normalizeSubagentStatus(asString(subagent.status)) : undefined,
           progress: typeof subagent.progress === 'number' ? subagent.progress : undefined,
           description: asString(subagent.description) || undefined,
-          latestActivity: asString(subagent.latestActivity) || asString(subagent.description) || undefined,
+          latestActivity:
+            sanitizeSubagentLabel(
+              asString(subagent.latestActivity) || asString(subagent.description),
+            ) || undefined,
           childSessionId: asString(subagent.childSessionId) || undefined,
           parentSessionId: asString(subagent.parentSessionId) || undefined,
           parentMessageId: asString(subagent.parentMessageId) || undefined,
@@ -1346,7 +1363,10 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
               status: asString(subagent.status) || undefined,
               progress: typeof subagent.progress === 'number' ? subagent.progress : undefined,
               description: asString(subagent.description) || undefined,
-              latestActivity: asString(subagent.latestActivity) || asString(subagent.description) || undefined,
+              latestActivity:
+                sanitizeSubagentLabel(
+                  asString(subagent.latestActivity) || asString(subagent.description),
+                ) || undefined,
               childSessionId: asString(subagent.childSessionId) || undefined,
               parentSessionId: asString(subagent.parentSessionId) || undefined,
               parentMessageId: asString(subagent.parentMessageId) || undefined,
@@ -1874,6 +1894,23 @@ function shouldOverrideStreamingContentWithInteractivePrompt(
     return true;
   }
 
+  // Some providers can leak tiny tool-intent fragments before the question
+  // event is emitted (for example: "wants"). Treat these as placeholders.
+  const likelyFragment =
+    /^(?:wants?|wants?\s+to|ask(?:s|ing)?|question(?:s|ing)?)$/i.test(trimmed) &&
+    trimmed.length <= 24;
+  if (likelyFragment) {
+    return true;
+  }
+
+  // FIX: If there's substantial content already (more than 150 chars),
+  // preserve it instead of replacing with question context.
+  // This prevents AI responses from disappearing when questions are asked.
+  const CONTENT_THRESHOLD = 150;
+  if (trimmed.length > CONTENT_THRESHOLD) {
+    return false;
+  }
+
   return (
     normalized === 'running question' ||
     normalized === 'question' ||
@@ -2352,6 +2389,13 @@ function sanitizeAssistantMessageEcho(message: Message, state: AppState): Messag
 function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined {
   const rec = asRecord(message);
   if (!rec) {
+    // FIX: If this is an assistant message with parts, don't return undefined
+    // This prevents question-type messages from being filtered during hydration
+    const role = asString(message.role);
+    const hasParts = Array.isArray((message as Message).parts) && (message as Message).parts.length > 0;
+    if (role === 'assistant' && hasParts) {
+      return message as Message; // Preserve assistant messages with parts
+    }
     return streaming ? buildStreamingMessage(streaming) : undefined;
   }
 
@@ -2597,10 +2641,16 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   // NOTE: When the AI triggers a question via a tool call (no text parts), content ends up
   // empty. Synthesize a context message from the Question tool parts so the chat bubble
   // always shows the question — during the live session AND after extension restart.
-  if (!normalized.content?.trim()) {
-    const structuredEvents = Array.isArray(normalized.interactiveEvents)
-      ? normalized.interactiveEvents
-      : [];
+  const structuredEvents = Array.isArray(normalized.interactiveEvents)
+    ? normalized.interactiveEvents
+    : [];
+  if (
+    (structuredEvents.length > 0 &&
+      shouldOverrideStreamingContentWithInteractivePrompt(
+        asString(normalized.content),
+      )) ||
+    !normalized.content?.trim()
+  ) {
     const synthesized = synthesizeQuestionContextMessage(structuredEvents);
     if (synthesized) {
       normalized.content = synthesized;
@@ -2676,6 +2726,105 @@ function isSubagentStatus(value: unknown): value is SubagentSummary['status'] {
   return value === 'pending' || value === 'running' || value === 'done' || value === 'error' || value === 'orphaned';
 }
 
+function isOpaqueSubagentToken(value: string): boolean {
+  const text = value.trim();
+  if (text.length < 8) {
+    return false;
+  }
+  return (
+    /^[a-f0-9-]{8,}$/i.test(text) ||
+    /^msg[_-][a-z0-9-]+$/i.test(text) ||
+    /^call[_-][a-z0-9-]+$/i.test(text) ||
+    /^ses[_-][a-z0-9-]+$/i.test(text)
+  );
+}
+
+function sanitizeSubagentLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || isOpaqueSubagentToken(trimmed)) {
+    return '';
+  }
+  return trimmed.replace(/\s+/g, ' ');
+}
+
+function normalizeSubagentProgressEventsForPresentation(
+  events: SubagentProgressEvent[],
+): SubagentProgressEvent[] {
+  if (events.length <= 1) {
+    return events;
+  }
+
+  const byCallId = new Map<string, SubagentProgressEvent>();
+  const ordered: SubagentProgressEvent[] = [];
+  for (const event of events) {
+    if (!event.callID) {
+      ordered.push(event);
+      continue;
+    }
+    const current = byCallId.get(event.callID);
+    if (!current) {
+      byCallId.set(event.callID, event);
+      ordered.push(event);
+      continue;
+    }
+    current.createdAt = Math.max(current.createdAt, event.createdAt);
+    current.status =
+      event.status === 'error'
+        ? 'error'
+        : event.status === 'done' || current.status === 'done'
+          ? 'done'
+          : 'pending';
+    current.title = event.title || current.title;
+    current.meta = event.meta || current.meta;
+    current.filePath = event.filePath || current.filePath;
+  }
+
+  const deduped: SubagentProgressEvent[] = [];
+  const seen = new Set<string>();
+  for (const event of ordered) {
+    const key = [
+      event.callID || '',
+      normalizeComparableText(event.title),
+      normalizeComparableText(event.meta || ''),
+      normalizeComparableText(event.filePath || ''),
+      event.status,
+    ].join('|');
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped;
+}
+
+function normalizeSubagentTimelineEventsForPresentation(
+  events: SubagentTimelineEvent[],
+): SubagentTimelineEvent[] {
+  if (events.length <= 1) {
+    return events;
+  }
+  const sorted = [...events].sort((a, b) => a.createdAt - b.createdAt);
+  const deduped: SubagentTimelineEvent[] = [];
+  for (const event of sorted) {
+    const previous = deduped[deduped.length - 1];
+    if (
+      previous &&
+      previous.type === event.type &&
+      normalizeComparableText(previous.label) ===
+        normalizeComparableText(event.label)
+    ) {
+      previous.createdAt = Math.max(previous.createdAt, event.createdAt);
+      previous.messageID = event.messageID || previous.messageID;
+      previous.partID = event.partID || previous.partID;
+      previous.callID = event.callID || previous.callID;
+      continue;
+    }
+    deduped.push(event);
+  }
+  return deduped;
+}
+
 function normalizeSubagentSummary(value: unknown): SubagentSummary | null {
   const rec = asRecord(value);
   if (!rec) {
@@ -2721,7 +2870,7 @@ function normalizeSubagentSummary(value: unknown): SubagentSummary | null {
     endedAt: asOptionalNumber(rec.endedAt),
     durationMs: asOptionalNumber(rec.durationMs),
     status: isSubagentStatus(rec.status) ? rec.status : 'pending',
-    latestActivity: asString(rec.latestActivity) || 'Subagent update',
+    latestActivity: sanitizeSubagentLabel(asString(rec.latestActivity)) || 'Subagent update',
     references
   };
 }
@@ -2766,7 +2915,7 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
         if (!evt) {
           return null;
         }
-        const title = asString(evt.title);
+        const title = sanitizeSubagentLabel(asString(evt.title));
         if (!title) {
           return null;
         }
@@ -2795,7 +2944,7 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
         }
         const key = asString(evt.key);
         const type = asString(evt.type);
-        const label = asString(evt.label);
+        const label = sanitizeSubagentLabel(asString(evt.label));
         if (!key || !type || !label) {
           return null;
         }
@@ -2813,14 +2962,19 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
       .filter((entry): entry is SubagentTimelineEvent => !!entry)
     : [];
 
+  const normalizedProgressEvents =
+    normalizeSubagentProgressEventsForPresentation(progressEvents);
+  const normalizedTimelineEvents =
+    normalizeSubagentTimelineEventsForPresentation(timelineEvents);
+
   const tokenUsageRec = asRecord(rec.tokenUsage);
   const tokenCacheRec = asRecord(tokenUsageRec?.cache);
 
   return {
     ...summary,
     thinkingEvents,
-    progressEvents,
-    timelineEvents,
+    progressEvents: normalizedProgressEvents,
+    timelineEvents: normalizedTimelineEvents,
     tokenUsage: tokenUsageRec
       ? {
         input: asOptionalNumber(tokenUsageRec.input),
@@ -3059,35 +3213,53 @@ function normalizeHydratedSubagentDetail(
   message: Message | undefined,
   freezeIncompleteStatuses: boolean,
 ): SubagentDetail {
+  const cleanedLatestActivity =
+    sanitizeSubagentLabel(detail.latestActivity) || "Subagent update";
+  const normalizedForPresentation: SubagentDetail = {
+    ...detail,
+    latestActivity: cleanedLatestActivity,
+    progressEvents: normalizeSubagentProgressEventsForPresentation(
+      Array.isArray(detail.progressEvents) ? detail.progressEvents : [],
+    ),
+    timelineEvents: normalizeSubagentTimelineEventsForPresentation(
+      Array.isArray(detail.timelineEvents) ? detail.timelineEvents : [],
+    ),
+  };
+
   if (!freezeIncompleteStatuses) {
-    return detail;
+    return normalizedForPresentation;
   }
 
-  const status = detail.status;
+  const status = normalizedForPresentation.status;
   if (status !== "pending" && status !== "running" && status !== "orphaned") {
-    return detail;
+    return normalizedForPresentation;
   }
 
   const completedAt =
-    (typeof detail.endedAt === "number" && Number.isFinite(detail.endedAt)
-      ? detail.endedAt
+    (typeof normalizedForPresentation.endedAt === "number" &&
+    Number.isFinite(normalizedForPresentation.endedAt)
+      ? normalizedForPresentation.endedAt
       : undefined) ??
     (message ? messageCompletedAt(message) : undefined) ??
-    latestSubagentEventTimestamp(detail) ??
-    detail.startedAt;
+    latestSubagentEventTimestamp(normalizedForPresentation) ??
+    normalizedForPresentation.startedAt;
   const startedAt =
-    typeof detail.startedAt === "number" && Number.isFinite(detail.startedAt)
-      ? detail.startedAt
+    typeof normalizedForPresentation.startedAt === "number" &&
+    Number.isFinite(normalizedForPresentation.startedAt)
+      ? normalizedForPresentation.startedAt
       : undefined;
   const durationMs =
     typeof startedAt === "number" && typeof completedAt === "number"
       ? Math.max(0, completedAt - startedAt)
-      : detail.durationMs;
+      : normalizedForPresentation.durationMs;
 
   const normalized: SubagentDetail = {
-    ...detail,
+    ...normalizedForPresentation,
     status: "done",
-    endedAt: typeof completedAt === "number" ? completedAt : detail.endedAt,
+    endedAt:
+      typeof completedAt === "number"
+        ? completedAt
+        : normalizedForPresentation.endedAt,
     durationMs,
   };
   if (
@@ -3486,6 +3658,14 @@ function hasRenderableHistoryPayload(message: Message): boolean {
   //   return false;
   // }
 
+  // FIX: Check assistant messages with parts FIRST, before any other checks.
+  // This ensures question-type messages with parts but no text content are preserved.
+  // Prevents regression where assistant messages disappear after session restart.
+  const role = asString(message.role) || asString(asRecord(message.info)?.role);
+  if (role === "assistant" && Array.isArray(message.parts) && message.parts.length > 0) {
+    return true;
+  }
+
   const text = extractMessageText(message).trim();
   if (text.length > 0) {
     return true;
@@ -3536,10 +3716,8 @@ function hasRenderableHistoryPayload(message: Message): boolean {
 
   // Preserve assistant turns that only contain activity parts
   // (tool/reasoning/step/patch) so reload matches stream-time rendering.
-  const role = asString(message.role) || asString(asRecord(message.info)?.role);
-  if (role === "assistant" && Array.isArray(message.parts) && message.parts.length > 0) {
-    return true;
-  }
+  // Note: This check is now redundant since we moved it to the top,
+  // but kept for clarity and backwards compatibility.
 
   if (Array.isArray(message.parts)) {
     return message.parts.some((part) => {
@@ -5877,6 +6055,25 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   let latestStreamingSnapshot: StreamingState | null = null;
   let terminalErrorReached = false;
   let activeSubagentParentMessageIds = new Set<string>();
+  let interactiveResponseTransitionUntil = 0;
+
+  const isLikelyInteractiveAnswerSubmissionMessage = (message: Message): boolean => {
+    const role = asString(message.role) || asString(asRecord(message.info)?.role);
+    if (role !== "user") {
+      return false;
+    }
+    const text =
+      asOptionalString(message.content) ||
+      asOptionalString(message.text) ||
+      contentFromParts(Array.isArray(message.parts) ? message.parts : []);
+    if (!text) {
+      return false;
+    }
+    return (
+      /(?:^|\n)\s*question\s+\d+\s*:/i.test(text) &&
+      /(?:^|\n)\s*answer\s*:/i.test(text)
+    );
+  };
 
   const trackActiveSubagentParentIds = (
     summariesByParentMessageId: Record<string, SubagentSummary[]>,
@@ -5895,21 +6092,22 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   };
 
   return (event: MessageEvent) => {
-    const data = asRecord(event.data);
-    if (!data) {
-      console.warn('[MessageHandler] Received event with no data');
-      return;
-    }
+    try {
+      const data = asRecord(event.data);
+      if (!data) {
+        console.warn('[MessageHandler] Received event with no data');
+        return;
+      }
 
-    const type = asString(data.type);
+      const type = asString(data.type);
 
-    // Log ALL events for comprehensive debugging
-    console.log(`[MessageHandler] ===== Received Event: ${type} =====`, {
-      timestamp: new Date().toISOString(),
-      eventType: type,
-      dataKeys: Object.keys(data),
-      fullData: data,
-    });
+      // Log ALL events for comprehensive debugging
+      console.log(`[MessageHandler] ===== Received Event: ${type} =====`, {
+        timestamp: new Date().toISOString(),
+        eventType: type,
+        dataKeys: Object.keys(data),
+        fullData: data,
+      });
 
     // Set processing state BEFORE handling message types to ensure streaming state is created early.
     // Never bootstrap "in progress" UI from compaction lifecycle messages.
@@ -6339,6 +6537,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const currentState = getState();
         const isSessionProcessing = !!(chatHistorySessionId &&
           currentState.processingSessionIds.includes(chatHistorySessionId));
+
+        // Set switchingSessionId if we're loading a different session
+        const isSwitchingSession = !!(
+          chatHistorySessionId &&
+          currentState.currentSessionId !== chatHistorySessionId
+        );
+        if (isSwitchingSession) {
+          dispatch({ type: "SET_SWITCHING_SESSION", payload: chatHistorySessionId });
+        }
+
         const hydrationPresentationPolicy: SubagentPresentationPolicy = {
           mode: "hydration",
           sessionProcessing: isSessionProcessing,
@@ -6372,6 +6580,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           };
         });
         dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages });
+
+        // Clear switchingSessionId after messages are loaded
+        dispatch({ type: "SET_SWITCHING_SESSION", payload: null });
+
         // Use the just-normalized hydration snapshot directly. Reading getState()
         // immediately after dispatch can observe stale messages in the same tick.
         const canonicalMessages = stabilizedHydratedMessages;
@@ -6680,8 +6892,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const pendingBlockingInteractive = hasBlockingInteractiveEvents(
           stateBeforeError.interactiveEvents,
         );
+        const inInteractiveTransitionWindow =
+          Date.now() <= interactiveResponseTransitionUntil;
         const suppressAsAwaitingInteractive =
-          pendingBlockingInteractive &&
+          (pendingBlockingInteractive || inInteractiveTransitionWindow) &&
           isLikelyInteractiveAwaitTimeout(errorMsg);
 
         // When the model is waiting for an interactive answer, transport header
@@ -6815,7 +7029,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       case "commandsList": {
+        console.log('[messageHandler] Received commandsList message:', data);
+        console.log('[messageHandler] data.commands:', data.commands);
+        console.log('[messageHandler] data.commands type:', typeof data.commands);
+        console.log('[messageHandler] Is array?', Array.isArray(data.commands));
+
         const commands = asArray(data.commands, isSlashCommand);
+        console.log('[messageHandler] Filtered commands:', commands);
+        console.log('[messageHandler] Commands count:', commands.length);
+
         dispatch({ type: "SET_COMMANDS_LIST", payload: commands });
         break;
       }
@@ -6837,6 +7059,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         terminalErrorReached = false;
         const message = data.message as Message;
         if (message && typeof message === "object") {
+          if (isLikelyInteractiveAnswerSubmissionMessage(message)) {
+            interactiveResponseTransitionUntil = Date.now() + 15000;
+            // Defensive cleanup: once an interactive answer bundle is echoed back
+            // from the extension host, clear any stale quick-input popover state.
+            // This prevents already-answered prompts from lingering in the composer.
+            dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
+          }
           // Get current state and append the new message
           const currentMessages = getState().messages || [];
           dispatch({
@@ -7103,9 +7332,17 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const current = getState().inputValue;
         dispatch({
           type: "SET_INPUT_VALUE",
-          payload: current ? `${current}\n${text}` : text,
+          payload: current ? `${current}\n}${text}` : text,
         });
       }
+    }
+    } catch (error) {
+      console.error('[MessageHandler] Error processing message:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        eventType: asString((event.data as { type?: unknown })?.type),
+        eventData: event.data
+      });
     }
   };
 }

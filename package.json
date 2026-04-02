@@ -200,7 +200,12 @@
     "test:webview-regression": "node --test tests/**/*.test.mjs",
     "typecheck": "tsc --noEmit src/providers/ChatViewProvider.ts",
     "lint": "npm run typecheck && eslint src --ext ts",
-    "package": "npx @vscode/vsce package"
+    "package": "npx @vscode/vsce package",
+    "analyze-logs": "npx tsx scripts/analyze-logs.ts logs/opencode.log",
+    "analyze-logs:summary": "npx tsx scripts/analyze-logs.ts logs/opencode.log --summary",
+    "analyze-logs:flows": "npx tsx scripts/analyze-logs.ts logs/opencode.log --flows",
+    "analyze-logs:errors": "npx tsx scripts/analyze-logs.ts logs/opencode.log --errors",
+    "analyze-logs:perf": "npx tsx scripts/analyze-logs.ts logs/opencode.log --performance"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
@@ -215,6 +220,7 @@
   "dependencies": {
     "@opencode-ai/sdk": "1.2.24",
     "ajv": "^8.18.0",
+    "ajv-formats": "^3.0.1",
     "axios": "^1.13.6",
     "highlight.js": "^11.11.1",
     "marked": "^17.0.1",

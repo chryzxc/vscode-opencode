@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { getNonce } from '../utils/getNonce';
 import { SkillManagementService } from '../services/SkillManagementService';
+import { createLogger } from '../utils/Logger';
+import { LoggingCategories } from '../utils/LoggingSchema';
 
 export class SkillsPanelProvider {
   public static currentPanel: SkillsPanelProvider | undefined;
@@ -8,6 +10,7 @@ export class SkillsPanelProvider {
 
   private _view?: vscode.WebviewView;
   private _disposables: vscode.Disposable[] = [];
+  private logger = createLogger(LoggingCategories.UI_INTERACTION);
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -50,7 +53,7 @@ export class SkillsPanelProvider {
 
   private async _handleMessage(message: any): Promise<void> {
     try {
-      console.log('SkillsPanel received message:', message);
+      this.logger.debug('SkillsPanel received message', { command: message.command });
 
       switch (message.command) {
         case 'requestData':
@@ -93,7 +96,7 @@ export class SkillsPanelProvider {
           await vscode.env.openExternal(vscode.Uri.file(this.skillManagementService['configPath']));
           break;
         default:
-          console.warn('Unknown command:', message.command);
+          this.logger.warn('Unknown command from SkillsPanel', { command: message.command });
       }
     } catch (error) {
       console.error('Error handling message:', error);

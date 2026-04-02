@@ -58,8 +58,9 @@ import * as cp from "child_process";
 import * as net from "net";
 import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk";
 import { createLogger } from "../utils/Logger";
+import { LoggingCategories } from "../utils/LoggingSchema";
 
-const log = createLogger("ServerManager");
+const log = createLogger(LoggingCategories.SERVER_MANAGER);
 /**
  * Server status states for state machine.
  *
@@ -307,9 +308,9 @@ export class OpencodeServerManager {
         // Try to create client with configured port
         const workspaceDirectory = this.getWorkspaceDirectory();
         if (workspaceDirectory) {
-          console.log(
-            `[OpencodeServerManager] Creating client with directory header: ${workspaceDirectory}`,
-          );
+          log.debug("Creating client with directory header", {
+            workspaceDirectory,
+          });
         }
         this.client = createOpencodeClient({
           baseUrl: `http://localhost:${configuredPort}`,
@@ -344,9 +345,10 @@ export class OpencodeServerManager {
 
         const workspaceDirectory = this.getWorkspaceDirectory();
         if (workspaceDirectory) {
-          console.log(
-            `[OpencodeServerManager] Reconnecting to persisted managed server port ${persistedPort} with directory header: ${workspaceDirectory}`,
-          );
+          log.info("Reconnecting to persisted managed server port", {
+            port: persistedPort,
+            workspaceDirectory,
+          });
         }
 
         this.client = createOpencodeClient({
@@ -462,9 +464,10 @@ export class OpencodeServerManager {
         if (state.loggedChars >= SERVER_OUTPUT_LOG_BUDGET_CHARS) {
           if (!state.suppressed) {
             state.suppressed = true;
-            console.warn(
-              `[OpenCode Server ${channel}] output suppressed after ${SERVER_OUTPUT_LOG_BUDGET_CHARS} chars (to prevent log/disk bloat)`,
-            );
+            log.warn("Server output suppressed (log budget exceeded)", {
+              channel,
+              budgetChars: SERVER_OUTPUT_LOG_BUDGET_CHARS,
+            });
           }
           return;
         }
@@ -477,9 +480,9 @@ export class OpencodeServerManager {
         state.loggedChars += snippet.length;
 
         if (channel === "stderr") {
-          console.error(`[OpenCode Server Error] ${snippet}`);
+          log.error("Server stderr output", { snippet });
         } else {
-          console.log(`[OpenCode Server] ${snippet}`);
+          log.debug("Server stdout output", { snippet });
         }
       };
 
@@ -521,7 +524,7 @@ export class OpencodeServerManager {
 
       if (workspaceFolder && workspaceFolder.uri.scheme === "file") {
         spawnOptions.cwd = workspaceFolder.uri.fsPath;
-        console.log(`OpenCode server CWD set to: ${spawnOptions.cwd}`);
+        log.info("Server CWD set", { cwd: spawnOptions.cwd });
       }
 
       // Step 3: Spawn the OpenCode CLI server process
@@ -612,7 +615,9 @@ export class OpencodeServerManager {
         if (!this.isDisposed && code !== 0 && !this.reconnectTimer) {
           this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
-            this.ensureRunning().catch(console.error);
+            this.ensureRunning().catch((err) => {
+              log.error("Auto-reconnect failed", {}, err as Error);
+            });
           }, 5000);
         }
       });
@@ -657,16 +662,16 @@ export class OpencodeServerManager {
   private async connectToServer(): Promise<OpencodeClient> {
     const workspaceDirectory = this.getWorkspaceDirectory();
     if (workspaceDirectory) {
-      console.log(
-        `[OpencodeServerManager] Creating client with directory header: ${workspaceDirectory}`,
-      );
+      log.debug("Creating client with directory header", {
+        workspaceDirectory,
+      });
     }
     this.client = createOpencodeClient({
       baseUrl: `http://localhost:${this.port}`,
       directory: workspaceDirectory,
     });
 
-    console.log(`Connected to OpenCode server on port ${this.port}`);
+    log.info("Connected to OpenCode server", { port: this.port });
     log.serverEvent("connect", { port: this.port });
 
     // Fetch server version
@@ -902,7 +907,7 @@ export class OpencodeServerManager {
 
     // Stop the server process if running
     if (this.serverProcess) {
-      console.log("Stopping OpenCode server...");
+      log.info("Stopping OpenCode server");
       this.terminateProcessTree(this.serverProcess);
       this.serverProcess = null;
     }

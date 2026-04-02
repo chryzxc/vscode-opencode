@@ -516,6 +516,14 @@ interface ActiveFeatureFlow {
 }
 
 /**
+ * Completed feature flow with duration and result
+ */
+interface CompletedFeatureFlow extends ActiveFeatureFlow {
+  duration: number;
+  result?: Record<string, unknown>;
+}
+
+/**
  * Creates a category-scoped logger for convenience.
  * Usage:
  * ```typescript
@@ -528,7 +536,7 @@ export function createLogger(category: string) {
   const activeFlows = new Map<string, ActiveFeatureFlow>();
 
   const generateCorrelationId = (): string => {
-    return `${category}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    return `${category}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
   };
 
   return {
@@ -574,7 +582,7 @@ export function createLogger(category: string) {
       return correlationId;
     },
 
-    endFeatureFlow: (correlationId: string, result?: Record<string, unknown>): ActiveFeatureFlow | undefined => {
+    endFeatureFlow: (correlationId: string, result?: Record<string, unknown>): CompletedFeatureFlow | undefined => {
       const flow = activeFlows.get(correlationId);
       if (!flow) {
         logger.warn(category, `Feature flow not found: ${correlationId}`, { correlationId });

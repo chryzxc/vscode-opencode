@@ -17,6 +17,27 @@ function getVsCodeApi() {
   return (window as any).__vscode_api;
 }
 
-const vscode = getVsCodeApi();
+const rawVscodeApi = getVsCodeApi();
+
+// Wrap postMessage to add logging
+const vscode = {
+  postMessage: (msg: unknown) => {
+    console.log('[vscode.postMessage] Sending message to extension:', {
+      type: (msg as { type?: string })?.type,
+      messageType: typeof msg,
+      hasData: msg !== null && msg !== undefined,
+      fullMessage: msg
+    });
+    try {
+      rawVscodeApi.postMessage(msg);
+      console.log('[vscode.postMessage] Message sent successfully');
+    } catch (error) {
+      console.error('[vscode.postMessage] Error sending message:', error);
+      throw error;
+    }
+  },
+  getState: () => rawVscodeApi.getState(),
+  setState: (state: unknown) => rawVscodeApi.setState(state),
+};
 
 export default vscode;

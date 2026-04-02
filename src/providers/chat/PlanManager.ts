@@ -174,10 +174,10 @@ export class PlanManager {
         vscode.Uri.file(normalizedPath),
         new TextEncoder().encode(normalizedContent),
       );
-      console.log(`[ChatViewProvider] Auto-persisted plan to ${normalizedPath}`);
+      this.logger.info("Auto-persisted plan", { path: normalizedPath });
       return normalizedPath;
     } catch (err) {
-      console.error("[ChatViewProvider] persistPlan error:", err);
+      this.logger.error("Failed to persist plan", { path: preferredPath }, err as Error);
       return undefined;
     }
   }
@@ -315,21 +315,41 @@ export class PlanManager {
   collectPlanFileCandidatesFromStructuredPlan(structured: any): string[] {
     const candidates: string[] = [];
 
-    if (structured?.plan?.file) {
-      const normalized = this.normalizePlanFileReference(structured.plan.file);
+    // DEBUG: Log input to trace file property
+    this.logger.debug('collectPlanFileCandidatesFromStructuredPlan INPUT', {
+      hasStructured: !!structured,
+      type: typeof structured,
+      keys: structured ? Object.keys(structured) : [],
+      hasFile: structured && 'file' in structured,
+      fileValue: structured?.file,
+      hasFiles: structured && 'files' in structured,
+      filesValue: structured?.files,
+      fullObject: structured ? JSON.stringify(structured, null, 2) : 'undefined'
+    });
+
+    // structured is the plan object itself (with file, title, content, etc.)
+    // not the parent structured output object
+    if (structured?.file) {
+      const normalized = this.normalizePlanFileReference(structured.file);
       if (normalized) {
         candidates.push(normalized);
       }
     }
 
-    if (structured?.plan?.files && Array.isArray(structured.plan.files)) {
-      for (const file of structured.plan.files) {
+    if (structured?.files && Array.isArray(structured.files)) {
+      for (const file of structured.files) {
         const normalized = this.normalizePlanFileReference(file);
         if (normalized && !candidates.includes(normalized)) {
           candidates.push(normalized);
         }
       }
     }
+
+    this.logger.debug('collectPlanFileCandidatesFromStructuredPlan OUTPUT', {
+      candidatesCount: candidates.length,
+      candidates: candidates,
+      firstCandidate: candidates[0]
+    });
 
     return candidates;
   }

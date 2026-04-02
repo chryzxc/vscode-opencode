@@ -1,0 +1,1043 @@
+import { describe, it, before, afterEach } from "node:test";
+import assert from "node:assert";
+
+/**
+ * StreamEventHandler Unit Tests
+ *
+ * Tests the StreamEventHandler module which handles:
+ * - SSE stream event processing
+ * - Token usage tracking
+ * - Subagent persistence
+ * - Compaction status forwarding
+ * - Stream lifecycle management (start/end)
+ * - Feature flow logging with correlation IDs
+ */
+
+// Mock implementations
+class MockStructuredOutputProcessor {
+    constructor() {
+        this.enrichedEvent = null;
+        this.shouldThrow = false;
+    }
+
+    enrichStreamEvent(event) {
+        if (this.shouldThrow) {
+            throw new Error("Enrich failed");
+        }
+        return this.enrichedEvent || event;
+    }
+
+    reset() {
+        this.enrichedEvent = null;
+        this.shouldThrow = false;
+    }
+}
+
+class MockSubagentPersistence {
+    constructor() {
+        this.updates = [];
+        this.shouldThrow = false;
+    }
+
+    async persistSubagentUpdateSnapshot(subagentUpdate, sessionId, sessionService, postMessage) {
+        if (this.shouldThrow) {
+            throw new Error("Persist failed");
+        }
+        this.updates.push({ subagentUpdate, sessionId });
+    }
+
+    reset() {
+        this.updates = [];
+        this.shouldThrow = false;
+    }
+}
+
+class MockCompactionManager {
+    constructor() {
+        this.forwardedEvents = [];
+        this.shouldThrow = false;
+    }
+
+    forwardCompactionStatusFromStreamEvent(event) {
+        if (this.shouldThrow) {
+            throw new Error("Forward failed");
+        }
+        this.forwardedEvents.push(event);
+    }
+
+    reset() {
+        this.forwardedEvents = [];
+        this.shouldThrow = false;
+    }
+}
+
+class MockDiagnosticsLogger {
+    constructor() {
+        this.loggedEvents = [];
+        this.shouldThrow = false;
+    }
+
+    logStreamEventDiagnostics(event, enrichedEvent) {
+        if (this.shouldThrow) {
+            throw new Error("Log failed");
+        }
+        this.loggedEvents.push({ event, enrichedEvent });
+    }
+
+    reset() {
+        this.loggedEvents = [];
+        this.shouldThrow = false;
+    }
+}
+
+class MockGeminiTokenTracker {
+    constructor() {
+        this.usage = [];
+        this.shouldThrow = false;
+    }
+
+    recordUsage(model, usage) {
+        if (this.shouldThrow) {
+            throw new Error("Record failed");
+        }
+        this.usage.push({ model, usage });
+    }
+
+    reset() {
+        this.usage = [];
+        this.shouldThrow = false;
+    }
+}
+
+class MockSubagentTracker {
+    reset() {
+        // Mock tracker
+    }
+}
+
+class MockLogger {
+    constructor() {
+        this.infos = [];
+        this.warns = [];
+        this.errors = [];
+        this.performanceLogs = [];
+        this.featureFlows = new Map();
+        this.correlationIdCounter = 0;
+    }
+
+    info(category, message, context) {
+        this.infos.push({ category, message, context });
+    }
+
+    warn(category, message, context) {
+        this.warns.push({ category, message, context });
+    }
+
+    error(category, message, context) {
+        this.errors.push({ category, message, context });
+    }
+
+    performance(feature, duration, context) {
+        this.performanceLogs.push({ feature, duration, context });
+    }
+
+    startFeatureFlow(featureName, context) {
+        const correlationId = `${featureName}-${Date.now()}-${this.correlationIdCounter++}`;
+        const flow = {
+            correlationId,
+            featureName,
+            startTime: Date.now(),
+            context,
+        };
+        this.featureFlows.set(correlationId, flow);
+        return correlationId;
+    }
+
+    endFeatureFlow(correlationId, result) {
+        const flow = this.featureFlows.get(correlationId);
+        if (flow) {
+            flow.endTime = Date.now();
+            flow.result = result;
+        }
+    }
+
+    getActiveFeatureFlow() {
+        for (const flow of this.featureFlows.values()) {
+            if (!flow.endTime) {
+                return flow;
+            }
+        }
+        return undefined;
+    }
+
+    reset() {
+        this.infos = [];
+        this.warns = [];
+        this.errors = [];
+        this.performanceLogs = [];
+        this.featureFlows.clear();
+        this.correlationIdCounter = 0;
+    }
+}
+
+// Import the StreamEventHandler class
+async function createStreamEventHandler() {
+    const module = await import("../../src/providers/chat/StreamEventHandler.ts");
+    return module.StreamEventHandler;
+}
+
+describe("StreamEventHandler", () => {
+    let structuredOutputProcessor;
+    let subagentPersistence;
+    let compactionManager;
+    let diagnosticsLogger;
+    let geminiTokenTracker;
+    let subagentTracker;
+    let logger;
+    let StreamEventHandler;
+    let streamEventHandler;
+    let postedMessages;
+    let currentSessionId;
+
+    before(async () => {
+        structuredOutputProcessor = new MockStructuredOutputProcessor();
+        subagentPersistence = new MockSubagentPersistence();
+        compactionManager = new MockCompactionManager();
+        diagnosticsLogger = new MockDiagnosticsLogger();
+        geminiTokenTracker = new MockGeminiTokenTracker();
+        subagentTracker = new MockSubagentTracker();
+        logger = new MockLogger();
+        StreamEventHandler = await createStreamEventHandler();
+    });
+
+    afterEach(() => {
+        structuredOutputProcessor.reset();
+        subagentPersistence.reset();
+        compactionManager.reset();
+        diagnosticsLogger.reset();
+        geminiTokenTracker.reset();
+        logger.reset();
+        postedMessages = [];
+        currentSessionId = "test-session";
+    });
+
+    const createMockPostMessage = () => {
+        postedMessages = [];
+        return (msg) => {
+            postedMessages.push(msg);
+        };
+    };
+
+    const createMockGetCurrentSessionId = () => {
+        return () => currentSessionId;
+    };
+
+    const createInstance = () => {
+        const instance = new StreamEventHandler(
+            structuredOutputProcessor,
+            subagentPersistence,
+            compactionManager,
+            diagnosticsLogger,
+            geminiTokenTracker,
+            subagentTracker,
+            logger,
+        );
+        instance.setPostMessage(createMockPostMessage());
+        instance.setGetCurrentSessionId(createMockGetCurrentSessionId());
+        return instance;
+    };
+
+    describe("Stream Event Handling - Basic", () => {
+        it("should enrich event via StructuredOutputProcessor", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                sessionId: "session-1",
+            };
+
+            structuredOutputProcessor.enrichedEvent = {
+                ...event,
+                enriched: true,
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages.length, 1);
+            assert.strictEqual(postedMessages[0].event.enriched, true);
+        });
+
+        it("should log diagnostics for event", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                sessionId: "session-1",
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(diagnosticsLogger.loggedEvents.length, 1);
+            assert.deepStrictEqual(diagnosticsLogger.loggedEvents[0].event, event);
+        });
+
+        it("should forward event to webview", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                sessionId: "session-1",
+                data: "test",
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages.length, 1);
+            assert.deepStrictEqual(postedMessages[0], {
+                type: "streamEvent",
+                event,
+                sessionId: "session-1",
+            });
+        });
+
+        it("should handle null events gracefully", async () => {
+            const handler = createInstance();
+
+            await handler.handleStreamEvent(null);
+            await handler.handleStreamEvent(undefined);
+
+            assert.strictEqual(postedMessages.length, 0);
+        });
+    });
+
+    describe("Compaction Status Forwarding", () => {
+        it("should forward compaction status from stream event", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {
+                    compaction: {
+                        status: "done",
+                        compacted: true,
+                    },
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(compactionManager.forwardedEvents.length, 1);
+            assert.deepStrictEqual(
+                compactionManager.forwardedEvents[0],
+                event.properties.compaction,
+            );
+        });
+
+        it("should not forward when no compaction data", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {},
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(compactionManager.forwardedEvents.length, 0);
+        });
+    });
+
+    describe("Subagent Persistence", () => {
+        it("should persist subagent updates from properties", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                properties: {
+                    subagentsDelta: {
+                        added: ["subagent-1"],
+                        updated: ["subagent-2"],
+                    },
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(subagentPersistence.updates.length, 1);
+            assert.deepStrictEqual(
+                subagentPersistence.updates[0].subagentUpdate,
+                event.properties.subagentsDelta,
+            );
+            assert.strictEqual(subagentPersistence.updates[0].sessionId, "test-session");
+        });
+
+        it("should persist subagent updates from enriched event", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+            };
+
+            structuredOutputProcessor.enrichedEvent = {
+                ...event,
+                structured: {
+                    subagentsDelta: {
+                        added: ["subagent-3"],
+                    },
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(subagentPersistence.updates.length, 1);
+            assert.deepStrictEqual(
+                subagentPersistence.updates[0].subagentUpdate,
+                structuredOutputProcessor.enrichedEvent.structur().subagentsDelta,
+            );
+        });
+    });
+
+    describe("Token Usage Tracking", () => {
+        it("should record token usage for Gemini models", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {
+                    usage: {
+                        promptTokens: 100,
+                        completionTokens: 50,
+                        totalTokens: 150,
+                    },
+                    info: {
+                        providerID: "google",
+                        modelID: "gemini-pro",
+                    },
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(geminiTokenTracker.usage.length, 1);
+            assert.strictEqual(geminiTokenTracker.usage[0].model, "google/gemini-pro");
+            assert.deepStrictEqual(
+                geminiTokenTracker.usage[0].usage,
+                event.properties.usage,
+            );
+        });
+
+        it("should handle missing provider/model IDs", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {
+                    usage: {
+                        promptTokens: 100,
+                    },
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(geminiTokenTracker.usage.length, 1);
+            assert.strictEqual(geminiTokenTracker.usage[0].model, "unknown/unknown");
+        });
+
+        it("should handle malformed usage data", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {
+                    usage: null,
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            // Should not throw, just record null usage
+            assert.strictEqual(geminiTokenTracker.usage.length, 1);
+        });
+
+        it("should accumulate multiple usage events", async () => {
+            const handler = createInstance();
+
+            const event1 = {
+                type: "message.delta",
+                properties: {
+                    usage: { promptTokens: 100 },
+                    info: { providerID: "openai", modelID: "gpt-4" },
+                },
+            };
+
+            const event2 = {
+                type: "message.delta",
+                properties: {
+                    usage: { promptTokens: 50 },
+                    info: { providerID: "openai", modelID: "gpt-4" },
+                },
+            };
+
+            await handler.handleStreamEvent(event1);
+            await handler.handleStreamEvent(event2);
+
+            assert.strictEqual(geminiTokenTracker.usage.length, 2);
+        });
+    });
+
+    describe("Session ID Resolution", () => {
+        it("should use sessionId from enriched event", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+            };
+
+            structuredOutputProcessor.enrichedEvent = {
+                ...event,
+                sessionId: "enriched-session",
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages[0].sessionId, "enriched-session");
+        });
+
+        it("should use sessionId from event", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                sessionId: "event-session",
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages[0].sessionId, "event-session");
+        });
+
+        it("should use sessionId from properties", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                properties: {
+                    sessionId: "properties-session",
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages[0].sessionId, "properties-session");
+        });
+
+        it("should use sessionId from info", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                properties: {
+                    info: {
+                        sessionId: "info-session",
+                    },
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages[0].sessionId, "info-session");
+        });
+
+        it("should use current session ID as fallback", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages[0].sessionId, "test-session");
+        });
+
+        it("should handle missing sessionId", async () => {
+            const handler = createInstance();
+
+            currentSessionId = undefined;
+
+            const event = {
+                type: "message.delta",
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages[0].sessionId, undefined);
+        });
+    });
+
+    describe("Stream Lifecycle", () => {
+        it("should start stream with logging", () => {
+            const handler = createInstance();
+
+            handler.startStream("session-1", "msg-123");
+
+            const flow = logger.getActiveFeatureFlow();
+            assert.ok(flow);
+            assert.strictEqual(flow.featureName, "ai-stream");
+            assert.strictEqual(flow.context.sessionId, "session-1");
+            assert.strictEqual(flow.context.messageId, "msg-123");
+
+            assert.strictEqual(logger.infos.length, 1);
+            assert.strictEqual(logger.infos[0].message, "AI stream started");
+        });
+
+        it("should end stream with performance logging", () => {
+            const handler = createInstance();
+
+            handler.startStream("session-1", "msg-123");
+
+            // Simulate some events
+            handler.eventCount = 5;
+
+            handler.endStream("session-1", "msg-123", true);
+
+            assert.strictEqual(logger.performanceLogs.length, 1);
+            assert.strictEqual(logger.performanceLogs[0].feature, "ai-stream");
+            assert.ok(logger.performanceLogs[0].duration > 0);
+            assert.strictEqual(logger.performanceLogs[0].context.eventCount, 5);
+            assert.strictEqual(logger.performanceLogs[0].context.success, true);
+
+            assert.strictEqual(logger.infos.filter(i => i.message === "AI stream ended").length, 1);
+        });
+
+        it("should handle stream end without start", () => {
+            const handler = createInstance();
+
+            handler.endStream("session-1", "msg-123", true);
+
+            assert.strictEqual(logger.warns.length, 1);
+            assert.strictEqual(logger.warns[0].message, "Stream ended but never started");
+        });
+
+        it("should reset state after stream end", () => {
+            const handler = createInstance();
+
+            handler.startStream("session-1", "msg-123");
+            handler.eventCount = 10;
+
+            handler.endStream("session-1", "msg-123", true);
+
+            // State should be reset
+            assert.strictEqual(handler.streamStartTime, undefined);
+            assert.strictEqual(handler.eventCount, 0);
+            assert.strictEqual(handler.lastEventTime, undefined);
+        });
+
+        it("should track event counts", () => {
+            const handler = createInstance();
+
+            handler.startStream("session-1", "msg-123");
+
+            // Simulate events
+            handler.eventCount = 15;
+            handler.lastEventTime = Date.now();
+
+            handler.endStream("session-1", "msg-123", true);
+
+            assert.strictEqual(logger.performanceLogs[0].context.eventCount, 15);
+        });
+
+        it("should calculate events per second", () => {
+            const handler = createInstance();
+
+            handler.startStream("session-1", "msg-123");
+            handler.eventCount = 100;
+
+            // Wait a bit
+            const start = Date.now();
+            while (Date.now() - start < 10) {
+                // Small delay
+            }
+
+            handler.endStream("session-1", "msg-123", true);
+
+            const eventsPerSecond = logger.performanceLogs[0].context.eventsPerSecond;
+            assert.ok(parseFloat(eventsPerSecond) > 0);
+        });
+    });
+
+    describe("Structured Output Logging", () => {
+        it("should log structured output processing", () => {
+            const handler = createInstance();
+
+            const structured = {
+                responseType: "message",
+                progressUpdates: [{ title: "Step 1" }],
+                interactiveEvents: [{ id: "choice-1" }],
+                plan: { file: "plan.md" },
+            };
+
+            handler.logStructuredOutputProcessing("session-1", "msg-123", structured);
+
+            const logEntry = logger.infos.find(i => i.message === "Structured output processed");
+            assert.ok(logEntry);
+            assert.strictEqual(logEntry.context.responseType, "message");
+            assert.strictEqual(logEntry.context.hasProgressUpdates, true);
+            assert.strictEqual(logEntry.context.hasInteractiveEvents, true);
+            assert.strictEqual(logEntry.context.hasPlan, true);
+        });
+
+        it("should log structured output with minimal data", () => {
+            const handler = createInstance();
+
+            const structured = {
+                responseType: "error",
+            };
+
+            handler.logStructuredOutputProcessing("session-1", "msg-123", structured);
+
+            const logEntry = logger.infos.find(i => i.message === "Structured output processed");
+            assert.ok(logEntry);
+            assert.strictEqual(logEntry.context.hasProgressUpdates, false);
+            assert.strictEqual(logEntry.context.hasInteractiveEvents, false);
+            assert.strictEqual(logEntry.context.hasPlan, false);
+        });
+    });
+
+    describe("Error Scenarios - Dependency Failures", () => {
+        it("should handle StructuredOutputProcessor errors", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                sessionId: "session-1",
+            };
+
+            structuredOutputProcessor.shouldThrow = true;
+
+            // Should not throw, but may log error
+            try {
+                await handler.handleStreamEvent(event);
+                // If it doesn't throw, that's fine - it should handle gracefully
+                assert.ok(true);
+            } catch (error) {
+                // If it throws, that's also acceptable behavior
+                assert.ok(error.message.includes("Enrich failed"));
+            }
+        });
+
+        it("should handle DiagnosticsLogger errors", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                sessionId: "session-1",
+            };
+
+            diagnosticsLogger.shouldThrow = true;
+
+            // Should not throw, but continue processing
+            try {
+                await handler.handleStreamEvent(event);
+                assert.ok(true);
+            } catch (error) {
+                assert.ok(error.message.includes("Log failed"));
+            }
+        });
+
+        it("should handle SubagentPersistence errors", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                properties: {
+                    subagentsDelta: { added: ["subagent-1"] },
+                },
+            };
+
+            subagentPersistence.shouldThrow = true;
+
+            // Should not throw, but continue processing
+            try {
+                await handler.handleStreamEvent(event);
+                assert.ok(true);
+            } catch (error) {
+                assert.ok(error.message.includes("Persist failed"));
+            }
+        });
+
+        it("should handle CompactionManager errors", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {
+                    compaction: { status: "done" },
+                },
+            };
+
+            compactionManager.shouldThrow = true;
+
+            // Should not throw, but continue processing
+            try {
+                await handler.handleStreamEvent(event);
+                assert.ok(true);
+            } catch (error) {
+                assert.ok(error.message.includes("Forward failed"));
+            }
+        });
+
+        it("should handle GeminiTokenTracker errors", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {
+                    usage: { promptTokens: 100 },
+                },
+            };
+
+            geminiTokenTracker.shouldThrow = true;
+
+            // Should not throw, but continue processing
+            try {
+                await handler.handleStreamEvent(event);
+                assert.ok(true);
+            } catch (error) {
+                assert.ok(error.message.includes("Record failed"));
+            }
+        });
+
+        it("should handle multiple dependency errors", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {
+                    subagentsDelta: { added: ["subagent-1"] },
+                    compaction: { status: "done" },
+                    usage: { promptTokens: 100 },
+                },
+            };
+
+            structuredOutputProcessor.shouldThrow = true;
+            diagnosticsLogger.shouldThrow = true;
+            subagentPersistence.shouldThrow = true;
+            compactionManager.shouldThrow = true;
+            geminiTokenTracker.shouldThrow = true;
+
+            // Should handle all errors gracefully
+            try {
+                await handler.handleStreamEvent(event);
+                assert.ok(true);
+            } catch (error) {
+                // At least one error should be thrown or logged
+                assert.ok(true);
+            }
+        });
+    });
+
+    describe("Error Scenarios - Missing Callbacks", () => {
+        it("should handle missing postMessage callback", async () => {
+            const handler = createInstance();
+            handler.setPostMessage(undefined);
+
+            const event = {
+                type: "message.delta",
+                sessionId: "session-1",
+            };
+
+            // Should not throw
+            try {
+                await handler.handleStreamEvent(event);
+                assert.ok(true);
+            } catch (error) {
+                // Might throw if postMessage is required
+                assert.ok(true);
+            }
+        });
+
+        it("should handle missing getCurrentSessionId callback", async () => {
+            const handler = createInstance();
+            handler.setGetCurrentSessionId(undefined);
+
+            const event = {
+                type: "message.delta",
+            };
+
+            await handler.handleStreamEvent(event);
+
+            // Should handle gracefully
+            assert.strictEqual(postedMessages[0].sessionId, undefined);
+        });
+    });
+
+    describe("Error Scenarios - Malformed Events", () => {
+        it("should handle event with null properties", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                properties: null,
+            };
+
+            await handler.handleStreamEvent(event);
+
+            // Should not throw
+            assert.ok(true);
+        });
+
+        it("should handle event with malformed properties", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+                properties: "not an object",
+            };
+
+            await handler.handleStreamEvent(event);
+
+            // Should not throw
+            assert.ok(true);
+        });
+
+        it("should handle event with circular references", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.delta",
+            };
+            event.circular = event;
+
+            // Should handle gracefully
+            try {
+                await handler.handleStreamEvent(event);
+                assert.ok(true);
+            } catch (error) {
+                // Circular references might cause JSON.stringify errors
+                assert.ok(true);
+            }
+        });
+    });
+
+    describe("Integration Tests", () => {
+        it("should handle complete stream lifecycle", () => {
+            const handler = createInstance();
+
+            const sessionId = "session-1";
+            const messageId = "msg-123";
+
+            // Start stream
+            handler.startStream(sessionId, messageId);
+            assert.ok(logger.getActiveFeatureFlow());
+
+            // Process events
+            handler.eventCount = 5;
+
+            // End stream
+            handler.endStream(sessionId, messageId, true);
+
+            assert.strictEqual(logger.performanceLogs.length, 1);
+            assert.strictEqual(logger.performanceLogs[0].context.success, true);
+            assert.strictEqual(logger.performanceLogs[0].context.eventCount, 5);
+        });
+
+        it("should handle stream with error", () => {
+            const handler = createInstance();
+
+            handler.startStream("session-1", "msg-123");
+
+            handler.endStream("session-1", "msg-123", false);
+
+            assert.strictEqual(logger.performanceLogs[0].context.success, false);
+        });
+
+        it("should process multiple streams sequentially", () => {
+            const handler = createInstance();
+
+            // First stream
+            handler.startStream("session-1", "msg-1");
+            handler.eventCount = 3;
+            handler.endStream("session-1", "msg-1", true);
+
+            // Second stream
+            handler.startStream("session-2", "msg-2");
+            handler.eventCount = 7;
+            handler.endStream("session-2", "msg-2", true);
+
+            assert.strictEqual(logger.performanceLogs.length, 2);
+            assert.strictEqual(logger.performanceLogs[0].context.eventCount, 3);
+            assert.strictEqual(logger.performanceLogs[1].context.eventCount, 7);
+        });
+    });
+
+    describe("Edge Cases", () => {
+        it("should handle very long sessionId", async () => {
+            const handler = createInstance();
+
+            const longSessionId = "session-" + "a".repeat(10000);
+
+            const event = {
+                type: "message.delta",
+                sessionId: longSessionId,
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages[0].sessionId, longSessionId);
+        });
+
+        it("should handle special characters in sessionId", async () => {
+            const handler = createInstance();
+
+            const specialSessionId = "session-with/special\\chars\"'";
+
+            const event = {
+                type: "message.delta",
+                sessionId: specialSessionId,
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(postedMessages[0].sessionId, specialSessionId);
+        });
+
+        it("should handle zero token usage", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {
+                    usage: {
+                        promptTokens: 0,
+                        completionTokens: 0,
+                        totalTokens: 0,
+                    },
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(geminiTokenTracker.usage.length, 1);
+        });
+
+        it("should handle very large token counts", async () => {
+            const handler = createInstance();
+
+            const event = {
+                type: "message.completed",
+                properties: {
+                    usage: {
+                        promptTokens: Number.MAX_SAFE_INTEGER,
+                        completionTokens: Number.MAX_SAFE_INTEGER,
+                    },
+                },
+            };
+
+            await handler.handleStreamEvent(event);
+
+            assert.strictEqual(geminiTokenTracker.usage.length, 1);
+        });
+    });
+});

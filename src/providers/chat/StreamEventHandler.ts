@@ -13,9 +13,13 @@ import type { CompactionManager } from "./CompactionManager";
 import type { DiagnosticsLogger } from "./DiagnosticsLogger";
 import type { GeminiTokenUsageTracker } from "../../services/GeminiTokenUsageTracker";
 import type { SubagentTracker } from "../../services/SubagentTracker";
+import { LoggingCategories } from "../../utils/LoggingSchema";
 
 export class StreamEventHandler {
   private awaitingInteractiveAnswer = false;
+  private streamStartTime?: number;
+  private eventCount = 0;
+  private lastEventTime?: number;
 
   constructor(
     private structuredOutputProcessor: StructuredOutputProcessor,
@@ -81,11 +85,8 @@ export class StreamEventHandler {
     if (properties?.usage) {
       const providerId = info?.providerID || info?.providerId || "unknown";
       const modelId = info?.modelID || info?.modelId || "unknown";
-      this.geminiTokenTracker.recordUsage(
-        providerId,
-        modelId,
-        properties.usage,
-      );
+      const model = `${providerId}/${modelId}`;
+      this.geminiTokenTracker.recordUsage(model, properties.usage);
     }
 
     // Forward to webview
@@ -93,6 +94,89 @@ export class StreamEventHandler {
       type: "streamEvent",
       event: enrichedEvent || event,
       sessionId,
+    });
+  }
+
+  /**
+   * Start stream with logging
+   */
+  startStream(sessionId: string, messageId: string): void {
+    this.streamStartTime = Date.now();
+    this.eventCount = 0;
+    this.lastEventTime = Date.now();
+
+    const correlationId = this.logger.startFeatureFlow('ai-stream', {
+      sessionId,
+      messageId,
+    });
+
+    this.logger.info(LoggingCategories.STREAM_HANDLER, 'AI stream started', {
+      correlationId,
+      sessionId,
+      messageId,
+    });
+  }
+
+  /**
+   * End stream with logging
+   */
+  endStream(sessionId: string, messageId: string, success: boolean): void {
+    if (!this.streamStartTime) {
+      this.logger.warn(LoggingCategories.STREAM_HANDLER, 'Stream ended but never started', {
+        sessionId,
+        messageId,
+      });
+      return;
+    }
+
+    const duration = Date.now() - this.streamStartTime;
+    const flow = this.logger.getActiveFeatureFlow();
+
+    this.logger.performance('ai-stream', duration, {
+      sessionId,
+      messageId,
+      eventCount: this.eventCount,
+      success,
+      eventsPerSecond: (this.eventCount / (duration / 1000)).toFixed(2),
+    });
+
+    if (flow) {
+      this.logger.endFeatureFlow(flow.correlationId, {
+        success,
+        duration,
+        eventCount: this.eventCount,
+      });
+    }
+
+    this.logger.info(LoggingCategories.STREAM_HANDLER, 'AI stream ended', {
+      sessionId,
+      messageId,
+      duration,
+      eventCount: this.eventCount,
+      success,
+    });
+
+    // Reset state
+    this.streamStartTime = undefined;
+    this.eventCount = 0;
+    this.lastEventTime = undefined;
+  }
+
+  /**
+   * Log structured output processing
+   */
+  logStructuredOutputProcessing(
+    sessionId: string,
+    messageId: string,
+    structured: any,
+  ): void {
+    this.logger.info(LoggingCategories.STREAM_HANDLER, 'Structured output processed', {
+      sessionId,
+      messageId,
+      responseType: structured.responseType,
+      hasProgressUpdates: structured.progressUpdates?.length > 0,
+      hasInteractiveEvents: structured.interactiveEvents?.length > 0,
+      hasPlan: !!structured.plan,
     });
   }
 }

@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { renderMarkdown } from "./markdownRenderer";
+import { getFilename } from "@/utils";
 
 interface PlanEnvelope {
   raw?: string;
@@ -329,10 +330,14 @@ export default function PlanShell() {
               <h1 className="truncate text-xs font-semibold">{planTitle}</h1>
             </div>
             {sourceFile ? (
-              <p className="truncate font-mono text-[10px] text-[var(--vscode-descriptionForeground)]">
+              <p className="truncate font-mono text-[10px] text-[var(--vscode-descriptionForeground)]" title={sourceFile}>
                 Source: {sourceFile}
               </p>
-            ) : null}
+            ) : (
+              <p className="truncate font-mono text-[10px] text-[var(--vscode-descriptionForeground)]/50 italic">
+                (no source file)
+              </p>
+            )}
           </div>
 
           {/* Right: Comments + Proceed buttons */}

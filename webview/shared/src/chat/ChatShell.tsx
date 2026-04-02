@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
 import { createMessageHandler } from "./lib/messageHandler";
@@ -204,14 +205,22 @@ function ChatContent() {
     }
   }, [state.messages, state.streaming]);
 
-  const isProcessingInCurrentSession =
+  // Check if AI is currently responding (processing user message)
+  const isAiResponding =
     state.isProcessing &&
     (!state.currentSessionId ||
       state.processingSessionIds.length === 0 ||
       state.processingSessionIds.includes(state.currentSessionId));
 
-  // Show thinking bubble when:
-  // 1. Processing but no streaming yet, OR
+  // Check if we're switching to a different session (loading conversation)
+  // This uses switchingSessionId which is ONLY set during session switches,
+  // not during AI response processing
+  const isSwitchingSession =
+    state.switchingSessionId === state.currentSessionId &&
+    state.messages.length > 0; // Only show loading state if we have previous messages to hide
+
+  // Show AI response loading indicator (thinking bubble) when:
+  // 1. AI is responding but no streaming yet, OR
   // 2. Streaming but only have reasoning (no actual content yet)
   const hasOnlyReasoning =
     state.streaming &&
@@ -219,8 +228,8 @@ function ChatContent() {
     state.streaming.reasoning.trim().length > 0 &&
     (!state.streaming.content || state.streaming.content.trim().length === 0);
 
-  const showThinking =
-    (isProcessingInCurrentSession && !state.streaming && !state.isCompacting) ||
+  const showAiResponseLoading =
+    (isAiResponding && !state.streaming && !state.isCompacting) ||
     (hasOnlyReasoning && !state.isCompacting);
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
@@ -260,13 +269,22 @@ function ChatContent() {
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden py-4"
           style={{ background: "var(--oc-chat-bg)" }}
         >
-          {state.messages.length === 0 &&
-          !state.streaming &&
-          !isProcessingInCurrentSession ? (
-            <EmptyState />
-          ) : null}
+          {isSwitchingSession ? (
+            <div className="flex h-full items-center justify-center">
+              <div className="flex flex-col items-center gap-4">
+                <Loader2 className="h-8 w-8 animate-spin text-oc-accent" />
+                <span className="text-sm text-oc-text-muted">Loading conversation...</span>
+              </div>
+            </div>
+          ) : (
+            <>
+              {state.messages.length === 0 &&
+              !state.streaming &&
+              !isAiResponding ? (
+                <EmptyState />
+              ) : null}
 
-          {hasCompactedSegment ? (
+              {hasCompactedSegment ? (
             <div className="-mx-4 py-2">
               <div className="flex w-full items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-oc-text-muted">
                 <span className="h-px flex-1 bg-current opacity-50" />
@@ -373,7 +391,7 @@ function ChatContent() {
           />
 
           {/* Loading status while processing before first stream payload */}
-          {showThinking ? <ThinkingBubble /> : null}
+          {showAiResponseLoading ? <ThinkingBubble /> : null}
 
           {state.isCompacting ? (
             <div className="sticky bottom-3 z-20 mb-2 flex justify-center px-4 pointer-events-none">
@@ -397,6 +415,8 @@ function ChatContent() {
           ) : null}
 
           <div ref={messagesEndRef} />
+        </>
+          )}
         </div>
 
         {/* Input area (queue panel is embedded inside InputWrapper) */}

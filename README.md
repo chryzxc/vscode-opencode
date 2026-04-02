@@ -496,19 +496,45 @@ The contract is defined in `scripts/sync-structured-output-contract.mjs` and aut
 
 ## Logging
 
-The extension uses a structured, leveled logging system writing to the VS Code Output channel (and optionally to a rotating file).
+The extension uses a comprehensive structured logging system with feature flow tracking, correlation IDs, and performance monitoring.
+
+### Key Features
+
+- **Correlation IDs**: Track multi-step operations from start to finish
+- **Feature Flow Tracking**: Monitor operations like "SendMessage" or "SwitchSession"
+- **Performance Monitoring**: Automatic warnings for operations taking >3 seconds
+- **State Change Logging**: Track state transitions with old/new values
+- **UI Interaction Logging**: Capture user actions for debugging
+- **Log Analysis Tools**: Query and analyze logs via CLI or API
+
+### Quick Start
+
+```bash
+# Enable file logging in settings.json
+{
+  "opencode.logging.enableFile": true,
+  "opencode.logging.level": "info"
+}
+
+# Analyze logs
+npm run analyze-logs:summary  # Generate a summary
+npm run analyze-logs:flows    # Show all feature flows
+npm run analyze-logs:errors   # Show errors only
+npm run analyze-logs:perf     # Show performance issues
+```
 
 ### Log Format (JSON)
 
 ```json
 {
-  "timestamp": "2026-03-13T10:00:00.000Z",
+  "timestamp": "2026-04-02T14:30:00.000Z",
   "level": "info",
-  "category": "ChatViewProvider",
-  "message": "AI request sent",
+  "category": "CHAT_VIEW",
+  "message": "Feature started: SendMessage",
   "context": {
-    "sessionId": "abc123",
-    "modelId": "gemini-3-pro",
+    "correlationId": "CHAT_VIEW-1712051400000-abc123",
+    "featureName": "SendMessage",
+    "sessionId": "sess-456",
     "messageLength": 240
   }
 }
@@ -516,11 +542,35 @@ The extension uses a structured, leveled logging system writing to the VS Code O
 
 ### Viewing Logs
 
-Open **Output** panel → select **OpenCode** from the dropdown.
+**Console**: Open **Output** panel → select **OpenCode** from the dropdown.
 
-For file logs, check `~/.opencode/logs/` (location may vary by platform).
+**File**: Check `logs/opencode.log` in the extension storage (when `enableFile: true`).
 
-See [LOGGING.md](LOGGING.md) for the full reference on instrumented components and log methods.
+### Debugging with Correlation IDs
+
+Each feature flow gets a unique correlation ID that ties all related logs together. Use the LogQuery utility's `filterByCorrelationId()` method for programmatic filtering, or the `--correlation` flag with the CLI tool—see [LOGGING.md](LOGGING.md) for details.
+
+### Performance Monitoring
+
+Operations taking >3 seconds automatically log a warning:
+
+```json
+{
+  "level": "warn",
+  "category": "QUEUE_MANAGER",
+  "message": "Slow operation detected: executeQueue",
+  "context": {
+    "operation": "executeQueue",
+    "duration": 3247
+  }
+}
+```
+
+See [LOGGING.md](LOGGING.md) for complete documentation including:
+- All logging methods and usage patterns
+- Feature flow tracking best practices
+- Log analysis CLI and API
+- Debugging tips and troubleshooting
 
 ---
 

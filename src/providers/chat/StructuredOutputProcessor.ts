@@ -625,6 +625,35 @@ export class StructuredOutputProcessor {
     }
 
     const sanitizedRec = sanitizeStructuredOutput(rec);
+
+    // Don't sanitize rec.plan separately - sanitizeStructuredOutput() is for
+    // top-level structured output fields only. The plan object is already validated
+    // by the schema and sanitizing it as a top-level object would strip its properties
+    // (file, title, content, etc.) because those aren't valid top-level field names.
+    this.logger.debug('Before plan preservation', {
+      hasRecPlan: 'plan' in rec,
+      recPlanType: typeof rec.plan,
+      recPlanValue: rec.plan,
+      hasSanitizedPlan: 'plan' in sanitizedRec,
+      sanitizedPlanValue: sanitizedRec.plan
+    });
+
+    if (rec.plan && typeof rec.plan === 'object') {
+      sanitizedRec.plan = rec.plan;
+      const planRecord = rec.plan as Record<string, unknown>;
+      this.logger.debug('Plan preserved', {
+        planKeys: Object.keys(planRecord),
+        hasFile: 'file' in planRecord,
+        fileValue: planRecord.file
+      });
+    } else {
+      this.logger.debug('Plan NOT preserved - condition failed', {
+        hasRecPlan: 'plan' in rec,
+        recPlanType: typeof rec.plan,
+        recPlan: rec.plan
+      });
+    }
+
     const messageCandidate =
       this.firstNonEmptyString(sanitizedRec.message) ||
       (typeof rec.message === "string" ? rec.message : undefined);
@@ -932,6 +961,7 @@ export class StructuredOutputProcessor {
     }
 
     const structured = this.extractStructuredOutput(message);
+
     const structuredResponseType = this.firstNonEmptyString(
       structured?.responseType,
       message?.structuredOutput?.responseType,
@@ -970,6 +1000,16 @@ export class StructuredOutputProcessor {
         this.planManager.collectPlanFileCandidatesFromStructuredPlan(structuredPlanRecord);
       const structuredPlanFile = structuredPlanFiles[0];
 
+      // DEBUG: Log what we got from the structured output
+      this.logger.debug('Structured Plan Data', {
+        structuredPlanRecord,
+        structuredPlanFiles,
+        structuredPlanFile,
+        hasFile: !!structuredPlanRecord?.file,
+        rawStructuredPlan: structured.plan,  // ← Add raw data
+        allStructuredKeys: Object.keys(structured || {})  // ← Show all keys
+      });
+
       // Resolve the plan filename: prefer what the agent declared in structured
       // output, then look for a matching filename in the message edits/patches,
       // then from markdown references. The viewer reads this to load the live
@@ -1000,6 +1040,16 @@ export class StructuredOutputProcessor {
         ...this.planManager.extractMarkdownFileReferences(structuredPlanRecord?.title),
       ]);
       const resolvedPlanFile = mergedPlanFiles[0];
+
+      // DEBUG: Log the plan file extraction
+      this.logger.debug('Plan File Extraction', {
+        structuredPlanFile: structuredPlanFiles[0],
+        mergedPlanFilesCount: mergedPlanFiles.length,
+        resolvedPlanFile,
+        fallbackPlanFile: resolvedPlanFile,
+        hasPlanContent: !!structuredPlanContent,
+        planContentLength: structuredPlanContent?.length || 0
+      });
       const resolvedPlanTitle = this.planManager.resolvePlanTitle({
         plan: { title: this.firstNonEmptyString(structuredPlanRecord?.title) },
         fallback: this.firstNonEmptyString(structuredPlanRecord?.summary),
@@ -1020,10 +1070,7 @@ export class StructuredOutputProcessor {
             structuredPlanContent,
             fallbackPlanFile,
           ).catch((err) => {
-            console.error(
-              "[ChatViewProvider] Failed to auto-persist structured plan:",
-              err,
-            );
+            this.logger.error("Failed to auto-persist structured plan", {}, err as Error);
           });
         }
 
@@ -1201,10 +1248,7 @@ export class StructuredOutputProcessor {
             cleanPlanContent,
             fallbackPlanFile,
           ).catch((err) => {
-            console.error(
-              "[ChatViewProvider] Failed to auto-persist cleaned plan:",
-              err,
-            );
+            this.logger.error("Failed to auto-persist cleaned plan", {}, err as Error);
           });
         }
       }

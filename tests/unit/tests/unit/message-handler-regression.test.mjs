@@ -304,3 +304,185 @@ test('messageHandler has no side effects besides dispatch', () => {
     'Budget/quota handlers should only dispatch'
   );
 });
+
+/**
+ * Regression tests for chatHistory/session switch bug fix
+ * Bug: firstNonEmptyString was undefined, causing all session switches to fail
+ * Fix: Added firstNonEmptyString utility function to messageHandler.ts
+ */
+
+test('firstNonEmptyString utility function exists', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+firstNonEmptyString/,
+    'firstNonEmptyString utility function should be defined'
+  );
+});
+
+test('firstNonEmptyString accepts multiple parameters', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+firstNonEmptyString\([^)]*\.\.\.[^)]*\)/,
+    'firstNonEmptyString should accept rest parameters'
+  );
+});
+
+test('firstNonEmptyString returns string or undefined', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+firstNonEmptyString[^{]*:\s*string\s*\|\s*undefined/,
+    'firstNonEmptyString should return string | undefined'
+  );
+});
+
+test('firstNonEmptyString handles string trimming', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+firstNonEmptyString[^{]*{[\s\S]*?\.trim\(\)/,
+    'firstNonEmptyString should trim strings'
+  );
+});
+
+test('normalizeMessage function is defined', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+normalizeMessage/,
+    'normalizeMessage should be defined (may not be exported)'
+  );
+});
+
+test('normalizeMessage accepts Message and StreamingState parameters', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+normalizeMessage\s*\([^)]*Message[^)]*StreamingState/s,
+    'normalizeMessage should accept Message and optional StreamingState'
+  );
+});
+
+test('normalizeMessage uses firstNonEmptyString for responseType', () => {
+  assert.match(
+    messageHandlerSource,
+    /const\s+responseType\s*=\s*firstNonEmptyString/,
+    'normalizeMessage should use firstNonEmptyString to extract responseType'
+  );
+});
+
+test('normalizeMessage handles responseType from multiple sources', () => {
+  assert.match(
+    messageHandlerSource,
+    /firstNonEmptyString\([^)]*normalized\.responseType[^)]*normalizedStructuredOutput\?\.responseType[^)]*\)/s,
+    'firstNonEmptyString should check both message.responseType and structuredOutput.responseType'
+  );
+});
+
+test('messageHandler handles chatHistory message type', () => {
+  assert.match(
+    messageHandlerSource,
+    /case\s+['"]chatHistory['"]\s*:/,
+    'Should handle chatHistory message type'
+  );
+});
+
+test('chatHistory case calls normalizeMessage', () => {
+  // Simply verify that both chatHistory case and normalizeMessage exist in the source
+  const hasChatHistoryCase = /case\s+["']chatHistory["']\s*:/.test(messageHandlerSource);
+  const hasNormalizeMessage = /normalizeMessage/.test(messageHandlerSource);
+
+  assert.ok(
+    hasChatHistoryCase && hasNormalizeMessage,
+    'chatHistory case should exist and normalizeMessage should be used'
+  );
+});
+
+test('chatHistory filters normalized messages', () => {
+  // Verify that isRenderableHistoryMessage is used in the message handler
+  assert.match(
+    messageHandlerSource,
+    /isRenderableHistoryMessage/,
+    'isRenderableHistoryMessage filter should be used'
+  );
+});
+
+test('chatHistory dispatches CLEAR_MESSAGES before SET_MESSAGES', () => {
+  // Verify the dispatch order: CLEAR_MESSAGES comes before SET_MESSAGES
+  const clearMessagesIndex = messageHandlerSource.indexOf('dispatch({ type: "CLEAR_MESSAGES" })');
+  const setMessagesIndex = messageHandlerSource.indexOf('dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages })');
+
+  assert.ok(
+    clearMessagesIndex > 0 && setMessagesIndex > 0,
+    'Both CLEAR_MESSAGES and SET_MESSAGES should be dispatched in chatHistory'
+  );
+  assert.ok(
+    clearMessagesIndex < setMessagesIndex,
+    'CLEAR_MESSAGES should be dispatched before SET_MESSAGES'
+  );
+});
+
+test('chatHistory dispatches SET_SESSION_ID', () => {
+  assert.match(
+    messageHandlerSource,
+    /case\s+['"]chatHistory['"]\s*:[\s\S]*?dispatch\(\s*\{\s*type:\s*['"]SET_SESSION_ID['"]/s,
+    'chatHistory should update the session ID'
+  );
+});
+
+test('normalizeMessage does not throw when processing chatHistory messages', () => {
+  // This test verifies the fix for the bug where normalizeMessage would throw
+  // "firstNonEmptyString is not defined" when processing messages from session history
+  assert.match(
+    messageHandlerSource,
+    /function\s+firstNonEmptyString[\s\S]*?function\s+normalizeMessage/,
+    'firstNonEmptyString should be defined before normalizeMessage (ensures no reference errors)'
+  );
+});
+
+test('message handler sanitizes opaque subagent labels before rendering', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+sanitizeSubagentLabel\(/,
+    'Should define sanitizeSubagentLabel helper for subagent UI text'
+  );
+  assert.match(
+    messageHandlerSource,
+    /sanitizeSubagentLabel\(\s*asString\(rec\.latestActivity\)\s*\)/,
+    'Subagent latestActivity should pass through sanitizeSubagentLabel'
+  );
+  assert.match(
+    messageHandlerSource,
+    /sanitizeSubagentLabel\(\s*asString\(evt\.title\)\s*\)/,
+    'Subagent progress titles should pass through sanitizeSubagentLabel'
+  );
+  assert.match(
+    messageHandlerSource,
+    /sanitizeSubagentLabel\(\s*asString\(evt\.label\)\s*\)/,
+    'Subagent timeline labels should pass through sanitizeSubagentLabel'
+  );
+});
+
+test('message handler deduplicates and merges subagent progress/timeline for presentation', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+normalizeSubagentProgressEventsForPresentation\(/,
+    'Should define subagent progress normalization helper'
+  );
+  assert.match(
+    messageHandlerSource,
+    /function\s+normalizeSubagentTimelineEventsForPresentation\(/,
+    'Should define subagent timeline normalization helper'
+  );
+  assert.match(
+    messageHandlerSource,
+    /const\s+byCallId\s*=\s*new Map<string,\s*SubagentProgressEvent>\(\)/,
+    'Progress normalization should merge tool snapshots by callID'
+  );
+  assert.match(
+    messageHandlerSource,
+    /byCallId\.get\(event\.callID\)/,
+    'Progress normalization should look up existing rows by callID'
+  );
+  assert.match(
+    messageHandlerSource,
+    /previous\.type === event\.type[\s\S]*normalizeComparableText\(previous\.label\)\s*===/s,
+    'Timeline normalization should collapse consecutive duplicate labels'
+  );
+});

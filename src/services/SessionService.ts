@@ -53,9 +53,10 @@ import * as vscode from "vscode";
 import { OpencodeServerManager } from "./OpencodeServerManager";
 import type { Session } from "@opencode-ai/sdk";
 import { createLogger } from "../utils/Logger";
+import { LoggingCategories } from "../utils/LoggingSchema";
 import { restoreCheckpointIfPresent } from "./CheckpointRestore";
 
-const log = createLogger("SessionService");
+const log = createLogger(LoggingCategories.SESSION_SERVICE);
 const MAX_CACHED_MESSAGES_PER_SESSION = 200;
 const MAX_CACHED_SESSION_BYTES = 4 * 1024 * 1024;
 const MAX_PERSISTED_STRING_LENGTH = 120_000;
@@ -1227,10 +1228,7 @@ export class SessionService {
         this.persistState();
       }
     } catch (error) {
-      console.error(
-        "[SessionService] Failed to fetch sessions from server:",
-        error,
-      );
+      log.error("Failed to fetch sessions from server", {}, error as Error);
       // Fallback to local history
       const normalizedLocal = coalesceSessionsById(this.sessionHistory);
       if (hasSessionAliasConflicts(normalizedLocal.aliasesByCanonicalId)) {
@@ -1338,10 +1336,10 @@ export class SessionService {
     } catch (error) {
       // Log but continue with local cleanup even if server deletion fails
       // This can happen if the session was already deleted on the server
-      console.warn(
-        `[SessionService] Server delete failed for session ${sessionId}, continuing with local cleanup:`,
-        error,
-      );
+      log.warn("Server delete failed, continuing with local cleanup", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     if (this.currentSession?.id === sessionId) {
@@ -1481,7 +1479,7 @@ export class SessionService {
    * @see loadSessionMessages for loading cached messages
    */
   async getMessages(sessionId: string): Promise<unknown[]> {
-    console.log(`[SessionService] Fetching messages for session ${sessionId}`);
+    log.debug("Fetching messages for session", { sessionId });
     const localMessages = await this.loadSessionMessages(sessionId);
 
     try {
@@ -1493,9 +1491,10 @@ export class SessionService {
       });
 
       if (response.data && response.data.length > 0) {
-        console.log(
-          `[SessionService] Fetched ${response.data.length} messages from server`,
-        );
+        log.info("Fetched messages from server", {
+          sessionId,
+          count: response.data.length,
+        });
         const mergedMessages =
           localMessages.length > 0
             ? mergeConversationMessages([localMessages, response.data])
@@ -1506,16 +1505,17 @@ export class SessionService {
         return mergedMessages;
       }
     } catch (error) {
-      console.warn(
-        `[SessionService] Error fetching messages from server:`,
-        error,
-      );
+      log.warn("Error fetching messages from server, using local cache", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     // Fallback to local storage
-    console.log(
-      `[SessionService] Returning ${localMessages.length} local messages for ${sessionId}`,
-    );
+    log.debug("Returning local messages", {
+      sessionId,
+      count: localMessages.length,
+    });
     return localMessages;
   }
 
@@ -1588,9 +1588,11 @@ export class SessionService {
     }
 
     if (wasCompacted) {
-      console.warn(
-        `[SessionService] Cached messages for ${sessionId} were compacted to ${persisted.length} items (${Math.round(estimatedSize / 1024)}KB)`,
-      );
+      log.warn("Cached messages were compacted", {
+        sessionId,
+        itemCount: persisted.length,
+        sizeKB: Math.round(estimatedSize / 1024),
+      });
     }
 
     await this.context.workspaceState.update(
@@ -1799,10 +1801,9 @@ export class SessionService {
       try {
         await this.switchSession(sessionId);
       } catch (e) {
-        console.log(
-          "[SessionService] Session not found on server, keeping local stub:",
+        log.debug("Session not found on server, keeping local stub", {
           sessionId,
-        );
+        });
         // If not on server, find in history to keep it as "active" in UI
         const stub = this.sessionHistory.find((s) => s.id === sessionId);
         if (stub) {

@@ -244,7 +244,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
         </div>
 
         {/* Session List */}
-        <div className="flex flex-1 min-h-0 overflow-y-auto px-3 py-2">
+        <div className="flex flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 py-2">
           {filteredSessions.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
               {searchQuery ? (

@@ -1,5 +1,5 @@
 import { Check, Copy, Sparkles, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { cn } from "@/utils";
@@ -7,6 +7,27 @@ import { Badge } from "@/components/ui/badge";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
 
 import type { SubagentDetail } from "./lib/types";
+
+function isOpaqueIdLike(value: string): boolean {
+	const text = value.trim();
+	if (text.length < 8) {
+		return false;
+	}
+	return (
+		/^[a-f0-9-]{8,}$/i.test(text) ||
+		/^msg[_-][a-z0-9-]+$/i.test(text) ||
+		/^call[_-][a-z0-9-]+$/i.test(text) ||
+		/^ses[_-][a-z0-9-]+$/i.test(text)
+	);
+}
+
+function cleanLabel(value: string): string {
+	const trimmed = value.trim().replace(/\s+/g, " ");
+	if (!trimmed || isOpaqueIdLike(trimmed)) {
+		return "";
+	}
+	return trimmed;
+}
 
 type SubagentDetailModalProps = {
 	isOpen: boolean;
@@ -61,6 +82,78 @@ export function SubagentDetailModal({
 	const status = detail.status || "running";
 	const isDone = status === "done";
 	const isError = status === "error";
+	const hasRawProgressEvents = (detail.progressEvents?.length || 0) > 0;
+	const latestActivity = cleanLabel(detail.latestActivity || "") || "Initializing...";
+	const renderedProgress = useMemo(() => {
+		const source = Array.isArray(detail.progressEvents) ? detail.progressEvents : [];
+		const mergedByCall = new Map<string, (typeof source)[number]>();
+		const kept: typeof source = [];
+		for (const event of source) {
+			const title = cleanLabel(event.title || "");
+			if (!title) {
+				continue;
+			}
+			const normalized = {
+				...event,
+				title,
+				meta: cleanLabel(event.meta || "") || undefined,
+			};
+			if (normalized.callID) {
+				const existing = mergedByCall.get(normalized.callID);
+				if (!existing) {
+					mergedByCall.set(normalized.callID, normalized);
+					kept.push(normalized);
+					continue;
+				}
+				existing.createdAt = Math.max(existing.createdAt, normalized.createdAt);
+				existing.status =
+					normalized.status === "error"
+						? "error"
+						: normalized.status === "done" || existing.status === "done"
+							? "done"
+							: "pending";
+				existing.title = normalized.title || existing.title;
+				existing.meta = normalized.meta || existing.meta;
+				existing.filePath = normalized.filePath || existing.filePath;
+				continue;
+			}
+			const previous = kept[kept.length - 1];
+			if (
+				previous &&
+				previous.title === normalized.title &&
+				previous.status === normalized.status &&
+				previous.filePath === normalized.filePath &&
+				previous.meta === normalized.meta
+			) {
+				continue;
+			}
+			kept.push(normalized);
+		}
+		return kept;
+	}, [detail.progressEvents]);
+	const renderedTimeline = useMemo(() => {
+		const source = Array.isArray(detail.timelineEvents) ? detail.timelineEvents : [];
+		const sorted = [...source].sort((a, b) => a.createdAt - b.createdAt);
+		const deduped: typeof sorted = [];
+		for (const event of sorted) {
+			const label = cleanLabel(event.label || "");
+			if (!label) {
+				continue;
+			}
+			const normalized = { ...event, label };
+			const previous = deduped[deduped.length - 1];
+			if (
+				previous &&
+				previous.type === normalized.type &&
+				previous.label.toLowerCase() === normalized.label.toLowerCase()
+			) {
+				previous.createdAt = Math.max(previous.createdAt, normalized.createdAt);
+				continue;
+			}
+			deduped.push(normalized);
+		}
+		return deduped;
+	}, [detail.timelineEvents]);
 
 	const modalContent = (
 		<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-2 backdrop-blur-sm animate-in fade-in duration-200 sm:p-4 md:p-6">
@@ -147,17 +240,17 @@ export function SubagentDetailModal({
 									Latest Activity
 								</span>
 								<div className="rounded-md border border-oc-border bg-oc-bg-soft px-3 py-2.5 text-[13px] font-mono text-foreground shadow-inner break-words">
-									{detail.latestActivity || "Initializing..."}
+									{latestActivity}
 								</div>
 							</div>
 
 							<div className="flex flex-col gap-2">
 								<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-									Progress ({detail.progressEvents?.length || 0})
+									Progress ({renderedProgress.length})
 								</span>
-								{detail.progressEvents?.length > 0 ? (
+								{renderedProgress.length > 0 || hasRawProgressEvents ? (
 									<div className="space-y-2">
-										{detail.progressEvents.map((ev) => (
+										{renderedProgress.map((ev) => (
 											<div
 												key={ev.id}
 												className="rounded-md border border-oc-border bg-oc-bg-soft px-3 py-2.5 shadow-sm transition-colors hover:bg-oc-panel"
@@ -202,23 +295,31 @@ export function SubagentDetailModal({
 					>
 						<div className="flex flex-col gap-4">
 							<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-								Timeline ({detail.timelineEvents?.length || 0})
+								Timeline ({renderedTimeline.length})
 							</span>
 
-							{detail.timelineEvents?.length > 0 ? (
+							{renderedTimeline.length > 0 ? (
 								<div className="pr-1 text-sm">
 									<Stepper>
-										{detail.timelineEvents.map((ev, index) => {
-											const isLast = index === detail.timelineEvents.length - 1;
+										{renderedTimeline.map((ev, index) => {
+											const isLast = index === renderedTimeline.length - 1;
 											const time = new Date(ev.createdAt).toLocaleTimeString([], {
 												hour: "2-digit",
 												minute: "2-digit",
 												second: "2-digit",
 											});
+											const eventLooksError =
+												ev.type.toLowerCase().includes("error") ||
+												ev.label.toLowerCase().includes("error") ||
+												ev.label.toLowerCase().includes("failed");
+											const eventLooksDone =
+												ev.label.toLowerCase() === "completed" ||
+												ev.label.toLowerCase().includes("done") ||
+												ev.label.toLowerCase().includes("finished");
 
-											const dotIndicator = isError ? (
+											const dotIndicator = eventLooksError || isError ? (
 												<X className="h-3 w-3 text-destructive" />
-											) : isLast && !isDone && !isError ? (
+											) : isLast && !isDone && !isError && !eventLooksDone ? (
 												<div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
 											) : (
 												<Check className="h-3 w-3 text-emerald-500" />
