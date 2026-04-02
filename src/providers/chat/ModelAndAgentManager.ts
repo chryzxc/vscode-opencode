@@ -10,8 +10,9 @@ import * as vscode from "vscode";
 import * as cp from "child_process";
 import type { OpencodeServerManager } from "../../services/OpencodeServerManager";
 import type { ModelCapabilitiesService } from "../../services/ModelCapabilitiesService";
-import type { Command as SdkCommand } from "@opencode-ai/sdk";
+import type { Command as SdkCommand } from "@opencode-ai/sdk" with { "resolution-mode": "import" };
 import type { ChatModelOption, ChatSlashCommand, SessionSettings } from "./types";
+import { LoggingCategories } from "../../utils/LoggingSchema";
 
 export class ModelAndAgentManager {
   private selectedModel: { providerID: string; modelID: string; providerName?: string };
@@ -55,8 +56,43 @@ export class ModelAndAgentManager {
    * Set selected model
    */
   async setSelectedModel(model: { providerID: string; modelID: string; providerName?: string }): Promise<void> {
-    this.selectedModel = model;
-    await this.globalState.update("selectedModel", model);
+    const correlationId = this.logger.startFeatureFlow('model-selection', {
+      providerId: model.providerID,
+      modelId: model.modelID,
+    });
+
+    try {
+      this.logger.featureStep(correlationId, 'validate-model', { model });
+
+      this.logger.logStateChange(
+        'selectedModel',
+        this.selectedModel,
+        model,
+        'user-selection'
+      );
+
+      this.selectedModel = model;
+      await this.globalState.update("selectedModel", model);
+
+      this.logger.featureStep(correlationId, 'persist-selection', { model });
+
+      this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, 'Model selected', {
+        providerId: model.providerID,
+        modelId: model.modelID,
+        providerName: model.providerName,
+      });
+
+      this.logger.endFeatureFlow(correlationId, { success: true });
+    } catch (error) {
+      this.logger.error(
+        LoggingCategories.MODEL_AGENT_MANAGER,
+        'Failed to set selected model',
+        { correlationId, model },
+        error as Error
+      );
+      this.logger.endFeatureFlow(correlationId, { success: false, error: String(error) });
+      throw error;
+    }
   }
 
   /**
@@ -84,13 +120,24 @@ export class ModelAndAgentManager {
    * Handle get models request
    */
   async handleGetModels(): Promise<ChatModelOption[]> {
+    const correlationId = this.logger.startFeatureFlow('fetch-models');
+    const startTime = Date.now();
+
     if (this.modelsFetchPromise) {
+      this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, 'Using cached models fetch', {
+        correlationId,
+      });
       return this.modelsFetchPromise;
     }
 
     this.modelsFetchPromise = (async () => {
+      this.logger.featureStep(correlationId, 'ensure-server-running');
+
       try {
         const client = await this.serverManager.ensureRunning();
+
+        this.logger.featureStep(correlationId, 'fetch-provider-list');
+
         const providerListTimeoutMs = 8000;
         let timeoutHandle: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
@@ -151,9 +198,40 @@ export class ModelAndAgentManager {
             selectedModel: this.selectedModel,
           });
 
+          const duration = Date.now() - startTime;
+          this.logger.performance('fetch-models', duration, {
+            modelCount: models.length,
+            providers: [...new Set(models.map(m => m.providerName))],
+          });
+
+          this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, 'Models fetched successfully', {
+            correlationId,
+            count: models.length,
+            duration,
+          });
+
+          this.logger.endFeatureFlow(correlationId, {
+            success: true,
+            modelCount: models.length,
+          });
+
           return models;
         }
       } catch (error) {
+        this.modelsFetchPromise = null;
+
+        this.logger.error(
+          LoggingCategories.MODEL_AGENT_MANAGER,
+          'Failed to fetch models',
+          { correlationId },
+          error as Error
+        );
+
+        this.logger.endFeatureFlow(correlationId, {
+          success: false,
+          error: String(error),
+        });
+
         console.error("Failed to get models:", error);
       }
 
@@ -172,6 +250,13 @@ export class ModelAndAgentManager {
         models: fallbackModels,
         selectedModel: this.selectedModel,
       });
+
+      this.logger.endFeatureFlow(correlationId, {
+        success: true,
+        fallbackUsed: true,
+        modelCount: fallbackModels.length,
+      });
+
       return fallbackModels;
     })();
 
@@ -341,6 +426,8 @@ export class ModelAndAgentManager {
    * Handle get agents request
    */
   async handleGetAgents(): Promise<void> {
+    const correlationId = this.logger.startFeatureFlow('fetch-agents');
+
     // Hidden system agents that run automatically and are not user-selectable.
     const HIDDEN_SYSTEM_AGENTS = new Set(["compaction", "title", "summary"]);
 
@@ -355,36 +442,49 @@ export class ModelAndAgentManager {
       mode: "primary" | "subagent" | "all";
       builtIn: boolean;
     }> = [
-      {
-        id: "build",
-        name: "Build",
-        description: "Default agent for development work with all tools enabled",
-        mode: "primary",
-        builtIn: true,
-      },
-      {
-        id: "plan",
-        name: "Plan",
-        description: "Restricted agent for planning and analysis without making changes",
-        mode: "primary",
-        builtIn: true,
-      },
-    ];
+        {
+          id: "build",
+          name: "Build",
+          description: "Default agent for development work with all tools enabled",
+          mode: "primary",
+          builtIn: true,
+        },
+        {
+          id: "plan",
+          name: "Plan",
+          description: "Restricted agent for planning and analysis without making changes",
+          mode: "primary",
+          builtIn: true,
+        },
+      ];
 
     try {
+      this.logger.featureStep(correlationId, 'ensure-server-running');
+
       const client = await this.serverManager.ensureRunning();
 
       // Check if the SDK supports agent listing
       if (!client || typeof (client as any).app?.agents !== 'function') {
-        this.logger.warn('[ModelAndAgentManager] Agent discovery not available in current SDK');
+        this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, 'Agent discovery not available in current SDK', {
+          correlationId,
+        });
         // Fallback to built-in agents
         this.postMessage({
           type: "agentsList",
           agents: BUILTIN_AGENTS,
           selectedAgent: this.selectedAgent || "build",
         });
+
+        this.logger.endFeatureFlow(correlationId, {
+          success: true,
+          fallbackUsed: true,
+          agentCount: BUILTIN_AGENTS.length,
+        });
+
         return;
       }
+
+      this.logger.featureStep(correlationId, 'fetch-agent-list');
 
       const response = await (client as any).app.agents();
 
@@ -438,15 +538,38 @@ export class ModelAndAgentManager {
           `[ModelAndAgentManager] Fetched ${sdkAgents.length} agent(s) via SDK; merged to ${agents.length} total (including built-ins)`,
         );
 
+        this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, 'Agents fetched successfully', {
+          correlationId,
+          count: agents.length,
+          sdkAgents: sdkAgents.length,
+          builtinAgents: BUILTIN_AGENTS.length,
+        });
+
         this.postMessage({
           type: "agentsList",
           agents,
           selectedAgent: this.selectedAgent,
         });
+
+        this.logger.endFeatureFlow(correlationId, {
+          success: true,
+          agentCount: agents.length,
+        });
+
         return;
       }
     } catch (error) {
-      this.logger.warn("[ModelAndAgentManager] Error fetching agents:", error instanceof Error ? error.message : String(error));
+      this.logger.error(
+        LoggingCategories.MODEL_AGENT_MANAGER,
+        'Failed to fetch agents',
+        { correlationId },
+        error as Error
+      );
+
+      this.logger.endFeatureFlow(correlationId, {
+        success: false,
+        error: String(error),
+      });
     }
 
     // Fallback: send only the guaranteed built-in primary agents.
@@ -454,6 +577,12 @@ export class ModelAndAgentManager {
       type: "agentsList",
       agents: BUILTIN_AGENTS,
       selectedAgent: this.selectedAgent || "build",
+    });
+
+    this.logger.endFeatureFlow(correlationId, {
+      success: true,
+      fallbackUsed: true,
+      agentCount: BUILTIN_AGENTS.length,
     });
   }
 
