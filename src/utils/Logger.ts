@@ -506,6 +506,16 @@ class Logger {
 export const logger = new Logger();
 
 /**
+ * Active feature flow tracking
+ */
+interface ActiveFeatureFlow {
+  featureName: string;
+  correlationId: string;
+  startTime: number;
+  metadata: Record<string, unknown>;
+}
+
+/**
  * Creates a category-scoped logger for convenience.
  * Usage:
  * ```typescript
@@ -515,7 +525,14 @@ export const logger = new Logger();
  * ```
  */
 export function createLogger(category: string) {
+  const activeFlows = new Map<string, ActiveFeatureFlow>();
+
+  const generateCorrelationId = (): string => {
+    return `${category}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  };
+
   return {
+    // Existing methods
     error: (message: string, context?: Record<string, unknown>, error?: Error) =>
       logger.error(category, message, context, error),
     warn: (message: string, context?: Record<string, unknown>) =>
@@ -536,5 +553,110 @@ export function createLogger(category: string) {
       logger.serverEvent(category, event, context),
     sessionEvent: (event: "create" | "load" | "switch" | "delete" | "persist" | "rename", sessionId: string, context?: Record<string, unknown>) =>
       logger.sessionEvent(category, event, sessionId, context),
+
+    // New feature flow methods
+    startFeatureFlow: (featureName: string, metadata?: Record<string, unknown>): string => {
+      const correlationId = generateCorrelationId();
+      const flow: ActiveFeatureFlow = {
+        featureName,
+        correlationId,
+        startTime: Date.now(),
+        metadata: metadata || {},
+      };
+      activeFlows.set(correlationId, flow);
+
+      logger.info(category, `Feature started: ${featureName}`, {
+        correlationId,
+        featureName,
+        ...metadata,
+      });
+
+      return correlationId;
+    },
+
+    endFeatureFlow: (correlationId: string, result?: Record<string, unknown>): ActiveFeatureFlow | undefined => {
+      const flow = activeFlows.get(correlationId);
+      if (!flow) {
+        logger.warn(category, `Feature flow not found: ${correlationId}`, { correlationId });
+        return undefined;
+      }
+
+      const duration = Date.now() - flow.startTime;
+      activeFlows.delete(correlationId);
+
+      logger.info(category, `Feature ended: ${flow.featureName}`, {
+        correlationId,
+        featureName: flow.featureName,
+        duration,
+        result,
+        ...flow.metadata,
+      });
+
+      return { ...flow, duration, ...result };
+    },
+
+    getActiveFeatureFlow: (correlationId?: string): ActiveFeatureFlow | undefined => {
+      if (correlationId) {
+        return activeFlows.get(correlationId);
+      }
+      // Return most recent flow if no ID provided
+      const entries = Array.from(activeFlows.entries());
+      if (entries.length === 0) return undefined;
+      return entries[entries.length - 1][1];
+    },
+
+    featureStep: (correlationId: string, stepName: string, context?: Record<string, unknown>): void => {
+      const flow = activeFlows.get(correlationId);
+      if (!flow) {
+        logger.warn(category, `Feature flow not found for step: ${correlationId}`, {
+          correlationId,
+          stepName,
+        });
+        return;
+      }
+
+      logger.info(category, `Feature step: ${stepName}`, {
+        correlationId,
+        featureName: flow.featureName,
+        stepName,
+        ...context,
+      });
+    },
+
+    logStateChange: <T>(stateKey: string, oldValue: T, newValue: T, changedBy: string): void => {
+      logger.info(category, `State changed: ${stateKey}`, {
+        stateKey,
+        oldValue,
+        newValue,
+        changedBy,
+        timestamp: new Date().toISOString(),
+      });
+    },
+
+    logUIInteraction: (component: string, action: string, element?: string, payload?: Record<string, unknown>): void => {
+      logger.debug(category, `UI interaction: ${action}`, {
+        component,
+        action,
+        element,
+        payload,
+        userInitiated: true,
+        timestamp: new Date().toISOString(),
+      });
+    },
+
+    performance: (operation: string, duration: number, metadata?: Record<string, unknown>): void => {
+      const performanceContext = {
+        operation,
+        duration,
+        ...metadata,
+      };
+
+      logger.info(category, `Performance: ${operation}`, performanceContext);
+
+      // Log warning if operation took too long (> 3 seconds)
+      if (duration > 3000) {
+        logger.warn(category, `Slow operation detected: ${operation}`, performanceContext);
+      }
+    },
   };
 }
