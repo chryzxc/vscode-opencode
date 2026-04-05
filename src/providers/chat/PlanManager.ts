@@ -9,6 +9,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs/promises";
+import { LoggingCategories } from "../../utils/LoggingSchema";
 
 export class PlanManager {
   constructor(
@@ -42,10 +43,10 @@ export class PlanManager {
     const normalized = { ...message };
 
     const parts = text.split(/\s+/, 2);
-    const command = parts[0];
+    const command = parts[0] || "";
     const rest = parts[1] || "";
 
-    if (rest) {
+    if (rest && command) {
       const trimmedRest = rest.trim();
       const quoteMatches = trimmedRest.match(/^["'](.+)["']$/);
       const commentText = quoteMatches ? quoteMatches[1] : trimmedRest;
@@ -150,12 +151,20 @@ export class PlanManager {
     content: string,
     preferredPath?: string,
   ): Promise<string | undefined> {
+    const flow = this.logger.startFeatureFlow('PersistPlan', {
+      hasContent: !!content,
+      contentLength: content.length,
+      preferredPath,
+    });
+
     try {
       const normalizedContent = this.firstNonEmptyString(content);
       if (!normalizedContent) {
+        this.logger.endFeatureFlow(flow, 'skipped', { reason: 'No content' });
         return undefined;
       }
 
+      this.logger.featureStep(flow, 'normalizing_paths');
       const normalizedPreferred = this.normalizePlanFileReference(preferredPath);
       const resolvedPreferred = normalizedPreferred
         ? this.resolvePlanFileCandidates(normalizedPreferred)[0] ||
@@ -163,21 +172,28 @@ export class PlanManager {
         : undefined;
       const resolvedPath = resolvedPreferred;
       if (!resolvedPath) {
+        this.logger.endFeatureFlow(flow, 'failed', { reason: 'No valid path' });
         return undefined;
       }
 
+      this.logger.featureStep(flow, 'creating_directory', { path: path.dirname(resolvedPath) });
       const normalizedPath = path.normalize(resolvedPath);
       await vscode.workspace.fs.createDirectory(
         vscode.Uri.file(path.dirname(normalizedPath)),
       );
+
+      this.logger.featureStep(flow, 'writing_file', { path: normalizedPath });
       await vscode.workspace.fs.writeFile(
         vscode.Uri.file(normalizedPath),
         new TextEncoder().encode(normalizedContent),
       );
+
       this.logger.info("Auto-persisted plan", { path: normalizedPath });
+      this.logger.endFeatureFlow(flow, 'completed');
       return normalizedPath;
     } catch (err) {
-      this.logger.error("Failed to persist plan", { path: preferredPath }, err as Error);
+      this.logger.error(`Failed to persist plan: ${err instanceof Error ? err.message : String(err)}`, { path: preferredPath });
+      this.logger.endFeatureFlow(flow, 'failed');
       return undefined;
     }
   }
@@ -453,18 +469,28 @@ export class PlanManager {
    * Discover likely plan file candidates
    */
   async discoverLikelyPlanFileCandidates(): Promise<string[]> {
+    const flow = this.logger.startFeatureFlow('DiscoverPlanFiles', {});
+
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder || workspaceFolder.uri.scheme !== "file") {
+      this.logger.endFeatureFlow(flow, 'skipped', { reason: 'No valid workspace folder' });
       return [];
     }
 
     const workspacePath = workspaceFolder.uri.fsPath;
+    this.logger.featureStep(flow, 'workspace_valid', { workspacePath });
 
     try {
+      this.logger.featureStep(flow, 'searching_for_plan_files');
+      const startTime = Date.now();
       const planFiles = await vscode.workspace.findFiles(
         new vscode.RelativePattern(workspaceFolder, "**/*plan*.md"),
         "**/{node_modules,.git,dist,build}/**",
       );
+      this.logger.featureStep(flow, 'files_found', {
+        count: planFiles.length,
+        duration: Date.now() - startTime,
+      });
 
       const scored = planFiles
         .map((uri) => uri.fsPath)
@@ -478,8 +504,20 @@ export class PlanManager {
         .slice(0, 10)
         .map((item) => item.filePath);
 
+      this.logger.info("Plan file discovery completed", {
+        totalFound: planFiles.length,
+        afterScoring: scored.length,
+        topCandidates: scored.slice(0, 3),
+      });
+
+      this.logger.endFeatureFlow(flow, 'completed', {
+        totalCandidates: scored.length,
+        duration: Date.now() - startTime,
+      });
       return scored;
-    } catch {
+    } catch (err) {
+      this.logger.error("Plan file discovery failed", { workspacePath }, err as Error);
+      this.logger.endFeatureFlow(flow, 'failed', { error: String(err) });
       return [];
     }
   }

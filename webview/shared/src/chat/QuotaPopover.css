@@ -1,0 +1,73 @@
+/**
+ * Quota Popover - Minimal Custom CSS
+ *
+ * Most styling uses Tailwind classes matching QuotaMonitor's design.
+ * Custom CSS is only used for the overlay and container positioning.
+ */
+
+/* Overlay */
+.quota-popover-overlay {
+  position: fixed;
+  top: 48px;
+  right: 16px;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/* Main Popover Container */
+.quota-popover {
+  pointer-events: auto;
+  position: relative;
+  background: var(--oc-panel);
+  border: 1px solid var(--oc-border);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  max-width: 400px;
+  max-height: 600px;
+  overflow-y: auto;
+  animation: quota-popover-slide-in 0.2s ease-out;
+}
+
+/* Animations */
+@keyframes quota-popover-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Scrollbar styling */
+.quota-popover::-webkit-scrollbar {
+  width: 8px;
+}
+
+.quota-popover::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.quota-popover::-webkit-scrollbar-thumb {
+  background: var(--oc-border);
+  border-radius: 4px;
+  border: 2px solid var(--oc-panel);
+}
+
+.quota-popover::-webkit-scrollbar-thumb:hover {
+  background: var(--oc-text-soft);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .quota-popover-overlay {
+    right: 8px;
+    left: 8px;
+  }
+
+  .quota-popover {
+    max-width: 100%;
+    max-height: 60vh;
+  }
+}

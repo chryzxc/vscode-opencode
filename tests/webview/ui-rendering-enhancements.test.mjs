@@ -92,6 +92,29 @@ test('AssistantMessage falls back to message edits diff stats for edit steps', (
   );
 });
 
+test('AssistantMessage renders structured activityDetail chips and diff excerpt component', () => {
+  assert.match(
+    messageComponentsSource,
+    /event\.activityDetail\.tool/,
+    'Activity detail panel should render tool chip when provided'
+  );
+  assert.match(
+    messageComponentsSource,
+    /event\.activityDetail\.command/,
+    'Activity detail panel should render command chip when provided'
+  );
+  assert.match(
+    messageComponentsSource,
+    /event\.activityDetail\.query/,
+    'Activity detail panel should render query chip when provided'
+  );
+  assert.match(
+    messageComponentsSource,
+    /<ActivityDiffExcerpt\s+excerpt=\{event\.activityDetail\.diffExcerpt\}/,
+    'Activity detail panel should render unified diff excerpts via ActivityDiffExcerpt'
+  );
+});
+
 test('Subagent detail rendering uses inline rows and modal (not popovers)', () => {
   assert.doesNotMatch(
     messageComponentsSource,

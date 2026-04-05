@@ -4,6 +4,8 @@ declare function acquireVsCodeApi(): {
   setState(state: unknown): void;
 };
 
+import logger from './logger';
+
 function getVsCodeApi() {
   // Reuse on window to avoid multiple acquisitions which throw in VS Code
   // @ts-expect-error - augmenting global for webview runtime
@@ -22,17 +24,16 @@ const rawVscodeApi = getVsCodeApi();
 // Wrap postMessage to add logging
 const vscode = {
   postMessage: (msg: unknown) => {
-    console.log('[vscode.postMessage] Sending message to extension:', {
+    logger.debug('Sending message to extension', {
       type: (msg as { type?: string })?.type,
       messageType: typeof msg,
       hasData: msg !== null && msg !== undefined,
-      fullMessage: msg
     });
     try {
       rawVscodeApi.postMessage(msg);
-      console.log('[vscode.postMessage] Message sent successfully');
+      logger.debug('Message sent successfully');
     } catch (error) {
-      console.error('[vscode.postMessage] Error sending message:', error);
+      logger.error('Error sending message', { error: String(error) });
       throw error;
     }
   },

@@ -22,7 +22,7 @@
  */
 
 import { EventEmitter } from "events";
-import * as fs from "fs";
+import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";
 import { createLogger } from "../utils/Logger";
@@ -106,16 +106,18 @@ function getTodayUTC(): string {
   return now.toISOString().split("T")[0]; // YYYY-MM-DD in UTC
 }
 
-function ensureStorageDir(): void {
+async function ensureStorageDir(): Promise<void> {
   const dir = path.dirname(STORAGE_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  try {
+    await fs.access(dir);
+  } catch {
+    await fs.mkdir(dir, { recursive: true });
   }
 }
 
-function readStorage(): DailyUsageSnapshot | null {
+async function readStorage(): Promise<DailyUsageSnapshot | null> {
   try {
-    const raw = fs.readFileSync(STORAGE_PATH, "utf8");
+    const raw = await fs.readFile(STORAGE_PATH, "utf8");
     const parsed = JSON.parse(raw) as DailyUsageSnapshot;
     // Validate structure
     if (parsed && typeof parsed.date === "string" && typeof parsed.models === "object") {
@@ -127,10 +129,10 @@ function readStorage(): DailyUsageSnapshot | null {
   return null;
 }
 
-function writeStorage(snapshot: DailyUsageSnapshot): void {
+async function writeStorage(snapshot: DailyUsageSnapshot): Promise<void> {
   try {
-    ensureStorageDir();
-    fs.writeFileSync(STORAGE_PATH, JSON.stringify(snapshot, null, 2), "utf8");
+    await ensureStorageDir();
+    await fs.writeFile(STORAGE_PATH, JSON.stringify(snapshot, null, 2), "utf8");
   } catch (error) {
     const logger = createLogger(LoggingCategories.EXTENSION);
     logger.error("Failed to write storage", { snapshot }, error as Error);
@@ -149,16 +151,27 @@ export class GeminiTokenUsageTracker extends EventEmitter {
   private currentDate: string;
   private isDisposed = false;
   private logger = createLogger(LoggingCategories.EXTENSION);
+  private saveTimer: NodeJS.Timeout | null = null;
+  private pendingSave = false;
 
   constructor() {
     super();
     this.currentDate = getTodayUTC();
-    this.loadFromStorage();
+    // Initialize asynchronously without blocking
+    this.initialize();
+  }
+
+  private async initialize(): Promise<void> {
+    await this.loadFromStorage();
     this.checkDailyReset();
   }
 
   /**
    * Records token usage from a message.updated event
+   *
+   * **Performance Note:** This method now uses async debounced file I/O.
+   * It updates memory immediately and schedules a write in the background.
+   * Multiple rapid calls will only trigger one write after 1 second of inactivity.
    *
    * @param model - Model identifier (e.g., "gemini-2.5-flash")
    * @param tokens - Token usage data from info.tokens
@@ -197,8 +210,36 @@ export class GeminiTokenUsageTracker extends EventEmitter {
     usage.lastUpdated = Date.now();
 
     this.currentUsage[model] = usage;
-    this.saveToStorage();
+
+    // Emit immediately for UI updates
     this.emit("usageUpdated", this.getAllUsage());
+
+    // Debounced save - don't await, let it happen in background
+    this.scheduleSave();
+  }
+
+  /**
+   * Schedules a debounced save to storage.
+   * Multiple rapid calls will only trigger one write after 1 second.
+   */
+  private scheduleSave(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+    }
+
+    // Only mark as pending if we don't already have a pending save
+    if (!this.pendingSave) {
+      this.pendingSave = true;
+    }
+
+    // Save after 1 second of inactivity (debouncing)
+    this.saveTimer = setTimeout(() => {
+      this.saveToStorage().catch((error) => {
+        this.logger.error("Failed to save token usage", {}, error);
+      });
+      this.pendingSave = false;
+      this.saveTimer = null;
+    }, 1000);
   }
 
   /**
@@ -267,16 +308,31 @@ export class GeminiTokenUsageTracker extends EventEmitter {
   public reset(): void {
     this.currentUsage = {};
     this.currentDate = getTodayUTC();
-    this.saveToStorage();
+    this.scheduleSave();
     this.emit("usageUpdated", []);
   }
 
   /**
    * Cleans up resources
+   *
+   * **Performance Note:** Ensures any pending data is saved before disposal.
    */
   public dispose(): void {
     this.isDisposed = true;
-    this.saveToStorage();
+
+    // Clear any pending debounced save
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+
+    // Final save before disposal (fire-and-forget)
+    if (this.pendingSave) {
+      this.saveToStorage().catch((error) => {
+        this.logger.error("Failed to save on dispose", {}, error);
+      });
+    }
+
     this.removeAllListeners();
   }
 
@@ -313,7 +369,7 @@ export class GeminiTokenUsageTracker extends EventEmitter {
       // New day - reset tracking
       this.currentDate = today;
       this.currentUsage = {};
-      this.saveToStorage();
+      this.scheduleSave();
       this.emit("dailyReset", today);
     }
   }
@@ -321,8 +377,8 @@ export class GeminiTokenUsageTracker extends EventEmitter {
   /**
    * Loads usage data from persistent storage
    */
-  private loadFromStorage(): void {
-    const snapshot = readStorage();
+  private async loadFromStorage(): Promise<void> {
+    const snapshot = await readStorage();
     if (snapshot && snapshot.date === this.currentDate) {
       // Load today's data
       for (const [model, data] of Object.entries(snapshot.models)) {
@@ -348,8 +404,11 @@ export class GeminiTokenUsageTracker extends EventEmitter {
 
   /**
    * Saves current usage data to persistent storage
+   *
+   * **Performance Note:** This method is async and debounced.
+   * It's called in the background without blocking the event loop.
    */
-  private saveToStorage(): void {
+  private async saveToStorage(): Promise<void> {
     const snapshot: DailyUsageSnapshot = {
       date: this.currentDate,
       models: {},
@@ -366,6 +425,6 @@ export class GeminiTokenUsageTracker extends EventEmitter {
       };
     }
 
-    writeStorage(snapshot);
+    await writeStorage(snapshot);
   }
 }

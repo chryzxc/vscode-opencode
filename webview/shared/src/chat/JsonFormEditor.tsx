@@ -4,6 +4,7 @@ import { PrimitiveField } from './PrimitiveField';
 import { ObjectField } from './ObjectField';
 import { ArrayField } from './ArrayField';
 import type { Model } from './lib/types';
+import logger from './lib/logger';
 
 interface JsonFormEditorProps {
   value: unknown;
@@ -28,7 +29,7 @@ export function JsonFormEditor({
   useEffect(() => {
     const jsonString = JSON.stringify(value);
     if (jsonString.length > 100_000) { // 100KB
-      console.warn('Large config detected, performance may be impacted');
+      logger.warn('Large config detected, performance may be impacted', { size: jsonString.length });
     }
   }, [value]);
 

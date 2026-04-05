@@ -24,13 +24,15 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
-import { cn, getFilename } from "@/utils";
+import { cn, formatDuration, getFilename } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
+import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 
 import type {
+  ActivityDetail,
   AppState,
   Message,
   MessagePart,
@@ -576,6 +578,7 @@ type ProgressItem = {
   meta?: string;
   filePath?: string;
   diffStats?: { added: number; deleted: number };
+  activityDetail?: ActivityDetail;
   /** Arrival-order sequence number from StreamingStep.streamSeq or MessageStep.streamSeq */
   streamSeq?: number;
 };
@@ -750,6 +753,9 @@ function progressItemsFromSteps(
             added: number;
             deleted: number;
           };
+        if ("activityDetail" in step && step.activityDetail) {
+          existing.activityDetail = step.activityDetail as ActivityDetail;
+        }
       } else {
         stepMap.set(mergeKey, {
           key: `${prefix}-${index}-${title}`,
@@ -763,6 +769,10 @@ function progressItemsFromSteps(
           diffStats:
             "diffStats" in step
               ? (step.diffStats as { added: number; deleted: number })
+              : undefined,
+          activityDetail:
+            "activityDetail" in step
+              ? (step.activityDetail as ActivityDetail | undefined)
               : undefined,
           streamSeq:
             "streamSeq" in step
@@ -821,16 +831,6 @@ function progressItemsFromStreaming(
     );
   }
   return [];
-}
-
-function formatDurationMs(ms?: number): string {
-  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
-    return "n/a";
-  }
-  if (ms >= 1000) {
-    return `${(ms / 1000).toFixed(1)}s`;
-  }
-  return `${Math.round(ms)}ms`;
 }
 
 function formatTodoStatus(status: TodoItem["status"]): string {
@@ -1123,6 +1123,7 @@ type DisplayEvent = {
   status: "pending" | "done" | "error";
   filePath?: string;
   diffStats?: { added: number; deleted: number };
+  activityDetail?: ActivityDetail;
   viewDiffFile?: string;
   updateCount: number;
 };
@@ -1147,9 +1148,19 @@ function subagentAgentLabel(
   subagent: SubagentSummary,
   detail?: SubagentDetail,
 ): string {
-  return (
-    subagent.agentId || detail?.agentId || `Agent ${subagent.id.slice(0, 4)}`
-  );
+  // Try explicit agent ID first
+  if (subagent.agentId || detail?.agentId) {
+    return subagent.agentId || detail?.agentId;
+  }
+
+  // For orphaned subagents, use childSessionId for unique identifier
+  if (subagent.childSessionId && subagent.status === 'orphaned') {
+    // Use last 8 chars of child session ID for a unique but readable identifier
+    return `Agent ${subagent.childSessionId.slice(-8)}`;
+  }
+
+  // Last resort: use first 4 chars of subagent ID
+  return `Agent ${subagent.id.slice(0, 4)}`;
 }
 
 function subagentModelLabel(
@@ -1425,7 +1436,8 @@ function buildDisplayEvents(
       const rawTitle = event.title || "";
       const parsed = parseTimelineStepTitle(rawTitle);
       const cleanedRawTitle = stripTrailingEllipsis(rawTitle);
-      let filePath = event.filePath;
+      const activityDetail = event.activityDetail;
+      let filePath = event.filePath || activityDetail?.file;
       if (
         !filePath &&
         /edit|writ|modif|updat|patch/i.test(rawTitle) &&
@@ -1453,17 +1465,27 @@ function buildDisplayEvents(
             deleted: Math.max(0, Number(fallbackEdit.deleted) || 0),
           }
           : undefined;
-      const diffStats = event.diffStats || fallbackDiffStats;
+      const detailDiffStats =
+        activityDetail?.diffExcerpt &&
+          (typeof activityDetail.diffExcerpt.added === "number" ||
+            typeof activityDetail.diffExcerpt.deleted === "number")
+          ? {
+            added: Math.max(0, Number(activityDetail.diffExcerpt.added) || 0),
+            deleted: Math.max(0, Number(activityDetail.diffExcerpt.deleted) || 0),
+          }
+          : undefined;
+      const diffStats = event.diffStats || fallbackDiffStats || detailDiffStats;
 
       const metaText = stripTrailingEllipsis(event.meta);
       const summary = filePath
         ? fileName || filePath
-        : parsed.summary ||
+        : activityDetail?.summary ||
+        parsed.summary ||
         metaText ||
         (parsed.label === "event" ? cleanedRawTitle : "");
       const description =
-        filePath || parsed.summary
-          ? metaText
+        filePath || parsed.summary || activityDetail?.summary
+          ? metaText || activityDetail?.command || activityDetail?.query
           : metaText && metaText !== summary
             ? metaText
             : undefined;
@@ -1485,6 +1507,7 @@ function buildDisplayEvents(
         status: event.status,
         filePath,
         diffStats,
+        activityDetail,
         viewDiffFile,
         updateCount: 1,
       });
@@ -1524,6 +1547,7 @@ function buildDisplayEvents(
     if (event.description) previous.description = event.description;
     if (event.detail) previous.detail = event.detail;
     if (event.diffStats) previous.diffStats = event.diffStats;
+    if (event.activityDetail) previous.activityDetail = event.activityDetail;
     if (event.viewDiffFile) previous.viewDiffFile = event.viewDiffFile;
   }
 
@@ -2545,6 +2569,32 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                       {event.detail}
                                     </span>
                                   )}
+
+                                  {shouldShowDetail && event.activityDetail && (
+                                    <div className="mt-1.5 flex flex-col gap-1.5">
+                                      <div className="flex flex-wrap items-center gap-1.5">
+                                        {event.activityDetail.tool && (
+                                          <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
+                                            tool {event.activityDetail.tool}
+                                          </span>
+                                        )}
+                                        {event.activityDetail.command && (
+                                          <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
+                                            cmd {event.activityDetail.command}
+                                          </span>
+                                        )}
+                                        {event.activityDetail.query && (
+                                          <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
+                                            query {event.activityDetail.query}
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      {event.activityDetail.diffExcerpt?.lines?.length ? (
+                                        <ActivityDiffExcerpt excerpt={event.activityDetail.diffExcerpt} />
+                                      ) : null}
+                                    </div>
+                                  )}
                                 </span>
 
                                 {event.diffStats &&
@@ -2890,7 +2940,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                             </span>
                           </div>
                           <span className="font-mono text-oc-2xs text-oc-text-muted">
-                            {formatDurationMs(subagent.durationMs)}
+                            {formatDuration(subagent.durationMs)}
                           </span>
                         </div>
                         <div className="mt-1 flex min-w-0 items-center gap-1.5">

@@ -259,27 +259,44 @@ export class OpencodeServerManager {
     this.isDisposed = false;
 
     if (this.startupPromise) {
+      log.debug('Server startup already in progress, returning existing promise');
       return this.startupPromise;
     }
 
-    this.startupPromise = this.ensureRunningInternal();
+    const flow = log.startFeatureFlow('EnsureServerRunning', {
+      currentStatus: this.status,
+      currentPort: this.port,
+    });
+
+    this.startupPromise = this.ensureRunningInternal(flow);
     try {
-      return await this.startupPromise;
+      const client = await this.startupPromise;
+      log.endFeatureFlow(flow, 'completed', {
+        port: this.port,
+        status: this.status,
+      });
+      return client;
+    } catch (error) {
+      log.endFeatureFlow(flow, 'failed', { error: String(error) });
+      throw error;
     } finally {
       this.startupPromise = null;
     }
   }
 
-  private async ensureRunningInternal(): Promise<OpencodeClient> {
+  private async ensureRunningInternal(flow: string): Promise<OpencodeClient> {
 
     // Fast path: Return existing client if already connected
     // Note: We assume the client is still valid. In the future, we might
     // want to ping the server to verify the connection is actually alive.
     if (this.client && this.port > 0) {
+      log.featureStep(flow, 'checking_existing_connection', { port: this.port });
       const reachable = await this.isPortReachable(this.port);
       if (reachable) {
+        log.featureStep(flow, 'port_reachable', { port: this.port });
         const healthy = await this.fetchVersion();
         if (healthy) {
+          log.featureStep(flow, 'using_existing_connection', { port: this.port });
           return this.client;
         }
       }
@@ -292,6 +309,7 @@ export class OpencodeServerManager {
       this.setStatus("idle");
     }
 
+    log.featureStep(flow, 'starting_server');
     this.setStatus("starting");
 
     // Try to connect to existing server first (user may have started it manually)
@@ -980,6 +998,7 @@ export class OpencodeServerManager {
     if (this._status !== status) {
       const oldStatus = this._status;
       this._status = status;
+      log.logStateChange('server_status', oldStatus, status, 'setStatus');
       log.debug("Server status changed", { oldStatus, newStatus: status });
       this._onStatusChange.fire(status);
     }

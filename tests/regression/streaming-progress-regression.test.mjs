@@ -189,6 +189,29 @@ test('streamEventEnrich applies async diff stats to active streaming step', () =
   );
 });
 
+test('streamEventEnrich preserves structured activityDetail enrichments', () => {
+  const createHandlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+
+  assert.match(
+    createHandlerBody,
+    /case "streamEventEnrich"[\s\S]*normalizeActivityDetail\(data\.activityDetail\)/s,
+    'streamEventEnrich should normalize activityDetail from enrich payloads',
+  );
+  assert.match(
+    createHandlerBody,
+    /if \(!callID \|\| \(!diffStats && !activityDetail\)\) \{\s*break;\s*\}/,
+    'streamEventEnrich should ignore empty enrich payloads without detail fields',
+  );
+  assert.match(
+    createHandlerBody,
+    /\.\.\.\(activityDetail \? \{ activityDetail \} : \{\}\)/,
+    'streamEventEnrich should patch activityDetail onto the matching step when present',
+  );
+});
+
 test('messageResponse remaps subagent parent message ids when stream and final ids differ', () => {
   assert.match(
     messageHandlerSource,
@@ -306,6 +329,24 @@ test('canonical activity steps preserve id/callID/streamSeq/diffStats across fin
     messageHandlerSource,
     /id:\s*existing\.id\s*\|\|\s*incoming\.id,[\s\S]*callID:\s*existing\.callID\s*\|\|\s*incoming\.callID,[\s\S]*streamSeq,[\s\S]*diffStats:\s*incoming\.diffStats\s*\|\|\s*existing\.diffStats/s,
     'canonical step normalization should preserve step fields during merge',
+  );
+});
+
+test('canonical activity steps preserve activityDetail across merge and parts fallback', () => {
+  assert.match(
+    messageHandlerSource,
+    /activityDetail:\s*incoming\.activityDetail\s*\|\|\s*existing\.activityDetail/,
+    'canonical step merge should preserve activityDetail fields',
+  );
+  assert.match(
+    messageHandlerSource,
+    /activityDetail:\s*normalizeActivityDetail\(rec\.activityDetail\)/,
+    'record-level normalization should include activityDetail',
+  );
+  assert.match(
+    messageHandlerSource,
+    /normalizeActivityDetail\(\{\s*kind:\s*"tool_call",[\s\S]*file:\s*filePath,\s*\}\)/,
+    'parts fallback should synthesize a baseline tool_call activityDetail when explicit detail is absent',
   );
 });
 

@@ -1,0 +1,476 @@
+/**
+ * Budget Indicator - Brutalist Developer Aesthetic
+ *
+ * Industrial design language with:
+ * - Exposed grid structure
+ * - Technical markers and labels
+ * - High contrast colors
+ * - Mechanical animations
+ * - Monospace typography
+ */
+
+.budget-indicator-brutalist {
+  --budget-bg-primary: #0a0a0a;
+  --budget-bg-secondary: #141414;
+  --budget-border: #2a2a2a;
+  --budget-text-primary: #ffffff;
+  --budget-text-secondary: #888888;
+  --budget-text-tertiary: #555555;
+  --budget-accent-blue: #0066ff;
+  --budget-accent-orange: #ff6b00;
+  --budget-grid-line: #1a1a1a;
+
+  position: relative;
+  background-color: var(--budget-bg-secondary);
+  border: 1px solid var(--budget-border);
+  padding: 20px;
+  margin-bottom: 16px;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--budget-text-primary);
+  overflow: hidden;
+}
+
+/* Grid overlay effect */
+.budget-indicator-brutalist::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image:
+    linear-gradient(var(--budget-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--budget-grid-line) 1px, transparent 1px);
+  background-size: 20px 20px;
+  pointer-events: none;
+  opacity: 0.3;
+  z-index: 0;
+}
+
+/* Technical marker */
+.budget-tech-marker {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 8px;
+  color: var(--budget-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  z-index: 1;
+}
+
+/* Header */
+.budget-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  position: relative;
+  z-index: 1;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--budget-border);
+}
+
+.budget-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.budget-emoji {
+  color: var(--budget-accent-orange);
+  font-size: 12px;
+}
+
+.budget-plan-name {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--budget-text-primary);
+}
+
+.budget-usage-display {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.budget-used {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--budget-accent-blue);
+}
+
+.budget-separator {
+  color: var(--budget-text-secondary);
+  font-size: 14px;
+}
+
+.budget-total {
+  font-size: 14px;
+  color: var(--budget-text-primary);
+}
+
+.budget-label {
+  font-size: 9px;
+  color: var(--budget-text-secondary);
+  letter-spacing: 1px;
+  margin-left: 4px;
+}
+
+/* Status Badge */
+.budget-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+  position: relative;
+  z-index: 1;
+}
+
+.budget-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  animation: budget-pulse 2s infinite;
+}
+
+@keyframes budget-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Progress Section */
+.budget-progress-section {
+  margin-bottom: 16px;
+  position: relative;
+  z-index: 1;
+}
+
+.budget-progress-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--budget-text-secondary);
+  text-transform: uppercase;
+}
+
+.budget-progress-container {
+  width: 100%;
+  height: 6px;
+  background: var(--budget-bg-primary);
+  border: 1px solid var(--budget-border);
+  position: relative;
+  overflow: hidden;
+}
+
+.budget-progress-bar {
+  height: 100%;
+  position: relative;
+  transition: width 0.6s ease-out;
+}
+
+.budget-progress-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--budget-text-primary);
+  box-shadow: 0 0 8px var(--budget-text-primary);
+}
+
+.budget-progress-details {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--budget-text-secondary);
+}
+
+.budget-detail-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.budget-detail-arrow {
+  color: var(--budget-accent-orange);
+  font-size: 10px;
+}
+
+/* Stats Grid */
+.budget-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  background: var(--budget-border);
+  border: 1px solid var(--budget-border);
+  margin-bottom: 16px;
+  position: relative;
+  z-index: 1;
+}
+
+.budget-stat-item {
+  background: var(--budget-bg-secondary);
+  padding: 16px 12px;
+  text-align: center;
+  position: relative;
+}
+
+.budget-stat-item::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40px;
+  height: 1px;
+  background: var(--budget-accent-blue);
+}
+
+.budget-stat-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--budget-text-secondary);
+  margin-bottom: 8px;
+}
+
+.budget-stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--budget-accent-blue);
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.budget-stat-subtext {
+  font-size: 9px;
+  color: var(--budget-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Advice Section */
+.budget-advice-section {
+  position: relative;
+  z-index: 1;
+  padding-top: 12px;
+  border-top: 1px solid var(--budget-border);
+}
+
+.budget-advice-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--budget-bg-primary);
+  border: 1px solid var(--budget-border);
+  margin-bottom: 8px;
+  font-size: 10px;
+  color: var(--budget-text-secondary);
+  line-height: 1.4;
+}
+
+.budget-advice-item:last-child {
+  margin-bottom: 0;
+}
+
+.budget-advice-marker {
+  color: var(--budget-accent-blue);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+/* Technical Decoration */
+.budget-tech-decoration {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  display: flex;
+  z-index: 1;
+}
+
+.budget-tech-decoration span:nth-child(1) {
+  flex: 1;
+  background: var(--budget-accent-blue);
+}
+
+.budget-tech-decoration span:nth-child(2) {
+  flex: 1;
+  background: var(--budget-accent-orange);
+}
+
+/* Animation on mount */
+@keyframes budget-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.budget-indicator-brutalist {
+  animation: budget-slide-in 0.3s ease-out;
+}
+
+/* Hover effect */
+.budget-indicator-brutalist:hover {
+  border-color: var(--budget-accent-blue);
+}
+
+.budget-indicator-brutalist:hover .budget-tech-marker {
+  color: var(--budget-accent-blue);
+}
+
+.budget-indicator-brutalist:hover::before {
+  opacity: 0.4;
+}
+
+/* Compact Budget Indicator */
+.compact-budget-indicator {
+  --compact-bg: #141414;
+  --compact-border: #2a2a2a;
+  --compact-text-secondary: #888888;
+
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--compact-bg);
+  border: 1px solid var(--compact-border);
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 9px;
+  color: #ffffff;
+  position: relative;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.compact-budget-indicator::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--theme-color, #00ff88);
+  transition: width 0.3s ease;
+}
+
+.compact-budget-indicator:hover::before {
+  width: 3px;
+}
+
+.compact-budget-indicator:hover {
+  border-color: var(--theme-color, #00ff88);
+  box-shadow: 0 0 8px var(--theme-color, #00ff88)20;
+}
+
+.compact-label {
+  color: var(--compact-text-secondary);
+  font-size: 8px;
+  letter-spacing: 1px;
+  margin-left: 4px;
+}
+
+.compact-used {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.compact-separator {
+  color: var(--compact-text-secondary);
+  font-size: 10px;
+}
+
+.compact-total {
+  font-size: 10px;
+  color: var(--compact-text-secondary);
+}
+
+.compact-progress-track {
+  width: 40px;
+  height: 3px;
+  background: #0a0a0a;
+  border: 1px solid var(--compact-border);
+  position: relative;
+  overflow: hidden;
+  margin-left: 4px;
+}
+
+.compact-progress-bar {
+  height: 100%;
+  position: relative;
+  transition: width 0.6s ease-out;
+}
+
+.compact-progress-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 1px;
+  height: 100%;
+  background: #ffffff;
+  box-shadow: 0 0 4px #ffffff;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+  .budget-indicator-brutalist {
+    padding: 16px;
+  }
+
+  .budget-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .budget-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .budget-stat-item::after {
+    display: none;
+  }
+
+  .budget-plan-name {
+    font-size: 12px;
+  }
+
+  .budget-used {
+    font-size: 18px;
+  }
+
+  .compact-budget-indicator {
+    padding: 4px 8px;
+    font-size: 8px;
+  }
+
+  .compact-used {
+    font-size: 10px;
+  }
+
+  .compact-progress-track {
+    width: 30px;
+  }
+}

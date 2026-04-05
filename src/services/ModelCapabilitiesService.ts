@@ -119,6 +119,11 @@ export class ModelCapabilitiesService {
   }
 
   private parseEntryToCapability(entry: unknown): ModelCapability {
+    // Validate entry is an object before type assertion
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return { reasoning: false, variants: [], thinkingConfig: null };
+    }
+
     const e = entry as Record<string, unknown>;
     const tags: string[] = Array.isArray(e.tags) ? (e.tags as unknown[]).map(String) : [];
 
@@ -131,7 +136,7 @@ export class ModelCapabilitiesService {
     if (Array.isArray(e.variants)) {
       for (const v of e.variants as unknown[]) {
         if (typeof v === "string") variants.push(v);
-        else if (v && typeof (v as Record<string, unknown>).name === "string") {
+        else if (v && typeof v === 'object' && typeof (v as Record<string, unknown>).name === "string") {
           variants.push((v as Record<string, unknown>).name as string);
         }
       }
@@ -139,7 +144,7 @@ export class ModelCapabilitiesService {
     // fallbacks
     if (variants.length === 0 && Array.isArray(e.configs)) {
       for (const c of e.configs as unknown[]) {
-        if (c && typeof (c as Record<string, unknown>).name === "string") {
+        if (c && typeof c === 'object' && typeof (c as Record<string, unknown>).name === "string") {
           variants.push((c as Record<string, unknown>).name as string);
         }
       }

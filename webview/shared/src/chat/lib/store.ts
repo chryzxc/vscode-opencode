@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useMemo, useReducer } from 'react';
+import logger from './logger';
 
 import type {
   Agent,
@@ -48,6 +49,7 @@ export const initialState: AppState = {
   isQueueOpen: false,
   isSidebarOpen: false,
   isSessionModalOpen: false,
+  isQuotaPopoverOpen: false,
   sessionsList: [],
   processingSessionIds: [],
   switchingSessionId: null as string | null,
@@ -162,6 +164,7 @@ export type AppAction =
   | { type: "SET_QUEUE_OPEN"; payload: boolean }
   | { type: "SET_SIDEBAR_OPEN"; payload: boolean }
   | { type: "SET_SESSION_MODAL_OPEN"; payload: boolean }
+  | { type: "SET_QUOTA_POPOVER_OPEN"; payload: boolean }
   | { type: "SET_MODEL_DROPDOWN_OPEN"; payload: boolean }
   | { type: "SET_AGENT_DROPDOWN_OPEN"; payload: boolean }
   | { type: "SET_THINKING_DROPDOWN_OPEN"; payload: boolean }
@@ -1360,7 +1363,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           };
         } catch (error) {
           // If creating streaming state fails, just set processing without it
-          console.error("Error creating streaming state:", error);
+          logger.error("Error creating streaming state", { error: String(error) });
           return { ...state, isProcessing: true };
         }
       }
@@ -1630,6 +1633,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, isSidebarOpen: action.payload };
     case "SET_SESSION_MODAL_OPEN":
       return { ...state, isSessionModalOpen: action.payload };
+    case "SET_QUOTA_POPOVER_OPEN":
+      return { ...state, isQuotaPopoverOpen: action.payload };
     case "SET_MODEL_DROPDOWN_OPEN":
       return { ...state, modelDropdownOpen: action.payload };
     case "SET_AGENT_DROPDOWN_OPEN":

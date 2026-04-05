@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
+  BarChart3,
   Bot,
   Check,
   ChevronDown,
@@ -24,13 +27,13 @@ import {
   Wrench,
   X,
   Zap,
-  ArrowLeft,
-  ArrowRight,
 } from "lucide-react";
+import logger from "./lib/logger";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { JsonFormEditor } from "./JsonFormEditor";
+import { formatDuration } from "../utils";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -346,6 +349,7 @@ export function StickyHeader() {
     currentSessionId,
     isSidebarOpen,
     isSessionModalOpen,
+    isQuotaPopoverOpen,
     sessionStats,
     isProcessing: globalIsProcessing,
     processingSessionIds,
@@ -444,19 +448,22 @@ export function StickyHeader() {
       : promptQueue.length > 0
         ? "PENDING"
         : "IDLE";
-  const durationLabel =
-    sessionStats.duration >= 1000
-      ? `${(sessionStats.duration / 1000).toFixed(1)}s`
-      : `${Math.round(sessionStats.duration)}ms`;
+  const durationLabel = formatDuration(sessionStats.duration);
 
   return (
-    <div className="oc-header sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-1.5 text-xs">
-      <div className="oc-header-left flex items-center gap-2 min-w-0">
+    <div className="oc-header sticky top-0 z-10 flex items-center justify-between border-b px-3 py-1.5 text-xs">
+      {/* Left side: Session title only */}
+      <div className="oc-header-left flex items-center min-w-0">
+        <span className="oc-title text-sm font-medium truncate">{sessionTitle}</span>
+      </div>
+
+      {/* Right side: Action buttons */}
+      <div className="oc-header-right flex items-center gap-1">
         <Button
           variant="ghost"
           size="icon"
           className="oc-history-btn h-7 w-7"
-          title="History"
+          title="View sessions"
           aria-label="Open session history"
           onClick={() =>
             dispatch({ type: "SET_SESSION_MODAL_OPEN", payload: !isSessionModalOpen })
@@ -468,13 +475,24 @@ export function StickyHeader() {
           variant="ghost"
           size="icon"
           className="oc-new-chat-btn h-7 w-7"
-          title="New chat"
+          title="Create new session"
           aria-label="Create new chat session"
           onClick={() => vscode.postMessage({ type: "createSession" })}
         >
           <Plus className="h-3.5 w-3.5" />
         </Button>
-        <span className="oc-title text-sm font-medium">{sessionTitle}</span>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="oc-quota-btn h-7 w-7 [@media(min-width:1100px)]:hidden"
+          title="Quota status"
+          aria-label="Show quota preview"
+          onClick={() =>
+            dispatch({ type: "SET_QUOTA_POPOVER_OPEN", payload: !isQuotaPopoverOpen })
+          }
+        >
+          <BarChart3 className="h-3.5 w-3.5" />
+        </Button>
       </div>
     </div>
   );
@@ -1317,9 +1335,7 @@ export function ActiveTaskPanel() {
               <div className="flex items-center justify-between pt-1 border-t border-oc-border mt-2">
                 <span className="text-[var(--oc-text-soft)] opacity-80">Duration</span>
                 <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
-                  {sessionStats.duration >= 1000
-                    ? `${(sessionStats.duration / 1000).toFixed(1)}s`
-                    : `${Math.round(sessionStats.duration)}ms`}
+                  {formatDuration(sessionStats.duration)}
                 </span>
               </div>
             </div>
@@ -2056,27 +2072,27 @@ export function InputWrapper() {
   const suggestionsContainerRef = useRef<HTMLDivElement>(null);
 
   const filteredCommands = useMemo(() => {
-    console.log('[filteredCommands] useMemo called', {
+    logger.debug('filteredCommands: useMemo called', {
       slashTrigger,
       availableCommandsCount: availableCommands.length,
       availableCommandsNames: availableCommands.map(c => c.name)
     });
 
     if (!slashTrigger) {
-      console.log('[filteredCommands] No slash trigger, returning empty array');
+      logger.debug('filteredCommands: No slash trigger, returning empty array');
       return [] as SlashCommand[];
     }
 
     const query = slashTrigger.query.trim().toLowerCase();
     const base = availableCommands || [];
-    console.log('[filteredCommands] Filtering commands', {
+    logger.debug('filteredCommands: Filtering commands', {
       query,
       baseCount: base.length,
       baseNames: base.map(c => c.name)
     });
 
     if (!query) {
-      console.log('[filteredCommands] No query, returning all commands', base.length);
+      logger.debug('filteredCommands: No query, returning all commands', { count: base.length });
       return base;
     }
 
@@ -2085,7 +2101,7 @@ export function InputWrapper() {
       return name.includes(query);
     });
 
-    console.log('[filteredCommands] Filtered result', {
+    logger.debug('filteredCommands: Filtered result', {
       filteredCount: filtered.length,
       filteredNames: filtered.map(c => c.name)
     });
@@ -2094,14 +2110,14 @@ export function InputWrapper() {
   }, [slashTrigger, availableCommands]);
 
   useEffect(() => {
-    console.log('[slashCommand useEffect] Trigger check', {
+    logger.debug('slashCommand useEffect: Trigger check', {
       hasSlashTrigger: !!slashTrigger,
       commandsLoaded,
       alreadyRequested: commandsRequestedRef.current
     });
 
     if (slashTrigger && !commandsLoaded && !commandsRequestedRef.current) {
-      console.log('[slashCommand useEffect] Requesting commands');
+      logger.debug('slashCommand useEffect: Requesting commands');
       commandsRequestedRef.current = true;
       vscode.postMessage({ type: "getCommands" });
     }
@@ -3987,7 +4003,7 @@ export function SkillsPanel() {
 
   // Debug logging to track state changes
   useEffect(() => {
-    console.log('[SkillsPanel] State updated', {
+    logger.debug('SkillsPanel: State updated', {
       availableCommandsCount: availableCommands.length,
       commandsLoaded,
       serverStatus,
@@ -3999,20 +4015,20 @@ export function SkillsPanel() {
   // Load commands on mount if server is ready and commands not yet loaded
   // This ensures SkillsPanel shows data immediately on desktop ≥1100px
   useEffect(() => {
-    console.log('[SkillsPanel] useEffect triggered', {
+    logger.debug('SkillsPanel: useEffect triggered', {
       serverStatus,
       commandsLoaded,
       shouldFetch: serverStatus === "running" && !commandsLoaded
     });
 
     if (serverStatus === "running" && !commandsLoaded) {
-      console.log('[SkillsPanel] Sending getCommands message');
+      logger.debug('SkillsPanel: Sending getCommands message');
       vscode.postMessage({ type: "getCommands" });
     }
   }, [serverStatus, commandsLoaded]);
 
   function handleRefresh() {
-    console.log('[SkillsPanel] Manual refresh triggered');
+    logger.debug('SkillsPanel: Manual refresh triggered');
     setIsRefreshing(true);
     dispatch({ type: "SET_COMMANDS_LIST", payload: [] });
     vscode.postMessage({ type: "getCommands" });

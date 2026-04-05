@@ -3,6 +3,8 @@ import type { Dispatch } from 'react';
 import type { AppAction } from './store';
 import { hasSystemMessagePatternInText } from './store';
 import type {
+  ActivityDetail,
+  ActivityDiffExcerpt,
   AppState,
   BudgetInfo,
   ContextItem,
@@ -42,9 +44,86 @@ const STREAM_DEBUG_ENABLED =
   (window as unknown as { __OPENCODE_STREAM_DEBUG__?: boolean })
     .__OPENCODE_STREAM_DEBUG__ === true;
 
+// WebView Logger - sends logs to extension for centralized logging
+class WebViewLogger {
+  private logLevel: 'debug' | 'info' | 'warn' | 'error' = 'info';
+  private sessionId: string | null = null;
+
+  setSession(sessionId: string): void {
+    this.sessionId = sessionId;
+  }
+
+  private shouldLog(level: string): boolean {
+    const levels = ['debug', 'info', 'warn', 'error'];
+    return levels.indexOf(level) >= levels.indexOf(this.logLevel);
+  }
+
+  private sendToExtension(level: string, message: string, context?: Record<string, unknown>): void {
+    try {
+      vscode.postMessage({
+        type: 'webviewLog',
+        level,
+        message,
+        context: {
+          ...context,
+          sessionId: this.sessionId,
+          timestamp: Date.now(),
+          source: 'webview',
+        },
+      });
+    } catch (error) {
+      // Fallback to console if postMessage fails
+      switch (level) {
+        case 'debug':
+          console.debug(`[WebViewLogger] ${message}`, context);
+          break;
+        case 'info':
+          console.info(`[WebViewLogger] ${message}`, context);
+          break;
+        case 'warn':
+          console.warn(`[WebViewLogger] ${message}`, context);
+          break;
+        case 'error':
+          console.error(`[WebViewLogger] ${message}`, context);
+          break;
+      }
+    }
+  }
+
+  debug(message: string, context?: Record<string, unknown>): void {
+    if (this.shouldLog('debug')) {
+      console.debug(`[WebView] ${message}`, context);
+      this.sendToExtension('debug', message, context);
+    }
+  }
+
+  info(message: string, context?: Record<string, unknown>): void {
+    if (this.shouldLog('info')) {
+      console.info(`[WebView] ${message}`, context);
+      this.sendToExtension('info', message, context);
+    }
+  }
+
+  warn(message: string, context?: Record<string, unknown>): void {
+    if (this.shouldLog('warn')) {
+      console.warn(`[WebView] ${message}`, context);
+      this.sendToExtension('warn', message, context);
+    }
+  }
+
+  error(message: string, context?: Record<string, unknown>, error?: Error): void {
+    if (this.shouldLog('error')) {
+      console.error(`[WebView] ${message}`, context, error);
+      this.sendToExtension('error', message, { ...context, error: error?.message });
+    }
+  }
+}
+
+const webviewLogger = new WebViewLogger();
+
 function streamDebug(...args: unknown[]): void {
   if (STREAM_DEBUG_ENABLED) {
-    console.debug(...args);
+    webviewLogger.debug('Stream debug', { args });
   }
 }
 
@@ -531,6 +610,79 @@ function normalizeDiffStats(
   };
 }
 
+function normalizeActivityDiffExcerpt(
+  value: unknown,
+): ActivityDiffExcerpt | undefined {
+  const rec = asRecord(value);
+  if (!rec) {
+    return undefined;
+  }
+  const lines = Array.isArray(rec.lines)
+    ? rec.lines.filter((line): line is string => typeof line === "string")
+    : [];
+  if (lines.length === 0) {
+    return undefined;
+  }
+  return {
+    header: asOptionalString(rec.header),
+    lines,
+    added:
+      typeof rec.added === "number" && Number.isFinite(rec.added)
+        ? Math.max(0, rec.added)
+        : undefined,
+    deleted:
+      typeof rec.deleted === "number" && Number.isFinite(rec.deleted)
+        ? Math.max(0, rec.deleted)
+        : undefined,
+  };
+}
+
+function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
+  const rec = asRecord(value);
+  if (!rec) {
+    return undefined;
+  }
+  const metadataRec = asRecord(rec.metadata);
+  const metadata: Record<string, string | number | boolean> = {};
+  if (metadataRec) {
+    for (const [key, fieldValue] of Object.entries(metadataRec)) {
+      if (
+        typeof fieldValue === "string" ||
+        typeof fieldValue === "number" ||
+        typeof fieldValue === "boolean"
+      ) {
+        metadata[key] = fieldValue;
+      }
+    }
+  }
+
+  const activityDetail: ActivityDetail = {
+    kind: asOptionalString(rec.kind) as ActivityDetail["kind"] | undefined,
+    summary: asOptionalString(rec.summary),
+    command: asOptionalString(rec.command),
+    tool: asOptionalString(rec.tool),
+    query: asOptionalString(rec.query),
+    file: asOptionalString(rec.file),
+    diffExcerpt: normalizeActivityDiffExcerpt(rec.diffExcerpt),
+    metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+  };
+
+  if (
+    !activityDetail.kind &&
+    !activityDetail.summary &&
+    !activityDetail.command &&
+    !activityDetail.tool &&
+    !activityDetail.query &&
+    !activityDetail.file &&
+    !activityDetail.diffExcerpt &&
+    !activityDetail.metadata
+  ) {
+    return undefined;
+  }
+
+  return activityDetail;
+}
+
 function normalizeActivityStepRecord(value: unknown): MessageStep | undefined {
   const rec = asRecord(value);
   if (!rec) {
@@ -576,6 +728,7 @@ function normalizeActivityStepRecord(value: unknown): MessageStep | undefined {
     callID: asString(rec.callID) || asString(rec.callId) || undefined,
     streamSeq: asOptionalNumber(rec.streamSeq),
     diffStats: normalizeDiffStats(rec.diffStats),
+    activityDetail: normalizeActivityDetail(rec.activityDetail),
   };
 }
 
@@ -635,6 +788,7 @@ function mergeCanonicalActivityStep(
     callID: existing.callID || incoming.callID,
     streamSeq,
     diffStats: incoming.diffStats || existing.diffStats,
+    activityDetail: incoming.activityDetail || existing.activityDetail,
   };
 }
 
@@ -717,6 +871,15 @@ function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[] {
       diffStats:
         normalizeDiffStats(resultRec?.diffStats) ||
         normalizeDiffStats(rec.diffStats),
+      activityDetail:
+        normalizeActivityDetail(resultRec?.activityDetail) ||
+        normalizeActivityDetail(rec.activityDetail) ||
+        normalizeActivityDetail({
+          kind: "tool_call",
+          tool: tool || undefined,
+          command: metaValues[0],
+          file: filePath,
+        }),
     };
 
     if (typeof existingIndex === "number") {
@@ -867,7 +1030,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   }
   const validation = validateStructuredOutput(rec);
   if (!validation.valid) {
-    console.warn("Structured output validation failed", validation.errors);
+    webviewLogger.warn("Structured output validation failed", { errors: validation.errors });
   }
   const sanitizedRec = sanitizeStructuredOutput(rec);
 
@@ -2103,6 +2266,7 @@ function upsertStreamingStep(
         meta: step.meta || current.meta,
         filePath: step.filePath || current.filePath,
         diffStats: step.diffStats || current.diffStats,
+        activityDetail: step.activityDetail || current.activityDetail,
         duration:
           typeof step.duration === "number" ? step.duration : current.duration,
       },
@@ -3006,7 +3170,9 @@ function normalizeSubagentSummaryMap(value: unknown): Record<string, SubagentSum
     const entries = item
       .map((raw) => normalizeSubagentSummary(raw))
       .filter((entry): entry is SubagentSummary => !!entry);
-    out[key] = entries;
+    if (entries.length > 0) {
+      out[key] = entries;
+    }
   }
   return out;
 }
@@ -3451,6 +3617,144 @@ function mergeSubagentSummaries(
     byId.set(entry.id, prev ? { ...prev, ...entry, id: entry.id } : entry);
   });
   return Array.from(byId.values());
+}
+
+function hasSubagentSummaryEntries(
+  summariesByParentMessageId: Record<string, SubagentSummary[]>,
+): boolean {
+  return Object.values(summariesByParentMessageId).some(
+    (entries) => Array.isArray(entries) && entries.length > 0,
+  );
+}
+
+function mergeSubagentSummaryPayload(
+  existingByParentMessageId: Record<string, SubagentSummary[]>,
+  incomingByParentMessageId: Record<string, SubagentSummary[]>,
+): Record<string, SubagentSummary[]> {
+  const merged: Record<string, SubagentSummary[]> = {};
+  for (const [parentMessageId, incoming] of Object.entries(
+    incomingByParentMessageId,
+  )) {
+    if (!Array.isArray(incoming) || incoming.length === 0) {
+      continue;
+    }
+    merged[parentMessageId] = mergeSubagentSummaries(
+      existingByParentMessageId[parentMessageId],
+      incoming,
+    );
+  }
+  return merged;
+}
+
+function mergeUniqueSubagentEntries<T>(
+  existing: T[] | undefined,
+  incoming: T[] | undefined,
+  keyBuilder: (item: T, index: number) => string,
+): T[] {
+  const out: T[] = [];
+  const byKey = new Map<string, T>();
+  const push = (items: T[] | undefined) => {
+    if (!Array.isArray(items) || items.length === 0) {
+      return;
+    }
+    items.forEach((item, index) => {
+      const key = keyBuilder(item, index);
+      if (!key) {
+        out.push(item);
+        return;
+      }
+      if (byKey.has(key)) {
+        const existingItemIndex = out.findIndex((entry, entryIndex) => {
+          const entryKey = keyBuilder(entry, entryIndex);
+          return entryKey === key;
+        });
+        if (existingItemIndex >= 0) {
+          out[existingItemIndex] = item;
+        }
+      } else {
+        out.push(item);
+      }
+      byKey.set(key, item);
+    });
+  };
+  push(existing);
+  push(incoming);
+  return out;
+}
+
+function mergeSubagentDetailRecord(
+  existing: SubagentDetail | undefined,
+  incoming: SubagentDetail,
+): SubagentDetail {
+  const latestActivity =
+    sanitizeSubagentLabel(incoming.latestActivity || "") ||
+    sanitizeSubagentLabel(existing?.latestActivity || "") ||
+    "Subagent update";
+
+  const references = mergeUniqueSubagentEntries(
+    existing?.references,
+    incoming.references,
+    (entry) =>
+      `${entry.messageID || ""}|${entry.partID || ""}|${entry.callID || ""}`,
+  );
+  const thinkingEvents = mergeUniqueSubagentEntries(
+    existing?.thinkingEvents,
+    incoming.thinkingEvents,
+    (event, index) =>
+      event.id || `${event.createdAt || 0}:${event.text || ""}:${index}`,
+  );
+  const progressEvents = normalizeSubagentProgressEventsForPresentation(
+    mergeUniqueSubagentEntries(
+      existing?.progressEvents,
+      incoming.progressEvents,
+      (event, index) =>
+        event.callID ||
+        event.id ||
+        `${event.title || ""}:${event.status || ""}:${event.createdAt || 0}:${index}`,
+    ),
+  );
+  const timelineEvents = normalizeSubagentTimelineEventsForPresentation(
+    mergeUniqueSubagentEntries(
+      existing?.timelineEvents,
+      incoming.timelineEvents,
+      (event, index) =>
+        event.key ||
+        `${event.type || ""}:${event.label || ""}:${event.createdAt || 0}:${index}`,
+    ),
+  );
+
+  return {
+    ...(existing || incoming),
+    ...incoming,
+    id: incoming.id || existing?.id || "",
+    parentSessionId:
+      incoming.parentSessionId || existing?.parentSessionId || "",
+    parentMessageId:
+      incoming.parentMessageId || existing?.parentMessageId || "",
+    status: incoming.status || existing?.status || "pending",
+    latestActivity,
+    references,
+    thinkingEvents,
+    progressEvents,
+    timelineEvents,
+  };
+}
+
+function mergeSubagentDetailPayload(
+  existingById: Record<string, SubagentDetail>,
+  incomingById: Record<string, SubagentDetail>,
+): Record<string, SubagentDetail> {
+  const merged: Record<string, SubagentDetail> = {};
+  for (const [detailId, incoming] of Object.entries(incomingById)) {
+    if (!incoming) {
+      continue;
+    }
+    merged[detailId] = mergeSubagentDetailRecord(
+      existingById[detailId],
+      incoming,
+    );
+  }
+  return merged;
 }
 
 function findLatestAssistantMessageIdForSession(
@@ -4033,7 +4337,7 @@ function logRenderSnapshot(source: string, messages: Message[]): void {
     summarizeRenderMessageForDebug(message, messages.length - tail.length + index),
   );
   const last = summary[summary.length - 1];
-  console.info("[OpenCode][webview] render snapshot", {
+  webviewLogger.info("Rendering snapshot", {
     source,
     messageCount: messages.length,
     last,
@@ -4605,7 +4909,7 @@ function handleStreamEvent(
 ): void {
   // Log every stream event for comprehensive debugging
   const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
-  console.log(`[StreamEvent] ===== Handling Event: ${eventType} =====`, {
+  webviewLogger.debug(`Handling Stream Event: ${eventType}`, {
     timestamp: new Date().toISOString(),
     eventType,
     payloadKeys: Object.keys(payload),
@@ -4618,7 +4922,7 @@ function handleStreamEvent(
   // Ignore streaming parts after a terminal error to prevent showing both
   // error banner and active streaming state simultaneously
   if (terminalErrorReached) {
-    console.warn(`[StreamEvent] Ignoring event due to terminal error: ${eventType}`);
+    webviewLogger.warn(`Ignoring event due to terminal error: ${eventType}`);
     return;
   }
 
@@ -4757,7 +5061,7 @@ function handleStreamEvent(
     case 'message.part.updated':
     case 'message.part.added':
     case 'message.part.created': {
-      console.log(`[StreamEvent] Processing part event`, {
+      webviewLogger.debug(`Processing part event`, {
         normalizedEventType,
         messageId,
         hasPart: !!asRecord(payload.part),
@@ -4766,7 +5070,7 @@ function handleStreamEvent(
       const properties = asRecord(payload.properties);
       const part = asRecord(payload.part) ?? asRecord(properties?.part) ?? properties;
       if (!part) {
-        console.log(`[StreamEvent] No part data, setting processing=true`);
+        webviewLogger.debug(`No part data, setting processing=true`);
         dispatch({ type: 'SET_PROCESSING', payload: true });
         break;
       }
@@ -4774,7 +5078,7 @@ function handleStreamEvent(
       // DEBUG: Log all part updates to see what's happening
       const currentPartType = normalizePartType(part.type);
       const currentStructuredKind = asString(payload.structuredKind) || asString(properties?.structuredKind) || '';
-      console.log('[OpenCode][DEBUG] message.part.updated', { partType: currentPartType, structuredKind: currentStructuredKind, hasText: !!part.text, hasContent: !!part.content });
+      webviewLogger.debug('message.part.updated', { partType: currentPartType, structuredKind: currentStructuredKind, hasText: !!part.text, hasContent: !!part.content });
 
       // Track if we're processing a reasoning part sequence
       const currentStreamingState = getState().streaming;
@@ -4783,7 +5087,7 @@ function handleStreamEvent(
       // Detect start of reasoning part sequence
       const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking';
       if (isReasoning) {
-        console.log('[OpenCode][DEBUG] Starting reasoning part sequence - will drop all content');
+        webviewLogger.debug('Starting reasoning part sequence - will drop all content');
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: true } });
       }
 
@@ -4791,7 +5095,7 @@ function handleStreamEvent(
       // This ensures that if the assistant skips the text part and goes straight to a tool call
       // (e.g. for a question), we still reset the reasoning filter so the synthesized text is shown.
       if (isInReasoningPart && !isReasoning) {
-        console.log(`[OpenCode][DEBUG] Ending reasoning part sequence - current part type is ${currentPartType}`);
+        webviewLogger.debug(`Ending reasoning part sequence - current part type is ${currentPartType}`);
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: false } });
       }
 
@@ -4911,11 +5215,11 @@ function handleStreamEvent(
       const isReasoningPart = partType === 'reasoning' || structuredKind === 'thinking' || isInReasoningPart;
 
       if (isReasoningPart) {
-        console.log('[OpenCode][DEBUG] Skipping reasoning content processing (but steps/tools/interactive events will still be processed)', { partType, structuredKind, isInReasoningPart, reasoningLength: (reasoningChunk || textChunk || '').length });
+        webviewLogger.debug('Skipping reasoning content processing', { partType, structuredKind, isInReasoningPart, reasoningLength: (reasoningChunk || textChunk || '').length });
       }
 
       if (!isReasoningPart) {
-        console.log('[OpenCode][DEBUG] Processing content', { partType, structuredKind, isInReasoningPart });
+        webviewLogger.debug('Processing content', { partType, structuredKind, isInReasoningPart });
 
         if (structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk) {
           let remaining = textChunk;
@@ -5095,8 +5399,25 @@ function handleStreamEvent(
           asString(inputObj?.url),
           asString(inputObj?.Url),
         ].filter(Boolean);
+        const commandValue = asOptionalString(
+          inputObj?.CommandLine ?? inputObj?.command,
+        );
+        const queryValue = asOptionalString(
+          inputObj?.Query ??
+          inputObj?.query ??
+          inputObj?.Pattern ??
+          inputObj?.pattern,
+        );
         const callID = asString(part.callID) || undefined;
         const title = asString(part.title) || (tool ? `Running ${tool}...` : inferredStepTitle(part));
+        const baseActivityDetail: ActivityDetail | undefined = normalizeActivityDetail({
+          kind: "tool_call",
+          tool: tool || undefined,
+          command: commandValue,
+          query: queryValue,
+          file: filePath,
+          summary: asOptionalString(part.meta),
+        });
 
         const existing = getState().streaming?.steps.find(
           (step) => !!callID && step.callID === callID
@@ -5110,6 +5431,7 @@ function handleStreamEvent(
             status: asString(part.status) === "error" ? "error" : "pending",
             meta: asString(part.meta) || metaValues[0] || undefined,
             filePath,
+            activityDetail: baseActivityDetail,
             startTime: Date.now(),
           });
         } else {
@@ -5137,6 +5459,7 @@ function handleStreamEvent(
             status: resolvedStatus,
             meta: asString(part.meta) || metaValues[0] || existing.meta,
             filePath: filePath || existing.filePath,
+            activityDetail: baseActivityDetail || existing.activityDetail,
           });
         }
 
@@ -5220,7 +5543,7 @@ function handleStreamEvent(
       break;
     }
     case 'message.updated': {
-      console.log(`[StreamEvent] Processing message.updated`, {
+      webviewLogger.debug(`Processing message.updated`, {
         messageId,
         finish: asBoolean(asRecord(payload.info)?.finish, false),
         hasInfo: !!asRecord(payload.info),
@@ -5346,7 +5669,7 @@ function handleStreamEvent(
 
         if (structuredOutput && structuredOutput.responseType === 'subagents' && messageId) {
           if (!structuredOutput.subagents || structuredOutput.subagents.length === 0) {
-            console.warn('Structured subagents responseType received without subagents array');
+            webviewLogger.warn('Structured subagents responseType received without subagents array');
           }
         }
 
@@ -5382,13 +5705,21 @@ function handleStreamEvent(
           });
 
           if (summaries.length > 0) {
+            const mergedSummaries = mergeSubagentSummaryPayload(
+              getState().subagentsByParentMessageId,
+              { [messageId]: summaries },
+            );
             dispatch({
               type: 'UPSERT_SUBAGENT_SUMMARIES',
-              payload: { [messageId]: summaries }
+              payload: mergedSummaries,
             });
           }
           if (Object.keys(details).length > 0) {
-            dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: details });
+            const mergedDetails = mergeSubagentDetailPayload(
+              getState().subagentDetailsById,
+              details,
+            );
+            dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: mergedDetails });
           }
         }
 
@@ -5429,13 +5760,21 @@ function handleStreamEvent(
             });
 
             if (summaries.length > 0) {
+              const mergedSummaries = mergeSubagentSummaryPayload(
+                getState().subagentsByParentMessageId,
+                { [targetMessageId]: summaries },
+              );
               dispatch({
                 type: 'UPSERT_SUBAGENT_SUMMARIES',
-                payload: { [targetMessageId]: summaries }
+                payload: mergedSummaries,
               });
             }
             if (Object.keys(details).length > 0) {
-              dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: details });
+              const mergedDetails = mergeSubagentDetailPayload(
+                getState().subagentDetailsById,
+                details,
+              );
+              dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: mergedDetails });
             }
           }
         }
@@ -5464,7 +5803,7 @@ function handleStreamEvent(
         } catch (e) {
           // Defensive: never allow malformed structured payloads to throw inside
           // the message handler — just skip and continue processing other parts.
-          console.warn('Failed to normalize todo_update structured payload', e);
+          webviewLogger.warn('Failed to normalize todo_update structured payload', { error: String(e) });
         }
       }
 
@@ -5480,7 +5819,7 @@ function handleStreamEvent(
     }
     case 'session.error':
     case 'error': {
-      console.log(`[StreamEvent] Processing error event`, {
+      webviewLogger.debug(`Processing error event`, {
         normalizedEventType,
         errorMessage: asString(payload.message),
       });
@@ -5490,7 +5829,7 @@ function handleStreamEvent(
     }
     case 'start':
     case 'streamStart': {
-      console.log(`[StreamEvent] Processing stream start`, {
+      webviewLogger.debug(`Processing stream start`, {
         messageId,
         eventAgent: asString(infoRecord?.agent) || asString(payload.agent),
       });
@@ -5604,7 +5943,7 @@ function handleStreamEvent(
     case 'thinking': {
       const chunk =
         asString(payload.delta) || asString(payload.reasoning) || asString(payload.thinking) || asString(payload.text);
-      console.log(`[StreamEvent] Processing reasoning/thinking event`, {
+      webviewLogger.debug(`Processing reasoning/thinking event`, {
         normalizedEventType,
         chunkLength: chunk.length,
         preview: chunk.slice(0, 100),
@@ -5618,7 +5957,7 @@ function handleStreamEvent(
     case 'stepStart': {
       const stepTitle = asString(payload.title);
       const stepTypeRaw = asString(payload.stepType).toLowerCase();
-      console.log(`[StreamEvent] Processing stepStart`, {
+      webviewLogger.debug(`Processing stepStart`, {
         normalizedEventType,
         stepTitle,
         stepType: stepTypeRaw,
@@ -5642,7 +5981,7 @@ function handleStreamEvent(
       break;
     }
     case 'stepUpdate': {
-      console.log(`[StreamEvent] Processing stepUpdate`, {
+      webviewLogger.debug(`Processing stepUpdate`, {
         normalizedEventType,
         stepId: asString(payload.id) || asString(payload.callID),
       });
@@ -5661,7 +6000,7 @@ function handleStreamEvent(
       break;
     }
     case 'stepDone': {
-      console.log(`[StreamEvent] Processing stepDone`, {
+      webviewLogger.debug(`Processing stepDone`, {
         normalizedEventType,
         stepId: asString(payload.id) || asString(payload.callID),
         stepStatus: asString(payload.status),
@@ -5849,7 +6188,7 @@ function handleStreamEvent(
 
   // Log completion of event handling
   const finalState = getState();
-  console.log(`[StreamEvent] ===== Finished Processing: ${normalizedEventType} =====`, {
+  webviewLogger.debug(`Finished Processing: ${normalizedEventType}`, {
     timestamp: new Date().toISOString(),
     hasStreaming: !!finalState.streaming,
     streamingContentLength: finalState.streaming?.content?.length || 0,
@@ -6095,14 +6434,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     try {
       const data = asRecord(event.data);
       if (!data) {
-        console.warn('[MessageHandler] Received event with no data');
+        webviewLogger.warn('Received event with no data');
         return;
       }
 
       const type = asString(data.type);
 
       // Log ALL events for comprehensive debugging
-      console.log(`[MessageHandler] ===== Received Event: ${type} =====`, {
+      webviewLogger.debug(`Received Event: ${type}`, {
         timestamp: new Date().toISOString(),
         eventType: type,
         dataKeys: Object.keys(data),
@@ -6684,7 +7023,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           data.detailsById ?? data.subagentDetailsById,
         );
         const hasSnapshotSubagents =
-          Object.keys(summariesByParentMessageId).length > 0 ||
+          hasSubagentSummaryEntries(summariesByParentMessageId) ||
           Object.keys(detailsById).length > 0;
 
         // Defensive fallback: some session/history hydration flows can emit an
@@ -6736,6 +7075,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           false,
           snapshotPolicy,
         );
+        const hasNormalizedSnapshotSubagents =
+          hasSubagentSummaryEntries(
+            normalizedSnapshot.summariesByParentMessageId,
+          ) || Object.keys(normalizedSnapshot.detailsById).length > 0;
+        if (!hasNormalizedSnapshotSubagents) {
+          const existingState = getState();
+          const hasExistingRenderedSubagents =
+            hasSubagentSummaryEntries(
+              existingState.subagentsByParentMessageId,
+            ) || Object.keys(existingState.subagentDetailsById).length > 0;
+          if (hasExistingRenderedSubagents) {
+            break;
+          }
+        }
         trackActiveSubagentParentIds(
           normalizedSnapshot.summariesByParentMessageId,
         );
@@ -6794,31 +7147,37 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           false,
           streamPolicy,
         );
-        trackActiveSubagentParentIds(
+        const mergedSummaryUpdate = mergeSubagentSummaryPayload(
+          getState().subagentsByParentMessageId,
           normalizedUpdate.summariesByParentMessageId,
         );
-        if (Object.keys(normalizedUpdate.summariesByParentMessageId).length > 0) {
+        const mergedDetailUpdate = mergeSubagentDetailPayload(
+          getState().subagentDetailsById,
+          normalizedUpdate.detailsById,
+        );
+        trackActiveSubagentParentIds(mergedSummaryUpdate);
+        if (hasSubagentSummaryEntries(mergedSummaryUpdate)) {
           dispatch({
             type: "UPSERT_SUBAGENT_SUMMARIES",
-            payload: normalizedUpdate.summariesByParentMessageId,
+            payload: mergedSummaryUpdate,
           });
         }
-        if (Object.keys(normalizedUpdate.detailsById).length > 0) {
+        if (Object.keys(mergedDetailUpdate).length > 0) {
           dispatch({
             type: "UPSERT_SUBAGENT_DETAIL",
-            payload: normalizedUpdate.detailsById,
+            payload: mergedDetailUpdate,
           });
         }
         bindStreamingToParentMessageIdFromSubagents(
           dispatch,
           getState,
-          normalizedUpdate.summariesByParentMessageId,
+          mergedSummaryUpdate,
         );
         syncSubagentMapsIntoMessages(
           dispatch,
           getState,
-          normalizedUpdate.summariesByParentMessageId,
-          normalizedUpdate.detailsById,
+          mergedSummaryUpdate,
+          mergedDetailUpdate,
           "merge",
           {
             freezeIncompleteStatuses: false,
@@ -6868,7 +7227,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       case "streamEventEnrich": {
         const callID = asString(data.callID);
         const diffStatsRec = asRecord(data.diffStats);
-        if (!callID || !diffStatsRec) {
+        const activityDetail = normalizeActivityDetail(data.activityDetail);
+        const diffStats =
+          diffStatsRec
+            ? {
+              added: asNumber(diffStatsRec.added) || 0,
+              deleted: asNumber(diffStatsRec.deleted) || 0,
+            }
+            : undefined;
+        if (!callID || (!diffStats && !activityDetail)) {
           break;
         }
         dispatch({
@@ -6876,10 +7243,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           payload: {
             callID,
             patch: {
-              diffStats: {
-                added: asNumber(diffStatsRec.added) || 0,
-                deleted: asNumber(diffStatsRec.deleted) || 0,
-              },
+              ...(diffStats ? { diffStats } : {}),
+              ...(activityDetail ? { activityDetail } : {}),
             },
           },
         });
@@ -7029,14 +7394,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         break;
       }
       case "commandsList": {
-        console.log('[messageHandler] Received commandsList message:', data);
-        console.log('[messageHandler] data.commands:', data.commands);
-        console.log('[messageHandler] data.commands type:', typeof data.commands);
-        console.log('[messageHandler] Is array?', Array.isArray(data.commands));
+        webviewLogger.debug('Received commandsList message', { data });
+        webviewLogger.debug('commands data', { commands: data.commands, type: typeof data.commands, isArray: Array.isArray(data.commands) });
 
         const commands = asArray(data.commands, isSlashCommand);
-        console.log('[messageHandler] Filtered commands:', commands);
-        console.log('[messageHandler] Commands count:', commands.length);
+        webviewLogger.debug('Filtered commands', { commands, count: commands.length });
 
         dispatch({ type: "SET_COMMANDS_LIST", payload: commands });
         break;
@@ -7215,7 +7577,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           }
         } catch (e) {
           // Defensive: do not allow a malformed postMessage to throw.
-          console.warn("Failed to process todoUpdate postMessage", e);
+          webviewLogger.warn("Failed to process todoUpdate postMessage", { error: String(e) });
         }
         break;
       }
@@ -7243,7 +7605,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           });
         } catch (e) {
           // Defensive: do not allow malformed postMessage to throw
-          console.warn("Failed to process modelCapabilityUpdate postMessage", e);
+          webviewLogger.warn("Failed to process modelCapabilityUpdate postMessage", { error: String(e) });
         }
         break;
       }
@@ -7337,7 +7699,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       }
     }
     } catch (error) {
-      console.error('[MessageHandler] Error processing message:', {
+      webviewLogger.error('Error processing message', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         eventType: asString((event.data as { type?: unknown })?.type),

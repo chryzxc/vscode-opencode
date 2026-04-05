@@ -298,7 +298,7 @@ export class MessageStreamService {
       const client = await this.serverManager.ensureRunning();
       const workspaceDirectory =
         vscode.workspace.workspaceFolders?.[0]?.uri.scheme === "file"
-          ? vscode.workspace.workspaceFolders[0].uri.fsPath
+          ? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
               .replace(/\\/g, "/")
               .replace(/\/+$/, "")
           : undefined;
@@ -1123,10 +1123,7 @@ export class MessageStreamService {
       logContext.allProperties = sanitizedProperties;
 
       // Log the event with enriched context - AI message now prominently displayed
-      console.log(
-        `[MessageStreamService] Stream Event: ${event.type}`,
-        logContext,
-      );
+      this.logger.debug(`Stream Event: ${event.type}`, logContext);
     }
 
     this.callbacks.forEach((callback) => {

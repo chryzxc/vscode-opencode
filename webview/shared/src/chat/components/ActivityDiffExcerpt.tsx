@@ -1,0 +1,190 @@
+import { Check, Copy } from "lucide-react";
+import { useMemo, useState } from "react";
+
+import { cn } from "@/utils";
+
+type DiffExcerpt = {
+  header?: string;
+  lines: string[];
+  added?: number;
+  deleted?: number;
+};
+
+function parseHunkHeader(header: string): { oldStart: number; newStart: number } {
+  const m = header.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+  if (m) return { oldStart: parseInt(m[1], 10), newStart: parseInt(m[2], 10) };
+  return { oldStart: 1, newStart: 1 };
+}
+
+function computeLineNumbers(
+  header: string | undefined,
+  lines: string[],
+): Array<{ old: number | null; new: number | null; line: string; isHeader: boolean }> {
+  const result: Array<{ old: number | null; new: number | null; line: string; isHeader: boolean }> = [];
+  const parsedHeader = typeof header === "string" ? header.trim() : "";
+  if (parsedHeader.length > 0) {
+    result.push({ old: null, new: null, line: parsedHeader, isHeader: true });
+  }
+  const { oldStart, newStart } =
+    parsedHeader.length > 0 ? parseHunkHeader(parsedHeader) : { oldStart: 1, newStart: 1 };
+  let oldN = oldStart;
+  let newN = newStart;
+  for (const line of lines) {
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      result.push({ old: null, new: newN++, line, isHeader: false });
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      result.push({ old: oldN++, new: null, line, isHeader: false });
+    } else {
+      result.push({ old: oldN++, new: newN++, line, isHeader: false });
+    }
+  }
+  return result;
+}
+
+function DiffLine({
+  line,
+  oldNum,
+  newNum,
+  isHeader,
+}: {
+  line: string;
+  oldNum: number | null;
+  newNum: number | null;
+  isHeader: boolean;
+}) {
+  const isAdded = !isHeader && line.startsWith("+") && !line.startsWith("+++");
+  const isRemoved = !isHeader && line.startsWith("-") && !line.startsWith("---");
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    const text = isHeader ? line : line.slice(1);
+    navigator.clipboard.writeText(text).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1000);
+  };
+
+  return (
+    <div
+      className={cn(
+        "group relative flex min-w-0 font-mono text-[10.5px] leading-relaxed",
+        isAdded && "bg-emerald-950/30",
+        isRemoved && "bg-red-950/30",
+        isHeader && "bg-blue-950/25",
+        !isAdded && !isRemoved && !isHeader && "hover:bg-white/[0.03]",
+      )}
+    >
+      <div
+        className={cn(
+          "flex select-none flex-shrink-0 items-center gap-0 border-r border-oc-border-soft",
+        )}
+        style={{ minWidth: 64 }}
+      >
+        <span
+          className={cn(
+            "inline-block w-8 py-0.5 pr-1.5 text-right",
+            isRemoved ? "text-oc-red opacity-60" : "text-oc-text-muted opacity-40",
+          )}
+        >
+          {oldNum ?? ""}
+        </span>
+        <span
+          className={cn(
+            "inline-block w-8 py-0.5 pr-1.5 text-right",
+            isAdded ? "text-oc-green opacity-60" : "text-oc-text-muted opacity-40",
+          )}
+        >
+          {newNum ?? ""}
+        </span>
+      </div>
+
+      <div
+        className={cn(
+          "flex w-5 flex-shrink-0 select-none items-center justify-center border-r border-oc-border-soft py-0.5 font-semibold",
+          isAdded && "text-oc-green",
+          isRemoved && "text-oc-red",
+          isHeader && "text-blue-400",
+          !isAdded && !isRemoved && !isHeader && "text-oc-text-muted opacity-30",
+        )}
+      >
+        {isAdded ? "+" : isRemoved ? "-" : isHeader ? "." : " "}
+      </div>
+
+      <div
+        className={cn(
+          "flex-1 overflow-x-auto whitespace-pre px-2.5 py-0.5",
+          isAdded && "text-emerald-300",
+          isRemoved && "text-red-300",
+          isHeader && "font-semibold text-blue-300",
+          !isAdded && !isRemoved && !isHeader && "text-oc-text opacity-75",
+        )}
+      >
+        {isHeader ? line : line.slice(1)}
+      </div>
+
+      {!isHeader && (
+        <button
+          type="button"
+          title="Copy line"
+          onClick={handleCopy}
+          className={cn(
+            "absolute right-1 top-0.5 flex h-4 w-4 items-center justify-center rounded",
+            "opacity-0 transition-opacity group-hover:opacity-100",
+            "text-oc-text-muted hover:bg-white/10 hover:text-oc-text",
+          )}
+        >
+          {copied ? (
+            <Check className="h-2.5 w-2.5 text-oc-green" />
+          ) : (
+            <Copy className="h-2.5 w-2.5" />
+          )}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function ActivityDiffExcerpt({ excerpt }: { excerpt: DiffExcerpt }) {
+  const rows = useMemo(
+    () => computeLineNumbers(excerpt.header, Array.isArray(excerpt.lines) ? excerpt.lines : []),
+    [excerpt.header, excerpt.lines],
+  );
+
+  if (!rows.length) {
+    return null;
+  }
+
+  return (
+    <div className="overflow-hidden rounded border border-oc-border bg-oc-bg-soft">
+      <div className="flex items-center justify-between border-b border-oc-border/80 bg-oc-panel-soft/40 px-2 py-1">
+        <span className="font-mono text-[10px] uppercase tracking-wide text-oc-text-muted">
+          patch excerpt
+        </span>
+        {(typeof excerpt.added === "number" || typeof excerpt.deleted === "number") && (
+          <span className="flex items-center gap-1 font-mono text-[10px]">
+            {typeof excerpt.added === "number" && excerpt.added > 0 ? (
+              <span className="text-oc-green">+{excerpt.added}</span>
+            ) : null}
+            {typeof excerpt.deleted === "number" && excerpt.deleted > 0 ? (
+              <span className="text-oc-red">-{excerpt.deleted}</span>
+            ) : null}
+          </span>
+        )}
+      </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[420px]">
+          {rows.map((row, index) => (
+            <DiffLine
+              // biome-ignore lint/suspicious/noArrayIndexKey: diff excerpts are short and can include duplicate lines
+              key={`row-${index}`}
+              line={row.line}
+              oldNum={row.old}
+              newNum={row.new}
+              isHeader={row.isHeader}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+

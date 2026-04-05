@@ -2,9 +2,12 @@
  * Budget Indicator Component
  *
  * Displays daily budget status, warnings, and advice for managing request quota.
+ * BRUTALIST DEVELOPER AESTHETIC: Industrial design language with exposed structure,
+ * technical markers, and precise typography.
  */
 
 import { useAppState } from './lib/store';
+import './BudgetIndicator.css';
 
 export function BudgetIndicator() {
   const state = useAppState();
@@ -19,82 +22,100 @@ export function BudgetIndicator() {
       ? (budget.usedToday / budget.dailyAllowance) * 100
       : 0;
 
-  const barColor =
-    budget.warningLevel === 'critical'
-      ? 'bg-red-500'
-      : budget.warningLevel === 'warning'
-        ? 'bg-yellow-500'
-        : 'bg-green-500';
+  const getThemeColor = () => {
+    switch (budget.warningLevel) {
+      case 'critical': return '#ff3333';
+      case 'warning': return '#ffaa00';
+      default: return '#00ff88';
+    }
+  };
 
-  const textColor =
-    budget.warningLevel === 'critical'
-      ? 'text-red-500'
-      : budget.warningLevel === 'warning'
-        ? 'text-yellow-500'
-        : 'text-green-500';
+  const themeColor = getThemeColor();
 
   return (
-    <div className="mb-2 rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] p-2 text-xs">
+    <div className="budget-indicator-brutalist">
+      {/* Technical marker */}
+      <div className="budget-tech-marker">QT-01</div>
+
       {/* Header */}
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="flex items-center gap-1.5 font-medium text-[var(--oc-text)]">
-          <span>📊 {budget.planName} Plan</span>
-          <span className="text-[var(--oc-text-muted)]">
-            {budget.usedToday} / {budget.dailyAllowance} today
-          </span>
+      <div className="budget-header">
+        <div className="budget-title-group">
+          <span className="budget-emoji">◆</span>
+          <span className="budget-plan-name">{budget.planName} PLAN</span>
         </div>
-        {budget.warningLevel !== 'ok' && (
-          <span className={`${textColor} font-semibold`}>
-            {budget.warningLevel === 'critical' ? '⚠️' : '⚡'}
-          </span>
-        )}
+        <div className="budget-usage-display">
+          <span className="budget-used">{budget.usedToday}</span>
+          <span className="budget-separator">/</span>
+          <span className="budget-total">{budget.dailyAllowance}</span>
+          <span className="budget-label">TODAY</span>
+        </div>
       </div>
+
+      {/* Status Badge */}
+      {budget.warningLevel !== 'ok' && (
+        <div className="budget-status-badge" style={{ borderColor: themeColor, color: themeColor }}>
+          <span className="budget-status-dot" style={{ backgroundColor: themeColor }}></span>
+          {budget.warningLevel === 'critical' ? 'CRITICAL' : 'WARNING'}
+        </div>
+      )}
 
       {/* Progress Bar */}
-      <div className="mb-1.5">
-        <div className="h-1.5 w-full bg-[var(--oc-border)] rounded-full overflow-hidden">
+      <div className="budget-progress-section">
+        <div className="budget-progress-labels">
+          <span>CONSUMED</span>
+          <span>{Math.round(usagePercent)}%</span>
+        </div>
+        <div className="budget-progress-container">
           <div
-            className={`h-full ${barColor} transition-all duration-300`}
-            style={{ width: `${Math.min(100, usagePercent)}%` }}
+            className="budget-progress-bar"
+            style={{
+              width: `${Math.min(100, usagePercent)}%`,
+              backgroundColor: themeColor,
+              boxShadow: `0 0 10px ${themeColor}40`,
+            }}
           />
         </div>
-        <div className="flex justify-between mt-1 text-[10px] text-[var(--oc-text-muted)]">
-          <span>{budget.remainingToday} remaining today</span>
-          <span>{Math.round(usagePercent)}% used</span>
+        <div className="budget-progress-details">
+          <span className="budget-detail-item">
+            <span className="budget-detail-arrow">→</span>
+            {budget.remainingToday} REMAINING
+          </span>
         </div>
       </div>
 
-      {/* Monthly Stats */}
-      <div className="grid grid-cols-2 gap-2 mb-1.5 text-[10px]">
-        <div className="text-center">
-          <div className="text-[var(--oc-text-muted)]">This Month</div>
-          <div className="font-medium text-[var(--oc-text)]">
-            {budget.usedToday} used
-          </div>
+      {/* Stats Grid */}
+      <div className="budget-stats-grid">
+        <div className="budget-stat-item">
+          <div className="budget-stat-label">THIS MONTH</div>
+          <div className="budget-stat-value">{budget.usedToday}</div>
+          <div className="budget-stat-subtext">REQUESTS USED</div>
         </div>
-        <div className="text-center">
-          <div className="text-[var(--oc-text-muted)]">
-            {budget.daysRemaining} days left
+        <div className="budget-stat-item">
+          <div className="budget-stat-label">{budget.daysRemaining} DAYS LEFT</div>
+          <div className="budget-stat-value" style={{ color: themeColor }}>
+            ~{Math.round(budget.projectedMonthlyUsage)}
           </div>
-          <div className="font-medium text-[var(--oc-text)]">
-            ~{Math.round(budget.projectedMonthlyUsage)} projected
-          </div>
+          <div className="budget-stat-subtext">PROJECTED</div>
         </div>
       </div>
 
-      {/* Advice */}
+      {/* Advice Section */}
       {budget.advice.length > 0 && (
-        <div className="space-y-1">
+        <div className="budget-advice-section">
           {budget.advice.map((advice, index) => (
-            <div
-              key={index}
-              className="text-[10px] text-[var(--oc-text-muted)] bg-[var(--oc-bg)] px-1.5 py-1 rounded"
-            >
+            <div key={index} className="budget-advice-item">
+              <span className="budget-advice-marker">▸</span>
               {advice}
             </div>
           ))}
         </div>
       )}
+
+      {/* Technical decoration */}
+      <div className="budget-tech-decoration">
+        <span></span>
+        <span></span>
+      </div>
     </div>
   );
 }
@@ -113,26 +134,35 @@ export function CompactBudgetIndicator({
   const usagePercent =
     dailyAllowance > 0 ? (usedToday / dailyAllowance) * 100 : 0;
 
-  const barColor =
-    warningLevel === 'critical'
-      ? 'bg-red-500'
-      : warningLevel === 'warning'
-        ? 'bg-yellow-500'
-        : 'bg-green-500';
+  const getThemeColor = () => {
+    switch (warningLevel) {
+      case 'critical': return '#ff3333';
+      case 'warning': return '#ffaa00';
+      default: return '#00ff88';
+    }
+  };
+
+  const themeColor = getThemeColor();
 
   return (
     <div
-      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[var(--oc-panel)] border border-[var(--oc-border)] text-[10px]"
+      className="compact-budget-indicator"
+      style={{
+        '--theme-color': themeColor,
+      } as React.CSSProperties}
       title={`${usedToday} / ${dailyAllowance} requests used today`}
     >
-      <span className="text-[var(--oc-text-muted)]">Today:</span>
-      <span className="font-medium text-[var(--oc-text)]">{usedToday}</span>
-      <span className="text-[var(--oc-text-muted)]">/</span>
-      <span className="text-[var(--oc-text-muted)]">{dailyAllowance}</span>
-      <div className="h-1 w-12 bg-[var(--oc-border)] rounded-full overflow-hidden">
+      <span className="compact-label">TODAY:</span>
+      <span className="compact-used">{usedToday}</span>
+      <span className="compact-separator">/</span>
+      <span className="compact-total">{dailyAllowance}</span>
+      <div className="compact-progress-track">
         <div
-          className={`h-full ${barColor} transition-all duration-300`}
-          style={{ width: `${Math.min(100, usagePercent)}%` }}
+          className="compact-progress-bar"
+          style={{
+            width: `${Math.min(100, usagePercent)}%`,
+            backgroundColor: themeColor,
+          }}
         />
       </div>
     </div>

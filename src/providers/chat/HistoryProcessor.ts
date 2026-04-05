@@ -533,7 +533,9 @@ export class HistoryProcessor {
    */
   isRenderableHistoryMessage(message: any): boolean {
     if (!message) return false;
-    if (this.isInternalSystemReminderMessage(message)) return false;
+    // Don't filter out system reminder messages - they will be converted to system role
+    // and rendered with the SystemMessage component
+    if (this.isInternalSystemReminderMessage(message)) return true;
     return this.hasRenderableHistoryPayload(message);
   }
 

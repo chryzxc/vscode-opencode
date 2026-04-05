@@ -291,19 +291,24 @@ export class QueueManager {
     id?: string,
     index?: number,
   ): Promise<void> {
+    const flow = this.logger.startFeatureFlow('DispatchQueuedItem', { mode, sessionId, id, index });
     const currentSessionId = this.getCurrentSessionId();
     const finalSessionId = sessionId || currentSessionId;
 
     if (!finalSessionId) {
       this.logger.warn(LoggingCategories.QUEUE_MANAGER, 'No session ID for queued item', { id, index });
+      this.logger.endFeatureFlow(flow, 'failed', { reason: 'No session ID' });
       return;
     }
+
+    this.logger.featureStep(flow, 'dispatching_item', { id, index });
 
     if (id) {
       // Add specific queued item by ID
       const prompt = this.queue.find(p => p.id === id);
       if (prompt) {
         prompt.sessionId = finalSessionId;
+        this.logger.featureStep(flow, 'sending_message_by_id', { id });
         await this.handleSendMessage(
           prompt.text,
           prompt.files,
@@ -316,11 +321,16 @@ export class QueueManager {
           undefined,
           prompt.userFacingText,
         );
+        this.logger.endFeatureFlow(flow, 'completed', { id });
+      } else {
+        this.logger.warn(LoggingCategories.QUEUE_MANAGER, 'Queued item not found', { id });
+        this.logger.endFeatureFlow(flow, 'failed', { reason: 'Item not found', id });
       }
     } else if (index !== undefined && index >= 0 && index < this.queue.length) {
       // Add by index
       const prompt = this.queue[index];
       prompt.sessionId = finalSessionId;
+      this.logger.featureStep(flow, 'sending_message_by_index', { index });
       await this.handleSendMessage(
         prompt.text,
         prompt.files,
@@ -333,6 +343,9 @@ export class QueueManager {
         undefined,
         prompt.userFacingText,
       );
+      this.logger.endFeatureFlow(flow, 'completed', { index });
+    } else {
+      this.logger.endFeatureFlow(flow, 'failed', { reason: 'Invalid index or ID', index, id });
     }
   }
 
@@ -375,8 +388,18 @@ export class QueueManager {
    * Handle clear queue
    */
   async handleClearQueue(payload: { sessionId: string }): Promise<void> {
+    const flow = this.logger.startFeatureFlow('ClearQueue', { sessionId: payload.sessionId });
+    const previousSize = this.queue.length;
+
     this.clearQueue();
     this.sendQueueUpdate(payload.sessionId);
+
+    this.logger.info(LoggingCategories.QUEUE_MANAGER, 'Queue cleared', {
+      sessionId: payload.sessionId,
+      previousSize,
+      newSize: 0,
+    });
+    this.logger.endFeatureFlow(flow, 'completed', { previousSize });
   }
 
   /**
@@ -394,14 +417,19 @@ export class QueueManager {
    * Handle execute queue
    */
   async handleExecuteQueue(payload: { sessionId: string }): Promise<void> {
+    const flow = this.logger.startFeatureFlow('ExecuteQueue', { sessionId: payload.sessionId });
     const { sessionId } = payload;
 
     if (this.queue.length === 0) {
       this.logger.debug(LoggingCategories.QUEUE_MANAGER, 'Execute queue called with empty queue', {
         queueSize: 0,
       });
+      this.logger.endFeatureFlow(flow, 'skipped', { reason: 'Empty queue' });
       return;
     }
+
+    const queueSize = this.queue.length;
+    this.logger.featureStep(flow, 'executing_queue', { queueSize, sessionId });
 
     // Update session IDs for all prompts
     for (const prompt of this.queue) {
@@ -423,6 +451,12 @@ export class QueueManager {
         prompt.userFacingText,
       );
     });
+
+    this.logger.info(LoggingCategories.QUEUE_MANAGER, 'Queue execution completed', {
+      sessionId,
+      itemsExecuted: queueSize,
+    });
+    this.logger.endFeatureFlow(flow, 'completed', { itemsExecuted: queueSize });
 
     // Send update after execution
     this.sendQueueUpdate(sessionId);

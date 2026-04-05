@@ -190,39 +190,60 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     // ============================================================================
-    // Auto-Attach Highlighted Text Feature
+    // Auto-Attach Highlighted Text Feature (with debouncing)
     // ============================================================================
+    // Debounce timer to prevent excessive calls during rapid text selection changes
+    let selectionChangeTimer: NodeJS.Timeout | undefined;
+
     context.subscriptions.push(
-      vscode.window.onDidChangeTextEditorSelection(async (event) => {
-        const editor = event.textEditor;
-        const selection = event.selections[0]; // Take primary selection
-
-        if (!selection || selection.isEmpty) {
-          // Tell webview to clear auto context
-          await chatViewProvider.clearAutoContext();
-          return;
+      vscode.window.onDidChangeTextEditorSelection((event) => {
+        // Clear any pending update
+        if (selectionChangeTimer) {
+          clearTimeout(selectionChangeTimer);
         }
 
-        const selectedText = editor.document.getText(selection).trim();
-        if (!selectedText) {
-          await chatViewProvider.clearAutoContext();
-          return;
-        }
+        // Debounce: Wait 150ms after the last selection change before processing
+        // This prevents performance issues when the user is rapidly selecting text
+        selectionChangeTimer = setTimeout(async () => {
+          const editor = event.textEditor;
+          const selection = event.selections?.[0]; // Take primary selection
 
-        const fileName = vscode.workspace.asRelativePath(editor.document.uri);
-        const startLine = selection.start.line + 1;
-        const endLine = selection.end.line + 1;
-        const lineInfo =
-          startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
+          if (!selection || selection.isEmpty) {
+            // Tell webview to clear auto context
+            await chatViewProvider.clearAutoContext();
+            return;
+          }
 
-        await chatViewProvider.autoAddContext({
-          file: fileName,
-          lineInfo: lineInfo,
-          content: selectedText,
-          languageId: editor.document.languageId,
-        });
+          const selectedText = editor.document.getText(selection).trim();
+          if (!selectedText) {
+            await chatViewProvider.clearAutoContext();
+            return;
+          }
+
+          const fileName = vscode.workspace.asRelativePath(editor.document.uri);
+          const startLine = selection.start.line + 1;
+          const endLine = selection.end.line + 1;
+          const lineInfo =
+            startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
+
+          await chatViewProvider.autoAddContext({
+            file: fileName,
+            lineInfo: lineInfo,
+            content: selectedText,
+            languageId: editor.document.languageId,
+          });
+        }, 150); // 150ms debounce delay
       }),
     );
+
+    // Clean up timer on disposal
+    context.subscriptions.push({
+      dispose: () => {
+        if (selectionChangeTimer) {
+          clearTimeout(selectionChangeTimer);
+        }
+      },
+    });
 
     // ============================================================================
     // PHASE 3: Register Commands

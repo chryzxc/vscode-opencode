@@ -16,9 +16,9 @@ import {
   LspPanel,
   AgentsPanel,
   SkillsPanel,
-  MobileRightSummary,
   SettingsPanel,
 } from "./PanelComponents";
+import { QuotaPopover } from "./QuotaPopover";
 import { StreamingCard } from "./StreamingComponents";
 import {
   AssistantMessage,
@@ -261,9 +261,6 @@ function ChatContent() {
         <StickyHeader />
 
         {/* Message list */}
-        <div className="block [@media(min-width:1100px)]:hidden">
-          <MobileRightSummary />
-        </div>
         <div
           ref={messagesScrollRef}
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden py-4"
@@ -448,6 +445,9 @@ function ChatContent() {
         isOpen={state.isSessionModalOpen}
         onClose={() => dispatch({ type: "SET_SESSION_MODAL_OPEN", payload: false })}
       />
+
+      {/* Quota Popover */}
+      <QuotaPopover />
     </div>
   );
 }

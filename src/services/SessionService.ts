@@ -1053,7 +1053,10 @@ export class SessionService {
    * ```
    */
   async createNewSession(title?: string): Promise<Session> {
+    const flow = log.startFeatureFlow('CreateSession', { title });
+
     const client = await this.serverManager.ensureRunning();
+    log.featureStep(flow, 'server_ready');
 
     // Create the session
     const response = await client.session.create({
@@ -1076,11 +1079,13 @@ export class SessionService {
         em?.message ||
         (Array.isArray(em?.errors) ? em.errors[0]?.message : undefined) ||
         "Unknown error";
+      log.endFeatureFlow(flow, 'failed', { error: msg });
       throw new Error(`Failed to create session: ${msg}`);
     }
 
     const session = response.data;
     this.currentSession = session;
+    log.featureStep(flow, 'session_created', { sessionId: session.id });
 
     // Check if session already exists in history
     const exists = this.sessionHistory.some((s) => s.id === session.id);
@@ -1094,6 +1099,11 @@ export class SessionService {
     });
 
     this.persistState();
+    log.endFeatureFlow(flow, 'completed', {
+      sessionId: session.id,
+      title: session.title,
+      wasNew: !exists,
+    });
     return session;
   }
 
@@ -1275,8 +1285,12 @@ export class SessionService {
    * ```
    */
   async switchSession(sessionId: string): Promise<Session> {
+    const flow = log.startFeatureFlow('SwitchSession', { sessionId });
+
     try {
       const client = await this.serverManager.ensureRunning();
+      log.featureStep(flow, 'fetching_session_from_server');
+
       const response = await client.session.get({
         path: { id: sessionId },
       });
@@ -1288,15 +1302,36 @@ export class SessionService {
       this.currentSession = response.data;
       this.persistState();
 
+      log.sessionEvent("switch", sessionId, {
+        title: response.data.title,
+        source: 'server',
+      });
+      log.endFeatureFlow(flow, 'completed', {
+        sessionId,
+        title: response.data.title,
+        source: 'server',
+      });
       return response.data;
     } catch (error) {
+      log.featureStep(flow, 'server_fetch_failed', { error: String(error) });
       const localSession = this.sessionHistory.find((s) => s.id === sessionId);
       if (!localSession) {
+        log.endFeatureFlow(flow, 'failed', { error: 'Session not found' });
         throw error;
       }
 
       this.currentSession = localSession;
       this.persistState();
+
+      log.sessionEvent("switch", sessionId, {
+        title: localSession.title,
+        source: 'local',
+      });
+      log.endFeatureFlow(flow, 'completed', {
+        sessionId,
+        title: localSession.title,
+        source: 'local_fallback',
+      });
       return localSession;
     }
   }

@@ -38,12 +38,54 @@ export function formatNumber(n: number): string {
   return String(n);
 }
 
+/**
+ * Formats a duration in milliseconds to a human-readable string.
+ * Examples: "500ms", "3.5s", "2m 30s", "1h 15m 30s"
+ *
+ * @param ms - Duration in milliseconds
+ * @returns Formatted duration string
+ */
 export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.floor((ms % 60_000) / 1000);
-  return `${m}m ${s}s`;
+  // Handle invalid values
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+    return 'n/a';
+  }
+
+  // Less than 1 second: show milliseconds
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+
+  // Less than 1 minute: show seconds with decimal
+  if (ms < 60_000) {
+    return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')}s`;
+  }
+
+  // Less than 1 hour: show minutes and seconds
+  if (ms < 3_600_000) {
+    const minutes = Math.floor(ms / 60_000);
+    const seconds = Math.floor((ms % 60_000) / 1000);
+    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+
+  // 1 hour or more: show hours, minutes, and optionally seconds
+  const hours = Math.floor(ms / 3_600_000);
+  const minutes = Math.floor((ms % 3_600_000) / 60_000);
+  const seconds = Math.floor((ms % 60_000) / 1000);
+
+  const parts: string[] = [];
+  parts.push(`${hours}h`);
+
+  if (minutes > 0) {
+    parts.push(`${minutes}m`);
+  }
+
+  if (seconds > 0 && minutes < 5) {
+    // Only show seconds if less than 5 minutes for cleaner display
+    parts.push(`${seconds}s`);
+  }
+
+  return parts.join(' ');
 }
 
 /**

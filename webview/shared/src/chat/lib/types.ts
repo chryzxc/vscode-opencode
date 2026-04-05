@@ -183,6 +183,7 @@ export interface StreamingStep {
     cache?: { read?: number; write?: number };
   };
   diffStats?: { added: number; deleted: number };
+  activityDetail?: ActivityDetail;
 }
 
 export interface ReasoningEvent {
@@ -261,6 +262,7 @@ export interface MessageStep {
   status?: string;
   meta?: string;
   diffStats?: { added: number; deleted: number };
+  activityDetail?: ActivityDetail;
   /** Tool-call deduplication key, mirrors StreamingStep.callID */
   callID?: string;
   /** Step identity key, mirrors StreamingStep.id */
@@ -269,6 +271,24 @@ export interface MessageStep {
   streamSeq?: number;
   /** File path associated with this step, used for deduplication */
   filePath?: string;
+}
+
+export interface ActivityDiffExcerpt {
+  header?: string;
+  lines: string[];
+  added?: number;
+  deleted?: number;
+}
+
+export interface ActivityDetail {
+  kind?: "tool_call" | "file_edit" | "command" | "read" | "search" | "other";
+  summary?: string;
+  command?: string;
+  tool?: string;
+  query?: string;
+  file?: string;
+  diffExcerpt?: ActivityDiffExcerpt;
+  metadata?: Record<string, string | number | boolean>;
 }
 
 export interface InteractiveChoice {
@@ -555,6 +575,7 @@ export interface AppState {
   isQueueOpen: boolean;
   isSidebarOpen: boolean;
   isSessionModalOpen: boolean;
+  isQuotaPopoverOpen: boolean;
   sessionsList: Session[];
   processingSessionIds: string[];
   switchingSessionId: string | null;

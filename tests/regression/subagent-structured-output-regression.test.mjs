@@ -32,8 +32,26 @@ test('structured subagents delta updates are merged into UI state', () => {
   assert.match(handlerSource, /UPSERT_SUBAGENT_DETAIL/, 'subagentsDelta should upsert detail store');
   assert.match(
     handlerSource,
+    /function\s+mergeSubagentSummaryPayload\(/,
+    'subagent summary updates should merge with existing entries instead of replacing rendered rows',
+  );
+  assert.match(
+    handlerSource,
+    /function\s+mergeSubagentDetailPayload\(/,
+    'subagent detail updates should merge with existing timeline/progress state',
+  );
+  assert.match(
+    handlerSource,
     /interactiveEvents\.length === 0[\s\S]*subagents\.length === 0[\s\S]*!subagentsDelta/,
     'normalizeStructuredOutput should not drop subagentsDelta-only payloads',
+  );
+});
+
+test('empty subagent snapshots do not clobber already-rendered subagent UI', () => {
+  assert.match(
+    handlerSource,
+    /hasExistingRenderedSubagents[\s\S]*break;/,
+    'snapshot handler should keep existing subagent cards when incoming snapshot has no normalized entries',
   );
 });
 
