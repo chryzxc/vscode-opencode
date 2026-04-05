@@ -52,7 +52,11 @@ test('MessageStreamService implements subscriber pattern with auto-lifecycle', (
 
   assert.match(subscribeBody, /this\.callbacks\.add\(callback\)/, 'subscribe should add callback to callbacks Set');
   assert.match(subscribeBody, /if\s*\(this\.callbacks\.size === 1\)/, 'subscribe should check if first subscriber');
-  assert.match(subscribeBody, /this\.startListening\(\)\.catch\(console\.error\)/, 'subscribe should start listening on first subscriber');
+  assert.match(
+    subscribeBody,
+    /this\.startListening\(\)\.catch\(\(error\)\s*=>\s*this\.logger\.error\("Failed to start listening",\s*\{\},\s*error as Error\)\)/,
+    'subscribe should start listening on first subscriber and log startup failures',
+  );
   assert.match(subscribeBody, /return \(\)\s*=>\s*\{[\s\S]*this\.callbacks\.delete\(callback\)/, 'subscribe should return unsubscribe function');
   assert.match(subscribeBody, /if\s*\(this\.callbacks\.size === 0\)/, 'unsubscribe should check if no more subscribers');
   assert.match(subscribeBody, /this\.stopListening\(\)/, 'unsubscribe should stop listening when last subscriber leaves');
@@ -63,12 +67,16 @@ test('MessageStreamService handles abort and auto-reconnect on errors', () => {
   const listenBody = extractFunctionBody(messageStreamSource, 'async startListening(): Promise<void>');
 
   assert.match(listenBody, /if\s*\(error\.name === "AbortError" \|\| abortSignal\.aborted\)/, 'startListening should detect AbortError');
-  assert.match(listenBody, /console\.log\("\[MessageStreamService\] Listening aborted"\)/, 'startListening should log aborts without error');
+  assert.match(listenBody, /this\.logger\.info\("Listening aborted"\)/, 'startListening should log aborts without error');
   assert.match(listenBody, /catch\s*\(error: any\)/, 'startListening should catch general errors');
-  assert.match(listenBody, /console\.error\("\[MessageStreamService\] SSE stream error:"/, 'startListening should log stream errors');
+  assert.match(listenBody, /this\.logger\.error\("SSE stream error",\s*\{\},\s*error\)/, 'startListening should log stream errors');
   assert.match(listenBody, /this\.reconnectTimer = setTimeout/, 'startListening should schedule reconnect after delay');
   assert.match(listenBody, /if\s*\(this\.callbacks\.size > 0\)/, 'reconnect should only occur if active subscribers exist');
-  assert.match(listenBody, /this\.startListening\(\)\.catch\(console\.error\)/, 'reconnect should call startListening on error');
+  assert.match(
+    listenBody,
+    /this\.startListening\(\)\.catch\(\(err\)\s*=>\s*\{[\s\S]*this\.logger\.error\("Auto-reconnect failed",\s*\{\},\s*err as Error\);[\s\S]*\}\)/,
+    'reconnect should call startListening on error and log reconnect failures',
+  );
   assert.match(listenBody, /5000/, 'reconnect should use 5 second delay');
 });
 
@@ -101,7 +109,11 @@ test('MessageStreamService notifies all callbacks with error isolation', () => {
   assert.match(notifyBody, /this\.callbacks\.forEach\(\(callback\)\s*=>\s*\{/, 'notifyCallbacks should iterate through all callbacks');
   assert.match(notifyBody, /try\s*\{[\s\S]*callback\(event\)/, 'notifyCallbacks should call callback in try block');
   assert.match(notifyBody, /catch\s*\(error\)/, 'notifyCallbacks should catch callback errors');
-  assert.match(notifyBody, /console\.error\("Callback error:"/, 'notifyCallbacks should log but continue on error');
+  assert.match(
+    notifyBody,
+    /this\.logger\.error\("Callback error in subscriber",\s*\{\},\s*error as Error\)/,
+    'notifyCallbacks should log but continue on callback errors',
+  );
 });
 
 test('MessageStreamService normalizes GlobalEvent wrappers from SDK', () => {
@@ -150,7 +162,7 @@ test('MessageStreamService filters global events to active workspace and dedupes
   );
   assert.match(
     source,
-    /Ignoring event from .* directory mismatch/,
+    /Ignoring event due to directory mismatch/,
     'service should log when events are dropped by workspace directory filtering',
   );
   assert.match(

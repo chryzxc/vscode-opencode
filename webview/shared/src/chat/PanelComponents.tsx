@@ -2165,6 +2165,19 @@ export function InputWrapper() {
     isQuickInputInteractiveEvent,
   );
   const interactiveEventCount = displayInteractiveEvents.length;
+  const interactiveEventResetKey = displayInteractiveEvents
+    .map((item) => {
+      const title =
+        item.type === "question" || item.type === "confirm"
+          ? item.question
+          : item.type === "quick_actions"
+            ? item.title
+            : item.type === "message"
+              ? item.message || item.title
+              : item.title;
+      return `${item.id}|${item.type}|${title ?? ""}`;
+    })
+    .join("::");
 
   // Reset index and custom mode when interactive events change
   useEffect(() => {
@@ -2181,7 +2194,7 @@ export function InputWrapper() {
     setIsCustomMode(autoCustomMode);
     setCustomValue("");
     setPendingAnswers({});
-  }, [interactiveEventCount]);
+  }, [interactiveEventCount, interactiveEventResetKey]);
 
   useEffect(() => {
     if (isCustomMode) {

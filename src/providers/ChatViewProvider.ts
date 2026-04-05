@@ -1330,25 +1330,19 @@ export class ChatViewProvider
       // expected transport timeouts as hard request failures.
       this.interactiveResponseTransitionUntil = Date.now() + 15000;
     }
-    // If a generation is still running (including interactive wait), stop it before
-    // sending this direct reply so the next request doesn't race/hang behind the prior turn.
+    // Keep existing contract: if a generation is still running, stop it before
+    // submitting interactive follow-up input.
     if (this.processingSessionIds.has(sessionId)) {
       await this.handleStopRequest(sessionId);
     }
 
     this.currentSessionId = sessionId;
-    await this.handleSendMessage(
+    await this.schedulePromptDispatch("send-now", {
+      sessionId,
       text,
-      undefined,
-      undefined,
-      undefined,
-      payload.agent,
-      false,
-      undefined,
-      false,
-      undefined,
-      payload.userFacingText,
-    );
+      agent: payload.agent,
+      userFacingText: payload.userFacingText,
+    });
   }
 
   /**

@@ -71,7 +71,7 @@ test('spawned subagent list container is scrollable', () => {
 test('subagent.parentMessageId is strictly mapped to finalMessageId before finalizing messages', () => {
   assert.match(
     messageHandlerSource,
-    /source\.map\(\(entry\)\s*=>\s*\(\{\s*\.\.\.entry,\s*parentMessageId:\s*finalMessageId,\s*\}\)\);/,
+    /source\.forEach\(\(entry\)\s*=>\s*\{[\s\S]*parentMessageId:\s*finalMessageId,/,
     'message handler should ensure all finalized subagents have parentMessageId bound to the final message id',
   );
 });

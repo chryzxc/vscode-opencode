@@ -128,7 +128,7 @@ test('BudgetIndicator shows monthly stats', () => {
 
   assert.match(
     indicatorBody,
-    /This Month/,
+    /THIS MONTH/,
     'Should show monthly section'
   );
   assert.match(
@@ -151,28 +151,18 @@ test('BudgetIndicator determines bar color by warning level', () => {
 
   assert.match(
     indicatorBody,
-    /budget\.warningLevel\s*===\s*['\"]critical['\"]/,
-    'Should check critical level'
+    /case\s+['"]critical['"]:\s*return\s*['"]#ff3333['"]/, 
+    'Should set critical color'
   );
   assert.match(
     indicatorBody,
-    /bg-red-500/,
-    'Should use red for critical'
+    /case\s+['"]warning['"]:\s*return\s*['"]#ffaa00['"]/, 
+    'Should set warning color'
   );
   assert.match(
     indicatorBody,
-    /budget\.warningLevel\s*===\s*['\"]warning['\"]/,
-    'Should check warning level'
-  );
-  assert.match(
-    indicatorBody,
-    /bg-yellow-500/,
-    'Should use yellow for warning'
-  );
-  assert.match(
-    indicatorBody,
-    /bg-green-500/,
-    'Should use green for ok'
+    /default:\s*return\s*['"]#00ff88['"]/, 
+    'Should set default ok color'
   );
 });
 
@@ -184,22 +174,17 @@ test('BudgetIndicator determines text color by warning level', () => {
 
   assert.match(
     indicatorBody,
-    /text-red-500/,
-    'Should use red text for critical'
+    /style=\{\{\s*borderColor:\s*themeColor,\s*color:\s*themeColor\s*\}\}/,
+    'Should use theme color in status badge'
   );
   assert.match(
     indicatorBody,
-    /text-yellow-500/,
-    'Should use yellow text for warning'
-  );
-  assert.match(
-    indicatorBody,
-    /text-green-500/,
-    'Should use green text for ok'
+    /style=\{\{\s*color:\s*themeColor\s*\}\}/,
+    'Should use theme color in projected value'
   );
 });
 
-test('BudgetIndicator shows warning icons', () => {
+test('BudgetIndicator shows warning indicators', () => {
   const indicatorBody = extractFunctionBody(
     budgetIndicatorSource,
     'export function BudgetIndicator()'
@@ -207,18 +192,18 @@ test('BudgetIndicator shows warning icons', () => {
 
   assert.match(
     indicatorBody,
-    /budget\.warningLevel\s*!==\s*['\"]ok['\"]/,
+    /budget\.warningLevel\s*!==\s*['"]ok['"]/, 
     'Should check non-ok levels'
   );
   assert.match(
     indicatorBody,
-    /⚠️/,
-    'Should show warning icon'
+    /budget-status-dot/,
+    'Should show status dot'
   );
   assert.match(
     indicatorBody,
-    /⚡/,
-    'Should show critical icon'
+    /budget\.warningLevel === 'critical' \? 'CRITICAL' : 'WARNING'/,
+    'Should show warning/critical label'
   );
 });
 
@@ -230,7 +215,7 @@ test('BudgetIndicator renders progress bar', () => {
 
   assert.match(
     indicatorBody,
-    /h-1\.5/,
+    /budget-progress-bar/,
     'Should render progress bar'
   );
   assert.match(
@@ -240,7 +225,7 @@ test('BudgetIndicator renders progress bar', () => {
   );
   assert.match(
     indicatorBody,
-    /Math\.round\(usagePercent\).*%.*used/,
+    /Math\.round\(usagePercent\)/,
     'Should show percentage'
   );
 });
@@ -289,7 +274,7 @@ test('CompactBudgetIndicator has correct props interface', () => {
   );
   assert.match(
     budgetIndicatorSource,
-    /warningLevel:\s*['\"]ok['\"]\s*\|\s*['\"]warning['\"]\s*\|\s*['\"]critical['\"]/,
+    /warningLevel:\s*['"]ok['"]\s*\|\s*['"]warning['"]\s*\|\s*['"]critical['"]/, 
     'Should accept warningLevel'
   );
 });
@@ -315,23 +300,18 @@ test('CompactBudgetIndicator determines bar color', () => {
 
   assert.match(
     compactBody,
-    /warningLevel\s*===\s*['\"]critical['\"]/,
-    'Should check critical'
+    /case\s+['"]critical['"]:\s*return\s*['"]#ff3333['"]/, 
+    'Should set critical color'
   );
   assert.match(
     compactBody,
-    /bg-red-500/,
-    'Should use red for critical'
+    /case\s+['"]warning['"]:\s*return\s*['"]#ffaa00['"]/, 
+    'Should set warning color'
   );
   assert.match(
     compactBody,
-    /bg-yellow-500/,
-    'Should use yellow for warning'
-  );
-  assert.match(
-    compactBody,
-    /bg-green-500/,
-    'Should use green for ok'
+    /default:\s*return\s*['"]#00ff88['"]/, 
+    'Should set default ok color'
   );
 });
 
@@ -343,12 +323,12 @@ test('CompactBudgetIndicator renders compact layout', () => {
 
   assert.match(
     compactBody,
-    /inline-flex/,
-    'Should use inline-flex'
+    /compact-budget-indicator/,
+    'Should render compact container'
   );
   assert.match(
     compactBody,
-    /Today:/,
+    /TODAY:/,
     'Should show today label'
   );
   assert.match(
@@ -363,7 +343,7 @@ test('CompactBudgetIndicator renders compact layout', () => {
   );
   assert.match(
     compactBody,
-    /h-1/,
+    /compact-progress-track/,
     'Should render progress bar'
   );
 });
