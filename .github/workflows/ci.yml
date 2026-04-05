@@ -33,7 +33,7 @@ jobs:
         run: npm ci
 
       - name: Install Webview Dependencies
-        run: npm --prefix webview/shared ci
+        run: npm --prefix webview/shared install --no-audit --no-fund
 
       - name: Validate Structured Output Contract
         run: npm run structured-output:check
