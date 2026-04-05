@@ -21,6 +21,14 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Pin npm Version
+        run: npm i -g npm@8.19.4
+
+      - name: Show Tool Versions
+        run: |
+          node -v
+          npm -v
+
       - name: Install Root Dependencies
         run: npm ci
 
