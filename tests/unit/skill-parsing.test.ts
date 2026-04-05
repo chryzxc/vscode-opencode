@@ -220,7 +220,7 @@ test('should handle Windows line endings (\\r\\n)', () => {
 });
 
 test('should handle tabs instead of spaces', () => {
-  const description = '## Available Skills\n- **test):\tDescription here';
+  const description = '## Available Skills\n- **test**:\tDescription here';
   const skills = parseSkillDescription(description);
   assert.equal(skills.length, 1);
   assert.equal(skills[0].name, 'test');
