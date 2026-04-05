@@ -4,6 +4,8 @@ import * as fs from 'fs/promises';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { skillSchema } from './skillSchema';
+import { createLogger } from '../utils/Logger';
+import { LoggingCategories } from '../utils/LoggingSchema';
 import type {
   SkillDefinition,
   SkillsMetadata,
@@ -20,6 +22,7 @@ export class SkillManagerService {
   private metadata?: SkillsMetadata;
   private ajv: Ajv;
   private validate: Ajv['ValidateFunction'];
+  private logger = createLogger(LoggingCategories.UI_INTERACTION);
 
   constructor(private context: vscode.ExtensionContext) {
     this.ajv = new Ajv({ allErrors: true });
@@ -97,7 +100,7 @@ export class SkillManagerService {
     if (this.skillsCache && this.skillsCache.length > 0) {
       // Trigger background refresh without waiting
       this.refreshSkillsCache().catch((error) => {
-        console.error('Failed to refresh skills cache:', error);
+        this.logger.error('Failed to refresh skills cache', {}, error as Error);
       });
       return this.skillsCache;
     }
@@ -115,7 +118,7 @@ export class SkillManagerService {
         const skill = JSON.parse(content) as SkillDefinition;
         skills.push(skill);
       } catch (error) {
-        console.error(`Failed to load skill ${name}:`, error);
+        this.logger.error('Failed to load skill', { skillName: name }, error as Error);
       }
     }
     this.skillsCache = skills;
@@ -170,7 +173,7 @@ export class SkillManagerService {
     try {
       await fs.unlink(filePath);
     } catch (error) {
-      console.error(`Failed to delete skill file:`, error);
+      this.logger.error('Failed to delete skill file', { skillName: name, filePath }, error as Error);
       throw new Error(`Failed to delete skill file for ${name}`);
     }
 

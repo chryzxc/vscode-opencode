@@ -144,7 +144,7 @@ import type { ConfigFile } from "./ConfigFilesProvider";
 import { ConfigFilesProvider } from "./ConfigFilesProvider";
 import { PlanViewProvider } from "./PlanViewProvider";
 
-const log = createLogger("ChatViewProvider");
+const log = createLogger(LoggingCategories.CHAT_VIEW);
 
 // All types (QueuedPrompt, PromptDispatchMode, SessionSettings, ChatModelOption,
 // ChatSlashCommand, PersistedCompactionViewState, CompactionBaselineStats,
@@ -807,7 +807,7 @@ export class ChatViewProvider
 
       // DEBUG: Log messages before sending to webview
       const planMessages = messages.filter((m: any) => m?.plan);
-      console.log('🔍 [ChatViewProvider] Sending messages to webview:', {
+      log.debug('Sending messages to webview', {
         totalMessages: messages.length,
         planMessagesCount: planMessages.length,
         samplePlanMessage: planMessages[0] ? {
@@ -4323,7 +4323,7 @@ export class ChatViewProvider
       structured.interactiveEvents.length > 0;
 
     // DEBUG: Check structured object immediately after extraction
-    console.log('🔍 [ChatViewProvider] Structured object after extraction:', {
+    log.debug('Structured object after extraction', {
       responseType: structured.responseType,
       hasPlan: 'plan' in structured,
       planKeys: structured.plan ? Object.keys(structured.plan) : [],
@@ -4343,7 +4343,7 @@ export class ChatViewProvider
     };
 
     // DEBUG: Log immediately after creating next object
-    console.log('🔍 [applyStructuredOutputToMessage] next object created:', {
+    log.debug('applyStructuredOutputToMessage: next object created', {
       messageId: next.id,
       hasStructuredOutput: 'structuredOutput' in next,
       structuredOutputResponseType: next.structuredOutput?.responseType,
@@ -4569,7 +4569,7 @@ export class ChatViewProvider
       const planFile = structuredPlanCandidates[0];
 
       // DEBUG: Log plan file extraction
-      console.log('🔍 [ChatViewProvider] Plan file extraction:', {
+      log.debug('Plan file extraction', {
         hasStructuredPlan: !!structured.plan,
         structuredPlanKeys: structured.plan ? Object.keys(structured.plan) : [],
         structuredPlanFile: structured.plan?.file,
@@ -4601,7 +4601,7 @@ export class ChatViewProvider
         };
 
         // DEBUG: Log the final plan object being set
-        console.log('🔍 [ChatViewProvider] Plan object set on next:', {
+        log.debug('Plan object set on next', {
           hasPlan: !!next.plan,
           planFile: next.plan?.file,
           planKeys: next.plan ? Object.keys(next.plan) : [],
@@ -4611,16 +4611,16 @@ export class ChatViewProvider
         // DEBUG: Try to serialize the entire next object to check for circular references
         try {
           const serialized = JSON.stringify(next);
-          console.log('🔍 [ChatViewProvider] Message serialization successful:', {
+          log.debug('Message serialization successful', {
             serializedLength: serialized.length,
             hasPlanInSerialized: '"plan"' in serialized,
             planSubstring: serialized.includes('"file"') ? serialized.substring(serialized.indexOf('"plan"'), serialized.indexOf('"plan"') + 200) : 'NOT FOUND'
           });
         } catch (e) {
-          console.log('🔍 [ChatViewProvider] Message serialization FAILED:', e);
+          log.debug('Message serialization FAILED', { error: e });
         }
       } else {
-        console.log('🔍 [ChatViewProvider] Plan NOT set - condition failed:', {
+        log.debug('Plan NOT set - condition failed', {
           hasLongPlanContent,
           planFile,
           planFileUndefined: planFile === undefined,
@@ -4797,8 +4797,8 @@ export class ChatViewProvider
         await this.handleGetSessions();
       }
 
-      console.log(
-        `[ChatViewProvider] Session ${session.id}: ${existingMessages.length} existing messages. isNew: ${isNewSession}`,
+      log.debug(
+        `Session ${session.id}: ${existingMessages.length} existing messages. isNew: ${isNewSession}`,
       );
 
       // Prepare message parts
@@ -4872,7 +4872,7 @@ export class ChatViewProvider
                 },
               });
             } catch (e) {
-              console.error(`Failed to read file ${filePath}:`, e);
+              log.error(`Failed to read file ${filePath}`, { filePath }, e as Error);
             }
           }
         }
@@ -4953,7 +4953,7 @@ export class ChatViewProvider
         );
       }
 
-      console.log(`[ChatViewProvider] Response received in ${duration}s`, {
+      log.debug(`Response received in ${duration}s`, {
         hasData: Boolean(response.data),
         hasError: Boolean(response.error),
         status: response.response?.status,
@@ -5045,16 +5045,16 @@ export class ChatViewProvider
           errorMessage.toLowerCase().includes("not found") &&
           errorMessage.toLowerCase().includes("session")
         ) {
-          console.warn(
-            `[ChatViewProvider] Session ${session.id} not found on server. Re-creating...`,
+          log.warn(
+            `Session ${session.id} not found on server. Re-creating...`,
           );
           // Re-create the session on the server
           try {
             const newSession = await this.sessionService.createNewSession(
               session.title,
             );
-            console.log(
-              `[ChatViewProvider] Re-created session with new ID: ${newSession.id}`,
+            log.info(
+              `Re-created session with new ID: ${newSession.id}`,
             );
 
             // Migrate local messages from old ID to new ID
@@ -5100,9 +5100,10 @@ export class ChatViewProvider
               structuredFallbackReason,
             );
           } catch (recreateError) {
-            console.error(
-              "[ChatViewProvider] Failed to re-create session:",
-              recreateError,
+            log.error(
+              "Failed to re-create session",
+              {},
+              recreateError as Error,
             );
           }
         }
@@ -5357,7 +5358,7 @@ export class ChatViewProvider
         };
 
         // DEBUG: Log right after creating debugMessage
-        console.log('🔍 [ChatViewProvider] debugMessage created:', {
+        log.debug('debugMessage created', {
           hasPlan: 'plan' in debugMessage,
           planFile: debugMessage.plan?.file,
           planKeys: debugMessage.plan ? Object.keys(debugMessage.plan) : [],
@@ -5394,7 +5395,7 @@ export class ChatViewProvider
         }
 
         // DEBUG: Log message right before sending to webview
-        console.log('🔍 [ChatViewProvider] SENDING message to webview:', {
+        log.debug('SENDING message to webview', {
           hasPlan: 'plan' in debugMessage,
           planKeys: debugMessage.plan ? Object.keys(debugMessage.plan) : [],
           planFile: debugMessage.plan?.file,
@@ -5407,7 +5408,7 @@ export class ChatViewProvider
         // Try to serialize to check for circular references
         try {
           const serialized = JSON.stringify(debugMessage);
-          console.log('🔍 [ChatViewProvider] Serialization check:', {
+          log.debug('Serialization check', {
             success: true,
             length: serialized.length,
             hasPlanInSerialized: serialized.includes('"plan"'),
@@ -5415,7 +5416,7 @@ export class ChatViewProvider
             planSubstring: serialized.includes('"plan"') ? serialized.substring(serialized.indexOf('"plan"'), Math.min(serialized.indexOf('"plan"') + 300, serialized.length)) : 'NOT FOUND'
           });
         } catch (e) {
-          console.log('🔍 [ChatViewProvider] Serialization FAILED:', e);
+          log.debug('Serialization FAILED', { error: e });
         }
 
         this.view?.webview.postMessage({
@@ -5525,12 +5526,6 @@ export class ChatViewProvider
         }
       }
       vscode.window.showErrorMessage(`Failed to send message: ${errorMessage}`);
-      console.error("Send message error:", error);
-      console.error("Send message error details:", {
-        sessionId: drainSessionId,
-        errorMessage,
-        errorMessages: this.collectNormalizedErrorMessages(error),
-      });
       this.logger.error("Send message exception", {
         sessionId: drainSessionId,
         errorMessage,
@@ -5591,9 +5586,9 @@ export class ChatViewProvider
       const currentSession = await this.sessionService.getCurrentSession();
       return this.firstNonEmptyString(currentSession?.id);
     } catch (error) {
-      console.warn(
-        "[ChatViewProvider] Failed to resolve stop session from SessionService:",
-        error,
+      log.warn(
+        "Failed to resolve stop session from SessionService",
+        { error },
       );
       return undefined;
     }
@@ -5630,7 +5625,7 @@ export class ChatViewProvider
         query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
       });
     } catch (error) {
-      console.error("Failed to stop request:", error);
+      log.error("Failed to stop request", {}, error as Error);
     } finally {
       if (resolvedSessionId) {
         this.processingSessionIds.delete(resolvedSessionId);
@@ -6126,7 +6121,7 @@ export class ChatViewProvider
           size: data.byteLength,
         });
       } catch (error) {
-        console.error(`Failed to read image ${uri.fsPath}:`, error);
+        log.error(`Failed to read image ${uri.fsPath}`, { uri: uri.fsPath }, error as Error);
       }
     }
 
@@ -6479,7 +6474,7 @@ export class ChatViewProvider
   private async syncCLIAgents(): Promise<void> {
     if (!this.selectedAgent) {
       this.selectedAgent = "build";
-      console.log("[ChatViewProvider] No agent set, defaulting to 'build'");
+      log.info("No agent set, defaulting to 'build'");
     }
   }
 
@@ -6536,9 +6531,9 @@ export class ChatViewProvider
           ].join("\n");
           allDiffs += (allDiffs ? "\n" : "") + pseudoDiff;
         } catch (e: any) {
-          console.warn(
-            `[ChatViewProvider] Failed to read untracked file ${String(file)}:`,
-            e,
+          log.warn(
+            `Failed to read untracked file ${String(file)}: ${e instanceof Error ? e.message : String(e)}`,
+            { file: String(file) },
           );
         }
       }
@@ -6623,7 +6618,7 @@ export class ChatViewProvider
       }
       return undefined;
     } catch (error) {
-      console.error("[ChatViewProvider] getDiffStats error:", error);
+      log.error("getDiffStats error", {}, error as Error);
       return undefined;
     }
   }
@@ -6677,7 +6672,7 @@ export class ChatViewProvider
           ].join("\n");
         }
       } catch (e) {
-        console.warn("[ChatViewProvider] git diff failed:", e);
+        log.warn(`git diff failed: ${e instanceof Error ? e.message : String(e)}`, {});
       }
 
       if (diffOutput) {
@@ -6889,7 +6884,7 @@ export class ChatViewProvider
         data: budgetInfo,
       });
     } catch (error) {
-      console.error("[ChatViewProvider] Failed to send budget info:", error);
+      log.error("Failed to send budget info", {}, error as Error);
     }
   }
 
@@ -6961,11 +6956,12 @@ export class ChatViewProvider
         type: "injectThemeCss",
         css: combinedCss,
       });
-      console.log("[ChatViewProvider] Injected theme CSS into webview");
+      log.debug("Injected theme CSS into webview");
     } catch (error) {
-      console.error(
-        "[ChatViewProvider] Failed to send theme data to webview:",
-        error,
+      log.error(
+        "Failed to send theme data to webview",
+        {},
+        error as Error,
       );
     }
   }

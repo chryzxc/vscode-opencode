@@ -36,8 +36,9 @@ import { ConfigFilesProvider, type ConfigFile } from "./providers/ConfigFilesPro
 import { SkillManagementService } from "./services/SkillManagementService";
 import { SkillsPanelProvider } from "./providers/SkillsPanelProvider";
 import { createLogger, logger } from "./utils/Logger";
+import { LoggingCategories } from "./utils/LoggingSchema";
 
-const log = createLogger("Extension");
+const log = createLogger(LoggingCategories.EXTENSION);
 //  * Global service instances.
 //  *
 //  * These are module-level variables to allow command handlers to access services.
@@ -477,7 +478,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const { exec } = require('child_process');
         exec('taskkill //F //IM opencode.exe', (error: any) => {
           if (error && !error.message.includes('not found')) {
-            console.error('Failed to kill server:', error);
+            log.error('Failed to kill server', {}, error);
           }
           // Server will auto-restart on next command
           vscode.window.showInformationMessage('OpenCode server will restart on next message');

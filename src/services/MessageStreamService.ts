@@ -699,7 +699,7 @@ export class MessageStreamService {
 
     // Start listening if this is the first subscriber
     if (this.callbacks.size === 1) {
-      this.startListening().catch(console.error);
+      this.startListening().catch((error) => this.logger.error("Failed to start listening", {}, error as Error));
     }
 
     // Return unsubscribe function

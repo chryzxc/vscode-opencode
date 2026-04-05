@@ -4,6 +4,8 @@ import * as path from "path";
 import * as os from "os";
 import * as https from "https";
 import { GeminiTokenUsageTracker } from "./GeminiTokenUsageTracker";
+import { createLogger } from "../utils/Logger";
+import { LoggingCategories } from "../utils/LoggingSchema";
 import type {
   QuotaData,
   QuotaItem,
@@ -225,6 +227,7 @@ export class QuotaService extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private isDisposed = false;
   private _cachedData: QuotaData | null = null;
+  private logger = createLogger(LoggingCategories.EXTENSION);
 
   constructor() {
     super();
@@ -408,7 +411,7 @@ export class QuotaService extends EventEmitter {
         }
       } catch (refreshError) {
         // If refresh fails, continue with expired token (will fail with 401)
-        console.error('OpenAI token refresh failed:', refreshError);
+        this.logger.error('OpenAI token refresh failed', {}, refreshError as Error);
       }
     }
 

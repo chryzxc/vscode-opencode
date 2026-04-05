@@ -25,6 +25,8 @@ import { EventEmitter } from "events";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { createLogger } from "../utils/Logger";
+import { LoggingCategories } from "../utils/LoggingSchema";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -130,7 +132,8 @@ function writeStorage(snapshot: DailyUsageSnapshot): void {
     ensureStorageDir();
     fs.writeFileSync(STORAGE_PATH, JSON.stringify(snapshot, null, 2), "utf8");
   } catch (error) {
-    console.error("[GeminiTokenUsageTracker] Failed to write storage:", error);
+    const logger = createLogger(LoggingCategories.EXTENSION);
+    logger.error("Failed to write storage", { snapshot }, error as Error);
   }
 }
 
@@ -145,6 +148,7 @@ export class GeminiTokenUsageTracker extends EventEmitter {
   private currentUsage: Record<string, ModelTokenUsage> = {};
   private currentDate: string;
   private isDisposed = false;
+  private logger = createLogger(LoggingCategories.EXTENSION);
 
   constructor() {
     super();

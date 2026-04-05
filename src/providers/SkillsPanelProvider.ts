@@ -99,7 +99,7 @@ export class SkillsPanelProvider {
           this.logger.warn('Unknown command from SkillsPanel', { command: message.command });
       }
     } catch (error) {
-      console.error('Error handling message:', error);
+      this.logger.error('Error handling message from SkillsPanel', { command: message.command }, error as Error);
       this._showInfo(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }

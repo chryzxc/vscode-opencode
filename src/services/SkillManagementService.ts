@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
+import { createLogger } from '../utils/Logger';
+import { LoggingCategories } from '../utils/LoggingSchema';
 
 interface SkillInfo {
   name: string;
@@ -28,6 +30,7 @@ export class SkillManagementService {
   private skills: Map<string, SkillInfo> = new Map();
   private config: SkillPermissionConfig = {};
   private _onDidChangeSkills = new vscode.EventEmitter<Map<string, SkillInfo>>();
+  private logger = createLogger(LoggingCategories.UI_INTERACTION);
   readonly onDidChangeSkills = this._onDidChangeSkills.event;
 
   constructor(private context: vscode.ExtensionContext) {
@@ -44,7 +47,7 @@ export class SkillManagementService {
       const content = await fs.readFile(this.configPath, 'utf-8');
       this.config = JSON.parse(content);
     } catch (error) {
-      console.error('Failed to load opencode.json:', error);
+      this.logger.error('Failed to load opencode.json', { configPath: this.configPath }, error as Error);
       this.config = {};
     }
   }
@@ -54,7 +57,7 @@ export class SkillManagementService {
       await fs.writeFile(this.configPath, JSON.stringify(this.config, null, 2));
       await this.loadConfig(); // Reload to verify
     } catch (error) {
-      console.error('Failed to save opencode.json:', error);
+      this.logger.error('Failed to save opencode.json', { configPath: this.configPath }, error as Error);
       throw error;
     }
   }

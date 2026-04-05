@@ -12,6 +12,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { createLogger } from '../utils/Logger';
+import { LoggingCategories } from '../utils/LoggingSchema';
 
 export interface SubscriptionPlan {
   id: string;
@@ -94,7 +96,8 @@ function writeJsonFile<T>(filePath: string, data: T): void {
     }
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
   } catch (error) {
-    console.error(`Failed to write ${filePath}:`, error);
+    const logger = createLogger(LoggingCategories.EXTENSION);
+    logger.error('Failed to write file', { filePath }, error as Error);
   }
 }
 
@@ -118,6 +121,7 @@ export class RequestBudgeter {
   private config: BudgetConfig;
   private usage: Record<string, number>; // Key: date, Value: request count
   private baselines: Record<string, number>; // Key: date, Value: baseline totalUsed
+  private logger = createLogger(LoggingCategories.EXTENSION);
 
   constructor(config?: Partial<BudgetConfig>) {
     this.config = {
