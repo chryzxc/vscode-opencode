@@ -22,7 +22,7 @@ export class CompactionManager {
     private logger: ReturnType<typeof import("../../utils/Logger").createLogger>,
     private asRecord: (value: unknown) => Record<string, unknown> | undefined,
     private firstNonEmptyString: (...values: unknown[]) => string | undefined,
-    private processHistoryMessages: (messages: any[], sessionId: string) => any[],
+    private processHistoryMessages: (messages: any[], sessionId: string) => Promise<any[]>,
   ) {
     // postMessage callback will be set by shell
     this.postMessage = () => { };
@@ -211,7 +211,7 @@ export class CompactionManager {
     try {
       const rawMessages = await sessionService.getMessages(sessionId);
       const messages = Array.isArray(rawMessages)
-        ? this.processHistoryMessages(rawMessages, sessionId)
+        ? await this.processHistoryMessages(rawMessages, sessionId)
         : [];
 
       const state = await this.loadPersistedCompactionViewState(sessionId);
@@ -411,7 +411,7 @@ export class CompactionManager {
       }
 
       const baselineStats = this.normalizeCompactionBaselineStats(
-        response.data.baselineStats,
+        (response.data as Record<string, unknown>)?.baselineStats,
       );
 
       const state: PersistedCompactionViewState = {

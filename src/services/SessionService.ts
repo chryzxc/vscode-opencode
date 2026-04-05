@@ -1079,7 +1079,7 @@ export class SessionService {
         em?.message ||
         (Array.isArray(em?.errors) ? em.errors[0]?.message : undefined) ||
         "Unknown error";
-      log.endFeatureFlow(flow, 'failed', { error: msg });
+      log.endFeatureFlow(flow, { status: 'failed', error: msg });
       throw new Error(`Failed to create session: ${msg}`);
     }
 
@@ -1099,7 +1099,8 @@ export class SessionService {
     });
 
     this.persistState();
-    log.endFeatureFlow(flow, 'completed', {
+    log.endFeatureFlow(flow, {
+      status: 'completed',
       sessionId: session.id,
       title: session.title,
       wasNew: !exists,
@@ -1306,7 +1307,8 @@ export class SessionService {
         title: response.data.title,
         source: 'server',
       });
-      log.endFeatureFlow(flow, 'completed', {
+      log.endFeatureFlow(flow, {
+        status: 'completed',
         sessionId,
         title: response.data.title,
         source: 'server',
@@ -1316,7 +1318,7 @@ export class SessionService {
       log.featureStep(flow, 'server_fetch_failed', { error: String(error) });
       const localSession = this.sessionHistory.find((s) => s.id === sessionId);
       if (!localSession) {
-        log.endFeatureFlow(flow, 'failed', { error: 'Session not found' });
+        log.endFeatureFlow(flow, { status: 'failed', error: 'Session not found' });
         throw error;
       }
 
@@ -1327,7 +1329,8 @@ export class SessionService {
         title: localSession.title,
         source: 'local',
       });
-      log.endFeatureFlow(flow, 'completed', {
+      log.endFeatureFlow(flow, {
+        status: 'completed',
         sessionId,
         title: localSession.title,
         source: 'local_fallback',
@@ -1461,7 +1464,7 @@ export class SessionService {
       return updatedSession;
     } catch (error) {
       // If server update fails, still update local state (optimistic update)
-      log.warn(`Server rename failed for session ${sessionId}, updating local state only:`, error);
+      log.warn(`Server rename failed for session ${sessionId}, updating local state only:`, { error: String(error) });
 
       const localSession = this.sessionHistory.find((s) => s.id === sessionId);
       if (localSession) {

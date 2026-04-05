@@ -153,6 +153,7 @@ test('plan property is defined', () => {
   assert.match(schemaSource, /plan:[\s\S]*?file:[\s\S]*?type:\s*"string"/, 'plan should have file property');
   assert.match(schemaSource, /plan:[\s\S]*?content:[\s\S]*?type:\s*"string"/, 'plan should have content property');
   assert.match(schemaSource, /plan:[\s\S]*?title:[\s\S]*?type:\s*"string"/, 'plan should have title property');
+  assert.match(schemaSource, /plan:[\s\S]*?intro:[\s\S]*?type:\s*"string"/, 'plan should have intro property');
   assert.match(schemaSource, /plan:[\s\S]*?summary:[\s\S]*?type:\s*"string"/, 'plan should have summary property');
 });
 

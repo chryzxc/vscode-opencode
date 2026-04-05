@@ -332,7 +332,7 @@ export class ChatViewProvider
       cancelled: 2,
     };
 
-    interface StoredTodoItem { id: string; text: string; status: string; [key: string]: unknown }
+    interface StoredTodoItem { id: string; text: string; status: string;[key: string]: unknown }
 
     const byId = new Map<string, StoredTodoItem>();
     for (const item of existing.items) {
@@ -344,9 +344,10 @@ export class ChatViewProvider
 
     for (const inc of incoming) {
       if (!inc || typeof inc !== "object") continue;
-      const id = typeof inc.id === "string" ? inc.id : undefined;
-      const text = typeof inc.text === "string" ? inc.text : undefined;
-      const status = typeof inc.status === "string" ? inc.status : undefined;
+      const incRec = inc as Record<string, unknown>;
+      const id = typeof incRec.id === "string" ? incRec.id : undefined;
+      const text = typeof incRec.text === "string" ? incRec.text : undefined;
+      const status = typeof incRec.status === "string" ? incRec.status : undefined;
       if (!id || !text || !status) continue;
 
       const existingItem = byId.get(id);
@@ -395,7 +396,7 @@ export class ChatViewProvider
       const updatedSession = await this.sessionService.switchSession(sessionId);
       this.logger.info(`Updated session ${sessionId} title to: ${title}`);
     } catch (error) {
-      this.logger.warn(`Failed to update session title for ${sessionId}:`, error);
+      this.logger.warn(`Failed to update session title for ${sessionId}:`, { error: String(error) });
     }
   }
 
@@ -968,9 +969,8 @@ export class ChatViewProvider
       // Remove from processing state regardless of success or error
       this.processingSessionIds.delete(sessionId);
       this.sendProcessingSessionsUpdate();
-      if (!flow.result) {
-        log.endFeatureFlow(flow, { status: 'completed', sessionId });
-      }
+      // always finalize flow (was previously guarded by !flow.result)
+      log.endFeatureFlow(flow, { status: 'completed', sessionId });
     }
   }
 
@@ -1043,90 +1043,162 @@ export class ChatViewProvider
    * Fetches available skills and converts them to slash commands
    */
   private async handleGetCommands(): Promise<void> {
-    this.logger.info('[handleGetCommands] Starting to fetch skills');
+    this.logger.info('[handleGetCommands] Starting to fetch skills from OpenCode server');
 
     try {
-      // CRITICAL: Ensure skillManager is initialized before listing skills
-      // The initialize() call in the constructor is fire-and-forget, so we need to ensure it completes
-      try {
-        await this.skillManager.initialize();
-        this.logger.info('[handleGetCommands] skillManager initialization completed');
-      } catch (initError) {
-        this.logger.warn('[handleGetCommands] skillManager initialization failed (may have already initialized)', {
-          error: initError instanceof Error ? initError.message : String(initError)
-        });
+      // Ensure server is running
+      this.logger.info('[handleGetCommands] Ensuring server is running...');
+      const client = await this.serverManager.ensureRunning();
+      if (!client) {
+        this.logger.error('[handleGetCommands] Failed to get client even after ensureRunning()');
+        this.sendCommandsToWebview([]);
+        return;
       }
 
-      this.logger.info('[handleGetCommands] Calling skillManager.listSkills()');
-      const skills = await this.skillManager.listSkills();
+      this.logger.info('[handleGetCommands] Server is running, client available');
 
-      this.logger.info('[handleGetCommands] Fetched skills', {
-        count: skills.length,
-        skillNames: skills.map(s => s.name)
+      // Get the current model and provider
+      let currentModel = this.selectedModel?.modelID
+        ? { provider: this.selectedModel.providerID, model: this.selectedModel.modelID }
+        : undefined;
+      if (!currentModel) {
+        this.logger.warn('[handleGetCommands] No current model selected, using defaults');
+        currentModel = { provider: 'anthropic', model: 'claude-sonnet-4-6' };
+      }
+
+      this.logger.info('[handleGetCommands] Fetching tools from OpenCode server', {
+        provider: currentModel.provider,
+        model: currentModel.model
       });
 
-      const commands = skills.map((skill) => ({
-        name: skill.name,
-        description: skill.description,
-        agent: skill.agent,
-        model: skill.model,
-        template: skill.template,
-        subtask: skill.subtask,
-      }));
-
-      this.logger.info('[handleGetCommands] Mapped skills to commands', {
-        skillsCount: skills.length,
-        commandsCount: commands.length,
-        skillsPreview: skills.slice(0, 3).map(s => ({ name: s.name, hasDesc: !!s.description })),
-        commandsPreview: commands.slice(0, 3).map(c => ({ name: c.name, hasDesc: !!c.description }))
+      // Use the OpenCode SDK client to get the list of available tools
+      const toolsResponse = await client.tool.list({
+        query: {
+          provider: currentModel.provider,
+          model: currentModel.model
+        }
       });
+
+      if (!toolsResponse.data) {
+        this.logger.warn('[handleGetCommands] No tools data returned from server');
+        this.sendCommandsToWebview([]);
+        return;
+      }
+
+      const tools = toolsResponse.data;
+      this.logger.info('[handleGetCommands] Fetched tools from server', {
+        toolCount: tools.length,
+        toolIds: tools.map(t => t.id),
+        allTools: JSON.stringify(tools.map(t => ({
+          id: t.id,
+          hasDescription: !!t.description,
+          descLength: t.description?.length || 0
+        })))
+      });
+
+      // Find the skill tool
+      const skillTool = tools.find(tool => tool.id === 'skill');
+
+      this.logger.info('[handleGetCommands] Looking for skill tool', {
+        found: !!skillTool,
+        hasDescription: !!skillTool?.description,
+        descPreview: skillTool?.description?.substring(0, 200)
+      });
+
+      const commands: Array<{ name: string; description: string }> = [];
+
+      if (skillTool && skillTool.description) {
+        // Parse the available skills from the skill tool's description
+        // Format: ## Available Skills\n- **skill-name**: description
+        // Show ALL skills in slash commands (even disabled ones) for manual use
+        // The config controls which skills OpenCode auto-loads, not what's visible
+
+        // Normalize line endings to handle \r\n (Windows) and \r (old Mac)
+        const normalizedDescription = skillTool.description.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const lines = normalizedDescription.split('\n');
+        this.logger.info('[handleGetCommands] Splitting description into lines', {
+          lineCount: lines.length,
+          firstLines: lines.slice(0, 5),
+          fullDescription: skillTool.description.substring(0, 500)
+        });
+
+        let inAvailableSection = false;
+        let currentSkill: { name: string; description: string } | null = null;
+
+        for (const line of lines) {
+          if (line.includes('## Available Skills') || line.includes('Available Skills')) {
+            inAvailableSection = true;
+            continue;
+          }
+
+          if (inAvailableSection) {
+            // Match format: - **skill-name**: description
+            const match = line.match(/^-\s*\*\*([^*]+)\*\*:\s*(.+)$/);
+            if (match) {
+              // Save previous skill if any
+              if (currentSkill) {
+                commands.push(currentSkill);
+              }
+              // Start new skill
+              currentSkill = {
+                name: match[1].trim(),
+                description: match[2].trim()
+              };
+            } else if (line.startsWith('##') || line.startsWith('---')) {
+              // End of skills section - save last skill
+              if (currentSkill) {
+                commands.push(currentSkill);
+                currentSkill = null; // Clear to prevent double-push
+              }
+              break;
+            } else if (line.trim().startsWith('- ') && currentSkill) {
+              // Continuation of description - remove the '- ' prefix
+              currentSkill.description += '\n' + line.trim().substring(2);
+            } else if (line.trim().length > 0 && currentSkill) {
+              // Continuation of description (lines without '- ' prefix)
+              currentSkill.description += '\n' + line.trim();
+            }
+          }
+        }
+
+        // Don't forget to push the last skill if we didn't hit a break condition
+        if (currentSkill) {
+          commands.push(currentSkill);
+        }
+
+        this.logger.info('[handleGetCommands] Parsed ALL skills from skill tool', {
+          count: commands.length,
+          skills: commands.map(c => ({ name: c.name, descLength: c.description.length }))
+        });
+      } else {
+        this.logger.warn('[handleGetCommands] No skill tool found or no description');
+      }
+
+      // If no skills found, do NOT fall back to all tools
+      // This prevents showing system tools (edit, read, bash, etc.) as if they were skills
+      if (commands.length === 0) {
+        this.logger.warn('[handleGetCommands] No skills found, sending empty command list');
+      }
 
       this.logger.info('[handleGetCommands] Sending commands to webview', {
         commandCount: commands.length,
-        commands: commands.map(c => ({ name: c.name, desc: c.description }))
+        commands: commands.slice(0, 10).map(c => ({ name: c.name, desc: c.description }))
       });
 
-      // CRITICAL: Check if view is available before sending message
-      if (!this.view) {
-        this.logger.error('[handleGetCommands] Cannot send commands - webview is not available');
-        throw new Error('Webview not available');
-      }
-
-      if (!this.view.webview) {
-        this.logger.error('[handleGetCommands] Cannot send commands - webview.webview is not available');
-        throw new Error('Webview.webview not available');
-      }
-
-      const message = {
-        type: "commandsList",
-        commands: commands,
-      };
-
-      this.logger.info('[handleGetCommands] Preparing to post message', {
-        messageType: message.type,
-        commandsCount: message.commands.length,
-        commandsPreview: message.commands.slice(0, 3).map(c => c.name)
-      });
-
-      try {
-        const result = this.view.webview.postMessage(message);
-        this.logger.info('[handleGetCommands] postMessage returned', {
-          success: result,
-          result: String(result)
+      if (commands.length === 0) {
+        this.logger.warn('[handleGetCommands] No commands found - this might indicate:', {
+          reasons: [
+            'Server not started or not ready',
+            'No skills available in current config',
+            'Skills not discovered by server',
+            'Tool list API changed'
+          ],
+          suggestion: 'Check OpenCode server status and ensure skills are enabled in config'
         });
-
-        if (!result) {
-          this.logger.error('[handleGetCommands] postMessage returned false - webview may not be ready');
-        }
-      } catch (postError) {
-        this.logger.error('[handleGetCommands] postMessage threw an error', {
-          error: postError instanceof Error ? postError.message : String(postError),
-          stack: postError instanceof Error ? postError.stack : undefined
-        });
-        throw postError;
       }
 
-      this.logger.info('[handleGetCommands] Message posted to webview successfully');
+      // Send the commands to the webview
+      this.sendCommandsToWebview(commands);
     } catch (error) {
       this.logger.error('[handleGetCommands] Failed to load commands', {
         error: error instanceof Error ? error.message : String(error),
@@ -1134,14 +1206,52 @@ export class ChatViewProvider
       });
 
       // Still send empty commands array to frontend even on error
-      if (this.view?.webview) {
-        this.view.webview.postMessage({
-          type: "commandsList",
-          commands: [],
-        });
-      } else {
-        this.logger.error('[handleGetCommands] Cannot send error response - webview not available');
+      this.sendCommandsToWebview([]);
+    }
+  }
+
+  /**
+   * Send commands to the webview
+   * Centralized method for sending slash commands to the chat interface
+   */
+  private sendCommandsToWebview(commands: Array<{ name: string; description: string }>): void {
+    // CRITICAL: Check if view is available before sending message
+    if (!this.view) {
+      this.logger.error('[sendCommandsToWebview] Cannot send commands - webview is not available');
+      return;
+    }
+
+    if (!this.view.webview) {
+      this.logger.error('[sendCommandsToWebview] Cannot send commands - webview.webview is not available');
+      return;
+    }
+
+    const message = {
+      type: "commandsList",
+      commands: commands,
+    };
+
+    this.logger.info('[sendCommandsToWebview] Posting message to webview', {
+      messageType: message.type,
+      commandsCount: message.commands.length,
+      commandsPreview: message.commands.slice(0, 3).map(c => c.name)
+    });
+
+    try {
+      const result = this.view.webview.postMessage(message);
+      this.logger.info('[sendCommandsToWebview] postMessage returned', {
+        success: result,
+        result: String(result)
+      });
+
+      if (!result) {
+        this.logger.error('[sendCommandsToWebview] postMessage returned false - webview may not be ready');
       }
+    } catch (postError) {
+      this.logger.error('[sendCommandsToWebview] postMessage threw an error', {
+        error: postError instanceof Error ? postError.message : String(postError),
+        stack: postError instanceof Error ? postError.stack : undefined
+      });
     }
   }
 
@@ -1161,6 +1271,7 @@ export class ChatViewProvider
     file?: string;
     content?: string;
     title?: string;
+    intro?: string;
     summary?: string;
     files?: any[];
     fileCount?: number;
@@ -1326,16 +1437,12 @@ export class ChatViewProvider
     }
 
     if (this.awaitingInteractiveAnswer) {
-      // Allow the in-flight interactive wait turn to settle without surfacing
-      // expected transport timeouts as hard request failures.
-      this.interactiveResponseTransitionUntil = Date.now() + 15000;
-    }
-    // Keep existing contract: if a generation is still running, stop it before
-    // submitting interactive follow-up input.
-    if (this.processingSessionIds.has(sessionId)) {
-      await this.handleStopRequest(sessionId);
+      // Reduce error suppression window from 15s to 3s for better responsiveness
+      this.interactiveResponseTransitionUntil = Date.now() + 3000;
     }
 
+    // Don't force stop ongoing requests - let schedulePromptDispatch handle mode switching
+    // This uses the same intelligent "steer" mode as normal messages instead of blocking
     this.currentSessionId = sessionId;
     await this.schedulePromptDispatch("send-now", {
       sessionId,
@@ -1421,11 +1528,11 @@ export class ChatViewProvider
     sessionId: string,
     payload: unknown,
   ): Promise<void> {
-    return this.subagentPersistence.persistSubagentLiveState(sessionId, payload);
+    await this.subagentPersistence.persistSubagentLiveState(sessionId, payload as SubagentUpdatePayload);
   }
 
-  private buildSubagentPayloadFromMessage(message: any): any {
-    return this.subagentPersistence.buildSubagentPayloadFromMessage(message);
+  private buildSubagentPayloadFromMessage(message: any, sessionId?: string): any {
+    return this.subagentPersistence.buildSubagentPayloadFromMessage(message, sessionId ?? '');
   }
 
   /**
@@ -2485,7 +2592,7 @@ export class ChatViewProvider
             toMode: message.mode,
           });
 
-          this.logger.info( 'User toggled chat mode', {
+          this.logger.info('User toggled chat mode', {
             correlationId,
             fromMode: this.currentMode,
             toMode: message.mode,
@@ -2495,7 +2602,7 @@ export class ChatViewProvider
             await this.handleToggleMode(message.mode);
             this.logger.endFeatureFlow(correlationId, { success: true });
           } catch (error) {
-            this.logger.error( 'Failed to toggle mode', {
+            this.logger.error('Failed to toggle mode', {
               correlationId,
               error: (error as Error).message,
             });
@@ -4184,9 +4291,9 @@ export class ChatViewProvider
         }
       });
       reboundSummaries.forEach((entry) => {
-        const id = this.firstNonEmptyString(entry.id);
+        const id = this.firstNonEmptyString((entry as Record<string, unknown>).id);
         if (id) {
-          mergedById.set(id, entry);
+          mergedById.set(id, entry as Record<string, unknown>);
         }
       });
 
@@ -4270,6 +4377,32 @@ export class ChatViewProvider
       return "";
     }
     return rawText;
+  }
+
+  private hasNonTextActivityParts(message: any): boolean {
+    if (!message || typeof message !== "object" || !Array.isArray(message.parts)) {
+      return false;
+    }
+    return message.parts.some((part: any) => {
+      const rec = this.asRecord(part);
+      if (!rec) {
+        return false;
+      }
+      if (this.isRenderableTextPart(rec)) {
+        return false;
+      }
+      const partType = this.firstNonEmptyString(rec.type, rec.kind)?.toLowerCase();
+      if (partType === "tool") {
+        const toolName = this.firstNonEmptyString(rec.tool, rec.name)?.toLowerCase();
+        if (
+          toolName?.includes("structuredoutput") ||
+          toolName?.includes("structured_output")
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
   }
 
   private extractStructuredOutput(
@@ -4380,7 +4513,7 @@ export class ChatViewProvider
     }
 
     for (const candidate of candidates) {
-      const parsed = this.normalizeStructuredOutput(candidate.value, {
+      const parsed = this.normalizeStructuredOutput(candidate.value as string, {
         source: candidate.source,
         providerID,
         modelID,
@@ -4463,6 +4596,11 @@ export class ChatViewProvider
         return next;
       }
       if (role === "assistant" && !bodyText) {
+        // Keep partial stop/activity turns intact so activity/reasoning widgets can render.
+        // These turns may have no assistant text body but still contain useful non-text parts.
+        if (this.hasNonTextActivityParts(message)) {
+          return message;
+        }
         if (!allowSyntheticFallbackError) {
           return message;
         }
@@ -4610,10 +4748,10 @@ export class ChatViewProvider
       structured.interactiveEvents.length > 0
     ) {
       next.interactiveEvents = structured.interactiveEvents;
-      const questionPrompt = this.deriveQuestionPromptFromInteractivePayload(
-        structured.interactiveEvents,
-        structured.question,
-      );
+      const questionPrompt = this.deriveQuestionPromptFromInteractivePayload({
+        question: (structured.question as string) ?? '',
+        options: structured.interactiveEvents as any[],
+      });
       const currentBodyText = this.extractMessageBodyText(next).trim();
       const normalizeComparableText = (value: string): string =>
         value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
@@ -4719,31 +4857,31 @@ export class ChatViewProvider
     ) {
       const summaryMessage = this.firstNonEmptyString(
         structured.message,
+        structured.plan?.intro,
+        structured.plan?.summary,
       );
-      const safeMessage =
-        summaryMessage && summaryMessage.length <= 280
-          ? summaryMessage
-          : "Implementation plan is ready. Use View Plan to inspect details.";
-      next.content = safeMessage;
-      const parts = Array.isArray(next.parts) ? [...next.parts] : [];
-      const textIndex = parts.findIndex(
-        (part: any) =>
-          part &&
-          typeof part === "object" &&
-          (part.type === "text" ||
-            typeof part.text === "string" ||
-            typeof part.content === "string"),
-      );
-      if (textIndex >= 0) {
-        parts[textIndex] = {
-          ...parts[textIndex],
-          type: "text",
-          text: safeMessage,
-        };
-      } else {
-        parts.push({ type: "text", text: safeMessage });
+      if (summaryMessage) {
+        next.content = summaryMessage;
+        const parts = Array.isArray(next.parts) ? [...next.parts] : [];
+        const textIndex = parts.findIndex(
+          (part: any) =>
+            part &&
+            typeof part === "object" &&
+            (part.type === "text" ||
+              typeof part.text === "string" ||
+              typeof part.content === "string"),
+        );
+        if (textIndex >= 0) {
+          parts[textIndex] = {
+            ...parts[textIndex],
+            type: "text",
+            text: summaryMessage,
+          };
+        } else {
+          parts.push({ type: "text", text: summaryMessage });
+        }
+        next.parts = parts;
       }
-      next.parts = parts;
     }
 
     if (
@@ -4805,7 +4943,7 @@ export class ChatViewProvider
           const serialized = JSON.stringify(next);
           log.debug('Message serialization successful', {
             serializedLength: serialized.length,
-            hasPlanInSerialized: '"plan"' in serialized,
+            hasPlanInSerialized: serialized.includes('"plan"'),
             planSubstring: serialized.includes('"file"') ? serialized.substring(serialized.indexOf('"plan"'), serialized.indexOf('"plan"') + 200) : 'NOT FOUND'
           });
         } catch (e) {
@@ -5098,10 +5236,7 @@ export class ChatViewProvider
       const useStructuredOutput =
         !retryWithoutStructuredOutput &&
         this.shouldUseStructuredOutput(
-          (parts as Array<Record<string, unknown>>)
-            ? (parts as Array<Record<string, unknown>>)
-            : [],
-          agent || this.selectedAgent,
+          this.getStructuredOutputModelKey(this.selectedModel.providerID, this.selectedModel.modelID)
         );
       const promptBody: NonNullable<SessionPromptData["body"]> = {
         model: this.selectedModel,
@@ -5233,6 +5368,12 @@ export class ChatViewProvider
                 errorMessage,
               },
             );
+            // Provide user feedback about the retry
+            this.view?.webview.postMessage({
+              type: "info",
+              message: "Retrying interactive response...",
+              sessionId: session.id,
+            });
             return this.handleSendMessage(
               text,
               files,
@@ -5731,6 +5872,12 @@ export class ChatViewProvider
               errorMessage,
             },
           );
+          // Provide user feedback about the retry
+          this.view?.webview.postMessage({
+            type: "info",
+            message: "Retrying interactive response...",
+            sessionId: drainSessionId,
+          });
           return this.handleSendMessage(
             text,
             files,
@@ -6228,11 +6375,11 @@ export class ChatViewProvider
         let result;
 
         if (source === "url") {
-          result = await this.skillManager.installFromUrl(data, (progress) => {
+          result = await this.skillManager.installFromUrl(data as string, (progress) => {
             this.view?.webview.postMessage({ type: "installProgress", progress });
           });
         } else if (source === "file") {
-          result = await this.skillManager.installFromFile(data);
+          result = await this.skillManager.installFromFile(data as string);
         } else {
           result = { success: false, error: "Unknown installation source" };
         }
@@ -6247,15 +6394,15 @@ export class ChatViewProvider
 
       case "removeSkill": {
         const { name } = message;
-        await this.skillManager.deleteSkill(name);
+        await this.skillManager.deleteSkill(name as string);
         this.view?.webview.postMessage({ type: "skillRemoved", name });
         break;
       }
 
       case "editSkill": {
         const { name, updates } = message;
-        await this.skillManager.updateSkill(name, updates);
-        const skill = await this.skillManager.getSkill(name);
+        await this.skillManager.updateSkill(name as string, updates as any);
+        const skill = await this.skillManager.getSkill(name as string);
         this.view?.webview.postMessage({ type: "skillInstalled", skill });
         break;
       }
@@ -6274,7 +6421,7 @@ export class ChatViewProvider
       }
 
       default:
-        this.logger.warn("Unknown skill message type:", message.type);
+        this.logger.warn("Unknown skill message type:", { type: message.type });
     }
   }
 
@@ -6559,7 +6706,7 @@ export class ChatViewProvider
         })),
       });
     } catch (error) {
-      this.logger.error("Failed to load OpenCode config", error);
+      this.logger.error("Failed to load OpenCode config", undefined, error instanceof Error ? error : new Error(String(error)));
       this.view?.webview.postMessage({
         type: "opencodeConfigError",
         error: error instanceof Error ? error.message : "Failed to load configuration",
@@ -6596,7 +6743,7 @@ export class ChatViewProvider
         log.endFeatureFlow(flow, { result: 'failed', error: result.error });
       }
     } catch (error) {
-      this.logger.error("Failed to save OpenCode config", error);
+      this.logger.error("Failed to save OpenCode config", undefined, error instanceof Error ? error : new Error(String(error)));
       log.endFeatureFlow(flow, { result: 'failed', error: String(error) });
       this.view?.webview.postMessage({
         type: "opencodeConfigSaved",
@@ -6714,7 +6861,8 @@ export class ChatViewProvider
       // Pass directory parameter to LSP status endpoint so the server
       // can detect language servers for the current workspace
       const res = workspaceDir
-        ? await client.lsp.status({ directory: workspaceDir })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ? await client.lsp.status({ directory: workspaceDir } as any)
         : await client.lsp.status();
 
       const servers = Array.isArray(res.data) ? res.data : [];
@@ -7231,7 +7379,6 @@ export class ChatViewProvider
 
     // Clear any pending todo persistence timer
     if (this.todoPersistenceTimer) {
-      // @ts-ignore - clearTimeout is available globally in Node.js
       clearTimeout(this.todoPersistenceTimer);
       this.todoPersistenceTimer = null;
     }

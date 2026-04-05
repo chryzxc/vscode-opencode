@@ -82,6 +82,8 @@ export class LogQuery {
     const flows = new Map<string, {
       featureName: string;
       startTime: string;
+      endTime?: string;
+      duration?: number;
       steps: LogEntry[];
     }>();
 

@@ -177,14 +177,9 @@ test('validateStructuredOutput validates question payload properties', () => {
   assert.match(fnBody, /if \(!isNonEmptyString\(questionRecord\.question\)\)/, 'Should validate question text using isNonEmptyString');
   assert.match(fnBody, /question requires question text/, 'Should include question text error');
 
-  assert.match(fnBody, /const options = Array\.isArray\(questionRecord\.options\)\s*\?\s*questionRecord\.options\s*:\s*\[\]/, 'Should handle missing or invalid options');
-  assert.match(fnBody, /options\.filter\(\(option\) => {/, 'Should filter options to find valid ones');
-
-  assert.match(fnBody, /!option \|\| typeof option !== "object"/, 'Should check option is object');
-  assert.match(fnBody, /isNonEmptyString\(optionRecord\.label\)\s*\|\|\s*isNonEmptyString\(optionRecord\.value\)/, 'Should check option has label or value');
-
-  assert.match(fnBody, /if \(!allowCustomInput && validOptionCount < 2\)/, 'Should check for at least 2 valid options unless custom input is enabled');
-  assert.match(fnBody, /question interactive payload requires at least two options unless allowCustomInput is true/, 'Should include options count error');
+  assert.match(fnBody, /const validOptionCount = countValidChoiceOptions\(questionRecord\.options\);/, 'Should count valid options through shared helper');
+  assert.match(fnBody, /if \(validOptionCount < 2\)/, 'Should require at least two valid options');
+  assert.match(fnBody, /question interactive payload requires at least two options/, 'Should include options count error');
 });
 
 test('validateStructuredOutput validates subagents array', () => {

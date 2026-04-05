@@ -202,7 +202,7 @@
     "test": "node --test tests/**/*.test.mjs",
     "test:ts": "tsx node --test tests/**/*.test.ts",
     "test:webview-regression": "node --test tests/**/*.test.mjs",
-    "typecheck": "tsc --noEmit src/providers/ChatViewProvider.ts",
+    "typecheck": "tsc --noEmit",
     "lint": "npm run typecheck && eslint src --ext ts",
     "package": "npx @vscode/vsce package",
     "analyze-logs": "npx tsx scripts/analyze-logs.ts logs/opencode.log",

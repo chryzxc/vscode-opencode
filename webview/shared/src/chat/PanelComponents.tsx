@@ -2522,9 +2522,9 @@ export function InputWrapper() {
     });
 
     dispatch({ type: "SET_STREAMING", payload: null });
-    // Immediately show loading state for interactive submissions instead of waiting
-    // for the extension host round-trip to publish processing-session updates.
-    dispatch({ type: "SET_PROCESSING", payload: true });
+    // Don't show processing state immediately - let extension confirm when actually processing
+    // This prevents UI from showing "stuck" loading state when request is delayed
+    // dispatch({ type: "SET_PROCESSING", payload: true });
 
     vscode.postMessage({
       type: "batchInteractiveResponse",
@@ -2534,7 +2534,7 @@ export function InputWrapper() {
       agent: selectedAgent || null,
     });
 
-    // Reset state
+    // Reset state immediately after sending
     setPendingAnswers({});
     setCurrentInteractiveIndex(0);
     setIsCustomMode(false);

@@ -12,7 +12,7 @@ import type {
   InstallResult,
   ProgressUpdate,
   ValidationResult,
-} from '../../webview/shared/src/chat/lib/types';
+} from './skillTypes';
 
 export class SkillManagerService {
   private skillsDir: string;

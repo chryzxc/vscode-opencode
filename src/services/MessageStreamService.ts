@@ -82,6 +82,8 @@ export interface StreamEvent {
   type: string;
   /** Optional event-specific properties/metadata */
   properties?: Record<string, unknown>;
+  /** Allow additional runtime fields (e.g. source, directory) without casting */
+  [key: string]: unknown;
 }
 
 /**
@@ -299,8 +301,8 @@ export class MessageStreamService {
       const workspaceDirectory =
         vscode.workspace.workspaceFolders?.[0]?.uri.scheme === "file"
           ? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
-              .replace(/\\/g, "/")
-              .replace(/\/+$/, "")
+            .replace(/\\/g, "/")
+            .replace(/\/+$/, "")
           : undefined;
       if (workspaceDirectory) {
         this.logger.debug("Workspace directory for stream filtering", {
@@ -404,7 +406,7 @@ export class MessageStreamService {
 
       const streamTasks: Array<Promise<void>> = [
         this.consumeEventStream(
-          events.stream,
+          events!.stream,
           "/event",
           abortSignal,
           workspaceDirectory,

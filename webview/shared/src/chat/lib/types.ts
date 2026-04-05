@@ -440,6 +440,7 @@ export interface Message {
     files?: unknown[];
     content?: string;
     title?: string;
+    intro?: string;
     summary?: string;
     fileCount?: number;
   };

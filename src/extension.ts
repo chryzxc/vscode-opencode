@@ -25,6 +25,7 @@
  */
 
 import * as vscode from "vscode";
+import * as cp from "child_process";
 import { OpencodeServerManager } from "./services/OpencodeServerManager";
 import { SessionService } from "./services/SessionService";
 import { ChatViewProvider } from "./providers/ChatViewProvider";
@@ -147,7 +148,7 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     // Register skills panel provider
-    const skillsPanelProvider = new SkillsPanelProvider(context.extensionUri, skillManagementService);
+    const skillsPanelProvider = new SkillsPanelProvider(context.extensionUri, skillManagementService, serverManager);
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(
         "opencode.skillsPanel",
@@ -496,8 +497,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.commands.registerCommand("opencode.restartServer", async () => {
         // Kill existing server processes
-        const { exec } = require('child_process');
-        exec('taskkill //F //IM opencode.exe', (error: any) => {
+        cp.exec('taskkill //F //IM opencode.exe', (error: any) => {
           if (error && !error.message.includes('not found')) {
             log.error('Failed to kill server', {}, error);
           }

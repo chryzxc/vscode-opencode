@@ -158,7 +158,7 @@ export class OpencodeServerManager {
    *
    * @param context - VSCode extension context (used for storage if needed in future)
    */
-  constructor(private context: vscode.ExtensionContext) {}
+  constructor(private context: vscode.ExtensionContext) { }
 
   private getPersistedManagedPort(): number {
     const persistedPort = this.context.globalState.get<number>(
@@ -271,13 +271,14 @@ export class OpencodeServerManager {
     this.startupPromise = this.ensureRunningInternal(flow);
     try {
       const client = await this.startupPromise;
-      log.endFeatureFlow(flow, 'completed', {
+      log.endFeatureFlow(flow, {
+        status: 'completed',
         port: this.port,
-        status: this._status,
+        serverStatus: this._status,
       });
       return client;
     } catch (error) {
-      log.endFeatureFlow(flow, 'failed', { error: String(error) });
+      log.endFeatureFlow(flow, { status: 'failed', error: String(error) });
       throw error;
     } finally {
       this.startupPromise = null;

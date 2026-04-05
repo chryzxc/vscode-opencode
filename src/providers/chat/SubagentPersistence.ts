@@ -28,10 +28,11 @@ export class SubagentPersistence {
       sessionId: string,
     ) => any[],
     private resolveSubagentPayloadSessionId: (payload: {
+      summariesByParentMessageId?: Record<string, unknown>;
       sessionId?: string;
       childSessionId?: string;
     }) => string | undefined,
-  ) {}
+  ) { }
 
   /**
    * Get storage key for subagent snapshot
@@ -75,7 +76,7 @@ export class SubagentPersistence {
     ]);
     for (const parentMessageId of Array.from(parentMessageIds)) {
       const merged = this.mergeSubagentEntries(
-        existingSummaries[parentMessageId],
+        Array.isArray(existingSummaries[parentMessageId]) ? existingSummaries[parentMessageId] as any[] : [],
         Array.isArray(incomingSummaries[parentMessageId])
           ? (incomingSummaries[parentMessageId] as Array<Record<string, unknown>>)
           : [],
@@ -332,7 +333,7 @@ export class SubagentPersistence {
       }
 
       const mergedSubagents = this.mergeSubagentEntries(
-        message.subagents,
+        Array.isArray(message.subagents) ? message.subagents as any[] : [],
         incomingSubagents,
       );
       const nextMessage: Record<string, unknown> = {

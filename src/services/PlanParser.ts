@@ -251,7 +251,7 @@ export class PlanParser {
 
     // Extract Steps (Checklist)
     // First try strict checkbox format: - [ ] Task
-    const checkboxRegex = /^[-*+]\s*\[([ xX\/])\]\s*(.*)/gm;
+    const checkboxRegex = /^[-*+]\s*\[([ xX/])\]\s*(.*)/gm;
     let foundCheckboxes = false;
     while ((match = checkboxRegex.exec(markdown)) !== null) {
       foundCheckboxes = true;
@@ -270,7 +270,7 @@ export class PlanParser {
       const tasksMatch = markdown.match(tasksSectionRegex);
 
       const textToSearch = tasksMatch ? tasksMatch[2] : markdown;
-      const listRegex = /^(?:[-*+]|\d+\.)\s+(?!\[[ xX\/]\])(.*)/gm;
+      const listRegex = /^(?:[-*+]|\d+\.)\s+(?!\[([ xX/])\])(.*)/gm;
 
       while ((match = listRegex.exec(textToSearch)) !== null) {
         // Ignore lines that look like file operations (handled separately)

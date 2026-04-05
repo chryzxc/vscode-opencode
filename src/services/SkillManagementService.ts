@@ -187,6 +187,48 @@ export class SkillManagementService {
     return Array.from(this.skills.values()).sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  /**
+   * Get all skills from both file system and server
+   * Use this for unified skill listing
+   */
+  async getAllSkills(client?: any): Promise<SkillInfo[]> {
+    const fileSystemSkills = this.getSkills();
+
+    // Try to get server skills if client is provided
+    let serverSkills: SkillInfo[] = [];
+    if (client) {
+      try {
+        const rawServerSkills = await this.fetchServerSkills(client);
+        serverSkills = rawServerSkills.map(s => ({
+          name: s.name,
+          description: s.description,
+          enabled: s.enabled,
+          path: '',
+          source: s.source as 'project' | 'global',
+        }));
+      } catch (error) {
+        this.logger.error('Failed to fetch server skills, using only file system skills', { error });
+      }
+    }
+
+    // Merge: server skills take precedence (they're what the agent actually uses)
+    const allSkills = new Map<string, SkillInfo>();
+
+    // Add server skills first
+    for (const skill of serverSkills) {
+      allSkills.set(skill.name, skill);
+    }
+
+    // Add file system skills (only if not already added from server)
+    for (const skill of fileSystemSkills) {
+      if (!allSkills.has(skill.name)) {
+        allSkills.set(skill.name, skill);
+      }
+    }
+
+    return Array.from(allSkills.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   getEnabledSkills(): SkillInfo[] {
     return this.getSkills().filter(s => s.enabled);
   }
@@ -357,6 +399,71 @@ export class SkillManagementService {
 
   async refreshSkills(): Promise<void> {
     await this.discoverSkills();
+  }
+
+  /**
+   * Fetch skills from the OpenCode server's skill tool
+   * Returns skills available to the agent (different from file system skills)
+   */
+  async fetchServerSkills(client?: any): Promise<Array<{ name: string; description: string; enabled: boolean; source: string }>> {
+    try {
+      if (!client) {
+        return [];
+      }
+
+      // Get tools from the server
+      const toolsResponse = await client.tool.list({
+        query: {
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-6'
+        }
+      });
+
+      if (!toolsResponse.data) {
+        return [];
+      }
+
+      const tools = toolsResponse.data;
+      const skillTool = tools.find(tool => tool.id === 'skill');
+
+      if (!skillTool || !skillTool.description) {
+        return [];
+      }
+
+      // Parse the available skills from the skill tool's description
+      const lines = skillTool.description.split('\n');
+      const serverSkills: Array<{ name: string; description: string; enabled: boolean; source: string }> = [];
+      let inAvailableSection = false;
+
+      for (const line of lines) {
+        if (line.includes('## Available Skills') || line.includes('Available Skills')) {
+          inAvailableSection = true;
+          continue;
+        }
+
+        if (inAvailableSection) {
+          const match = line.match(/^-\s*\*\*([^*]+)\*\*:\s*(.+)$/);
+          if (match) {
+            const name = match[1].trim();
+            // Check if this server skill is enabled in config
+            const enabled = this.isSkillEnabled(name);
+            serverSkills.push({
+              name,
+              description: match[2].trim(),
+              enabled,
+              source: 'server',
+            });
+          } else if (line.startsWith('##') || line.trim() === '' || line.startsWith('---')) {
+            break;
+          }
+        }
+      }
+
+      return serverSkills;
+    } catch (error) {
+      this.logger.error('Failed to fetch server skills', { error });
+      return [];
+    }
   }
 
   dispose(): void {

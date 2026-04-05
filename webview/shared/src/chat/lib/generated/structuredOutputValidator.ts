@@ -372,6 +372,9 @@ export function validateStructuredOutput(
     if (plan && typeof plan.file !== "undefined" && typeof plan.file !== "string") {
       errors.push("plan.file must be a string when provided");
     }
+    if (plan && typeof plan.intro !== "undefined" && typeof plan.intro !== "string") {
+      errors.push("plan.intro must be a string when provided");
+    }
     if (planFile && !isQualifiedMarkdownPath(planFile)) {
       errors.push(
         "plan.file must be a full markdown filepath (absolute or workspace-relative), not just a filename",
@@ -393,6 +396,12 @@ export function validateStructuredOutput(
           );
         }
       }
+    }
+    if (typeof record.data !== "undefined") {
+      errors.push("implementation_plan responseType must not include data payload");
+    }
+    if (typeof record.error !== "undefined") {
+      errors.push("implementation_plan responseType must not include error payload");
     }
   }
 

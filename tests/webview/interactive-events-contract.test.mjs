@@ -178,7 +178,7 @@ test('webview question normalization preserves question payloads from info.struc
 test('implementation_plan normalization preserves plan card payload and summary across stream and hydration', () => {
   assert.match(
     handlerSource,
-    /type StructuredOutput = \{[\s\S]*plan\?: \{[\s\S]*file\?: string;[\s\S]*summary\?: string;[\s\S]*\};/s,
+    /type StructuredOutput = \{[\s\S]*plan\?: \{[\s\S]*file\?: string;[\s\S]*intro\?: string;[\s\S]*summary\?: string;[\s\S]*\};/s,
     'structured output shape should include plan payload fields for implementation plans',
   );
   assert.match(
@@ -198,13 +198,18 @@ test('implementation_plan normalization preserves plan card payload and summary 
   );
   assert.match(
     handlerSource,
-    /responseType === "implementation_plan"[\s\S]*summaryFromPlan[\s\S]*!currentContent[\s\S]*normalized\.content = summaryFromPlan;/s,
-    'normalizeMessage should render implementation plan summary when no assistant body content exists',
+    /responseType === "implementation_plan"[\s\S]*introFromPlan[\s\S]*summaryFromPlan[\s\S]*!currentContent[\s\S]*normalized\.content = introFromPlan \|\| summaryFromPlan;/s,
+    'normalizeMessage should prefer plan intro (then summary) when no assistant body content exists',
   );
   assert.match(
     messageSource,
     /const showResponseSection = hasResponseContent \|\| !!plan;/,
     'assistant message renderer should display response section when a plan card exists, even without body content',
+  );
+  assert.doesNotMatch(
+    providerSource,
+    /Implementation plan is ready\. Use View Plan to inspect details\./,
+    'provider should not inject fixed implementation-plan prefix text',
   );
 });
 

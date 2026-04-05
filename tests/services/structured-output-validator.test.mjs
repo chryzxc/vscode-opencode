@@ -15,6 +15,14 @@ const generatedWebviewValidatorSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'generated', 'structuredOutputValidator.ts')],
   'generated webview structuredOutputValidator.ts',
 );
+const schemaSource = readSource(
+  [joinFromRoot('src', 'shared', 'structuredOutputSchema.ts')],
+  'structuredOutputSchema.ts',
+);
+const generatedWebviewSchemaSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'generated', 'structuredOutputSchema.ts')],
+  'generated webview structuredOutputSchema.ts',
+);
 
 test('structured output validator enforces responseType specific requirements', () => {
   assert.match(
@@ -26,6 +34,11 @@ test('structured output validator enforces responseType specific requirements', 
     validatorSource,
     /plan\.file must be a full markdown filepath/,
     'validator should require full filepath for implementation_plan plan.file',
+  );
+  assert.match(
+    validatorSource,
+    /plan\.intro must be a string when provided/,
+    'validator should validate implementation_plan plan.intro type when present',
   );
   assert.match(validatorSource, /subagents responseType requires subagents array/, 'validator should enforce subagents array for subagents responseType');
   assert.match(validatorSource, /question responseType requires question object or interactiveEvents/, 'validator should enforce question payload contract for question responseType');
@@ -62,6 +75,37 @@ test('structured output sanitizer lifts top-level question options in developmen
     generatedWebviewValidatorSource,
     /typeof value\.options !== "undefined"/,
     'generated webview sanitizer should mirror top-level option lifting behavior',
+  );
+});
+
+test('structured output validator rejects unrelated payload families for implementation plans', () => {
+  assert.match(
+    validatorSource,
+    /implementation_plan responseType must not include data payload/,
+    'validator should reject data payloads on implementation_plan responses',
+  );
+  assert.match(
+    generatedWebviewValidatorSource,
+    /implementation_plan responseType must not include error payload/,
+    'generated webview validator should reject error payloads on implementation_plan responses',
+  );
+});
+
+test('structured output schema encodes implementation_plan exclusivity for data/error', () => {
+  assert.match(
+    schemaSource,
+    /allOf:\s*\[/,
+    'source schema should include conditional contract rules',
+  );
+  assert.match(
+    schemaSource,
+    /responseType:\s*\{\s*const:\s*"implementation_plan"\s*\}/,
+    'source schema should scope exclusivity rule to implementation_plan',
+  );
+  assert.match(
+    generatedWebviewSchemaSource,
+    /anyOf:\s*\[\s*\{\s*required:\s*\["data"\]\s*\},\s*\{\s*required:\s*\["error"\]\s*\}\s*\]/,
+    'generated webview schema should carry the same implementation_plan exclusivity rule',
   );
 });
 

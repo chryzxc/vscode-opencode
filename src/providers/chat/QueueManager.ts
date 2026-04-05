@@ -6,7 +6,6 @@
  * Extracted from ChatViewProvider.ts (~300 lines)
  */
 
-import { LoggingCategories } from "../../utils/LoggingSchema";
 import type { QueuedPrompt } from "./types";
 
 export class QueueManager {
@@ -16,10 +15,10 @@ export class QueueManager {
   constructor(
     private logger: ReturnType<typeof import("../../utils/Logger").createLogger>,
   ) {
-    this.handleSendMessage = async () => {};
-    this.handleStopRequest = () => {};
+    this.handleSendMessage = async () => { };
+    this.handleStopRequest = () => { };
     this.getCurrentSessionId = () => undefined;
-    this.postMessage = () => {};
+    this.postMessage = () => { };
   }
 
   private handleSendMessage: (
@@ -85,7 +84,7 @@ export class QueueManager {
       'add-to-queue'
     );
 
-    this.logger.info( 'Prompt added to queue', {
+    this.logger.info('Prompt added to queue', {
       correlationId,
       promptId: prompt.id,
       queuePosition: this.queue.length,
@@ -115,7 +114,7 @@ export class QueueManager {
         this.queue.length,
         'add-to-queue-front'
       );
-      this.logger.info( 'Prompt prioritized in queue', {
+      this.logger.info('Prompt prioritized in queue', {
         correlationId,
         promptId: prompt.id,
         queuePosition: 1,
@@ -138,14 +137,14 @@ export class QueueManager {
     executePrompt: (prompt: QueuedPrompt) => Promise<void>
   ): Promise<void> {
     if (this.queue.length === 0) {
-      this.logger.debug( 'Execute queue called with empty queue', {
+      this.logger.debug('Execute queue called with empty queue', {
         queueSize: 0,
       });
       return;
     }
 
     if (this.isExecuting) {
-      this.logger.warn( 'Queue already executing', {
+      this.logger.warn('Queue already executing', {
         queueSize: this.queue.length,
       });
       return;
@@ -160,7 +159,7 @@ export class QueueManager {
     this.isExecuting = true;
 
     try {
-      this.logger.info( 'Starting queue execution', {
+      this.logger.info('Starting queue execution', {
         correlationId,
         promptCount: this.queue.length,
       });
@@ -179,7 +178,7 @@ export class QueueManager {
           await executePrompt(prompt);
           completedCount++;
 
-          this.logger.info( 'Prompt executed successfully', {
+          this.logger.info('Prompt executed successfully', {
             correlationId,
             promptId: prompt.id,
             position: completedCount,
@@ -188,7 +187,6 @@ export class QueueManager {
           failedCount++;
 
           this.logger.error(
-            LoggingCategories.QUEUE_MANAGER,
             'Prompt execution failed',
             {
               correlationId,
@@ -209,7 +207,7 @@ export class QueueManager {
         failedPrompts: failedCount,
       });
 
-      this.logger.info( 'Queue execution completed', {
+      this.logger.info('Queue execution completed', {
         correlationId,
         totalPrompts: this.queue.length,
         completedCount,
@@ -227,7 +225,6 @@ export class QueueManager {
       });
     } catch (error) {
       this.logger.error(
-        LoggingCategories.QUEUE_MANAGER,
         'Queue execution failed',
         { correlationId },
         error as Error
@@ -259,7 +256,7 @@ export class QueueManager {
 
     this.queue = [];
 
-    this.logger.info( 'Queue cleared', {
+    this.logger.info('Queue cleared', {
       correlationId,
       previousSize,
       cleared: true,
@@ -296,7 +293,7 @@ export class QueueManager {
     const finalSessionId = sessionId || currentSessionId;
 
     if (!finalSessionId) {
-      this.logger.warn( 'No session ID for queued item', { id, index });
+      this.logger.warn('No session ID for queued item', { id, index });
       this.logger.endFeatureFlow(flow, { status: 'failed', reason: 'No session ID' });
       return;
     }
@@ -323,7 +320,7 @@ export class QueueManager {
         );
         this.logger.endFeatureFlow(flow, { status: 'completed', id });
       } else {
-        this.logger.warn( 'Queued item not found', { id });
+        this.logger.warn('Queued item not found', { id });
         this.logger.endFeatureFlow(flow, { status: 'failed', reason: 'Item not found', id });
       }
     } else if (index !== undefined && index >= 0 && index < this.queue.length) {
@@ -371,7 +368,7 @@ export class QueueManager {
         'remove-from-queue'
       );
 
-      this.logger.info( 'Prompt removed from queue', {
+      this.logger.info('Prompt removed from queue', {
         correlationId,
         promptId: id,
         queueSize: this.queue.length,
@@ -394,7 +391,7 @@ export class QueueManager {
     this.clearQueue();
     this.sendQueueUpdate(payload.sessionId);
 
-    this.logger.info( 'Queue cleared', {
+    this.logger.info('Queue cleared', {
       sessionId: payload.sessionId,
       previousSize,
       newSize: 0,
@@ -421,10 +418,10 @@ export class QueueManager {
     const { sessionId } = payload;
 
     if (this.queue.length === 0) {
-      this.logger.debug( 'Execute queue called with empty queue', {
+      this.logger.debug('Execute queue called with empty queue', {
         queueSize: 0,
       });
-      this.logger.endFeatureFlow(flow, 'skipped', { reason: 'Empty queue' });
+      this.logger.endFeatureFlow(flow, { status: 'skipped', reason: 'Empty queue' });
       return;
     }
 
@@ -452,7 +449,7 @@ export class QueueManager {
       );
     });
 
-    this.logger.info( 'Queue execution completed', {
+    this.logger.info('Queue execution completed', {
       sessionId,
       itemsExecuted: queueSize,
     });

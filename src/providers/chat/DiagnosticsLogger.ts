@@ -24,10 +24,10 @@ export class DiagnosticsLogger {
     private asRecord: (value: unknown) => Record<string, unknown> | undefined,
     private firstNonEmptyString: (...values: unknown[]) => string | undefined,
     private extractMessageBodyText: (message: any) => string,
-    private historyMessageCreatedAt: (message: any) => number,
+    private historyMessageCreatedAt: (message: any) => number | undefined,
     private extractHistoryMessageId: (message: any) => string | undefined,
     private isRenderableHistoryMessage: (message: any) => boolean,
-    private historyMessageFingerprint: (message: any) => string,
+    private historyMessageFingerprint: (message: any) => string | undefined,
   ) { }
 
   /**

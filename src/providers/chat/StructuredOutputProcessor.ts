@@ -52,6 +52,9 @@ export class StructuredOutputProcessor {
         (item) => typeof item === "string" && item.trim().length > 0,
       )
       : ["responseType"];
+    const allOf = Array.isArray(schemaRecord?.allOf)
+      ? schemaRecord.allOf
+      : undefined;
 
     // Send a docs-style minimal JSON schema to maximize compatibility across providers.
     return {
@@ -62,6 +65,7 @@ export class StructuredOutputProcessor {
         type: "object",
         properties,
         required,
+        ...(allOf ? { allOf } : {}),
       },
     };
   }
@@ -753,14 +757,18 @@ export class StructuredOutputProcessor {
 
     switch (responseType) {
       case "implementation_plan":
-        return plan?.title ? `📋 ${plan.title}` : "📋 Implementation Plan";
+        return this.firstNonEmptyString(
+          plan?.intro,
+          plan?.summary,
+          plan?.title,
+        );
       case "progress_update":
         if (progressUpdates && progressUpdates.length > 0) {
           const titles = progressUpdates.map((p) => p.title).join(", ");
           return `Progress: ${titles}`;
         }
         return "📊 Working on tasks...";
-      case "question":
+      case "question": {
         const questionRecord = this.asRecord(structured.question);
         const displayPrompt = this.firstNonEmptyString(
           questionRecord?.displayPrompt,
@@ -794,6 +802,7 @@ export class StructuredOutputProcessor {
           }
         }
         return "❓ Question for you";
+      }
       case "subagents":
         return "🤖 Spawned subagents...";
       case "error":
@@ -1276,6 +1285,7 @@ export class StructuredOutputProcessor {
           file: fallbackPlanFile,
           content: cleanPlanContent,
           title: resolvedPlanTitle,
+          intro: this.firstNonEmptyString(existingStructuredPlan?.intro, parsed.description),
           summary: parsed.description,
           files:
             extractedPlanFiles.length > 0
@@ -1306,32 +1316,38 @@ export class StructuredOutputProcessor {
               : existingStructuredPlan?.files,
         content: cleanPlanContent,
         title: resolvedPlanTitle,
+        intro: this.firstNonEmptyString(existingStructuredPlan?.intro, parsed.description),
         summary:
           parsed.description ||
           this.firstNonEmptyString(existingStructuredPlan?.summary),
       };
       nextMessage.structuredOutput = nextStructured;
       if (message?.structuredOutput?.responseType !== "implementation_plan") {
-        const safeMessage =
-          "Implementation plan is ready. Use View Plan to inspect details.";
-        nextStructured.message = safeMessage;
-        nextMessage.content = safeMessage;
-        const parts = Array.isArray(nextMessage.parts)
-          ? [...nextMessage.parts]
-          : [];
-        const textIndex = parts.findIndex(
-          (part: any) => this.isRenderableTextPart(part),
+        const planIntro = this.firstNonEmptyString(
+          nextStructured.message,
+          this.asRecord(nextStructured.plan)?.intro,
+          this.asRecord(nextStructured.plan)?.summary,
         );
-        if (textIndex >= 0) {
-          parts[textIndex] = {
-            ...parts[textIndex],
-            type: "text",
-            text: safeMessage,
-          };
-        } else {
-          parts.push({ type: "text", text: safeMessage });
+        if (planIntro) {
+          nextStructured.message = planIntro;
+          nextMessage.content = planIntro;
+          const parts = Array.isArray(nextMessage.parts)
+            ? [...nextMessage.parts]
+            : [];
+          const textIndex = parts.findIndex(
+            (part: any) => this.isRenderableTextPart(part),
+          );
+          if (textIndex >= 0) {
+            parts[textIndex] = {
+              ...parts[textIndex],
+              type: "text",
+              text: planIntro,
+            };
+          } else {
+            parts.push({ type: "text", text: planIntro });
+          }
+          nextMessage.parts = parts;
         }
-        nextMessage.parts = parts;
       }
       return nextMessage;
     }

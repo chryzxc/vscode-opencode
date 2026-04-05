@@ -17,6 +17,7 @@ export type StructuredOutputSchema = {
     description?: string;
     additionalProperties: boolean;
     required?: string[];
+    allOf?: unknown[];
     properties: Record<string, unknown>;
     examples?: unknown[];
   };
@@ -31,6 +32,20 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       "Return one JSON object. Always include responseType. RULES: (1) responseType='implementation_plan' when proposing/creating any multi-step plan — populate the plan object. (2) responseType='question' when asking questions, presenting choices, or needing user input — populate the question object WITH explicit choices. question.options must include at least two options for question flows. NEVER fall back to plain text for questions. (3) responseType='message' for everything else.",
     additionalProperties: false,
     required: ["responseType"],
+    allOf: [
+      {
+        if: {
+          properties: {
+            responseType: { const: "implementation_plan" },
+          },
+        },
+        then: {
+          not: {
+            anyOf: [{ required: ["data"] }, { required: ["error"] }],
+          },
+        },
+      },
+    ],
     properties: {
       responseType: {
         type: "string",
@@ -206,22 +221,27 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         description:
-          "CRITICAL: Implementation plan payload — MUST be populated when responseType='implementation_plan'. Conversely, when this object is populated, responseType MUST be 'implementation_plan'. At least one of plan.file or plan.content is required. If the plan was written to disk, set plan.file to the actual filepath. If the plan was proposed inline without writing a file, set plan.content with the full markdown. The UI renders a plan card below the message showing plan.title, plan.file, and a 'View Plan' button that opens an interactive plan viewer. Keep user clarifications/questions out of this object — route those to the question field instead.",
+          "CRITICAL: Implementation plan payload — MUST be populated when responseType='implementation_plan'. Conversely, when this object is populated, responseType MUST be 'implementation_plan'. At least one of plan.file or plan.content is required. If the plan was written to disk, set plan.file to the actual filepath. If the plan was proposed inline without writing a file, set plan.content with the full markdown. The UI renders a plan card below the message showing plan.title, plan.file, and a 'View Plan' button that opens an interactive plan viewer. Use plan.intro for human-friendly narrative context above the plan card when no top-level message is provided. Keep user clarifications/questions out of this object — route those to the question field instead. Do not include unrelated top-level payload families like data/error in implementation_plan responses.",
         examples: [
           {
             file: "/workspace/project/plans/todo-feature.md",
             title: "Todo Feature Implementation",
+            intro:
+              "I drafted a plan for the todo feature covering schema changes, API routes, and frontend wiring with a clear execution order.",
             summary: "Add todo CRUD with priority levels and due dates",
           },
           {
-            file: "C:\\Workspace\\project\\plans\\auth-session-hardening.md",
-            files: ["C:\\Workspace\\project\\plans\\auth-session-hardening.md"],
+            file: "/workspace/project/plans/auth-session-hardening.md",
             title: "Auth Session Hardening",
-            content: "## Plan\n1. Update schema\n2. Sync generated artifacts",
+            intro:
+              "I prepared a security-focused implementation plan that tightens session validation and token lifecycle behavior.",
+            summary: "Harden session lifecycle, validation, and token rotation",
           },
           {
+            file: "/workspace/project/plans/api-rate-limiting.md",
             title: "API Rate Limiting",
-            content: "## Proposed Changes\n### 1. Add RateLimiter middleware\n- Create `src/middleware/rateLimiter.ts`\n- Configure per-route limits\n\n### 2. Update API routes\n- Apply middleware to all public endpoints\n\n### 3. Add tests\n- Unit tests for limiter logic\n- Integration tests for rate-limited routes",
+            intro:
+              "I created a step-by-step plan to add middleware-based rate limiting, route integration, and verification tests.",
             summary: "Implement rate limiting across public API endpoints",
           },
         ],
@@ -243,6 +263,14 @@ export const structuredOutputSchema: StructuredOutputSchema = {
               "Markdown implementation plan content. Required when no plan.file was written (inline proposals). IMPORTANT: Must NOT contain questions, clarifications, or choices — route those to the top-level 'question' field. If you wrote the plan to disk using tools, you SHOULD omit this field to prevent stale content from overwriting the source-of-truth file.",
             examples: [
               "## Proposed Changes\n### 1. Update SessionService\n- Refactor token validation\n- Add refresh token rotation\n\n### 2. Update API middleware\n- Add token expiry checks\n\n### 3. Migration\n- Create migration script for existing sessions",
+            ],
+          },
+          intro: {
+            type: "string",
+            description:
+              "Optional narrative sentence/paragraph shown above the plan card. Use this to explain what the plan implements and which stack/approach it uses in natural language.",
+            examples: [
+              "I created a plan that implements the requested reusable drawer using React, TypeScript, and Tailwind with accessibility and animation steps included.",
             ],
           },
           // Note: runtime validator enforces mutual exclusivity between
@@ -540,14 +568,14 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "object",
         additionalProperties: true,
         description:
-          "Machine-readable payload for UI components that render custom data cards. Use only for structured data, not normal chat text.",
+          "Machine-readable payload for UI components that render custom data cards. Use only when responseType='data' (or system metadata cases), not normal chat text and not implementation_plan payloads.",
         examples: [{ cardType: "metrics", values: { passed: 12, failed: 0 } }],
       },
       error: {
         type: "object",
         additionalProperties: true,
         description:
-          "Error metadata for responseType='error'. Include user-safe message text in error.message and/or message.",
+          "Error metadata for responseType='error'. Include user-safe message text in error.message and/or message. Omit for successful response types such as implementation_plan.",
         examples: [
           {
             message: "Schema validation failed.",
@@ -587,15 +615,17 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         plan: {
           file: "plans/todo-feature.md",
           title: "Todo Feature Implementation",
+          intro:
+            "I mapped the feature into backend, API, and UI workstreams so implementation can proceed safely in sequence.",
           summary: "Add todo CRUD with priority levels and due dates",
         },
       },
       {
         responseType: "implementation_plan",
-        message:
-          "Here's my proposed plan for the authentication refactor. It covers session management updates, token validation hardening, and the migration path for existing sessions.",
         plan: {
           title: "Auth Session Refactoring",
+          intro:
+            "I drafted a focused auth refactor plan using the existing session stack, emphasizing token validation hardening and migration safety.",
           content:
             "## Proposed Changes\n### 1. Update SessionService\n- Refactor token validation\n\n### 2. Add migration script",
           summary: "Refactor session management for token-based auth",

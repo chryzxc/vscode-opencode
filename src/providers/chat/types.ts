@@ -251,6 +251,7 @@ export type StructuredAssistantOutput = {
     file?: string;
     content?: string;
     title?: string;
+    intro?: string;
     summary?: string;
     files?: any[]; // To match ImplementationPlan structure
     fileCount?: number;

@@ -861,6 +861,7 @@ type StructuredOutput = {
     files?: unknown[];
     content?: string;
     title?: string;
+    intro?: string;
     summary?: string;
     fileCount?: number;
   };
@@ -932,6 +933,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
       files: Array.isArray(planRec.files) ? planRec.files : undefined,
       content: asString(planRec.content) || undefined,
       title: asString(planRec.title) || undefined,
+      intro: asString(planRec.intro) || undefined,
       summary: asString(planRec.summary) || undefined,
       fileCount:
         typeof planRec.fileCount === "number" && Number.isFinite(planRec.fileCount)
@@ -1974,6 +1976,10 @@ function maybeInjectStreamingInteractiveContext(
   const currentContent = asString(streamingState?.content);
   const hasRenderableContent = !!streamingState?.hasRenderableContent;
   const latestUserText = latestUserMessageText(getState());
+  // Lock: if we already have trusted assistant text, only replace it when the
+  // existing body is clearly low-signal (placeholder/echo/reasoning leak). If we
+  // do not have trusted text yet, always inject synthesized question context so
+  // the assistant bubble appears together with the question popover.
   if (
     hasRenderableContent &&
     !shouldOverrideStreamingContentWithInteractivePrompt(
@@ -2662,10 +2668,11 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     delete (normalized as Record<string, unknown>).plan;
   }
   if (responseType === "implementation_plan" && normalized.plan) {
+    const introFromPlan = asString(normalized.plan.intro).trim();
     const summaryFromPlan = asString(normalized.plan.summary).trim();
     const currentContent = asString(normalized.content).trim();
-    if (summaryFromPlan && !currentContent) {
-      normalized.content = summaryFromPlan;
+    if (!currentContent) {
+      normalized.content = introFromPlan || summaryFromPlan;
     }
   }
 
@@ -4814,6 +4821,51 @@ function dedupeInteractiveUserHydrationMessages(messages: Message[]): Message[] 
   return deduped;
 }
 
+export function dedupeSystemMessages(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length <= 1) {
+    return messages;
+  }
+
+  const deduped: Message[] = [];
+  const seenSystemContents = new Set<string>();
+
+  for (const message of messages) {
+    const role = asString(message.role) || asString(asRecord(message.info)?.role);
+    const content = asString(message.content) || '';
+
+    if (role === 'system' && content) {
+      // Normalize content for deduplication by trimming whitespace
+      // This handles cases where the same system message has slight formatting differences
+      const normalizedContent = content.trim();
+
+      // Skip system messages with duplicate content
+      if (seenSystemContents.has(normalizedContent)) {
+        webviewLogger.debug('[dedupeSystemMessages] Skipping duplicate system message', {
+          content: normalizedContent.substring(0, 100),
+          totalSkipped: seenSystemContents.size,
+        });
+        continue;
+      }
+      seenSystemContents.add(normalizedContent);
+      webviewLogger.debug('[dedupeSystemMessages] Keeping unique system message', {
+        content: normalizedContent.substring(0, 100),
+        index: deduped.length,
+      });
+    }
+
+    deduped.push(message);
+  }
+
+  webviewLogger.debug('[dedupeSystemMessages] Deduplication complete', {
+    inputCount: messages.length,
+    outputCount: deduped.length,
+    duplicatesRemoved: messages.length - deduped.length,
+    systemMessageCount: seenSystemContents.size,
+  });
+
+  return deduped;
+}
+
 function buildStreamingMessage(streaming: StreamingState): Message {
   const parts: any[] = [
     {
@@ -5060,20 +5112,25 @@ function handleStreamEvent(
       // events with role="user" but should be rendered as system messages
       const partText = asRichString(part.text) || asRichString(part.content) || '';
       if (partText && hasSystemMessagePatternInText(partText)) {
-        // System messages should be added immediately to state.messages
-        // even during streaming, because streaming content is isolated.
-        // Streaming content is in state.streaming, not state.messages,
-        // and SET_MESSAGES with [...state.messages, systemMessage] preserves existing messages.
-        // We still gate dispatch behind !current to avoid race-condition overwrites while
-        // an assistant stream is active; deferred merge occurs during finalization.
-        const systemMessage: Message = {
-          role: 'system',
-          content: partText,
-          parts: [{ type: 'text', text: partText }],
-          time: { created: Date.now() },
-          info: { role: 'system', id: `sys-${Date.now()}` }
-        };
-        if (!current) {
+        // Check if a system message with the same content already exists to prevent duplicates
+        const alreadyExists = state.messages.some(
+          (msg) => msg.role === 'system' && msg.content === partText
+        );
+
+        if (!alreadyExists) {
+          // System messages should be added immediately to state.messages
+          // even during streaming, because streaming content is isolated.
+          // Streaming content is in state.streaming, not state.messages,
+          // and SET_MESSAGES with [...state.messages, systemMessage] preserves existing messages.
+          // System messages are safe to dispatch immediately regardless of streaming state.
+          const systemMessage: Message = {
+            role: 'system',
+            content: partText,
+            parts: [{ type: 'text', text: partText }],
+            time: { created: Date.now() },
+            info: { role: 'system', id: `sys-${Date.now()}` }
+          };
+          // Dispatch immediately - system messages modify state.messages, not state.streaming
           dispatch({
             type: 'SET_MESSAGES',
             payload: [...state.messages, systemMessage]
@@ -5243,16 +5300,16 @@ function handleStreamEvent(
           });
         }
 
-        // Strict structured gate: only append assistant body content for explicit
-        // message/text chunks. Do not infer from arbitrary text-like payloads.
+        // Lock: only explicit assistant message text can create trusted renderable
+        // body content. Progress/lifecycle/tool chunks must never seed the bubble.
         const canAppendMainContent =
           hasMainContent ||
           (!isReasoning &&
             partType !== "reasoning" &&
             structuredKind !== "thinking" &&
             (structuredKind === "message" ||
-              partType === "text" ||
-              partType === "message"));
+              ((!structuredKind || structuredKind === "message") &&
+                (partType === "text" || partType === "message"))));
 
         if (canAppendMainContent) {
           let candidateChunk = hasMainContent ? mainContent : textChunk;
@@ -6774,8 +6831,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
         const responseMessageId =
           asString(msg.id) || asString(asRecord(msg.info)?.id);
-        const currentStreaming = getState().streaming;
+        const currentStateForResponse = getState();
+        const currentStreaming = currentStateForResponse.streaming;
         const snapshotMessageId = latestStreamingSnapshot?.messageId || null;
+        const hasOwnResponsePayload =
+          !!asString(msg.content).trim() ||
+          !!asString(msg.text).trim() ||
+          (Array.isArray(msg.parts) && msg.parts.length > 0);
+        const shouldDropMismatchedSnapshot =
+          !!responseMessageId &&
+          !!snapshotMessageId &&
+          snapshotMessageId !== responseMessageId &&
+          hasOwnResponsePayload;
         if (
           !currentStreaming &&
           latestStreamingSnapshot &&
@@ -6788,6 +6855,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             {
               responseMessageId,
               snapshotMessageId,
+              shouldDropMismatchedSnapshot,
             },
           );
         }
@@ -6796,7 +6864,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const plainTextFallbackFinal =
           asBoolean(asRecord(msg)?.plainTextFallback, false) ||
           asBoolean(asRecord(asRecord(msg)?.info)?.plainTextFallback, false);
-        const snapshotStreaming = currentStreaming ?? latestStreamingSnapshot;
+        const snapshotStreaming =
+          currentStreaming ??
+          (shouldDropMismatchedSnapshot ? null : latestStreamingSnapshot);
         const interactiveEventsInResponse = isMessage(msg)
           ? interactiveEventsFromMessage(msg)
           : [];
@@ -6913,7 +6983,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
           }
           const interactiveEvents = interactiveEventsFromMessage(sanitized);
-          if (interactiveEvents.length > 0) {
+          const inInteractiveTransitionWindow =
+            Date.now() <= interactiveResponseTransitionUntil;
+          const latestMessage =
+            currentMessages.length > 0
+              ? currentMessages[currentMessages.length - 1]
+              : undefined;
+          const suppressInteractiveReshow =
+            inInteractiveTransitionWindow &&
+            !!latestMessage &&
+            isLikelyInteractiveAnswerSubmissionMessage(latestMessage) &&
+            hasBlockingInteractiveEvents(interactiveEvents);
+          if (!suppressInteractiveReshow && interactiveEvents.length > 0) {
             dispatch({
               type: "SET_INTERACTIVE_EVENTS",
               payload: interactiveEvents,
@@ -6958,6 +7039,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         const hydratedMessages = hydrateLegacyInteractiveUserMessages(messages);
         const dedupedHydratedMessages =
           dedupeInteractiveUserHydrationMessages(hydratedMessages);
+        const dedupedSystemMessages =
+          dedupeSystemMessages(dedupedHydratedMessages);
         activeSubagentParentMessageIds = new Set<string>();
 
         const chatHistorySessionId = asString(data.sessionId);
@@ -6987,7 +7070,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         dispatch({ type: "SET_STREAMING", payload: null });
         dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
         dispatch({ type: "CLEAR_MESSAGES" });
-        const stabilizedHydratedMessages = dedupedHydratedMessages.map((message) => {
+        const stabilizedHydratedMessages = dedupedSystemMessages.map((message) => {
           if (!Array.isArray(message.subagents) || message.subagents.length === 0) {
             return message;
           }
@@ -7510,6 +7593,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         if (message && typeof message === "object") {
           if (isLikelyInteractiveAnswerSubmissionMessage(message)) {
             interactiveResponseTransitionUntil = Date.now() + 15000;
+            // Lock: interactive answer submit starts a brand-new assistant turn.
+            // Clear stale stream snapshots so previous turn content cannot leak or
+            // duplicate into the next messageResponse normalization pass.
+            latestStreamingSnapshot = null;
+            activeSubagentParentMessageIds = new Set<string>();
+            dispatch({ type: "SET_STREAMING", payload: null });
             // Defensive cleanup: once an interactive answer bundle is echoed back
             // from the extension host, clear any stale quick-input popover state.
             // This prevents already-answered prompts from lingering in the composer.

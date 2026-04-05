@@ -8,6 +8,7 @@
 
 import * as vscode from "vscode";
 import * as cp from "child_process";
+import * as util from "util";
 import type { OpencodeServerManager } from "../../services/OpencodeServerManager";
 import type { ModelCapabilitiesService } from "../../services/ModelCapabilitiesService";
 import type { Command as SdkCommand } from "@opencode-ai/sdk" with { "resolution-mode": "import" };
@@ -379,7 +380,6 @@ export class ModelAndAgentManager {
     }
 
     try {
-      const util = require("util");
       const execAsync = util.promisify(cp.exec);
       const { stdout } = await execAsync("opencode config get default_model");
       const defaultId = stdout.trim();

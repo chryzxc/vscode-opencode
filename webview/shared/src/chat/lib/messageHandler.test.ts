@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Message } from './types';
-import { normalizeMessage } from './messageHandler';
+import { normalizeMessage, dedupeSystemMessages } from './messageHandler';
 
 describe('normalizeMessage - responseType handling', () => {
   it('should handle message with responseType field without throwing', () => {
@@ -482,5 +482,275 @@ describe('structuredOutput preservation - Integration Tests', () => {
       'q-base',
       'Original event ID must be preserved'
     );
+  });
+});
+
+describe('dedupeSystemMessages', () => {
+  it('should return empty array for empty input', () => {
+    const result = dedupeSystemMessages([]);
+    assert.deepStrictEqual(result, []);
+  });
+
+  it('should return single message for single message input', () => {
+    const messages: Message[] = [{
+      role: 'system',
+      content: '<auto-slash-command>test</auto-slash-command>',
+    }];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].content, '<auto-slash-command>test</auto-slash-command>');
+  });
+
+  it('should remove duplicate system messages with identical content', () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: '<auto-slash-command>test</auto-slash-command>',
+      },
+      {
+        role: 'user',
+        content: 'Hello',
+      },
+      {
+        role: 'system',
+        content: '<auto-slash-command>test</auto-slash-command>',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[0].content, '<auto-slash-command>test</auto-slash-command>');
+    assert.strictEqual(result[1].content, 'Hello');
+  });
+
+  it('should preserve different system messages', () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: '<auto-slash-command>command1</auto-slash-command>',
+      },
+      {
+        role: 'system',
+        content: '<auto-slash-command>command2</auto-slash-command>',
+      },
+      {
+        role: 'system',
+        content: '[info] Different format',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 3);
+    assert.strictEqual(result[0].content, '<auto-slash-command>command1</auto-slash-command>');
+    assert.strictEqual(result[1].content, '<auto-slash-command>command2</auto-slash-command>');
+    assert.strictEqual(result[2].content, '[info] Different format');
+  });
+
+  it('should keep only first occurrence of duplicate system messages', () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: '<system-reminder>First occurrence</system-reminder>',
+        time: { created: 1000 },
+      },
+      {
+        role: 'system',
+        content: '<system-reminder>First occurrence</system-reminder>',
+        time: { created: 2000 },
+      },
+      {
+        role: 'system',
+        content: '<system-reminder>First occurrence</system-reminder>',
+        time: { created: 3000 },
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].time?.created, 1000, 'Should keep first occurrence');
+  });
+
+  it('should not deduplicate non-system messages', () => {
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content: 'Hello',
+      },
+      {
+        role: 'assistant',
+        content: 'Hi there',
+      },
+      {
+        role: 'user',
+        content: 'Hello',
+      },
+      {
+        role: 'assistant',
+        content: 'Hi there',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 4, 'Should not deduplicate non-system messages');
+  });
+
+  it('should handle mixed system and non-system messages', () => {
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content: 'Start',
+      },
+      {
+        role: 'system',
+        content: '<auto-slash-command>test</auto-slash-command>',
+      },
+      {
+        role: 'assistant',
+        content: 'Response',
+      },
+      {
+        role: 'system',
+        content: '<auto-slash-command>test</auto-slash-command>',
+      },
+      {
+        role: 'user',
+        content: 'End',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 4);
+    assert.strictEqual(result[0].role, 'user');
+    assert.strictEqual(result[1].role, 'system');
+    assert.strictEqual(result[2].role, 'assistant');
+    assert.strictEqual(result[3].role, 'user');
+  });
+
+  it('should handle system messages with empty content', () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: '',
+      },
+      {
+        role: 'system',
+        content: '',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 2, 'Empty content should not be deduplicated');
+  });
+
+  it('should handle system messages with missing content', () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+      },
+      {
+        role: 'system',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 2, 'Missing content should not be deduplicated');
+  });
+
+  it('should preserve message order when deduplicating', () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: '[info] Message 1',
+      },
+      {
+        role: 'system',
+        content: '[info] Message 2',
+      },
+      {
+        role: 'system',
+        content: '[info] Message 1',
+      },
+      {
+        role: 'system',
+        content: '[info] Message 3',
+      },
+      {
+        role: 'system',
+        content: '[info] Message 2',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 3);
+    assert.strictEqual(result[0].content, '[info] Message 1');
+    assert.strictEqual(result[1].content, '[info] Message 2');
+    assert.strictEqual(result[2].content, '[info] Message 3');
+  });
+
+  it('should handle various system message formats', () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: '[auto-slash-command] Square brackets',
+      },
+      {
+        role: 'system',
+        content: '<auto-slash-command> Angle brackets',
+      },
+      {
+        role: 'system',
+        content: '<!-- omo_internal_initiator --> Comment style',
+      },
+      {
+        role: 'system',
+        content: '[auto-slash-command] Square brackets',
+      },
+      {
+        role: 'system',
+        content: '<auto-slash-command> Angle brackets',
+      },
+      {
+        role: 'system',
+        content: '<!-- omo_internal_initiator --> Comment style',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 3);
+    assert.strictEqual(result[0].content, '[auto-slash-command] Square brackets');
+    assert.strictEqual(result[1].content, '<auto-slash-command> Angle brackets');
+    assert.strictEqual(result[2].content, '<!-- omo_internal_initiator --> Comment style');
+  });
+
+  it('should deduplicate system messages with different whitespace', () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: '<auto-slash-command>test</auto-slash-command>',
+      },
+      {
+        role: 'system',
+        content: '  <auto-slash-command>test</auto-slash-command>  ',
+      },
+      {
+        role: 'system',
+        content: '<auto-slash-command>test</auto-slash-command> ',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 1, 'Should deduplicate messages with different whitespace');
+    assert.strictEqual(result[0].content, '<auto-slash-command>test</auto-slash-command>');
+  });
+
+  it('should deduplicate system messages with leading/trailing newlines', () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: '\n[info] Test message\n',
+      },
+      {
+        role: 'system',
+        content: '[info] Test message',
+      },
+      {
+        role: 'system',
+        content: '[info] Test message\n\n',
+      },
+    ];
+    const result = dedupeSystemMessages(messages);
+    assert.strictEqual(result.length, 1, 'Should deduplicate messages with different newlines');
+  });
+});
   });
 });

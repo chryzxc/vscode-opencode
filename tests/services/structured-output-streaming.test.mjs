@@ -250,3 +250,21 @@ test.skip('webview normalizeMessage can prefer streaming content for structured_
     'normalizeMessage should avoid forcing structured text when response is structured_output_invalid',
   );
 });
+
+test('chat provider does not synthesize structured fallback errors when non-text activity parts exist', () => {
+  const applyBody = extractFunctionBody(
+    chatProviderSource,
+    'applyStructuredOutputToMessage(',
+  );
+
+  assert.match(
+    chatProviderSource,
+    /private hasNonTextActivityParts\(message: any\): boolean/,
+    'provider should define a non-text activity-part guard',
+  );
+  assert.match(
+    applyBody,
+    /if \(this\.hasNonTextActivityParts\(message\)\) \{\s*return message;\s*\}/,
+    'provider should preserve assistant activity turns instead of forcing synthetic fallback text',
+  );
+});

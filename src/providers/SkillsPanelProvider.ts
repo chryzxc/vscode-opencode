@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { getNonce } from '../utils/getNonce';
 import { SkillManagementService } from '../services/SkillManagementService';
+import { OpencodeServerManager } from '../services/OpencodeServerManager';
 import { createLogger } from '../utils/Logger';
 import { LoggingCategories } from '../utils/LoggingSchema';
 
@@ -14,7 +15,8 @@ export class SkillsPanelProvider {
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
-    private readonly skillManagementService: SkillManagementService
+    private readonly skillManagementService: SkillManagementService,
+    private readonly serverManager: OpencodeServerManager
   ) {}
 
   public resolveWebviewView(
@@ -62,18 +64,22 @@ export class SkillsPanelProvider {
         case 'enableSkill':
           await this.skillManagementService.enableSkill(message.skillName);
           await this._showInfo(`Enabled skill: ${message.skillName}`);
+          await this._promptServerRestart();
           break;
         case 'disableSkill':
           await this.skillManagementService.disableSkill(message.skillName);
           await this._showInfo(`Disabled skill: ${message.skillName}`);
+          await this._promptServerRestart();
           break;
         case 'enableMultiple':
           await this.skillManagementService.enableMultipleSkills(message.skillNames);
           await this._showInfo(`Enabled ${message.skillNames.length} skills`);
+          await this._promptServerRestart();
           break;
         case 'disableMultiple':
           await this.skillManagementService.disableMultipleSkills(message.skillNames);
           await this._showInfo(`Disabled ${message.skillNames.length} skills`);
+          await this._promptServerRestart();
           break;
         case 'enableAll':
           await this.skillManagementService.enableAllSkills();
@@ -91,6 +97,7 @@ export class SkillsPanelProvider {
         case 'refresh':
           await this.skillManagementService.refreshSkills();
           await this._showInfo('Refreshed skills list');
+          await this._promptServerRestart();
           break;
         case 'openConfig':
           await vscode.env.openExternal(vscode.Uri.file(this.skillManagementService['configPath']));
@@ -127,7 +134,17 @@ export class SkillsPanelProvider {
       return;
     }
 
-    const skills = this.skillManagementService.getSkills();
+    // Get client for server skills
+    const client = this.serverManager.getClient();
+    const skills = await this.skillManagementService.getAllSkills(client);
+
+    this.logger.info('[_sendSkillsToWebview] Sending skills to webview', {
+      skillCount: skills.length,
+      skillNames: skills.slice(0, 5).map(s => s.name),
+      serverSkills: skills.filter(s => s.source === 'server').length,
+      fileSystemSkills: skills.filter(s => s.source !== 'server').length
+    });
+
     this._view.webview.postMessage({
       type: 'skillsData',
       skills,
