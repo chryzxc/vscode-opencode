@@ -11,7 +11,7 @@ interface SkillInfo {
   path: string;
   enabled: boolean;
   category?: string;
-  source: 'project' | 'global';
+  source: 'project' | 'global' | 'server';
 }
 
 interface SkillPermissionConfig {
@@ -204,7 +204,7 @@ export class SkillManagementService {
           description: s.description,
           enabled: s.enabled,
           path: '',
-          source: s.source as 'project' | 'global',
+          source: s.source as 'project' | 'global' | 'server',
         }));
       } catch (error) {
         this.logger.error('Failed to fetch server skills, using only file system skills', { error });
@@ -424,7 +424,7 @@ export class SkillManagementService {
       }
 
       const tools = toolsResponse.data;
-      const skillTool = tools.find(tool => tool.id === 'skill');
+      const skillTool = tools.find((tool: { id: string; description?: string }) => tool.id === 'skill');
 
       if (!skillTool || !skillTool.description) {
         return [];
