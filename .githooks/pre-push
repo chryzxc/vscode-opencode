@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+
+echo "Running pre-push regression guard..."
+node scripts/pre-push-check.mjs
+status=$?
+
+if [ $status -ne 0 ]; then
+  echo "Pre-push regression guard failed."
+  exit $status
+fi
+
+echo "Pre-push regression guard passed."
+exit 0

@@ -1,0 +1,99 @@
+{
+  "fullSuiteIfChangedCount": 25,
+  "alwaysRunTests": [
+    "tests/unit/structured-output-contract-sync.test.mjs",
+    "tests/components/plan-detection.test.mjs",
+    "tests/webview/plan-viewer.test.mjs",
+    "tests/regression/streaming-progress-regression.test.mjs",
+    "tests/regression/session-hydration-rendering-regression.test.mjs",
+    "tests/regression/store-message-canonicalization-regression.test.mjs",
+    "tests/webview/chat-view-streaming.test.mjs"
+  ],
+  "rules": [
+    {
+      "name": "shared-structured-output-contract",
+      "prefixes": [
+        "src/shared/",
+        "webview/shared/src/chat/lib/generated/",
+        "scripts/sync-structured-output-contract.mjs"
+      ],
+      "tests": [
+        "tests/unit/structured-output-contract-sync.test.mjs",
+        "tests/services/structured-output-validator.test.mjs",
+        "tests/services/structured-output-streaming.test.mjs",
+        "tests/unit/system-prompt-and-structured-output-parsing.test.mjs"
+      ]
+    },
+    {
+      "name": "chat-provider-orchestrator",
+      "prefixes": [
+        "src/providers/ChatViewProvider.ts",
+        "src/services/MessageStreamService.ts",
+        "src/services/SubagentTracker.ts",
+        "webview/shared/src/chat/lib/messageHandler.ts"
+      ],
+      "tests": [
+        "tests/unit/providers/ChatViewProvider.unit.test.mjs",
+        "tests/services/message-stream-service.test.mjs",
+        "tests/unit/services/MessageStreamService.test.mjs",
+        "tests/unit/subagent-tracker-contract.test.mjs",
+        "tests/unit/subagent-ui-contract.test.mjs",
+        "tests/webview/message-handler-processing.test.mjs",
+        "tests/webview/interactive-events-contract.test.mjs",
+        "tests/unit/system-prompt-history-filter.test.mjs"
+      ]
+    },
+    {
+      "name": "plan-contract-paths",
+      "prefixes": [
+        "src/providers/PlanViewProvider.ts",
+        "src/services/PlanParser.ts",
+        "webview/shared/src/chat/components/Plan",
+        "docs/knowledge-base/implementation-plan-contract.md"
+      ],
+      "tests": [
+        "tests/components/plan-detection.test.mjs",
+        "tests/webview/plan-viewer.test.mjs"
+      ]
+    },
+    {
+      "name": "quota-budget",
+      "prefixes": [
+        "src/services/RequestBudgeter.ts",
+        "src/services/QuotaService.ts",
+        "webview/shared/src/chat/components/Quota"
+      ],
+      "tests": [
+        "tests/services/request-budgeter.test.mjs",
+        "tests/services/quota-service.test.mjs",
+        "tests/integration/budget-quota-integration-regression.test.mjs"
+      ]
+    },
+    {
+      "name": "chat-rendering-and-style",
+      "prefixes": [
+        "webview/shared/src/chat/",
+        "webview/shared/src/shared/chat.css",
+        "webview/shared/src/chat.css"
+      ],
+      "tests": [
+        "tests/regression/chat-css-regression.test.mjs",
+        "tests/webview/message-handler-processing.test.mjs",
+        "tests/webview/interactive-events-contract.test.mjs"
+      ]
+    },
+    {
+      "name": "high-risk-cross-cutting",
+      "prefixes": [
+        "src/extension.ts",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "esbuild.config.js",
+        "webview/shared/package.json",
+        "webview/shared/package-lock.json"
+      ],
+      "fullSuite": true
+    }
+  ]
+}

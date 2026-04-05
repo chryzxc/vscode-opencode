@@ -592,7 +592,29 @@ The test suite covers:
 - Integration tests for message streaming and session CRUD
 - Regression tests for UI contracts, streaming behaviour, MCP/LSP panels, and model dropdown
 
----
+## Regression Guardrails
+
+Use the built-in guard scripts to catch regressions before push:
+
+```bash
+# one-time setup: activate repo-managed git hooks
+npm run hooks:install
+
+# run the same local pre-push guard manually
+npm run guard:prepush
+
+# run only impacted tests based on changed files
+npm run test:impacted
+```
+
+What this enforces:
+
+- `structured-output:check` before tests
+- extension compile and lint checks
+- webview build check when webview files changed
+- impacted contract/regression suites (or full `npm test` on high-risk changes)
+
+--- 
 
 ## Contributing
 
