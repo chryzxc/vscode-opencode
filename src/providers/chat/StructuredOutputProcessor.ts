@@ -1128,6 +1128,17 @@ export class StructuredOutputProcessor {
       }
     }
 
+    // Only honor implementation plans when the structured payload explicitly
+    // declares responseType="implementation_plan".
+    if (structuredResponseType !== "implementation_plan") {
+      if (message.plan) {
+        const nextMessage = { ...message };
+        delete nextMessage.plan;
+        return nextMessage;
+      }
+      return message;
+    }
+
     // Check for implementation plan in edits, parts, or message content
     const edits = message.edits || [];
     const parts = message.parts || [];
@@ -1148,13 +1159,19 @@ export class StructuredOutputProcessor {
     const extractedPlanFiles = this.planManager.prioritizePlanFileCandidates([
       ...edits
         .map((e: any) => this.firstNonEmptyString(e?.file))
-        .filter((file: unknown): file is string => !!file),
+        .filter(
+          (file: unknown): file is string =>
+            !!file && this.planManager.isLikelyPlanMarkdownFile(file),
+        ),
       ...parts
         .filter((p: any) => p.type === "patch" && Array.isArray(p.files))
         .flatMap((p: any) =>
           (p.files as unknown[])
             .map((f) => this.firstNonEmptyString(f))
-            .filter((file: unknown): file is string => !!file),
+            .filter(
+              (file: unknown): file is string =>
+                !!file && this.planManager.isLikelyPlanMarkdownFile(file),
+            ),
         ),
       ...this.planManager.extractMarkdownFileReferences(message?.content),
       ...this.planManager.extractMarkdownFileReferences(info.summary?.title),

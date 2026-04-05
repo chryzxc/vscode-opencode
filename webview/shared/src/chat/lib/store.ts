@@ -103,7 +103,11 @@ export const initialState: AppState = {
   configFiles: undefined,
 };
 
-type StreamingContentPayload = { content: string; append?: boolean };
+type StreamingContentPayload = {
+  content: string;
+  append?: boolean;
+  renderable?: boolean;
+};
 type StreamingReasoningPayload = { reasoning: string; append?: boolean; inThoughtBlock?: boolean; inReasoningPart?: boolean };
 type StreamingStepUpdatePayload = {
   id?: string;
@@ -493,6 +497,26 @@ export function messageRichnessScoreForCanonical(message: Message): number {
 }
 
 export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
+  const preserveRawResponse = (
+    preferred: Message,
+    alternate: Message,
+  ): Message => {
+    const preferredRecord = preferred as unknown as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(preferredRecord, 'rawResponse')) {
+      return preferred;
+    }
+
+    const alternateRecord = alternate as unknown as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(alternateRecord, 'rawResponse')) {
+      return preferred;
+    }
+
+    return {
+      ...preferred,
+      rawResponse: alternate.rawResponse,
+    };
+  };
+
   const deduped: Message[] = [];
   for (const message of messages) {
     const id = getMessageIdForCanonical(message);
@@ -502,11 +526,11 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
       );
       if (existingById >= 0) {
         const existing = deduped[existingById];
-        deduped[existingById] =
-          messageRichnessScoreForCanonical(message) >=
-            messageRichnessScoreForCanonical(existing)
-            ? message
-            : existing;
+        const messageScore = messageRichnessScoreForCanonical(message);
+        const existingScore = messageRichnessScoreForCanonical(existing);
+        const preferred = messageScore >= existingScore ? message : existing;
+        const alternate = preferred === message ? existing : message;
+        deduped[existingById] = preserveRawResponse(preferred, alternate);
         continue;
       }
     }
@@ -541,11 +565,11 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
       });
       if (existingByText >= 0) {
         const existing = deduped[existingByText];
-        deduped[existingByText] =
-          messageRichnessScoreForCanonical(message) >=
-            messageRichnessScoreForCanonical(existing)
-            ? message
-            : existing;
+        const messageScore = messageRichnessScoreForCanonical(message);
+        const existingScore = messageRichnessScoreForCanonical(existing);
+        const preferred = messageScore >= existingScore ? message : existing;
+        const alternate = preferred === message ? existing : message;
+        deduped[existingByText] = preserveRawResponse(preferred, alternate);
         continue;
       }
     }
@@ -1422,6 +1446,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ...state,
           streaming: {
             ...action.payload,
+            hasRenderableContent: action.payload.hasRenderableContent ?? false,
             reasoningEvents: action.payload.reasoningEvents ?? [],
             progressEvents: action.payload.progressEvents ?? [],
           },
@@ -1443,7 +1468,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             : undefined;
       return {
         ...state,
-        streaming: { ...state.streaming, content, contentStartSeq },
+        streaming: {
+          ...state.streaming,
+          content,
+          contentStartSeq,
+          hasRenderableContent:
+            state.streaming.hasRenderableContent ||
+            !!action.payload.renderable,
+        },
       };
     }
     case "UPDATE_STREAMING_REASONING": {

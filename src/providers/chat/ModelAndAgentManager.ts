@@ -76,7 +76,7 @@ export class ModelAndAgentManager {
 
       this.logger.featureStep(correlationId, 'persist-selection', { model });
 
-      this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, 'Model selected', {
+      this.logger.info('Model selected', {
         providerId: model.providerID,
         modelId: model.modelID,
         providerName: model.providerName,
@@ -85,7 +85,6 @@ export class ModelAndAgentManager {
       this.logger.endFeatureFlow(correlationId, { success: true });
     } catch (error) {
       this.logger.error(
-        LoggingCategories.MODEL_AGENT_MANAGER,
         'Failed to set selected model',
         { correlationId, model },
         error as Error
@@ -124,7 +123,7 @@ export class ModelAndAgentManager {
     const startTime = Date.now();
 
     if (this.modelsFetchPromise) {
-      this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, 'Using cached models fetch', {
+      this.logger.debug('Using cached models fetch', {
         correlationId,
       });
       return this.modelsFetchPromise;
@@ -188,7 +187,7 @@ export class ModelAndAgentManager {
         }
 
         if (models.length > 0) {
-          this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, "Discovered models across all providers", {
+          this.logger.info("Discovered models across all providers", {
             count: models.length,
           });
           this.availableModels = models;
@@ -203,10 +202,10 @@ export class ModelAndAgentManager {
           const duration = Date.now() - startTime;
           this.logger.performance('fetch-models', duration, {
             modelCount: models.length,
-            providers: [...new Set(models.map(m => m.providerName))],
+            providers: Array.from(new Set(models.map(m => m.providerName))),
           });
 
-          this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, 'Models fetched successfully', {
+          this.logger.info('Models fetched successfully', {
             correlationId,
             count: models.length,
             duration,
@@ -223,7 +222,6 @@ export class ModelAndAgentManager {
         this.modelsFetchPromise = null;
 
         this.logger.error(
-          LoggingCategories.MODEL_AGENT_MANAGER,
           'Failed to fetch models',
           { correlationId },
           error as Error
@@ -234,7 +232,7 @@ export class ModelAndAgentManager {
           error: String(error),
         });
 
-        this.logger.error(LoggingCategories.MODEL_AGENT_MANAGER, "Failed to get models", {}, error as Error);
+        this.logger.error("Failed to get models", {}, error as Error);
       }
 
       const cachedModels = Array.isArray(this.availableModels) ? this.availableModels : [];
@@ -242,9 +240,9 @@ export class ModelAndAgentManager {
       this.availableModels = fallbackModels;
 
       if (fallbackModels.length === 0) {
-        this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "No provider models discovered");
+        this.logger.warn("No provider models discovered");
       } else {
-        this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Using fallback models", {
+        this.logger.warn("Using fallback models", {
           count: fallbackModels.length,
         });
       }
@@ -323,7 +321,7 @@ export class ModelAndAgentManager {
       !this.selectedModel.providerID ||
       this.selectedModel.providerID === "opencode";
     if (!isLegacyGenericProvider) {
-      this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Persisted model not found in provider catalog", {
+      this.logger.warn("Persisted model not found in provider catalog", {
         providerId: this.selectedModel.providerID,
         modelId: this.selectedModel.modelID,
       });
@@ -339,7 +337,7 @@ export class ModelAndAgentManager {
         providerName: match.providerName || match.providerID,
       };
       await this.globalState.update("selectedModel", this.selectedModel);
-      this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, "Reconciled legacy model selection", {
+      this.logger.info("Reconciled legacy model selection", {
         providerId: this.selectedModel.providerID,
         modelId: this.selectedModel.modelID,
       });
@@ -347,7 +345,7 @@ export class ModelAndAgentManager {
     }
 
     if (candidates.length > 1) {
-      this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Ambiguous modelID across multiple providers", {
+      this.logger.warn("Ambiguous modelID across multiple providers", {
         modelId: this.selectedModel.modelID,
         candidateCount: candidates.length,
       });
@@ -387,7 +385,7 @@ export class ModelAndAgentManager {
       const defaultId = stdout.trim();
 
       if (defaultId) {
-        this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, "Found CLI default model", {
+        this.logger.debug("Found CLI default model", {
           defaultId,
         });
         const providerModelMatch = defaultId.match(/^([^/:\s]+)[/:](.+)$/);
@@ -417,18 +415,18 @@ export class ModelAndAgentManager {
             providerName: match.providerName || match.providerID,
           };
           await this.globalState.update("selectedModel", this.selectedModel);
-          this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, "Synced default model from CLI", {
+          this.logger.info("Synced default model from CLI", {
             modelId: match.modelID,
             providerId: match.providerID,
           });
         } else {
-          this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Could not uniquely resolve CLI default model", {
+          this.logger.warn("Could not uniquely resolve CLI default model", {
             defaultId,
           });
         }
       }
     } catch (error) {
-      this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, "Failed to resolve default model from CLI", {
+      this.logger.warn("Failed to resolve default model from CLI", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -477,7 +475,7 @@ export class ModelAndAgentManager {
 
       // Check if the SDK supports agent listing
       if (!client || typeof (client as any).app?.agents !== 'function') {
-        this.logger.warn(LoggingCategories.MODEL_AGENT_MANAGER, 'Agent discovery not available in current SDK', {
+        this.logger.warn('Agent discovery not available in current SDK', {
           correlationId,
         });
         // Fallback to built-in agents
@@ -546,13 +544,13 @@ export class ModelAndAgentManager {
           this.selectedAgent = agents[0].id;
         }
 
-        this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, "Fetched agents via SDK", {
+        this.logger.debug("Fetched agents via SDK", {
           sdkAgentCount: sdkAgents.length,
           totalAgentCount: agents.length,
           builtinAgentCount: BUILTIN_AGENTS.length,
         });
 
-        this.logger.info(LoggingCategories.MODEL_AGENT_MANAGER, 'Agents fetched successfully', {
+        this.logger.info('Agents fetched successfully', {
           correlationId,
           count: agents.length,
           sdkAgents: sdkAgents.length,
@@ -574,7 +572,6 @@ export class ModelAndAgentManager {
       }
     } catch (error) {
       this.logger.error(
-        LoggingCategories.MODEL_AGENT_MANAGER,
         'Failed to fetch agents',
         { correlationId },
         error as Error
@@ -733,14 +730,14 @@ export class ModelAndAgentManager {
     const settings = this.getSessionSettings(sessionId);
     if (settings.agent) {
       this.selectedAgent = settings.agent;
-      this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, "Restored agent for session", {
+      this.logger.debug("Restored agent for session", {
         sessionId,
         agent: settings.agent,
       });
     }
     if (settings.model?.providerID && settings.model?.modelID) {
       this.selectedModel = settings.model;
-      this.logger.debug(LoggingCategories.MODEL_AGENT_MANAGER, "Restored model for session", {
+      this.logger.debug("Restored model for session", {
         sessionId,
         modelId: settings.model.modelID,
         providerId: settings.model.providerID,

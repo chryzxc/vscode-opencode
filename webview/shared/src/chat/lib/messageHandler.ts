@@ -127,6 +127,40 @@ function streamDebug(...args: unknown[]): void {
   }
 }
 
+function logAssistantContentSource(
+  stage: string,
+  payload: {
+    messageId?: string | null;
+    responseType?: string | null;
+    selectedSource?: string;
+    renderable?: boolean;
+    eventType?: string;
+    structuredKind?: string;
+    partType?: string;
+    finalContent?: string;
+    partsContent?: string;
+    structuredMessage?: string;
+    topLevelContent?: string;
+    streamingContent?: string;
+  },
+): void {
+  webviewLogger.info("[OpenCode][assistant-content-source]", {
+    stage,
+    messageId: payload.messageId ?? null,
+    responseType: payload.responseType ?? null,
+    selectedSource: payload.selectedSource ?? null,
+    renderable: typeof payload.renderable === "boolean" ? payload.renderable : null,
+    eventType: payload.eventType ?? null,
+    structuredKind: payload.structuredKind ?? null,
+    partType: payload.partType ?? null,
+    finalPreview: (payload.finalContent ?? "").slice(0, 240),
+    partsPreview: (payload.partsContent ?? "").slice(0, 240),
+    structuredPreview: (payload.structuredMessage ?? "").slice(0, 240),
+    topLevelPreview: (payload.topLevelContent ?? "").slice(0, 240),
+    streamingPreview: (payload.streamingContent ?? "").slice(0, 240),
+  });
+}
+
 /**
  * Returns the first non-empty string from the provided values, or undefined if all are empty.
  */
@@ -282,111 +316,13 @@ function sanitizeReasoningChunk(value: string): string {
 }
 
 function looksLikeReasoningTrace(value: string, currentContent: string): boolean {
-  const text = value.trim();
-  if (!text || text.length < 60) {
+  void currentContent;
+  const trimmed = value.trim();
+  if (!trimmed) {
     return false;
   }
-
-  // IMPORTANT: Don't disable reasoning detection based on content length
-  // This was causing reasoning to leak into the final response when it arrived
-  // after some real content had already started streaming. Instead, we use
-  // a more sophisticated check below to avoid reclassifying actual user content.
-  //
-  // Only skip detection if we have VERY substantial content (> 500 chars) AND
-  // the new chunk is clearly continuation content (not reasoning-like)
-  if (currentContent.trim().length > 500) {
-    // If we have a lot of content already, only classify as reasoning if
-    // the new chunk has VERY strong reasoning markers (high score)
-    const normalized = text.toLowerCase();
-    let score = 0;
-
-    const strongReasoningPhrases = [
-      "the user is asking",
-      "this is a straightforward informational question",
-      "not a request to implement",
-      "not related to their specific codebase",
-      "general question",
-      "i don't need to",
-    ];
-
-    strongReasoningPhrases.forEach((phrase) => {
-      if (normalized.includes(phrase)) {
-        score += 3;
-      }
-    });
-
-    // Require strong evidence (score >= 5) when we already have lots of content
-    if (score < 5) {
-      return false;
-    }
-  }
-
-  const normalized = text.toLowerCase();
-  let score = 0;
-
-  const markerPhrases = [
-    "the user is asking",
-    "this is a straightforward informational question",
-    "i don't need to",
-    "not a request to implement",
-    "not related to their specific codebase",
-    "create todos",
-    "use explore",
-    "i'll help you with",
-    "let me start by",
-    "first, i need to",
-    "i should begin by",
-  ];
-  markerPhrases.forEach((phrase) => {
-    if (normalized.includes(phrase)) {
-      score += 1;
-    }
-  });
-
-  if (/\bi (?:need|should|must|will|can|can't)\b/.test(normalized)) {
-    score += 1;
-  }
-  if (/^\s*(use|create|read|write|analyze|review)\b/im.test(text)) {
-    score += 1;
-  }
-  if (
-    /\b(not related to|general question|don't need to|straightforward informational question)\b/.test(
-      normalized,
-    )
-  ) {
-    score += 2;
-  }
-
-  // Also check for tool-use monologue patterns as a fallback
-  if (score < 3 && looksLikeToolUseMonologue(text)) {
-    return true;
-  }
-
-  return score >= 3;
-}
-
-// Detects AI-internal tool-use narration that leaked into the main content stream
-// (e.g. "Let me search for...", "Let me read the file...", "Now let me check...").
-// Returns true if the text is predominantly a reasoning monologue with no user-facing value.
-function looksLikeToolUseMonologue(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed || trimmed.length < 40) {
-    return false;
-  }
-  const toolNarrationPatterns = [
-    /let me (?:(?:also|now|first|then|just) )?(?:read|search|look|find|check|examine|grep|analyze|explore|scan|fetch|run|verify)\b/gi,
-    /now let me (?:read|search|look|find|check|examine|grep|analyze|explore|verify)\b/gi,
-    /(?:good|great|okay),?\s+(?:so |now )(?:let me|i need|i should)\b/gi,
-    /\bi (?:need|should|will) (?:now )?(?:read|search|look|find|check|examine|use)\b/gi,
-  ];
-  let total = 0;
-  for (const pattern of toolNarrationPatterns) {
-    total += (trimmed.match(pattern) ?? []).length;
-    if (total >= 2) {
-      return true;
-    }
-  }
-  return false;
+  // Structured-only signal: detect explicit thought tags only.
+  return /<\s*\/?\s*thought\s*>/i.test(trimmed);
 }
 
 function splitMixedReasoningFromContent(
@@ -397,75 +333,17 @@ function splitMixedReasoningFromContent(
     return null;
   }
 
-  const markers = [
-    /the\s*user\s*(?:is\s*asking|just\s*said)/i,
-    /the\s*user\s*keeps?\s*saying/i,
-    /let\s*me\s*check/i,
-    /behavior\s*instructions?/i,
-    /tone[_\s-]*and[_\s-]*style/i,
-    /start\s*work\s*immediately/i,
-    /\bi\s*should\b/i,
-    /no\s*tools?\s*are\s*needed/i,
-    /without\s*flattery/i,
-  ];
-
-  let splitIndex = -1;
-  for (const marker of markers) {
-    const match = marker.exec(text);
-    if (!match) continue;
-    if (match.index <= 8) continue;
-    if (splitIndex < 0 || match.index < splitIndex) {
-      splitIndex = match.index;
-    }
-  }
-
-  // Fallback for leaked text where spaces/punctuation are stripped
-  // (e.g. "Theuserkeepssaying...Ishouldrespond...").
-  const compactChars: string[] = [];
-  const compactToRaw: number[] = [];
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index].toLowerCase();
-    if (/[a-z0-9]/.test(char)) {
-      compactChars.push(char);
-      compactToRaw.push(index);
-    }
-  }
-  const compact = compactChars.join("");
-  const compactMarkers = [
-    "theuserisasking",
-    "theuserjustsaid",
-    "theuserkeepssaying",
-    "letmecheck",
-    "behaviorinstructions",
-    "toneandstyle",
-    "startworkimmediately",
-    "ishouldrespond",
-    "ishouldacknowledge",
-    "ishouldreply",
-    "notoolsareneeded",
-    "withoutflattery",
-  ];
-  for (const marker of compactMarkers) {
-    const compactIndex = compact.indexOf(marker);
-    if (compactIndex <= 0 || compactIndex >= compactToRaw.length) {
-      continue;
-    }
-    const rawIndex = compactToRaw[compactIndex];
-    if (rawIndex <= 8) {
-      continue;
-    }
-    if (splitIndex < 0 || rawIndex < splitIndex) {
-      splitIndex = rawIndex;
-    }
-  }
-
-  if (splitIndex < 0) {
+  const openTag = /<\s*thought\s*>/i.exec(text);
+  const closeTag = /<\s*\/\s*thought\s*>/i.exec(text);
+  if (!openTag || !closeTag || closeTag.index <= openTag.index) {
     return null;
   }
 
-  const content = text.slice(0, splitIndex).trim();
-  const reasoning = text.slice(splitIndex).trim();
-  if (content.length < 8 || reasoning.length < 20) {
+  const content = text.slice(0, openTag.index).trim();
+  const reasoning = text
+    .slice(openTag.index + openTag[0].length, closeTag.index)
+    .trim();
+  if (!content || !reasoning) {
     return null;
   }
 
@@ -2050,10 +1928,7 @@ function shouldOverrideStreamingContentWithInteractivePrompt(
     return true;
   }
 
-  if (
-    looksLikeReasoningTrace(trimmed, "") ||
-    looksLikeToolUseMonologue(trimmed)
-  ) {
+  if (looksLikeReasoningTrace(trimmed, "")) {
     return true;
   }
 
@@ -2095,9 +1970,12 @@ function maybeInjectStreamingInteractiveContext(
     return;
   }
 
-  const currentContent = asString(getState().streaming?.content);
+  const streamingState = getState().streaming;
+  const currentContent = asString(streamingState?.content);
+  const hasRenderableContent = !!streamingState?.hasRenderableContent;
   const latestUserText = latestUserMessageText(getState());
   if (
+    hasRenderableContent &&
     !shouldOverrideStreamingContentWithInteractivePrompt(
       currentContent,
       latestUserText,
@@ -2112,8 +1990,8 @@ function maybeInjectStreamingInteractiveContext(
   }
 
   dispatch({
-    type: 'UPDATE_STREAMING_CONTENT',
-    payload: { content: synthesized, append: false },
+      type: 'UPDATE_STREAMING_CONTENT',
+      payload: { content: synthesized, append: false, renderable: true },
   });
 }
 
@@ -2205,6 +2083,17 @@ function isReasoningPart(part: UnknownRecord): boolean {
   );
 }
 
+function isRenderableAssistantTextPart(part: UnknownRecord): boolean {
+  if (isReasoningPart(part)) {
+    return false;
+  }
+  const type = normalizePartType(part.type);
+  if (!type) {
+    return true;
+  }
+  return type === "text" || type === "message" || type === "output_text";
+}
+
 function upsertStreamingStep(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -2278,7 +2167,7 @@ function contentFromParts(parts: unknown[]): string {
   return parts
     .map((part) => {
       const rec = asRecord(part);
-      if (!rec || isReasoningPart(rec)) {
+      if (!rec || !isRenderableAssistantTextPart(rec)) {
         return '';
       }
       return asRichString(rec.text) || asRichString(rec.content) || asRichString(rec.delta);
@@ -2634,13 +2523,82 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     return mixed.content;
   };
 
+  // Normalize structured output early so content-source selection can rely on
+  // structured responseType/message without falling back to free-form text.
+  const normalizedStructuredOutput =
+    normalizeStructuredOutput(rec.structuredOutput) ??
+    normalizeStructuredOutput((rec as Record<string, unknown>).structured_output) ??
+    normalizeStructuredOutput(asRecord(rec.info)?.structuredOutput) ??
+    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured_output) ??
+    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured);
+
   const role = asString(rec.role) || asString(asRecord(rec.info)?.role);
-  const content = pickBestContentCandidate([
+  const nonReasoningPartsContent = contentFromParts(sanitizedMergedParts).trim();
+  const contentFromTopLevel = pickBestContentCandidate([
     splitReasoningFromCandidate(asRichString(rec.content)),
     splitReasoningFromCandidate(asRichString(rec.text)),
-    contentFromParts(sanitizedMergedParts),
     summaryText(rec.info),
   ]);
+  const structuredMessage = asString(normalizedStructuredOutput?.message).trim();
+  const provisionalResponseType = firstNonEmptyString(
+    asString(rec.responseType),
+    normalizedStructuredOutput?.responseType,
+  )?.toLowerCase();
+  const hasParts = Array.isArray(parts) && parts.length > 0;
+  // Structured-first rule: when provider parts exist, non-reasoning text parts
+  // are authoritative for assistant body rendering.
+  let content = hasParts
+    ? nonReasoningPartsContent || (provisionalResponseType === "message" ? structuredMessage : "")
+    : structuredMessage || contentFromTopLevel;
+  const sourceMessageId =
+    asString(asRecord(rec.info)?.id) || asString((rec as UnknownRecord).id) || null;
+  const contentSelectedSource = hasParts
+    ? nonReasoningPartsContent
+      ? "parts"
+      : provisionalResponseType === "message" && structuredMessage
+        ? "structured.message"
+        : "none"
+    : structuredMessage
+      ? "structured.message"
+      : contentFromTopLevel
+        ? "top-level"
+        : "none";
+  logAssistantContentSource("normalizeMessage:content-selection", {
+    messageId: sourceMessageId,
+    responseType: provisionalResponseType ?? null,
+    selectedSource: contentSelectedSource,
+    finalContent: content,
+    partsContent: nonReasoningPartsContent,
+    structuredMessage,
+    topLevelContent: contentFromTopLevel,
+  });
+  if (
+    hasParts &&
+    !nonReasoningPartsContent &&
+    contentFromTopLevel &&
+    !content
+  ) {
+    webviewLogger.info("Dropping top-level content because message parts are authoritative", {
+      messageId:
+        asString(asRecord(rec.info)?.id) || asString((rec as UnknownRecord).id),
+      topLevelContentPreview: contentFromTopLevel.slice(0, 220),
+      partCount: parts.length,
+      responseType: provisionalResponseType,
+    });
+  }
+  if (
+    nonReasoningPartsContent &&
+    contentFromTopLevel &&
+    normalizeComparableText(nonReasoningPartsContent) !==
+      normalizeComparableText(contentFromTopLevel)
+  ) {
+    webviewLogger.info("Content source mismatch; preferring parts content", {
+      messageId:
+        asString(asRecord(rec.info)?.id) || asString((rec as UnknownRecord).id),
+      partsContentPreview: nonReasoningPartsContent.slice(0, 220),
+      topLevelContentPreview: contentFromTopLevel.slice(0, 220),
+    });
+  }
 
   const streamingRawContent = asString(streaming?.content);
   const streamingMixed = splitMixedReasoningFromContent(streamingRawContent);
@@ -2655,36 +2613,20 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     content || "",
     streamingContent,
   );
+  const shouldUseStreamingContent = !nonReasoningPartsContent && preferStreamingContent;
   const normalized: Message = {
     ...(message as Message),
     role: role || (parts.length > 0 ? 'assistant' : message.role),
-    content: preferStreamingContent ? streamingContent : content || message.content,
-    parts: preferStreamingContent
+    content: shouldUseStreamingContent ? streamingContent : content || message.content,
+    parts: shouldUseStreamingContent
       ? partsWithStreamingContent(sanitizedMergedParts as MessagePart[], streamingContent)
       : sanitizedMergedParts.length > 0
         ? (sanitizedMergedParts as Message['parts'])
         : message.parts
   };
 
-  const isImplementationPlanPlaceholderBody = (value: string): boolean => {
-    const normalizedValue = normalizeComparableText(value);
-    if (!normalizedValue) {
-      return false;
-    }
-    return (
-      normalizedValue === "implementation plan is ready. use view plan to inspect details." ||
-      normalizedValue === "implementation plan is ready. use view plan to inspect details"
-    );
-  };
-
   // Preserve a normalized structured output payload so question/options data
   // survives message normalization even when the source uses legacy field names.
-  const normalizedStructuredOutput =
-    normalizeStructuredOutput(rec.structuredOutput) ??
-    normalizeStructuredOutput((rec as Record<string, unknown>).structured_output) ??
-    normalizeStructuredOutput(asRecord(rec.info)?.structuredOutput) ??
-    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured_output) ??
-    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured);
   if (normalizedStructuredOutput) {
     (normalized as Record<string, unknown>).structuredOutput = normalizedStructuredOutput;
     if (!normalized.responseType && normalizedStructuredOutput.responseType) {
@@ -2716,13 +2658,13 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     normalized.responseType,
     normalizedStructuredOutput?.responseType,
   )?.toLowerCase();
+  if (responseType !== "implementation_plan" && normalized.plan) {
+    delete (normalized as Record<string, unknown>).plan;
+  }
   if (responseType === "implementation_plan" && normalized.plan) {
     const summaryFromPlan = asString(normalized.plan.summary).trim();
     const currentContent = asString(normalized.content).trim();
-    if (
-      summaryFromPlan &&
-      (!currentContent || isImplementationPlanPlaceholderBody(currentContent))
-    ) {
+    if (summaryFromPlan && !currentContent) {
       normalized.content = summaryFromPlan;
     }
   }
@@ -2833,6 +2775,19 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
         if (pr) {
           allEvents.push(...interactiveEventsFromToolQuestionPart(pr));
         }
+      }
+      if (
+        allEvents.length > 0 &&
+        (!Array.isArray(normalized.interactiveEvents) ||
+          normalized.interactiveEvents.length === 0)
+      ) {
+        normalized.interactiveEvents = allEvents;
+      }
+      if (
+        allEvents.length > 0 &&
+        !firstNonEmptyString(normalized.responseType, normalizedStructuredOutput?.responseType)
+      ) {
+        normalized.responseType = "question";
       }
       const synthesized = synthesizeQuestionContextMessage(allEvents);
       if (synthesized) {
@@ -5027,6 +4982,7 @@ function handleStreamEvent(
       payload: {
         messageId,
         content: "",
+        hasRenderableContent: false,
         reasoning: "",
         reasoningEvents: [],
         steps: [],
@@ -5155,6 +5111,14 @@ function handleStreamEvent(
         asRichString(part.content) ||
         asRichString(properties?.text) ||
         asRichString(properties?.content);
+      const hasExplicitReasoningOnlyChunk =
+        reasoningChunk.trim().length > 0 &&
+        !deltaChunk &&
+        !structuredText &&
+        !asRichString(part.text) &&
+        !asRichString(part.content) &&
+        !asRichString(properties?.text) &&
+        !asRichString(properties?.content);
       const isProgressPartType =
         partType === "tool" ||
         partType === "step-start" ||
@@ -5212,7 +5176,21 @@ function handleStreamEvent(
 
       // SKIP CONTENT PROCESSING for reasoning parts, but allow all other event processing to continue
       // This prevents reasoning from being rendered in the UI while still processing steps, tools, and interactive events
-      const isReasoningPart = partType === 'reasoning' || structuredKind === 'thinking' || isInReasoningPart;
+      if (hasExplicitReasoningOnlyChunk) {
+        const sanitized = sanitizeReasoningChunk(reasoningChunk);
+        if (sanitized) {
+          dispatch({
+            type: "UPDATE_STREAMING_REASONING",
+            payload: { reasoning: sanitized, append: true },
+          });
+        }
+      }
+
+      const isReasoningPart =
+        partType === 'reasoning' ||
+        structuredKind === 'thinking' ||
+        isInReasoningPart ||
+        hasExplicitReasoningOnlyChunk;
 
       if (isReasoningPart) {
         webviewLogger.debug('Skipping reasoning content processing', { partType, structuredKind, isInReasoningPart, reasoningLength: (reasoningChunk || textChunk || '').length });
@@ -5265,9 +5243,18 @@ function handleStreamEvent(
           });
         }
 
-        // Explicitly filter out reasoning/thinking parts to prevent them from being rendered as main content
-        // Even if reasoning wasn't detected by the patterns above, we should not render reasoning parts as content
-        if (hasMainContent || (!isReasoning && partType !== "reasoning" && structuredKind !== "thinking" && (structuredKind === "message" || partType === "text" || (!!textChunk && !isProgressPartType) || (!partType && structuredKind !== "progress")))) {
+        // Strict structured gate: only append assistant body content for explicit
+        // message/text chunks. Do not infer from arbitrary text-like payloads.
+        const canAppendMainContent =
+          hasMainContent ||
+          (!isReasoning &&
+            partType !== "reasoning" &&
+            structuredKind !== "thinking" &&
+            (structuredKind === "message" ||
+              partType === "text" ||
+              partType === "message"));
+
+        if (canAppendMainContent) {
           let candidateChunk = hasMainContent ? mainContent : textChunk;
 
           const rawReasoningLike = looksLikeReasoningTrace(candidateChunk, streamingState?.content || "");
@@ -5335,7 +5322,21 @@ function handleStreamEvent(
             });
             dispatch({
               type: "UPDATE_STREAMING_CONTENT",
-              payload: { content: contentPatch.content, append: contentPatch.append },
+              payload: {
+                content: contentPatch.content,
+                append: contentPatch.append,
+                renderable: true,
+              },
+            });
+            logAssistantContentSource("stream:message.part.updated", {
+              messageId,
+              selectedSource: "message.part.updated",
+              renderable: true,
+              eventType,
+              structuredKind,
+              partType,
+              finalContent: contentPatch.content,
+              streamingContent: streamingState?.content || "",
             });
           }
         }
@@ -5543,6 +5544,10 @@ function handleStreamEvent(
       break;
     }
     case 'message.updated': {
+      if (eventRole === "user") {
+        dispatch({ type: "SET_PROCESSING", payload: true });
+        break;
+      }
       webviewLogger.debug(`Processing message.updated`, {
         messageId,
         finish: asBoolean(asRecord(payload.info)?.finish, false),
@@ -5631,7 +5636,23 @@ function handleStreamEvent(
               if (contentPatch) {
                 dispatch({
                   type: 'UPDATE_STREAMING_CONTENT',
-                  payload: { content: contentPatch.content, append: contentPatch.append }
+                  payload: {
+                    content: contentPatch.content,
+                    append: contentPatch.append,
+                    renderable: true,
+                  }
+                });
+                logAssistantContentSource("stream:message.updated:structured-message", {
+                  messageId,
+                  responseType: structuredOutput?.responseType ?? null,
+                  selectedSource: "message.updated.structured.message",
+                  renderable: true,
+                  eventType,
+                  structuredKind,
+                  partType,
+                  finalContent: contentPatch.content,
+                  structuredMessage: messageText,
+                  streamingContent: streamingState?.content || "",
                 });
               }
             } else {
@@ -5643,7 +5664,23 @@ function handleStreamEvent(
               if (contentPatch) {
                 dispatch({
                   type: 'UPDATE_STREAMING_CONTENT',
-                  payload: { content: contentPatch.content, append: contentPatch.append }
+                  payload: {
+                    content: contentPatch.content,
+                    append: contentPatch.append,
+                    renderable: true,
+                  }
+                });
+                logAssistantContentSource("stream:message.updated:structured-message-raw", {
+                  messageId,
+                  responseType: structuredOutput?.responseType ?? null,
+                  selectedSource: "message.updated.structured.message.raw",
+                  renderable: true,
+                  eventType,
+                  structuredKind,
+                  partType,
+                  finalContent: contentPatch.content,
+                  structuredMessage,
+                  streamingContent: streamingState?.content || "",
                 });
               }
             }
@@ -5844,6 +5881,7 @@ function handleStreamEvent(
         payload: {
           messageId,
           content: "",
+          hasRenderableContent: false,
           reasoning: "",
           reasoningEvents: [],
           steps: [],
@@ -5879,10 +5917,29 @@ function handleStreamEvent(
     case 'content':
     case 'text':
     case 'text-delta': {
+      if (eventRole && eventRole !== "assistant") {
+        dispatch({ type: "SET_PROCESSING", payload: true });
+        break;
+      }
+      if (structuredKind && structuredKind !== "message") {
+        dispatch({ type: "SET_PROCESSING", payload: true });
+        break;
+      }
       const chunk =
         asString(payload.delta) || asString(payload.text) || asString(payload.content) || asString(payload.chunk);
       if (chunk) {
         const streamingState = getState().streaming;
+        const skipContentChunk =
+          (streamingState?.inReasoningPart ?? false) ||
+          structuredKind === "thinking" ||
+          partType === "reasoning" ||
+          !!asString(payload.reasoning) ||
+          !!asString(payload.thinking) ||
+          !!asString(payload.thought);
+        if (skipContentChunk) {
+          dispatch({ type: "SET_PROCESSING", payload: true });
+          break;
+        }
         const contentEmpty = !streamingState || !streamingState.content.trim();
         let candidateChunk = contentEmpty
           ? stripLeadingUserEcho(chunk, getState())
@@ -5933,7 +5990,21 @@ function handleStreamEvent(
         });
         dispatch({
           type: 'UPDATE_STREAMING_CONTENT',
-          payload: { content: contentPatch.content, append: contentPatch.append },
+          payload: {
+            content: contentPatch.content,
+            append: contentPatch.append,
+            renderable: !!streamingState?.hasRenderableContent,
+          },
+        });
+        logAssistantContentSource("stream:content-delta", {
+          messageId,
+          selectedSource: "contentDelta",
+          renderable: !!streamingState?.hasRenderableContent,
+          eventType,
+          structuredKind,
+          partType,
+          finalContent: contentPatch.content,
+          streamingContent: streamingState?.content || "",
         });
       }
       break;
@@ -6153,7 +6224,23 @@ function handleStreamEvent(
         }
         dispatch({
           type: "UPDATE_STREAMING_CONTENT",
-          payload: { content: contentPatch.content, append: contentPatch.append },
+          payload: {
+            content: contentPatch.content,
+            append: contentPatch.append,
+            renderable: true,
+          },
+        });
+        logAssistantContentSource("stream:structured.message", {
+          messageId,
+          responseType: structuredOutput?.responseType ?? null,
+          selectedSource: "structured.message",
+          renderable: true,
+          eventType,
+          structuredKind,
+          partType,
+          finalContent: contentPatch.content,
+          structuredMessage: messageText,
+          streamingContent: streamingState?.content || "",
         });
         consumed = true;
       } else if (structuredKind === "progress") {
@@ -6738,8 +6825,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               normalizedMessage,
               {
                 ...snapshotStreaming,
-                content: "",
-                reasoning: "",
+          content: "",
+          hasRenderableContent: false,
+          reasoning: "",
                 reasoningEvents: [],
               },
               Array.isArray(normalizedMessage.parts)
@@ -7286,8 +7374,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const rawContent = currentStreaming.content ?? "";
           const timeoutLikeError = isLikelyInteractiveAwaitTimeout(errorMsg);
           const contentIsReasoningMonologue =
-            looksLikeReasoningTrace(rawContent, "") ||
-            looksLikeToolUseMonologue(rawContent);
+            looksLikeReasoningTrace(rawContent, "");
           const suppressLowSignalTimeoutFragment =
             timeoutLikeError && isLowSignalTimeoutFragment(rawContent);
           const partialMessage: Message = {

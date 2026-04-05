@@ -218,7 +218,7 @@ export class MessageStreamService {
     };
 
     visit(rawEvent);
-    return [...hints];
+    return Array.from(hints);
   }
 
   /**
@@ -880,7 +880,7 @@ export class MessageStreamService {
     this.recentEventSignatures.set(signature, { timestamp: now, source });
 
     if (this.recentEventSignatures.size > 500) {
-      for (const [existingSignature, timestamp] of this.recentEventSignatures) {
+      for (const [existingSignature, timestamp] of Array.from(this.recentEventSignatures.entries())) {
         if (now - timestamp.timestamp > staleEntryWindowMs) {
           this.recentEventSignatures.delete(existingSignature);
         }

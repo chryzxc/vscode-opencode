@@ -264,7 +264,7 @@ export class OpencodeServerManager {
     }
 
     const flow = log.startFeatureFlow('EnsureServerRunning', {
-      currentStatus: this.status,
+      currentStatus: this._status,
       currentPort: this.port,
     });
 
@@ -273,7 +273,7 @@ export class OpencodeServerManager {
       const client = await this.startupPromise;
       log.endFeatureFlow(flow, 'completed', {
         port: this.port,
-        status: this.status,
+        status: this._status,
       });
       return client;
     } catch (error) {
@@ -1029,5 +1029,42 @@ export class OpencodeServerManager {
         finish(false);
       }
     });
+  }
+
+  /**
+   * Compacts a session by removing old messages to reduce token usage.
+   *
+   * This method calls the SDK client's compact session endpoint to
+   * compress the session history while preserving important context.
+   *
+   * @param sessionId - The ID of the session to compact
+   * @returns Promise resolving to the compaction response data
+   * @throws {Error} If client is not available or compaction fails
+   */
+  async compactSession(sessionId: string): Promise<{ data?: unknown }> {
+    if (!this.client) {
+      throw new Error("Cannot compact session: client not available");
+    }
+
+    try {
+      const clientRec = this.client as unknown as Record<string, unknown>;
+      const sessionRec =
+        clientRec.session && typeof clientRec.session === "object"
+          ? (clientRec.session as Record<string, unknown>)
+          : null;
+
+      if (!sessionRec || typeof sessionRec.compact !== "function") {
+        throw new Error("compact method not available on client");
+      }
+
+      const result = await (sessionRec.compact as (sessionId: string) => Promise<{ data?: unknown }>)(
+        sessionId,
+      );
+
+      return result;
+    } catch (error) {
+      log.error("Failed to compact session", { sessionId, error });
+      throw error;
+    }
   }
 }

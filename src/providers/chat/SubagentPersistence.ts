@@ -73,7 +73,7 @@ export class SubagentPersistence {
       ...Object.keys(existingSummaries),
       ...Object.keys(incomingSummaries),
     ]);
-    for (const parentMessageId of parentMessageIds) {
+    for (const parentMessageId of Array.from(parentMessageIds)) {
       const merged = this.mergeSubagentEntries(
         existingSummaries[parentMessageId],
         Array.isArray(incomingSummaries[parentMessageId])
@@ -92,7 +92,7 @@ export class SubagentPersistence {
       ...Object.keys(existingDetails),
       ...Object.keys(incomingDetails),
     ]);
-    for (const detailId of detailIds) {
+    for (const detailId of Array.from(detailIds)) {
       const prev = this.asRecord(existingDetails[detailId]) || {};
       const next = this.asRecord(incomingDetails[detailId]) || {};
       mergedDetails[detailId] = {

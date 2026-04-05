@@ -21,7 +21,7 @@ export class SkillManagerService {
   private backupsDir: string;
   private metadata?: SkillsMetadata;
   private ajv: Ajv;
-  private validate: Ajv['ValidateFunction'];
+  private validate: ReturnType<Ajv['compile']>;
   private logger = createLogger(LoggingCategories.UI_INTERACTION);
 
   constructor(private context: vscode.ExtensionContext) {

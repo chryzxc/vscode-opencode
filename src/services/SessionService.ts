@@ -834,7 +834,7 @@ function mergeConversationMessages(messageGroups: unknown[][]): unknown[] {
 function hasSessionAliasConflicts(
   aliasesByCanonicalId: Map<string, string[]>,
 ): boolean {
-  for (const [canonicalId, aliases] of aliasesByCanonicalId.entries()) {
+  for (const [canonicalId, aliases] of Array.from(aliasesByCanonicalId.entries())) {
     if (aliases.some((alias) => alias !== canonicalId)) {
       return true;
     }
@@ -894,7 +894,7 @@ function coalesceSessionsById(sessions: Session[]): {
   }
 
   const aliasesByCanonicalId = new Map<string, string[]>();
-  for (const [canonicalId, aliasSet] of aliasSets.entries()) {
+  for (const [canonicalId, aliasSet] of Array.from(aliasSets.entries())) {
     aliasesByCanonicalId.set(canonicalId, Array.from(aliasSet));
   }
 
@@ -1720,7 +1720,7 @@ export class SessionService {
   private async mergeMessagesForSessionAliases(
     aliasesByCanonicalId: Map<string, string[]>,
   ): Promise<void> {
-    for (const [canonicalId, aliases] of aliasesByCanonicalId.entries()) {
+    for (const [canonicalId, aliases] of Array.from(aliasesByCanonicalId.entries())) {
       const normalizedCanonicalId = normalizeSessionId(canonicalId);
       if (!normalizedCanonicalId) {
         continue;

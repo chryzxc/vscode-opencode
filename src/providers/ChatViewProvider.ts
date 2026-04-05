@@ -788,9 +788,9 @@ export class ChatViewProvider
 
     if (!sessionId || this.executingQueueSessionIds.has(sessionId)) {
       if (this.executingQueueSessionIds.has(sessionId)) {
-        log.endFeatureFlow(flow, 'skipped', { reason: 'Queue already executing' });
+        log.endFeatureFlow(flow, { status: 'skipped', reason: 'Queue already executing' });
       } else {
-        log.endFeatureFlow(flow, 'failed', { reason: 'No sessionId provided' });
+        log.endFeatureFlow(flow, { status: 'failed', reason: 'No sessionId provided' });
       }
       return;
     }
@@ -804,10 +804,10 @@ export class ChatViewProvider
 
     try {
       await this.queueManager.handleExecuteQueue({ sessionId });
-      log.endFeatureFlow(flow, 'completed', { sessionId });
+      log.endFeatureFlow(flow, { status: 'completed', sessionId });
     } catch (error) {
       log.error('Failed to execute queue', { sessionId }, error as Error);
-      log.endFeatureFlow(flow, 'failed', { error: String(error) });
+      log.endFeatureFlow(flow, { status: 'failed', error: String(error) });
     } finally {
       this.executingQueueSessionIds.delete(sessionId);
       this.sendQueueUpdate(sessionId);
@@ -841,7 +841,7 @@ export class ChatViewProvider
     const flow = log.startFeatureFlow('LoadSession', { sessionId });
 
     if (!sessionId) {
-      log.endFeatureFlow(flow, 'failed', { reason: 'No sessionId provided' });
+      log.endFeatureFlow(flow, { status: 'failed', reason: 'No sessionId provided' });
       return;
     }
 
@@ -963,13 +963,13 @@ export class ChatViewProvider
     } catch (error) {
       log.error('Failed to load session', { sessionId }, error as Error);
       vscode.window.showErrorMessage(`Failed to load session: ${error}`);
-      log.endFeatureFlow(flow, 'failed', { error: String(error) });
+      log.endFeatureFlow(flow, { status: 'failed', error: String(error) });
     } finally {
       // Remove from processing state regardless of success or error
       this.processingSessionIds.delete(sessionId);
       this.sendProcessingSessionsUpdate();
       if (!flow.result) {
-        log.endFeatureFlow(flow, 'completed', { sessionId });
+        log.endFeatureFlow(flow, { status: 'completed', sessionId });
       }
     }
   }
@@ -982,7 +982,7 @@ export class ChatViewProvider
     const flow = log.startFeatureFlow('DeleteSession', { sessionId });
 
     if (!sessionId) {
-      log.endFeatureFlow(flow, 'failed', { reason: 'No sessionId provided' });
+      log.endFeatureFlow(flow, { status: 'failed', reason: 'No sessionId provided' });
       return;
     }
 
@@ -998,11 +998,11 @@ export class ChatViewProvider
       }
 
       await this.handleGetSessions();
-      log.endFeatureFlow(flow, 'completed', { sessionId });
+      log.endFeatureFlow(flow, { status: 'completed', sessionId });
     } catch (error) {
       log.error('Failed to delete session', { sessionId }, error as Error);
       vscode.window.showErrorMessage(`Failed to delete session: ${error}`);
-      log.endFeatureFlow(flow, 'failed', { error: String(error) });
+      log.endFeatureFlow(flow, { status: 'failed', error: String(error) });
     }
   }
 
@@ -2485,7 +2485,7 @@ export class ChatViewProvider
             toMode: message.mode,
           });
 
-          this.logger.info(LoggingCategories.UI_INTERACTION, 'User toggled chat mode', {
+          this.logger.info( 'User toggled chat mode', {
             correlationId,
             fromMode: this.currentMode,
             toMode: message.mode,
@@ -2495,7 +2495,7 @@ export class ChatViewProvider
             await this.handleToggleMode(message.mode);
             this.logger.endFeatureFlow(correlationId, { success: true });
           } catch (error) {
-            this.logger.error(LoggingCategories.UI_INTERACTION, 'Failed to toggle mode', {
+            this.logger.error( 'Failed to toggle mode', {
               correlationId,
               error: (error as Error).message,
             });
@@ -5362,7 +5362,7 @@ export class ChatViewProvider
               errorMessage,
             );
 
-            log.endFeatureFlow(retryFlow, 'completed', { retrySuccess: true });
+            log.endFeatureFlow(retryFlow, { status: 'completed', retrySuccess: true });
             return result;
           }
           errorMessage = [
@@ -5785,7 +5785,7 @@ export class ChatViewProvider
       }
 
       // End feature flow tracking
-      log.endFeatureFlow(flow, 'completed', { totalDuration });
+      log.endFeatureFlow(flow, { status: 'completed', totalDuration });
     }
   }
 

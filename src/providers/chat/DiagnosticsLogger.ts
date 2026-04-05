@@ -28,7 +28,7 @@ export class DiagnosticsLogger {
     private extractHistoryMessageId: (message: any) => string | undefined,
     private isRenderableHistoryMessage: (message: any) => boolean,
     private historyMessageFingerprint: (message: any) => string,
-  ) {}
+  ) { }
 
   /**
    * Log diagnostics for stream events
@@ -445,7 +445,7 @@ export class DiagnosticsLogger {
       this.renderParityDebugFilePath = path.join(
         workspaceFolder.uri.fsPath,
         ".opencode-debug",
-        "render-parity.ndjson",
+        "isLikelyPlanMarkdownFile",
       );
       return this.renderParityDebugFilePath;
     }

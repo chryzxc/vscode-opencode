@@ -155,7 +155,7 @@ export class PlanViewProvider {
 
   private saveComments() {
     const obj: { [planId: string]: any[] } = {};
-    for (const [key, val] of this._commentsByPlan.entries()) {
+    for (const [key, val] of Array.from(this._commentsByPlan.entries())) {
       obj[key] = val;
     }
     this._context.workspaceState.update('opencode.planComments', obj);

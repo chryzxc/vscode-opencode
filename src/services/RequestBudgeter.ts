@@ -411,7 +411,8 @@ export class RequestBudgeter {
       );
     }
 
-    if (status.projectedMonthlyUsage > status.monthlyQuota) {
+    const plan = this.getPlan();
+    if (status.projectedMonthlyUsage > plan.monthlyQuota) {
       advice.push(
         `🚨 At your current rate, you'll run out ${status.daysRemaining} days early! Reduce to ${status.recommendedDailyLimit} requests/day.`,
       );

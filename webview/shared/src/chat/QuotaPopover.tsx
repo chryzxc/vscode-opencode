@@ -79,14 +79,14 @@ export function QuotaPopover() {
   // Format last updated time
   const formatLastUpdated = () => {
     if (!quotaData?.lastUpdated) return 'Unknown';
-    const diff = Date.now() - quotaData.lastUpdated;
-    const minutes = Math.floor(diff / 60000);
-    if (minutes < 1) return 'Just now';
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    return `${days}d ago`;
+    const date = new Date(quotaData.lastUpdated);
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
   };
 
   // Helper to get icon for quota type

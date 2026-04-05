@@ -160,7 +160,7 @@ export class PlanManager {
     try {
       const normalizedContent = this.firstNonEmptyString(content);
       if (!normalizedContent) {
-        this.logger.endFeatureFlow(flow, 'skipped', { reason: 'No content' });
+        this.logger.endFeatureFlow(flow, { status: 'skipped', reason: 'No content' });
         return undefined;
       }
 
@@ -172,7 +172,7 @@ export class PlanManager {
         : undefined;
       const resolvedPath = resolvedPreferred;
       if (!resolvedPath) {
-        this.logger.endFeatureFlow(flow, 'failed', { reason: 'No valid path' });
+        this.logger.endFeatureFlow(flow, { status: 'failed', reason: 'No valid path' });
         return undefined;
       }
 
@@ -189,11 +189,11 @@ export class PlanManager {
       );
 
       this.logger.info("Auto-persisted plan", { path: normalizedPath });
-      this.logger.endFeatureFlow(flow, 'completed');
+      this.logger.endFeatureFlow(flow, { status: 'completed' });
       return normalizedPath;
     } catch (err) {
       this.logger.error(`Failed to persist plan: ${err instanceof Error ? err.message : String(err)}`, { path: preferredPath });
-      this.logger.endFeatureFlow(flow, 'failed');
+      this.logger.endFeatureFlow(flow, { status: 'failed' });
       return undefined;
     }
   }
@@ -253,8 +253,10 @@ export class PlanManager {
     ) {
       return false;
     }
+    const isPlanDirectoryPath =
+      /(^|\/)\.?plans?\//.test(lower) || /(^|\/)planning\//.test(lower);
     return (
-      lower.includes("/.sisyphus/plans/") ||
+      isPlanDirectoryPath ||
       /(^|\/)implementation_plan(?:_[a-z0-9-]+)?\.md$/.test(lower) ||
       /(^|\/)plans?\//.test(lower) ||
       lower.includes("plan")
@@ -267,9 +269,10 @@ export class PlanManager {
   getPlanFileCandidateScore(filePath: string): number {
     const normalized = filePath.replace(/\\/g, "/").toLowerCase();
     let score = 0;
-
-    if (normalized.includes("/.sisyphus/plans/")) {
-      score += 100;
+    const isPlanDirectoryPath =
+      /(^|\/)\.?plans?\//.test(normalized) || /(^|\/)planning\//.test(normalized);
+    if (isPlanDirectoryPath) {
+      score += 60;
     }
 
     if (normalized.includes("plan")) {
@@ -400,7 +403,7 @@ export class PlanManager {
       }
     }
 
-    return [...new Set(candidates)];
+    return Array.from(new Set(candidates));
   }
 
   /**
@@ -473,7 +476,7 @@ export class PlanManager {
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder || workspaceFolder.uri.scheme !== "file") {
-      this.logger.endFeatureFlow(flow, 'skipped', { reason: 'No valid workspace folder' });
+      this.logger.endFeatureFlow(flow, { status: 'skipped', reason: 'No valid workspace folder' });
       return [];
     }
 
@@ -510,14 +513,15 @@ export class PlanManager {
         topCandidates: scored.slice(0, 3),
       });
 
-      this.logger.endFeatureFlow(flow, 'completed', {
+      this.logger.endFeatureFlow(flow, {
+        status: 'completed',
         totalCandidates: scored.length,
         duration: Date.now() - startTime,
       });
       return scored;
     } catch (err) {
       this.logger.error("Plan file discovery failed", { workspacePath }, err as Error);
-      this.logger.endFeatureFlow(flow, 'failed', { error: String(err) });
+      this.logger.endFeatureFlow(flow, { status: 'failed', error: String(err) });
       return [];
     }
   }

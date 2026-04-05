@@ -394,6 +394,43 @@ describe('dedupeMirrorMessagesForCanonical', () => {
     const result = dedupeMirrorMessagesForCanonical([msg1, msg2]);
     assert.strictEqual(result.length, 1);
   });
+
+  it('should preserve rawResponse when deduplicating by ID', () => {
+    const msgWithDebug: Message = {
+      id: 'm1',
+      role: 'assistant',
+      content: 'Hello',
+      rawResponse: '{"debug":true}',
+    };
+    const msgWithoutDebug: Message = {
+      id: 'm1',
+      role: 'assistant',
+      content: 'Hello world',
+    };
+
+    const result = dedupeMirrorMessagesForCanonical([msgWithDebug, msgWithoutDebug]);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual((result[0] as any).rawResponse, '{"debug":true}');
+  });
+
+  it('should preserve rawResponse when deduplicating by text', () => {
+    const now = Date.now();
+    const msgWithDebug: Message = {
+      role: 'assistant',
+      content: 'same text',
+      created: now,
+      rawResponse: '{"debug":"yes"}',
+    };
+    const msgWithoutDebug: Message = {
+      role: 'assistant',
+      content: 'same text',
+      created: now + 500,
+    };
+
+    const result = dedupeMirrorMessagesForCanonical([msgWithDebug, msgWithoutDebug]);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual((result[0] as any).rawResponse, '{"debug":"yes"}');
+  });
 });
 
 describe('coalesceAssistantRunForCanonical', () => {

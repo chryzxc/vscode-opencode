@@ -110,7 +110,7 @@ export class StreamEventHandler {
       messageId,
     });
 
-    this.logger.info(LoggingCategories.STREAM_HANDLER, 'AI stream started', {
+    this.logger.info( 'AI stream started', {
       correlationId,
       sessionId,
       messageId,
@@ -122,7 +122,7 @@ export class StreamEventHandler {
    */
   endStream(sessionId: string, messageId: string, success: boolean): void {
     if (!this.streamStartTime) {
-      this.logger.warn(LoggingCategories.STREAM_HANDLER, 'Stream ended but never started', {
+      this.logger.warn( 'Stream ended but never started', {
         sessionId,
         messageId,
       });
@@ -148,7 +148,7 @@ export class StreamEventHandler {
       });
     }
 
-    this.logger.info(LoggingCategories.STREAM_HANDLER, 'AI stream ended', {
+    this.logger.info( 'AI stream ended', {
       sessionId,
       messageId,
       duration,
@@ -170,7 +170,7 @@ export class StreamEventHandler {
     messageId: string,
     structured: any,
   ): void {
-    this.logger.info(LoggingCategories.STREAM_HANDLER, 'Structured output processed', {
+    this.logger.info( 'Structured output processed', {
       sessionId,
       messageId,
       responseType: structured.responseType,

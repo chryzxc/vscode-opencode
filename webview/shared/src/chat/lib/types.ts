@@ -194,6 +194,8 @@ export interface ReasoningEvent {
 export interface StreamingState {
   messageId: string | null;
   content: string;
+  /** True only after explicit renderable assistant text/message content is observed. */
+  hasRenderableContent?: boolean;
   reasoning: string;
   reasoningEvents: ReasoningEvent[];
   steps: StreamingStep[];

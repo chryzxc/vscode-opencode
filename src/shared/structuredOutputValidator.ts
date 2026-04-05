@@ -689,9 +689,10 @@ export function sanitizeStructuredOutput(
     interactiveEvents = [];
   }
 
-  sanitized.interactiveEvents = interactiveEvents;
+  const eventsArray = interactiveEvents as unknown[];
+  sanitized.interactiveEvents = eventsArray;
 
-  sanitized.interactiveEvents = interactiveEvents.map((event) => {
+  sanitized.interactiveEvents = eventsArray.map((event) => {
     if (!event || typeof event !== "object") {
       return event;
     }

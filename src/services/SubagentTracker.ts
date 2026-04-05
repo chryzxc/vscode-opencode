@@ -261,7 +261,7 @@ export class SubagentTracker {
 
   getActiveProcessingSessionIds(): string[] {
     const activeSessionIds = new Set<string>();
-    for (const detail of this.detailsById.values()) {
+    for (const detail of Array.from(this.detailsById.values())) {
       if (detail.status === "pending" || detail.status === "running") {
         if (detail.parentSessionId) {
           activeSessionIds.add(detail.parentSessionId);
@@ -633,7 +633,7 @@ export class SubagentTracker {
     detailIds: Set<string>,
   ): SubagentUpdatePayload {
     const summariesByParentMessageId: Record<string, SubagentSummary[]> = {};
-    for (const parentMessageId of parentMessageIds) {
+    for (const parentMessageId of Array.from(parentMessageIds)) {
       const ids = this.idsByParentMessageId.get(parentMessageId) || [];
       const summaries = ids
         .map((id) => this.detailsById.get(id))
@@ -647,7 +647,7 @@ export class SubagentTracker {
     }
 
     const detailsById: Record<string, SubagentDetail> = {};
-    for (const detailId of detailIds) {
+    for (const detailId of Array.from(detailIds)) {
       const detail = this.detailsById.get(detailId);
       if (!detail) {
         continue;

@@ -198,8 +198,8 @@ test('implementation_plan normalization preserves plan card payload and summary 
   );
   assert.match(
     handlerSource,
-    /responseType === "implementation_plan"[\s\S]*summaryFromPlan[\s\S]*isImplementationPlanPlaceholderBody\(currentContent\)[\s\S]*normalized\.content = summaryFromPlan;/s,
-    'normalizeMessage should render implementation plan summary instead of generic placeholder text',
+    /responseType === "implementation_plan"[\s\S]*summaryFromPlan[\s\S]*!currentContent[\s\S]*normalized\.content = summaryFromPlan;/s,
+    'normalizeMessage should render implementation plan summary when no assistant body content exists',
   );
   assert.match(
     messageSource,
@@ -231,8 +231,23 @@ test('streaming question turns also synthesize assistant-bubble prompt text', ()
   );
   assert.match(
     handlerSource,
-    /looksLikeReasoningTrace\(trimmed,\s*""\)[\s\S]*looksLikeToolUseMonologue\(trimmed\)/s,
-    'interactive prompt replacement should also override leaked reasoning/tool-monologue content',
+    /looksLikeReasoningTrace\(trimmed,\s*""\)/,
+    'interactive prompt replacement should override leaked reasoning-shaped content',
+  );
+  assert.match(
+    handlerSource,
+    /allEvents\.length > 0[\s\S]*normalized\.interactiveEvents = allEvents;/s,
+    'normalizeMessage should preserve tool-question interactive events on the final assistant message',
+  );
+  assert.match(
+    handlerSource,
+    /allEvents\.length > 0[\s\S]*normalized\.responseType = "question";/s,
+    'normalizeMessage should mark tool-question fallback messages as responseType=question',
+  );
+  assert.match(
+    handlerSource,
+    /const hasRenderableContent = !!streamingState\?\.hasRenderableContent;[\s\S]*if \([\s\S]*hasRenderableContent[\s\S]*!shouldOverrideStreamingContentWithInteractivePrompt\(/s,
+    'question prompt injection should still occur when no renderable assistant content has been established yet',
   );
 });
 
@@ -246,6 +261,29 @@ test('store keeps processing off while blocking interactive prompt is waiting', 
     storeSource,
     /case "SET_PROCESSING":[\s\S]*action\.payload[\s\S]*hasBlockingInteractiveEventsLocal\(state\.interactiveEvents\)[\s\S]*state\.streaming\.isActive === false[\s\S]*isProcessing:\s*false/s,
     'SET_PROCESSING should ignore stale true updates when a blocking interactive popover is active and streaming is finished',
+  );
+});
+
+test('streaming assistant body renders only after trusted renderable content is established', () => {
+  assert.match(
+    typesSource,
+    /hasRenderableContent\?: boolean;/,
+    'StreamingState should track whether trusted assistant renderable content exists',
+  );
+  assert.match(
+    storeSource,
+    /hasRenderableContent:\s*action\.payload\.hasRenderableContent \?\? false/,
+    'SET_STREAMING should initialize hasRenderableContent to false by default',
+  );
+  assert.match(
+    storeSource,
+    /hasRenderableContent:\s*state\.streaming\.hasRenderableContent[\s\S]*\|\|[\s\S]*!!action\.payload\.renderable/s,
+    'UPDATE_STREAMING_CONTENT should only mark renderable content via explicit trusted writes',
+  );
+  assert.match(
+    messageSource,
+    /if \(!hasRenderableContent\) \{\s*return '';\s*\}/,
+    'AssistantMessage should suppress transient untrusted streaming content',
   );
 });
 
@@ -559,14 +597,14 @@ test('substantial AI responses are preserved when questions are asked', () => {
     'should have the override check function'
   );
 
-  // Verify the logic flow: empty check -> reasoning/tool check -> threshold check -> phrase checks
+  // Verify the logic flow: empty check -> reasoning check -> threshold check -> phrase checks
   const logicFlowPattern =
-    /!normalized[\s\S]*looksLikeReasoningTrace[\s\S]*looksLikeToolUseMonologue[\s\S]*trimmed\.length\s*>\s*CONTENT_THRESHOLD[\s\S]*normalized\s*===\s*['"]running question['"]/s;
+    /!normalized[\s\S]*looksLikeReasoningTrace[\s\S]*trimmed\.length\s*>\s*CONTENT_THRESHOLD[\s\S]*normalized\s*===\s*['"]running question['"]/s;
 
   assert.match(
     handlerSource,
     logicFlowPattern,
-    'should check content length before checking for low-value placeholder phrases (regression test for AI response disappearance)'
+    'should check content length before low-value placeholder checks (regression test for AI response disappearance)'
   );
 });
 
@@ -602,16 +640,11 @@ test('content override logic prevents AI response disappearance', () => {
     'should override empty content'
   );
 
-  // 2. Reasoning/tool monologues should be overridden (original behavior)
+  // 2. Reasoning-shaped content should be overridden (original behavior)
   assert.match(
     handlerSource,
     /looksLikeReasoningTrace/,
     'should check for reasoning traces'
-  );
-  assert.match(
-    handlerSource,
-    /looksLikeToolUseMonologue/,
-    'should check for tool monologues'
   );
 
   // 3. NEW: Substantial content should NOT be overridden (fix for the bug)

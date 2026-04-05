@@ -96,6 +96,17 @@ function isReasoningPart(part: MessagePart): boolean {
   );
 }
 
+function isRenderableAssistantTextPart(part: MessagePart): boolean {
+  if (isReasoningPart(part)) {
+    return false;
+  }
+  const type = (part.type ?? "").toLowerCase();
+  if (!type) {
+    return true;
+  }
+  return type === "text" || type === "message" || type === "output_text";
+}
+
 function isStructuredOutputFailureMessage(value?: string): boolean {
   const normalized = (value || "").trim().toLowerCase();
   if (!normalized) return false;
@@ -277,7 +288,7 @@ function messageBodyFromParts(parts?: MessagePart[]): string {
   }
   return parts
     .map((part) => {
-      if (isReasoningPart(part)) {
+      if (!isRenderableAssistantTextPart(part)) {
         return "";
       }
       return part.message ?? part.text ?? part.content ?? "";
@@ -477,6 +488,7 @@ function getMessageContent(
     // Filter out reasoning content from streaming content as a safety measure
     // This catches any reasoning that leaked through the event handler
     const content = streaming.content || '';
+    const hasRenderableContent = streaming.hasRenderableContent === true;
     const hasReasoningEvents = streaming.reasoningEvents && streaming.reasoningEvents.length > 0;
     const isInReasoningPart = streaming.inReasoningPart || false;
 
@@ -491,21 +503,13 @@ function getMessageContent(
       return '';
     }
 
-    if (!streamingFinished && hasReasoningEvents && content.length < 100) {
-      // Streaming is live and content is very short — likely reasoning leak, hide it.
+    if (!hasRenderableContent) {
       return '';
     }
 
-    // Additional safety check: if content looks like reasoning monologue, filter it out.
-    // Skip this check once streaming has finished — the content is already finalised.
-    if (!streamingFinished) {
-      const trimmedContent = content.trim();
-      if (trimmedContent.length > 0 && trimmedContent.length < 200) {
-        const looksLikeReasoning = /The user (?:is asking|just said|keeps saying)|I (?:should|need|will|can|must)|Let me (?:check|read|search|look|find)|straightforward informational question|general question/i.test(trimmedContent);
-        if (looksLikeReasoning) {
-          return '';
-        }
-      }
+    if (!streamingFinished && hasReasoningEvents && content.length < 100) {
+      // Streaming is live and content is very short — likely reasoning leak, hide it.
+      return '';
     }
 
     return content;
@@ -513,37 +517,45 @@ function getMessageContent(
   if (!message) {
     return "";
   }
-  const candidates = [
-    messageBodyFromParts(message.parts),
-    message.content,
-    message.text,
-    summaryText(message),
-  ];
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured = asRecord(messageRec?.structuredOutput) || asRecord(infoRec?.structuredOutput);
+  const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
+  const partsBody = messageBodyFromParts(message.parts);
+  const hasParts = Array.isArray(message.parts) && message.parts.length > 0;
+  const isMessageResponseType = responseType === "message";
+  const structuredMessage = firstNonEmptyString(structured?.message);
+  const candidates = hasParts
+    ? [
+      partsBody,
+      isMessageResponseType ? structuredMessage : "",
+      summaryText(message),
+    ]
+    : [
+      partsBody,
+      message.content,
+      message.text,
+      summaryText(message),
+    ];
   const baseContent =
     candidates.find(
       (candidate) =>
         typeof candidate === "string" && candidate.trim().length > 0,
     ) ?? "";
+  const safeBaseContent = baseContent;
   const questionPrompt = questionPromptFromMessage(message);
   if (!questionPrompt) {
-    return baseContent;
+    return safeBaseContent;
   }
-
-  const messageRec = asRecord(message);
-  const infoRec = asRecord(messageRec?.info);
-  const structured = asRecord(messageRec?.structuredOutput) || asRecord(infoRec?.structuredOutput);
-  const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
   const isQuestionResponseType = responseType === "question";
-  const isMessageResponseType = responseType === "message";
   const hasInteractiveEvents = Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0;
   if (isMessageResponseType) {
-    const structuredMessage = firstNonEmptyString(structured?.message);
     if (structuredMessage) {
       return structuredMessage;
     }
   }
   if (!isQuestionResponseType && !hasInteractiveEvents) {
-    return baseContent;
+    return safeBaseContent;
   }
 
   // For explicit question turns, render only the canonical question prompt in the
@@ -552,19 +564,19 @@ function getMessageContent(
     return questionPrompt;
   }
 
-  if (!baseContent || isLowValueInteractiveBodyText(baseContent)) {
+  if (!safeBaseContent || isLowValueInteractiveBodyText(safeBaseContent)) {
     return questionPrompt;
   }
 
   const promptNorm = normalizeComparableText(questionPrompt);
-  const bodyNorm = normalizeComparableText(baseContent);
+  const bodyNorm = normalizeComparableText(safeBaseContent);
   if (!promptNorm || bodyNorm === promptNorm) {
     return questionPrompt;
   }
   if (bodyNorm.startsWith(promptNorm)) {
-    return baseContent;
+    return safeBaseContent;
   }
-  return `${questionPrompt}\n\n${baseContent}`;
+  return `${questionPrompt}\n\n${safeBaseContent}`;
 }
 
 type ThoughtItem = { key: string; text: string };
@@ -1858,8 +1870,61 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     [timelineBlocks, message, isStreamingActive],
   );
   const info = message?.info;
-  const plan = message?.plan;
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured = asRecord(messageRec?.structuredOutput) || asRecord(infoRec?.structuredOutput);
+  const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
+  const plan = responseType === "implementation_plan" ? message?.plan : undefined;
   const messageId = info?.id || message?.id || streaming?.messageId;
+
+  useEffect(() => {
+    const partsBody = messageBodyFromParts(message?.parts);
+    const structuredMessage = firstNonEmptyString(structured?.message) ?? "";
+    const topLevelContent = (message?.content ?? message?.text ?? "").trim();
+    const streamingContent = (streaming?.content ?? "").trim();
+    const finalContent = (content ?? "").trim();
+    const finalNorm = normalizeComparableText(finalContent);
+    const sourceMatch = {
+      parts: !!partsBody && normalizeComparableText(partsBody) === finalNorm,
+      structuredMessage:
+        !!structuredMessage &&
+        normalizeComparableText(structuredMessage) === finalNorm,
+      topLevel:
+        !!topLevelContent &&
+        normalizeComparableText(topLevelContent) === finalNorm,
+      streaming:
+        !!streamingContent &&
+        normalizeComparableText(streamingContent) === finalNorm,
+    };
+
+    console.info("[OpenCode][assistant-render-source]", {
+      messageId: messageId ?? null,
+      role: message?.role ?? message?.info?.role ?? null,
+      responseType: responseType ?? null,
+      hasParts: Array.isArray(message?.parts) && message.parts.length > 0,
+      streamingActive: !!streaming?.isActive,
+      streamingHasRenderableContent: streaming?.hasRenderableContent ?? null,
+      sourceMatch,
+      finalContentPreview: finalContent.slice(0, 240),
+      partsPreview: partsBody.slice(0, 240),
+      structuredMessagePreview: structuredMessage.slice(0, 240),
+      topLevelPreview: topLevelContent.slice(0, 240),
+      streamingPreview: streamingContent.slice(0, 240),
+    });
+  }, [
+    content,
+    messageId,
+    responseType,
+    message?.role,
+    message?.info?.role,
+    message?.content,
+    message?.text,
+    message?.parts,
+    structured?.message,
+    streaming?.content,
+    streaming?.isActive,
+    streaming?.hasRenderableContent,
+  ]);
   const state = useAppState();
   const latestAssistantMessageId = useMemo(() => {
     for (let index = state.messages.length - 1; index >= 0; index--) {
@@ -3271,3 +3336,7 @@ export function MessageStatus({
     </div>
   );
 }
+
+
+
+
