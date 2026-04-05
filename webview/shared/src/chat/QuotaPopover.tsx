@@ -109,8 +109,13 @@ export function QuotaPopover() {
       <div ref={popoverRef} className="quota-popover">
         {/* Header */}
         <div className="flex items-center justify-between px-3 py-2.5 border-b border-oc-border">
-          <div className="text-oc-sm font-semibold tracking-tight text-[var(--oc-text-soft)]">
-            Quota Status
+          <div className="flex items-center gap-2">
+            <div className="text-oc-sm font-semibold tracking-tight text-[var(--oc-text-soft)]">
+              Quota Status
+            </div>
+            <div className="text-[10px] text-[var(--oc-text-soft)] opacity-70 font-mono">
+              {quotaIsRefreshing ? 'Refreshing...' : `Updated ${formatLastUpdated()}`}
+            </div>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -328,8 +333,7 @@ export function QuotaPopover() {
         </div>
 
         {/* Footer */}
-        <div className="px-3 py-2 border-t border-oc-border text-[10px] text-[var(--oc-text-soft)] opacity-70 font-mono flex justify-between">
-          <span>{quotaIsRefreshing ? 'Refreshing...' : `Updated ${formatLastUpdated()}`}</span>
+        <div className="px-3 py-2 border-t border-oc-border text-[10px] text-center text-[var(--oc-text-soft)] opacity-70 font-mono">
           <span>◆</span>
         </div>
       </div>
