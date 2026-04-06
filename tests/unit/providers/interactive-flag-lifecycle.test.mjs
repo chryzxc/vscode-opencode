@@ -72,3 +72,50 @@ test('flag lifecycle: awaitingInteractiveAnswer is set when question arrives', (
     'Should be in the context of hasBlockingInteractiveInStreamPayload check'
   );
 });
+
+test('flag lifecycle: awaitingInteractiveAnswer cleared when streaming starts', () => {
+  // Find stream event handler section (it's inside streamService.subscribe)
+  const streamHandler = chatProviderSource.match(
+    /streamService\.subscribe\([\s\S]{0,5000}awaitingInteractiveAnswer\s*=\s*false[\s\S]{0,1000}/
+  );
+
+  assert.ok(streamHandler, 'stream event handler should have flag clearing logic');
+
+  // Should have logic to clear flag when non-interactive events arrive
+  assert.match(
+    streamHandler[0],
+    /if\s*\(\s*this\.awaitingInteractiveAnswer\s*\)/,
+    'Should check awaitingInteractiveAnswer flag in stream handler'
+  );
+
+  // Should clear flag when actual content arrives (not just another question)
+  assert.match(
+    streamHandler[0],
+    /this\.awaitingInteractiveAnswer\s*=\s*false/,
+    'Should clear flag when streaming starts'
+  );
+});
+
+test('flag lifecycle: flag is NOT cleared when another question arrives', () => {
+  // The flag clearing logic should check if the event is another interactive question
+  // and NOT clear the flag in that case
+  const streamHandler = chatProviderSource.match(
+    /streamService\.subscribe\([\s\S]{0,5000}awaitingInteractiveAnswer\s*=\s*false[\s\S]{0,1000}/
+  );
+
+  assert.ok(streamHandler, 'stream event handler should have flag clearing logic');
+
+  // Should check for blocking interactive events before clearing
+  assert.match(
+    streamHandler[0],
+    /hasBlockingInteractiveInStreamPayload/,
+    'Should check for blocking interactive events before clearing flag'
+  );
+
+  // Should check if event is another question before clearing
+  assert.match(
+    streamHandler[0],
+    /isAnotherQuestion/,
+    'Should check if event is another interactive question'
+  );
+});

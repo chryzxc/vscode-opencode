@@ -2857,6 +2857,19 @@ export class ChatViewProvider
         this.awaitingInteractiveAnswer = true;
       }
 
+      // Clear flag when we receive actual content (not another question)
+      // This indicates the model is processing and we're no longer just "awaiting"
+      if (this.awaitingInteractiveAnswer) {
+        const isAnotherQuestion = this.hasBlockingInteractiveInStreamPayload(enrichedEvent);
+        const isActualContent = enrichedEvent.type &&
+                               enrichedEvent.type !== 'interactive_event' &&
+                               !isAnotherQuestion;
+
+        if (isActualContent) {
+          this.awaitingInteractiveAnswer = false;
+        }
+      }
+
       // Log stream event for debugging response types (with error handling)
       try {
         const structured = enrichedEvent?.structured || {};
