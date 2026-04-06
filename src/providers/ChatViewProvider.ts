@@ -1437,8 +1437,8 @@ export class ChatViewProvider
     }
 
     if (this.awaitingInteractiveAnswer) {
-      // Reduce error suppression window from 15s to 3s for better responsiveness
-      this.interactiveResponseTransitionUntil = Date.now() + 3000;
+      // Match webview's 15s window to prevent popover reappearing during transition
+      this.interactiveResponseTransitionUntil = Date.now() + 15000;
     }
 
     // Don't force stop ongoing requests - let schedulePromptDispatch handle mode switching

@@ -283,7 +283,7 @@ export interface MessageStep {
 
 export interface ActivityDiffExcerpt {
   header?: string;
-  lines: string[];
+  lines?: string[];
   added?: number;
   deleted?: number;
 }

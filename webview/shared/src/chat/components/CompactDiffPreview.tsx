@@ -3,7 +3,7 @@ import { cn } from "@/utils";
 
 type DiffExcerpt = {
   header?: string;
-  lines: string[];
+  lines?: string[];
   added?: number;
   deleted?: number;
 };
@@ -17,14 +17,50 @@ interface CompactDiffPreviewProps {
 /**
  * Compact diff preview component for stepper items
  * Shows 3-5 representative lines of code changes
+ * Falls back to diff stats if lines are not available
  */
 export function CompactDiffPreview({
   excerpt,
   maxLines = 5,
   filePath,
 }: CompactDiffPreviewProps) {
-  if (!excerpt || !Array.isArray(excerpt.lines) || excerpt.lines.length === 0) {
+  if (!excerpt) {
     return null;
+  }
+
+  // Fallback: if no lines but we have diff stats, show a minimal indicator
+  const hasLines = Array.isArray(excerpt.lines) && excerpt.lines.length > 0;
+  const hasDiffStats = typeof excerpt.added === 'number' || typeof excerpt.deleted === 'number';
+
+  if (!hasLines && !hasDiffStats) {
+    return null;
+  }
+
+  // Fallback rendering when lines aren't available
+  if (!hasLines && hasDiffStats) {
+    return (
+      <div className="oc-compact-diff-preview mt-2">
+        <div className="oc-compact-diff-stats flex items-center gap-3 text-xs font-mono px-1.5 py-1 rounded bg-oc-bg/30 border border-oc-border/40">
+          {filePath && (
+            <span className="text-oc-text-muted truncate">{filePath}</span>
+          )}
+          <div className="flex items-center gap-2 ml-auto">
+            {typeof excerpt.added === 'number' && excerpt.added > 0 && (
+              <span className="text-oc-green flex items-center gap-1">
+                <span>+</span>
+                <span>{excerpt.added}</span>
+              </span>
+            )}
+            {typeof excerpt.deleted === 'number' && excerpt.deleted > 0 && (
+              <span className="text-oc-red flex items-center gap-1">
+                <span>-</span>
+                <span>{excerpt.deleted}</span>
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const processedLines = useMemo(() => {

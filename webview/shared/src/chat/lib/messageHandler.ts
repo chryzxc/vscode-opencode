@@ -498,20 +498,22 @@ function normalizeActivityDiffExcerpt(
   const lines = Array.isArray(rec.lines)
     ? rec.lines.filter((line): line is string => typeof line === "string")
     : [];
-  if (lines.length === 0) {
+
+  // Check if there are diff stats (added/deleted counts)
+  const added = typeof rec.added === 'number' && Number.isFinite(rec.added) ? Math.max(0, rec.added) : undefined;
+  const deleted = typeof rec.deleted === 'number' && Number.isFinite(rec.deleted) ? Math.max(0, rec.deleted) : undefined;
+
+  // Return excerpt if we have lines OR diff stats
+  // This allows fallback rendering of diff stats even without detailed lines
+  if (lines.length === 0 && !added && !deleted) {
     return undefined;
   }
+
   return {
     header: asOptionalString(rec.header),
     lines,
-    added:
-      typeof rec.added === "number" && Number.isFinite(rec.added)
-        ? Math.max(0, rec.added)
-        : undefined,
-    deleted:
-      typeof rec.deleted === "number" && Number.isFinite(rec.deleted)
-        ? Math.max(0, rec.deleted)
-        : undefined,
+    added,
+    deleted,
   };
 }
 
@@ -1297,7 +1299,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     ? interactiveRaw
       .map((event, index) => normalizeInteractiveEvent(event, index))
       .filter((event): event is StructuredInteractiveEvent => !!event)
-      : singleInteractive
+    : singleInteractive
       ? [singleInteractive]
       : [];
 
@@ -1365,11 +1367,11 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
           rootQuestion && rootOptions.length < 2
             ? []
             : rootOptions.length >= 2
-            ? rootOptions
-            : [
-              { id: "yes", label: "Yes", value: "yes" },
-              { id: "no", label: "No", value: "no" },
-            ],
+              ? rootOptions
+              : [
+                { id: "yes", label: "Yes", value: "yes" },
+                { id: "no", label: "No", value: "no" },
+              ],
         multiSelect: rootMultiSelect,
         allowCustomInput:
           rootQuestion && rootOptions.length < 2
@@ -2139,8 +2141,8 @@ function maybeInjectStreamingInteractiveContext(
   }
 
   dispatch({
-      type: 'UPDATE_STREAMING_CONTENT',
-      payload: { content: synthesized, append: false, renderable: true },
+    type: 'UPDATE_STREAMING_CONTENT',
+    payload: { content: synthesized, append: false, renderable: true },
   });
 }
 
@@ -2762,7 +2764,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     nonReasoningPartsContent &&
     contentFromTopLevel &&
     normalizeComparableText(nonReasoningPartsContent) !==
-      normalizeComparableText(contentFromTopLevel)
+    normalizeComparableText(contentFromTopLevel)
   ) {
     webviewLogger.info("Content source mismatch; preferring parts content", {
       messageId:
@@ -2889,10 +2891,10 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     .map((part) =>
       sanitizeReasoningChunk(
         asRichString(part.reasoning) ||
-          asRichString(part.thought) ||
-          asRichString(part.thinking) ||
-          asRichString(part.text) ||
-          asRichString(part.content),
+        asRichString(part.thought) ||
+        asRichString(part.thinking) ||
+        asRichString(part.text) ||
+        asRichString(part.content),
       ).trim(),
     )
     .filter((text) => text.length > 0);
@@ -2917,9 +2919,9 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     .map((part) =>
       sanitizeReasoningChunk(
         asRichString(part.reasoning) ||
-          asRichString(part.text) ||
-          asRichString(part.content) ||
-          asRichString(part.delta),
+        asRichString(part.text) ||
+        asRichString(part.content) ||
+        asRichString(part.delta),
       ).trim(),
     )
     .filter((text) => text.length > 0);
@@ -3195,7 +3197,7 @@ function normalizeSubagentTimelineEventsForPresentation(
       previous &&
       previous.type === event.type &&
       normalizeComparableText(previous.label) ===
-        normalizeComparableText(event.label)
+      normalizeComparableText(event.label)
     ) {
       previous.createdAt = Math.max(previous.createdAt, event.createdAt);
       previous.messageID = event.messageID || previous.messageID;
@@ -3622,7 +3624,7 @@ function normalizeHydratedSubagentDetail(
 
   const completedAt =
     (typeof normalizedForPresentation.endedAt === "number" &&
-    Number.isFinite(normalizedForPresentation.endedAt)
+      Number.isFinite(normalizedForPresentation.endedAt)
       ? normalizedForPresentation.endedAt
       : undefined) ??
     (message ? messageCompletedAt(message) : undefined) ??
@@ -3630,7 +3632,7 @@ function normalizeHydratedSubagentDetail(
     normalizedForPresentation.startedAt;
   const startedAt =
     typeof normalizedForPresentation.startedAt === "number" &&
-    Number.isFinite(normalizedForPresentation.startedAt)
+      Number.isFinite(normalizedForPresentation.startedAt)
       ? normalizedForPresentation.startedAt
       : undefined;
   const durationMs =
@@ -3671,11 +3673,11 @@ function normalizeHydratedSubagentSummary(
     detail
       ? detail
       : ({
-          ...(summary as SubagentDetail),
-          thinkingEvents: [],
-          progressEvents: [],
-          timelineEvents: [],
-        } as SubagentDetail),
+        ...(summary as SubagentDetail),
+        thinkingEvents: [],
+        progressEvents: [],
+        timelineEvents: [],
+      } as SubagentDetail),
     message,
     true,
   );
@@ -6864,1302 +6866,1302 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         fullData: data,
       });
 
-    // Set processing state BEFORE handling message types to ensure streaming state is created early.
-    // Never bootstrap "in progress" UI from compaction lifecycle messages.
-    if (
-      asBoolean(data.processing, false) &&
-      type !== "compactionStatus" &&
-      type !== "compactionViewState"
-    ) {
-      dispatch({ type: "SET_PROCESSING", payload: true });
-    }
+      // Set processing state BEFORE handling message types to ensure streaming state is created early.
+      // Never bootstrap "in progress" UI from compaction lifecycle messages.
+      if (
+        asBoolean(data.processing, false) &&
+        type !== "compactionStatus" &&
+        type !== "compactionViewState"
+      ) {
+        dispatch({ type: "SET_PROCESSING", payload: true });
+      }
 
-    switch (type) {
-      case "initState":
-      case "init": {
-        terminalErrorReached = false;
-        activeSubagentParentMessageIds = new Set<string>();
-        const state = asRecord(data.state) ?? data;
-        const sessionId =
-          asString(state.sessionId) || asString(state.currentSessionId) || null;
+      switch (type) {
+        case "initState":
+        case "init": {
+          terminalErrorReached = false;
+          activeSubagentParentMessageIds = new Set<string>();
+          const state = asRecord(data.state) ?? data;
+          const sessionId =
+            asString(state.sessionId) || asString(state.currentSessionId) || null;
 
-        const selectedModelRecord = asRecord(state.selectedModel);
-        const selectedModel = selectedModelRecord
-          ? {
-            providerID: asString(selectedModelRecord.providerID),
-            modelID: asString(selectedModelRecord.modelID),
+          const selectedModelRecord = asRecord(state.selectedModel);
+          const selectedModel = selectedModelRecord
+            ? {
+              providerID: asString(selectedModelRecord.providerID),
+              modelID: asString(selectedModelRecord.modelID),
+            }
+            : null;
+
+          if (sessionId) {
+            dispatch({ type: "SET_SESSION_ID", payload: sessionId });
           }
-          : null;
+          dispatch({
+            type: "SET_SERVER_STATUS",
+            payload: asString(state.serverStatus, "connected"),
+          });
+          dispatch({
+            type: "SET_SELECTED_MODEL",
+            payload:
+              selectedModel?.providerID && selectedModel?.modelID
+                ? selectedModel
+                : null,
+          });
+          dispatch({
+            type: "SET_SELECTED_AGENT",
+            payload: asString(state.selectedAgent),
+          });
+          dispatch({
+            type: "SET_SERVER_VERSION",
+            payload: asString(state.serverVersion) || undefined,
+          });
+          dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
 
-        if (sessionId) {
-          dispatch({ type: "SET_SESSION_ID", payload: sessionId });
+          // Store workspace root on window object for use in file path display
+          const workspaceRoot = asString(state.workspaceRoot);
+          if (workspaceRoot) {
+            // @ts-expect-error - setting __workspace_root__ for use in file path utilities
+            window.__workspace_root__ = workspaceRoot;
+          }
+
+          // Rehydrate persisted todos from initState payload (sent by provider on
+          // extension open or session switch).
+          const rawTodoItems = Array.isArray(state.todoItems) ? state.todoItems : [];
+          if (rawTodoItems.length > 0) {
+            const VALID_TODO_STATUS = new Set(['pending', 'in_progress', 'completed', 'cancelled', 'failed']);
+            const validTodos = rawTodoItems.filter(
+              (item): item is TodoItem => {
+                const rec = asRecord(item);
+                return (
+                  !!rec &&
+                  typeof rec.id === 'string' && rec.id.length > 0 &&
+                  typeof rec.text === 'string' && rec.text.length > 0 &&
+                  typeof rec.status === 'string' && VALID_TODO_STATUS.has(rec.status) &&
+                  typeof rec.sessionId === 'string'
+                );
+              },
+            );
+            if (validTodos.length > 0) {
+              dispatch({ type: 'SET_TODO_ITEMS', payload: validTodos });
+            }
+          }
+
+          break;
         }
-        dispatch({
-          type: "SET_SERVER_STATUS",
-          payload: asString(state.serverStatus, "connected"),
-        });
-        dispatch({
-          type: "SET_SELECTED_MODEL",
-          payload:
-            selectedModel?.providerID && selectedModel?.modelID
-              ? selectedModel
-              : null,
-        });
-        dispatch({
-          type: "SET_SELECTED_AGENT",
-          payload: asString(state.selectedAgent),
-        });
-        dispatch({
-          type: "SET_SERVER_VERSION",
-          payload: asString(state.serverVersion) || undefined,
-        });
-        dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
-
-        // Store workspace root on window object for use in file path display
-        const workspaceRoot = asString(state.workspaceRoot);
-        if (workspaceRoot) {
-          // @ts-expect-error - setting __workspace_root__ for use in file path utilities
-          window.__workspace_root__ = workspaceRoot;
-        }
-
-        // Rehydrate persisted todos from initState payload (sent by provider on
-        // extension open or session switch).
-        const rawTodoItems = Array.isArray(state.todoItems) ? state.todoItems : [];
-        if (rawTodoItems.length > 0) {
-          const VALID_TODO_STATUS = new Set(['pending', 'in_progress', 'completed', 'cancelled', 'failed']);
-          const validTodos = rawTodoItems.filter(
-            (item): item is TodoItem => {
+        case "modelsList": {
+          const models = asArray(
+            data.models,
+            (item): item is AppState["availableModels"][number] => {
               const rec = asRecord(item);
+              const contextLimit =
+                typeof rec?.contextLimit === "number"
+                  ? rec.contextLimit
+                  : undefined;
               return (
                 !!rec &&
-                typeof rec.id === 'string' && rec.id.length > 0 &&
-                typeof rec.text === 'string' && rec.text.length > 0 &&
-                typeof rec.status === 'string' && VALID_TODO_STATUS.has(rec.status) &&
-                typeof rec.sessionId === 'string'
+                typeof rec.modelID === "string" &&
+                typeof rec.providerID === "string" &&
+                typeof rec.name === "string" &&
+                (contextLimit === undefined ||
+                  (Number.isFinite(contextLimit) && contextLimit > 0))
               );
             },
           );
-          if (validTodos.length > 0) {
-            dispatch({ type: 'SET_TODO_ITEMS', payload: validTodos });
-          }
-        }
-
-        break;
-      }
-      case "modelsList": {
-        const models = asArray(
-          data.models,
-          (item): item is AppState["availableModels"][number] => {
-            const rec = asRecord(item);
-            const contextLimit =
-              typeof rec?.contextLimit === "number"
-                ? rec.contextLimit
-                : undefined;
-            return (
-              !!rec &&
-              typeof rec.modelID === "string" &&
-              typeof rec.providerID === "string" &&
-              typeof rec.name === "string" &&
-              (contextLimit === undefined ||
-                (Number.isFinite(contextLimit) && contextLimit > 0))
-            );
-          },
-        );
-        dispatch({ type: "SET_MODELS_LIST", payload: models });
-        break;
-      }
-      case "agentsList": {
-        const agents = asArray(
-          data.agents,
-          (item): item is AppState["availableAgents"][number] => {
-            const rec = asRecord(item);
-            return (
-              !!rec &&
-              typeof rec.id === "string" &&
-              typeof rec.name === "string" &&
-              typeof rec.description === "string"
-            );
-          },
-        );
-        dispatch({ type: "SET_AGENTS_LIST", payload: agents });
-        break;
-      }
-      case "statusUpdate": {
-        dispatch({
-          type: "SET_SERVER_STATUS",
-          payload: asString(data.status, "unknown"),
-        });
-        break;
-      }
-      case "compactionStatus": {
-        const sessionId = asString(data.sessionId);
-        const currentSessionId = getState().currentSessionId;
-        if (sessionId && currentSessionId && sessionId !== currentSessionId) {
+          dispatch({ type: "SET_MODELS_LIST", payload: models });
           break;
         }
-        const status = asString(data.status).toLowerCase();
-        if (status !== "running" && status !== "done" && status !== "error") {
+        case "agentsList": {
+          const agents = asArray(
+            data.agents,
+            (item): item is AppState["availableAgents"][number] => {
+              const rec = asRecord(item);
+              return (
+                !!rec &&
+                typeof rec.id === "string" &&
+                typeof rec.name === "string" &&
+                typeof rec.description === "string"
+              );
+            },
+          );
+          dispatch({ type: "SET_AGENTS_LIST", payload: agents });
           break;
         }
-        const normalizedStatus = status as "running" | "done" | "error";
-        dispatch({
-          type: "SET_COMPACTION_STATUS",
-          payload: {
-            status: normalizedStatus,
-            at: asOptionalNumber(data.at),
-            error: asString(data.error) || undefined,
-            compactionDividerIndex: asOptionalNumber(data.compactionDividerIndex),
-            compactionDividerBeforeMessageId: asOptionalString(
-              data.compactionDividerBeforeMessageId,
-            ),
-            compactionDividerAfterMessageId: asOptionalString(
-              data.compactionDividerAfterMessageId,
-            ),
-            collapsed:
-              typeof data.collapsed === "boolean"
-                ? data.collapsed
-                : undefined,
-            baselineStats: asSessionStats(data.baselineStats),
-          },
-        });
-        if (normalizedStatus === "done") {
-          const nextState = getState();
-          if (nextState.currentSessionId) {
-            vscode.postMessage({
-              type: "setCompactionViewState",
-              sessionId: nextState.currentSessionId,
-              lastCompactedAt: nextState.lastCompactedAt,
-              compactionDividerIndex: nextState.compactionDividerIndex,
-              compactionDividerBeforeMessageId:
-                nextState.compactionDividerBeforeMessageId,
-              compactionDividerAfterMessageId:
-                nextState.compactionDividerAfterMessageId,
-              baselineStats: nextState.compactionBaselineStats,
-              collapsed: nextState.compactedMessagesCollapsed,
-            });
-          }
+        case "statusUpdate": {
+          dispatch({
+            type: "SET_SERVER_STATUS",
+            payload: asString(data.status, "unknown"),
+          });
+          break;
         }
-        if (normalizedStatus !== "running") {
-          latestStreamingSnapshot = null;
+        case "compactionStatus": {
+          const sessionId = asString(data.sessionId);
+          const currentSessionId = getState().currentSessionId;
+          if (sessionId && currentSessionId && sessionId !== currentSessionId) {
+            break;
+          }
+          const status = asString(data.status).toLowerCase();
+          if (status !== "running" && status !== "done" && status !== "error") {
+            break;
+          }
+          const normalizedStatus = status as "running" | "done" | "error";
+          dispatch({
+            type: "SET_COMPACTION_STATUS",
+            payload: {
+              status: normalizedStatus,
+              at: asOptionalNumber(data.at),
+              error: asString(data.error) || undefined,
+              compactionDividerIndex: asOptionalNumber(data.compactionDividerIndex),
+              compactionDividerBeforeMessageId: asOptionalString(
+                data.compactionDividerBeforeMessageId,
+              ),
+              compactionDividerAfterMessageId: asOptionalString(
+                data.compactionDividerAfterMessageId,
+              ),
+              collapsed:
+                typeof data.collapsed === "boolean"
+                  ? data.collapsed
+                  : undefined,
+              baselineStats: asSessionStats(data.baselineStats),
+            },
+          });
+          if (normalizedStatus === "done") {
+            const nextState = getState();
+            if (nextState.currentSessionId) {
+              vscode.postMessage({
+                type: "setCompactionViewState",
+                sessionId: nextState.currentSessionId,
+                lastCompactedAt: nextState.lastCompactedAt,
+                compactionDividerIndex: nextState.compactionDividerIndex,
+                compactionDividerBeforeMessageId:
+                  nextState.compactionDividerBeforeMessageId,
+                compactionDividerAfterMessageId:
+                  nextState.compactionDividerAfterMessageId,
+                baselineStats: nextState.compactionBaselineStats,
+                collapsed: nextState.compactedMessagesCollapsed,
+              });
+            }
+          }
+          if (normalizedStatus !== "running") {
+            latestStreamingSnapshot = null;
+            dispatch({ type: "SET_STEERING", payload: false });
+            dispatch({ type: "SET_PROCESSING", payload: false });
+            dispatch({ type: "FINISH_STREAMING" });
+            dispatch({ type: "SET_STREAMING", payload: null });
+          }
+          break;
+        }
+        case "compactionViewState": {
+          const sessionId = asString(data.sessionId);
+          const currentSessionId = getState().currentSessionId;
+          if (sessionId && currentSessionId && sessionId !== currentSessionId) {
+            break;
+          }
+          dispatch({
+            type: "SET_COMPACTION_VIEW_STATE",
+            payload: {
+              lastCompactedAt: asOptionalNumber(data.lastCompactedAt),
+              compactionDividerIndex: asOptionalNumber(data.compactionDividerIndex),
+              compactionDividerBeforeMessageId: asOptionalString(
+                data.compactionDividerBeforeMessageId,
+              ),
+              compactionDividerAfterMessageId: asOptionalString(
+                data.compactionDividerAfterMessageId,
+              ),
+              collapsed:
+                typeof data.collapsed === "boolean"
+                  ? data.collapsed
+                  : undefined,
+              baselineStats: asSessionStats(data.baselineStats),
+            },
+          });
+          break;
+        }
+        case "stopRequestHandled": {
+          latestStreamingSnapshot = getState().streaming ?? latestStreamingSnapshot;
           dispatch({ type: "SET_STEERING", payload: false });
           dispatch({ type: "SET_PROCESSING", payload: false });
           dispatch({ type: "FINISH_STREAMING" });
-          dispatch({ type: "SET_STREAMING", payload: null });
-        }
-        break;
-      }
-      case "compactionViewState": {
-        const sessionId = asString(data.sessionId);
-        const currentSessionId = getState().currentSessionId;
-        if (sessionId && currentSessionId && sessionId !== currentSessionId) {
           break;
         }
-        dispatch({
-          type: "SET_COMPACTION_VIEW_STATE",
-          payload: {
-            lastCompactedAt: asOptionalNumber(data.lastCompactedAt),
-            compactionDividerIndex: asOptionalNumber(data.compactionDividerIndex),
-            compactionDividerBeforeMessageId: asOptionalString(
-              data.compactionDividerBeforeMessageId,
-            ),
-            compactionDividerAfterMessageId: asOptionalString(
-              data.compactionDividerAfterMessageId,
-            ),
-            collapsed:
-              typeof data.collapsed === "boolean"
-                ? data.collapsed
-                : undefined,
-            baselineStats: asSessionStats(data.baselineStats),
-          },
-        });
-        break;
-      }
-      case "stopRequestHandled": {
-        latestStreamingSnapshot = getState().streaming ?? latestStreamingSnapshot;
-        dispatch({ type: "SET_STEERING", payload: false });
-        dispatch({ type: "SET_PROCESSING", payload: false });
-        dispatch({ type: "FINISH_STREAMING" });
-        break;
-      }
-      case "messageResponse": {
-        const msg =
-          (asRecord(data.message) as Message | null) ??
-          (data as unknown as Message);
-        const currentMessages = getState().messages;
+        case "messageResponse": {
+          const msg =
+            (asRecord(data.message) as Message | null) ??
+            (data as unknown as Message);
+          const currentMessages = getState().messages;
 
-        // FORBIDDEN TO REMOVE - token accumulation for sticky header
-        dispatch({
-          type: "ACCUMULATE_SESSION_STATS",
-          payload: {
-            input: msg.tokens?.input || msg.info?.tokens?.input || 0,
-            output: msg.tokens?.output || msg.info?.tokens?.output || 0,
-            read: msg.tokens?.cache?.read || msg.info?.tokens?.cache?.read || 0,
-            write:
-              msg.tokens?.cache?.write || msg.info?.tokens?.cache?.write || 0,
-            duration:
-              msg.duration || msg.timing?.duration || msg.info?.duration || 0,
-          },
-        });
-
-        const responseMessageId =
-          asString(msg.id) || asString(asRecord(msg.info)?.id);
-        const currentStateForResponse = getState();
-        const currentStreaming = currentStateForResponse.streaming;
-        const snapshotMessageId = latestStreamingSnapshot?.messageId || null;
-        const hasOwnResponsePayload =
-          !!asString(msg.content).trim() ||
-          !!asString(msg.text).trim() ||
-          (Array.isArray(msg.parts) && msg.parts.length > 0);
-        const shouldDropMismatchedSnapshot =
-          !!responseMessageId &&
-          !!snapshotMessageId &&
-          snapshotMessageId !== responseMessageId &&
-          hasOwnResponsePayload;
-        if (
-          !currentStreaming &&
-          latestStreamingSnapshot &&
-          responseMessageId &&
-          snapshotMessageId &&
-          snapshotMessageId !== responseMessageId
-        ) {
-          streamDebug(
-            "[OpenCode][stream] messageResponse id mismatch; preserving latest streaming snapshot",
-            {
-              responseMessageId,
-              snapshotMessageId,
-              shouldDropMismatchedSnapshot,
+          // FORBIDDEN TO REMOVE - token accumulation for sticky header
+          dispatch({
+            type: "ACCUMULATE_SESSION_STATS",
+            payload: {
+              input: msg.tokens?.input || msg.info?.tokens?.input || 0,
+              output: msg.tokens?.output || msg.info?.tokens?.output || 0,
+              read: msg.tokens?.cache?.read || msg.info?.tokens?.cache?.read || 0,
+              write:
+                msg.tokens?.cache?.write || msg.info?.tokens?.cache?.write || 0,
+              duration:
+                msg.duration || msg.timing?.duration || msg.info?.duration || 0,
             },
-          );
-        }
-        // Always prefer the latest local streaming snapshot for final normalization.
-        // Some providers emit different IDs between stream events and final response.
-        const plainTextFallbackFinal =
-          asBoolean(asRecord(msg)?.plainTextFallback, false) ||
-          asBoolean(asRecord(asRecord(msg)?.info)?.plainTextFallback, false);
-        const snapshotStreaming =
-          currentStreaming ??
-          (shouldDropMismatchedSnapshot ? null : latestStreamingSnapshot);
-        const interactiveEventsInResponse = isMessage(msg)
-          ? interactiveEventsFromMessage(msg)
-          : [];
-        const shouldPreserveStreamingSnapshot =
-          !plainTextFallbackFinal || interactiveEventsInResponse.length > 0;
-        const streaming = shouldPreserveStreamingSnapshot
-          ? snapshotStreaming
-          : null;
-        let normalizedMessage = isMessage(msg)
-          ? normalizeMessage(msg, streaming)
-          : streaming
-            ? buildStreamingMessage(streaming)
-            : undefined;
-        if (
-          normalizedMessage &&
-          snapshotStreaming &&
-          interactiveEventsInResponse.length > 0
-        ) {
-          const hasCanonicalActivity =
-            (Array.isArray(normalizedMessage.steps) &&
-              normalizedMessage.steps.length > 0) ||
-            (Array.isArray(normalizedMessage.progressEvents) &&
-              normalizedMessage.progressEvents.length > 0);
-          if (!hasCanonicalActivity) {
-            const mergedSteps = normalizeActivitySteps(
-              normalizedMessage,
+          });
+
+          const responseMessageId =
+            asString(msg.id) || asString(asRecord(msg.info)?.id);
+          const currentStateForResponse = getState();
+          const currentStreaming = currentStateForResponse.streaming;
+          const snapshotMessageId = latestStreamingSnapshot?.messageId || null;
+          const hasOwnResponsePayload =
+            !!asString(msg.content).trim() ||
+            !!asString(msg.text).trim() ||
+            (Array.isArray(msg.parts) && msg.parts.length > 0);
+          const shouldDropMismatchedSnapshot =
+            !!responseMessageId &&
+            !!snapshotMessageId &&
+            snapshotMessageId !== responseMessageId &&
+            hasOwnResponsePayload;
+          if (
+            !currentStreaming &&
+            latestStreamingSnapshot &&
+            responseMessageId &&
+            snapshotMessageId &&
+            snapshotMessageId !== responseMessageId
+          ) {
+            streamDebug(
+              "[OpenCode][stream] messageResponse id mismatch; preserving latest streaming snapshot",
               {
-                ...snapshotStreaming,
-          content: "",
-          hasRenderableContent: false,
-          reasoning: "",
-                reasoningEvents: [],
+                responseMessageId,
+                snapshotMessageId,
+                shouldDropMismatchedSnapshot,
               },
-              Array.isArray(normalizedMessage.parts)
-                ? (normalizedMessage.parts as MessagePart[])
-                : [],
             );
-            if (mergedSteps.length > 0) {
-              normalizedMessage = {
-                ...normalizedMessage,
-                steps: mergedSteps,
-                progressEvents: mergedSteps,
+          }
+          // Always prefer the latest local streaming snapshot for final normalization.
+          // Some providers emit different IDs between stream events and final response.
+          const plainTextFallbackFinal =
+            asBoolean(asRecord(msg)?.plainTextFallback, false) ||
+            asBoolean(asRecord(asRecord(msg)?.info)?.plainTextFallback, false);
+          const snapshotStreaming =
+            currentStreaming ??
+            (shouldDropMismatchedSnapshot ? null : latestStreamingSnapshot);
+          const interactiveEventsInResponse = isMessage(msg)
+            ? interactiveEventsFromMessage(msg)
+            : [];
+          const shouldPreserveStreamingSnapshot =
+            !plainTextFallbackFinal || interactiveEventsInResponse.length > 0;
+          const streaming = shouldPreserveStreamingSnapshot
+            ? snapshotStreaming
+            : null;
+          let normalizedMessage = isMessage(msg)
+            ? normalizeMessage(msg, streaming)
+            : streaming
+              ? buildStreamingMessage(streaming)
+              : undefined;
+          if (
+            normalizedMessage &&
+            snapshotStreaming &&
+            interactiveEventsInResponse.length > 0
+          ) {
+            const hasCanonicalActivity =
+              (Array.isArray(normalizedMessage.steps) &&
+                normalizedMessage.steps.length > 0) ||
+              (Array.isArray(normalizedMessage.progressEvents) &&
+                normalizedMessage.progressEvents.length > 0);
+            if (!hasCanonicalActivity) {
+              const mergedSteps = normalizeActivitySteps(
+                normalizedMessage,
+                {
+                  ...snapshotStreaming,
+                  content: "",
+                  hasRenderableContent: false,
+                  reasoning: "",
+                  reasoningEvents: [],
+                },
+                Array.isArray(normalizedMessage.parts)
+                  ? (normalizedMessage.parts as MessagePart[])
+                  : [],
+              );
+              if (mergedSteps.length > 0) {
+                normalizedMessage = {
+                  ...normalizedMessage,
+                  steps: mergedSteps,
+                  progressEvents: mergedSteps,
+                };
+              }
+            }
+          }
+          let finalMessageId: string | null = null;
+          let streamingMessageId: string | null = null;
+          if (normalizedMessage) {
+            streamingMessageId =
+              currentStreaming?.messageId || snapshotMessageId;
+            let sanitized = sanitizeAssistantMessageEcho(
+              normalizedMessage,
+              getState(),
+            );
+
+            // Extract error from info.error and set to message.error for display
+            const infoRec = asRecord(sanitized.info);
+            const errorRec = asRecord(infoRec?.error);
+            if (errorRec) {
+              const errorName = asString(errorRec.name);
+              const errorData = asRecord(errorRec.data);
+              const errorMessage = asString(errorData?.message) || asString(errorRec.message);
+              if (errorMessage) {
+                (sanitized as unknown as UnknownRecord).error = errorName
+                  ? `${errorName}: ${errorMessage}`
+                  : errorMessage;
+              }
+            }
+            const provisionalFinalMessageId =
+              asString(asRecord(sanitized.info)?.id) ||
+              asString(sanitized.id) ||
+              responseMessageId ||
+              null;
+            const hydratedSubagentsFromState = collectHydratedSubagentsFromState(
+              getState(),
+              [
+                provisionalFinalMessageId,
+                streamingMessageId,
+                ...Array.from(activeSubagentParentMessageIds),
+              ],
+            );
+            if (hydratedSubagentsFromState.length > 0) {
+              sanitized = mergeSubagentsIntoMessage(
+                sanitized,
+                hydratedSubagentsFromState,
+                {
+                  freezeIncompleteStatuses: false,
+                  presentationPolicy: { mode: "stream", sessionProcessing: true },
+                },
+              );
+            }
+            if (
+              !asString(asRecord(sanitized.info)?.id) &&
+              !asString(sanitized.id) &&
+              streamingMessageId
+            ) {
+              sanitized = {
+                ...sanitized,
+                id: streamingMessageId,
               };
             }
-          }
-        }
-        let finalMessageId: string | null = null;
-        let streamingMessageId: string | null = null;
-        if (normalizedMessage) {
-          streamingMessageId =
-            currentStreaming?.messageId || snapshotMessageId;
-          let sanitized = sanitizeAssistantMessageEcho(
-            normalizedMessage,
-            getState(),
-          );
 
-          // Extract error from info.error and set to message.error for display
-          const infoRec = asRecord(sanitized.info);
-          const errorRec = asRecord(infoRec?.error);
-          if (errorRec) {
-            const errorName = asString(errorRec.name);
-            const errorData = asRecord(errorRec.data);
-            const errorMessage = asString(errorData?.message) || asString(errorRec.message);
-            if (errorMessage) {
-              (sanitized as unknown as UnknownRecord).error = errorName
-                ? `${errorName}: ${errorMessage}`
-                : errorMessage;
+            dispatch({
+              type: "SET_MESSAGES",
+              payload: [...currentMessages, sanitized],
+            });
+            finalMessageId =
+              asString(asRecord(sanitized.info)?.id) ||
+              asString(sanitized.id) ||
+              responseMessageId ||
+              null;
+            remapSubagentsToFinalMessageId(
+              dispatch,
+              getState,
+              [streamingMessageId, ...Array.from(activeSubagentParentMessageIds)],
+              finalMessageId,
+            );
+            const { summariesByParentMessageId, detailsById } =
+              extractSubagentsFromMessages([sanitized]);
+            if (Object.keys(summariesByParentMessageId).length > 0) {
+              dispatch({
+                type: "UPSERT_SUBAGENT_SUMMARIES",
+                payload: summariesByParentMessageId,
+              });
+            }
+            if (Object.keys(detailsById).length > 0) {
+              dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
+            }
+            const interactiveEvents = interactiveEventsFromMessage(sanitized);
+            const inInteractiveTransitionWindow =
+              Date.now() <= interactiveResponseTransitionUntil;
+            const latestMessage =
+              currentMessages.length > 0
+                ? currentMessages[currentMessages.length - 1]
+                : undefined;
+            const suppressInteractiveReshow =
+              inInteractiveTransitionWindow &&
+              !!latestMessage &&
+              isLikelyInteractiveAnswerSubmissionMessage(latestMessage) &&
+              hasBlockingInteractiveEvents(interactiveEvents);
+            if (!suppressInteractiveReshow && interactiveEvents.length > 0) {
+              dispatch({
+                type: "SET_INTERACTIVE_EVENTS",
+                payload: interactiveEvents,
+              });
+            }
+
+            const sessionId = deriveSessionIdFromMessage(
+              sanitized,
+              getState().currentSessionId,
+            );
+            if (sessionId) {
+              vscode.postMessage({
+                type: "persistAssistantMessage",
+                sessionId,
+                message: sanitized,
+              });
             }
           }
-          const provisionalFinalMessageId =
-            asString(asRecord(sanitized.info)?.id) ||
-            asString(sanitized.id) ||
-            responseMessageId ||
-            null;
-          const hydratedSubagentsFromState = collectHydratedSubagentsFromState(
-            getState(),
-            [
-              provisionalFinalMessageId,
-              streamingMessageId,
-              ...Array.from(activeSubagentParentMessageIds),
-            ],
-          );
-          if (hydratedSubagentsFromState.length > 0) {
-            sanitized = mergeSubagentsIntoMessage(
-              sanitized,
-              hydratedSubagentsFromState,
-              {
-                freezeIncompleteStatuses: false,
-                presentationPolicy: { mode: "stream", sessionProcessing: true },
-              },
-            );
-          }
-          if (
-            !asString(asRecord(sanitized.info)?.id) &&
-            !asString(sanitized.id) &&
-            streamingMessageId
-          ) {
-            sanitized = {
-              ...sanitized,
-              id: streamingMessageId,
-            };
-          }
+          // Only clear streaming state if this messageResponse matches the current streaming message ID
+          // This prevents clearing streaming state when processing messageResponse events for
+          // system messages or other non-streaming messages that arrive during streaming
+          const isMatchingStreamingMessage =
+            streamingMessageId && finalMessageId && streamingMessageId === finalMessageId;
 
-          dispatch({
-            type: "SET_MESSAGES",
-            payload: [...currentMessages, sanitized],
-          });
-          finalMessageId =
-            asString(asRecord(sanitized.info)?.id) ||
-            asString(sanitized.id) ||
-            responseMessageId ||
-            null;
-          remapSubagentsToFinalMessageId(
-            dispatch,
-            getState,
-            [streamingMessageId, ...Array.from(activeSubagentParentMessageIds)],
-            finalMessageId,
-          );
-          const { summariesByParentMessageId, detailsById } =
-            extractSubagentsFromMessages([sanitized]);
-          if (Object.keys(summariesByParentMessageId).length > 0) {
-            dispatch({
-              type: "UPSERT_SUBAGENT_SUMMARIES",
-              payload: summariesByParentMessageId,
-            });
+          if (isMatchingStreamingMessage || !currentStreaming) {
+            latestStreamingSnapshot = null;
+            activeSubagentParentMessageIds = new Set<string>();
           }
-          if (Object.keys(detailsById).length > 0) {
-            dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
-          }
-          const interactiveEvents = interactiveEventsFromMessage(sanitized);
-          const inInteractiveTransitionWindow =
-            Date.now() <= interactiveResponseTransitionUntil;
-          const latestMessage =
-            currentMessages.length > 0
-              ? currentMessages[currentMessages.length - 1]
-              : undefined;
-          const suppressInteractiveReshow =
-            inInteractiveTransitionWindow &&
-            !!latestMessage &&
-            isLikelyInteractiveAnswerSubmissionMessage(latestMessage) &&
-            hasBlockingInteractiveEvents(interactiveEvents);
-          if (!suppressInteractiveReshow && interactiveEvents.length > 0) {
-            dispatch({
-              type: "SET_INTERACTIVE_EVENTS",
-              payload: interactiveEvents,
-            });
-          }
-
-          const sessionId = deriveSessionIdFromMessage(
-            sanitized,
-            getState().currentSessionId,
-          );
-          if (sessionId) {
-            vscode.postMessage({
-              type: "persistAssistantMessage",
-              sessionId,
-              message: sanitized,
-            });
-          }
+          dispatch({ type: "SET_PROCESSING", payload: false });
+          dispatch({ type: "SET_STREAMING", payload: null });
+          break;
         }
-        // Only clear streaming state if this messageResponse matches the current streaming message ID
-        // This prevents clearing streaming state when processing messageResponse events for
-        // system messages or other non-streaming messages that arrive during streaming
-        const isMatchingStreamingMessage =
-          streamingMessageId && finalMessageId && streamingMessageId === finalMessageId;
-
-        if (isMatchingStreamingMessage || !currentStreaming) {
-          latestStreamingSnapshot = null;
+        case "chatHistory": {
+          terminalErrorReached = false;
+          const rawMessages = asArray(data.messages, isMessage);
+          const normalizedMessages = rawMessages
+            .map((msg) => normalizeMessage(msg, null))
+            .filter((msg): msg is Message => !!msg)
+            .filter((msg) => isRenderableHistoryMessage(msg));
+          const messages =
+            coalesceAdjacentAssistantHistoryMessages(normalizedMessages);
+          const hydratedMessages = hydrateLegacyInteractiveUserMessages(messages);
+          const dedupedHydratedMessages =
+            dedupeInteractiveUserHydrationMessages(hydratedMessages);
+          const dedupedSystemMessages =
+            dedupeSystemMessages(dedupedHydratedMessages);
           activeSubagentParentMessageIds = new Set<string>();
-        }
-        dispatch({ type: "SET_PROCESSING", payload: false });
-        dispatch({ type: "SET_STREAMING", payload: null });
-        break;
-      }
-      case "chatHistory": {
-        terminalErrorReached = false;
-        const rawMessages = asArray(data.messages, isMessage);
-        const normalizedMessages = rawMessages
-          .map((msg) => normalizeMessage(msg, null))
-          .filter((msg): msg is Message => !!msg)
-          .filter((msg) => isRenderableHistoryMessage(msg));
-        const messages =
-          coalesceAdjacentAssistantHistoryMessages(normalizedMessages);
-        const hydratedMessages = hydrateLegacyInteractiveUserMessages(messages);
-        const dedupedHydratedMessages =
-          dedupeInteractiveUserHydrationMessages(hydratedMessages);
-        const dedupedSystemMessages =
-          dedupeSystemMessages(dedupedHydratedMessages);
-        activeSubagentParentMessageIds = new Set<string>();
 
-        const chatHistorySessionId = asString(data.sessionId);
-        const currentState = getState();
-        const isSessionProcessing = !!(chatHistorySessionId &&
-          currentState.processingSessionIds.includes(chatHistorySessionId));
+          const chatHistorySessionId = asString(data.sessionId);
+          const currentState = getState();
+          const isSessionProcessing = !!(chatHistorySessionId &&
+            currentState.processingSessionIds.includes(chatHistorySessionId));
 
-        // Set switchingSessionId if we're loading a different session
-        const isSwitchingSession = !!(
-          chatHistorySessionId &&
-          currentState.currentSessionId !== chatHistorySessionId
-        );
-        if (isSwitchingSession) {
-          dispatch({ type: "SET_SWITCHING_SESSION", payload: chatHistorySessionId });
-        }
-
-        const hydrationPresentationPolicy: SubagentPresentationPolicy = {
-          mode: "hydration",
-          sessionProcessing: isSessionProcessing,
-        };
-
-        latestStreamingSnapshot = null;
-
-        // Clear any stale streaming state when history is loaded (extension open
-        // or session switch) so the UI starts clean. Preserve processing state
-        // if the session is currently being processed on the backend.
-        dispatch({ type: "SET_STREAMING", payload: null });
-        dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
-        dispatch({ type: "CLEAR_MESSAGES" });
-        const stabilizedHydratedMessages = dedupedSystemMessages.map((message) => {
-          if (!Array.isArray(message.subagents) || message.subagents.length === 0) {
-            return message;
+          // Set switchingSessionId if we're loading a different session
+          const isSwitchingSession = !!(
+            chatHistorySessionId &&
+            currentState.currentSessionId !== chatHistorySessionId
+          );
+          if (isSwitchingSession) {
+            dispatch({ type: "SET_SWITCHING_SESSION", payload: chatHistorySessionId });
           }
-          return {
-            ...message,
-            subagents: message.subagents.map((subagent) =>
-              normalizeHydratedSubagentDetail(
-                subagent,
-                message,
-                shouldFreezeSubagentForPresentation(
+
+          const hydrationPresentationPolicy: SubagentPresentationPolicy = {
+            mode: "hydration",
+            sessionProcessing: isSessionProcessing,
+          };
+
+          latestStreamingSnapshot = null;
+
+          // Clear any stale streaming state when history is loaded (extension open
+          // or session switch) so the UI starts clean. Preserve processing state
+          // if the session is currently being processed on the backend.
+          dispatch({ type: "SET_STREAMING", payload: null });
+          dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
+          dispatch({ type: "CLEAR_MESSAGES" });
+          const stabilizedHydratedMessages = dedupedSystemMessages.map((message) => {
+            if (!Array.isArray(message.subagents) || message.subagents.length === 0) {
+              return message;
+            }
+            return {
+              ...message,
+              subagents: message.subagents.map((subagent) =>
+                normalizeHydratedSubagentDetail(
                   subagent,
                   message,
-                  hydrationPresentationPolicy,
+                  shouldFreezeSubagentForPresentation(
+                    subagent,
+                    message,
+                    hydrationPresentationPolicy,
+                  ),
                 ),
               ),
-            ),
+            };
+          });
+          dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages });
+
+          // Clear switchingSessionId after messages are loaded
+          dispatch({ type: "SET_SWITCHING_SESSION", payload: null });
+
+          // Use the just-normalized hydration snapshot directly. Reading getState()
+          // immediately after dispatch can observe stale messages in the same tick.
+          const canonicalMessages = stabilizedHydratedMessages;
+
+          // If the backend included a sessionId (e.g. on session switch), update it BEFORE
+          // storing stats so RESET_SESSION_STATS writes under the correct key.
+          if (chatHistorySessionId) {
+            dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
+            // Clear todo items from the previous session so stale tasks are not shown.
+            dispatch({ type: "SET_TODO_ITEMS", payload: [] });
+          }
+
+          // FORBIDDEN TO REMOVE - recalculate session stats from full history
+          const stats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
+          canonicalMessages.forEach((msg) => {
+            stats.input += msg.tokens?.input || msg.info?.tokens?.input || 0;
+            stats.output += msg.tokens?.output || msg.info?.tokens?.output || 0;
+            stats.read +=
+              msg.tokens?.cache?.read || msg.info?.tokens?.cache?.read || 0;
+            stats.write +=
+              msg.tokens?.cache?.write || msg.info?.tokens?.cache?.write || 0;
+            stats.duration +=
+              msg.duration || msg.timing?.duration || msg.info?.duration || 0;
+          });
+          dispatch({ type: "RESET_SESSION_STATS", payload: stats });
+          dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
+          const extractedHydratedSubagents =
+            extractSubagentsFromMessages(canonicalMessages);
+          const normalizedHydratedSubagents = normalizeHydratedSubagentMaps(
+            extractedHydratedSubagents.summariesByParentMessageId,
+            extractedHydratedSubagents.detailsById,
+            canonicalMessages,
+            false,
+            hydrationPresentationPolicy,
+          );
+          if (
+            Object.keys(normalizedHydratedSubagents.summariesByParentMessageId)
+              .length > 0
+          ) {
+            dispatch({
+              type: "UPSERT_SUBAGENT_SUMMARIES",
+              payload: normalizedHydratedSubagents.summariesByParentMessageId,
+            });
+          }
+          if (Object.keys(normalizedHydratedSubagents.detailsById).length > 0) {
+            dispatch({
+              type: "UPSERT_SUBAGENT_DETAIL",
+              payload: normalizedHydratedSubagents.detailsById,
+            });
+          }
+          let latestInteractive: InteractiveEvent[] = [];
+          for (let index = canonicalMessages.length - 1; index >= 0; index -= 1) {
+            const msg = canonicalMessages[index];
+            const role = msg.role ?? msg.info?.role;
+            const items = interactiveEventsFromMessage(msg);
+            if (items.length > 0) {
+              latestInteractive = items;
+              break;
+            }
+            if (role === "user") {
+              break;
+            }
+          }
+          if (latestInteractive.length === 0 && canonicalMessages.length > 0) {
+            const lastMessage = canonicalMessages[canonicalMessages.length - 1];
+            const lastRec = asRecord(lastMessage);
+            const lastInfo = asRecord(lastRec?.info);
+            const lastStructured =
+              asRecord(lastRec?.structuredOutput) ||
+              asRecord(lastRec?.structured_output) ||
+              asRecord(lastInfo?.structuredOutput) ||
+              asRecord(lastInfo?.structured_output) ||
+              asRecord(lastInfo?.structured);
+            const lastResponseType =
+              asString(lastRec?.responseType) ||
+              asString(lastInfo?.responseType) ||
+              asString(lastStructured?.responseType);
+            if (lastResponseType.toLowerCase() === "question") {
+              latestInteractive = interactiveEventsFromMessage(lastMessage);
+            }
+          }
+          dispatch({
+            type: "SET_INTERACTIVE_EVENTS",
+            payload: latestInteractive,
+          });
+          logRenderSnapshot("chatHistory", canonicalMessages);
+          break;
+        }
+        case "subagentSnapshot": {
+          const snapshotPolicy: SubagentPresentationPolicy = {
+            mode: "hydration",
+            sessionProcessing: getState().processing,
           };
-        });
-        dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages });
+          const summariesByParentMessageId = normalizeSubagentSummaryMap(
+            data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
+          );
+          const detailsById = normalizeSubagentDetailMap(
+            data.detailsById ?? data.subagentDetailsById,
+          );
+          const hasSnapshotSubagents =
+            hasSubagentSummaryEntries(summariesByParentMessageId) ||
+            Object.keys(detailsById).length > 0;
 
-        // Clear switchingSessionId after messages are loaded
-        dispatch({ type: "SET_SWITCHING_SESSION", payload: null });
-
-        // Use the just-normalized hydration snapshot directly. Reading getState()
-        // immediately after dispatch can observe stale messages in the same tick.
-        const canonicalMessages = stabilizedHydratedMessages;
-
-        // If the backend included a sessionId (e.g. on session switch), update it BEFORE
-        // storing stats so RESET_SESSION_STATS writes under the correct key.
-        if (chatHistorySessionId) {
-          dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
-          // Clear todo items from the previous session so stale tasks are not shown.
-          dispatch({ type: "SET_TODO_ITEMS", payload: [] });
-        }
-
-        // FORBIDDEN TO REMOVE - recalculate session stats from full history
-        const stats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };
-        canonicalMessages.forEach((msg) => {
-          stats.input += msg.tokens?.input || msg.info?.tokens?.input || 0;
-          stats.output += msg.tokens?.output || msg.info?.tokens?.output || 0;
-          stats.read +=
-            msg.tokens?.cache?.read || msg.info?.tokens?.cache?.read || 0;
-          stats.write +=
-            msg.tokens?.cache?.write || msg.info?.tokens?.cache?.write || 0;
-          stats.duration +=
-            msg.duration || msg.timing?.duration || msg.info?.duration || 0;
-        });
-        dispatch({ type: "RESET_SESSION_STATS", payload: stats });
-        dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
-        const extractedHydratedSubagents =
-          extractSubagentsFromMessages(canonicalMessages);
-        const normalizedHydratedSubagents = normalizeHydratedSubagentMaps(
-          extractedHydratedSubagents.summariesByParentMessageId,
-          extractedHydratedSubagents.detailsById,
-          canonicalMessages,
-          false,
-          hydrationPresentationPolicy,
-        );
-        if (
-          Object.keys(normalizedHydratedSubagents.summariesByParentMessageId)
-            .length > 0
-        ) {
-          dispatch({
-            type: "UPSERT_SUBAGENT_SUMMARIES",
-            payload: normalizedHydratedSubagents.summariesByParentMessageId,
-          });
-        }
-        if (Object.keys(normalizedHydratedSubagents.detailsById).length > 0) {
-          dispatch({
-            type: "UPSERT_SUBAGENT_DETAIL",
-            payload: normalizedHydratedSubagents.detailsById,
-          });
-        }
-        let latestInteractive: InteractiveEvent[] = [];
-        for (let index = canonicalMessages.length - 1; index >= 0; index -= 1) {
-          const msg = canonicalMessages[index];
-          const role = msg.role ?? msg.info?.role;
-          const items = interactiveEventsFromMessage(msg);
-          if (items.length > 0) {
-            latestInteractive = items;
-            break;
+          // Defensive fallback: some session/history hydration flows can emit an
+          // empty snapshot right after chatHistory has already restored subagents
+          // from persisted messages. Avoid clobbering those restored cards.
+          if (!hasSnapshotSubagents) {
+            const fallback = extractSubagentsFromMessages(getState().messages);
+            const normalizedFallback = normalizeHydratedSubagentMaps(
+              fallback.summariesByParentMessageId,
+              fallback.detailsById,
+              getState().messages,
+              false,
+              snapshotPolicy,
+            );
+            if (
+              Object.keys(normalizedFallback.summariesByParentMessageId).length >
+              0 ||
+              Object.keys(normalizedFallback.detailsById).length > 0
+            ) {
+              trackActiveSubagentParentIds(
+                normalizedFallback.summariesByParentMessageId,
+              );
+              dispatch({
+                type: "UPSERT_SUBAGENT_SUMMARIES",
+                payload: normalizedFallback.summariesByParentMessageId,
+              });
+              dispatch({
+                type: "UPSERT_SUBAGENT_DETAIL",
+                payload: normalizedFallback.detailsById,
+              });
+              syncSubagentMapsIntoMessages(
+                dispatch,
+                getState,
+                normalizedFallback.summariesByParentMessageId,
+                normalizedFallback.detailsById,
+                "merge",
+                {
+                  freezeIncompleteStatuses: false,
+                  presentationPolicy: snapshotPolicy,
+                },
+              );
+              break;
+            }
           }
-          if (role === "user") {
-            break;
-          }
-        }
-        if (latestInteractive.length === 0 && canonicalMessages.length > 0) {
-          const lastMessage = canonicalMessages[canonicalMessages.length - 1];
-          const lastRec = asRecord(lastMessage);
-          const lastInfo = asRecord(lastRec?.info);
-          const lastStructured =
-            asRecord(lastRec?.structuredOutput) ||
-            asRecord(lastRec?.structured_output) ||
-            asRecord(lastInfo?.structuredOutput) ||
-            asRecord(lastInfo?.structured_output) ||
-            asRecord(lastInfo?.structured);
-          const lastResponseType =
-            asString(lastRec?.responseType) ||
-            asString(lastInfo?.responseType) ||
-            asString(lastStructured?.responseType);
-          if (lastResponseType.toLowerCase() === "question") {
-            latestInteractive = interactiveEventsFromMessage(lastMessage);
-          }
-        }
-        dispatch({
-          type: "SET_INTERACTIVE_EVENTS",
-          payload: latestInteractive,
-        });
-        logRenderSnapshot("chatHistory", canonicalMessages);
-        break;
-      }
-      case "subagentSnapshot": {
-        const snapshotPolicy: SubagentPresentationPolicy = {
-          mode: "hydration",
-          sessionProcessing: getState().processing,
-        };
-        const summariesByParentMessageId = normalizeSubagentSummaryMap(
-          data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
-        );
-        const detailsById = normalizeSubagentDetailMap(
-          data.detailsById ?? data.subagentDetailsById,
-        );
-        const hasSnapshotSubagents =
-          hasSubagentSummaryEntries(summariesByParentMessageId) ||
-          Object.keys(detailsById).length > 0;
-
-        // Defensive fallback: some session/history hydration flows can emit an
-        // empty snapshot right after chatHistory has already restored subagents
-        // from persisted messages. Avoid clobbering those restored cards.
-        if (!hasSnapshotSubagents) {
-          const fallback = extractSubagentsFromMessages(getState().messages);
-          const normalizedFallback = normalizeHydratedSubagentMaps(
-            fallback.summariesByParentMessageId,
-            fallback.detailsById,
+          const normalizedSnapshot = normalizeHydratedSubagentMaps(
+            summariesByParentMessageId,
+            detailsById,
             getState().messages,
             false,
             snapshotPolicy,
           );
+          const hasNormalizedSnapshotSubagents =
+            hasSubagentSummaryEntries(
+              normalizedSnapshot.summariesByParentMessageId,
+            ) || Object.keys(normalizedSnapshot.detailsById).length > 0;
+          if (!hasNormalizedSnapshotSubagents) {
+            const existingState = getState();
+            const hasExistingRenderedSubagents =
+              hasSubagentSummaryEntries(
+                existingState.subagentsByParentMessageId,
+              ) || Object.keys(existingState.subagentDetailsById).length > 0;
+            if (hasExistingRenderedSubagents) {
+              break;
+            }
+          }
+          trackActiveSubagentParentIds(
+            normalizedSnapshot.summariesByParentMessageId,
+          );
+          dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
           if (
-            Object.keys(normalizedFallback.summariesByParentMessageId).length >
-              0 ||
-            Object.keys(normalizedFallback.detailsById).length > 0
+            Object.keys(normalizedSnapshot.summariesByParentMessageId).length > 0
           ) {
-            trackActiveSubagentParentIds(
-              normalizedFallback.summariesByParentMessageId,
-            );
             dispatch({
               type: "UPSERT_SUBAGENT_SUMMARIES",
-              payload: normalizedFallback.summariesByParentMessageId,
+              payload: normalizedSnapshot.summariesByParentMessageId,
             });
+          }
+          if (Object.keys(normalizedSnapshot.detailsById).length > 0) {
             dispatch({
               type: "UPSERT_SUBAGENT_DETAIL",
-              payload: normalizedFallback.detailsById,
+              payload: normalizedSnapshot.detailsById,
             });
-            syncSubagentMapsIntoMessages(
-              dispatch,
-              getState,
-              normalizedFallback.summariesByParentMessageId,
-              normalizedFallback.detailsById,
-              "merge",
-              {
-                freezeIncompleteStatuses: false,
-                presentationPolicy: snapshotPolicy,
-              },
-            );
-            break;
           }
-        }
-        const normalizedSnapshot = normalizeHydratedSubagentMaps(
-          summariesByParentMessageId,
-          detailsById,
-          getState().messages,
-          false,
-          snapshotPolicy,
-        );
-        const hasNormalizedSnapshotSubagents =
-          hasSubagentSummaryEntries(
+          bindStreamingToParentMessageIdFromSubagents(
+            dispatch,
+            getState,
             normalizedSnapshot.summariesByParentMessageId,
-          ) || Object.keys(normalizedSnapshot.detailsById).length > 0;
-        if (!hasNormalizedSnapshotSubagents) {
-          const existingState = getState();
-          const hasExistingRenderedSubagents =
-            hasSubagentSummaryEntries(
-              existingState.subagentsByParentMessageId,
-            ) || Object.keys(existingState.subagentDetailsById).length > 0;
-          if (hasExistingRenderedSubagents) {
-            break;
-          }
-        }
-        trackActiveSubagentParentIds(
-          normalizedSnapshot.summariesByParentMessageId,
-        );
-        dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
-        if (
-          Object.keys(normalizedSnapshot.summariesByParentMessageId).length > 0
-        ) {
-          dispatch({
-            type: "UPSERT_SUBAGENT_SUMMARIES",
-            payload: normalizedSnapshot.summariesByParentMessageId,
-          });
-        }
-        if (Object.keys(normalizedSnapshot.detailsById).length > 0) {
-          dispatch({
-            type: "UPSERT_SUBAGENT_DETAIL",
-            payload: normalizedSnapshot.detailsById,
-          });
-        }
-        bindStreamingToParentMessageIdFromSubagents(
-          dispatch,
-          getState,
-          normalizedSnapshot.summariesByParentMessageId,
-        );
-        syncSubagentMapsIntoMessages(
-          dispatch,
-          getState,
-          normalizedSnapshot.summariesByParentMessageId,
-          normalizedSnapshot.detailsById,
-          "replace",
-          {
-            freezeIncompleteStatuses: false,
-            presentationPolicy: snapshotPolicy,
-          },
-        );
-        break;
-      }
-      case "subagentUpdate": {
-        const streamPolicy: SubagentPresentationPolicy = {
-          mode: "stream",
-          sessionProcessing: getState().processing,
-          liveParentMessageIds:
-            getState().streaming?.messageId
-              ? new Set([getState().streaming?.messageId as string])
-              : undefined,
-        };
-        const summariesByParentMessageId = normalizeSubagentSummaryMap(
-          data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
-        );
-        const detailsById = normalizeSubagentDetailMap(
-          data.detailsById ?? data.subagentDetailsById,
-        );
-        const normalizedUpdate = normalizeHydratedSubagentMaps(
-          summariesByParentMessageId,
-          detailsById,
-          getState().messages,
-          false,
-          streamPolicy,
-        );
-        const mergedSummaryUpdate = mergeSubagentSummaryPayload(
-          getState().subagentsByParentMessageId,
-          normalizedUpdate.summariesByParentMessageId,
-        );
-        const mergedDetailUpdate = mergeSubagentDetailPayload(
-          getState().subagentDetailsById,
-          normalizedUpdate.detailsById,
-        );
-        trackActiveSubagentParentIds(mergedSummaryUpdate);
-        if (hasSubagentSummaryEntries(mergedSummaryUpdate)) {
-          dispatch({
-            type: "UPSERT_SUBAGENT_SUMMARIES",
-            payload: mergedSummaryUpdate,
-          });
-        }
-        if (Object.keys(mergedDetailUpdate).length > 0) {
-          dispatch({
-            type: "UPSERT_SUBAGENT_DETAIL",
-            payload: mergedDetailUpdate,
-          });
-        }
-        bindStreamingToParentMessageIdFromSubagents(
-          dispatch,
-          getState,
-          mergedSummaryUpdate,
-        );
-        syncSubagentMapsIntoMessages(
-          dispatch,
-          getState,
-          mergedSummaryUpdate,
-          mergedDetailUpdate,
-          "merge",
-          {
-            freezeIncompleteStatuses: false,
-            presentationPolicy: streamPolicy,
-          },
-        );
-        break;
-      }
-      case "streamEvent": {
-        if (terminalErrorReached && getState().isProcessing) {
-          terminalErrorReached = false;
-        }
-        const streamingBefore = getState().streaming;
-        if (streamingBefore) {
-          latestStreamingSnapshot = streamingBefore;
-        }
-        const payload = asRecord(data.event) ?? data;
-        const streamEventType = asString(payload.type) || "unknown";
-
-        // Reset terminal error flag on explicit stream start
-        if (streamEventType === "start" || streamEventType === "streamStart") {
-          terminalErrorReached = false;
-        }
-
-        streamDebug("[OpenCode][webview] streamEvent received", {
-          type: streamEventType,
-          hasProperties: !!asRecord(payload.properties),
-          hasPart: !!asRecord(asRecord(payload.properties)?.part),
-          structuredKind:
-            asString(asRecord(payload.structured)?.kind) || "unknown",
-        });
-        handleStreamEvent(dispatch, getState, payload, terminalErrorReached);
-        const streamingAfter = getState().streaming;
-        if (streamingAfter) {
-          latestStreamingSnapshot = streamingAfter;
-        }
-        if (
-          streamEventType === "message.updated" ||
-          streamEventType === "message.completed" ||
-          streamEventType === "session.completed"
-        ) {
-          const stateNow = getState();
-          logRenderSnapshot(`streamEvent:${streamEventType}`, stateNow.messages);
-        }
-        break;
-      }
-      case "streamEventEnrich": {
-        const callID = asString(data.callID);
-        const diffStatsRec = asRecord(data.diffStats);
-        const activityDetail = normalizeActivityDetail(data.activityDetail);
-        const diffStats =
-          diffStatsRec
-            ? {
-              added: asNumber(diffStatsRec.added) || 0,
-              deleted: asNumber(diffStatsRec.deleted) || 0,
-            }
-            : undefined;
-        if (!callID || (!diffStats && !activityDetail)) {
-          break;
-        }
-        dispatch({
-          type: "UPDATE_STREAMING_STEP",
-          payload: {
-            callID,
-            patch: {
-              ...(diffStats ? { diffStats } : {}),
-              ...(activityDetail ? { activityDetail } : {}),
-            },
-          },
-        });
-        break;
-      }
-      case "error": {
-        const errorMsg = asString(data.message, "Unknown error");
-        const stateBeforeError = getState();
-        const currentStreaming = stateBeforeError.streaming;
-        const pendingBlockingInteractive = hasBlockingInteractiveEvents(
-          stateBeforeError.interactiveEvents,
-        );
-        const inInteractiveTransitionWindow =
-          Date.now() <= interactiveResponseTransitionUntil;
-        const suppressAsAwaitingInteractive =
-          (pendingBlockingInteractive || inInteractiveTransitionWindow) &&
-          isLikelyInteractiveAwaitTimeout(errorMsg);
-
-        // When the model is waiting for an interactive answer, transport header
-        // timeouts are expected and should not surface as hard request failures.
-        if (suppressAsAwaitingInteractive) {
-          latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
-          dispatch({ type: "SET_PROCESSING", payload: false });
-          dispatch({ type: "FINISH_STREAMING" });
-          break;
-        }
-
-        latestStreamingSnapshot = null;
-        terminalErrorReached = true;
-
-        // If we were in the middle of a stream, preserve it as a message so the user
-        // can see partial output + the error banner + retry.
-        // The error is shown via partialMessage.error inside AssistantMessage,
-        // which renders the ErrorBanner at the bottom of the message.
-        if (currentStreaming) {
-          // If the streamed content is an AI internal monologue (tool-use narration like
-          // "Let me search for...", "Let me read the file..."), it has no user-facing value.
-          // Suppress it so only the error banner is shown rather than garbled reasoning text.
-          const rawContent = currentStreaming.content ?? "";
-          const timeoutLikeError = isLikelyInteractiveAwaitTimeout(errorMsg);
-          const contentIsReasoningMonologue =
-            looksLikeReasoningTrace(rawContent, "");
-          const suppressLowSignalTimeoutFragment =
-            timeoutLikeError && isLowSignalTimeoutFragment(rawContent);
-          const partialMessage: Message = {
-            id: currentStreaming.messageId || `error-${Date.now()}`,
-            role: "assistant",
-            agent: currentStreaming.agent,
-            modelID: currentStreaming.modelID,
-            providerID: currentStreaming.providerID,
-            content:
-              contentIsReasoningMonologue || suppressLowSignalTimeoutFragment
-                ? ""
-                : rawContent,
-            reasoningEvents: currentStreaming.reasoningEvents,
-            steps: currentStreaming.steps as any,
-            created: Date.now(),
-            error: errorMsg,
-          };
-          const messages = getState().messages;
-          dispatch({
-            type: "SET_MESSAGES",
-            payload: [...messages, partialMessage],
-          });
-        } else {
-          // No active stream — create an error-only message so the error banner
-          // appears at the bottom of the message instead of at the top of the chat.
-          const errorMessage: Message = {
-            id: `error-${Date.now()}`,
-            role: "assistant",
-            content: "",
-            error: errorMsg,
-            created: Date.now(),
-          };
-          const messages = getState().messages;
-          dispatch({
-            type: "SET_MESSAGES",
-            payload: [...messages, errorMessage],
-          });
-        }
-
-        dispatch({ type: "SET_PROCESSING", payload: false });
-        dispatch({ type: "FINISH_STREAMING" });
-        dispatch({ type: "SET_STREAMING", payload: null });
-        break;
-      }
-      case "appendPrompt": {
-        const current = getState().inputValue;
-        const extra = asString(data.text);
-        const next = current ? `${current}\n${extra}` : extra;
-        dispatch({ type: "SET_INPUT_VALUE", payload: next });
-        break;
-      }
-      case "addContext": {
-        const item = asRecord(data.context);
-        if (!item) {
-          break;
-        }
-        const context: ContextItem = {
-          file: asString(item.file) || "",
-          lineInfo: asString(item.lineInfo) || "",
-          isAuto: asBoolean(item.isAuto, false),
-          content: asString(item.content),
-          languageId: asString(item.languageId),
-        };
-        if (!context.file) {
-          break;
-        }
-        const selected = getState().selectedContexts;
-
-        let nextSelected = [...selected];
-
-        // If it's an auto context, remove any existing auto context
-        if (context.isAuto) {
-          nextSelected = nextSelected.filter((c) => !c.isAuto);
-        }
-
-        // Avoid exact duplicates
-        const exists = nextSelected.some(
-          (c) => c.file === context.file && c.lineInfo === context.lineInfo,
-        );
-
-        if (!exists) {
-          nextSelected.push(context);
-        }
-
-        dispatch({ type: "SET_SELECTED_CONTEXTS", payload: nextSelected });
-        break;
-      }
-      case "clearAutoContext": {
-        const selected = getState().selectedContexts;
-        const nextSelected = selected.filter((c) => !c.isAuto);
-        if (nextSelected.length !== selected.length) {
-          dispatch({ type: "SET_SELECTED_CONTEXTS", payload: nextSelected });
-        }
-        break;
-      }
-      case "fileSearchResults": {
-        const results = asArray(data.results, isFileResult);
-        dispatch({ type: "SET_FILE_SUGGESTIONS", payload: results });
-        dispatch({
-          type: "SET_SHOW_FILE_SUGGESTIONS",
-          payload: results.length > 0,
-        });
-        dispatch({ type: "SET_SUGGESTION_INDEX", payload: 0 });
-        break;
-      }
-      case "commandsList": {
-        webviewLogger.debug('Received commandsList message', { data });
-        webviewLogger.debug('commands data', { commands: data.commands, type: typeof data.commands, isArray: Array.isArray(data.commands) });
-
-        const commands = asArray(data.commands, isSlashCommand);
-        webviewLogger.debug('Filtered commands', { commands, count: commands.length });
-
-        dispatch({ type: "SET_COMMANDS_LIST", payload: commands });
-        break;
-      }
-      case "sessionsList": {
-        const currentSessionId = asString(data.currentSessionId) || null;
-        dispatch({
-          type: "SET_SESSIONS_LIST",
-          payload: asArray(data.sessions, isSession),
-        });
-        if (currentSessionId) {
-          dispatch({
-            type: "SET_SESSION_ID",
-            payload: currentSessionId,
-          });
-        }
-        break;
-      }
-      case "userMessageAppended": {
-        terminalErrorReached = false;
-        const message = data.message as Message;
-        if (message && typeof message === "object") {
-          if (isLikelyInteractiveAnswerSubmissionMessage(message)) {
-            interactiveResponseTransitionUntil = Date.now() + 15000;
-            // Lock: interactive answer submit starts a brand-new assistant turn.
-            // Clear stale stream snapshots so previous turn content cannot leak or
-            // duplicate into the next messageResponse normalization pass.
-            latestStreamingSnapshot = null;
-            activeSubagentParentMessageIds = new Set<string>();
-            dispatch({ type: "SET_STREAMING", payload: null });
-            // Defensive cleanup: once an interactive answer bundle is echoed back
-            // from the extension host, clear any stale quick-input popover state.
-            // This prevents already-answered prompts from lingering in the composer.
-            dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
-          }
-          // Get current state and append the new message
-          const currentMessages = getState().messages || [];
-          dispatch({
-            type: "SET_MESSAGES",
-            payload: [...currentMessages, message],
-          });
-        }
-        break;
-      }
-      case "sessionsListUpdate":
-      case "SET_PROCESSING_SESSIONS": {
-        const rawSessionIds =
-          type === "sessionsListUpdate" ? data.processingSessionIds : data.payload;
-        const sessionIds = asArray(
-          rawSessionIds,
-          (item): item is string => typeof item === "string",
-        );
-        dispatch({
-          type: "SET_PROCESSING_SESSIONS",
-          payload: sessionIds,
-        });
-        const stateAfterProcessingUpdate = getState();
-        const activeSessionId = stateAfterProcessingUpdate.currentSessionId;
-        const isActiveSessionStillProcessing = !!(
-          activeSessionId && sessionIds.includes(activeSessionId)
-        );
-        if (!isActiveSessionStillProcessing) {
-          if (stateAfterProcessingUpdate.isSteering) {
-            dispatch({ type: "SET_STEERING", payload: false });
-          }
-          if (stateAfterProcessingUpdate.isProcessing) {
-            dispatch({ type: "SET_PROCESSING", payload: false });
-          }
-          if (stateAfterProcessingUpdate.streaming?.isActive) {
-            dispatch({ type: "FINISH_STREAMING" });
-          }
-        }
-        break;
-      }
-      case "queueUpdate": {
-        const sessionId = asString(data.sessionId) || null;
-        dispatch({
-          type: "SET_QUEUE",
-          payload: {
-            sessionId,
-            queue: asArray(data.queue, isQueueItem),
-          },
-        });
-        break;
-      }
-      case "queueExecutionStarted": {
-        dispatch({ type: "SET_EXECUTING_QUEUE", payload: { sessionId: asString(data.sessionId), executing: true } });
-        break;
-      }
-      case "queueExecutionFinished": {
-        dispatch({ type: "SET_EXECUTING_QUEUE", payload: { sessionId: asString(data.sessionId), executing: false } });
-        break;
-      }
-      case "quotaData":
-      case "quotaUpdate": {
-        dispatch({ type: "SET_QUOTA_DATA", payload: data.data as QuotaData });
-        break;
-      }
-      case "budgetInfo": {
-        dispatch({ type: "SET_BUDGET_INFO", payload: data.data as BudgetInfo });
-        break;
-      }
-      case "mcpStatus": {
-        // Payload: { servers: Record<string, { status: string; error?: string }>, toolIds?: string[] }
-        const serversRec = asRecord(data.servers);
-        const toolIds: string[] = Array.isArray(data.toolIds)
-          ? (data.toolIds as unknown[]).filter(
-            (t): t is string => typeof t === "string",
-          )
-          : [];
-        if (serversRec) {
-          const mcpServers: McpServerInfo[] = Object.entries(serversRec).map(
-            ([name, raw]) => {
-              const entry = asRecord(raw);
-              const status =
-                (asString(entry?.status) as McpServerStatus) || "disconnected";
-              const error = entry?.error ? asString(entry.error) : undefined;
-              // Associate tools whose ID starts with `name/` convention
-              const serverTools = toolIds.filter(
-                (id) =>
-                  id === name ||
-                  id.startsWith(`${name}/`) ||
-                  id.startsWith(`${name}_`),
-              );
-              return { name, status, error, tools: serverTools };
+          );
+          syncSubagentMapsIntoMessages(
+            dispatch,
+            getState,
+            normalizedSnapshot.summariesByParentMessageId,
+            normalizedSnapshot.detailsById,
+            "replace",
+            {
+              freezeIncompleteStatuses: false,
+              presentationPolicy: snapshotPolicy,
             },
           );
-          dispatch({ type: "SET_MCP_SERVERS", payload: mcpServers });
+          break;
         }
-        break;
-      }
-      case "lspStatus": {
-        // Payload: { servers: Array<LspStatus> }
-        const rawServers = Array.isArray(data.servers) ? data.servers : [];
-        const lspServers: LspServerInfo[] = rawServers.map((raw) => {
-          const entry = asRecord(raw) ?? {};
-          return {
-            id: asString(entry.id),
-            name: asString(entry.name),
-            root: asString(entry.root),
-            status: asString(entry.status) === "error" ? "error" : "connected",
+        case "subagentUpdate": {
+          const streamPolicy: SubagentPresentationPolicy = {
+            mode: "stream",
+            sessionProcessing: getState().processing,
+            liveParentMessageIds:
+              getState().streaming?.messageId
+                ? new Set([getState().streaming?.messageId as string])
+                : undefined,
           };
-        });
-        dispatch({ type: "SET_LSP_SERVERS", payload: lspServers });
-        break;
-      }
-      case "todoUpdate": {
-        // Normalize the incoming item to the canonical shape and ingest via
-        // the shared ingestion helper so stream-origin and direct postMessage
-        // messages produce identical reducer effects.
-        try {
-          const action = asString(data.action);
-          const item = data.item;
-          // Guard: ignore malformed or missing items silently.
-          if (!item) break;
-          const normalized = normalizeTodoRecord(item);
-          if (!normalized) break;
-
-          // Keep a clear, test-friendly branching for add/update so existing
-          // string-based regression tests continue to match the handler body.
-          if (action === "add") {
+          const summariesByParentMessageId = normalizeSubagentSummaryMap(
+            data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
+          );
+          const detailsById = normalizeSubagentDetailMap(
+            data.detailsById ?? data.subagentDetailsById,
+          );
+          const normalizedUpdate = normalizeHydratedSubagentMaps(
+            summariesByParentMessageId,
+            detailsById,
+            getState().messages,
+            false,
+            streamPolicy,
+          );
+          const mergedSummaryUpdate = mergeSubagentSummaryPayload(
+            getState().subagentsByParentMessageId,
+            normalizedUpdate.summariesByParentMessageId,
+          );
+          const mergedDetailUpdate = mergeSubagentDetailPayload(
+            getState().subagentDetailsById,
+            normalizedUpdate.detailsById,
+          );
+          trackActiveSubagentParentIds(mergedSummaryUpdate);
+          if (hasSubagentSummaryEntries(mergedSummaryUpdate)) {
             dispatch({
-              type: "ADD_TODO_ITEM",
-              payload: {
-                id: normalized.id,
+              type: "UPSERT_SUBAGENT_SUMMARIES",
+              payload: mergedSummaryUpdate,
+            });
+          }
+          if (Object.keys(mergedDetailUpdate).length > 0) {
+            dispatch({
+              type: "UPSERT_SUBAGENT_DETAIL",
+              payload: mergedDetailUpdate,
+            });
+          }
+          bindStreamingToParentMessageIdFromSubagents(
+            dispatch,
+            getState,
+            mergedSummaryUpdate,
+          );
+          syncSubagentMapsIntoMessages(
+            dispatch,
+            getState,
+            mergedSummaryUpdate,
+            mergedDetailUpdate,
+            "merge",
+            {
+              freezeIncompleteStatuses: false,
+              presentationPolicy: streamPolicy,
+            },
+          );
+          break;
+        }
+        case "streamEvent": {
+          if (terminalErrorReached && getState().isProcessing) {
+            terminalErrorReached = false;
+          }
+          const streamingBefore = getState().streaming;
+          if (streamingBefore) {
+            latestStreamingSnapshot = streamingBefore;
+          }
+          const payload = asRecord(data.event) ?? data;
+          const streamEventType = asString(payload.type) || "unknown";
+
+          // Reset terminal error flag on explicit stream start
+          if (streamEventType === "start" || streamEventType === "streamStart") {
+            terminalErrorReached = false;
+          }
+
+          streamDebug("[OpenCode][webview] streamEvent received", {
+            type: streamEventType,
+            hasProperties: !!asRecord(payload.properties),
+            hasPart: !!asRecord(asRecord(payload.properties)?.part),
+            structuredKind:
+              asString(asRecord(payload.structured)?.kind) || "unknown",
+          });
+          handleStreamEvent(dispatch, getState, payload, terminalErrorReached);
+          const streamingAfter = getState().streaming;
+          if (streamingAfter) {
+            latestStreamingSnapshot = streamingAfter;
+          }
+          if (
+            streamEventType === "message.updated" ||
+            streamEventType === "message.completed" ||
+            streamEventType === "session.completed"
+          ) {
+            const stateNow = getState();
+            logRenderSnapshot(`streamEvent:${streamEventType}`, stateNow.messages);
+          }
+          break;
+        }
+        case "streamEventEnrich": {
+          const callID = asString(data.callID);
+          const diffStatsRec = asRecord(data.diffStats);
+          const activityDetail = normalizeActivityDetail(data.activityDetail);
+          const diffStats =
+            diffStatsRec
+              ? {
+                added: asNumber(diffStatsRec.added) || 0,
+                deleted: asNumber(diffStatsRec.deleted) || 0,
+              }
+              : undefined;
+          if (!callID || (!diffStats && !activityDetail)) {
+            break;
+          }
+          dispatch({
+            type: "UPDATE_STREAMING_STEP",
+            payload: {
+              callID,
+              patch: {
+                ...(diffStats ? { diffStats } : {}),
+                ...(activityDetail ? { activityDetail } : {}),
+              },
+            },
+          });
+          break;
+        }
+        case "error": {
+          const errorMsg = asString(data.message, "Unknown error");
+          const stateBeforeError = getState();
+          const currentStreaming = stateBeforeError.streaming;
+          const pendingBlockingInteractive = hasBlockingInteractiveEvents(
+            stateBeforeError.interactiveEvents,
+          );
+          const inInteractiveTransitionWindow =
+            Date.now() <= interactiveResponseTransitionUntil;
+          const suppressAsAwaitingInteractive =
+            (pendingBlockingInteractive || inInteractiveTransitionWindow) &&
+            isLikelyInteractiveAwaitTimeout(errorMsg);
+
+          // When the model is waiting for an interactive answer, transport header
+          // timeouts are expected and should not surface as hard request failures.
+          if (suppressAsAwaitingInteractive) {
+            latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
+            dispatch({ type: "SET_PROCESSING", payload: false });
+            dispatch({ type: "FINISH_STREAMING" });
+            break;
+          }
+
+          latestStreamingSnapshot = null;
+          terminalErrorReached = true;
+
+          // If we were in the middle of a stream, preserve it as a message so the user
+          // can see partial output + the error banner + retry.
+          // The error is shown via partialMessage.error inside AssistantMessage,
+          // which renders the ErrorBanner at the bottom of the message.
+          if (currentStreaming) {
+            // If the streamed content is an AI internal monologue (tool-use narration like
+            // "Let me search for...", "Let me read the file..."), it has no user-facing value.
+            // Suppress it so only the error banner is shown rather than garbled reasoning text.
+            const rawContent = currentStreaming.content ?? "";
+            const timeoutLikeError = isLikelyInteractiveAwaitTimeout(errorMsg);
+            const contentIsReasoningMonologue =
+              looksLikeReasoningTrace(rawContent, "");
+            const suppressLowSignalTimeoutFragment =
+              timeoutLikeError && isLowSignalTimeoutFragment(rawContent);
+            const partialMessage: Message = {
+              id: currentStreaming.messageId || `error-${Date.now()}`,
+              role: "assistant",
+              agent: currentStreaming.agent,
+              modelID: currentStreaming.modelID,
+              providerID: currentStreaming.providerID,
+              content:
+                contentIsReasoningMonologue || suppressLowSignalTimeoutFragment
+                  ? ""
+                  : rawContent,
+              reasoningEvents: currentStreaming.reasoningEvents,
+              steps: currentStreaming.steps as any,
+              created: Date.now(),
+              error: errorMsg,
+            };
+            const messages = getState().messages;
+            dispatch({
+              type: "SET_MESSAGES",
+              payload: [...messages, partialMessage],
+            });
+          } else {
+            // No active stream — create an error-only message so the error banner
+            // appears at the bottom of the message instead of at the top of the chat.
+            const errorMessage: Message = {
+              id: `error-${Date.now()}`,
+              role: "assistant",
+              content: "",
+              error: errorMsg,
+              created: Date.now(),
+            };
+            const messages = getState().messages;
+            dispatch({
+              type: "SET_MESSAGES",
+              payload: [...messages, errorMessage],
+            });
+          }
+
+          dispatch({ type: "SET_PROCESSING", payload: false });
+          dispatch({ type: "FINISH_STREAMING" });
+          dispatch({ type: "SET_STREAMING", payload: null });
+          break;
+        }
+        case "appendPrompt": {
+          const current = getState().inputValue;
+          const extra = asString(data.text);
+          const next = current ? `${current}\n${extra}` : extra;
+          dispatch({ type: "SET_INPUT_VALUE", payload: next });
+          break;
+        }
+        case "addContext": {
+          const item = asRecord(data.context);
+          if (!item) {
+            break;
+          }
+          const context: ContextItem = {
+            file: asString(item.file) || "",
+            lineInfo: asString(item.lineInfo) || "",
+            isAuto: asBoolean(item.isAuto, false),
+            content: asString(item.content),
+            languageId: asString(item.languageId),
+          };
+          if (!context.file) {
+            break;
+          }
+          const selected = getState().selectedContexts;
+
+          let nextSelected = [...selected];
+
+          // If it's an auto context, remove any existing auto context
+          if (context.isAuto) {
+            nextSelected = nextSelected.filter((c) => !c.isAuto);
+          }
+
+          // Avoid exact duplicates
+          const exists = nextSelected.some(
+            (c) => c.file === context.file && c.lineInfo === context.lineInfo,
+          );
+
+          if (!exists) {
+            nextSelected.push(context);
+          }
+
+          dispatch({ type: "SET_SELECTED_CONTEXTS", payload: nextSelected });
+          break;
+        }
+        case "clearAutoContext": {
+          const selected = getState().selectedContexts;
+          const nextSelected = selected.filter((c) => !c.isAuto);
+          if (nextSelected.length !== selected.length) {
+            dispatch({ type: "SET_SELECTED_CONTEXTS", payload: nextSelected });
+          }
+          break;
+        }
+        case "fileSearchResults": {
+          const results = asArray(data.results, isFileResult);
+          dispatch({ type: "SET_FILE_SUGGESTIONS", payload: results });
+          dispatch({
+            type: "SET_SHOW_FILE_SUGGESTIONS",
+            payload: results.length > 0,
+          });
+          dispatch({ type: "SET_SUGGESTION_INDEX", payload: 0 });
+          break;
+        }
+        case "commandsList": {
+          webviewLogger.debug('Received commandsList message', { data });
+          webviewLogger.debug('commands data', { commands: data.commands, type: typeof data.commands, isArray: Array.isArray(data.commands) });
+
+          const commands = asArray(data.commands, isSlashCommand);
+          webviewLogger.debug('Filtered commands', { commands, count: commands.length });
+
+          dispatch({ type: "SET_COMMANDS_LIST", payload: commands });
+          break;
+        }
+        case "sessionsList": {
+          const currentSessionId = asString(data.currentSessionId) || null;
+          dispatch({
+            type: "SET_SESSIONS_LIST",
+            payload: asArray(data.sessions, isSession),
+          });
+          if (currentSessionId) {
+            dispatch({
+              type: "SET_SESSION_ID",
+              payload: currentSessionId,
+            });
+          }
+          break;
+        }
+        case "userMessageAppended": {
+          terminalErrorReached = false;
+          const message = data.message as Message;
+          if (message && typeof message === "object") {
+            if (isLikelyInteractiveAnswerSubmissionMessage(message)) {
+              interactiveResponseTransitionUntil = Date.now() + 15000;
+              // Lock: interactive answer submit starts a brand-new assistant turn.
+              // Clear stale stream snapshots so previous turn content cannot leak or
+              // duplicate into the next messageResponse normalization pass.
+              latestStreamingSnapshot = null;
+              activeSubagentParentMessageIds = new Set<string>();
+              dispatch({ type: "SET_STREAMING", payload: null });
+              // Defensive cleanup: once an interactive answer bundle is echoed back
+              // from the extension host, clear any stale quick-input popover state.
+              // This prevents already-answered prompts from lingering in the composer.
+              dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
+            }
+            // Get current state and append the new message
+            const currentMessages = getState().messages || [];
+            dispatch({
+              type: "SET_MESSAGES",
+              payload: [...currentMessages, message],
+            });
+          }
+          break;
+        }
+        case "sessionsListUpdate":
+        case "SET_PROCESSING_SESSIONS": {
+          const rawSessionIds =
+            type === "sessionsListUpdate" ? data.processingSessionIds : data.payload;
+          const sessionIds = asArray(
+            rawSessionIds,
+            (item): item is string => typeof item === "string",
+          );
+          dispatch({
+            type: "SET_PROCESSING_SESSIONS",
+            payload: sessionIds,
+          });
+          const stateAfterProcessingUpdate = getState();
+          const activeSessionId = stateAfterProcessingUpdate.currentSessionId;
+          const isActiveSessionStillProcessing = !!(
+            activeSessionId && sessionIds.includes(activeSessionId)
+          );
+          if (!isActiveSessionStillProcessing) {
+            if (stateAfterProcessingUpdate.isSteering) {
+              dispatch({ type: "SET_STEERING", payload: false });
+            }
+            if (stateAfterProcessingUpdate.isProcessing) {
+              dispatch({ type: "SET_PROCESSING", payload: false });
+            }
+            if (stateAfterProcessingUpdate.streaming?.isActive) {
+              dispatch({ type: "FINISH_STREAMING" });
+            }
+          }
+          break;
+        }
+        case "queueUpdate": {
+          const sessionId = asString(data.sessionId) || null;
+          dispatch({
+            type: "SET_QUEUE",
+            payload: {
+              sessionId,
+              queue: asArray(data.queue, isQueueItem),
+            },
+          });
+          break;
+        }
+        case "queueExecutionStarted": {
+          dispatch({ type: "SET_EXECUTING_QUEUE", payload: { sessionId: asString(data.sessionId), executing: true } });
+          break;
+        }
+        case "queueExecutionFinished": {
+          dispatch({ type: "SET_EXECUTING_QUEUE", payload: { sessionId: asString(data.sessionId), executing: false } });
+          break;
+        }
+        case "quotaData":
+        case "quotaUpdate": {
+          dispatch({ type: "SET_QUOTA_DATA", payload: data.data as QuotaData });
+          break;
+        }
+        case "budgetInfo": {
+          dispatch({ type: "SET_BUDGET_INFO", payload: data.data as BudgetInfo });
+          break;
+        }
+        case "mcpStatus": {
+          // Payload: { servers: Record<string, { status: string; error?: string }>, toolIds?: string[] }
+          const serversRec = asRecord(data.servers);
+          const toolIds: string[] = Array.isArray(data.toolIds)
+            ? (data.toolIds as unknown[]).filter(
+              (t): t is string => typeof t === "string",
+            )
+            : [];
+          if (serversRec) {
+            const mcpServers: McpServerInfo[] = Object.entries(serversRec).map(
+              ([name, raw]) => {
+                const entry = asRecord(raw);
+                const status =
+                  (asString(entry?.status) as McpServerStatus) || "disconnected";
+                const error = entry?.error ? asString(entry.error) : undefined;
+                // Associate tools whose ID starts with `name/` convention
+                const serverTools = toolIds.filter(
+                  (id) =>
+                    id === name ||
+                    id.startsWith(`${name}/`) ||
+                    id.startsWith(`${name}_`),
+                );
+                return { name, status, error, tools: serverTools };
+              },
+            );
+            dispatch({ type: "SET_MCP_SERVERS", payload: mcpServers });
+          }
+          break;
+        }
+        case "lspStatus": {
+          // Payload: { servers: Array<LspStatus> }
+          const rawServers = Array.isArray(data.servers) ? data.servers : [];
+          const lspServers: LspServerInfo[] = rawServers.map((raw) => {
+            const entry = asRecord(raw) ?? {};
+            return {
+              id: asString(entry.id),
+              name: asString(entry.name),
+              root: asString(entry.root),
+              status: asString(entry.status) === "error" ? "error" : "connected",
+            };
+          });
+          dispatch({ type: "SET_LSP_SERVERS", payload: lspServers });
+          break;
+        }
+        case "todoUpdate": {
+          // Normalize the incoming item to the canonical shape and ingest via
+          // the shared ingestion helper so stream-origin and direct postMessage
+          // messages produce identical reducer effects.
+          try {
+            const action = asString(data.action);
+            const item = data.item;
+            // Guard: ignore malformed or missing items silently.
+            if (!item) break;
+            const normalized = normalizeTodoRecord(item);
+            if (!normalized) break;
+
+            // Keep a clear, test-friendly branching for add/update so existing
+            // string-based regression tests continue to match the handler body.
+            if (action === "add") {
+              dispatch({
+                type: "ADD_TODO_ITEM",
+                payload: {
+                  id: normalized.id,
+                  text: normalized.text,
+                  status: normalized.status,
+                  sessionId: normalized.sessionId ?? "",
+                },
+              });
+            } else if (action === "update") {
+              const patch: Partial<TodoItem> = {
                 text: normalized.text,
                 status: normalized.status,
-                sessionId: normalized.sessionId ?? "",
-              },
+              };
+              if (normalized.sessionId) patch.sessionId = normalized.sessionId;
+              dispatch({ type: "UPDATE_TODO_ITEM", payload: { id: normalized.id, patch } });
+            } else {
+              // Unknown action: fall back to unified ingestion which will decide
+              // whether to add or update based on existing state.
+              ingestNormalizedTodo(dispatch, getState, normalized);
+            }
+          } catch (e) {
+            // Defensive: do not allow a malformed postMessage to throw.
+            webviewLogger.warn("Failed to process todoUpdate postMessage", { error: String(e) });
+          }
+          break;
+        }
+        case "thinkingLevelUpdate": {
+          const level = asString(data.level) as any;
+          if (level) {
+            dispatch({ type: "SET_THINKING_LEVEL", payload: level });
+          }
+          break;
+        }
+        case "modelCapabilityUpdate": {
+          try {
+            const capRec = asRecord(data.capability);
+            dispatch({
+              type: "SET_MODEL_CAPABILITY",
+              payload: capRec
+                ? {
+                  reasoning: Boolean(capRec.reasoning),
+                  variants: Array.isArray(capRec.variants)
+                    ? (capRec.variants as string[])
+                    : undefined,
+                  thinkingConfig: capRec.thinkingConfig as Record<string, unknown> | undefined,
+                }
+                : null,
             });
-          } else if (action === "update") {
-            const patch: Partial<TodoItem> = {
-              text: normalized.text,
-              status: normalized.status,
-            };
-            if (normalized.sessionId) patch.sessionId = normalized.sessionId;
-            dispatch({ type: "UPDATE_TODO_ITEM", payload: { id: normalized.id, patch } });
-          } else {
-            // Unknown action: fall back to unified ingestion which will decide
-            // whether to add or update based on existing state.
-            ingestNormalizedTodo(dispatch, getState, normalized);
+          } catch (e) {
+            // Defensive: do not allow malformed postMessage to throw
+            webviewLogger.warn("Failed to process modelCapabilityUpdate postMessage", { error: String(e) });
           }
-        } catch (e) {
-          // Defensive: do not allow a malformed postMessage to throw.
-          webviewLogger.warn("Failed to process todoUpdate postMessage", { error: String(e) });
+          break;
         }
-        break;
-      }
-      case "thinkingLevelUpdate": {
-        const level = asString(data.level) as any;
-        if (level) {
-          dispatch({ type: "SET_THINKING_LEVEL", payload: level });
-        }
-        break;
-      }
-      case "modelCapabilityUpdate": {
-        try {
-          const capRec = asRecord(data.capability);
+        case "addPlanAttachment": {
+          const p = asRecord(data.payload);
+          if (!p) break;
           dispatch({
-            type: "SET_MODEL_CAPABILITY",
-            payload: capRec
-              ? {
-                reasoning: Boolean(capRec.reasoning),
-                variants: Array.isArray(capRec.variants)
-                  ? (capRec.variants as string[])
-                  : undefined,
-                thinkingConfig: capRec.thinkingConfig as Record<string, unknown> | undefined,
-              }
-              : null,
+            type: "ADD_ATTACHMENT",
+            payload: {
+              id: asString(p.id) || `plan-${Date.now()}`,
+              filename: asString(p.filename, "Implementation Plan"),
+              mimeType: asString(p.mimeType, "text/markdown"),
+              dataUrl: asString(p.dataUrl),
+            },
           });
-        } catch (e) {
-          // Defensive: do not allow malformed postMessage to throw
-          webviewLogger.warn("Failed to process modelCapabilityUpdate postMessage", { error: String(e) });
+          break;
         }
-        break;
-      }
-      case "addPlanAttachment": {
-        const p = asRecord(data.payload);
-        if (!p) break;
-        dispatch({
-          type: "ADD_ATTACHMENT",
-          payload: {
-            id: asString(p.id) || `plan-${Date.now()}`,
-            filename: asString(p.filename, "Implementation Plan"),
-            mimeType: asString(p.mimeType, "text/markdown"),
-            dataUrl: asString(p.dataUrl),
-          },
-        });
-        break;
-      }
-      case "injectThemeCss": {
-        const css = asString(data.css);
-        if (css) {
-          let styleTag = document.getElementById("vscode-theme-icons");
-          if (!styleTag) {
-            styleTag = document.createElement("style");
-            styleTag.id = "vscode-theme-icons";
-            document.head.appendChild(styleTag);
+        case "injectThemeCss": {
+          const css = asString(data.css);
+          if (css) {
+            let styleTag = document.getElementById("vscode-theme-icons");
+            if (!styleTag) {
+              styleTag = document.createElement("style");
+              styleTag.id = "vscode-theme-icons";
+              document.head.appendChild(styleTag);
+            }
+            styleTag.textContent = css;
           }
-          styleTag.textContent = css;
+          break;
         }
-        break;
-      }
-      case "opencodeConfig": {
-        // Handle OpenCode configuration with file list
-        const files = asArray(data.files, (item): item is AppState["opencodeConfig"]["files"][number] => {
-          const rec = asRecord(item);
-          return !!rec && typeof rec.name === 'string' && typeof rec.path === 'string';
-        });
+        case "opencodeConfig": {
+          // Handle OpenCode configuration with file list
+          const files = asArray(data.files, (item): item is AppState["opencodeConfig"]["files"][number] => {
+            const rec = asRecord(item);
+            return !!rec && typeof rec.name === 'string' && typeof rec.path === 'string';
+          });
 
-        dispatch({
-          type: 'SET_OPENCODE_CONFIG',
-          payload: {
-            content: asString(data.content) || '',
-            filePath: asString(data.filePath) || '',
-            fileName: asString(data.fileName) || '',
-            isGlobal: false, // TODO: determine if global vs workspace
-            files,
-          },
-        });
-        break;
+          dispatch({
+            type: 'SET_OPENCODE_CONFIG',
+            payload: {
+              content: asString(data.content) || '',
+              filePath: asString(data.filePath) || '',
+              fileName: asString(data.fileName) || '',
+              isGlobal: false, // TODO: determine if global vs workspace
+              files,
+            },
+          });
+          break;
+        }
+        case "opencodeConfigSaved": {
+          dispatch({
+            type: 'SET_OPENCODE_CONFIG_SAVE_STATUS',
+            payload: {
+              success: asBoolean(data.success, false),
+              filePath: asString(data.filePath) || '',
+              savedAt: Date.now(),
+              message: asString(data.message),
+              error: asString(data.error),
+            },
+          });
+          break;
+        }
+        case "opencodeConfigError": {
+          // Handle error loading config
+          dispatch({
+            type: 'SET_OPENCODE_CONFIG',
+            payload: {
+              content: '',
+              filePath: '',
+              fileName: '',
+              isGlobal: false,
+              error: asString(data.error) || 'Failed to load configuration',
+              files: [],
+            },
+          });
+          break;
+        }
+        default:
+          break;
       }
-      case "opencodeConfigSaved": {
-        dispatch({
-          type: 'SET_OPENCODE_CONFIG_SAVE_STATUS',
-          payload: {
-            success: asBoolean(data.success, false),
-            filePath: asString(data.filePath) || '',
-            savedAt: Date.now(),
-            message: asString(data.message),
-            error: asString(data.error),
-          },
-        });
-        break;
-      }
-      case "opencodeConfigError": {
-        // Handle error loading config
-        dispatch({
-          type: 'SET_OPENCODE_CONFIG',
-          payload: {
-            content: '',
-            filePath: '',
-            fileName: '',
-            isGlobal: false,
-            error: asString(data.error) || 'Failed to load configuration',
-            files: [],
-          },
-        });
-        break;
-      }
-      default:
-        break;
-    }
 
-    const candidate = asRecord(data.message);
-    if (candidate) {
-      const text = extractMessageText(candidate as Message);
-      if (text && asString(data.type) === "appendPrompt") {
-        const current = getState().inputValue;
-        dispatch({
-          type: "SET_INPUT_VALUE",
-          payload: current ? `${current}\n}${text}` : text,
-        });
+      const candidate = asRecord(data.message);
+      if (candidate) {
+        const text = extractMessageText(candidate as Message);
+        if (text && asString(data.type) === "appendPrompt") {
+          const current = getState().inputValue;
+          dispatch({
+            type: "SET_INPUT_VALUE",
+            payload: current ? `${current}\n}${text}` : text,
+          });
+        }
       }
-    }
     } catch (error) {
       webviewLogger.error('Error processing message', {
         error: error instanceof Error ? error.message : String(error),
