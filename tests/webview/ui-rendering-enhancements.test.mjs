@@ -151,7 +151,7 @@ test('AssistantMessage subagent rows render activity and open detail modal', () 
   );
   assert.match(
     messageComponentsSource,
-    /formatDurationMs\(subagent\.durationMs\)/,
+    /formatDuration\(subagent\.durationMs\s*\?\?\s*\d+\)/,
     'Subagent rows should render per-agent duration'
   );
 
@@ -167,5 +167,41 @@ test('Raw data rendering handles typed edits', () => {
     messageComponentsSource,
     /edits\s*:\s*message\.edits\?\.map\(\(file\s*:\s*\{\s*file\s*:\s*string\s*\}\)\s*=>\s*file\.file\)/,
     'Raw data edits mapping should use explicit typing'
+  );
+});
+
+test('AssistantMessage renders activity source badges and toggles internal rows into the same stepper', () => {
+  assert.match(
+    messageComponentsSource,
+    /event\.source === "raw_debug"\s*\?\s*"raw"\s*:\s*event\.source/,
+    'Activity rows should render compact provenance badges (stream/final/raw)',
+  );
+  assert.match(
+    messageComponentsSource,
+    /internal \{internalDisplayEvents\.length\}[\s\S]*\{viewState\.showInternalActivity \? "on" : "off"\}/,
+    'Timeline controls should toggle internal rows inline in the main stepper',
+  );
+  assert.match(
+    messageComponentsSource,
+    /const timelineDisplayEvents[\s\S]*viewState\.showInternalActivity[\s\S]*visibleDisplayEvents[\s\S]*userFacingDisplayEvents/s,
+    'Main stepper should switch between user-facing rows and all rows (including internal)',
+  );
+});
+
+test('AssistantMessage renders unified stepper reasoning rows and raw-debug parse status', () => {
+  assert.match(
+    messageComponentsSource,
+    /if \(block\.kind === "thinking"\)[\s\S]*kind:\s*"reasoning"[\s\S]*label:\s*"Reasoning"/,
+    'Display event builder should convert thinking blocks into reasoning rows for the unified stepper',
+  );
+  assert.match(
+    messageComponentsSource,
+    /event\.kind === "activity" && "uppercase"/,
+    'Reasoning rows should keep a human label while activity labels remain uppercase',
+  );
+  assert.match(
+    messageComponentsSource,
+    /parse \{rawResponseParseStatus\}/,
+    'Raw response panel should display parse-status indicator',
   );
 });

@@ -170,6 +170,9 @@ export interface StreamingStep {
   title: string;
   type: "step" | "tool" | "reasoning";
   status: "pending" | "done" | "error";
+  source?: "stream" | "final" | "raw_debug";
+  partType?: string;
+  internal?: boolean;
   meta?: string;
   filePath?: string;
   startTime?: number;
@@ -262,6 +265,9 @@ export interface MessageStep {
   title: string;
   content?: string;
   status?: string;
+  source?: "stream" | "final" | "raw_debug";
+  partType?: string;
+  internal?: boolean;
   meta?: string;
   diffStats?: { added: number; deleted: number };
   activityDetail?: ActivityDetail;
@@ -432,6 +438,10 @@ export interface Message {
 
   content?: string;
   rawResponse?: unknown;
+  reasoningPayload?: {
+    events: ReasoningEvent[];
+    sources?: Array<"stream" | "final" | "raw_debug">;
+  };
   reasoningEvents?: ReasoningEvent[];
   progressEvents?: MessageStep[];
   info?: MessageInfo;

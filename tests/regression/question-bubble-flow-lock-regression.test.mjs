@@ -72,6 +72,29 @@ test("question flow lock: renderer hides untrusted streaming text until trusted 
   );
 });
 
+test("question flow lock: live streaming bubble falls back to structured interactive prompt", () => {
+  assert.match(
+    messageSource,
+    /function questionPromptFromInteractiveEvents\(/,
+    "assistant renderer should derive fallback prompt from structured interactive events",
+  );
+  assert.match(
+    messageSource,
+    /const liveInteractivePrompt = useMemo\(\s*\(\) => questionPromptFromInteractiveEvents\(state\.interactiveEvents\)/s,
+    "assistant renderer should source live fallback prompt from store interactiveEvents",
+  );
+  assert.match(
+    messageSource,
+    /const shouldUseInteractivePromptFallback =[\s\S]*streaming\?\.isActive[\s\S]*content\.trim\(\)\.length === 0[\s\S]*liveInteractivePrompt/s,
+    "fallback should only activate during active streaming when no trusted response body is available",
+  );
+  assert.match(
+    messageSource,
+    /content=\{resolvedContent\}/,
+    "assistant response markdown should render resolvedContent so fallback prompt appears in bubble",
+  );
+});
+
 test("question flow lock: streaming trust bit is defined and only elevated by explicit renderable writes", () => {
   assert.match(
     typesSource,

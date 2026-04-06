@@ -290,6 +290,21 @@ test('streaming assistant body renders only after trusted renderable content is 
     /if \(!hasRenderableContent\) \{\s*return '';\s*\}/,
     'AssistantMessage should suppress transient untrusted streaming content',
   );
+  assert.match(
+    messageSource,
+    /const liveInteractivePrompt = useMemo\(\s*\(\) => questionPromptFromInteractiveEvents\(state\.interactiveEvents\)/s,
+    'AssistantMessage should compute live fallback prompt from structured interactiveEvents',
+  );
+  assert.match(
+    messageSource,
+    /const shouldUseInteractivePromptFallback =[\s\S]*streaming\?\.isActive[\s\S]*content\.trim\(\)\.length === 0[\s\S]*liveInteractivePrompt/s,
+    'AssistantMessage should show question prompt fallback in the AI bubble while question streaming is active',
+  );
+  assert.match(
+    messageSource,
+    /content=\{resolvedContent\}/,
+    'AssistantMessage should render resolvedContent so streaming question fallback appears in the response section',
+  );
 });
 
 test('input wrapper renders top popup choices and posts batchInteractiveResponse', () => {

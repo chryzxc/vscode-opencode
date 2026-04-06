@@ -104,14 +104,15 @@ export class DiagnosticsLogger {
       eventType === "message.updated" ||
       eventType === "message.completed" ||
       eventType === "session.completed";
-    const shouldPersistFile =
-      shouldLogInfo ||
-      eventType === "message.part.updated" ||
-      eventType === "message.part.added" ||
-      eventType === "message.part.created";
-    if (shouldPersistFile) {
-      this.appendRenderParityDebugLog("stream", summary);
-    }
+    // Removed render-parity.ndjson file writing to prevent tool call creation
+    // const shouldPersistFile =
+    //   shouldLogInfo ||
+    //   eventType === "message.part.updated" ||
+    //   eventType === "message.part.added" ||
+    //   eventType === "message.part.created";
+    // if (shouldPersistFile) {
+    //   this.appendRenderParityDebugLog("stream", summary);
+    // }
     if (this.shouldVerboseStreamDebug()) {
       this.logger.debug("Stream event received", summary);
       return;
@@ -241,11 +242,12 @@ export class DiagnosticsLogger {
       processedTail: processedCompact,
     };
 
-    this.appendRenderParityDebugLog("history", {
-      ...summaryContext,
-      rawTailVerbose: rawSummary,
-      processedTailVerbose: processedSummary,
-    });
+    // Disabled render-parity.ndjson file writing to prevent tool call creation
+    // this.appendRenderParityDebugLog("history", {
+    //   ...summaryContext,
+    //   rawTailVerbose: rawSummary,
+    //   processedTailVerbose: processedSummary,
+    // });
 
     this.logger.info("History render parity", summaryContext);
 
@@ -445,7 +447,7 @@ export class DiagnosticsLogger {
       this.renderParityDebugFilePath = path.join(
         workspaceFolder.uri.fsPath,
         ".opencode-debug",
-        "isLikelyPlanMarkdownFile",
+        "render-parity.ndjson",
       );
       return this.renderParityDebugFilePath;
     }

@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -924,12 +926,42 @@ body {
   opacity: 0.9;
 }
 
+/* ── Token Statistics Display ─────────────────────────────────────────────── */
 .oc-msg-token-chips {
-  font-size: 11px;
-  color: var(--oc-text-soft);
-  opacity: 0.8;
-  font-family: "SF Mono", "Cascadia Code", monospace;
-  white-space: nowrap;
+  font-family: "SF Mono", "Cascadia Code", "Menlo", monospace;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+}
+
+/* Token metric badges - Soft, refined, native VS Code feel */
+.oc-msg-token-chips > div {
+  transition: all 0.15s ease-out;
+  backdrop-filter: blur(8px);
+}
+
+.oc-msg-token-chips > div:hover {
+  border-color: var(--oc-accent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--oc-accent) 20%, transparent);
+}
+
+/* Subtle indicator dots - no animation, just clean dots */
+.oc-msg-token-chips > div > div:first-child {
+  opacity: 0.9;
+}
+
+.oc-msg-token-chips > div:hover > div:first-child {
+  opacity: 1;
+}
+
+/* Responsive adjustments */
+@media (max-width: 640px) {
+  .oc-msg-token-chips {
+    gap: 1rem;
+  }
+
+  .oc-msg-token-chips > div {
+    padding: 0.5rem 0.75rem;
+  }
 }
 
 .oc-msg-copy-btn {
@@ -1612,4 +1644,515 @@ body {
 
 .markdown-body img {
   cursor: zoom-in;
+}
+
+/* ── Refined Activity Timeline ───────────────────────────────────────────────── */
+/* Subtle, refined styling that matches current UI aesthetics */
+
+/* Enhanced Stepper Container - no timeline line */
+.oc-refined-stepper {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  position: relative;
+}
+
+/* Enhanced stepper item - subtle, no hover effects */
+.oc-refined-stepper-item {
+  position: relative;
+  padding: 8px 12px;
+  margin: 3px 0;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  z-index: 1;
+}
+
+/* Active streaming state - minimal */
+.oc-refined-stepper-item.is-streaming {
+  background: color-mix(in srgb, var(--oc-accent) 6%, transparent);
+}
+
+/* Enhanced indicator - subtle */
+.oc-refined-indicator {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--oc-bg) 40%, transparent);
+  border: 1.5px solid var(--oc-border);
+  flex-shrink: 0;
+}
+
+/* Pending state */
+.oc-refined-indicator.pending::before {
+  content: '';
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  background: var(--oc-accent);
+  border-radius: 50%;
+  animation: pending-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Success state */
+.oc-refined-indicator.success {
+  background: color-mix(in srgb, var(--oc-green) 15%, transparent);
+  border-color: color-mix(in srgb, var(--oc-green) 30%, transparent);
+  color: var(--oc-green);
+}
+
+/* Error state */
+.oc-refined-indicator.error {
+  background: color-mix(in srgb, var(--oc-red) 15%, transparent);
+  border-color: color-mix(in srgb, var(--oc-red) 30%, transparent);
+  color: var(--oc-red);
+}
+
+/* Enhanced event label - subtle */
+.oc-refined-event-label {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  min-width: 65px;
+  text-align: center;
+  background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 12%, transparent);
+  color: var(--oc-accent);
+}
+
+/* Event type-specific label colors - subtle */
+.oc-refined-event-label.reasoning {
+  background: color-mix(in srgb, #a78bfa 10%, transparent);
+  border-color: color-mix(in srgb, #a78bfa 18%, transparent);
+  color: #a78bfa;
+}
+
+.oc-refined-event-label.activity {
+  background: color-mix(in srgb, #38bdf8 10%, transparent);
+  border-color: color-mix(in srgb, #38bdf8 18%, transparent);
+  color: #38bdf8;
+}
+
+/* Enhanced source/internal badges - minimal */
+.oc-refined-meta-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--oc-text-muted) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-text-muted) 10%, transparent);
+  color: var(--oc-text-muted);
+}
+
+/* Enhanced event content - markdown support */
+.oc-refined-event-content {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--oc-text-soft);
+  padding: 2px 0;
+}
+
+/* Markdown styling within event content */
+.oc-refined-event-content .markdown-body {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.oc-refined-event-content .markdown-body code {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  padding: 2px 4px;
+  background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
+  border-radius: 3px;
+  color: var(--oc-accent);
+}
+
+.oc-refined-event-content .markdown-body pre {
+  margin: 6px 0;
+  padding: 10px;
+  background: color-mix(in srgb, var(--oc-bg) 60%, transparent);
+  border: 1px solid var(--oc-border-soft);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.oc-refined-event-content .markdown-body pre code {
+  padding: 0;
+  background: transparent;
+  color: var(--oc-text-soft);
+}
+
+.oc-refined-event-summary {
+  font-weight: 400;
+  color: var(--oc-text);
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+/* File path - technical blueprint aesthetic */
+.oc-refined-file-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 2px;
+  background: linear-gradient(135deg, color-mix(in srgb, #0066cc 4%, transparent) 0%, color-mix(in srgb, #0066cc 8%, transparent) 100%);
+  border: 1px solid color-mix(in srgb, #0066cc 20%, transparent);
+  border-left: 3px solid #0066cc;
+  color: #0066cc;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  text-decoration: none;
+  position: relative;
+  transition: all 0.15s ease-out;
+}
+
+.oc-refined-file-link:hover {
+  background: linear-gradient(135deg, color-mix(in srgb, #0066cc 8%, transparent) 0%, color-mix(in srgb, #0066cc 12%, transparent) 100%);
+  border-left-color: #0088ff;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px color-mix(in srgb, #0066cc 15%, transparent);
+}
+
+/* Technical corner accent for file links */
+.oc-refined-file-link::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 6px;
+  background: linear-gradient(135deg, transparent 50%, #0066cc 50%);
+  opacity: 0.6;
+}
+
+/* Write operation specific styling - creative green */
+.oc-refined-event-label[data-operation="write"] {
+  background: linear-gradient(135deg, color-mix(in srgb, #10b981 8%, transparent) 0%, color-mix(in srgb, #10b981 12%, transparent) 100%);
+  border-color: color-mix(in srgb, #10b981 25%, transparent);
+  color: #10b981;
+  border-left: 2px solid #10b981;
+}
+
+/* Edit operation specific styling - analytical blue */
+.oc-refined-event-label[data-operation="edit"] {
+  background: linear-gradient(135deg, color-mix(in srgb, #3b82f6 8%, transparent) 0%, color-mix(in srgb, #3b82f6 12%, transparent) 100%);
+  border-color: color-mix(in srgb, #3b82f6 25%, transparent);
+  color: #3b82f6;
+  border-left: 2px solid #3b82f6;
+}
+
+/* Modify operation specific styling - adaptive purple */
+.oc-refined-event-label[data-operation="modify"] {
+  background: linear-gradient(135deg, color-mix(in srgb, #8b5cf6 8%, transparent) 0%, color-mix(in srgb, #8b5cf6 12%, transparent) 100%);
+  border-color: color-mix(in srgb, #8b5cf6 25%, transparent);
+  color: #8b5cf6;
+  border-left: 2px solid #8b5cf6;
+}
+
+/* Update operation specific styling - progressive amber */
+.oc-refined-event-label[data-operation="update"] {
+  background: linear-gradient(135deg, color-mix(in srgb, #f59e0b 8%, transparent) 0%, color-mix(in srgb, #f59e0b 12%, transparent) 100%);
+  border-color: color-mix(in srgb, #f59e0b 25%, transparent);
+  color: #f59e0b;
+  border-left: 2px solid #f59e0b;
+}
+
+/* Patch operation specific styling - technical teal */
+.oc-refined-event-label[data-operation="patch"] {
+  background: linear-gradient(135deg, color-mix(in srgb, #14b8a6 8%, transparent) 0%, color-mix(in srgb, #14b8a6 12%, transparent) 100%);
+  border-color: color-mix(in srgb, #14b8a6 25%, transparent);
+  color: #14b8a6;
+  border-left: 2px solid #14b8a6;
+}
+
+/* Enhanced file operation layout - technical precision */
+.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"], [data-operation="modify"], [data-operation="update"], [data-operation="patch"]) {
+  background: linear-gradient(to right, color-mix(in srgb, var(--oc-accent) 2%, transparent) 0%, transparent 100%);
+  border-left: 2px solid color-mix(in srgb, var(--oc-accent) 10%, transparent);
+  padding-left: 14px;
+  position: relative;
+}
+
+/* Technical grid pattern background for file operations */
+.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"])::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--oc-accent) 3%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--oc-accent) 3%, transparent) 1px, transparent 1px);
+  background-size: 20px 20px;
+  opacity: 0.3;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Ensure content stays above grid pattern */
+.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Enhanced typography for file operations */
+.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-summary {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--oc-text);
+  padding: 4px 0;
+  border-left: 1px solid color-mix(in srgb, var(--oc-accent) 15%, transparent);
+  padding-left: 8px;
+}
+
+/* Technical measurement marks for file operations */
+.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-summary::before {
+  content: '┃';
+  position: absolute;
+  left: 4px;
+  color: color-mix(in srgb, var(--oc-accent) 30%, transparent);
+  font-size: 10px;
+  opacity: 0.5;
+}
+
+/* Enhanced file icon presentation */
+.oc-refined-file-link svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0.9;
+  transition: all 0.15s ease-out;
+}
+
+.oc-refined-file-link:hover svg {
+  opacity: 1;
+  transform: scale(1.1);
+}
+
+/* Subtle pulse animation for active file operations */
+@keyframes technicalPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.oc-refined-stepper-item.is-streaming:has([data-operation="write"], [data-operation="edit"]) {
+  animation: technicalPulse 2s ease-in-out infinite;
+}
+
+/* Technical precision border enhancement */
+.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-label {
+  position: relative;
+}
+
+.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-label::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, currentColor 50%, transparent 100%);
+  opacity: 0.3;
+}
+
+/* Enhanced diff stats - minimal */
+.oc-refined-diff-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--oc-bg) 40%, transparent);
+  border: 1px solid var(--oc-border-soft);
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.oc-refined-diff-add {
+  color: var(--oc-green);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.oc-refined-diff-del {
+  color: var(--oc-red);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Compact diff preview - technical precision styling */
+.oc-compact-diff-preview {
+  margin-top: 8px;
+  border-left: 2px solid color-mix(in srgb, var(--oc-accent) 10%, transparent);
+  padding-left: 10px;
+  position: relative;
+}
+
+/* Technical measurement mark for diff preview */
+.oc-compact-diff-preview::before {
+  content: '┃';
+  position: absolute;
+  left: 2px;
+  top: 0;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 8px;
+  color: color-mix(in srgb, var(--oc-accent) 25%, transparent);
+  opacity: 0.4;
+}
+
+.oc-compact-diff-lines {
+  position: relative;
+  z-index: 1;
+}
+
+/* Diff line styling with technical precision */
+.oc-diff-line {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Hover effect for diff lines - technical scan */
+.oc-diff-line::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, currentColor 5%, transparent) 50%,
+    transparent 100%
+  );
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+  pointer-events: none;
+}
+
+.oc-diff-line:hover::before {
+  opacity: 1;
+}
+
+/* Enhanced "more" indicator styling */
+.oc-compact-diff-more {
+  border-top: 1px solid color-mix(in srgb, var(--oc-border) 30%, transparent);
+  padding-top: 6px;
+  margin-top: 4px;
+  position: relative;
+  z-index: 1;
+}
+
+/* Technical corner for "more" section */
+.oc-compact-diff-more::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  right: 4px;
+  width: 8px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, currentColor 50%, transparent 100%);
+  opacity: 0.2;
+}
+
+/* Operation-specific diff preview styling */
+.oc-refined-stepper-item:has([data-operation="write"]) .oc-compact-diff-preview {
+  border-left-color: color-mix(in srgb, #10b981 20%, transparent);
+}
+
+.oc-refined-stepper-item:has([data-operation="write"]) .oc-compact-diff-preview::before {
+  color: color-mix(in srgb, #10b981 30%, transparent);
+}
+
+.oc-refined-stepper-item:has([data-operation="edit"]) .oc-compact-diff-preview {
+  border-left-color: color-mix(in srgb, #3b82f6 20%, transparent);
+}
+
+.oc-refined-stepper-item:has([data-operation="edit"]) .oc-compact-diff-preview::before {
+  color: color-mix(in srgb, #3b82f6 30%, transparent);
+}
+
+/* Enhanced diff line indicators */
+.oc-diff-line .text-oc-green,
+.oc-diff-line:has(.text-oc-green) {
+  text-shadow: 0 0 10px color-mix(in srgb, #10b981 20%, transparent);
+}
+
+.oc-diff-line .text-oc-red,
+.oc-diff-line:has(.text-oc-red) {
+  text-shadow: 0 0 10px color-mix(in srgb, #ef4444 20%, transparent);
+}
+
+/* Enhanced activity details section - minimal */
+.oc-refined-activity-details {
+  margin-top: 6px;
+  padding: 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--oc-bg) 30%, transparent);
+  border: 1px solid var(--oc-border-soft);
+}
+
+/* Enhanced tool/cmd badges in details - minimal */
+.oc-refined-detail-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 8px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--oc-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 15%, transparent);
+  color: var(--oc-accent);
+}
+
+/* Update count - minimal */
+.oc-refined-update-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 12%, transparent);
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 8px;
+  font-weight: 500;
+  color: var(--oc-accent);
 }

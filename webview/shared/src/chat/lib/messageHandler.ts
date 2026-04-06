@@ -561,7 +561,97 @@ function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
   return activityDetail;
 }
 
-function normalizeActivityStepRecord(value: unknown): MessageStep | undefined {
+type ActivitySource = "stream" | "final" | "raw_debug";
+
+type ParsedRawDebug = {
+  parseStatus: "parsed" | "empty" | "unparseable" | "truncated";
+  parts: UnknownRecord[];
+  info: UnknownRecord | null;
+};
+
+function normalizeActivitySource(
+  value: unknown,
+  fallback: ActivitySource,
+): ActivitySource {
+  const source = asString(value).toLowerCase();
+  if (source === "stream" || source === "final" || source === "raw_debug") {
+    return source;
+  }
+  return fallback;
+}
+
+function mergeActivitySource(
+  current?: ActivitySource,
+  incoming?: ActivitySource,
+): ActivitySource | undefined {
+  const rank: Record<ActivitySource, number> = {
+    stream: 3,
+    final: 2,
+    raw_debug: 1,
+  };
+  if (!current) return incoming;
+  if (!incoming) return current;
+  return rank[incoming] >= rank[current] ? incoming : current;
+}
+
+function isInternalToolName(tool?: string): boolean {
+  const normalized = (tool || "").toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("structuredoutput") ||
+    normalized.includes("structured_output") ||
+    normalized.includes("transport")
+  );
+}
+
+function parseRawResponseDebug(value: unknown): ParsedRawDebug {
+  if (typeof value === "undefined" || value === null) {
+    return { parseStatus: "empty", parts: [], info: null };
+  }
+
+  if (typeof value === "object") {
+    const rec = asRecord(value);
+    const parts = Array.isArray(rec?.parts)
+      ? rec?.parts.map((part) => asRecord(part)).filter((part): part is UnknownRecord => !!part)
+      : [];
+    return { parseStatus: "parsed", parts, info: asRecord(rec?.info) };
+  }
+
+  if (typeof value !== "string") {
+    return { parseStatus: "unparseable", parts: [], info: null };
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { parseStatus: "empty", parts: [], info: null };
+  }
+
+  const truncatedMarkerMatch = trimmed.match(/\.\.\.<truncated\s+\d+\s+chars>\s*$/i);
+  const isTruncated = !!truncatedMarkerMatch;
+  const candidate = isTruncated
+    ? trimmed.slice(0, truncatedMarkerMatch?.index ?? trimmed.length).trim()
+    : trimmed;
+
+  try {
+    const parsed = JSON.parse(candidate);
+    const rec = asRecord(parsed);
+    const parts = Array.isArray(rec?.parts)
+      ? rec?.parts.map((part) => asRecord(part)).filter((part): part is UnknownRecord => !!part)
+      : [];
+    return {
+      parseStatus: isTruncated ? "truncated" : "parsed",
+      parts,
+      info: asRecord(rec?.info),
+    };
+  } catch {
+    return { parseStatus: isTruncated ? "truncated" : "unparseable", parts: [], info: null };
+  }
+}
+
+function normalizeActivityStepRecord(
+  value: unknown,
+  fallbackSource: ActivitySource,
+): MessageStep | undefined {
   const rec = asRecord(value);
   if (!rec) {
     return undefined;
@@ -593,6 +683,9 @@ function normalizeActivityStepRecord(value: unknown): MessageStep | undefined {
     title,
     content: filePath,
     status: statusRaw ? normalizeProgressStatus(statusRaw) : undefined,
+    source: normalizeActivitySource(rec.source, fallbackSource),
+    partType: asString(rec.partType) || asString(rec.type) || undefined,
+    internal: asBoolean(rec.internal, false),
     meta:
       asString(rec.meta) ||
       asString(rec.detail) ||
@@ -667,26 +760,36 @@ function mergeCanonicalActivityStep(
     streamSeq,
     diffStats: incoming.diffStats || existing.diffStats,
     activityDetail: incoming.activityDetail || existing.activityDetail,
+    source: mergeActivitySource(existing.source, incoming.source),
+    partType: incoming.partType || existing.partType,
+    internal: Boolean(existing.internal || incoming.internal),
   };
 }
 
-function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[] {
+function extractActivityStepsFromParts(
+  parts: MessagePart[],
+  fallbackSource: ActivitySource,
+): MessageStep[] {
   const fromParts: MessageStep[] = [];
   const stepIndexByCallId = new Map<string, number>();
   for (const part of parts) {
     const rec = asRecord(part);
-    if (!rec || asString(rec.type).toLowerCase() !== "tool") {
+    if (!rec) {
+      continue;
+    }
+    const partType = normalizePartType(rec.type);
+    if (
+      partType !== "tool" &&
+      partType !== "step-start" &&
+      partType !== "step-finish" &&
+      partType !== "patch"
+    ) {
       continue;
     }
 
     const tool = asString(rec.tool);
     const toolLower = tool.toLowerCase();
-    if (
-      toolLower.includes("structuredoutput") ||
-      toolLower.includes("structured_output")
-    ) {
-      continue;
-    }
+    const isInternal = isInternalToolName(tool);
 
     const callID = asString(rec.callID) || asString(rec.callId) || undefined;
 
@@ -737,11 +840,22 @@ function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[] {
     const title =
       explicitTitle ||
       (tool ? `Running ${tool}...` : inferredStepTitle(rec));
+    const normalizedStatus =
+      partType === "step-finish"
+        ? "done"
+        : statusValue
+          ? normalizeProgressStatus(statusValue)
+          : partType === "step-start"
+            ? "pending"
+            : "done";
     const normalized: MessageStep = {
-      type: "tool",
+      type: partType || "step",
       title,
       content: filePath,
-      status: statusValue ? normalizeProgressStatus(statusValue) : "done",
+      status: normalizedStatus,
+      source: fallbackSource,
+      partType: partType || asString(rec.type) || undefined,
+      internal: isInternal,
       meta,
       id: asString(rec.id) || undefined,
       callID,
@@ -785,22 +899,39 @@ function normalizeActivitySteps(
 ): MessageStep[] {
   const candidates: unknown[] = [];
   if (Array.isArray(message.steps)) {
-    candidates.push(...message.steps);
+    candidates.push(
+      ...message.steps.map((step) => ({ ...step, source: step.source || "final" })),
+    );
   }
   if (Array.isArray(message.progressEvents)) {
-    candidates.push(...message.progressEvents);
+    candidates.push(
+      ...message.progressEvents.map((step) => ({ ...step, source: step.source || "final" })),
+    );
   }
   if (Array.isArray(streaming?.steps)) {
-    candidates.push(...streaming.steps);
+    candidates.push(
+      ...streaming.steps.map((step) => ({ ...step, source: step.source || "stream" })),
+    );
   }
   if (Array.isArray(streaming?.progressEvents)) {
-    candidates.push(...streaming.progressEvents);
+    candidates.push(
+      ...streaming.progressEvents.map((step) => ({ ...step, source: step.source || "stream" })),
+    );
+  }
+
+  const parsedRaw = parseRawResponseDebug(message.rawResponse);
+  if (parsedRaw.parts.length > 0) {
+    const rawSteps = extractActivityStepsFromParts(
+      parsedRaw.parts as unknown as MessagePart[],
+      "raw_debug",
+    );
+    candidates.push(...rawSteps);
   }
 
   const merged: MessageStep[] = [];
   const indexByKey = new Map<string, number>();
   candidates.forEach((candidate, index) => {
-    const normalized = normalizeActivityStepRecord(candidate);
+    const normalized = normalizeActivityStepRecord(candidate, "final");
     if (!normalized) {
       return;
     }
@@ -820,7 +951,7 @@ function normalizeActivitySteps(
   if (merged.length > 0) {
     return merged;
   }
-  return extractActivityStepsFromParts(sanitizedMergedParts);
+  return extractActivityStepsFromParts(sanitizedMergedParts, "final");
 }
 
 type StructuredInteractiveEvent = {
@@ -909,7 +1040,19 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   }
   const validation = validateStructuredOutput(rec);
   if (!validation.valid) {
-    webviewLogger.warn("Structured output validation failed", { errors: validation.errors });
+    // Enhanced logging for debugging model-specific validation failures
+    const inputPreview = JSON.stringify(rec).slice(0, 500);
+    webviewLogger.warn("Structured output validation failed", {
+      errors: validation.errors,
+      inputPreview: inputPreview.length < 500 ? inputPreview : inputPreview + "...",
+      hasResponseType: typeof rec.responseType !== 'undefined',
+      responseTypeValue: rec.responseType,
+      hasMessage: typeof rec.message !== 'undefined',
+      hasPlan: typeof rec.plan !== 'undefined',
+      hasQuestion: typeof rec.question !== 'undefined',
+      keys: Object.keys(rec),
+    });
+    return undefined;
   }
   const sanitizedRec = sanitizeStructuredOutput(rec);
 
@@ -2100,6 +2243,14 @@ function isRenderableAssistantTextPart(part: UnknownRecord): boolean {
   return type === "text" || type === "message" || type === "output_text";
 }
 
+function isRenderableStreamingPartType(partType: string): boolean {
+  return (
+    partType === "text" ||
+    partType === "message" ||
+    partType === "output_text"
+  );
+}
+
 function upsertStreamingStep(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -2180,6 +2331,20 @@ function contentFromParts(parts: unknown[]): string {
     })
     .join('')
     .trim();
+}
+
+function hasRenderableAssistantTextInParts(parts: unknown[]): boolean {
+  return parts.some((part) => {
+    const rec = asRecord(part);
+    if (!rec || !isRenderableAssistantTextPart(rec)) {
+      return false;
+    }
+    const text =
+      asRichString(rec.text) ||
+      asRichString(rec.content) ||
+      asRichString(rec.delta);
+    return text.trim().length > 0;
+  });
 }
 
 function reasoningFromParts(parts: unknown[]): string {
@@ -2459,6 +2624,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   }
 
   const parts = Array.isArray(rec.parts) ? rec.parts : [];
+  const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
   const mergedParts = [...parts];
   const currentReasoning = reasoningFromParts(mergedParts);
   const directReasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
@@ -2615,14 +2781,39 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     }
   }
   const streamingContent = streamingMixed ? streamingMixed.content : streamingRawContent;
+  const hasRenderableStreamingContent = Boolean(streaming?.hasRenderableContent);
   const preferStreamingContent = shouldPreferStreamingContent(
     content || "",
     streamingContent,
   );
-  const shouldUseStreamingContent = !nonReasoningPartsContent && preferStreamingContent;
+  const rawHasRenderableText = hasRenderableAssistantTextInParts(parsedRawDebug.parts);
+  const rawHasReasoning = parsedRawDebug.parts.some((part) => {
+    const rec = asRecord(part);
+    return !!rec && isReasoningPart(rec);
+  });
+  const shouldSuppressStreamingFallbackForReasoningOnly =
+    parsedRawDebug.parts.length > 0 &&
+    !hasRenderableStreamingContent &&
+    provisionalResponseType === "message" &&
+    !structuredMessage &&
+    !nonReasoningPartsContent &&
+    rawHasReasoning &&
+    !rawHasRenderableText;
+  const shouldUseStreamingContent =
+    hasRenderableStreamingContent &&
+    !shouldSuppressStreamingFallbackForReasoningOnly &&
+    !nonReasoningPartsContent &&
+    preferStreamingContent;
+  if (shouldSuppressStreamingFallbackForReasoningOnly) {
+    webviewLogger.info("Suppressing streaming fallback: raw debug indicates reasoning-only final payload", {
+      messageId: sourceMessageId,
+      responseType: provisionalResponseType ?? null,
+      rawPartsCount: parsedRawDebug.parts.length,
+    });
+  }
   const normalized: Message = {
     ...(message as Message),
-    role: role || (parts.length > 0 ? 'assistant' : message.role),
+    role: role || message.role || (parts.length > 0 ? 'assistant' : undefined),
     content: shouldUseStreamingContent ? streamingContent : content || message.content,
     parts: shouldUseStreamingContent
       ? partsWithStreamingContent(sanitizedMergedParts as MessagePart[], streamingContent)
@@ -2683,6 +2874,68 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     ...existingReasoningEvents,
     ...(streaming?.reasoningEvents ?? [])
   ];
+  const reasoningSources = new Set<ActivitySource>();
+  if (Array.isArray(streaming?.reasoningEvents) && streaming.reasoningEvents.length > 0) {
+    reasoningSources.add("stream");
+  }
+  if (Array.isArray(existingReasoningEvents) && existingReasoningEvents.length > 0) {
+    reasoningSources.add("final");
+  }
+
+  const explicitReasoningFromFinalParts = parts
+    .map((part) => asRecord(part))
+    .filter((part): part is UnknownRecord => !!part)
+    .filter((part) => isReasoningPart(part))
+    .map((part) =>
+      sanitizeReasoningChunk(
+        asRichString(part.reasoning) ||
+          asRichString(part.thought) ||
+          asRichString(part.thinking) ||
+          asRichString(part.text) ||
+          asRichString(part.content),
+      ).trim(),
+    )
+    .filter((text) => text.length > 0);
+  if (explicitReasoningFromFinalParts.length > 0) {
+    reasoningSources.add("final");
+    for (const chunk of explicitReasoningFromFinalParts) {
+      const norm = normalizeComparableText(chunk);
+      if (!norm) continue;
+      const alreadyTracked = mergedReasoningEvents.some(
+        (event) => normalizeComparableText(asString(event.text)) === norm,
+      );
+      if (!alreadyTracked) {
+        mergedReasoningEvents.push({ text: chunk, createdAt: Date.now() });
+      }
+    }
+  }
+
+  const explicitReasoningFromRawParts = parsedRawDebug.parts
+    .map((part) => asRecord(part))
+    .filter((part): part is UnknownRecord => !!part)
+    .filter((part) => normalizePartType(part.type) === "reasoning")
+    .map((part) =>
+      sanitizeReasoningChunk(
+        asRichString(part.reasoning) ||
+          asRichString(part.text) ||
+          asRichString(part.content) ||
+          asRichString(part.delta),
+      ).trim(),
+    )
+    .filter((text) => text.length > 0);
+  if (explicitReasoningFromRawParts.length > 0) {
+    reasoningSources.add("raw_debug");
+    for (const chunk of explicitReasoningFromRawParts) {
+      const norm = normalizeComparableText(chunk);
+      if (!norm) continue;
+      const alreadyTracked = mergedReasoningEvents.some(
+        (event) => normalizeComparableText(asString(event.text)) === norm,
+      );
+      if (!alreadyTracked) {
+        mergedReasoningEvents.push({ text: chunk, createdAt: Date.now() });
+      }
+    }
+  }
   const streamingReasoningLeak = sanitizeReasoningChunk(
     streamingMixed ? streamingMixed.reasoning : asString(streaming?.content),
   ).trim();
@@ -2721,6 +2974,10 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   }
   if (mergedReasoningEvents.length > 0) {
     normalized.reasoningEvents = mergedReasoningEvents;
+    normalized.reasoningPayload = {
+      events: mergedReasoningEvents,
+      sources: Array.from(reasoningSources),
+    };
   }
 
   const canonicalSteps = normalizeActivitySteps(
@@ -5207,6 +5464,9 @@ function handleStreamEvent(
             title: update.title,
             type: "step",
             status: update.status ?? "pending",
+            source: "stream",
+            partType: "structured-progress",
+            internal: false,
             meta: update.meta,
             filePath: update.filePath,
           });
@@ -5226,10 +5486,6 @@ function handleStreamEvent(
       }
 
       const streamingState = getState().streaming;
-      let nextInThoughtBlock = streamingState?.inThoughtBlock ?? false;
-
-      let reasoningContent = "";
-      let mainContent = "";
 
       // SKIP CONTENT PROCESSING for reasoning parts, but allow all other event processing to continue
       // This prevents reasoning from being rendered in the UI while still processing steps, tools, and interactive events
@@ -5250,69 +5506,36 @@ function handleStreamEvent(
         hasExplicitReasoningOnlyChunk;
 
       if (isReasoningPart) {
-        webviewLogger.debug('Skipping reasoning content processing', { partType, structuredKind, isInReasoningPart, reasoningLength: (reasoningChunk || textChunk || '').length });
-      }
+        webviewLogger.debug('Processing reasoning part - routing to stepper only', { partType, structuredKind, isInReasoningPart, reasoningLength: (reasoningChunk || textChunk || '').length });
 
-      if (!isReasoningPart) {
-        webviewLogger.debug('Processing content', { partType, structuredKind, isInReasoningPart });
-
-        if (structuredKind === 'thinking' || partType === 'reasoning' || !!reasoningChunk) {
-          let remaining = textChunk;
-          while (remaining.length > 0) {
-            if (nextInThoughtBlock) {
-              const closeIdx = remaining.indexOf("</thought>");
-              if (closeIdx !== -1) {
-                reasoningContent += remaining.substring(0, closeIdx);
-                remaining = remaining.substring(closeIdx + "</thought>".length);
-                nextInThoughtBlock = false;
-              } else {
-                reasoningContent += remaining;
-                remaining = "";
-              }
-            } else {
-              const openIdx = remaining.indexOf("<thought>");
-              if (openIdx !== -1) {
-                mainContent += remaining.substring(0, openIdx);
-                remaining = remaining.substring(openIdx + "<thought>".length);
-                nextInThoughtBlock = true;
-              } else {
-                mainContent += remaining;
-                remaining = "";
-              }
-            }
-          }
-        }
-
-        const isReasoning = reasoningContent.length > 0;
-        const hasMainContent = mainContent.length > 0;
-
-        if (isReasoning || nextInThoughtBlock !== (streamingState?.inThoughtBlock ?? false)) {
-          if (reasoningContent.startsWith("<thought>")) {
-            reasoningContent = reasoningContent.substring("<thought>".length);
-          }
-          if (reasoningContent.endsWith("</thought>")) {
-            reasoningContent = reasoningContent.substring(0, reasoningContent.length - "</thought>".length);
-          }
-          const nextReasoning = sanitizeReasoningChunk(reasoningContent);
+        // Extract reasoning content and route to stepper, NEVER to main content
+        const reasoningContent = reasoningChunk || textChunk || '';
+        const sanitized = sanitizeReasoningChunk(reasoningContent);
+        if (sanitized) {
           dispatch({
             type: 'UPDATE_STREAMING_REASONING',
-            payload: { reasoning: nextReasoning || reasoningContent, append: true, inThoughtBlock: nextInThoughtBlock }
+            payload: { reasoning: sanitized, append: true },
           });
         }
+
+        // Skip main content processing for reasoning parts - let the case continue
+        // to handle steps/tools/interactive events, but don't process text content
+      } else {
+        // Non-reasoning parts continue to normal content processing
+        webviewLogger.debug('Processing non-reasoning content', { partType, structuredKind });
+        webviewLogger.debug('Processing content', { partType, structuredKind, isInReasoningPart });
 
         // Lock: only explicit assistant message text can create trusted renderable
         // body content. Progress/lifecycle/tool chunks must never seed the bubble.
         const canAppendMainContent =
-          hasMainContent ||
-          (!isReasoning &&
-            partType !== "reasoning" &&
-            structuredKind !== "thinking" &&
-            (structuredKind === "message" ||
-              ((!structuredKind || structuredKind === "message") &&
-                (partType === "text" || partType === "message"))));
+          partType !== "reasoning" &&
+          structuredKind !== "thinking" &&
+          (structuredKind === "message" ||
+            ((!structuredKind || structuredKind === "message") &&
+              (partType === "text" || partType === "message")));
 
         if (canAppendMainContent) {
-          let candidateChunk = hasMainContent ? mainContent : textChunk;
+          let candidateChunk = textChunk;
 
           const rawReasoningLike = looksLikeReasoningTrace(candidateChunk, streamingState?.content || "");
           const mixedChunk = splitMixedReasoningFromContent(candidateChunk);
@@ -5382,13 +5605,13 @@ function handleStreamEvent(
               payload: {
                 content: contentPatch.content,
                 append: contentPatch.append,
-                renderable: true,
+                renderable: isRenderableStreamingPartType(partType),
               },
             });
             logAssistantContentSource("stream:message.part.updated", {
               messageId,
               selectedSource: "message.part.updated",
-              renderable: true,
+              renderable: isRenderableStreamingPartType(partType),
               eventType,
               structuredKind,
               partType,
@@ -5406,6 +5629,9 @@ function handleStreamEvent(
           title: inferredStepTitle(part),
           type: 'step',
           status: 'pending',
+          source: "stream",
+          partType: "step-start",
+          internal: false,
           startTime: Date.now()
         });
       }
@@ -5425,6 +5651,9 @@ function handleStreamEvent(
           title: inferredStepTitle(part),
           type: "step",
           status: "done",
+          source: "stream",
+          partType: "step-finish",
+          internal: false,
           duration: asOptionalNumber(asRecord(part.timing)?.duration),
           diffStats,
         });
@@ -5487,6 +5716,9 @@ function handleStreamEvent(
             title,
             type: "tool",
             status: asString(part.status) === "error" ? "error" : "pending",
+            source: "stream",
+            partType: "tool",
+            internal: isInternalToolName(tool),
             meta: asString(part.meta) || metaValues[0] || undefined,
             filePath,
             activityDetail: baseActivityDetail,
@@ -5515,6 +5747,9 @@ function handleStreamEvent(
             title,
             type: "tool",
             status: resolvedStatus,
+            source: existing.source || "stream",
+            partType: "tool",
+            internal: Boolean(existing.internal || isInternalToolName(tool)),
             meta: asString(part.meta) || metaValues[0] || existing.meta,
             filePath: filePath || existing.filePath,
             activityDetail: baseActivityDetail || existing.activityDetail,
@@ -5559,6 +5794,9 @@ function handleStreamEvent(
           title: inferredStepTitle(part),
           type: "step",
           status: normalizeProgressStatus(asString(part.status)),
+          source: "stream",
+          partType: partType,
+          internal: false,
           meta: asString(part.meta) || undefined,
           startTime: Date.now(),
         });
@@ -5586,6 +5824,9 @@ function handleStreamEvent(
           title: inferredStepTitle(part),
           type: "step",
           status: normalizeProgressStatus(asString(part.status)),
+          source: "stream",
+          partType: partType,
+          internal: false,
           meta: asString(part.meta) || undefined,
           startTime: Date.now(),
         });
@@ -5632,6 +5873,9 @@ function handleStreamEvent(
               title: step.title,
               type: 'step',
               status: step.status ?? 'pending',
+              source: "stream",
+              partType: "structured-progress",
+              internal: false,
               meta: step.meta,
               filePath: step.filePath
             });
@@ -5684,6 +5928,19 @@ function handleStreamEvent(
               });
             }
           } else {
+            const canRenderStructuredMessageLive =
+              !!structuredQuestionText || !!finish;
+            if (!canRenderStructuredMessageLive) {
+              const deferredReasoning = sanitizeReasoningChunk(messageText || structuredMessage);
+              if (deferredReasoning) {
+                dispatch({
+                  type: "UPDATE_STREAMING_REASONING",
+                  payload: { reasoning: deferredReasoning, append: true },
+                });
+              }
+              dispatch({ type: "SET_PROCESSING", payload: true });
+              break;
+            }
             if (mixedMessage) {
               const contentPatch = resolveStreamingContentUpdate(
                 streamingState?.content || '',
@@ -5696,14 +5953,14 @@ function handleStreamEvent(
                   payload: {
                     content: contentPatch.content,
                     append: contentPatch.append,
-                    renderable: true,
+                    renderable: canRenderStructuredMessageLive,
                   }
                 });
                 logAssistantContentSource("stream:message.updated:structured-message", {
                   messageId,
                   responseType: structuredOutput?.responseType ?? null,
                   selectedSource: "message.updated.structured.message",
-                  renderable: true,
+                  renderable: canRenderStructuredMessageLive,
                   eventType,
                   structuredKind,
                   partType,
@@ -5724,14 +5981,14 @@ function handleStreamEvent(
                   payload: {
                     content: contentPatch.content,
                     append: contentPatch.append,
-                    renderable: true,
+                    renderable: canRenderStructuredMessageLive,
                   }
                 });
                 logAssistantContentSource("stream:message.updated:structured-message-raw", {
                   messageId,
                   responseType: structuredOutput?.responseType ?? null,
                   selectedSource: "message.updated.structured.message.raw",
-                  renderable: true,
+                  renderable: canRenderStructuredMessageLive,
                   eventType,
                   structuredKind,
                   partType,
@@ -6101,6 +6358,9 @@ function handleStreamEvent(
             ? (stepTypeRaw === "thinking" ? "reasoning" : stepTypeRaw)
             : 'step',
         status: 'pending',
+        source: "stream",
+        partType: "step-start",
+        internal: false,
         meta: asString(payload.meta) || undefined,
         filePath: asString(payload.filePath) || undefined,
         startTime: Date.now()
@@ -6121,7 +6381,9 @@ function handleStreamEvent(
           patch: {
             title: asString(payload.title) || undefined,
             meta: asString(payload.meta) || undefined,
-            filePath: asString(payload.filePath) || undefined
+            filePath: asString(payload.filePath) || undefined,
+            source: "stream",
+            partType: "step-update",
           }
         }
       });
@@ -6140,7 +6402,9 @@ function handleStreamEvent(
           callID: asString(payload.callID) || undefined,
           patch: {
             status: 'done',
-            duration: asOptionalNumber(payload.duration)
+            duration: asOptionalNumber(payload.duration),
+            source: "stream",
+            partType: "step-finish",
           }
         }
       });
@@ -6154,7 +6418,9 @@ function handleStreamEvent(
           callID: asString(payload.callID) || undefined,
           patch: {
             status: 'error',
-            meta: asString(payload.error) || asString(payload.meta) || 'Failed'
+            meta: asString(payload.error) || asString(payload.meta) || 'Failed',
+            source: "stream",
+            partType: "step-error",
           }
         }
       });
@@ -6204,6 +6470,9 @@ function handleStreamEvent(
             title: step.title,
             type: "step",
             status: step.status ?? "pending",
+            source: "stream",
+            partType: "structured-progress",
+            internal: false,
             meta: step.meta,
             filePath: step.filePath,
           });
@@ -6310,6 +6579,9 @@ function handleStreamEvent(
             title,
             type: "step",
             status: normalizeProgressStatus(asString(fallbackPart.status)),
+            source: "stream",
+            partType: normalizePartType(fallbackPart.type) || "progress",
+            internal: false,
             meta: asString(fallbackPart.meta) || undefined,
             startTime: Date.now(),
           });
@@ -6922,6 +7194,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             normalizedMessage,
             getState(),
           );
+
+          // Extract error from info.error and set to message.error for display
+          const infoRec = asRecord(sanitized.info);
+          const errorRec = asRecord(infoRec?.error);
+          if (errorRec) {
+            const errorName = asString(errorRec.name);
+            const errorData = asRecord(errorRec.data);
+            const errorMessage = asString(errorData?.message) || asString(errorRec.message);
+            if (errorMessage) {
+              (sanitized as unknown as UnknownRecord).error = errorName
+                ? `${errorName}: ${errorMessage}`
+                : errorMessage;
+            }
+          }
           const provisionalFinalMessageId =
             asString(asRecord(sanitized.info)?.id) ||
             asString(sanitized.id) ||

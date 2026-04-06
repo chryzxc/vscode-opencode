@@ -8,8 +8,6 @@ import {
 } from "react";
 import {
   Check,
-  ChevronDown,
-  ChevronRight,
   Copy,
   FileText as FileTextIcon,
   Loader2,
@@ -18,22 +16,23 @@ import {
   RotateCw,
   Zap,
   AlertCircle,
-  Terminal,
   StopCircle,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
-import { cn, formatDuration, getFilename } from "@/utils";
+import { cn, formatDuration } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
+import { CompactDiffPreview } from "./components/CompactDiffPreview";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 
 import type {
   ActivityDetail,
   AppState,
+  InteractiveEvent,
   Message,
   MessagePart,
   MessageStep,
@@ -434,6 +433,47 @@ function questionPromptFromMessage(message?: Message): string | undefined {
   return undefined;
 }
 
+function questionPromptFromInteractiveEvents(
+  events?: InteractiveEvent[],
+): string | undefined {
+  if (!Array.isArray(events) || events.length === 0) {
+    return undefined;
+  }
+
+  for (const event of events) {
+    if (event.type === "question" || event.type === "confirm") {
+      const prompt = firstNonEmptyString(
+        event.contextMessage,
+        event.question,
+        event.title,
+      );
+      if (prompt) {
+        return formatQuestionPromptForAssistant(prompt, event.type);
+      }
+      continue;
+    }
+    if (event.type === "message") {
+      const prompt = firstNonEmptyString(
+        event.contextMessage,
+        event.message,
+        event.title,
+      );
+      if (prompt) {
+        return prompt;
+      }
+      continue;
+    }
+    if (event.type === "quick_actions") {
+      const prompt = firstNonEmptyString(event.contextMessage, event.title);
+      if (prompt) {
+        return formatQuestionPromptForAssistant(prompt, "quick_actions");
+      }
+    }
+  }
+
+  return undefined;
+}
+
 
 function summaryText(message?: Message): string {
   // Check both nested info and top-level properties (for persisted messages)
@@ -579,6 +619,49 @@ function getMessageContent(
   return `${questionPrompt}\n\n${safeBaseContent}`;
 }
 
+type RawDebugParseStatus = "parsed" | "empty" | "unparseable" | "truncated";
+
+type ParsedRawDebugForUi = {
+  status: RawDebugParseStatus;
+  parts: Array<Record<string, unknown>>;
+};
+
+function parseRawResponseDebugForUi(raw: unknown): ParsedRawDebugForUi {
+  if (typeof raw === "undefined" || raw === null) {
+    return { status: "empty", parts: [] };
+  }
+  if (typeof raw === "object") {
+    const rec = asRecord(raw);
+    const parts = Array.isArray(rec?.parts)
+      ? rec.parts
+        .map((part) => asRecord(part))
+        .filter((part): part is Record<string, unknown> => !!part)
+      : [];
+    return { status: "parsed", parts };
+  }
+  if (typeof raw !== "string") {
+    return { status: "unparseable", parts: [] };
+  }
+  const text = raw.trim();
+  if (!text) {
+    return { status: "empty", parts: [] };
+  }
+  const truncMatch = text.match(/\.\.\.<truncated\s+\d+\s+chars>\s*$/i);
+  const candidate = truncMatch ? text.slice(0, truncMatch.index).trim() : text;
+  try {
+    const parsed = JSON.parse(candidate);
+    const rec = asRecord(parsed);
+    const parts = Array.isArray(rec?.parts)
+      ? rec.parts
+        .map((part) => asRecord(part))
+        .filter((part): part is Record<string, unknown> => !!part)
+      : [];
+    return { status: truncMatch ? "truncated" : "parsed", parts };
+  } catch {
+    return { status: truncMatch ? "truncated" : "unparseable", parts: [] };
+  }
+}
+
 type ThoughtItem = { key: string; text: string };
 type ProgressItem = {
   key: string;
@@ -587,6 +670,9 @@ type ProgressItem = {
   callID?: string;
   title: string;
   status: "pending" | "done" | "error";
+  source?: "stream" | "final" | "raw_debug";
+  partType?: string;
+  internal?: boolean;
   meta?: string;
   filePath?: string;
   diffStats?: { added: number; deleted: number };
@@ -615,19 +701,31 @@ function seqFromThoughtKey(key: string): number {
 }
 
 function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
-  if (message?.reasoningEvents && message.reasoningEvents.length > 0) {
-    const fromEvents = message.reasoningEvents
-      .filter((event: ReasoningEvent) => {
-        const text = event.text;
-        return typeof text === "string" && text.length > 0;
-      })
-      .map((event: ReasoningEvent) => ({
-        key: `evt-${event.createdAt}`,
-        text: event.text.trim(),
-      }));
-    if (fromEvents.length > 0) {
-      return fromEvents;
-    }
+  const items: ThoughtItem[] = [];
+  const seen = new Set<string>();
+  const pushUnique = (key: string, text: string) => {
+    const cleaned = text.trim();
+    if (!cleaned) return;
+    const fp = normalizeComparableText(cleaned);
+    if (!fp || seen.has(fp)) return;
+    seen.add(fp);
+    items.push({ key, text: cleaned });
+  };
+
+  if (Array.isArray(message?.reasoningPayload?.events)) {
+    message.reasoningPayload.events.forEach((event, index) => {
+      pushUnique(`evt-${event.createdAt}-${index}`, event.text || "");
+    });
+  }
+
+  if (Array.isArray(message?.reasoningEvents)) {
+    message.reasoningEvents.forEach((event: ReasoningEvent, index: number) => {
+      pushUnique(`evt-${event.createdAt}-${index}`, event.text || "");
+    });
+  }
+
+  if (items.length > 0) {
+    return items;
   }
 
   // Do not derive visible thinking text from raw reasoning parts.
@@ -676,41 +774,27 @@ function normalizeProgressStatus(
   return "pending";
 }
 
-function isStructuredOutputActivityText(value?: string): boolean {
-  if (!value) {
-    return false;
-  }
-  const normalized = value.toLowerCase().replace(/\s+/g, "");
-  if (
-    normalized === "invalid" ||
-    normalized === "runninginvalid" ||
-    normalized === "processinginvalid"
-  ) {
-    return true;
-  }
-  return (
-    normalized.includes("structuredoutput") ||
-    normalized.includes("structured_output")
-  );
-}
-
 function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
   const type = (step.type ?? "").toLowerCase();
+  const partType = ("partType" in step ? step.partType : undefined) || "";
+  const normalizedPartType = partType.toString().toLowerCase();
+
+  // Filter out reasoning/thinking and internal bookkeeping steps
   if (type === "reasoning" || type === "thinking") {
     return false;
   }
-
-  const title = (step.title ?? "").trim().toLowerCase();
+  // Filter out step-start and step-finish events (internal bookkeeping)
   if (
-    isStructuredOutputActivityText(title) ||
-    isStructuredOutputActivityText(step.meta)
+    normalizedPartType === "step-start" ||
+    normalizedPartType === "step-finish" ||
+    type === "step-start" ||
+    type === "step-finish"
   ) {
     return false;
   }
-  if (title === "thinking..." || title === "thinking") {
-    return false;
-  }
-  if (title === "starting step" || title === "finishing step") {
+  // Filter out tool wrapper events that just show "tool completed successfully"
+  // These are internal system events, not actual user-facing progress
+  if (type === "tool" && step.title?.toLowerCase().includes("structuredoutput")) {
     return false;
   }
 
@@ -744,6 +828,14 @@ function progressItemsFromSteps(
         "filePath" in step
           ? (step as StreamingStep).filePath
           : ((step as MessageStep).content ?? undefined);
+      const stepSource =
+        "source" in step
+          ? (step.source as "stream" | "final" | "raw_debug" | undefined)
+          : undefined;
+      const stepPartType =
+        "partType" in step ? (step.partType as string | undefined) : undefined;
+      const stepInternal =
+        "internal" in step ? Boolean(step.internal) : false;
 
       if (stepMap.has(mergeKey)) {
         const existing = stepMap.get(mergeKey)!;
@@ -760,6 +852,9 @@ function progressItemsFromSteps(
         if (stepFilePath) existing.filePath = stepFilePath;
         if (!existing.id && stepId) existing.id = stepId;
         if (!existing.callID && stepCallId) existing.callID = stepCallId;
+        if (!existing.source && stepSource) existing.source = stepSource;
+        if (!existing.partType && stepPartType) existing.partType = stepPartType;
+        existing.internal = Boolean(existing.internal || stepInternal);
         if ("diffStats" in step)
           existing.diffStats = step.diffStats as {
             added: number;
@@ -776,6 +871,9 @@ function progressItemsFromSteps(
           callID: stepCallId,
           title,
           status,
+          source: stepSource,
+          partType: stepPartType,
+          internal: stepInternal,
           meta,
           filePath: stepFilePath,
           diffStats:
@@ -869,7 +967,7 @@ function getLatestTodoTransition(items: TodoItem[]): TodoItem | undefined {
       return item;
     }
   }
-  return items.at(-1);
+  return items[items.length - 1];
 }
 
 function TodoInlineSummary({ todoItems }: { todoItems: TodoItem[] }) {
@@ -1119,26 +1217,38 @@ function buildStreamingTimeline(
 const MAX_VISIBLE_COMPLETED_ACTIVITY = 5;
 
 type MessageViewState = {
-  activityExpanded: boolean;
   showActivityDetails: boolean;
   showThinkingDetails: boolean;
   showAllCompletedActivity: boolean;
+  showInternalActivity: boolean;
 };
 
 type DisplayEvent = {
   key: string;
-  kind: "thinking" | "activity";
+  kind: "activity" | "reasoning";
   label: string;
   summary: string;
   description?: string;
   detail?: string;
   status: "pending" | "done" | "error";
+  source?: "stream" | "final" | "raw_debug";
+  partType?: string;
+  internal?: boolean;
   filePath?: string;
   diffStats?: { added: number; deleted: number };
   activityDetail?: ActivityDetail;
   viewDiffFile?: string;
   updateCount: number;
 };
+
+function sourceFromThoughtKey(
+  key: string,
+): "stream" | "final" | "raw_debug" | undefined {
+  if (key.startsWith("stream-")) return "stream";
+  if (key.startsWith("evt-")) return "final";
+  if (key.startsWith("raw-")) return "raw_debug";
+  return undefined;
+}
 
 function subagentStatusLabel(status: SubagentSummary["status"]): string {
   switch (status) {
@@ -1162,7 +1272,7 @@ function subagentAgentLabel(
 ): string {
   // Try explicit agent ID first
   if (subagent.agentId || detail?.agentId) {
-    return subagent.agentId || detail?.agentId;
+    return subagent.agentId || detail?.agentId || "Unknown Agent";
   }
 
   // For orphaned subagents, use childSessionId for unique identifier
@@ -1326,13 +1436,11 @@ function ThinkingStatusTicker({ className }: { className?: string }) {
 }
 
 function latestNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .at(-1) ?? ""
-  );
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines[lines.length - 1] ?? "";
 }
 
 function parseTimelineStepTitle(rawTitle: string): {
@@ -1420,6 +1528,30 @@ function buildDisplayEvents(
     (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
   const normalizePathForMatch = (value?: string) =>
     (value || "").replace(/\\/g, "/").toLowerCase();
+
+  // Clean event labels - remove unwanted prefixes and filter out system noise
+  const cleanEventLabel = (label: string): string => {
+    const cleaned = label
+      .replace(/^final\s+/i, '') // Remove "Final" prefix
+      .replace(/^step\s+/i, '') // Remove "Step" prefix
+      .trim();
+
+    // Filter out system noise events
+    const lowerCleaned = cleaned.toLowerCase();
+    if (
+      lowerCleaned === 'starting' ||
+      lowerCleaned === 'finishing' ||
+      lowerCleaned.startsWith('starting ') ||
+      lowerCleaned.startsWith('finishing ') ||
+      lowerCleaned.includes('starting...') ||
+      lowerCleaned.includes('finishing...')
+    ) {
+      return ''; // Return empty to filter out
+    }
+
+    return cleaned || label;
+  };
+
   const rawEvents: DisplayEvent[] = [];
 
   for (const block of timelineBlocks) {
@@ -1429,15 +1561,15 @@ function buildDisplayEvents(
 
     if (block.kind === "thinking") {
       for (const item of block.items) {
-        const text = item.text.trim();
+        const text = (item.text || "").trim();
         if (!text) continue;
         rawEvents.push({
-          key: item.key,
-          kind: "thinking",
-          label: "thinking",
-          summary: latestNonEmptyLine(text) || "Thinking...",
-          detail: text,
-          status: isStreamingActive ? "pending" : "done",
+          key: `reasoning-${item.key}`,
+          kind: "reasoning",
+          label: "Reasoning",
+          summary: text,
+          status: "done",
+          source: sourceFromThoughtKey(item.key),
           updateCount: 1,
         });
       }
@@ -1449,6 +1581,9 @@ function buildDisplayEvents(
       const parsed = parseTimelineStepTitle(rawTitle);
       const cleanedRawTitle = stripTrailingEllipsis(rawTitle);
       const activityDetail = event.activityDetail;
+      const source = event.source;
+      const partType = event.partType;
+      const internal = Boolean(event.internal);
       let filePath = event.filePath || activityDetail?.file;
       if (
         !filePath &&
@@ -1508,15 +1643,31 @@ function buildDisplayEvents(
           (diffStats || /edit|writ|modif|updat|patch/i.test(rawTitle))
           ? filePath || message?.edits?.[0]?.file
           : undefined;
+      const metadataFirstLabel =
+        stripTrailingEllipsis(
+          (activityDetail?.tool || "").toLowerCase() ||
+          (activityDetail?.kind || "").toLowerCase() ||
+          (partType || "").toLowerCase(),
+        ) || parsed.label;
+
+      const cleanedLabel = cleanEventLabel(metadataFirstLabel);
+
+      // Skip filtered events (like starting/finishing)
+      if (!cleanedLabel) {
+        continue;
+      }
 
       rawEvents.push({
         key: event.key,
         kind: "activity",
-        label: parsed.label,
+        label: cleanedLabel,
         summary: summary || cleanedRawTitle || "Activity update",
         description,
         detail: detail || undefined,
         status: event.status,
+        source,
+        partType,
+        internal,
         filePath,
         diffStats,
         activityDetail,
@@ -1530,25 +1681,15 @@ function buildDisplayEvents(
   for (const event of rawEvents) {
     const previous = collapsed[collapsed.length - 1];
 
-    if (previous && previous.kind === "thinking" && event.kind === "thinking") {
-      previous.updateCount += 1;
-      const prevDetail = previous.detail || "";
-      const currDetail = event.detail || "";
-      previous.detail = prevDetail && currDetail
-        ? `${prevDetail}\n\n${currDetail}`
-        : prevDetail || currDetail;
-      previous.summary = event.summary || previous.summary;
-      if (event.status === "done") previous.status = "done";
-      continue;
-    }
-
     const isDuplicate =
       !!previous &&
       previous.kind === event.kind &&
       previous.label === event.label &&
       previous.summary === event.summary &&
       previous.status === event.status &&
-      (previous.filePath ?? "") === (event.filePath ?? "");
+      (previous.filePath ?? "") === (event.filePath ?? "") &&
+      (previous.source ?? "") === (event.source ?? "") &&
+      (previous.internal ?? false) === (event.internal ?? false);
 
     if (!isDuplicate || !previous) {
       collapsed.push({ ...event });
@@ -1561,6 +1702,9 @@ function buildDisplayEvents(
     if (event.diffStats) previous.diffStats = event.diffStats;
     if (event.activityDetail) previous.activityDetail = event.activityDetail;
     if (event.viewDiffFile) previous.viewDiffFile = event.viewDiffFile;
+    if (event.partType) previous.partType = event.partType;
+    if (event.source) previous.source = event.source;
+    previous.internal = Boolean(previous.internal || event.internal);
   }
 
   if (isStreamingActive) {
@@ -1835,6 +1979,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   todoItems?: AppState["todoItems"];
 }) {
   const dispatch = useAppDispatch();
+  const state = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
@@ -1845,6 +1990,17 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const messageBodyRef = useRef<HTMLDivElement>(null);
   const progressTimelineRef = useRef<HTMLDivElement>(null);
   const content = getMessageContent(message, streaming);
+  const liveInteractivePrompt = useMemo(
+    () => questionPromptFromInteractiveEvents(state.interactiveEvents),
+    [state.interactiveEvents],
+  );
+  const shouldUseInteractivePromptFallback =
+    !!streaming?.isActive &&
+    content.trim().length === 0 &&
+    !!liveInteractivePrompt;
+  const resolvedContent = shouldUseInteractivePromptFallback
+    ? (liveInteractivePrompt ?? "")
+    : content;
   const thoughtItems = useMemo(
     () =>
       streaming
@@ -1862,8 +2018,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
   /** Unified chronological list of timeline blocks to render. */
   const timelineBlocks = useMemo<TimelineBlock[]>(() => {
-    return buildTimeline(thoughtItems, progressItems, content, message?.parts);
-  }, [thoughtItems, progressItems, content, message?.parts]);
+    return buildTimeline(
+      thoughtItems,
+      progressItems,
+      resolvedContent,
+      message?.parts,
+    );
+  }, [thoughtItems, progressItems, resolvedContent, message?.parts]);
   const isStreamingActive = !!streaming?.isActive;
   const displayEvents = useMemo(
     () => buildDisplayEvents(timelineBlocks, message, isStreamingActive),
@@ -1882,7 +2043,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     const structuredMessage = firstNonEmptyString(structured?.message) ?? "";
     const topLevelContent = (message?.content ?? message?.text ?? "").trim();
     const streamingContent = (streaming?.content ?? "").trim();
-    const finalContent = (content ?? "").trim();
+    const finalContent = (resolvedContent ?? "").trim();
     const finalNorm = normalizeComparableText(finalContent);
     const sourceMatch = {
       parts: !!partsBody && normalizeComparableText(partsBody) === finalNorm,
@@ -1904,15 +2065,17 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       hasParts: Array.isArray(message?.parts) && message.parts.length > 0,
       streamingActive: !!streaming?.isActive,
       streamingHasRenderableContent: streaming?.hasRenderableContent ?? null,
+      usedInteractivePromptFallback: shouldUseInteractivePromptFallback,
       sourceMatch,
       finalContentPreview: finalContent.slice(0, 240),
       partsPreview: partsBody.slice(0, 240),
       structuredMessagePreview: structuredMessage.slice(0, 240),
       topLevelPreview: topLevelContent.slice(0, 240),
       streamingPreview: streamingContent.slice(0, 240),
+      interactivePromptPreview: (liveInteractivePrompt ?? "").slice(0, 240),
     });
   }, [
-    content,
+    resolvedContent,
     messageId,
     responseType,
     message?.role,
@@ -1924,8 +2087,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     streaming?.content,
     streaming?.isActive,
     streaming?.hasRenderableContent,
+    shouldUseInteractivePromptFallback,
+    liveInteractivePrompt,
   ]);
-  const state = useAppState();
   const latestAssistantMessageId = useMemo(() => {
     for (let index = state.messages.length - 1; index >= 0; index--) {
       const candidate = state.messages[index];
@@ -1939,10 +2103,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const isLatestAssistantMessage =
     !!messageId && latestAssistantMessageId === messageId;
   const [viewState, setViewState] = useState<MessageViewState>({
-    activityExpanded: true,
     showActivityDetails: false,
     showThinkingDetails: false,
     showAllCompletedActivity: false,
+    showInternalActivity: false,
   });
   const hasCompletedCondensedActivity =
     !isStreamingActive &&
@@ -1952,13 +2116,23 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const visibleDisplayEvents = hasCompletedCondensedActivity
     ? displayEvents.slice(-MAX_VISIBLE_COMPLETED_ACTIVITY)
     : displayEvents;
+  const userFacingDisplayEvents = visibleDisplayEvents.filter(
+    (event) => !event.internal,
+  );
+  const internalDisplayEvents = visibleDisplayEvents.filter(
+    (event) => event.internal,
+  );
+  const timelineDisplayEvents =
+    viewState.showInternalActivity && internalDisplayEvents.length > 0
+      ? visibleDisplayEvents
+      : userFacingDisplayEvents;
   const hiddenActivityEventCount = Math.max(
     0,
     displayEvents.length - visibleDisplayEvents.length,
   );
   const activityStatusCounts = useMemo(
     () =>
-      visibleDisplayEvents.reduce(
+      userFacingDisplayEvents.reduce(
         (acc, event) => {
           if (event.status === "error") acc.error += 1;
           else if (event.status === "done") acc.done += 1;
@@ -1967,7 +2141,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         },
         { pending: 0, done: 0, error: 0 },
       ),
-    [visibleDisplayEvents],
+    [userFacingDisplayEvents],
   );
   const shouldShowTodoInlineSummary =
     todoItems.length > 0 &&
@@ -2128,7 +2302,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     !streaming && thoughtItems.length === 0 && reasoningTok > 0;
   const thinkingPlaceholderText =
     "Reasoning tokens were used, but this provider did not expose reasoning text.";
-  const rawResponseText = useMemo(() => {
+  const { rawResponseText, rawResponseParseStatus } = useMemo(() => {
     const maxRawDebugChars = 30000;
     const withCap = (value: string): string =>
       value.length > maxRawDebugChars
@@ -2137,21 +2311,38 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         : value;
     const raw = message?.rawResponse;
     if (typeof raw === "undefined") {
-      return "";
+      return {
+        rawResponseText: "",
+        rawResponseParseStatus: "empty" as RawDebugParseStatus,
+      };
     }
+    const parsedRaw = parseRawResponseDebugForUi(raw);
     if (typeof raw === "string") {
-      return withCap(raw);
+      return {
+        rawResponseText: withCap(raw),
+        rawResponseParseStatus: parsedRaw.status,
+      };
     }
     try {
-      return withCap(JSON.stringify(raw, null, 2));
+      return {
+        rawResponseText: withCap(JSON.stringify(raw, null, 2)),
+        rawResponseParseStatus: parsedRaw.status,
+      };
     } catch {
-      return withCap(String(raw));
+      return {
+        rawResponseText: withCap(String(raw)),
+        rawResponseParseStatus: parsedRaw.status,
+      };
     }
   }, [message?.rawResponse]);
   // Render raw debug whenever payload exists. Do not gate behind stream-debug
   // flags, otherwise streamed + hydrated sessions can silently hide rawResponse.
   const hasRawResponseDebug = rawResponseText.trim().length > 0;
-  const hasPrimaryResponseBody = content.trim().length > 0 || !!plan;
+  const hasThinkingEvents = useMemo(
+    () => displayEvents.some((event) => event.kind === "reasoning"),
+    [displayEvents],
+  );
+  const hasPrimaryResponseBody = resolvedContent.trim().length > 0 || !!plan;
   const hasResponseContent = hasPrimaryResponseBody || hasRawResponseDebug;
   const isAborted = message?.aborted === true;
   const structuredRetryError =
@@ -2178,12 +2369,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     ? "w-full max-w-none"
     : "w-full";
   const showResponseSection = hasResponseContent || !!plan;
-  const hasThinkingEvents = useMemo(
-    () => displayEvents.some((event) => event.kind === "thinking"),
-    [displayEvents],
-  );
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(content);
+    await navigator.clipboard.writeText(resolvedContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
@@ -2267,13 +2454,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     return () => root.removeEventListener("click", onClick);
   }, []);
 
-  useEffect(() => {
-    if (!isStreamingActive) return;
-    const root = progressTimelineRef.current;
-    if (!root) return;
-    root.scrollTop = root.scrollHeight;
-  }, [isStreamingActive]);
-
   const responseEnterClass = streaming
     ? "oc-assistant-streaming-enter"
     : "oc-assistant-response-enter";
@@ -2341,90 +2521,85 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     </div>
                   </div>
                   {hasTokens && (
-                    <div className="oc-msg-token-chips flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] sm:ml-auto sm:text-[12px]">
-                      <span
-                        title="Tokens in system prompt + conversation history + your message"
-                        className="cursor-help decoration-dotted underline underline-offset-2"
-                      >
-                        prompt
-                      </span>
-                      <span
-                        className="tabular-nums cursor-help"
-                        title="Tokens in system prompt + conversation history + your message"
-                      >
-                        {inputTok.toLocaleString()}
-                      </span>
-                      <span className="opacity-30">-</span>
-                      <span
-                        title="Tokens generated in this reply"
-                        className="cursor-help decoration-dotted underline underline-offset-2"
-                      >
-                        response
-                      </span>
-                      <span
-                        className="tabular-nums cursor-help"
-                        title="Tokens generated in this reply"
-                      >
-                        {outputTok.toLocaleString()}
-                      </span>
+                    <div className="oc-msg-token-chips flex min-w-0 flex-wrap items-center gap-2 text-[11px] sm:ml-auto sm:text-[12px]">
+                      {/* Prompt - Uses existing oc-yellow for warmth */}
+                      <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                        <div className="h-1 w-1 rounded-full bg-oc-yellow" />
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
+                            prompt
+                          </span>
+                          <span className="font-mono font-medium text-oc-text tabular-nums">
+                            {inputTok.toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Response - Uses oc-accent for primary action */}
+                      <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                        <div className="h-1 w-1 rounded-full bg-oc-accent" />
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
+                            response
+                          </span>
+                          <span className="font-mono font-medium text-oc-text tabular-nums">
+                            {outputTok.toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+
                       {reasoningTok > 0 && (
-                        <>
-                          <span className="opacity-30">-</span>
-                          <span
-                            title="Internal reasoning tokens reported by provider/model"
-                            className="cursor-help decoration-dotted underline underline-offset-2"
-                          >
-                            reasoning
-                          </span>
-                          <span
-                            className="tabular-nums cursor-help"
-                            title="Internal reasoning tokens reported by provider/model"
-                          >
-                            {reasoningTok.toLocaleString()}
-                          </span>
-                        </>
+                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                          <div className="h-1 w-1 rounded-full bg-oc-amber-custom" />
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
+                              reasoning
+                            </span>
+                            <span className="font-mono font-medium text-oc-text tabular-nums">
+                              {reasoningTok.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
                       )}
+
                       {cacheRead > 0 && (
-                        <>
-                          <span className="opacity-30">-</span>
-                          <span
-                            title="Tokens retrieved from prompt cache"
-                            className="cursor-help decoration-dotted underline underline-offset-2"
-                          >
-                            cache read
-                          </span>
-                          <span
-                            className="tabular-nums cursor-help"
-                            title="Tokens retrieved from prompt cache"
-                          >
-                            {cacheRead.toLocaleString()}
-                          </span>
-                        </>
+                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                          <div className="h-1 w-1 rounded-full bg-oc-green" />
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
+                              cache read
+                            </span>
+                            <span className="font-mono font-medium text-oc-text tabular-nums">
+                              {cacheRead.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
                       )}
+
                       {cacheWrite > 0 && (
-                        <>
-                          <span className="opacity-30">-</span>
-                          <span
-                            title="New tokens written to prompt cache"
-                            className="cursor-help decoration-dotted underline underline-offset-2"
-                          >
-                            cache write
-                          </span>
-                          <span
-                            className="tabular-nums cursor-help"
-                            title="New tokens written to prompt cache"
-                          >
-                            {cacheWrite.toLocaleString()}
-                          </span>
-                        </>
+                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                          <div className="h-1 w-1 rounded-full bg-oc-orange" />
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
+                              cache write
+                            </span>
+                            <span className="font-mono font-medium text-oc-text tabular-nums">
+                              {cacheWrite.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
                       )}
+
                       {typeof duration === "number" && (
-                        <>
-                          <span className="opacity-30">-</span>
-                          <span className="tabular-nums">
+                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200">
+                          <svg className="h-3 w-3 text-oc-text-muted opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <circle cx="12" cy="12" r="10" />
+                            <path d="M12 6v6l4 2" />
+                          </svg>
+                          <span className="font-mono text-oc-text-muted tabular-nums">
                             {duration.toFixed(1)}s
                           </span>
-                        </>
+                        </div>
                       )}
                     </div>
                   )}
@@ -2465,29 +2640,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               className="rounded-md border border-oc-border bg-oc-panel-soft/40"
             >
               <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1.5 text-left"
-                  onClick={() =>
-                    setViewState((prev) => ({
-                      ...prev,
-                      activityExpanded: !prev.activityExpanded,
-                    }))
-                  }
-                  title="Toggle activity panel"
-                >
-                  {viewState.activityExpanded ? (
-                    <ChevronDown className="h-3.5 w-3.5 text-oc-text-muted" />
-                  ) : (
-                    <ChevronRight className="h-3.5 w-3.5 text-oc-text-muted" />
-                  )}
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                    Activity
-                  </span>
+                <div className="inline-flex items-center gap-1.5">
                   <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
-                    {displayEvents.length}
+                    {timelineDisplayEvents.length}
                   </span>
-                </button>
+                </div>
 
                 <div className="flex flex-wrap items-center gap-1.5">
                   {activityStatusCounts.pending > 0 && (
@@ -2514,10 +2671,25 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         showActivityDetails: !prev.showActivityDetails,
                       }))
                     }
-                    title="Toggle activity metadata"
+                    title="Toggle metadata"
                   >
                     details {viewState.showActivityDetails ? "on" : "off"}
                   </button>
+                  {internalDisplayEvents.length > 0 && (
+                    <button
+                      type="button"
+                      className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted hover:text-oc-text-soft"
+                      onClick={() =>
+                        setViewState((prev) => ({
+                          ...prev,
+                          showInternalActivity: !prev.showInternalActivity,
+                        }))
+                      }
+                    >
+                      internal {internalDisplayEvents.length}{" "}
+                      {viewState.showInternalActivity ? "on" : "off"}
+                    </button>
+                  )}
                   {hasThinkingEvents && (
                     <button
                       type="button"
@@ -2528,202 +2700,260 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           showThinkingDetails: !prev.showThinkingDetails,
                         }))
                       }
-                      title="Toggle full thinking text"
                     >
-                      thinking{" "}
-                      {viewState.showThinkingDetails ? "full" : "preview"}
+                      text {viewState.showThinkingDetails ? "full" : "preview"}
                     </button>
                   )}
                 </div>
               </div>
 
-              {viewState.activityExpanded && (
-                <div className="border-t border-oc-border px-3 py-2.5">
-                  {showThinkingPlaceholder && (
-                    <div className="mb-2 rounded-md border border-oc-border bg-oc-bg-soft px-2.5 py-2 text-xs text-oc-text-muted whitespace-pre-wrap">
-                      {thinkingPlaceholderText}
-                    </div>
-                  )}
+              <div className="border-t border-oc-border px-3 py-2.5">
+                {timelineDisplayEvents.length > 0 && (
+                  <>
+                    <Stepper
+                      className="oc-refined-stepper max-h-[400px] overflow-y-auto pl-2"
+                      ref={progressTimelineRef}
+                      autoScrollToBottom={isStreamingActive}
+                    >
+                      {timelineDisplayEvents.map((event, index) => {
+                        const isLast =
+                          index === timelineDisplayEvents.length - 1;
+                        const isLatestStreamingEvent =
+                          isStreamingActive && isLast;
+                        const indicatorNode =
+                          event.status === "pending" ? (
+                            <div className="h-2 w-2 rounded-full border border-oc-accent/70 bg-oc-accent/30 animate-pulse" />
+                          ) : event.status === "error" ? (
+                            <X className="h-[10px] w-[10px] text-[var(--vscode-terminal-ansiRed,#ef4444)]" />
+                          ) : (
+                            <Check className="h-[10px] w-[10px] text-[var(--oc-green,#22c55e)]" />
+                          );
+                        const fileName = event.filePath
+                          ? event.filePath.split(/[/\\]/).pop()
+                          : undefined;
+                        const shouldShowDetail = viewState.showActivityDetails;
 
-                  {displayEvents.length > 0 && (
-                    <>
-                      <Stepper
-                        className="max-h-[320px] overflow-y-auto pl-1 font-sans text-[12px]"
-                        ref={progressTimelineRef}
-                      >
-                        {visibleDisplayEvents.map((event, index) => {
-                          const isLast =
-                            index === visibleDisplayEvents.length - 1;
-                          const isLatestStreamingEvent =
-                            isStreamingActive && isLast;
-                          const indicatorNode =
-                            event.status === "pending" ? (
-                              <div className="h-2 w-2 rounded-full border border-oc-accent/70 bg-oc-accent/30 animate-pulse" />
-                            ) : event.status === "error" ? (
-                              <X className="h-[10px] w-[10px] text-[var(--vscode-terminal-ansiRed,#ef4444)]" />
-                            ) : (
-                              <Check className="h-[10px] w-[10px] text-[var(--oc-green,#22c55e)]" />
-                            );
-                          const fileName = event.filePath
-                            ? event.filePath.split(/[/\\]/).pop()
-                            : undefined;
-                          const shouldShowDetail =
-                            event.kind === "thinking"
-                              ? viewState.showThinkingDetails
-                              : viewState.showActivityDetails;
-
-                          return (
-                            <StepperItem
-                              key={event.key}
-                              isLast={isLast}
-                              indicator={indicatorNode}
-                              className={cn(
-                                "group rounded-md pr-3 transition-colors",
-                                isLatestStreamingEvent
-                                  ? "bg-oc-accent/10"
-                                  : "hover:bg-foreground/5",
-                              )}
-                            >
-                              <div className="flex min-w-0 items-start gap-2.5 pt-[3px]">
-                                <span className="inline-block min-w-[64px] shrink-0 rounded border border-oc-border px-1.5 py-[3px] text-center font-mono text-[10px] font-semibold uppercase text-oc-text-muted">
-                                  {event.kind === "thinking"
-                                    ? "thinking"
-                                    : event.label}
+                        return (
+                          <StepperItem
+                            key={event.key}
+                            isLast={isLast}
+                            indicator={indicatorNode}
+                            className={cn(
+                              "oc-refined-stepper-item group",
+                              isLatestStreamingEvent
+                                ? "is-streaming"
+                                : "",
+                            )}
+                          >
+                            <div className="flex min-w-0 flex-col items-start gap-2 w-full">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span
+                                  className={cn(
+                                    "oc-refined-event-label",
+                                    event.kind === "reasoning" && "reasoning",
+                                    // event.kind === "activity" && "uppercase"
+                                    event.kind === "activity" && "activity",
+                                  )}
+                                  data-operation={event.label.toLowerCase()}
+                                >
+                                  {event.label}
                                 </span>
+                                {event.kind === "activity" && event.source && (
+                                  <span className="oc-refined-meta-badge">
+                                    {event.source === "raw_debug"
+                                      ? "raw"
+                                      : event.source}
+                                  </span>
+                                )}
+                                {event.kind === "activity" && event.internal && (
+                                  <span className="oc-refined-meta-badge">
+                                    internal
+                                  </span>
+                                )}
+                              </div>
 
-                                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                                  {event.filePath ? (
-                                    <button
-                                      type="button"
-                                      className="inline-flex min-w-0 items-center gap-1 text-left font-mono text-[12px] text-oc-text-soft hover:text-oc-accent"
-                                      title={event.filePath}
-                                      onClick={() =>
-                                        vscode.postMessage({
-                                          type: "openFile",
-                                          file: event.filePath!,
-                                        })
-                                      }
-                                    >
-                                      <FileIcon filePath={event.filePath} />
-                                      <span className="break-words whitespace-pre-wrap">
-                                        {fileName || event.summary}
-                                      </span>
-                                    </button>
-                                  ) : (
-                                    event.summary && (
-                                      <span className="block break-words whitespace-pre-wrap text-[12.5px] text-oc-text-muted">
-                                        {event.summary}
-                                      </span>
-                                    )
-                                  )}
-
-                                  {event.description && (
-                                    <span className="block whitespace-pre-wrap break-words text-[11px] text-oc-text-muted">
-                                      {event.description}
-                                    </span>
-                                  )}
-
-                                  {event.updateCount > 1 && (
-                                    <span className="text-[10px] font-mono text-oc-text-muted">
-                                      x{event.updateCount} updates
-                                    </span>
-                                  )}
-
-                                  {shouldShowDetail && event.detail && (
-                                    <span className="block whitespace-pre-wrap break-words text-[11px] text-oc-text-muted">
-                                      {event.detail}
-                                    </span>
-                                  )}
-
-                                  {shouldShowDetail && event.activityDetail && (
-                                    <div className="mt-1.5 flex flex-col gap-1.5">
-                                      <div className="flex flex-wrap items-center gap-1.5">
-                                        {event.activityDetail.tool && (
-                                          <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
-                                            tool {event.activityDetail.tool}
-                                          </span>
-                                        )}
-                                        {event.activityDetail.command && (
-                                          <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
-                                            cmd {event.activityDetail.command}
-                                          </span>
-                                        )}
-                                        {event.activityDetail.query && (
-                                          <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
-                                            query {event.activityDetail.query}
-                                          </span>
-                                        )}
-                                      </div>
-
-                                      {event.activityDetail.diffExcerpt?.lines?.length ? (
-                                        <ActivityDiffExcerpt excerpt={event.activityDetail.diffExcerpt} />
-                                      ) : null}
-                                    </div>
-                                  )}
-                                </span>
-
-                                {event.diffStats &&
-                                  (event.diffStats.added > 0 ||
-                                    event.diffStats.deleted > 0) && (
-                                    <span className="flex shrink-0 items-center gap-1 text-[10px] font-mono">
-                                      {event.diffStats.added > 0 && (
-                                        <span className="text-oc-green">
-                                          +{event.diffStats.added}
-                                        </span>
-                                      )}
-                                      {event.diffStats.deleted > 0 && (
-                                        <span className="text-oc-red">
-                                          -{event.diffStats.deleted}
-                                        </span>
-                                      )}
-                                    </span>
-                                  )}
-
-                                {event.viewDiffFile && (
+                              <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
+                                {event.filePath ? (
                                   <button
                                     type="button"
-                                    className="shrink-0 rounded border border-oc-border px-2 py-0.5 text-[10px] font-medium text-oc-text-muted hover:text-oc-text-soft"
+                                    className="oc-refined-file-link"
+                                    title={event.filePath}
                                     onClick={() =>
                                       vscode.postMessage({
-                                        type: "openDiff",
-                                        file: event.viewDiffFile,
+                                        type: "openFile",
+                                        file: event.filePath!,
                                       })
                                     }
                                   >
-                                    View diff
+                                    <FileIcon filePath={event.filePath} />
+                                    <span className="break-words whitespace-pre-wrap">
+                                      {fileName || event.summary}
+                                    </span>
                                   </button>
+                                ) : (
+                                  event.summary && (
+                                    <div
+                                      className={cn(
+                                        "oc-refined-event-summary",
+                                        event.kind === "reasoning" &&
+                                        !viewState.showThinkingDetails &&
+                                        "line-clamp-2",
+                                      )}
+                                    >
+                                      <MarkdownRenderer
+                                        content={event.summary}
+                                        className="markdown-body"
+                                      />
+                                    </div>
+                                  )
                                 )}
-                              </div>
-                            </StepperItem>
-                          );
-                        })}
-                      </Stepper>
 
-                      {!isStreamingActive &&
-                        displayEvents.length >
-                        MAX_VISIBLE_COMPLETED_ACTIVITY && (
-                          <button
-                            type="button"
-                            className="mt-2 text-[11px] font-mono text-oc-accent hover:underline"
-                            onClick={() =>
-                              setViewState((prev) => ({
-                                ...prev,
-                                showAllCompletedActivity:
-                                  !prev.showAllCompletedActivity,
-                              }))
-                            }
-                          >
-                            {hasCompletedCondensedActivity
-                              ? "Show " +
-                              hiddenActivityEventCount +
-                              " older events"
-                              : "Show fewer events"}
-                          </button>
-                        )}
-                    </>
-                  )}
-                </div>
-              )}
+                                {/* Compact diff preview for write/edit operations */}
+                                {event.activityDetail?.diffExcerpt && (
+                                  <CompactDiffPreview
+                                    excerpt={event.activityDetail.diffExcerpt}
+                                    filePath={event.filePath}
+                                    maxLines={5}
+                                  />
+                                )}
+
+                                {event.description && (
+                                  <div className="oc-refined-event-content">
+                                    <MarkdownRenderer
+                                      content={event.description}
+                                      className="markdown-body"
+                                    />
+                                  </div>
+                                )}
+
+                                {event.updateCount > 1 && (
+                                  <span className="oc-refined-update-count">
+                                    x{event.updateCount} updates
+                                  </span>
+                                )}
+
+                                {shouldShowDetail && event.detail && (
+                                  <div className="oc-refined-event-content">
+                                    <MarkdownRenderer
+                                      content={event.detail}
+                                      className="markdown-body"
+                                    />
+                                  </div>
+                                )}
+
+                                {shouldShowDetail && event.activityDetail && (
+                                  <div className="oc-refined-activity-details flex flex-col gap-2">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      {event.activityDetail.tool && (
+                                        <span className="oc-refined-detail-badge">
+                                          tool {event.activityDetail.tool}
+                                        </span>
+                                      )}
+                                      {event.activityDetail.command && (
+                                        <span className="oc-refined-detail-badge">
+                                          cmd {event.activityDetail.command}
+                                        </span>
+                                      )}
+                                      {event.activityDetail.query && (
+                                        <span className="oc-refined-detail-badge">
+                                          query {event.activityDetail.query}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {event.activityDetail.diffExcerpt?.lines?.length ? (
+                                      <ActivityDiffExcerpt excerpt={event.activityDetail.diffExcerpt} />
+                                    ) : null}
+                                  </div>
+                                )}
+                              </span>
+
+                              {event.diffStats &&
+                                (event.diffStats.added > 0 ||
+                                  event.diffStats.deleted > 0) && (
+                                  <span className="oc-refined-diff-stats">
+                                    {event.diffStats.added > 0 && (
+                                      <span className="oc-refined-diff-add">
+                                        +{event.diffStats.added}
+                                      </span>
+                                    )}
+                                    {event.diffStats.deleted > 0 && (
+                                      <span className="oc-refined-diff-del">
+                                        -{event.diffStats.deleted}
+                                      </span>
+                                    )}
+                                  </span>
+                                )}
+
+                              {event.viewDiffFile && (
+                                <button
+                                  type="button"
+                                  className="shrink-0 rounded border border-oc-border px-2 py-0.5 text-[10px] font-medium text-oc-text-muted hover:text-oc-text-soft"
+                                  onClick={() =>
+                                    vscode.postMessage({
+                                      type: "openDiff",
+                                      file: event.viewDiffFile,
+                                    })
+                                  }
+                                >
+                                  View diff
+                                </button>
+                              )}
+                            </div>
+                          </StepperItem>
+                        );
+                      })}
+                    </Stepper>
+
+                    {showThinkingPlaceholder && !hasThinkingEvents && (
+                      <Stepper className="mt-2 max-h-[120px] overflow-y-auto pl-1 font-sans text-[12px]">
+                        <StepperItem
+                          isLast={true}
+                          indicator={
+                            <div className="h-2 w-2 rounded-full border border-oc-accent/70 bg-oc-accent/30 animate-pulse" />
+                          }
+                        >
+                          <div className="flex min-w-0 items-start gap-2.5 pt-[3px]">
+                            <span className="inline-block min-w-[64px] shrink-0 rounded border border-oc-border px-1.5 py-[3px] text-center font-mono text-[10px] font-semibold text-oc-text-muted">
+                              Reasoning
+                            </span>
+                            <span
+                              className={cn(
+                                "flex-1 whitespace-pre-wrap break-words text-[11px] text-oc-text-muted",
+                                !viewState.showThinkingDetails && "line-clamp-2",
+                              )}
+                            >
+                              {thinkingPlaceholderText}
+                            </span>
+                          </div>
+                        </StepperItem>
+                      </Stepper>
+                    )}
+
+                    {!isStreamingActive &&
+                      displayEvents.length >
+                      MAX_VISIBLE_COMPLETED_ACTIVITY && (
+                        <button
+                          type="button"
+                          className="mt-2 text-[11px] font-mono text-oc-accent hover:underline"
+                          onClick={() =>
+                            setViewState((prev) => ({
+                              ...prev,
+                              showAllCompletedActivity:
+                                !prev.showAllCompletedActivity,
+                            }))
+                          }
+                        >
+                          {hasCompletedCondensedActivity
+                            ? "Show " +
+                            hiddenActivityEventCount +
+                            " older events"
+                            : "Show fewer events"}
+                        </button>
+                      )}
+                  </>
+                )}
+              </div>
             </section>
           )}
 
@@ -2735,7 +2965,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               {hasResponseContent && (
                 <div className={responseBodyClass}>
                   <MarkdownRenderer
-                    content={content}
+                    content={resolvedContent}
                     className={markdownBodyClass}
                   />
                 </div>
@@ -2809,8 +3039,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       : undefined
                   }
                 >
-                  <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                    Raw Response (Debug)
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                      Raw Response (Debug)
+                    </div>
+                    <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[9px] uppercase text-oc-text-muted/80">
+                      parse {rawResponseParseStatus}
+                    </span>
                   </div>
                   <pre className="max-h-[260px] overflow-auto rounded border border-oc-border bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-mono">
                     {rawResponseText}
@@ -3005,7 +3240,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                             </span>
                           </div>
                           <span className="font-mono text-oc-2xs text-oc-text-muted">
-                            {formatDuration(subagent.durationMs)}
+                            {formatDuration(subagent.durationMs ?? 0)}
                           </span>
                         </div>
                         <div className="mt-1 flex min-w-0 items-center gap-1.5">

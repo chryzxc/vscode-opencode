@@ -154,6 +154,26 @@ test('stream handler reclassifies reasoning-like leaked text chunks into reasoni
     /looksLikeReasoningTrace\(.*?,.*?\)[\s\S]*UPDATE_STREAMING_REASONING/s,
     'message.part.updated content branch should redirect reasoning-like text chunks to reasoning events',
   );
+  assert.match(
+    messageHandlerSource,
+    /function isRenderableStreamingPartType\(partType: string\): boolean \{[\s\S]*partType === "text"[\s\S]*partType === "message"[\s\S]*partType === "output_text"/s,
+    'streaming renderability should require explicit text/message part types',
+  );
+  assert.match(
+    streamBody,
+    /renderable:\s*isRenderableStreamingPartType\(partType\)/,
+    'message.part.updated should only mark content renderable for trusted text-bearing parts',
+  );
+  assert.match(
+    streamBody,
+    /const canRenderStructuredMessageLive =[\s\S]*\|\|\s*!!finish;/,
+    'message.updated structured content should defer live rendering unless final or question context',
+  );
+  assert.match(
+    streamBody,
+    /if \(!canRenderStructuredMessageLive\) \{[\s\S]*UPDATE_STREAMING_REASONING[\s\S]*SET_PROCESSING/s,
+    'deferred structured-message chunks should be routed to reasoning events during streaming',
+  );
   
   // Check for the presence of the extraction logic in the source rather than a single startsWith line
   assert.match(
@@ -244,8 +264,23 @@ test('normalizeMessage picks the richest available final content candidate', () 
   );
   assert.match(
     messageHandlerSource,
-    /const content = pickBestContentCandidate\(\[\s*splitReasoningFromCandidate\(asRichString\(rec\.content\)\),[\s\S]*contentFromParts\(sanitizedMergedParts\)/s,
-    'normalizeMessage should evaluate content from content/text/parts before finalizing',
+    /const contentFromTopLevel = pickBestContentCandidate\(/,
+    'normalizeMessage should evaluate top-level content candidates via pickBestContentCandidate',
+  );
+  assert.match(
+    messageHandlerSource,
+    /let content = hasParts[\s\S]*nonReasoningPartsContent[\s\S]*structuredMessage/s,
+    'normalizeMessage should prefer parts/structured channels before falling back',
+  );
+  assert.match(
+    messageHandlerSource,
+    /const shouldSuppressStreamingFallbackForReasoningOnly =[\s\S]*!hasRenderableStreamingContent[\s\S]*provisionalResponseType === "message"[\s\S]*!structuredMessage[\s\S]*rawHasReasoning[\s\S]*!rawHasRenderableText/s,
+    'normalizeMessage should block reasoning-only fallback only when no trusted renderable streaming text exists',
+  );
+  assert.match(
+    messageHandlerSource,
+    /const shouldUseStreamingContent =[\s\S]*hasRenderableStreamingContent[\s\S]*!shouldSuppressStreamingFallbackForReasoningOnly[\s\S]*preferStreamingContent/s,
+    'streaming fallback should require renderable streaming content plus suppression checks',
   );
 });
 
@@ -259,6 +294,47 @@ test('messageResponse finalization preserves latest streaming snapshot even when
     createHandlerBody,
     /const shouldPreserveStreamingSnapshot =[\s\S]*!plainTextFallbackFinal \|\| interactiveEventsInResponse\.length > 0;/,
     'messageResponse should preserve streaming snapshots unless plain-text fallback explicitly suppresses them without interactive events',
+  );
+});
+
+test('normalizeActivitySteps merges raw-response debug parts with explicit raw_debug source tagging', () => {
+  assert.match(
+    messageHandlerSource,
+    /function parseRawResponseDebug\(/,
+    'message handler should define raw-response debug parser for activity parity',
+  );
+  assert.match(
+    messageHandlerSource,
+    /extractActivityStepsFromParts\(\s*parsedRaw\.parts[\s\S]*"raw_debug"\s*\)/,
+    'normalizeActivitySteps should convert raw debug parts into canonical activity steps',
+  );
+  assert.match(
+    messageHandlerSource,
+    /source:\s*normalizeActivitySource\(rec\.source,\s*fallbackSource\)/,
+    'activity normalization should assign explicit provenance source',
+  );
+  assert.match(
+    messageHandlerSource,
+    /source:\s*mergeActivitySource\(existing\.source,\s*incoming\.source\)/,
+    'activity merge should preserve strongest provenance source across updates',
+  );
+});
+
+test('activity extraction supports non-tool raw part types and routes internal tool events', () => {
+  assert.match(
+    messageHandlerSource,
+    /partType !== "tool"[\s\S]*partType !== "step-start"[\s\S]*partType !== "step-finish"[\s\S]*partType !== "patch"/,
+    'raw part extraction should include step-start, tool, step-finish, and patch parts',
+  );
+  assert.match(
+    messageHandlerSource,
+    /function isInternalToolName\(/,
+    'message handler should classify internal transport/tool events',
+  );
+  assert.match(
+    messageHandlerSource,
+    /internal:\s*isInternalToolName\(tool\)/,
+    'tool step normalization should mark internal transport events explicitly',
   );
 });
 
@@ -288,7 +364,7 @@ test('activity normalization uses one canonical helper shared by streaming and h
 test('parts-based activity fallback keeps streaming-style tool titles', () => {
   const partsFallbackBody = extractFunctionBody(
     messageHandlerSource,
-    'function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[]',
+    'function extractActivityStepsFromParts(',
   );
 
   assert.match(
@@ -309,7 +385,7 @@ test('timeline parser recognizes compact single-word tool titles from hydrated h
 test('parts fallback merges duplicate callID tool rows and preserves enriched metadata', () => {
   const partsFallbackBody = extractFunctionBody(
     messageHandlerSource,
-    'function extractActivityStepsFromParts(parts: MessagePart[]): MessageStep[]',
+    'function extractActivityStepsFromParts(',
   );
 
   assert.match(
@@ -408,16 +484,16 @@ test('subagent map synchronization rebinds orphaned parent message ids from stre
   );
 });
 
-test('message timeline filters placeholder starting/finishing steps', () => {
+test('message timeline keeps placeholder starting/finishing steps for full progress visibility', () => {
   const filterBody = extractFunctionBody(
     messageComponentsSource,
     'function isActionProgressStep(step: MessageStep | StreamingStep): boolean',
   );
 
-  assert.match(
+  assert.doesNotMatch(
     filterBody,
     /title === "starting step" \|\| title === "finishing step"/,
-    'timeline progress filter should hide placeholder starting/finishing rows',
+    'timeline progress filter should not hide placeholder starting/finishing rows',
   );
 });
 

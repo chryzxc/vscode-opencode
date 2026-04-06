@@ -4,10 +4,35 @@ import { cn } from "@/utils"
 // Stepper: outer container for all steps
 const Stepper = React.forwardRef<
   HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("flex flex-col", className)} {...props} />
-))
+  React.HTMLAttributes<HTMLDivElement> & {
+    /** When true, the container auto-scrolls to the bottom on each render */
+    autoScrollToBottom?: boolean
+  }
+>(({ className, autoScrollToBottom, ...props }, forwardedRef) => {
+  const innerRef = React.useRef<HTMLDivElement>(null)
+
+  // Keep innerRef in sync with the forwarded ref so callers can still read .current
+  const setRefs = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      ;(innerRef as React.MutableRefObject<HTMLDivElement | null>).current = node
+      if (typeof forwardedRef === "function") {
+        forwardedRef(node)
+      } else if (forwardedRef) {
+        ;(forwardedRef as React.MutableRefObject<HTMLDivElement | null>).current = node
+      }
+    },
+    [forwardedRef],
+  )
+
+  React.useEffect(() => {
+    if (!autoScrollToBottom) return
+    const el = innerRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  })
+
+  return <div ref={setRefs} className={cn("flex flex-col", className)} {...props} />
+})
 Stepper.displayName = "Stepper"
 
 // StepperItem: one row — left column (dot + line) + right content
