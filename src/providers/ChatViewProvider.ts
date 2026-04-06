@@ -5073,7 +5073,8 @@ export class ChatViewProvider
       this.sendProcessingSessionsUpdate();
       this.currentSessionId = session.id;
       this.subagentTracker.setActiveSession(session.id);
-      this.awaitingInteractiveAnswer = false;
+      // Note: awaitingInteractiveAnswer flag is NOT cleared here
+      // It will be cleared naturally when stream events arrive
 
       // Check budget before sending
       const budgetCheck = this.budgeter.canMakeRequest();
