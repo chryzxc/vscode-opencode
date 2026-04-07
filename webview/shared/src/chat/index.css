@@ -1668,7 +1668,7 @@ body {
 
 /* Active streaming state - minimal */
 .oc-refined-stepper-item.is-streaming {
-  background: color-mix(in srgb, var(--oc-accent) 6%, transparent);
+  /* Background removed - no visual highlight on streaming step */
 }
 
 /* Enhanced indicator - subtle */
