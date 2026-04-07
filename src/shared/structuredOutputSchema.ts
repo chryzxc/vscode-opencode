@@ -98,7 +98,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
 
       progressUpdates: {
         type: "array",
-        description: "Execution progress steps",
+        description: "Execution progress steps. For bash/shell commands, include BOTH the command text in 'command' field AND the terminal output (stdout/stderr) in 'output' field when status is 'done' or 'error'.",
         items: {
           type: "object",
           properties: {
@@ -110,11 +110,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             },
             command: {
               type: "string",
-              description: "Command text for bash/shell operations (e.g., 'npm run build')",
+              description: "Command text for bash/shell operations (e.g., 'npm run build'). REQUIRED for bash steps.",
             },
             output: {
               type: "string",
-              description: "Terminal output from command execution",
+              description: "Terminal output (stdout/stderr) from command execution. INCLUDE this for bash steps when status is 'done' or 'error' - show what the command printed to the terminal.",
             },
           },
           required: ["title", "status"],
