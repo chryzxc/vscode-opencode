@@ -2777,7 +2777,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                       )}
                                     >
                                       {event.label === "bash" ? (
-                                        <TerminalBlock command={event.summary} />
+                                        <TerminalBlock
+                                          command={event.summary}
+                                          output={event.description}
+                                        />
                                       ) : (
                                         <MarkdownRenderer
                                           content={event.summary}
@@ -2797,7 +2800,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                   />
                                 )}
 
-                                {event.description && (
+                                {/* For non-bash events, render description separately */}
+                                {event.label !== "bash" && event.description && (
                                   <div className="oc-refined-event-content">
                                     <MarkdownRenderer
                                       content={event.description}
