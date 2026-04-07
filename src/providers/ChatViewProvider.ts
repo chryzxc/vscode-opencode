@@ -6215,37 +6215,6 @@ export class ChatViewProvider
       },
     });
 
-    const approvalMessage = {
-      role: "user" as const,
-      content: "Proceed on this plan.",
-      text: "Proceed on this plan.",
-      parts: [{ type: "text", text: "Proceed on this plan." }],
-      time: {
-        created: Date.now(),
-      },
-    };
-
-    let activeSession: { id: string } | undefined;
-    try {
-      activeSession = this.currentSessionId
-        ? await this.sessionService.switchSession(this.currentSessionId)
-        : await this.sessionService.getCurrentSession();
-    } catch {
-      try {
-        activeSession = await this.sessionService.getCurrentSession();
-      } catch {
-        activeSession = undefined;
-      }
-    }
-    if (activeSession?.id) {
-      await this.sessionService.appendMessage(activeSession.id, approvalMessage);
-      this.view?.webview.postMessage({
-        type: "userMessageAppended",
-        message: approvalMessage,
-      });
-      await this.handleGetSessions();
-    }
-
     PlanViewProvider.closeCurrentPanel();
 
     // Fire and forget so the plan tab closes immediately and execution starts in chat.

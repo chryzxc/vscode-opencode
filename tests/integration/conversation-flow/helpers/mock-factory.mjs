@@ -197,7 +197,8 @@ export function createMockSessionService(options = {}) {
  * @returns {Object} Mock budget service
  */
 export function createMockBudgetService(options = {}) {
-  const { allowed = true, reason = '' } = options;
+  let allowed = options?.allowed ?? true;
+  let reason = options?.reason ?? '';
 
   const mock = {
     canMakeRequest: () => ({ allowed, reason }),

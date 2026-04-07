@@ -1893,56 +1893,12 @@ body {
   border-left: 2px solid #14b8a6;
 }
 
-/* Enhanced file operation layout - technical precision */
-.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"], [data-operation="modify"], [data-operation="update"], [data-operation="patch"]) {
-  background: linear-gradient(to right, color-mix(in srgb, var(--oc-accent) 2%, transparent) 0%, transparent 100%);
-  border-left: 2px solid color-mix(in srgb, var(--oc-accent) 10%, transparent);
-  padding-left: 14px;
-  position: relative;
-}
-
-/* Technical grid pattern background for file operations */
-.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"])::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-image:
-    linear-gradient(color-mix(in srgb, var(--oc-accent) 3%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--oc-accent) 3%, transparent) 1px, transparent 1px);
-  background-size: 20px 20px;
-  opacity: 0.3;
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* Ensure content stays above grid pattern */
-.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) > * {
-  position: relative;
-  z-index: 1;
-}
-
 /* Enhanced typography for file operations */
 .oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-summary {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
   font-size: 12px;
   line-height: 1.6;
   color: var(--oc-text);
-  padding: 4px 0;
-  border-left: 1px solid color-mix(in srgb, var(--oc-accent) 15%, transparent);
-  padding-left: 8px;
-}
-
-/* Technical measurement marks for file operations */
-.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-summary::before {
-  content: '┃';
-  position: absolute;
-  left: 4px;
-  color: color-mix(in srgb, var(--oc-accent) 30%, transparent);
-  font-size: 10px;
-  opacity: 0.5;
 }
 
 /* Enhanced file icon presentation */
@@ -1958,35 +1914,6 @@ body {
   transform: scale(1.1);
 }
 
-/* Subtle pulse animation for active file operations */
-@keyframes technicalPulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.8;
-  }
-}
-
-.oc-refined-stepper-item.is-streaming:has([data-operation="write"], [data-operation="edit"]) {
-  animation: technicalPulse 2s ease-in-out infinite;
-}
-
-/* Technical precision border enhancement */
-.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-label {
-  position: relative;
-}
-
-.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-label::after {
-  content: '';
-  position: absolute;
-  bottom: -2px;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent 0%, currentColor 50%, transparent 100%);
-  opacity: 0.3;
-}
 
 /* Enhanced diff stats - minimal */
 .oc-refined-diff-stats {
@@ -2076,6 +2003,24 @@ body {
   z-index: 1;
 }
 
+/* ── Bash Preview ───────────────────────────────────────────────────────── */
+.oc-bash-preview {
+  user-select: none;
+}
+
+.oc-bash-preview:hover .oc-bash-command {
+  color: var(--oc-text);
+}
+
+.oc-bash-prompt {
+  font-weight: 600;
+}
+
+.oc-bash-command {
+  color: var(--oc-text-soft);
+  letter-spacing: 0.02em;
+}
+
 /* Technical corner for "more" section */
 .oc-compact-diff-more::before {
   content: '';
@@ -2155,4 +2100,754 @@ body {
   font-size: 8px;
   font-weight: 500;
   color: var(--oc-accent);
+}
+
+/* Bash command block styling */
+.oc-bash-command-block {
+  margin: 8px 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0d1117;
+  border: 1px solid #30363d;
+}
+
+.oc-bash-command-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+
+.oc-bash-prompt {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #58a6ff;
+}
+
+.oc-bash-command-code {
+  margin: 0;
+  padding: 10px;
+  overflow-x: auto;
+  background: #0d1117;
+}
+
+.oc-bash-command-code code {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #c9d1d9;
+  white-space: pre;
+}
+
+/* Command code block styling */
+.oc-refined-command-block {
+  margin: 6px 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--oc-bg) 60%, transparent);
+  border: 1px solid var(--oc-border-soft);
+}
+
+.oc-refined-command-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
+  border-bottom: 1px solid var(--oc-border-soft);
+}
+
+.oc-refined-command-label {
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--oc-accent);
+}
+
+.oc-refined-command-code {
+  margin: 0;
+  padding: 10px;
+  overflow-x: auto;
+  background: transparent;
+}
+
+.oc-refined-command-code code {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--oc-text-soft);
+  white-space: pre;
+}
+
+/* Enhanced TerminalBlock Styling */
+.oc-bash-copy-btn {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  padding: 4px;
+  margin-left: auto;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.oc-bash-copy-btn:hover {
+  color: #c9d1d9;
+  background: rgba(139, 148, 158, 0.1);
+}
+
+.oc-bash-copy-btn:active {
+  transform: scale(0.95);
+}
+
+.oc-bash-output {
+  padding: 10px;
+  border-top: 1px solid #30363d;
+  background: #0d1117;
+}
+
+.oc-bash-output pre {
+  margin: 0;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #8b949e;
+}
+
+.oc-bash-output code {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ============================================
+   TERMINAL ACTIVITY STEPPER STYLING
+   ============================================ */
+
+.terminal-container {
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Terminal Header - macOS-style controls */
+.terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: linear-gradient(to bottom, #161b22, #0d1117);
+  border-bottom: 1px solid #30363d;
+}
+
+.terminal-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.terminal-control {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.terminal-close {
+  background: #ff5f56;
+  border: 1px solid #e0443e;
+}
+
+.terminal-minimize {
+  background: #ffbd2e;
+  border: 1px solid #dea123;
+}
+
+.terminal-maximize {
+  background: #27c93f;
+  border: 1px solid #1aab29;
+}
+
+.terminal-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  font-size: 11px;
+  color: #c9d1d9;
+}
+
+.terminal-prompt {
+  color: #58a6ff;
+  font-weight: 600;
+}
+
+.terminal-separator {
+  color: #8b949e;
+}
+
+.terminal-path {
+  color: #58a6ff;
+}
+
+.terminal-cursor {
+  color: #58a6ff;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* Terminal Body */
+.terminal-body {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 12px 0;
+  background: #0d1117;
+}
+
+.terminal-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.terminal-body::-webkit-scrollbar-track {
+  background: #161b22;
+}
+
+.terminal-body::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+.terminal-body::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* Terminal Line */
+.terminal-line {
+  padding: 6px 14px;
+  border-left: 2px solid transparent;
+  transition: background-color 0.15s ease;
+}
+
+.terminal-line:hover {
+  background: rgba(48, 54, 61, 0.3);
+}
+
+.terminal-line-activity {
+  border-left-color: #30363d;
+}
+
+.terminal-line-reasoning {
+  border-left-color: #8957e5;
+  background: rgba(137, 87, 229, 0.05);
+}
+
+.terminal-line-streaming {
+  background: rgba(88, 166, 255, 0.08);
+  animation: pulse-stream 2s ease-in-out infinite;
+}
+
+@keyframes pulse-stream {
+  0%, 100% { background: rgba(88, 166, 255, 0.08); }
+  50% { background: rgba(88, 166, 255, 0.12); }
+}
+
+/* Terminal Line Header */
+.terminal-line-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.terminal-status {
+  font-size: 10px;
+  font-weight: bold;
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.terminal-status-pending {
+  color: #58a6ff;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.terminal-status-error {
+  color: #ff7b72;
+}
+
+.terminal-status-done {
+  color: #3fb950;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.terminal-operation {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.terminal-operation-activity {
+  background: rgba(48, 54, 61, 0.5);
+  color: #c9d1d9;
+  border: 1px solid #484f58;
+}
+
+.terminal-operation-reasoning {
+  background: rgba(137, 87, 229, 0.2);
+  color: #a5d6ff;
+  border: 1px solid rgba(137, 87, 229, 0.4);
+}
+
+.terminal-meta {
+  font-size: 8px;
+  color: #8b949e;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+}
+
+/* Terminal Line Content */
+.terminal-line-content {
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.terminal-file-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(48, 54, 61, 0.3);
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #58a6ff;
+  text-decoration: none;
+  font-size: 11px;
+  transition: all 0.15s ease;
+  cursor: pointer;
+  text-align: left;
+  width: fit-content;
+}
+
+.terminal-file-link:hover {
+  background: rgba(88, 166, 255, 0.15);
+  border-color: #58a6ff;
+  color: #a5d6ff;
+}
+
+.terminal-file-icon {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.terminal-file-path {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  word-break: break-all;
+}
+
+.terminal-summary {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #c9d1d9;
+}
+
+.terminal-summary-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.terminal-description {
+  font-size: 11px;
+  color: #8b949e;
+  padding: 6px 8px;
+  background: rgba(48, 54, 61, 0.2);
+  border-left: 2px solid #30363d;
+  border-radius: 0 4px 4px 0;
+}
+
+.terminal-updates {
+  font-size: 9px;
+  color: #8b949e;
+  font-family: 'SF Mono', Consolas, monospace;
+  padding: 2px 6px;
+  background: rgba(134, 153, 170, 0.15);
+  border-radius: 3px;
+  width: fit-content;
+}
+
+.terminal-detail {
+  font-size: 11px;
+  color: #8b949e;
+  padding: 8px;
+  background: rgba(48, 54, 61, 0.2);
+  border-radius: 4px;
+  border: 1px solid #30363d;
+}
+
+/* Terminal Activity Detail */
+.terminal-activity-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  background: rgba(48, 54, 61, 0.15);
+  border-radius: 4px;
+  border: 1px solid #30363d;
+}
+
+.terminal-tool,
+.terminal-query {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+}
+
+.terminal-tool-label,
+.terminal-query-label {
+  color: #8b949e;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.terminal-tool-value,
+.terminal-query-value {
+  color: #58a6ff;
+  font-family: 'SF Mono', Consolas, monospace;
+}
+
+/* Terminal Command */
+.terminal-command {
+  margin-top: 4px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #161b22;
+  border: 1px solid #30363d;
+}
+
+.terminal-command-prompt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: rgba(48, 54, 61, 0.5);
+  border-bottom: 1px solid #30363d;
+  font-size: 10px;
+}
+
+.terminal-prompt-user {
+  color: #58a6ff;
+  font-weight: 600;
+}
+
+.terminal-prompt-at {
+  color: #8b949e;
+}
+
+.terminal-prompt-host {
+  color: #3fb950;
+}
+
+.terminal-prompt-separator {
+  color: #8b949e;
+}
+
+.terminal-prompt-path {
+  color: #58a6ff;
+}
+
+.terminal-prompt-symbol {
+  color: #f0883e;
+  font-weight: 600;
+}
+
+.terminal-command-code {
+  margin: 0;
+  padding: 10px;
+  overflow-x: auto;
+  background: #161b22;
+}
+
+.terminal-command-code code {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #c9d1d9;
+  white-space: pre;
+}
+
+/* Terminal Diff Stats */
+.terminal-diff-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.terminal-diff-add {
+  font-size: 10px;
+  color: #3fb950;
+  font-family: 'SF Mono', Consolas, monospace;
+  font-weight: 600;
+}
+
+.terminal-diff-del {
+  font-size: 10px;
+  color: #ff7b72;
+  font-family: 'SF Mono', Consolas, monospace;
+  font-weight: 600;
+}
+
+/* Terminal View Diff Button */
+.terminal-view-diff {
+  padding: 4px 8px;
+  font-size: 9px;
+  font-family: 'SF Mono', Consolas, monospace;
+  color: #58a6ff;
+  background: transparent;
+  border: 1px solid #30363d;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.terminal-view-diff:hover {
+  background: rgba(88, 166, 255, 0.15);
+  border-color: #58a6ff;
+  color: #a5d6ff;
+}
+
+/* Terminal Thinking Placeholder */
+.terminal-thinking {
+  padding: 8px 14px;
+  background: rgba(137, 87, 229, 0.08);
+  border-left: 2px solid #8957e5;
+}
+
+.terminal-thinking-text {
+  font-size: 11px;
+  color: #a5d6ff;
+  font-style: italic;
+  padding-left: 22px;
+}
+
+.terminal-thinking-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Terminal Expand Button */
+.terminal-expand-button {
+  width: 100%;
+  padding: 8px 14px;
+  font-size: 10px;
+  font-family: 'SF Mono', Consolas, monospace;
+  color: #58a6ff;
+  background: rgba(48, 54, 61, 0.3);
+  border: none;
+  border-top: 1px solid #30363d;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+}
+
+.terminal-expand-button:hover {
+  background: rgba(88, 166, 255, 0.15);
+  color: #a5d6ff;
+}
+
+/* ============================================
+   EXPANDABLE STEP STYLING
+   ============================================ */
+
+/* ExpandableStep Styling */
+.oc-expandable-step {
+  position: relative;
+}
+
+.oc-expandable-toggle {
+  position: absolute;
+  left: -20px;
+  top: 0;
+  background: transparent;
+  border: none;
+  color: var(--oc-text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.oc-expandable-toggle:hover {
+  color: var(--oc-text);
+  background: rgba(137, 180, 250, 0.1);
+}
+
+.oc-expandable-toggle:focus-visible {
+  outline: 2px solid var(--oc-accent);
+  outline-offset: 2px;
+}
+
+.oc-expandable-chevron {
+  transition: transform 0.2s ease;
+}
+
+.oc-expandable-content {
+  overflow: hidden;
+  transition: max-height 0.2s ease, opacity 0.2s ease;
+}
+
+.oc-expandable-content--collapsed {
+  max-height: 0;
+  opacity: 0;
+}
+
+.oc-expandable-content--expanded {
+  max-height: 2000px; /* Arbitrary large value */
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oc-expandable-content,
+  .oc-expandable-chevron {
+    transition: none;
+  }
+}
+
+/* ── StepIndicator Styling ────────────────────────────────────────────────────── */
+.oc-step-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+/* Pending state */
+.oc-step-indicator-pending {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--oc-accent);
+}
+
+/* Done state */
+.oc-step-indicator-done {
+  color: var(--oc-green);
+  animation: success-bounce 0.3s ease-out;
+}
+
+@keyframes success-bounce {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+}
+
+/* Error state */
+.oc-step-indicator-error {
+  color: var(--oc-red);
+  animation: error-shake 0.3s ease-out;
+}
+
+@keyframes error-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+
+/* Running state */
+.oc-step-indicator-running {
+  color: var(--oc-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oc-step-indicator-done,
+  .oc-step-indicator-error,
+  .oc-step-indicator-running {
+    animation: none;
+  }
+}
+
+/* TypingText Animation - Modern mask-image approach */
+.oc-typing-text {
+  mask-image: linear-gradient(to right, black 50%, transparent 50%);
+  mask-size: 200% 100%;
+  mask-position: 100% 0;
+  -webkit-mask-image: linear-gradient(to right, black 50%, transparent 50%);
+  -webkit-mask-size: 200% 100%;
+  -webkit-mask-position: 100% 0;
+}
+
+.oc-typing-text--typing {
+  will-change: mask-image, -webkit-mask-image;
+  animation: typing-reveal steps(40, end) forwards;
+}
+
+@keyframes typing-reveal {
+  to {
+    mask-position: 0 0;
+    -webkit-mask-position: 0 0;
+  }
+}
+
+/* Fallback for browsers without mask-image support */
+@supports not (mask-image: linear-gradient(to right, black 50%, transparent 50%)) {
+  .oc-typing-text {
+    display: inline-block;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .oc-typing-text--typing {
+    animation: typing-reveal-fallback steps(40, end) forwards;
+  }
+
+  @keyframes typing-reveal-fallback {
+    from {
+      max-width: 0;
+    }
+    to {
+      max-width: 100%;
+    }
+  }
+}
+
+/* Respect user motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .oc-typing-text--typing {
+    animation: none !important;
+    mask-position: 0 0 !important;
+    -webkit-mask-position: 0 0 !important;
+  }
 }

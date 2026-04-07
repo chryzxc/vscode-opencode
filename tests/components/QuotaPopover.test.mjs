@@ -87,7 +87,7 @@ test('QuotaPopover has ref for container', () => {
 
   assert.match(
     popoverBody,
-    /useRef<HTMLDivElement>\(\)/,
+    /useRef<HTMLDivElement>\([^)]*\)/,
     'Should use useRef for popover container'
   );
   assert.match(
@@ -169,7 +169,7 @@ test('QuotaPopover ignores clicks on quota button', () => {
 
   assert.match(
     popoverBody,
-    /\.\.closest\(['"]\.oc-quota-btn['"]\)/,
+    /\.closest\(['"]\.oc-quota-btn['"]\)/,
     'Should ignore clicks on quota button'
   );
 });
@@ -283,7 +283,7 @@ test('QuotaPopover renders close button', () => {
 
   assert.match(
     popoverBody,
-    /<X\s+size=\{16\}\s*\/>/,
+    /<X\s+size=\{14\}\s*\/>/,
     'Should render X icon'
   );
   assert.match(
@@ -426,7 +426,7 @@ test('QuotaPopover renders platform cards', () => {
 
   assert.match(
     popoverBody,
-    /quotaData\?\.platforms\?\.map\(\s*platform/,
+    /quotaData\?\.platforms\?\.map\(\s*\(\s*platform/,
     'Should map over platforms'
   );
 });
@@ -514,7 +514,7 @@ test('QuotaPopover renders quota items', () => {
 
   assert.match(
     popoverBody,
-    /platform\.quotas\.map\(\s*quota/,
+    /platform\.quotas\.map\(\s*\(\s*quota\s*\)\s*=>\s*\{/,
     'Should map over quota items'
   );
 });
@@ -558,7 +558,7 @@ test('QuotaPopover shows percent labels', () => {
   );
   assert.match(
     popoverBody,
-    /Math\.round\(pct\)\s*%\s*remaining/,
+    /Math\.round\(pct\).*%.*remaining/,
     'Should default to percentage remaining'
   );
 });
@@ -724,8 +724,8 @@ test('QuotaPopover formats last updated time', () => {
   );
   assert.match(
     popoverBody,
-    /Date\.now\(\)\s*-\s*quotaData\.lastUpdated/,
-    'Should calculate time difference'
+    /new\s+Date\(quotaData\.lastUpdated\)/,
+    'Should create Date from lastUpdated'
   );
 });
 

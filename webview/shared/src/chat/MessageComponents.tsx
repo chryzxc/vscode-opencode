@@ -21,6 +21,10 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
+import { TerminalBlock } from "@/components/ui/TerminalBlock";
+import { ExpandableStep } from "@/components/ui/ExpandableStep";
+import { StepIndicator } from "@/components/ui/StepIndicator";
+import { TypingText } from "@/components/ui/TypingText";
 import { cn, formatDuration } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
@@ -1238,6 +1242,7 @@ type DisplayEvent = {
   diffStats?: { added: number; deleted: number };
   activityDetail?: ActivityDetail;
   viewDiffFile?: string;
+  isImportant?: boolean;
   updateCount: number;
 };
 
@@ -1570,6 +1575,7 @@ function buildDisplayEvents(
           summary: text,
           status: "done",
           source: sourceFromThoughtKey(item.key),
+          isImportant: false,
           updateCount: 1,
         });
       }
@@ -1672,6 +1678,11 @@ function buildDisplayEvents(
         diffStats,
         activityDetail,
         viewDiffFile,
+        isImportant: Boolean(
+          event.status === 'error' ||
+          (event.status === 'done' && (filePath || diffStats || viewDiffFile)) ||
+          cleanedLabel === 'error'
+        ),
         updateCount: 1,
       });
     }
@@ -2302,7 +2313,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     !streaming && thoughtItems.length === 0 && reasoningTok > 0;
   const thinkingPlaceholderText =
     "Reasoning tokens were used, but this provider did not expose reasoning text.";
-  const { rawResponseText, rawResponseParseStatus } = useMemo(() => {
+  const { rawResponseText } = useMemo(() => {
     const maxRawDebugChars = 30000;
     const withCap = (value: string): string =>
       value.length > maxRawDebugChars
@@ -2313,25 +2324,20 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     if (typeof raw === "undefined") {
       return {
         rawResponseText: "",
-        rawResponseParseStatus: "empty" as RawDebugParseStatus,
       };
     }
-    const parsedRaw = parseRawResponseDebugForUi(raw);
     if (typeof raw === "string") {
       return {
         rawResponseText: withCap(raw),
-        rawResponseParseStatus: parsedRaw.status,
       };
     }
     try {
       return {
         rawResponseText: withCap(JSON.stringify(raw, null, 2)),
-        rawResponseParseStatus: parsedRaw.status,
       };
     } catch {
       return {
         rawResponseText: withCap(String(raw)),
-        rawResponseParseStatus: parsedRaw.status,
       };
     }
   }, [message?.rawResponse]);
@@ -2644,6 +2650,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
                     {timelineDisplayEvents.length}
                   </span>
+                  {hiddenActivityEventCount > 0 && (
+                    <span className="text-xs text-oc-text-muted">
+                  +{hiddenActivityEventCount} hidden
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -2666,44 +2677,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     type="button"
                     className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted hover:text-oc-text-soft"
                     onClick={() =>
-                      setViewState((prev) => ({
-                        ...prev,
-                        showActivityDetails: !prev.showActivityDetails,
-                      }))
+                      dispatch({
+                        type: "TOGGLE_ACTIVITY_DETAILS",
+                        payload: { messageId: message.id || messageId },
+                      })
                     }
-                    title="Toggle metadata"
                   >
-                    details {viewState.showActivityDetails ? "on" : "off"}
+                    text {viewState.showActivityDetails ? "full" : "preview"}
                   </button>
-                  {internalDisplayEvents.length > 0 && (
-                    <button
-                      type="button"
-                      className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted hover:text-oc-text-soft"
-                      onClick={() =>
-                        setViewState((prev) => ({
-                          ...prev,
-                          showInternalActivity: !prev.showInternalActivity,
-                        }))
-                      }
-                    >
-                      internal {internalDisplayEvents.length}{" "}
-                      {viewState.showInternalActivity ? "on" : "off"}
-                    </button>
-                  )}
-                  {hasThinkingEvents && (
-                    <button
-                      type="button"
-                      className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted hover:text-oc-text-soft"
-                      onClick={() =>
-                        setViewState((prev) => ({
-                          ...prev,
-                          showThinkingDetails: !prev.showThinkingDetails,
-                        }))
-                      }
-                    >
-                      text {viewState.showThinkingDetails ? "full" : "preview"}
-                    </button>
-                  )}
                 </div>
               </div>
 
@@ -2720,14 +2701,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           index === timelineDisplayEvents.length - 1;
                         const isLatestStreamingEvent =
                           isStreamingActive && isLast;
-                        const indicatorNode =
-                          event.status === "pending" ? (
-                            <div className="h-2 w-2 rounded-full border border-oc-accent/70 bg-oc-accent/30 animate-pulse" />
-                          ) : event.status === "error" ? (
-                            <X className="h-[10px] w-[10px] text-[var(--vscode-terminal-ansiRed,#ef4444)]" />
-                          ) : (
-                            <Check className="h-[10px] w-[10px] text-[var(--oc-green,#22c55e)]" />
-                          );
+                        const indicatorNode = <StepIndicator status={event.status} />;
                         const fileName = event.filePath
                           ? event.filePath.split(/[/\\]/).pop()
                           : undefined;
@@ -2745,9 +2719,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                 : "",
                             )}
                           >
-                            <div className="flex min-w-0 flex-col items-start gap-2 w-full">
+                            <ExpandableStep isImportant={event.isImportant}>
+                              <div className="flex min-w-0 flex-col items-start gap-2 w-full">
                               <div className="flex items-center gap-2 flex-wrap">
-                                <span
+                                <TypingText
+                                  isTyping={event.status === 'pending'}
                                   className={cn(
                                     "oc-refined-event-label",
                                     event.kind === "reasoning" && "reasoning",
@@ -2757,7 +2733,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                   data-operation={event.label.toLowerCase()}
                                 >
                                   {event.label}
-                                </span>
+                                </TypingText>
                                 {event.kind === "activity" && event.source && (
                                   <span className="oc-refined-meta-badge">
                                     {event.source === "raw_debug"
@@ -2849,17 +2825,16 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                           tool {event.activityDetail.tool}
                                         </span>
                                       )}
-                                      {event.activityDetail.command && (
-                                        <span className="oc-refined-detail-badge">
-                                          cmd {event.activityDetail.command}
-                                        </span>
-                                      )}
                                       {event.activityDetail.query && (
                                         <span className="oc-refined-detail-badge">
                                           query {event.activityDetail.query}
                                         </span>
                                       )}
                                     </div>
+
+                                    {event.activityDetail.command && (
+                                      <TerminalBlock command={event.activityDetail.command} />
+                                    )}
 
                                     {event.activityDetail.diffExcerpt?.lines?.length ? (
                                       <ActivityDiffExcerpt excerpt={event.activityDetail.diffExcerpt} />
@@ -2900,6 +2875,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                 </button>
                               )}
                             </div>
+                            </ExpandableStep>
                           </StepperItem>
                         );
                       })}
@@ -3043,9 +3019,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
                       Raw Response (Debug)
                     </div>
-                    <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[9px] uppercase text-oc-text-muted/80">
-                      parse {rawResponseParseStatus}
-                    </span>
                   </div>
                   <pre className="max-h-[260px] overflow-auto rounded border border-oc-border bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-mono">
                     {rawResponseText}
@@ -3456,22 +3429,67 @@ export function ErrorBanner({
 
 export function AbortedBanner({ onRetry }: { onRetry?: () => void }) {
   return (
-    <div className="mb-2 px-4">
-      <div className="flex items-center justify-between gap-2 rounded-lg border border-[#78716c80] bg-[#1c1917e6] px-3 py-2 text-oc-xs text-[#d6d3d1] shadow-sm transition-all duration-200">
-        <div className="flex items-center gap-2">
-          <StopCircle className="h-3.5 w-3.5 shrink-0 text-[#a8a29e]" />
-          <span className="text-[11px] text-[#a8a29e]">Response was stopped</span>
+    <div className="mb-3">
+      <div className="relative overflow-hidden rounded-lg border border-[#d9770640] bg-gradient-to-br from-[#d9770615] to-[#b4530910] backdrop-blur-sm">
+        {/* Decorative geometric pattern - diagonal stripes */}
+        <div className="absolute inset-0 opacity-[0.03]">
+          <div className="absolute inset-0" style={{
+            backgroundImage: `repeating-linear-gradient(
+              45deg,
+              transparent,
+              transparent 10px,
+              #d97706 10px,
+              #d97706 11px
+            )`
+          }} />
         </div>
-        {onRetry && (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#78716c80] bg-[#292524] px-2 py-1 text-[11px] font-medium text-[#d6d3d1] transition-all hover:bg-[#3c3836] active:scale-95"
-          >
-            <RotateCw className="h-3 w-3" />
-            <span>Retry</span>
-          </button>
-        )}
+
+        <div className="relative flex items-center justify-between gap-3 px-3 py-3">
+          {/* Left side - icon and message */}
+          <div className="flex items-center gap-3">
+            {/* Refined icon container with glow */}
+            <div className="relative">
+              <div className="absolute inset-0 rounded-full bg-[#d9770620] blur-md" />
+              <div className="relative flex h-8 w-8 items-center justify-center rounded-full border border-[#d9770640] bg-[#d9770625] backdrop-blur-sm">
+                <StopCircle className="h-4 w-4 text-[#fbbf24] drop-shadow-sm" />
+              </div>
+            </div>
+
+            {/* Typography - editorial style with hierarchy */}
+            <div className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold tracking-wide text-[#fbbf24] uppercase" style={{ fontFamily: "'SF Mono', 'Cascadia Code', monospace" }}>
+                  Interrupted
+                </span>
+                <span className="h-3 w-px rounded-full bg-[#d9770640]" />
+              </div>
+              <span className="text-[12px] text-[#d6d3d1]/90 leading-snug" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+                Response stopped by user
+              </span>
+            </div>
+          </div>
+
+          {/* Right side - retry button with refined styling */}
+          {onRetry && (
+            <div className="flex flex-col items-end gap-1.5">
+              <button
+                type="button"
+                onClick={onRetry}
+                className="group relative inline-flex items-center gap-1.5 rounded-md border border-[#d9770650] bg-[#d9770620] px-3 py-1.5 text-[11px] font-medium text-[#fbbf24] backdrop-blur-sm transition-all duration-200 hover:border-[#d9770670] hover:bg-[#d9770630] active:scale-95"
+                style={{ fontFamily: "'SF Mono', 'Cascadia Code', monospace" }}
+              >
+                <RotateCw className="h-3 w-3 transition-transform duration-500 group-hover:rotate-180" />
+                <span className="tracking-wide">RETRY</span>
+              </button>
+              <span className="text-[9px] text-[#d6d3d1]/60 uppercase tracking-wider" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+                Resume generation
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Bottom accent line with subtle gradient */}
+        <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-[#d9770640] to-transparent" />
       </div>
     </div>
   );

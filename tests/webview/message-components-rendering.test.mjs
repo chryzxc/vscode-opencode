@@ -227,11 +227,12 @@ Line 3`;
         });
 
         it("should render message with subagents", () => {
+            const messageId = `msg-${Date.now()}`;
             const message = createAssistantMessage("Working on it", {
                 subagents: [
                     {
                         id: "subagent-1",
-                        parentMessageId: message.id,
+                        parentMessageId: messageId,
                         status: "running",
                         title: "Analyzing code",
                     },

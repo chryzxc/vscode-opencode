@@ -5125,6 +5125,61 @@ export function dedupeSystemMessages(messages: Message[]): Message[] {
   return deduped;
 }
 
+/**
+ * Deduplicates user messages with "proceed on this plan." content.
+ * This fixes duplicate "Plan Approved" messages that may appear during hydration.
+ * Only deduplicates exact content matches to avoid removing legitimate repeated plan approvals.
+ */
+export function dedupePlanProceedMessages(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length <= 1) {
+    return messages;
+  }
+
+  const deduped: Message[] = [];
+  const seenPlanProceedMessages = new Set<string>();
+
+  for (const message of messages) {
+    const role = asString(message.role) || asString(asRecord(message.info)?.role);
+    const content = asString(message.content) || '';
+
+    // Check if this is a "Plan Approved" user message
+    const isPlanProceed = role === 'user' && /\bproceed on this plan\./i.test(content);
+
+    if (isPlanProceed) {
+      // Normalize content for deduplication
+      const normalizedContent = content.trim();
+
+      // Skip duplicate "Plan Approved" messages
+      if (seenPlanProceedMessages.has(normalizedContent)) {
+        webviewLogger.debug('[dedupePlanProceedMessages] Skipping duplicate Plan Approved message', {
+          content: normalizedContent.substring(0, 100),
+          totalSkipped: seenPlanProceedMessages.size,
+        });
+        continue;
+      }
+
+      seenPlanProceedMessages.add(normalizedContent);
+      webviewLogger.debug('[dedupePlanProceedMessages] Keeping unique Plan Approved message', {
+        content: normalizedContent.substring(0, 100),
+        index: deduped.length,
+      });
+    }
+
+    deduped.push(message);
+  }
+
+  if (seenPlanProceedMessages.size > 0) {
+    webviewLogger.debug('[dedupePlanProceedMessages] Deduplication complete', {
+      inputCount: messages.length,
+      outputCount: deduped.length,
+      duplicatesRemoved: messages.length - deduped.length,
+      planProceedMessageCount: seenPlanProceedMessages.size,
+    });
+  }
+
+  return deduped;
+}
+
 function buildStreamingMessage(streaming: StreamingState): Message {
   const parts: any[] = [
     {
@@ -7327,8 +7382,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const hydratedMessages = hydrateLegacyInteractiveUserMessages(messages);
           const dedupedHydratedMessages =
             dedupeInteractiveUserHydrationMessages(hydratedMessages);
+          const dedupedPlanProceedMessages =
+            dedupePlanProceedMessages(dedupedHydratedMessages);
           const dedupedSystemMessages =
-            dedupeSystemMessages(dedupedHydratedMessages);
+            dedupeSystemMessages(dedupedPlanProceedMessages);
           activeSubagentParentMessageIds = new Set<string>();
 
           const chatHistorySessionId = asString(data.sessionId);

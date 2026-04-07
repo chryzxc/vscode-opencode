@@ -381,17 +381,23 @@ test('latest streaming event is marked with is-streaming class', () => {
 test('pending step indicator shows animated pulse dot', () => {
     assert.match(
         messageComponentsSource,
-        /event\.status\s*===\s*["']pending["'][\s\S]*?animate-pulse/,
-        'Pending steps should display an animated pulse indicator dot',
+        /StepIndicator[\s\S]*?status=\{event\.status\}[\s\S]*?animate-pulse/,
+        'Pending steps should display an animated pulse indicator dot via StepIndicator component',
     );
 });
 
 test('done step indicator shows a check icon', () => {
-    // Pattern: pending ? <pulse> : event.status === "error" ? <X/> : <Check/>
+    // Check that StepIndicator is used with event.status
     assert.match(
         messageComponentsSource,
-        /event\.status\s*===\s*["']error["'][\s\S]{1,200}<X\b[\s\S]{1,300}<Check\b/,
-        'Non-error completed steps should show a Check icon as indicator',
+        /<StepIndicator[\s\S]*?status=\{event\.status\}/,
+        'Steps should use StepIndicator component with event.status',
+    );
+    // Verify StepIndicator component renders Check icon for done status
+    assert.match(
+        messageComponentsSource,
+        /import.*StepIndicator.*from.*StepIndicator/,
+        'StepIndicator component should be imported',
     );
 });
 

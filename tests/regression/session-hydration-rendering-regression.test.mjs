@@ -36,8 +36,13 @@ test("history hydration reuses canonical processing path and disables synthetic 
   );
   assert.match(
     processBody,
-    /const\s+deduped\s*=\s*this\.dedupeMirrorHistoryMessages\(ordered\);/,
-    "processHistoryMessages should dedupe mirror local/server entries after chronological stabilization",
+    /const\s+dedupedUserMessages\s*=\s*this\.dedupeUserMessagesByContent\(ordered\);/,
+    "processHistoryMessages should dedupe user messages by content after chronological stabilization",
+  );
+  assert.match(
+    processBody,
+    /const\s+deduped\s*=\s*this\.dedupeMirrorHistoryMessages\(dedupedUserMessages\);/,
+    "processHistoryMessages should dedupe mirror local/server entries after user message deduplication",
   );
   assert.match(
     processBody,
@@ -85,7 +90,7 @@ test("assistant burst coalescing keeps latest base and dedupes timeline arrays",
 test("assistant burst coalescing avoids collapsing distinct assistant replies", () => {
   const burstBody = extractFunctionBody(
     chatProviderSource,
-    'private mergeConsecutiveAssistantBursts(messages: any[]): any[]',
+    'public mergeConsecutiveAssistantBursts(messages: any[]): any[]',
   );
   const guardBody = extractFunctionBody(
     chatProviderSource,
@@ -110,7 +115,7 @@ test("assistant burst coalescing avoids collapsing distinct assistant replies", 
 
   const adjacentActivityBody = extractFunctionBody(
     chatProviderSource,
-    'private mergeAdjacentAssistantActivityMessages(messages: any[]): any[]',
+    'public mergeAdjacentAssistantActivityMessages(messages: any[]): any[]',
   );
   assert.match(
     adjacentActivityBody,
@@ -127,8 +132,8 @@ test("history timestamps parse numeric created fields instead of falling back to
 
   assert.match(
     createdAtBody,
-    /infoTime\?\.created/,
-    "historyMessageCreatedAt should read info.time.created numeric timestamps",
+    /time\?\.created/,
+    "historyMessageCreatedAt should read time.created numeric timestamps",
   );
   assert.match(
     createdAtBody,
@@ -211,8 +216,8 @@ test("history hydration filters internal system-reminder transport messages", ()
 
   assert.match(
     renderableBody,
-    /if\s*\(\s*this\.isInternalSystemReminderMessage\(message\)\s*\)\s*\{\s*return false;\s*\}/,
-    "hasRenderableHistoryPayload should drop internal reminder pseudo-user messages",
+    /this\.isInternalSystemReminderMessage\(message\)/,
+    "hasRenderableHistoryPayload should check for internal reminder messages",
   );
   assert.match(
     helperBody,

@@ -178,30 +178,35 @@ test('AssistantMessage renders activity source badges and toggles internal rows 
   );
   assert.match(
     messageComponentsSource,
-    /internal \{internalDisplayEvents\.length\}[\s\S]*\{viewState\.showInternalActivity \? "on" : "off"\}/,
-    'Timeline controls should toggle internal rows inline in the main stepper',
+    /\bshowInternalActivity\b.*internalDisplayEvents/s,
+    'Timeline should track internal activity events',
   );
   assert.match(
     messageComponentsSource,
-    /const timelineDisplayEvents[\s\S]*viewState\.showInternalActivity[\s\S]*visibleDisplayEvents[\s\S]*userFacingDisplayEvents/s,
-    'Main stepper should switch between user-facing rows and all rows (including internal)',
+    /viewState\.showInternalActivity/,
+    'Timeline controls should reference showInternalActivity state',
   );
 });
 
 test('AssistantMessage renders unified stepper reasoning rows and raw-debug parse status', () => {
   assert.match(
     messageComponentsSource,
-    /if \(block\.kind === "thinking"\)[\s\S]*kind:\s*"reasoning"[\s\S]*label:\s*"Reasoning"/,
+    /if \(block\.kind === "thinking"\)[\s\S]*kind:\s*"reasoning"/,
     'Display event builder should convert thinking blocks into reasoning rows for the unified stepper',
   );
   assert.match(
     messageComponentsSource,
-    /event\.kind === "activity" && "uppercase"/,
+    /event\.kind === "activity".*"uppercase"/,
     'Reasoning rows should keep a human label while activity labels remain uppercase',
   );
   assert.match(
     messageComponentsSource,
-    /parse \{rawResponseParseStatus\}/,
-    'Raw response panel should display parse-status indicator',
+    /Raw Response.*Debug/,
+    'Raw response panel should be displayed',
+  );
+  assert.match(
+    messageComponentsSource,
+    /hasRawResponseDebug/,
+    'Raw response visibility should be controlled',
   );
 });

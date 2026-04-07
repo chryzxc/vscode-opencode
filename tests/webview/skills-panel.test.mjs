@@ -54,9 +54,9 @@ test('Skills Shell renders stats pills and presets row', () => {
 });
 
 test('Skills Shell includes search input with clear button', () => {
-  assert.match(skillsShellSource, /placeholder="Search skills(…|...)"/, 'should have search placeholder');
+  assert.match(skillsShellSource, /placeholder="Search skills/, 'should have search placeholder');
   assert.match(skillsShellSource, /<Search/, 'should render search icon component');
-  assert.match(skillsShellSource, /query\s*(&&|\.length)/, 'should show clear button when search is not empty');
+  assert.match(skillsShellSource, /\{query\s*&&/, 'should show clear button when search is not empty');
 });
 
 test('Skills Shell renders batch actions with multi-select', () => {

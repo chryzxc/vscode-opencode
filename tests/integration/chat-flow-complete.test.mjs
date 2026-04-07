@@ -112,7 +112,9 @@ class MockWebview {
 
     reset() {
         this.messages = [];
-        this.postMessage.mock.reset();
+        this.postMessage = mock.fn((msg) => {
+            this.messages.push(msg);
+        });
     }
 }
 

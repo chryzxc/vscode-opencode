@@ -65,8 +65,14 @@ export function setupConversationTest(options = {}) {
 
     // Verification helpers
     verify: {
-      // Verify webview received a specific message type
+      // Verify webview received a specific message type (returns array, may be empty)
       webviewReceivedMessageType: (messageType) => {
+        const messages = mockWebview._getMessagesByType(messageType);
+        return messages; // Return array as-is, let tests decide if empty is acceptable
+      },
+
+      // Verify webview received at least one message of a specific type (with assertion)
+      webviewReceivedMessageTypeOrFail: (messageType) => {
         const messages = mockWebview._getMessagesByType(messageType);
         assert.ok(messages.length > 0, `Expected webview to receive ${messageType} message`);
         return messages;

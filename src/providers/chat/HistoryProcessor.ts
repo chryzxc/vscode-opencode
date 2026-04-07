@@ -199,7 +199,8 @@ export class HistoryProcessor {
       .filter((message) => this.isRenderableHistoryMessage(message));
 
     const ordered = this.orderHistoryMessagesChronologically(processed);
-    const deduped = this.dedupeMirrorHistoryMessages(ordered);
+    const dedupedUserMessages = this.dedupeUserMessagesByContent(ordered);
+    const deduped = this.dedupeMirrorHistoryMessages(dedupedUserMessages);
     const mergedActivity = this.mergeAdjacentAssistantActivityMessages(deduped);
     return this.mergeConsecutiveAssistantBursts(mergedActivity);
   }
@@ -554,6 +555,60 @@ export class HistoryProcessor {
       seen.add(fingerprint);
       return true;
     });
+  }
+
+  /**
+   * Dedupe user messages with identical content
+   * This fixes duplicate "Plan Approved" messages that may occur during hydration
+   */
+  private dedupeUserMessagesByContent(messages: any[]): any[] {
+    if (!Array.isArray(messages) || messages.length <= 1) {
+      return messages;
+    }
+
+    const deduped: any[] = [];
+    const seenUserContents = new Set<string>();
+
+    for (const message of messages) {
+      const role = this.firstNonEmptyString(
+        message?.role,
+        message?.info?.role,
+        message?.sender,
+      )?.toLowerCase();
+
+      if (role !== "user") {
+        deduped.push(message);
+        continue;
+      }
+
+      const content = this.extractMessageBodyText(message);
+      if (!content) {
+        deduped.push(message);
+        continue;
+      }
+
+      const normalizedContent = content.trim();
+      if (seenUserContents.has(normalizedContent)) {
+        this.logger.debug("[HistoryProcessor] Skipping duplicate user message", {
+          content: normalizedContent.substring(0, 100),
+          totalSkipped: seenUserContents.size,
+        });
+        continue;
+      }
+
+      seenUserContents.add(normalizedContent);
+      deduped.push(message);
+    }
+
+    if (deduped.length < messages.length) {
+      this.logger.debug("[HistoryProcessor] User message deduplication complete", {
+        inputCount: messages.length,
+        outputCount: deduped.length,
+        duplicatesRemoved: messages.length - deduped.length,
+      });
+    }
+
+    return deduped;
   }
 
   /**
