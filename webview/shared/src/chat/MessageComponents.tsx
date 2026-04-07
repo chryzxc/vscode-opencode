@@ -1688,6 +1688,10 @@ function buildDisplayEvents(
     }
   }
 
+  // Log ALL events to see what we have
+  console.log('📊 ALL RAW EVENTS COUNT:', rawEvents.length);
+  console.log('📊 ALL EVENTS LABELS:', rawEvents.map(e => e.label));
+
   // Log bash events to debug data availability
   const bashEvents = rawEvents.filter(e => e.label === 'bash');
   if (bashEvents.length > 0) {
@@ -2013,6 +2017,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const messageBodyRef = useRef<HTMLDivElement>(null);
   const progressTimelineRef = useRef<HTMLDivElement>(null);
+
+  // Debug log to see if component renders
+  useEffect(() => {
+    console.log('🚀 AssistantMessageInner RENDERED');
+  }, []);
+
   const content = getMessageContent(message, streaming);
   const liveInteractivePrompt = useMemo(
     () => questionPromptFromInteractiveEvents(state.interactiveEvents),
