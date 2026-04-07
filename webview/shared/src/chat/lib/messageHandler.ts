@@ -2265,16 +2265,6 @@ function upsertStreamingStep(
     return;
   }
 
-  // Log bash steps to see what data we have
-  if (title.toLowerCase().includes('bash') || step.activityDetail?.command) {
-    console.log('🔧 UPSERT STREAMING STEP:', {
-      title: step.title,
-      meta: step.meta,
-      activityDetail: step.activityDetail,
-      partType: step.partType,
-    });
-  }
-
   const streaming = getState().streaming;
   if (!streaming) {
     dispatch({
@@ -5529,15 +5519,6 @@ function handleStreamEvent(
 
       if (structuredOutput?.progressUpdates) {
         structuredOutput.progressUpdates.forEach((update) => {
-          console.log('📥 PROGRESS UPDATE FROM AI:', {
-            title: update.title,
-            status: update.status,
-            command: update.command,
-            output: update.output,
-            meta: update.meta,
-            filePath: update.filePath,
-          });
-
           upsertStreamingStep(dispatch, getState, {
             title: update.title,
             type: "step",

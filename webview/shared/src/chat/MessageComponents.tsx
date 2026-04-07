@@ -1688,24 +1688,6 @@ function buildDisplayEvents(
     }
   }
 
-  // Log ALL events to see what we have
-  console.log('📊 ALL RAW EVENTS COUNT:', rawEvents.length);
-  console.log('📊 ALL EVENTS LABELS:', rawEvents.map(e => e.label));
-
-  // Log bash events to debug data availability
-  const bashEvents = rawEvents.filter(e => e.label === 'bash');
-  if (bashEvents.length > 0) {
-    console.log('🎯 BASH EVENTS IN DISPLAY:', bashEvents.map(e => ({
-      label: e.label,
-      summary: e.summary,
-      meta: e.meta,
-      description: e.description,
-      detail: e.detail,
-      activityDetail: e.activityDetail,
-      activityDetailKeys: e.activityDetail ? Object.keys(e.activityDetail) : [],
-    })));
-  }
-
   const collapsed: DisplayEvent[] = [];
   for (const event of rawEvents) {
     const previous = collapsed[collapsed.length - 1];
@@ -2018,11 +2000,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const messageBodyRef = useRef<HTMLDivElement>(null);
   const progressTimelineRef = useRef<HTMLDivElement>(null);
-
-  // Debug log to see if component renders
-  useEffect(() => {
-    console.log('🚀 AssistantMessageInner RENDERED');
-  }, []);
 
   const content = getMessageContent(message, streaming);
   const liveInteractivePrompt = useMemo(
@@ -2800,23 +2777,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                         "line-clamp-2",
                                       )}
                                     >
-                                      {event.label === "bash" ? (() => {
-                                        console.log('🔍 BASH EVENT DATA:', {
-                                          label: event.label,
-                                          summary: event.summary,
-                                          meta: event.meta,
-                                          description: event.description,
-                                          detail: event.detail,
-                                          activityDetail: event.activityDetail,
-                                          activityDetailKeys: event.activityDetail ? Object.keys(event.activityDetail) : [],
-                                        });
-                                        return (
-                                          <TerminalBlock
-                                            command={event.activityDetail?.command || event.summary}
-                                            output={event.activityDetail?.output}
-                                          />
-                                        );
-                                      })() : (
+                                      {event.label === "bash" ? (
+                                        <TerminalBlock
+                                          command={event.activityDetail?.command || event.summary}
+                                          output={event.activityDetail?.output}
+                                        />
+                                      ) : (
                                         <MarkdownRenderer
                                           content={event.summary}
                                           className="markdown-body"
