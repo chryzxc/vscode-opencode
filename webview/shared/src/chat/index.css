@@ -2104,40 +2104,25 @@ body {
 
 /* Bash command block styling */
 .oc-bash-command-block {
-  margin: 8px 0;
-  border-radius: 6px;
+  margin: 4px 0;
+  border-radius: 4px;
   overflow: hidden;
-  background: #0d1117;
-  border: 1px solid #30363d;
-}
-
-.oc-bash-command-header {
-  display: flex;
-  align-items: center;
-  padding: 6px 10px;
-  background: #161b22;
-  border-bottom: 1px solid #30363d;
-}
-
-.oc-bash-prompt {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-  font-size: 11px;
-  font-weight: 600;
-  color: #58a6ff;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 0, 0, 0.1);
 }
 
 .oc-bash-command-code {
   margin: 0;
-  padding: 10px;
+  padding: 6px 8px;
   overflow-x: auto;
-  background: #0d1117;
+  background: transparent;
 }
 
 .oc-bash-command-code code {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #c9d1d9;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--oc-text-soft);
   white-space: pre;
 }
 
@@ -2182,41 +2167,19 @@ body {
   white-space: pre;
 }
 
-/* Enhanced TerminalBlock Styling */
-.oc-bash-copy-btn {
-  background: transparent;
-  border: none;
-  color: #8b949e;
-  cursor: pointer;
-  padding: 4px;
-  margin-left: auto;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  transition: color 0.15s ease, background-color 0.15s ease;
-}
-
-.oc-bash-copy-btn:hover {
-  color: #c9d1d9;
-  background: rgba(139, 148, 158, 0.1);
-}
-
-.oc-bash-copy-btn:active {
-  transform: scale(0.95);
-}
-
+/* Bash output styling */
 .oc-bash-output {
-  padding: 10px;
-  border-top: 1px solid #30363d;
-  background: #0d1117;
+  padding: 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .oc-bash-output pre {
   margin: 0;
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #8b949e;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--oc-text-soft);
 }
 
 .oc-bash-output code {

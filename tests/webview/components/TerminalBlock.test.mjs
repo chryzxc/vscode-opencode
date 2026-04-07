@@ -63,26 +63,6 @@ test('TerminalBlock handles empty command gracefully', () => {
   );
 });
 
-test('TerminalBlock has copy functionality', () => {
-  assert.match(
-    terminalBlockSource,
-    /handleCopy/,
-    'Should have handleCopy function'
-  );
-
-  assert.match(
-    terminalBlockSource,
-    /navigator\.clipboard\.writeText/,
-    'Should use clipboard API to copy'
-  );
-
-  assert.match(
-    terminalBlockSource,
-    /setCopied\(true\)/,
-    'Should set copied state to true'
-  );
-});
-
 test('TerminalBlock renders correct structure', () => {
   assert.match(
     terminalBlockSource,
@@ -92,41 +72,14 @@ test('TerminalBlock renders correct structure', () => {
 
   assert.match(
     terminalBlockSource,
-    /oc-bash-prompt/,
-    'Should have prompt element'
-  );
-
-  assert.match(
-    terminalBlockSource,
-    /\$\s*<\/?span>/,
-    'Prompt should show $ symbol'
-  );
-
-  assert.match(
-    terminalBlockSource,
     /oc-bash-command-code/,
     'Should have command code element'
   );
-});
 
-test('TerminalBlock has copy button', () => {
-  assert.match(
-    terminalBlockSource,
-    /oc-bash-copy-btn/,
-    'Should have copy button'
-  );
-
-  assert.match(
-    terminalBlockSource,
-    /Copy\s+size=\{14\}/,
-    'Should use Copy icon from lucide-react'
-  );
-
-  assert.match(
-    terminalBlockSource,
-    /aria-label="Copy command"/,
-    'Should have accessibility label'
-  );
+  // Verify no prompt or copy button
+  const hasPrompt = terminalBlockSource.includes('oc-bash-prompt');
+  const hasCopyButton = terminalBlockSource.includes('oc-bash-copy-btn');
+  assert.equal(hasPrompt || hasCopyButton, false, 'Should NOT have prompt or copy button');
 });
 
 test('TerminalBlock renders optional output', () => {
