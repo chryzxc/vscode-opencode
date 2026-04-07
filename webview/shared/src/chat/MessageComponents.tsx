@@ -2719,11 +2719,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                 : "",
                             )}
                           >
-                            <ExpandableStep isImportant={event.isImportant}>
+                            <ExpandableStep>
                               <div className="flex min-w-0 flex-col items-start gap-2 w-full">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <TypingText
-                                  isTyping={event.status === 'pending'}
+                                  isTyping={event.status === 'pending' || event.status === 'running'}
                                   className={cn(
                                     "oc-refined-event-label",
                                     event.kind === "reasoning" && "reasoning",

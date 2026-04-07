@@ -2801,15 +2801,19 @@ body {
 
 /* TypingText Animation - Modern mask-image approach */
 .oc-typing-text {
+  /* Default state: fully visible */
   mask-image: linear-gradient(to right, black 50%, transparent 50%);
   mask-size: 200% 100%;
-  mask-position: 100% 0;
+  mask-position: 0 0;
   -webkit-mask-image: linear-gradient(to right, black 50%, transparent 50%);
   -webkit-mask-size: 200% 100%;
-  -webkit-mask-position: 100% 0;
+  -webkit-mask-position: 0 0;
 }
 
 .oc-typing-text--typing {
+  /* Start hidden, animate to visible */
+  mask-position: 100% 0;
+  -webkit-mask-position: 100% 0;
   will-change: mask-image, -webkit-mask-image;
   animation: typing-reveal steps(40, end) forwards;
 }

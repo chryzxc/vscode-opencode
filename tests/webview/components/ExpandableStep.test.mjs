@@ -19,7 +19,7 @@ test('ExpandableStep has correct props interface', () => {
   assert.match(
     expandableStepSource,
     /export\s+interface\s+ExpandableStepProps/,
-    'Should have ExpandableStepProps interface'
+    'Should have ExpandableProps interface'
   );
 
   assert.match(
@@ -33,6 +33,11 @@ test('ExpandableStep has correct props interface', () => {
     /className\?:\s*string/,
     'Should have optional className prop'
   );
+
+  // Check that removed props don't exist
+  const hasIsImportant = expandableStepSource.includes('isImportant');
+  const hasDefaultExpanded = expandableStepSource.includes('defaultExpanded');
+  assert.equal(hasIsImportant || hasDefaultExpanded, false, 'Should NOT have isImportant or defaultExpanded props (removed)');
 });
 
 test('ExpandableStep uses React.forwardRef', () => {
@@ -43,53 +48,28 @@ test('ExpandableStep uses React.forwardRef', () => {
   );
 });
 
-test('ExpandableStep has toggle button', () => {
-  assert.match(
-    expandableStepSource,
-    /oc-expandable-toggle/,
-    'Should have toggle button class'
-  );
+test('ExpandableStep does NOT have toggle button', () => {
+  const match = expandableStepSource.match(/oc-expandable-toggle/);
+  assert.equal(match, null, 'Should NOT have toggle button class');
 });
 
-test('ExpandableStep has chevron icons', () => {
-  assert.match(
-    expandableStepSource,
-    /ChevronDown/,
-    'Should have ChevronDown icon for expanded state'
-  );
-
-  assert.match(
-    expandableStepSource,
-    /ChevronRight/,
-    'Should have ChevronRight icon for collapsed state'
-  );
+test('ExpandableStep does NOT have chevron icons', () => {
+  const match = expandableStepSource.match(/ChevronDown|ChevronRight/);
+  assert.equal(match, null, 'Should NOT have chevron icons');
 });
 
-test('ExpandableStep has expand/collapse state', () => {
-  assert.match(
-    expandableStepSource,
-    /isExpanded/,
-    'Should have isExpanded state'
-  );
-
-  assert.match(
-    expandableStepSource,
-    /oc-expandable-content--expanded/,
-    'Should have expanded state class'
-  );
-
-  assert.match(
-    expandableStepSource,
-    /oc-expandable-content--collapsed/,
-    'Should have collapsed state class'
-  );
+test('ExpandableStep does NOT have collapse state', () => {
+  const match1 = expandableStepSource.match(/isExpanded|setIsExpanded/);
+  const match2 = expandableStepSource.match(/oc-expandable-content--expanded|oc-expandable-content--collapsed/);
+  assert.equal(match1, null, 'Should NOT have isExpanded state');
+  assert.equal(match2, null, 'Should NOT have expanded/collapsed classes');
 });
 
 test('ExpandableStep renders correct structure', () => {
   assert.match(
     expandableStepSource,
-    /oc-expandable-content/,
-    'Should have content container'
+    /oc-expandable-step/,
+    'Should have expandable-step container class'
   );
 });
 
