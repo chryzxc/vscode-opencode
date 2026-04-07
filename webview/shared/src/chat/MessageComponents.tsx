@@ -2778,8 +2778,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                     >
                                       {event.label === "bash" ? (
                                         <TerminalBlock
-                                          command={event.summary}
-                                          output={event.description}
+                                          command={event.activityDetail?.command || event.summary}
+                                          output={event.activityDetail?.output || event.description}
                                         />
                                       ) : (
                                         <MarkdownRenderer
@@ -2840,7 +2840,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                       )}
                                     </div>
 
-                                    {event.activityDetail.command && (
+                                    {/* Don't show TerminalBlock here for bash - already shown in summary section above */}
+                                    {event.label !== "bash" && event.activityDetail.command && (
                                       <TerminalBlock command={event.activityDetail.command} />
                                     )}
 
