@@ -292,6 +292,7 @@ export interface ActivityDetail {
   kind?: "tool_call" | "file_edit" | "command" | "read" | "search" | "other";
   summary?: string;
   command?: string;
+  output?: string;
   tool?: string;
   query?: string;
   file?: string;

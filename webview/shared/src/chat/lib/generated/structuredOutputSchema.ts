@@ -114,6 +114,14 @@ export const structuredOutputSchema: StructuredOutputSchema = {
               enum: ["pending", "done", "error"],
               description: "Step status",
             },
+            command: {
+              type: "string",
+              description: "Command text for bash/shell operations (e.g., 'npm run build')",
+            },
+            output: {
+              type: "string",
+              description: "Terminal output from command execution",
+            },
           },
           required: ["title", "status"],
         },

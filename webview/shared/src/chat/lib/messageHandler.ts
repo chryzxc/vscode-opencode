@@ -443,6 +443,8 @@ type StructuredProgressUpdate = {
   status?: 'pending' | 'done' | 'error';
   meta?: string;
   filePath?: string;
+  command?: string;
+  output?: string;
 };
 
 function normalizeProgressStatus(
@@ -5526,6 +5528,11 @@ function handleStreamEvent(
             internal: false,
             meta: update.meta,
             filePath: update.filePath,
+            activityDetail: (update.command || update.output) ? {
+              kind: "command",
+              command: update.command,
+              output: update.output,
+            } : undefined,
           });
         });
       }
@@ -5934,7 +5941,12 @@ function handleStreamEvent(
               partType: "structured-progress",
               internal: false,
               meta: step.meta,
-              filePath: step.filePath
+              filePath: step.filePath,
+              activityDetail: (step.command || step.output) ? {
+                kind: "command",
+                command: step.command,
+                output: step.output,
+              } : undefined,
             });
           });
         }
@@ -6532,6 +6544,11 @@ function handleStreamEvent(
             internal: false,
             meta: step.meta,
             filePath: step.filePath,
+            activityDetail: (step.command || step.output) ? {
+              kind: "command",
+              command: step.command,
+              output: step.output,
+            } : undefined,
           });
           consumed = true;
         });
