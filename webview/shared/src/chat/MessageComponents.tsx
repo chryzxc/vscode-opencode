@@ -2776,12 +2776,22 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                         "line-clamp-2",
                                       )}
                                     >
-                                      {event.label === "bash" ? (
-                                        <TerminalBlock
-                                          command={event.summary}
-                                          output={event.meta || event.description}
-                                        />
-                                      ) : (
+                                      {event.label === "bash" ? (() => {
+                                        console.log('🔍 BASH EVENT DATA:', {
+                                          label: event.label,
+                                          summary: event.summary,
+                                          meta: event.meta,
+                                          description: event.description,
+                                          detail: event.detail,
+                                          activityDetail: event.activityDetail,
+                                        });
+                                        return (
+                                          <TerminalBlock
+                                            command={event.summary}
+                                            output={event.meta || event.description}
+                                          />
+                                        );
+                                      })() : (
                                         <MarkdownRenderer
                                           content={event.summary}
                                           className="markdown-body"
