@@ -208,6 +208,67 @@ function getSubagentMetaStyle(id: string): CSSProperties {
   };
 }
 
+// Component to extract bash output from message content
+function TerminalBlockWithOutput({
+  event,
+  messageContent,
+}: {
+  event: DisplayEvent;
+  messageContent: string;
+}) {
+  const command = event.activityDetail?.command || event.summary;
+
+  // Try to extract bash output from message content
+  // Look for text after the command that looks like terminal output
+  let output = event.activityDetail?.output;
+
+  if (!output && messageContent) {
+    // The output might be in the message content after the command
+    // Look for patterns like:
+    // - "Running: npm run build" followed by output
+    // - Command text followed by multi-line output
+    const commandLower = command.toLowerCase();
+    const contentLines = messageContent.split('\n');
+
+    // Find lines that come after the command mention
+    const commandIndex = contentLines.findIndex(line =>
+      line.toLowerCase().includes(commandLower) ||
+      line.toLowerCase().includes('running') ||
+      line.toLowerCase().includes('executing')
+    );
+
+    if (commandIndex >= 0 && commandIndex < contentLines.length - 1) {
+      // Get lines after the command (skip the command line itself)
+      const outputLines = contentLines.slice(commandIndex + 1);
+
+      // Filter out lines that look like other activity steps
+      const terminalOutput = outputLines
+        .filter(line => {
+          const lineLower = line.trim().toLowerCase();
+          // Skip if it looks like another step
+          if (lineLower.startsWith('step') ||
+              lineLower.startsWith('running') ||
+              lineLower.startsWith('reading') ||
+              lineLower.startsWith('writing') ||
+              lineLower.startsWith('starting') ||
+              lineLower.match(/^\d+\./) || // numbered lists
+              line.length < 3) { // too short
+            return false;
+          }
+          return true;
+        })
+        .join('\n')
+        .trim();
+
+      if (terminalOutput.length > 0) {
+        output = terminalOutput;
+      }
+    }
+  }
+
+  return <TerminalBlock command={command} output={output} />;
+}
+
 // SVG file icon
 export function FileIcon({
   filePath,
@@ -2778,9 +2839,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                       )}
                                     >
                                       {event.label === "bash" ? (
-                                        <TerminalBlock
-                                          command={event.activityDetail?.command || event.summary}
-                                          output={event.activityDetail?.output}
+                                        <TerminalBlockWithOutput
+                                          event={event}
+                                          messageContent={content}
                                         />
                                       ) : (
                                         <MarkdownRenderer
