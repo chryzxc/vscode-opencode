@@ -1688,6 +1688,19 @@ function buildDisplayEvents(
     }
   }
 
+  // Log bash events to debug data availability
+  const bashEvents = rawEvents.filter(e => e.label === 'bash');
+  if (bashEvents.length > 0) {
+    console.log('🎯 BASH EVENTS IN DISPLAY:', bashEvents.map(e => ({
+      label: e.label,
+      summary: e.summary,
+      meta: e.meta,
+      description: e.description,
+      detail: e.detail,
+      activityDetail: e.activityDetail,
+    })));
+  }
+
   const collapsed: DisplayEvent[] = [];
   for (const event of rawEvents) {
     const previous = collapsed[collapsed.length - 1];
@@ -2723,7 +2736,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                               <div className="flex min-w-0 flex-col items-start gap-2 w-full">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <TypingText
-                                  isTyping={event.status === 'pending' || event.status === 'running'}
+                                  isTyping={event.status === 'pending'}
                                   className={cn(
                                     "oc-refined-event-label",
                                     event.kind === "reasoning" && "reasoning",
