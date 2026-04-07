@@ -7,8 +7,10 @@ const Stepper = React.forwardRef<
   React.HTMLAttributes<HTMLDivElement> & {
     /** When true, the container auto-scrolls to the bottom on each render */
     autoScrollToBottom?: boolean
+    /** When true, ensures the last step is always visible on each render */
+    alwaysShowLastStep?: boolean
   }
->(({ className, autoScrollToBottom, ...props }, forwardedRef) => {
+>(({ className, autoScrollToBottom, alwaysShowLastStep, ...props }, forwardedRef) => {
   const innerRef = React.useRef<HTMLDivElement>(null)
 
   // Keep innerRef in sync with the forwarded ref so callers can still read .current
@@ -24,12 +26,45 @@ const Stepper = React.forwardRef<
     [forwardedRef],
   )
 
-  React.useEffect(() => {
-    if (!autoScrollToBottom) return
+  /**
+   * Scrolls the stepper to ensure the last step is visible
+   * This function ensures the last step is always visible by scrolling to the bottom
+   */
+  const scrollToLastStep = React.useCallback(() => {
     const el = innerRef.current
     if (!el) return
+
+    // Scroll to the bottom to show the last step
     el.scrollTop = el.scrollHeight
-  })
+
+    // Ensure the last step is fully visible by accounting for any padding/margins
+    const lastChild = el.lastElementChild
+    if (lastChild) {
+      lastChild.scrollIntoView({ behavior: "smooth", block: "end" })
+    }
+  }, [])
+
+  // Expose scrollToLastStep through the ref
+  React.useImperativeHandle(
+    forwardedRef,
+    () => {
+      const el = innerRef.current
+      if (!el) return {} as any
+
+      return {
+        ...el,
+        scrollToLastStep,
+      }
+    },
+    [scrollToLastStep],
+  )
+
+  React.useEffect(() => {
+    if (autoScrollToBottom || alwaysShowLastStep) {
+      scrollToLastStep()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return <div ref={setRefs} className={cn("flex flex-col", className)} {...props} />
 })

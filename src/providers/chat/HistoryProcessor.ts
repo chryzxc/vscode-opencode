@@ -91,8 +91,8 @@ export class HistoryProcessor {
   /**
    * Enrich message with plan information
    */
-  private enrichMessageWithPlan(message: any): any {
-    return this.structuredOutputProcessor.enrichMessageWithPlan(message);
+  private async enrichMessageWithPlan(message: any): Promise<any> {
+    return await this.structuredOutputProcessor.enrichMessageWithPlan(message);
   }
 
   /**
@@ -179,13 +179,13 @@ export class HistoryProcessor {
    * Process history messages for rendering.
    * Canonical pipeline: normalize → structured output → filter → dedup → coalesce.
    */
-  processHistoryMessages(rawMessages: any[], sessionId: string): any[] {
+  async processHistoryMessages(rawMessages: any[], sessionId: string): Promise<any[]> {
     if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
       return [];
     }
 
-    const processed = rawMessages
-      .map((rawMessage: any) => {
+    const processedMessages = await Promise.all(
+      rawMessages.map(async (rawMessage: any) => {
         const message =
           rawMessage && typeof rawMessage === "object"
             ? { ...rawMessage }
@@ -194,9 +194,13 @@ export class HistoryProcessor {
         const structured = this.applyStructuredOutputToMessage(normalizedMessage, {
           allowSyntheticFallbackError: false,
         });
-        return this.enrichMessageWithPlan(structured);
+        return await this.enrichMessageWithPlan(structured);
       })
-      .filter((message) => this.isRenderableHistoryMessage(message));
+    );
+
+    const processed = processedMessages.filter((message) =>
+      this.isRenderableHistoryMessage(message)
+    );
 
     const ordered = this.orderHistoryMessagesChronologically(processed);
     const dedupedUserMessages = this.dedupeUserMessagesByContent(ordered);

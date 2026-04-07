@@ -70,28 +70,29 @@ test('Stepper scrolls to bottom when autoScrollToBottom is true', () => {
     );
     assert.match(
         stepperSource,
-        /if\s*\(\s*!autoScrollToBottom\s*\)\s*return/,
-        'Stepper auto-scroll effect should bail out when autoScrollToBottom is false',
+        /if\s*\(\s*autoScrollToBottom\s*\|\|\s*alwaysShowLastStep\s*\)/,
+        'Stepper auto-scroll effect should trigger when autoScrollToBottom or alwaysShowLastStep is true',
     );
     assert.match(
         stepperSource,
-        /el\.scrollTop\s*=\s*el\.scrollHeight/,
-        'Stepper should set scrollTop = scrollHeight to reach the bottom',
+        /scrollToLastStep\(\)/,
+        'Stepper should call scrollToLastStep function to handle scrolling',
     );
 });
 
-test('Stepper auto-scroll effect runs after every render (no dependency array)', () => {
-    // A useEffect with no dep-array fires on every render so each new step triggers it.
-    // Verify the effect is not locked to a specific dep array that would miss step additions.
+test('Stepper auto-scroll effect runs on EVERY RENDER (not just when props change)', () => {
+    // CRITICAL: The effect MUST run on every render when autoScrollToBottom is true
+    // to catch new steps being added during streaming. It should NOT be optimized
+    // with dependencies that would cause it to miss new steps.
     assert.match(
         stepperSource,
-        /React\.useEffect\(\s*\(\)\s*=>\s*\{[\s\S]*?el\.scrollTop\s*=\s*el\.scrollHeight[\s\S]*?\}\s*\)/,
-        'Stepper scroll useEffect should have no dependency array so it fires on every render',
+        /React\.useEffect\(\s*\(\)\s*=>\s*\{[\s\S]*?scrollToLastStep\(\)[\s\S]*?\}\s*,\s*\[\s*\]\s*\)/,
+        'Stepper scroll useEffect MUST have empty dependency array [] to run on every render',
     );
     assert.doesNotMatch(
         stepperSource,
-        /el\.scrollTop\s*=\s*el\.scrollHeight[\s\S]{0,60}\},\s*\[.+\]\s*\)/,
-        'Stepper scroll useEffect must not have a narrow dependency array that would miss new steps',
+        /React\.useEffect\(\s*\(\)\s*=>\s*\{[\s\S]*?scrollToLastStep\(\)[\s\S]*?\}\s*,\s*\[.+\]\s*\)(?![\s\S]*?\[\s*\])/,
+        'Stepper scroll useEffect MUST NOT have prop dependencies that prevent every-render execution',
     );
 });
 

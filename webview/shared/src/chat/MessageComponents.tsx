@@ -1600,6 +1600,8 @@ function buildDisplayEvents(
     const cleaned = label
       .replace(/^final\s+/i, '') // Remove "Final" prefix
       .replace(/^step\s+/i, '') // Remove "Step" prefix
+      .replace(/streaming|stream/gi, '') // Remove "Stream" or "Streaming" references
+      .replace(/\s+/g, ' ') // Normalize multiple spaces to single space
       .trim();
 
     // Filter out system noise events
@@ -1615,7 +1617,8 @@ function buildDisplayEvents(
       return ''; // Return empty to filter out
     }
 
-    return cleaned || label;
+    // Return cleaned label or original if cleaning resulted in empty string
+    return cleaned.trim() || label;
   };
 
   const rawEvents: DisplayEvent[] = [];
@@ -2203,19 +2206,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     0,
     displayEvents.length - visibleDisplayEvents.length,
   );
-  const activityStatusCounts = useMemo(
-    () =>
-      userFacingDisplayEvents.reduce(
-        (acc, event) => {
-          if (event.status === "error") acc.error += 1;
-          else if (event.status === "done") acc.done += 1;
-          else acc.pending += 1;
-          return acc;
-        },
-        { pending: 0, done: 0, error: 0 },
-      ),
-    [userFacingDisplayEvents],
-  );
   const shouldShowTodoInlineSummary =
     todoItems.length > 0 &&
     (!latestAssistantMessageId || latestAssistantMessageId === messageId);
@@ -2707,50 +2697,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               data-assistant-section="activity"
               className="rounded-md border border-oc-border bg-oc-panel-soft/40"
             >
-              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
-                <div className="inline-flex items-center gap-1.5">
-                  <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted">
-                    {timelineDisplayEvents.length}
-                  </span>
-                  {hiddenActivityEventCount > 0 && (
-                    <span className="text-xs text-oc-text-muted">
-                  +{hiddenActivityEventCount} hidden
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {activityStatusCounts.pending > 0 && (
-                    <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-accent">
-                      pending {activityStatusCounts.pending}
-                    </span>
-                  )}
-                  {activityStatusCounts.done > 0 && (
-                    <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-green">
-                      done {activityStatusCounts.done}
-                    </span>
-                  )}
-                  {activityStatusCounts.error > 0 && (
-                    <span className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-red">
-                      error {activityStatusCounts.error}
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    className="rounded border border-oc-border px-1.5 py-0.5 font-mono text-[10px] text-oc-text-muted hover:text-oc-text-soft"
-                    onClick={() =>
-                      dispatch({
-                        type: "TOGGLE_ACTIVITY_DETAILS",
-                        payload: { messageId: message.id || messageId },
-                      })
-                    }
-                  >
-                    text {viewState.showActivityDetails ? "full" : "preview"}
-                  </button>
-                </div>
-              </div>
-
-              <div className="border-t border-oc-border px-3 py-2.5">
+              <div className="px-3 py-2.5">
                 {timelineDisplayEvents.length > 0 && (
                   <>
                     <Stepper

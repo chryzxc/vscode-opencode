@@ -1366,8 +1366,8 @@ export class ChatViewProvider
    * Wrapper: Enrich message with plan
    * Delegates to StructuredOutputProcessor module
    */
-  private enrichMessageWithPlan(message: any): any {
-    return this.structuredOutputProcessor.enrichMessageWithPlan(message);
+  private async enrichMessageWithPlan(message: any): Promise<any> {
+    return await this.structuredOutputProcessor.enrichMessageWithPlan(message);
   }
 
   /**
@@ -5565,7 +5565,7 @@ export class ChatViewProvider
         const structuredMessage = this.applyStructuredOutputToMessage(
           response.data,
         );
-        const enrichedMessage = this.enrichMessageWithPlan(structuredMessage);
+        const enrichedMessage = await this.enrichMessageWithPlan(structuredMessage);
         const structuredFailureText = this.firstNonEmptyString(
           (enrichedMessage as any)?.error,
         );

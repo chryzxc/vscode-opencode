@@ -104,10 +104,15 @@ function writeJsonFile<T>(filePath: string, data: T): boolean {
   }
 }
 
+interface HttpResponse {
+  body: string;
+  statusCode: number;
+}
+
 function httpsGet(
   url: string,
   headers: Record<string, string>,
-): Promise<string> {
+): Promise<HttpResponse> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const options: https.RequestOptions = {
@@ -121,7 +126,7 @@ function httpsGet(
     const req = https.request(options, (res) => {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => resolve(data));
+      res.on("end", () => resolve({ body: data, statusCode: res.statusCode || 200 }));
     });
 
     req.on("timeout", () => {
@@ -136,7 +141,7 @@ function httpsPost(
   url: string,
   headers: Record<string, string>,
   body: string,
-): Promise<string> {
+): Promise<HttpResponse> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const options: https.RequestOptions = {
@@ -153,7 +158,7 @@ function httpsPost(
     const req = https.request(options, (res) => {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => resolve(data));
+      res.on("end", () => resolve({ body: data, statusCode: res.statusCode || 200 }));
     });
 
     req.on("timeout", () => {
@@ -381,7 +386,7 @@ export class QuotaService extends EventEmitter {
 
     if (expired && auth?.refresh) {
       try {
-        const refreshRaw = await httpsPost(
+        const refreshResponse = await httpsPost(
           OPENAI_OAUTH_TOKEN_URL,
           {
             "Content-Type": "application/json",
@@ -392,7 +397,7 @@ export class QuotaService extends EventEmitter {
             client_id: OPENAI_CLIENT_ID,
           }),
         );
-        const refreshed = JSON.parse(refreshRaw);
+        const refreshed = JSON.parse(refreshResponse.body);
         if (refreshed.access_token) {
           token = refreshed.access_token;
 
@@ -416,12 +421,41 @@ export class QuotaService extends EventEmitter {
     }
 
     try {
-      const raw = await httpsGet(OPENAI_USAGE_URL, {
+      const response = await httpsGet(OPENAI_USAGE_URL, {
         Authorization: `Bearer ${token}`,
         "User-Agent": USER_AGENT,
         "Content-Type": "application/json",
       });
-      const json = JSON.parse(raw);
+
+      // Handle 401 Unauthorized errors specifically
+      if (response.statusCode === 401) {
+        const errorMsg = auth?.refresh
+          ? "Token refresh failed. Please re-authenticate."
+          : "Access token expired and no refresh token available. Please re-authenticate with OpenAI.";
+        this.logger.error('OpenAI API returned 401 Unauthorized', { hasRefreshToken: Boolean(auth?.refresh) }, new Error(errorMsg));
+        return {
+          platform: "openai",
+          account: "ChatGPT",
+          title: "OpenAI Account Quota",
+          status: "error",
+          error: errorMsg,
+          quotas: [
+            {
+              label: "Authentication Error",
+              remainPercent: 0,
+              percentLabel: "—",
+              note: auth?.refresh ? "Token refresh failed" : "No refresh token - re-authenticate required",
+            },
+          ],
+        };
+      }
+
+      // Handle other non-200 status codes
+      if (response.statusCode !== 200) {
+        throw new Error(`HTTP ${response.statusCode}: ${response.body.substring(0, 200)}`);
+      }
+
+      const json = JSON.parse(response.body);
 
       const quotas: QuotaItem[] = [];
 
@@ -520,18 +554,22 @@ export class QuotaService extends EventEmitter {
         quotas,
       };
     } catch (e) {
+      const errorMessage = String(e);
+      this.logger.error('OpenAI quota fetch failed', { error: errorMessage }, e as Error);
       return {
         platform: "openai",
         account: "ChatGPT",
         title: "OpenAI Account Quota",
         status: "error",
-        error: String(e),
+        error: errorMessage,
         quotas: [
           {
             label: "Error",
             remainPercent: 0,
-            percentLabel: "â€”",
-            note: "Check auth.json token or rate limits.",
+            percentLabel: "—",
+            note: errorMessage.includes("401") || errorMessage.includes("authenticate")
+              ? "Authentication failed. Check auth.json credentials."
+              : "Check auth.json token or rate limits.",
           },
         ],
       };
@@ -543,12 +581,12 @@ export class QuotaService extends EventEmitter {
       return null;
     }
     try {
-      const raw = await httpsGet(url, {
+      const response = await httpsGet(url, {
         Authorization: `Bearer ${auth.key}`,
         "User-Agent": USER_AGENT,
         "Content-Type": "application/json",
       });
-      const json = JSON.parse(raw);
+      const json = JSON.parse(response.body);
       const quotas: QuotaItem[] = [];
 
       const limits: any[] = Array.isArray(json?.data?.limits)
@@ -623,7 +661,7 @@ export class QuotaService extends EventEmitter {
 
     if (expired && auth?.refresh) {
       try {
-        const refreshRaw = await httpsPost(
+        const refreshResponse = await httpsPost(
           "https://github.com/login/oauth/access_token",
           {
             Accept: "application/json",
@@ -636,7 +674,7 @@ export class QuotaService extends EventEmitter {
             grant_type: "urn:ietf:params:oauth:grant-type:device_code",
           }),
         );
-        const refreshed = JSON.parse(refreshRaw);
+        const refreshed = JSON.parse(refreshResponse.body);
         if (refreshed.access_token) {
           token = refreshed.access_token;
         }
@@ -658,7 +696,7 @@ export class QuotaService extends EventEmitter {
 
     try {
       // Get Copilot API token
-      const copilotTokenRaw = await httpsGet(
+      const copilotTokenResponse = await httpsGet(
         `${GITHUB_API_BASE_URL}/copilot_internal/v2/token`,
         {
           Authorization: `Bearer ${token}`,
@@ -668,10 +706,10 @@ export class QuotaService extends EventEmitter {
           "Copilot-Language-Server-Version": COPILOT_VERSION,
         },
       );
-      const copilotToken = JSON.parse(copilotTokenRaw);
+      const copilotToken = JSON.parse(copilotTokenResponse.body);
       const apiToken: string = copilotToken.token ?? token;
 
-      const userRaw = await httpsGet(
+      const userResponse = await httpsGet(
         `${GITHUB_API_BASE_URL}/copilot_internal/user`,
         {
           Authorization: `Bearer ${apiToken}`,
@@ -680,7 +718,7 @@ export class QuotaService extends EventEmitter {
           "Editor-Plugin-Version": COPILOT_EDITOR_PLUGIN_VERSION,
         },
       );
-      const userJson = JSON.parse(userRaw);
+      const userJson = JSON.parse(userResponse.body);
 
       const premiumSnapshot = userJson?.quota_snapshots?.premium_interactions;
 
@@ -704,13 +742,13 @@ export class QuotaService extends EventEmitter {
             : 0;
 
       if (!premiumSnapshot) {
-        const usageRaw = await httpsGet(`https://api.githubcopilot.com/usage`, {
+        const usageResponse = await httpsGet(`https://api.githubcopilot.com/usage`, {
           Authorization: `Bearer ${apiToken}`,
           "User-Agent": COPILOT_USER_AGENT,
           "Editor-Version": COPILOT_EDITOR_VERSION,
           "Editor-Plugin-Version": COPILOT_EDITOR_PLUGIN_VERSION,
         });
-        const usageJson = JSON.parse(usageRaw);
+        const usageJson = JSON.parse(usageResponse.body);
         used = Number(usageJson?.premium_requests_used ?? 0);
         remaining = Math.max(0, effectiveLimit - used);
         rawRemainPct =
@@ -761,7 +799,7 @@ export class QuotaService extends EventEmitter {
     // Refresh access token
     let accessToken: string;
     try {
-      const refreshRaw = await httpsPost(
+      const refreshResponse = await httpsPost(
         GOOGLE_TOKEN_REFRESH_URL,
         { "Content-Type": "application/x-www-form-urlencoded" },
         new URLSearchParams({
@@ -771,7 +809,7 @@ export class QuotaService extends EventEmitter {
           grant_type: "refresh_token",
         }).toString(),
       );
-      const refreshed = JSON.parse(refreshRaw);
+      const refreshed = JSON.parse(refreshResponse.body);
       if (!refreshed.access_token) {
         throw new Error("No access token in refresh response");
       }
@@ -790,7 +828,7 @@ export class QuotaService extends EventEmitter {
     }
 
     try {
-      const raw = await httpsPost(
+      const response = await httpsPost(
         GOOGLE_QUOTA_API_URL,
         {
           Authorization: `Bearer ${accessToken}`,
@@ -799,7 +837,7 @@ export class QuotaService extends EventEmitter {
         },
         JSON.stringify({}),
       );
-      const json = JSON.parse(raw);
+      const json = JSON.parse(response.body);
       const modelsInfo: any[] = json?.models ?? [];
 
       const quotas: QuotaItem[] = [];

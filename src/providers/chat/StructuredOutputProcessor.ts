@@ -961,7 +961,7 @@ export class StructuredOutputProcessor {
   /**
    * Enrich message with plan information
    */
-  enrichMessageWithPlan(message: any): any {
+  async enrichMessageWithPlan(message: any): Promise<any> {
     if (!message) return message;
 
     const role = message?.info?.role || message?.role;
@@ -1066,6 +1066,18 @@ export class StructuredOutputProcessor {
       });
       const fallbackPlanFile = resolvedPlanFile;
 
+      // Check if the plan file actually exists on disk
+      let planFileExists = false;
+      if (resolvedPlanFile) {
+        try {
+          await vscode.workspace.fs.stat(vscode.Uri.file(resolvedPlanFile));
+          planFileExists = true;
+        } catch {
+          // File doesn't exist, need to persist it
+          planFileExists = false;
+        }
+      }
+
       if (
         structuredPlanContent &&
         typeof structuredPlanContent === "string" &&
@@ -1074,7 +1086,8 @@ export class StructuredOutputProcessor {
         if (this.isClarificationQuestionnaire(structuredPlanContent)) {
           return message;
         }
-        if (!resolvedPlanFile) {
+        // Persist the plan if the file doesn't exist, even if we have a file path
+        if (!planFileExists) {
           this.persistPlan(
             structuredPlanContent,
             fallbackPlanFile,
@@ -1111,6 +1124,16 @@ export class StructuredOutputProcessor {
         structuredResponseType === "implementation_plan" &&
         structuredPlanFile
       ) {
+        // For file-only plans, persist the content if the file doesn't exist yet
+        if (!planFileExists && structuredPlanContent) {
+          this.persistPlan(
+            structuredPlanContent,
+            fallbackPlanFile,
+          ).catch((err) => {
+            this.logger.error("Failed to auto-persist file-only plan", {}, err as Error);
+          });
+        }
+
         // Preserve structured file-only plans so the webview "View Plan" action
         // can open the plan tab directly from disk.
         return {
@@ -1140,7 +1163,23 @@ export class StructuredOutputProcessor {
     // Only honor implementation plans when the structured payload explicitly
     // declares responseType="implementation_plan".
     if (structuredResponseType !== "implementation_plan") {
+      // During hydration, if the message already has a plan field from a previous
+      // enrichment, preserve it instead of removing it. This ensures that implementation
+      // plans loaded from storage are still displayed in the UI even if the structured
+      // output recognition fails during hydration.
       if (message.plan) {
+        // Check if this looks like a valid plan that was previously enriched
+        const planRec = this.asRecord(message.plan);
+        const hasValidPlanFields =
+          (this.firstNonEmptyString(planRec?.file) || this.firstNonEmptyString(planRec?.content)) &&
+          (this.firstNonEmptyString(planRec?.title) || this.firstNonEmptyString(planRec?.summary));
+
+        if (hasValidPlanFields) {
+          // Preserve the existing plan - it's likely from a previous enrichment
+          return message;
+        }
+
+        // Remove invalid plan objects
         const nextMessage = { ...message };
         delete nextMessage.plan;
         return nextMessage;
