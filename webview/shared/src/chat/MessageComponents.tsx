@@ -2778,8 +2778,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                     >
                                       {event.label === "bash" ? (
                                         <TerminalBlock
-                                          command={event.activityDetail?.command || event.summary}
-                                          output={event.activityDetail?.output || event.description}
+                                          command={event.summary}
+                                          output={event.meta || event.description}
                                         />
                                       ) : (
                                         <MarkdownRenderer
