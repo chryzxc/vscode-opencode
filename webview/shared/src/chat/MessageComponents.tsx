@@ -1702,6 +1702,7 @@ function buildDisplayEvents(
       description: e.description,
       detail: e.detail,
       activityDetail: e.activityDetail,
+      activityDetailKeys: e.activityDetail ? Object.keys(e.activityDetail) : [],
     })));
   }
 
@@ -2807,11 +2808,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                           description: event.description,
                                           detail: event.detail,
                                           activityDetail: event.activityDetail,
+                                          activityDetailKeys: event.activityDetail ? Object.keys(event.activityDetail) : [],
                                         });
                                         return (
                                           <TerminalBlock
-                                            command={event.summary}
-                                            output={event.meta || event.description}
+                                            command={event.activityDetail?.command || event.summary}
+                                            output={event.activityDetail?.output}
                                           />
                                         );
                                       })() : (
