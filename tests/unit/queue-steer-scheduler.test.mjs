@@ -15,7 +15,7 @@ test('ChatViewProvider uses session-scoped queue model with stable queued item m
   );
   assert.match(
     chatProviderSource,
-    /id:\s*`q-\$\{Date\.now\(\)\}-\$\{this\.queueItemSequence\}`/,
+    /(const promptId = `q-\$\{Date\.now\(\)\}-\$\{this\.queueItemSequence\}`|id:\s*(promptId|`q-\$\{Date\.now\(\)\}-\$\{this\.queueItemSequence\}`))/,
     'Queued prompt metadata should include stable sequential ID'
   );
   assert.match(
@@ -62,8 +62,8 @@ test('ChatViewProvider send-now dispatch bypasses queue persistence', () => {
   );
   assert.match(
     chatProviderSource,
-    /if \((mode|effectiveMode) === "send-now"\)[\s\S]*?return;[\s\S]*?this\.queueManager\.schedulePromptDispatch\(/,
-    'queueManager scheduling should only happen after the send-now early return path',
+    /if \((mode|effectiveMode) === "send-now"\)[\s\S]*?return;[\s\S]*?this\.queueManager\.(enqueuePrompt|schedulePromptDispatch)\(/,
+    'queueManager should only be called after the send-now early return path',
   );
 });
 
@@ -83,7 +83,7 @@ test('ChatViewProvider queue execution logic correctly manages state', () => {
     /async handleExecuteQueue\(.*?\): Promise<void> \{[\s\S]*?finally \{[\s\S]*?this\.executingQueueSessionIds\.delete\(sessionId\)/,
     'handleExecuteQueue should clean up execution state in finally block'
   );
-  
+
   assert.doesNotMatch(
     chatProviderSource,
     /async handleExecuteQueue\(.*?\): Promise<void> \{[\s\S]*?setTimeout/,

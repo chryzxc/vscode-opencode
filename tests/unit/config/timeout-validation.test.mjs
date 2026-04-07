@@ -189,14 +189,16 @@ test("timeout configurations don't conflict with existing settings", () => {
 test("timeout configurations follow naming conventions", () => {
   const properties = packageJson.contributes?.configuration?.properties;
 
-  // Check camelCase naming
+  // Check camelCase naming for the timeout configs
   assert.ok(properties['opencode.requestTimeout'], 'Should use camelCase: requestTimeout');
   assert.ok(properties['opencode.complexQueryMultiplier'], 'Should use camelCase: complexQueryMultiplier');
 
-  // Check no spaces or special characters
-  const keys = Object.keys(properties).filter(k => k.startsWith('opencode.'));
-  keys.forEach(key => {
-    assert.match(key, /^[a-z.]+$/, `${key} should contain only lowercase letters and dots`);
+  // Check our new timeout settings specifically use lowercase after the namespace
+  const timeoutKeys = ['opencode.requestTimeout', 'opencode.complexQueryMultiplier'];
+  timeoutKeys.forEach(key => {
+    // The part after "opencode." should be camelCase (starts lowercase, no spaces or special chars except dots)
+    const setting = key.substring('opencode.'.length);
+    assert.match(setting, /^[a-z][a-zA-Z]*$/, `${key} should use camelCase for setting name`);
   });
 });
 

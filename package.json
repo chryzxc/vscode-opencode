@@ -180,6 +180,24 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically generate session title from first message"
+        },
+        "opencode.requestTimeout": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 10000,
+          "maximum": 600000,
+          "description": "Request timeout in milliseconds for API calls (default: 120s, min: 10s, max: 10min)",
+          "scope": "window",
+          "order": 10
+        },
+        "opencode.complexQueryMultiplier": {
+          "type": "number",
+          "default": 1.5,
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Timeout multiplier for complex queries with multiple files or contexts (default: 1.5x)",
+          "scope": "window",
+          "order": 11
         }
       }
     }
