@@ -53,15 +53,16 @@ test('ChatViewProvider routes prompt actions through internal queue handlers', (
   );
 });
 
+
 test('ChatViewProvider send-now dispatch bypasses queue persistence', () => {
   assert.match(
     chatProviderSource,
-    /if \(mode === "send-now"\)[\s\S]*?await this\.handleSendMessage\(/,
+    /if \((mode|effectiveMode) === "send-now"\)[\s\S]*?await this\.handleSendMessage\(/,
     'send-now should execute handleSendMessage directly',
   );
   assert.match(
     chatProviderSource,
-    /if \(mode === "send-now"\)[\s\S]*?return;[\s\S]*?this\.queueManager\.schedulePromptDispatch\(/,
+    /if \((mode|effectiveMode) === "send-now"\)[\s\S]*?return;[\s\S]*?this\.queueManager\.schedulePromptDispatch\(/,
     'queueManager scheduling should only happen after the send-now early return path',
   );
 });

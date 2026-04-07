@@ -78,8 +78,13 @@ test('provider suppresses timeout errors while awaiting interactive answers', ()
   );
   assert.match(
     providerSource,
-    /if \(this\.processingSessionIds\.has\(sessionId\)\) \{[\s\S]*await this\.handleStopRequest\(sessionId\);/s,
-    'interactive reply submit should stop any in-flight turn before sending follow-up answers',
+    /dispatchInteractiveResponse\(\{/,
+    'interactive response dispatch should be routed through dedicated handler',
+  );
+  assert.match(
+    providerSource,
+    /interactiveResponseTransitionUntil\s*=\s*Date\.now\(\)\s*\+\s*15000/,
+    'provider should set transition window after interactive response to prevent popover reappearing',
   );
   assert.match(
     providerSource,

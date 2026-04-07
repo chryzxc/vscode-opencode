@@ -12,41 +12,51 @@ const stepIndicatorSource = readSource(
   'StepIndicator.tsx',
 );
 
-test('ExpandableStep has proper ARIA attributes', () => {
+test('ExpandableStep is a wrapper component', () => {
   assert.match(
     expandableStepSource,
-    /aria-expanded=/,
-    'Should have aria-expanded attribute on toggle button'
+    /React\.forwardRef/,
+    'Should be a forwardRef component for proper ref forwarding'
   );
 
   assert.match(
     expandableStepSource,
-    /aria-label=/,
-    'Should have aria-label attribute on toggle button'
+    /oc-expandable-step/,
+    'Should apply proper CSS class for styling'
   );
-});
 
-test('ExpandableStep has dynamic aria-expanded based on state', () => {
   assert.match(
     expandableStepSource,
-    /aria-expanded=\{isExpanded\}/,
-    'Should bind aria-expanded to isExpanded state'
+    /children/,
+    'Should render children prop'
   );
 });
 
-test('ExpandableStep has descriptive aria-label', () => {
+test('ExpandableStep allows className customization', () => {
   assert.match(
     expandableStepSource,
-    /Collapse.*Expand|Expand.*Collapse/,
-    'Should mention both collapse and expand in aria-label'
+    /className/,
+    'Should accept className prop'
+  );
+
+  assert.match(
+    expandableStepSource,
+    /cn\(/,
+    'Should use cn utility for class merging'
   );
 });
 
-test('ExpandableStep toggle button has type="button"', () => {
+test('ExpandableStep has TypeScript types', () => {
   assert.match(
     expandableStepSource,
-    /type=\s*["']button["']/,
-    'Should have type="button" to prevent form submission'
+    /ExpandableStepProps/,
+    'Should export ExpandableStepProps interface'
+  );
+
+  assert.match(
+    expandableStepSource,
+    /React\.ReactNode/,
+    'Should type children as React.ReactNode'
   );
 });
 

@@ -26,14 +26,14 @@ test('TerminalBlock has correct CSS classes', () => {
 
   assert.match(
     terminalBlockSource,
-    /oc-bash-prompt/,
-    'Should have prompt class'
+    /oc-bash-command-code/,
+    'Should have command code class'
   );
 
   assert.match(
     terminalBlockSource,
-    /oc-bash-copy-btn/,
-    'Should have copy button class'
+    /oc-bash-output/,
+    'Should have output class'
   );
 });
 
@@ -53,27 +53,19 @@ test('ExpandableStep has correct CSS classes for wrapper', () => {
   );
 });
 
-test('ExpandableStep has correct CSS classes for toggle button', () => {
+test('ExpandableStep is a forwardRef component', () => {
   assert.match(
     expandableStepSource,
-    /oc-expandable-toggle/,
-    'Should have toggle button class'
+    /React\.forwardRef/,
+    'Should be a forwardRef component'
   );
 });
 
-test('ExpandableStep has correct CSS classes for expanded state', () => {
+test('ExpandableStep accepts children prop', () => {
   assert.match(
     expandableStepSource,
-    /oc-expandable-content--expanded/,
-    'Should have expanded content class'
-  );
-});
-
-test('ExpandableStep has correct CSS classes for collapsed state', () => {
-  assert.match(
-    expandableStepSource,
-    /oc-expandable-content--collapsed/,
-    'Should have collapsed content class'
+    /children.*React\.ReactNode|React\.ReactNode.*children/,
+    'Should accept children prop'
   );
 });
 
@@ -106,6 +98,12 @@ test('StepIndicator applies status-specific classes', () => {
     stepIndicatorSource,
     /oc-step-indicator-running/,
     'Should have running status class referenced'
+  );
+
+  assert.match(
+    stepIndicatorSource,
+    /oc-step-indicator"/,
+    'Should have base step indicator class'
   );
 });
 

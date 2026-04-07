@@ -108,7 +108,7 @@ test('ChatViewProvider.schedulePromptDispatch core logic', () => {
     'async schedulePromptDispatch(',
   );
 
-  assert.match(dispatchBody, /if \(mode === "send-now"\)/, 'send-now should have a direct dispatch branch');
+  assert.match(dispatchBody, /if \((mode|effectiveMode) === "send-now"\)/, 'send-now should have a direct dispatch branch');
   assert.match(dispatchBody, /await this\.handleSendMessage\(/, 'send-now should call handleSendMessage directly');
   assert.match(dispatchBody, /await this\.queueManager\.schedulePromptDispatch\(/, 'non-send-now modes should still delegate to QueueManager');
 });

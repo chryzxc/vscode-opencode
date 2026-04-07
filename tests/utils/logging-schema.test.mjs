@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LoggingCategories, LogEventTypes } from '../../src/utils/LoggingSchema.js';
+import { LoggingCategories, LogEventTypes } from '../../src/utils/LoggingSchema.ts';
 
 test('LoggingSchema', async (t) => {
   await t.test('LoggingCategories', async (t) => {

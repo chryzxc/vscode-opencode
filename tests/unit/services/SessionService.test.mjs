@@ -633,7 +633,7 @@ test('SessionService handles errors gracefully', () => {
   );
   assert.match(
     listBody,
-    /console\.error/,
+    /(console\.error|this\.logger\.error|log\.error)/,
     'listSessions should log errors'
   );
 

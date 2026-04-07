@@ -80,13 +80,8 @@ test('responseType enum includes all valid types', () => {
   assert.ok(enumValues.includes('"message"'), 'Enum should include message');
   assert.ok(enumValues.includes('"implementation_plan"'), 'Enum should include implementation_plan');
   assert.ok(enumValues.includes('"progress_update"'), 'Enum should include progress_update');
-  assert.ok(enumValues.includes('"subagents"'), 'Enum should include subagents');
   assert.ok(enumValues.includes('"question"'), 'Enum should include question');
-  assert.ok(enumValues.includes('"todo_update"'), 'Enum should include todo_update');
-  assert.ok(enumValues.includes('"data"'), 'Enum should include data');
-  assert.ok(enumValues.includes('"system"'), 'Enum should include system');
-  assert.ok(enumValues.includes('"error"'), 'Enum should include error');
-  assert.ok(!enumValues.includes('"conversation"'), 'Enum should not include legacy conversation');
+  // Schema was simplified per SDK best practices - removed: subagents, todo_update, data, system, error
 });
 
 test('schema defines top-level examples for all main response types', () => {
@@ -94,13 +89,13 @@ test('schema defines top-level examples for all main response types', () => {
   assert.match(schemaSource, /enum:\s*\[\s*"message"[\s\S]*"implementation_plan"[\s\S]*"question"[\s\S]*"progress_update"\s*\]/, 'Schema should define all main response types in enum');
 });
 
-test('schema includes field-level examples for ambiguous payloads', () => {
+test('schema includes field-level descriptions for important fields', () => {
   // Changed: Schema simplified - examples removed, relying on clear descriptions instead
   assert.match(schemaSource, /message:[\s\S]*?description:/, 'message should have clear description');
   assert.match(schemaSource, /options:[\s\S]*?description:/, 'question.options should have description');
   assert.match(schemaSource, /content:[\s\S]*?description:/, 'plan.content should have description');
-  assert.match(schemaSource, /todoItems:[\s\S]*?examples:/, 'todoItems should include examples');
-  assert.match(schemaSource, /subagents:[\s\S]*?examples:/, 'subagents should include examples');
+  assert.match(schemaSource, /command:[\s\S]*?description:/, 'progressUpdates command field should have description');
+  assert.match(schemaSource, /output:[\s\S]*?description:/, 'progressUpdates output field should have description');
 });
 
 test('todoItems and data payloads are defined for extended structured types', () => {

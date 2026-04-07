@@ -8,41 +8,35 @@ const chatProviderSource = readAllSources([
   joinFromRoot('src', 'providers', 'chat', '*.ts'),
 ], 'ChatViewProvider.ts');
 
-test('slash commands are fetched from skill manager and sent to webview', () => {
+test('slash commands are fetched from OpenCode server via client.tool.list', () => {
   // Verify handleGetCommands method exists and has correct implementation
   const getCommandsBody = extractFunctionBody(
     chatProviderSource,
-    'async handleGetCommands(): Promise<void> {',
+    'private async handleGetCommands(): Promise<void> {',
   );
 
   assert.match(
     getCommandsBody,
-    /this\.skillManager\.listSkills\(\)/,
-    'handleGetCommands must fetch skills from skillManager',
+    /await this\.serverManager\.ensureRunning\(\)/,
+    'handleGetCommands must ensure server is running',
   );
 
   assert.match(
     getCommandsBody,
-    /\.map\(\s*\([^)]+\)\s*=>\s*\(\{[\s\S]*name:\s*skill\.name/,
-    'handleGetCommands must map skills to slash commands',
+    /client\.tool\.list\(/,
+    'handleGetCommands must fetch tools from server via client.tool.list',
   );
 
   assert.match(
     getCommandsBody,
-    /type:\s*["']commandsList["']/,
-    'handleGetCommands must post commandsList message to webview',
+    /skill|commands/i,
+    'handleGetCommands must extract or filter skill-related tools/commands',
   );
 
   assert.match(
     getCommandsBody,
-    /commands:\s*commands/,
-    'handleGetCommands must include commands in the message payload',
-  );
-
-  assert.match(
-    getCommandsBody,
-    /type:\s*["']commandsList["']\s*,\s*commands:\s*commands/,
-    'handleGetCommands must post both type and commands in the message',
+    /sendCommandsToWebview\(/,
+    'handleGetCommands must send commands to webview',
   );
 });
 
@@ -50,7 +44,7 @@ test('slash command handler is properly wired in message router', () => {
   // Verify that getCommands message type is handled in the message router
   assert.match(
     chatProviderSource,
-    /case\s+["']getCommands["']:\s*\{\s*await\s+this\.handleGetCommands\(\)[\s\S]*break/,
+    /case\s+["']getCommands["']:\s*\{[\s\S]*await\s+this\.handleGetCommands\(\)[\s\S]*break/,
     'Message router must handle getCommands and call handleGetCommands method',
   );
 });

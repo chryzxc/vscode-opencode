@@ -128,7 +128,7 @@ test('assistant header is responsive on small screens for agent/model/tokens row
   );
   assert.match(
     messageSource,
-    /oc-msg-token-chips flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0\.5 text-\[11px\] sm:ml-auto sm:text-\[12px\]/,
+    /oc-msg-token-chips flex min-w-0 flex-wrap items-center gap-2 text-\[11px\] sm:ml-auto sm:text-\[12px\]/,
     'token row should wrap with compact typography and shift right on larger screens',
   );
 });

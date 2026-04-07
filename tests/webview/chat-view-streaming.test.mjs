@@ -222,7 +222,7 @@ test('ChatViewProvider emits subagent updates and async stream enrich payloads',
   );
   assert.match(
     registerHandlersBody,
-    /this\.view\.webview\.postMessage\(\{\s*type: "streamEventEnrich",[\s\S]*callID,[\s\S]*diffStats: stats/s,
+    /this\.view\.webview\.postMessage\(\{\s*type: "streamEventEnrich",[\s\S]*callID,[\s\S]*diffStats: enrichment\.diffStats/s,
     'provider should post streamEventEnrich updates containing callID and computed diff stats',
   );
 });

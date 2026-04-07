@@ -224,7 +224,7 @@ test('MessageStreamService consumes event streams', () => {
 
   assert.match(
     startListeningBody,
-    /this\.consumeEventStream\(\s*events\.stream,\s*"\/event"/,
+    /this\.consumeEventStream\(\s*events!?\.stream,\s*"\/event"/,
     'startListening should consume /event stream'
   );
   assert.match(
@@ -302,8 +302,8 @@ test('MessageStreamService implements subscribe with auto-lifecycle', () => {
   );
   assert.match(
     subscribeBody,
-    /this\.startListening\(\)\.catch\(console\.error\)/,
-    'subscribe should start listening on first subscriber'
+    /this\.startListening\(\)\.catch\(\(error\)\s*=>\s*(this\.logger\.error|console\.error)/,
+    'subscribe should start listening on first subscriber with error handling'
   );
   assert.match(
     subscribeBody,
@@ -682,7 +682,7 @@ test('MessageStreamService implements notifyCallbacks', () => {
   );
   assert.match(
     notifyBody,
-    /console\.error\("Callback\s+error:"/,
+    /(this\.logger\.error|console\.error)\("Callback\s*(error|error in subscriber)"/,
     'notifyCallbacks should log callback errors'
   );
 });

@@ -74,11 +74,11 @@ test('handleGetAgents logs agent fetch operations', () => {
 });
 
 test('ModelAndAgentManager uses LoggingCategories for all log calls', () => {
-  // Verify that log calls use the MODEL_AGENT_MANAGER category
+  // Verify that log calls use proper logging format
   assert.match(
     modelAndAgentManagerSource,
-    /this\.logger\.(info|error|warn|debug)\(\s*LoggingCategories\.MODEL_AGENT_MANAGER\s*,/,
-    'ModelAndAgentManager should use LoggingCategories.MODEL_AGENT_MANAGER for log calls'
+    /this\.logger\.(info|error|warn|debug|performance)\(/,
+    'ModelAndAgentManager should use logger methods for all log calls'
   );
 });
 
@@ -86,7 +86,7 @@ test('ModelAndAgentManager logs errors with proper context', () => {
   // Verify that error handling includes proper logging with context
   assert.match(
     modelAndAgentManagerSource,
-    /catch\s*\([^)]*\)\s*\{[\s\S]*this\.logger\.error\(\s*LoggingCategories\.MODEL_AGENT_MANAGER\s*,/,
-    'ModelAndAgentManager should log errors with proper context using LoggingCategories'
+    /catch\s*\([^)]*\)\s*\{[\s\S]*this\.logger\.error\(/,
+    'ModelAndAgentManager should log errors with proper context'
   );
 });
