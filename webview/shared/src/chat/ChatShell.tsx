@@ -253,7 +253,7 @@ function ChatContent() {
   // 2. AI is responding but no streaming yet, OR
   // 3. Streaming but only have reasoning (no actual content yet)
   const showAiResponseLoading =
-    !isSwitchingSession && // Session loading takes priority
+    !state.isLoadingSession && // Direct state check to avoid timing issues
     ((isAiResponding && !state.streaming && !state.isCompacting) ||
     (hasOnlyReasoning && !state.isCompacting));
   const compactionDividerIndex =
