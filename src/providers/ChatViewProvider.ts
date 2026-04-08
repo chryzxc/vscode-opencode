@@ -98,6 +98,8 @@ import type { SessionPromptData } from "@opencode-ai/sdk" with { "resolution-mod
 import * as cp from "child_process";
 import * as path from "path";
 import * as vscode from "vscode";
+import { ErrorBuilder } from "./chat/ErrorBuilder";
+import type { DisplayError } from "./chat/types";
 import {
   CssGenerator,
   FileThemeProcessor,
@@ -4628,15 +4630,25 @@ export class ChatViewProvider
           ),
         );
         const retryWithoutStructuredOutput = true;
-        const fallbackText =
-          incompatibleModelKey &&
+
+        // Use ErrorBuilder to extract actual error message
+        const errorBuilder = new ErrorBuilder(
+          this.logger,
+          this.isLikelyInteractiveAwaitTimeoutError.bind(this)
+        );
+        const displayError = errorBuilder.extractError(message);
+
+        const fallbackText = displayError?.message ||
+          (incompatibleModelKey &&
             this.structuredOutputIncompatibleModelKeys.has(incompatibleModelKey)
             ? "Structured output error: this model returned an empty structured payload."
-            : "I couldn't produce a valid structured response for this turn. Please retry.";
+            : "I couldn't produce a valid structured response for this turn. Please retry.");
+
         const next: any = {
           ...message,
           content: fallbackText,
           error: fallbackText,
+          displayError: displayError,
           retryWithoutStructuredOutput,
         };
         const parts = Array.isArray(next.parts)
@@ -4746,13 +4758,40 @@ export class ChatViewProvider
 
     if (structured.progressUpdates && structured.progressUpdates.length > 0) {
       const existingSteps = Array.isArray(next.steps) ? next.steps : [];
-      const mapped = structured.progressUpdates.map((update) => ({
-        type: "step",
-        title: update.title,
-        content: update.filePath,
-        status: update.status ?? "pending",
-        meta: update.meta,
-      }));
+      const mapped = structured.progressUpdates.map((update) => {
+        const step: any = {
+          type: "step",
+          title: update.title,
+          content: update.filePath,
+          status: update.status ?? "pending",
+          meta: update.meta,
+        };
+
+        // Extract diff information for file edit operations
+        if (update.kind || update.file || update.diffStats || update.diffExcerpt) {
+          step.activityDetail = {
+            kind: update.kind,
+            summary: update.title,
+            command: update.command,
+            output: update.output,
+            file: update.file,
+            diffStats: update.diffStats,
+            diffExcerpt: update.diffExcerpt,
+          };
+        }
+
+        // Set filePath if available
+        if (update.file) {
+          step.filePath = update.file;
+        }
+
+        // Set diffStats if available
+        if (update.diffStats) {
+          step.diffStats = update.diffStats;
+        }
+
+        return step;
+      });
       next.steps = [...existingSteps, ...mapped];
     }
 
