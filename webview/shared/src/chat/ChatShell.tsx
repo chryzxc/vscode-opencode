@@ -248,9 +248,14 @@ function ChatContent() {
     state.streaming.reasoning.trim().length > 0 &&
     (!state.streaming.content || state.streaming.content.trim().length === 0);
 
+  // Show AI response loading indicator (thinking bubble) when:
+  // 1. NOT switching sessions (session loading takes precedence), AND
+  // 2. AI is responding but no streaming yet, OR
+  // 3. Streaming but only have reasoning (no actual content yet)
   const showAiResponseLoading =
-    (isAiResponding && !state.streaming && !state.isCompacting) ||
-    (hasOnlyReasoning && !state.isCompacting);
+    !isSwitchingSession && // Session loading takes priority
+    ((isAiResponding && !state.streaming && !state.isCompacting) ||
+    (hasOnlyReasoning && !state.isCompacting));
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
       ? Math.max(
