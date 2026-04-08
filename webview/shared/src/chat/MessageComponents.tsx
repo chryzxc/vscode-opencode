@@ -16,6 +16,10 @@ import {
   RotateCw,
   Zap,
   AlertCircle,
+  AlertTriangle,
+  Clock,
+  HelpCircle,
+  Info,
   StopCircle,
 } from "lucide-react";
 
@@ -47,6 +51,7 @@ import type {
   SubagentSummary,
   TodoItem,
 } from "./lib/types";
+import type { DisplayError } from "../../../../src/providers/chat/types";
 import { useAppDispatch, useAppState } from "./lib/store";
 import { jumpToMessage } from "./lib/messageJump";
 import vscode from "./lib/vscode";
@@ -3082,6 +3087,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           </div>
         )}
 
+        {/* Add new error banner */}
+        {message?.displayError && (
+          <div className="mt-2">
+            <InfoBanner error={message.displayError} />
+          </div>
+        )}
+
         {message?.retryState === "retrying_without_structured_output" && (
           <div className="mt-2">
             <InfoBanner
@@ -3513,28 +3525,69 @@ export function AbortedBanner({ onRetry }: { onRetry?: () => void }) {
   );
 }
 
-export function InfoBanner({ message }: { message: string }) {
-  const infoDetails =
-    typeof message === "string" && message.trim().length > 0
+interface InfoBannerProps {
+  message?: string;
+  error?: DisplayError;
+}
+
+export function InfoBanner({ message, error }: InfoBannerProps) {
+  // Error type styling configuration
+  const errorStyles = {
+    api_error: {
+      borderColor: 'border-red-500/50',
+      bgColor: 'bg-red-500/10',
+      textColor: 'text-red-200',
+      icon: AlertCircle
+    },
+    timeout: {
+      borderColor: 'border-orange-500/50',
+      bgColor: 'bg-orange-500/10',
+      textColor: 'text-orange-200',
+      icon: Clock
+    },
+    structured_output_failure: {
+      borderColor: 'border-blue-500/50',
+      bgColor: 'bg-blue-500/10',
+      textColor: 'text-blue-200',
+      icon: AlertTriangle
+    },
+    unknown: {
+      borderColor: 'border-gray-500/50',
+      bgColor: 'bg-gray-500/10',
+      textColor: 'text-gray-200',
+      icon: HelpCircle
+    }
+  };
+
+  // Determine display message and styling
+  let displayMessage: string;
+  let styles = errorStyles.api_error;
+  let Icon = Info;
+
+  if (error) {
+    displayMessage = error.message;
+    styles = errorStyles[error.type as keyof typeof errorStyles] || errorStyles.unknown;
+    Icon = styles.icon;
+  } else if (message) {
+    displayMessage = typeof message === 'string' && message.trim().length > 0
       ? message.trim()
-      : "Working...";
+      : 'Working...';
+    styles = errorStyles.api_error; // Default for backward compat
+    Icon = Info;
+  } else {
+    displayMessage = 'Working...';
+    styles = errorStyles.api_error;
+    Icon = Info;
+  }
 
   return (
     <div className="mb-2 px-4">
-      <div className="flex flex-col gap-2 rounded-lg border border-[#2563eb80] bg-[#1e3a8a26] p-2.5 text-oc-xs text-[#dbeafe] shadow-[0_4px_14px_rgba(30,58,138,0.18)] transition-all duration-200">
+      <div className={`flex flex-col gap-2 rounded-lg border ${styles.borderColor} ${styles.bgColor} p-2.5 text-oc-xs ${styles.textColor} shadow-[0_4px_14px_rgba(30,58,138,0.18)] transition-all duration-200`}>
         <div className="flex items-center gap-2">
-          <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-[#60a5fa80] bg-[#3b82f626]">
-            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[#93c5fd]" />
+          <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${styles.borderColor} ${styles.bgColor}`}>
+            <Icon className="h-3 w-3" />
           </span>
-          <span className="text-[10px] font-semibold uppercase tracking-[0.07em] text-[#93c5fd]">
-            Retrying
-          </span>
-        </div>
-
-        <div className="rounded-md border border-[#3b82f640] bg-[#1e40af33] px-2 py-1.5">
-          <div className="overflow-hidden text-[11px] leading-snug text-[#dbeafe] whitespace-pre-wrap break-words">
-            {infoDetails}
-          </div>
+          <span className="flex-1 font-medium">{displayMessage}</span>
         </div>
       </div>
     </div>
