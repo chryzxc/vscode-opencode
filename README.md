@@ -47,6 +47,11 @@ Key differentiators over a plain terminal-based OpenCode setup:
 - Copy message content to clipboard
 - Image attachments and inline image preview modal
 - Contiguous message grouping for visual clarity
+- **Unified error display** with specific error messages from the API:
+  - **API Errors** (Red): Raw errors from API responses (e.g., "Token refresh failed: 401")
+  - **Timeout Errors** (Orange): Request timeout messages with retry option
+  - **Structured Output Errors** (Blue): Model compatibility issues
+  - All errors include appropriate icons and actionable retry buttons
 
 ### Implementation Planning
 
