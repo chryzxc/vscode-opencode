@@ -129,6 +129,26 @@ export type StructuredProgressUpdate = {
   status?: "pending" | "done" | "error";
   meta?: string;
   filePath?: string;
+  // Activity kind for categorization
+  kind?: "tool_call" | "file_edit" | "command" | "read" | "search" | "other";
+  // File path for file edit operations
+  file?: string;
+  // Command text for bash/shell operations
+  command?: string;
+  // Terminal output from command execution
+  output?: string;
+  // Diff statistics for file edits
+  diffStats?: {
+    added?: number;
+    deleted?: number;
+  };
+  // Compact diff preview showing representative code changes
+  diffExcerpt?: {
+    header?: string;
+    lines?: string[];
+    added?: number;
+    deleted?: number;
+  };
 };
 
 /**
@@ -285,6 +305,23 @@ export const STRUCTURED_RESPONSE_TYPES = new Set(
     )?.responseType?.enum ?? []
   ).map((value: string) => value.toLowerCase()),
 );
+
+/**
+ * Normalized error structure for display in webview
+ */
+export interface DisplayError {
+  type: 'api_error' | 'timeout' | 'structured_output_failure' | 'unknown';
+  message: string;
+  originalError?: string; // Raw error for debugging
+  canRetry: boolean;
+  retryWithoutStructuredOutput?: boolean;
+  metadata?: {
+    statusCode?: number;
+    errorName?: string;
+    provider?: string;
+    model?: string;
+  };
+}
 
 // Re-import structuredOutputSchema for the constant above
 import { structuredOutputSchema } from "../../shared/structuredOutputSchema";
