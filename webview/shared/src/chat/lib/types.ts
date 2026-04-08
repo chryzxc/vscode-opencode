@@ -596,8 +596,11 @@ export interface AppState {
   sessionEdits: Set<string>;
   sessionStats: SessionStats;
   sessionsStatsById?: Record<string, SessionStats>;
+  /** Indicates a session is currently being loaded from persistence */
   isLoadingSession: boolean;
+  /** User-facing title of the session being loaded */
   loadingSessionTitle: string | null;
+  /** ID of the session being loaded (null if not loading) */
   loadingSessionId: string | null;
   streaming: StreamingState | null;
   inputValue: string;
