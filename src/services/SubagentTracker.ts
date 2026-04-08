@@ -31,6 +31,16 @@ export type SubagentThinkingEvent = {
   partID?: string;
 };
 
+export type SubagentConversationEvent = {
+  id: string;
+  role: string;
+  kind: "message" | "reasoning" | "step";
+  text: string;
+  createdAt: number;
+  messageID?: string;
+  partID?: string;
+};
+
 export type SubagentProgressEvent = {
   id: string;
   title: string;
@@ -62,6 +72,7 @@ export type SubagentSummary = {
 
 export type SubagentDetail = SubagentSummary & {
   thinkingEvents: SubagentThinkingEvent[];
+  conversationEvents: SubagentConversationEvent[];
   progressEvents: SubagentProgressEvent[];
   timelineEvents: SubagentTimelineEvent[];
   tokenUsage?: {
@@ -99,6 +110,7 @@ type FinalizeParentMessageOptions = {
 const MAX_TIMELINE_EVENTS = 200;
 const MAX_PROGRESS_EVENTS = 200;
 const MAX_THINKING_EVENTS = 200;
+const MAX_CONVERSATION_EVENTS = 400;
 
 function asRecord(value: unknown): UnknownRecord | null {
   return typeof value === "object" && value !== null
@@ -207,6 +219,7 @@ function cloneDetail(detail: SubagentDetail): SubagentDetail {
   return {
     ...cloneSummary(detail),
     thinkingEvents: detail.thinkingEvents.map((event) => ({ ...event })),
+    conversationEvents: detail.conversationEvents.map((event) => ({ ...event })),
     progressEvents: detail.progressEvents.map((event) => ({ ...event })),
     timelineEvents: detail.timelineEvents.map((event) => ({ ...event })),
     tokenUsage: detail.tokenUsage
@@ -526,6 +539,35 @@ export class SubagentTracker {
           .filter((item): item is SubagentThinkingEvent => !!item)
       : [];
 
+    const conversationEvents = Array.isArray(rec.conversationEvents)
+      ? rec.conversationEvents
+          .map((item) => {
+            const event = asRecord(item);
+            if (!event) {
+              return null;
+            }
+            const text = sanitizeReasoningText(asString(event.text));
+            if (!text) {
+              return null;
+            }
+            const kindRaw = asString(event.kind).toLowerCase();
+            const kind: SubagentConversationEvent["kind"] =
+              kindRaw === "reasoning" || kindRaw === "step"
+                ? (kindRaw as SubagentConversationEvent["kind"])
+                : "message";
+            return {
+              id: asString(event.id) || `conversation-${Date.now()}`,
+              role: asString(event.role) || "assistant",
+              kind,
+              text,
+              createdAt: toTimestamp(event.createdAt),
+              messageID: asString(event.messageID) || undefined,
+              partID: asString(event.partID) || undefined,
+            } as SubagentConversationEvent;
+          })
+          .filter((item): item is SubagentConversationEvent => !!item)
+      : [];
+
     const progressEvents = Array.isArray(rec.progressEvents)
       ? rec.progressEvents
           .map((item) => {
@@ -605,6 +647,7 @@ export class SubagentTracker {
       latestActivity: asString(rec.latestActivity) || "Loaded from history",
       references,
       thinkingEvents,
+      conversationEvents,
       progressEvents,
       timelineEvents,
       tokenUsage: tokenUsage
@@ -874,6 +917,7 @@ export class SubagentTracker {
         latestActivity: "Subagent requested",
         references: [],
         thinkingEvents: [],
+        conversationEvents: [],
         progressEvents: [],
         timelineEvents: [],
       };
@@ -1132,6 +1176,7 @@ export class SubagentTracker {
         startedAt: asNumber(asRecord(info.time)?.created) ?? createdAt,
         references: [],
         thinkingEvents: [],
+        conversationEvents: [],
         progressEvents: [],
         timelineEvents: [],
       };
@@ -1436,6 +1481,12 @@ export class SubagentTracker {
         return;
       }
 
+      const conversationEvents =
+        this.buildConversationEventsFromChildSessionMessages(response.data);
+      if (conversationEvents.length > 0) {
+        detail.conversationEvents = conversationEvents;
+      }
+
       const latest = assistantInfos[assistantInfos.length - 1];
       detail.providerID = asString(latest.providerID) || detail.providerID;
       detail.modelID = asString(latest.modelID) || detail.modelID;
@@ -1485,5 +1536,166 @@ export class SubagentTracker {
         event.status = "done";
       }
     }
+  }
+
+  private buildConversationEventsFromChildSessionMessages(
+    messagesRaw: unknown[],
+  ): SubagentConversationEvent[] {
+    const events: SubagentConversationEvent[] = [];
+
+    const append = (
+      role: string,
+      kind: SubagentConversationEvent["kind"],
+      textRaw: string,
+      createdAt: number,
+      messageID?: string,
+      partID?: string,
+    ) => {
+      const text = sanitizeReasoningText(textRaw);
+      if (!text) {
+        return;
+      }
+      const previous = events[events.length - 1];
+      if (
+        previous &&
+        previous.role === role &&
+        previous.kind === kind &&
+        previous.text === text
+      ) {
+        previous.createdAt = Math.max(previous.createdAt, createdAt);
+        previous.messageID = previous.messageID || messageID;
+        previous.partID = previous.partID || partID;
+        return;
+      }
+      events.push({
+        id: `${messageID || "msg"}:${kind}:${events.length}`,
+        role: role || "assistant",
+        kind,
+        text,
+        createdAt,
+        messageID,
+        partID,
+      });
+    };
+
+    for (const rawMessage of messagesRaw) {
+      const message = asRecord(rawMessage);
+      if (!message) {
+        continue;
+      }
+      const info = asRecord(message.info);
+      const role = asString(info?.role) || asString(message.role) || "assistant";
+      const messageID =
+        asString(info?.id) || asString(message.id) || asString(message.messageID) || undefined;
+      const infoTime = asRecord(info?.time);
+      const msgTime = asRecord(message.time);
+      const createdAt = toTimestamp(
+        asNumber(infoTime?.created) ??
+          asNumber(infoTime?.updated) ??
+          asNumber(msgTime?.created) ??
+          asNumber(msgTime?.updated) ??
+          asNumber(message.createdAt),
+      );
+
+      const content = this.extractPrimaryMessageText(message);
+      if (content) {
+        append(role, "message", content, createdAt, messageID);
+      }
+
+      const reasoningEvents = Array.isArray(message.reasoningEvents)
+        ? message.reasoningEvents
+        : [];
+      for (let index = 0; index < reasoningEvents.length; index += 1) {
+        const rawEvent = asRecord(reasoningEvents[index]);
+        if (!rawEvent) {
+          continue;
+        }
+        const text = asString(rawEvent.text);
+        if (!text) {
+          continue;
+        }
+        append(
+          role,
+          "reasoning",
+          text,
+          toTimestamp(asNumber(rawEvent.createdAt), createdAt),
+          messageID,
+          asString(rawEvent.partID) || undefined,
+        );
+      }
+
+      const parts = Array.isArray(message.parts) ? message.parts : [];
+      for (const rawPart of parts) {
+        const part = asRecord(rawPart);
+        if (!part || !isReasoningPart(part)) {
+          continue;
+        }
+        const partText =
+          asString(part.text) ||
+          asString(part.reasoning) ||
+          asString(part.thinking) ||
+          asString(part.thought) ||
+          "";
+        append(
+          role,
+          "reasoning",
+          partText,
+          toTimestamp(asNumber(part.createdAt), createdAt),
+          messageID,
+          asString(part.id) || asString(part.partID) || undefined,
+        );
+      }
+
+      const steps = Array.isArray(message.steps) ? message.steps : [];
+      for (const rawStep of steps) {
+        const step = asRecord(rawStep);
+        if (!step) {
+          continue;
+        }
+        const title = sanitizeActivityLabel(asString(step.title));
+        const meta = sanitizeActivityLabel(asString(step.meta));
+        const status = sanitizeActivityLabel(asString(step.status));
+        const text = [title, meta, status].filter(Boolean).join(" - ");
+        if (!text) {
+          continue;
+        }
+        append(
+          role,
+          "step",
+          text,
+          toTimestamp(asNumber(step.createdAt), createdAt),
+          messageID,
+          asString(step.partID) || undefined,
+        );
+      }
+    }
+
+    return clampEvents(events, MAX_CONVERSATION_EVENTS);
+  }
+
+  private extractPrimaryMessageText(message: UnknownRecord): string {
+    const content = asString(message.content).trim();
+    if (content) {
+      return content;
+    }
+
+    const text = asString(message.text).trim();
+    if (text) {
+      return text;
+    }
+
+    const parts = Array.isArray(message.parts) ? message.parts : [];
+    const chunks: string[] = [];
+    for (const rawPart of parts) {
+      const part = asRecord(rawPart);
+      if (!part || isReasoningPart(part)) {
+        continue;
+      }
+      const chunk = asString(part.text) || asString(part.content) || "";
+      if (chunk.trim()) {
+        chunks.push(chunk.trim());
+      }
+    }
+    return chunks.join("\n").trim();
   }
 }

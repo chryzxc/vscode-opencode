@@ -141,3 +141,29 @@ test("question flow lock: suppress stale popover re-show during interactive tran
     "messageResponse should suppress stale blocking interactive events during post-answer transition",
   );
 });
+
+test("question flow lock: final message aligns subagent parent IDs during stream->final handoff", () => {
+  assert.match(
+    handlerSource,
+    /function alignMessageSubagentParentIds\(/,
+    "message handler should expose a parent-id alignment helper for finalized assistant messages",
+  );
+  assert.match(
+    handlerSource,
+    /const preferredParentMessageId =[\s\S]*responseMessageId[\s\S]*streamingMessageId[\s\S]*null;/s,
+    "messageResponse should compute a preferred parent message id fallback chain",
+  );
+  assert.match(
+    handlerSource,
+    /sanitized = alignMessageSubagentParentIds\([\s\S]*preferredParentMessageId[\s\S]*\);/s,
+    "messageResponse should normalize subagent parent ids before committing final message",
+  );
+});
+
+test("question flow lock: assistant renderer keeps subagent rows visible during temporary parent-id drift", () => {
+  assert.match(
+    messageSource,
+    /if \(fromStore\.length === 0 && fromMessage\.length === 0\) \{[\s\S]*if \(scopedStore\.length > 0\) return scopedStore;[\s\S]*if \(messageSubagents\.length > 0\) return messageSubagents;[\s\S]*\}/s,
+    "assistant renderer should fallback to scoped/message subagents instead of dropping UI during transient id mismatch",
+  );
+});

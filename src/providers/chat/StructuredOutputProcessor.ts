@@ -658,24 +658,52 @@ export class StructuredOutputProcessor {
       });
     }
 
-    const messageCandidate =
+    const responseTypeHintRaw = this.firstNonEmptyString(
+      sanitizedRec.responseType,
+      rec.type,
+      rec.kind,
+      rec.category,
+    );
+    const responseTypeHint = responseTypeHintRaw?.toLowerCase();
+
+    const strictMessageCandidate =
       this.firstNonEmptyString(sanitizedRec.message) ||
       (typeof rec.message === "string" ? rec.message : undefined);
+    const aliasMessageCandidate = this.firstNonEmptyString(
+      strictMessageCandidate,
+      sanitizedRec.content,
+      rec.content,
+      sanitizedRec.text,
+      rec.text,
+      sanitizedRec.output,
+      rec.output,
+      sanitizedRec.detail,
+      rec.detail,
+    );
+
+    // Some providers return responseType="message" but put the body in content/text/output.
+    // Accept those aliases so regular replies keep structured JSON instead of being dropped.
+    let messageCandidate = strictMessageCandidate;
+    if (
+      !messageCandidate &&
+      (!responseTypeHint ||
+        responseTypeHint === "message" ||
+        responseTypeHint === "conversation")
+    ) {
+      messageCandidate = aliasMessageCandidate;
+    }
 
     let responseTypeRaw =
-      this.firstNonEmptyString(
-        sanitizedRec.responseType,
-        rec.type,
-        rec.kind,
-        rec.category,
-      ) ||
-      (messageCandidate ? "message" : undefined);
+      responseTypeHintRaw || (messageCandidate ? "message" : undefined);
 
     if (responseTypeRaw?.toLowerCase() === "conversation") {
       responseTypeRaw = "message";
     }
     if (responseTypeRaw?.toLowerCase() === "interactive") {
       responseTypeRaw = "question";
+    }
+    if (responseTypeRaw?.toLowerCase() === "message" && !messageCandidate) {
+      messageCandidate = aliasMessageCandidate;
     }
 
     if (
@@ -698,6 +726,43 @@ export class StructuredOutputProcessor {
       !this.firstNonEmptyString(canonicalRec.message)
     ) {
       canonicalRec.message = messageCandidate;
+    }
+
+    const canonicalResponseType = this.firstNonEmptyString(
+      canonicalRec.responseType,
+    )?.toLowerCase();
+    if (canonicalResponseType === "implementation_plan") {
+      const existingPlan = this.asRecord(canonicalRec.plan) ?? this.asRecord(rec.plan);
+      if (existingPlan) {
+        let ensuredPlanFile = this.firstNonEmptyString(existingPlan.file);
+        if (!ensuredPlanFile && Array.isArray(existingPlan.files)) {
+          for (const entry of existingPlan.files) {
+            const candidate = this.firstNonEmptyString(entry);
+            if (candidate) {
+              ensuredPlanFile = candidate;
+              break;
+            }
+          }
+        }
+
+        if (ensuredPlanFile) {
+          const planFiles = Array.isArray(existingPlan.files)
+            ? existingPlan.files
+                .map((entry) => this.firstNonEmptyString(entry))
+                .filter((entry): entry is string => Boolean(entry))
+            : [];
+          const nextPlan: Record<string, unknown> = {
+            ...existingPlan,
+            file: ensuredPlanFile,
+          };
+          if (!planFiles.includes(ensuredPlanFile)) {
+            nextPlan.files = [ensuredPlanFile, ...planFiles];
+          } else {
+            nextPlan.files = planFiles;
+          }
+          canonicalRec.plan = nextPlan;
+        }
+      }
     }
 
     let validation = validateStructuredOutput(canonicalRec);

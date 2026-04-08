@@ -238,6 +238,9 @@ export class SubagentPersistence {
       if (!Array.isArray(normalized.thinkingEvents)) {
         normalized.thinkingEvents = [];
       }
+      if (!Array.isArray(normalized.conversationEvents)) {
+        normalized.conversationEvents = [];
+      }
       if (!Array.isArray(normalized.timelineEvents)) {
         normalized.timelineEvents = [];
       }

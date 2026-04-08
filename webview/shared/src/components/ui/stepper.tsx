@@ -10,7 +10,7 @@ const Stepper = React.forwardRef<
     /** When true, ensures the last step is always visible on each render */
     alwaysShowLastStep?: boolean
   }
->(({ className, autoScrollToBottom, alwaysShowLastStep, ...props }, forwardedRef) => {
+>(({ className, autoScrollToBottom, alwaysShowLastStep, children, ...props }, forwardedRef) => {
   const innerRef = React.useRef<HTMLDivElement>(null)
 
   // Keep innerRef in sync with the forwarded ref so callers can still read .current
@@ -34,14 +34,10 @@ const Stepper = React.forwardRef<
     const el = innerRef.current
     if (!el) return
 
-    // Scroll to the bottom to show the last step
+    // Scroll only the stepper container itself.
+    // Avoid scrollIntoView here because it can also scroll ancestor containers
+    // (like the outer conversation viewport).
     el.scrollTop = el.scrollHeight
-
-    // Ensure the last step is fully visible by accounting for any padding/margins
-    const lastChild = el.lastElementChild
-    if (lastChild) {
-      lastChild.scrollIntoView({ behavior: "smooth", block: "end" })
-    }
   }, [])
 
   // Expose scrollToLastStep through the ref
@@ -59,14 +55,17 @@ const Stepper = React.forwardRef<
     [scrollToLastStep],
   )
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     if (autoScrollToBottom || alwaysShowLastStep) {
       scrollToLastStep()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [autoScrollToBottom, alwaysShowLastStep, children, scrollToLastStep])
 
-  return <div ref={setRefs} className={cn("flex flex-col", className)} {...props} />
+  return (
+    <div ref={setRefs} className={cn("flex flex-col", className)} {...props}>
+      {children}
+    </div>
+  )
 })
 Stepper.displayName = "Stepper"
 

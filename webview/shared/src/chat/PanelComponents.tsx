@@ -501,146 +501,14 @@ export function StickyHeader() {
 export function HistorySidebar() {
   const {
     isSidebarOpen,
-    sessionsList,
-    currentSessionId,
-    processingSessionIds,
   } = useAppState();
   const dispatch = useAppDispatch();
-  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
-  const [newTitle, setNewTitle] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
-
-  const visibleSessions = useMemo(() => {
-    if (sessionsList.length === 0) {
-      return [];
-    }
-
-    const sessionIds = new Set(sessionsList.map((session) => session.id));
-    const topLevelSessions = sessionsList.filter((session) => {
-      const parentSessionId = session.parentSessionId?.trim();
-      if (!parentSessionId) return true;
-      if (parentSessionId === session.id) return true;
-      return !sessionIds.has(parentSessionId);
-    });
-
-    return topLevelSessions.length > 0 ? topLevelSessions : sessionsList;
-  }, [sessionsList]);
-
-  const filteredSessions = useMemo(() => {
-    if (!searchQuery.trim()) return visibleSessions;
-    const q = searchQuery.toLowerCase();
-    return visibleSessions.filter((s) =>
-      (s.title || "Untitled chat").toLowerCase().includes(q),
-    );
-  }, [visibleSessions, searchQuery]);
-
-  const groupedSessions = useMemo(() => {
-    const day = 86_400_000;
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayTs = todayStart.getTime();
-    const yesterdayTs = todayTs - day;
-    const weekTs = todayTs - 6 * day;
-
-    const groups: { label: string; sessions: typeof filteredSessions }[] = [
-      { label: "Today", sessions: [] },
-      { label: "Yesterday", sessions: [] },
-      { label: "This Week", sessions: [] },
-      { label: "Older", sessions: [] },
-    ];
-
-    for (const session of filteredSessions) {
-      const ts = session.createdAt ?? 0;
-      if (ts >= todayTs) {
-        groups[0].sessions.push(session);
-      } else if (ts >= yesterdayTs) {
-        groups[1].sessions.push(session);
-      } else if (ts >= weekTs) {
-        groups[2].sessions.push(session);
-      } else {
-        groups[3].sessions.push(session);
-      }
-    }
-
-    return groups.filter((g) => g.sessions.length > 0);
-  }, [filteredSessions]);
-
-  useEffect(() => {
-    if (editingSessionId && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [editingSessionId]);
 
   useEffect(() => {
     if (isSidebarOpen) {
-      setTimeout(() => searchRef.current?.focus(), 220);
-    } else {
-      setSearchQuery("");
-      setConfirmDeleteId(null);
+      // Could add focus management here if needed
     }
   }, [isSidebarOpen]);
-
-  function relativeSessionTime(ts: number | undefined): string {
-    if (!ts) return "";
-    const now = Date.now();
-    const diff = now - ts;
-    const minute = 60_000;
-    const hour = 60 * minute;
-    const day = 24 * hour;
-
-    if (diff < minute) return "Just now";
-    if (diff < hour) {
-      const mins = Math.round(diff / minute);
-      return `${mins}m ago`;
-    }
-    if (diff < day) {
-      const hrs = Math.round(diff / hour);
-      return `${hrs}h ago`;
-    }
-    if (diff < 7 * day) {
-      const days = Math.round(diff / day);
-      return days === 1 ? "Yesterday" : `${days}d ago`;
-    }
-    const d = new Date(ts);
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  }
-
-  const handleStartEdit = (sessionId: string, title: string) => {
-    setEditingSessionId(sessionId);
-    setNewTitle(title || "");
-    setConfirmDeleteId(null);
-  };
-
-  const handleSaveEdit = () => {
-    if (newTitle.trim() && editingSessionId) {
-      vscode.postMessage({
-        type: "renameSession",
-        sessionId: editingSessionId,
-        newTitle: newTitle.trim(),
-      });
-    }
-    setEditingSessionId(null);
-    setNewTitle("");
-  };
-
-  const handleCancelEdit = () => {
-    setEditingSessionId(null);
-    setNewTitle("");
-  };
-
-  const handleEditKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") handleSaveEdit();
-    else if (e.key === "Escape") handleCancelEdit();
-  };
-
-  const handleDeleteConfirm = (sessionId: string) => {
-    vscode.postMessage({ type: "deleteSession", sessionId });
-    setConfirmDeleteId(null);
-  };
 
   return (
     <aside
@@ -652,13 +520,8 @@ export function HistorySidebar() {
         <div className="flex items-center gap-2">
           <History className="h-3.5 w-3.5 text-oc-accent" />
           <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-oc-text-muted">
-            Sessions
+            History
           </span>
-          {visibleSessions.length > 0 && (
-            <span className="rounded-full bg-oc-border px-1.5 py-0.5 text-[9px] font-medium tabular-nums text-oc-text-muted leading-none">
-              {visibleSessions.length}
-            </span>
-          )}
         </div>
         <button
           type="button"
@@ -670,193 +533,25 @@ export function HistorySidebar() {
         </button>
       </div>
 
-      <div className="shrink-0 px-3 pb-2.5">
-        <button
-          type="button"
-          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-oc-accent bg-oc-accent-soft py-1.5 text-[11px] font-medium text-oc-accent transition-all hover:bg-oc-accent hover:text-white active:scale-[0.98]"
-          onClick={() => {
-            vscode.postMessage({ type: "createSession" });
-            dispatch({ type: "SET_SIDEBAR_OPEN", payload: false });
-          }}
-        >
-          <span className="text-sm leading-none">+</span>
-          New Chat
-        </button>
-      </div>
-
-      <div className="shrink-0 px-3 pb-2.5">
-        <div className="flex items-center gap-1.5 rounded-md border border-oc-border bg-oc-panel px-2.5 py-1.5 transition-colors focus-within:border-oc-accent">
-          <Search className="h-3 w-3 shrink-0 text-oc-text-muted" />
-          <input
-            ref={searchRef}
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search sessions…"
-            className="flex-1 bg-transparent text-[11px] text-oc-text placeholder-oc-text-muted outline-none"
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => setSearchQuery("")}
-              className="flex h-4 w-4 items-center justify-center rounded text-oc-text-muted hover:text-oc-text"
-              aria-label="Clear search"
-            >
-              <X className="h-2.5 w-2.5" />
-            </button>
-          )}
-        </div>
-      </div>
-
       <div className="mx-3 mb-1 h-px bg-oc-border" />
 
       <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 pt-1">
-        {filteredSessions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
-            {searchQuery ? (
-              <>
-                <Search className="h-8 w-8 text-oc-border" />
-                <p className="text-[11px] text-oc-text-muted">No sessions match</p>
-                <p className="text-[10px] text-oc-text-muted opacity-60">"{searchQuery}"</p>
-              </>
-            ) : (
-              <>
-                <MessageSquare className="h-8 w-8 text-oc-border" />
-                <p className="text-[11px] text-oc-text-muted">No sessions yet</p>
-                <p className="text-[10px] text-oc-text-muted opacity-60">Start a new chat to begin</p>
-              </>
-            )}
-          </div>
-        ) : (
-          groupedSessions.map((group) => (
-            <div key={group.label} className="mb-2">
-              <div className="mb-1 px-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-oc-text-muted opacity-60">
-                {group.label}
-              </div>
-              {group.sessions.map((session) => {
-                const isActive = session.id === currentSessionId;
-                const isProcessing = processingSessionIds?.includes(session.id) || false;
-                const isEditing = editingSessionId === session.id;
-                const isConfirmingDelete = confirmDeleteId === session.id;
-
-                return (
-                  <div
-                    key={session.id}
-                    className="group relative mb-0.5"
-                  >
-                    {isEditing ? (
-                      <div className="flex items-center gap-1 rounded-md border border-oc-accent bg-oc-accent-soft px-2 py-2">
-                        <input
-                          ref={inputRef}
-                          type="text"
-                          value={newTitle}
-                          onChange={(e) => setNewTitle(e.target.value)}
-                          onKeyDown={handleEditKeyDown}
-                          onBlur={handleSaveEdit}
-                          className="flex-1 bg-transparent text-[11px] text-oc-text outline-none"
-                          placeholder="Session title…"
-                        />
-                        <button
-                          type="button"
-                          title="Save"
-                          className="flex h-5 w-5 items-center justify-center rounded text-oc-accent hover:bg-oc-accent hover:text-white transition-colors"
-                          onClick={handleSaveEdit}
-                        >
-                          <Check className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          title="Cancel"
-                          className="flex h-5 w-5 items-center justify-center rounded text-oc-text-muted hover:bg-oc-border transition-colors"
-                          onClick={handleCancelEdit}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ) : isConfirmingDelete ? (
-                      <div className="flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-2">
-                        <span className="flex-1 truncate text-[11px] text-oc-text-muted">
-                          Delete "{session.title || "Untitled chat"}"?
-                        </span>
-                        <button
-                          type="button"
-                          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-red-400 hover:bg-red-500/20 transition-colors"
-                          onClick={() => handleDeleteConfirm(session.id)}
-                        >
-                          Delete
-                        </button>
-                        <button
-                          type="button"
-                          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-oc-text-muted hover:bg-oc-border transition-colors"
-                          onClick={() => setConfirmDeleteId(null)}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <div
-                        className={`flex items-stretch rounded-md transition-all ${isActive
-                            ? "bg-oc-accent-soft"
-                            : "hover:bg-oc-panel"
-                          }`}
-                      >
-                        <div
-                          className={`w-[3px] shrink-0 self-stretch rounded-l-md transition-colors ${isActive ? "bg-oc-accent" : "bg-transparent"
-                            }`}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            vscode.postMessage({ type: "switchSession", sessionId: session.id });
-                            dispatch({ type: "SET_SIDEBAR_OPEN", payload: false });
-                          }}
-                          className="oc-session-item min-w-0 flex-1 overflow-hidden px-2 py-2 text-left"
-                        >
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            {isProcessing ? (
-                              <Loader2 className="h-3 w-3 shrink-0 animate-spin text-oc-accent" aria-label="Processing" />
-                            ) : null}
-                            <span
-                              className={`truncate text-[12px] font-medium leading-tight ${isActive ? "text-oc-text" : "text-oc-text-soft"
-                                }`}
-                            >
-                              {session.title || "Untitled chat"}
-                            </span>
-                          </div>
-                          {session.createdAt ? (
-                            <div className="mt-0.5 text-[10px] text-oc-text-muted tabular-nums">
-                              {relativeSessionTime(session.createdAt)}
-                            </div>
-                          ) : null}
-                        </button>
-                        <div className="flex shrink-0 items-center gap-0.5 pr-1 opacity-0 transition-opacity group-hover:opacity-100">
-                          <button
-                            type="button"
-                            title="Rename session"
-                            aria-label={`Rename session ${session.title ?? session.id}`}
-                            className="oc-session-rename flex h-6 w-6 items-center justify-center rounded text-oc-text-muted transition-colors hover:bg-oc-border hover:text-oc-text"
-                            onClick={() => handleStartEdit(session.id, session.title || "")}
-                          >
-                            <Edit className="h-3 w-3" />
-                          </button>
-                          <button
-                            type="button"
-                            title="Delete session"
-                            aria-label={`Delete session ${session.title ?? session.id}`}
-                            className="oc-session-delete flex h-6 w-6 items-center justify-center rounded text-oc-text-muted transition-colors hover:bg-red-500/15 hover:text-red-400"
-                            onClick={() => setConfirmDeleteId(session.id)}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ))
-        )}
+        <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
+          <History className="h-8 w-8 text-oc-border" />
+          <p className="text-[11px] text-oc-text-muted">Session management moved</p>
+          <p className="text-[10px] text-oc-text-muted opacity-70">
+            Use the session modal to switch, create, or manage sessions
+          </p>
+          <button
+            type="button"
+            className="mt-2 rounded-md border border-oc-accent bg-oc-accent-soft px-3 py-1.5 text-[11px] font-medium text-oc-accent transition-all hover:bg-oc-accent hover:text-white"
+            onClick={() => {
+              vscode.postMessage({ type: "openSessionModal" });
+            }}
+          >
+            Open Sessions
+          </button>
+        </div>
       </div>
     </aside>
   );

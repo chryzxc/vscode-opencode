@@ -108,12 +108,12 @@ test('ChatViewProvider attempts interactive transport recovery before surfacing 
 
   assert.match(
     sendMessageBody,
-    /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*session\.id,\s*baselineAssistantMarker/s,
+    /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*session\.id,\s*baselineAssistantMarker,\s*errorMessage/s,
     'response.error interactive transport-failure path should try session-history recovery before showing an error banner',
   );
   assert.match(
     sendMessageBody,
-    /drainSessionId[\s\S]*isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*drainSessionId,\s*baselineAssistantMarker/s,
+    /drainSessionId[\s\S]*isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(\s*drainSessionId,\s*baselineAssistantMarker,\s*errorMessage/s,
     'thrown interactive transport-failure path should also try session-history recovery before surfacing a hard error',
   );
   assert.match(

@@ -319,8 +319,14 @@ test("extended timeout logging is only for complex queries", () => {
 test("timeout recovery polling delays are preserved", () => {
   assert.match(
     chatProviderSource,
-    /const pollDelaysMs = \[500,\s*1000,\s*1800,\s*2800,\s*4000\]/,
-    "Timeout recovery should use exponential backoff delays"
+    /const pollDelaysMs = this\.getTimeoutRecoveryPollDelays\(failureMessage\)/,
+    "Timeout recovery should derive polling delays from timeout-aware helper"
+  );
+
+  assert.match(
+    chatProviderSource,
+    /return \[500,\s*1000,\s*1800,\s*2800,\s*4000,\s*5500,\s*7000,\s*9000,\s*12000,\s*15000,\s*20000,\s*25000,\s*30000\]/,
+    "Timeout-like failures should use an extended backoff window"
   );
 
   assert.match(
@@ -330,4 +336,3 @@ test("timeout recovery polling delays are preserved", () => {
   );
 });
 });
-

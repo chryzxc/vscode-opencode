@@ -270,6 +270,11 @@ function compactSubagentForPersistence(subagent: unknown): unknown {
       .slice(-MAX_COMPACT_SUBAGENT_EVENTS)
       .map((item) => compactReasoningEventForPersistence(item));
   }
+  if (Array.isArray(rec.conversationEvents)) {
+    compact.conversationEvents = rec.conversationEvents
+      .slice(-MAX_COMPACT_SUBAGENT_EVENTS)
+      .map((item) => sanitizeForPersistence(item));
+  }
   if (Array.isArray(rec.progressEvents)) {
     compact.progressEvents = rec.progressEvents
       .slice(-MAX_COMPACT_SUBAGENT_EVENTS)

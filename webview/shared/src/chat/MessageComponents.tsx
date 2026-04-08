@@ -8,7 +8,10 @@ import {
 } from "react";
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
+  FileText,
   FileText as FileTextIcon,
   Loader2,
   X,
@@ -21,6 +24,7 @@ import {
   HelpCircle,
   Info,
   StopCircle,
+  FileCode,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -28,11 +32,9 @@ import { Stepper, StepperItem } from "@/components/ui/stepper";
 import { TerminalBlock } from "@/components/ui/TerminalBlock";
 import { ExpandableStep } from "@/components/ui/ExpandableStep";
 import { StepIndicator } from "@/components/ui/StepIndicator";
-import { TypingText } from "@/components/ui/TypingText";
 import { cn, formatDuration } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
-import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { CompactDiffPreview } from "./components/CompactDiffPreview";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
@@ -2117,6 +2119,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const structured = asRecord(messageRec?.structuredOutput) || asRecord(infoRec?.structuredOutput);
   const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
   const plan = responseType === "implementation_plan" ? message?.plan : undefined;
+  const changeSummary = message?.changeSummary;
   const messageId = info?.id || message?.id || streaming?.messageId;
 
   useEffect(() => {
@@ -2262,22 +2265,28 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   // Merge subagents from message data and from the store lookup by parent message ID.
   // Prefer store-scoped entries so subagent cards cannot bleed into unrelated messages.
   const subagents = useMemo(() => {
-    const fromStore = (
-      messageId ? (subagentsByParentMessageId[messageId] ?? []) : []
-    ).filter((subagent: SubagentSummary) => {
+    const scopedStore = messageId ? (subagentsByParentMessageId[messageId] ?? []) : [];
+    const fromStore = scopedStore.filter((subagent: SubagentSummary) => {
       if (!messageId) {
         return true;
       }
       return subagent.parentMessageId === messageId;
     });
-    const fromMessage = (
-      Array.isArray(message?.subagents) ? message.subagents : []
-    ).filter((subagent: SubagentSummary) => {
+    const messageSubagents = Array.isArray(message?.subagents) ? message.subagents : [];
+    const fromMessage = messageSubagents.filter((subagent: SubagentSummary) => {
       if (!messageId) {
         return true;
       }
       return subagent.parentMessageId === messageId;
     });
+
+    // Live-stream safety: if finalization temporarily leaves parentMessageId
+    // out-of-sync, keep rendering the scoped bucket/message-attached subagents
+    // instead of dropping the section until hydration catches up.
+    if (fromStore.length === 0 && fromMessage.length === 0) {
+      if (scopedStore.length > 0) return scopedStore;
+      if (messageSubagents.length > 0) return messageSubagents;
+    }
 
     if (fromStore.length === 0) return fromMessage;
     if (fromMessage.length === 0) return fromStore;
@@ -2736,8 +2745,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                             <ExpandableStep>
                               <div className="flex min-w-0 flex-col items-start gap-2 w-full">
                               <div className="flex items-center gap-2 flex-wrap">
-                                <TypingText
-                                  isTyping={event.status === 'pending'}
+                                <span
                                   className={cn(
                                     "oc-refined-event-label",
                                     event.kind === "reasoning" && "reasoning",
@@ -2747,7 +2755,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                   data-operation={event.label.toLowerCase()}
                                 >
                                   {event.label}
-                                </TypingText>
+                                </span>
                                 {event.kind === "activity" && event.source && (
                                   <span className="oc-refined-meta-badge">
                                     {event.source === "raw_debug"
@@ -2805,15 +2813,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                   )
                                 )}
 
-                                {/* Compact diff preview for write/edit operations */}
-                                {event.activityDetail?.diffExcerpt && (
-                                  <CompactDiffPreview
-                                    excerpt={event.activityDetail.diffExcerpt}
-                                    filePath={event.filePath}
-                                    maxLines={5}
-                                  />
-                                )}
-
                                 {/* For non-bash events, render description separately */}
                                 {event.label !== "bash" && event.description && (
                                   <div className="oc-refined-event-content">
@@ -2858,10 +2857,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                     {event.label !== "bash" && event.activityDetail.command && (
                                       <TerminalBlock command={event.activityDetail.command} />
                                     )}
-
-                                    {event.activityDetail.diffExcerpt?.lines?.length ? (
-                                      <ActivityDiffExcerpt excerpt={event.activityDetail.diffExcerpt} />
-                                    ) : null}
                                   </div>
                                 )}
                               </span>
@@ -3028,6 +3023,98 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                 </div>
               )}
+
+              {/* CHANGE SUMMARY SECTION - TEMPORARILY DISABLED
+              
+              User reported that diff previews were showing inside the AI response card
+              above the Raw Response (Debug) section. This changeSummary section
+              (lines 3027-3102) displays file change statistics like "5 files changed +15 -3"
+              with a list of modified files. This appears to be what the user was seeing.
+              
+              The File Changes section (lines 3362-3397) at the bottom now shows actual
+              diff previews with CompactDiffPreview, so this summary section is redundant.
+              
+              TODO: Verify with user that this is the correct section to remove.
+              */}
+              {/* {changeSummary &&
+                Array.isArray(changeSummary.files) &&
+                changeSummary.files.length > 0 && (
+                  <div
+                    className={
+                      hasResponseContent || !!plan
+                        ? "mt-3 pt-3 border-t border-oc-border/30"
+                        : undefined
+                    }
+                  >
+                    <div className="rounded-md border border-oc-border bg-oc-panel-soft/50">
+                      <div className="flex items-center justify-between gap-2 px-3 py-2">
+                        <div className="text-sm font-medium text-oc-text-soft">
+                          {changeSummary.filesChanged} file
+                          {changeSummary.filesChanged === 1 ? "" : "s"} changed
+                          {(changeSummary.added > 0 || changeSummary.deleted > 0) && (
+                            <span className="ml-2 text-xs font-mono">
+                              {changeSummary.added > 0 && (
+                                <span className="text-oc-green">+{changeSummary.added}</span>
+                              )}
+                              {changeSummary.added > 0 && changeSummary.deleted > 0 ? " " : ""}
+                              {changeSummary.deleted > 0 && (
+                                <span className="text-oc-red">-{changeSummary.deleted}</span>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            className="rounded border border-oc-border px-2 py-0.5 text-xs text-oc-text-muted hover:text-oc-text-soft"
+                            onClick={() =>
+                              vscode.postMessage({
+                                type: "undoMessageChanges",
+                                messageId: changeSummary.messageId || messageId,
+                              })
+                            }
+                          >
+                            Undo
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded border border-oc-border px-2 py-0.5 text-xs text-oc-text-muted hover:text-oc-text-soft"
+                            onClick={() =>
+                              vscode.postMessage({
+                                type: "reviewMessageChanges",
+                                files: changeSummary.files.map((file) => file.file),
+                              })
+                            }
+                          >
+                            Review
+                          </button>
+                        </div>
+                      </div>
+                      <div className="border-t border-oc-border/50">
+                        {changeSummary.files.slice(0, 12).map((file) => (
+                          <button
+                            key={file.file}
+                            type="button"
+                            className="flex w-full items-center justify-between px-3 py-1.5 text-left text-xs hover:bg-oc-panel-soft"
+                            onClick={() =>
+                              vscode.postMessage({
+                                type: "openDiff",
+                                file: file.file,
+                              })
+                            }
+                          >
+                            <span className="truncate text-oc-text-soft">{file.file}</span>
+                            <span className="ml-2 shrink-0 font-mono">
+                              {file.added > 0 && <span className="text-oc-green">+{file.added}</span>}
+                              {file.added > 0 && file.deleted > 0 ? " " : ""}
+                              {file.deleted > 0 && <span className="text-oc-red">-{file.deleted}</span>}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )} */}
 
               {hasRawResponseDebug && (
                 <div
@@ -3287,6 +3374,18 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           </div>
         )}
 
+        {/* File Changes - aggregated diffs at the bottom */}
+        {/* Follows UI design from original image with expand/collapse per file */}
+        {(streaming?.steps.some((s) => s.activityDetail?.diffExcerpt) ||
+          timelineDisplayEvents.some((e) => e.activityDetail?.diffExcerpt) ||
+          (Array.isArray(message?.edits) && message.edits.length > 0)) && (
+          <FileChangesSection
+            streamingSteps={streaming?.steps.filter((s) => s.activityDetail?.diffExcerpt) || []}
+            timelineEvents={timelineDisplayEvents.filter((e) => e.activityDetail?.diffExcerpt)}
+            messageEdits={message?.edits || []}
+          />
+        )}
+
         {isStreamingActive && !showResponseSection && hasStreamingActivity && (
           <div className="mt-2 mb-2 px-1">
             <ThinkingStatusTicker className="text-[#4e648c]" />
@@ -3350,6 +3449,235 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     </div>
   );
 });
+
+/**
+ * FileChangesSection - Shows file changes with expand/collapse functionality
+ * Follows UI design from original image with expand/collapse buttons on the right
+ */
+function FileChangesSection({
+  streamingSteps,
+  timelineEvents,
+  messageEdits,
+}: {
+  streamingSteps: Array<{ filePath?: string; title?: string; content?: string; activityDetail?: { diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number } }; diffStats?: { added: number; deleted: number } }>;
+  timelineEvents: Array<{ filePath?: string; summary?: string; description?: string; activityDetail?: { diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number } }; diffStats?: { added: number; deleted: number } }>;
+  messageEdits: Array<{ file: string; added?: number; deleted?: number }>;
+}) {
+  // DEBUG: Log what data we're receiving
+  console.log('[FileChangesSection] DEBUG - Checking all available data sources:', {
+    streamingStepsCount: streamingSteps.length,
+    timelineEventsCount: timelineEvents.length,
+    messageEditsCount: messageEdits.length,
+    // Check if streaming steps have content/detail fields
+    streamingStepsWithContent: streamingSteps.filter(s => s.content || s.detail).length,
+    // Check timeline events for content/detail
+    timelineEventsWithContent: timelineEvents.filter(e => e.content || e.detail).length,
+    streamingStepsSample: streamingSteps.slice(0, 3).map(s => ({
+      filePath: s.filePath,
+      title: s.title,
+      content: s.content?.substring(0, 100),
+      detail: s.detail?.substring(0, 100),
+      hasActivityDetail: !!s.activityDetail,
+      hasDiffExcerpt: !!s.activityDetail?.diffExcerpt,
+      activityDetailKeys: s.activityDetail ? Object.keys(s.activityDetail) : [],
+      diffStats: s.diffStats,
+    })),
+    timelineEventsSample: timelineEvents.slice(0, 3).map(e => ({
+      filePath: e.filePath,
+      summary: e.summary?.substring(0, 100),
+      description: e.description?.substring(0, 100),
+      detail: e.detail?.substring(0, 100),
+      hasActivityDetail: !!e.activityDetail,
+      hasDiffExcerpt: !!e.activityDetail?.diffExcerpt,
+      activityDetailKeys: e.activityDetail ? Object.keys(e.activityDetail) : [],
+      diffStats: e.diffStats,
+    })),
+  });
+
+  // Combine all file changes with their sources
+  const allFileChanges = [
+    ...streamingSteps.map((step) => ({
+      filePath: step.filePath || step.title || step.content || "",
+      source: "streaming" as const,
+      diffExcerpt: step.activityDetail?.diffExcerpt,
+      diffStats: step.diffStats,
+      rawStep: step,
+      // Also check content/detail fields for diff data
+      content: step.content,
+      detail: step.detail,
+    })),
+    ...timelineEvents.map((event) => ({
+      filePath: event.filePath || event.summary || event.description || "",
+      source: "timeline" as const,
+      diffExcerpt: event.activityDetail?.diffExcerpt,
+      diffStats: event.diffStats,
+      rawEvent: event,
+      // Also check content/detail fields for diff data
+      content: event.content,
+      detail: event.detail,
+    })),
+    ...messageEdits.map((edit) => ({
+      filePath: edit.file,
+      source: "message" as const,
+      diffExcerpt: undefined,
+      diffStats: edit.added || edit.deleted ? { added: edit.added || 0, deleted: edit.deleted || 0 } : undefined,
+    })),
+  ];
+
+  // State for expanded/collapsed files
+  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({});
+
+  // Toggle expand/collapse for a specific file
+  const toggleFile = (filePath: string) => {
+    setExpandedFiles((prev) => ({
+      ...prev,
+      [filePath]: !prev[filePath],
+    }));
+  };
+
+  // Expand/collapse all files
+  const toggleAll = () => {
+    const allExpanded = Object.values(expandedFiles).every((v) => v === true);
+    const newState: Record<string, boolean> = {};
+    allFileChanges.forEach((file) => {
+      newState[file.filePath] = !allExpanded;
+    });
+    setExpandedFiles(newState);
+  };
+
+  if (allFileChanges.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 mb-2 border-l-2 border-oc-border pl-3">
+      {/* Header with expand/collapse all button */}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-semibold text-oc-text-soft">
+          <FileCode className="h-3.5 w-3.5 text-oc-accent" />
+          <span>File Changes</span>
+          <span className="text-[10px] font-normal text-oc-text-muted">
+            ({allFileChanges.length} {allFileChanges.length === 1 ? 'file' : 'files'})
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={toggleAll}
+          className="text-[10px] font-mono text-oc-accent hover:underline"
+        >
+          {Object.values(expandedFiles).every((v) => v === true) ? 'Collapse all' : 'Expand all'}
+        </button>
+      </div>
+
+      {/* File list with expand/collapse */}
+      <div className="space-y-1.5">
+        {allFileChanges.map((fileChange, idx) => {
+          const isExpanded = expandedFiles[fileChange.filePath] ?? false; // Default collapsed
+          const fileName = fileChange.filePath.split(/[/\\]/).pop() || fileChange.filePath;
+          
+          // Check for diff content in multiple places
+          const hasDiffExcerpt = fileChange.diffExcerpt?.lines && fileChange.diffExcerpt.lines.length > 0;
+          const hasContent = fileChange.content && fileChange.content.length > 0;
+          const hasDetail = fileChange.detail && fileChange.detail.length > 0;
+          const hasDiffContent = hasDiffExcerpt || hasContent || hasDetail;
+          
+          // Log what we found
+          console.log('[FileChangesSection] File data:', {
+            filePath: fileChange.filePath,
+            hasDiffExcerpt,
+            hasContent,
+            hasDetail,
+            hasDiffContent,
+            contentPreview: fileChange.content?.substring(0, 100),
+            detailPreview: fileChange.detail?.substring(0, 100),
+            diffExcerptLines: fileChange.diffExcerpt?.lines?.length,
+          });
+
+          return (
+            <div
+              key={`${fileChange.source}-${idx}`}
+              className="rounded-md border border-oc-border bg-oc-panel-soft/30 overflow-hidden"
+            >
+              {/* File header row - always visible */}
+              <button
+                type="button"
+                onClick={() => toggleFile(fileChange.filePath)}
+                className="flex w-full items-center justify-between px-2.5 py-1.5 text-left hover:bg-oc-panel-soft transition-colors"
+              >
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  {/* File icon */}
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-oc-text-muted" />
+                  
+                  {/* File name */}
+                  <span className="truncate text-[11px] font-medium text-oc-text-soft">
+                    {fileName}
+                  </span>
+                  
+                  {/* Full path as tooltip */}
+                  {fileChange.filePath !== fileName && (
+                    <span className="truncate text-[9px] text-oc-text-muted opacity-70">
+                      ({fileChange.filePath})
+                    </span>
+                  )}
+                </div>
+
+                {/* Right side: stats + expand/collapse icon */}
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Diff stats */}
+                  {(fileChange.diffStats || fileChange.diffExcerpt) && (
+                    <span className="text-[10px] font-mono text-oc-text-muted">
+                      {fileChange.diffExcerpt?.added || fileChange.diffStats?.added ? (
+                        <span className="text-oc-green">+{fileChange.diffExcerpt?.added || fileChange.diffStats?.added}</span>
+                      ) : null}
+                      {fileChange.diffExcerpt?.deleted || fileChange.diffStats?.deleted ? (
+                        <span className="text-oc-red ml-1">-{fileChange.diffExcerpt?.deleted || fileChange.diffStats?.deleted}</span>
+                      ) : null}
+                    </span>
+                  )}
+
+                  {/* Expand/collapse icon */}
+                  {hasDiffContent && (
+                    <>
+                      {isExpanded ? (
+                        <ChevronDown className="h-3.5 w-3.5 text-oc-text-muted" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5 text-oc-text-muted" />
+                      )}
+                    </>
+                  )}
+                </div>
+              </button>
+
+              {/* Expanded diff content */}
+              {isExpanded && hasDiffContent && (
+                <div className="border-t border-oc-border/50 bg-oc-panel/50">
+                  {fileChange.diffExcerpt ? (
+                    <CompactDiffPreview
+                      excerpt={fileChange.diffExcerpt}
+                      filePath={fileChange.filePath}
+                      maxLines={10}
+                    />
+                  ) : fileChange.content || fileChange.detail ? (
+                    <div className="px-2.5 py-1.5">
+                      <div className="text-[9px] text-oc-text-muted mb-1">Diff output:</div>
+                      <pre className="text-[10px] font-mono whitespace-pre-wrap break-words text-oc-text-soft bg-oc-panel rounded p-2 overflow-x-auto">
+                        {fileChange.content || fileChange.detail}
+                      </pre>
+                    </div>
+                  ) : (
+                    <div className="px-2.5 py-1.5 text-[10px] text-oc-text-muted italic opacity-70">
+                      No diff preview available
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export function AssistantMessage({
   message,
@@ -3660,7 +3988,6 @@ export function MessageStatus({
     </div>
   );
 }
-
 
 
 

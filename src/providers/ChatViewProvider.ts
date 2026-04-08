@@ -94,7 +94,7 @@
  * @see webview/shared/src/chat/index.tsx for frontend implementation
  */
 
-import type { SessionPromptData } from "@opencode-ai/sdk" with { "resolution-mode": "import" };
+import type { FileDiff, SessionPromptData } from "@opencode-ai/sdk" with { "resolution-mode": "import" };
 import * as cp from "child_process";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -147,6 +147,18 @@ import { ConfigFilesProvider } from "./ConfigFilesProvider";
 import { PlanViewProvider } from "./PlanViewProvider";
 
 const log = createLogger(LoggingCategories.CHAT_VIEW);
+
+type MessageChangeSummary = {
+  messageId: string;
+  filesChanged: number;
+  added: number;
+  deleted: number;
+  files: Array<{
+    file: string;
+    added: number;
+    deleted: number;
+  }>;
+};
 
 // All types (QueuedPrompt, PromptDispatchMode, SessionSettings, ChatModelOption,
 // ChatSlashCommand, PersistedCompactionViewState, CompactionBaselineStats,
@@ -823,11 +835,36 @@ export class ChatViewProvider
    */
   private async handleGetSessions(): Promise<void> {
     const sessions = await this.sessionService.listSessions();
-    const sessionsPayload = sessions.map((session: any) => ({
+    const sessionIds = new Set(
+      sessions
+        .map((session: any) => this.firstNonEmptyString(session?.id))
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    );
+    const topLevelSessions = sessions.filter((session: any) => {
+      const parentSessionId = this.firstNonEmptyString(
+        session?.parentSessionId,
+        session?.parentID,
+        session?.parentId,
+      );
+      const sessionId = this.firstNonEmptyString(session?.id);
+      if (!parentSessionId) {
+        return true;
+      }
+      if (sessionId && parentSessionId === sessionId) {
+        return true;
+      }
+      return !sessionIds.has(parentSessionId);
+    });
+    const sessionsPayload = topLevelSessions.map((session: any) => ({
       id: session.id,
       title: session.title || session.id,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
+      parentSessionId: this.firstNonEmptyString(
+        session.parentSessionId,
+        session.parentID,
+        session.parentId,
+      ),
     }));
 
     this.view?.webview.postMessage({
@@ -2243,6 +2280,22 @@ export class ChatViewProvider
           this.handleReviewChanges();
           break;
         }
+        case "reviewMessageChanges": {
+          const files = Array.isArray(message.files)
+            ? message.files
+                .map((file: unknown) => this.firstNonEmptyString(file))
+                .filter((file: string | undefined): file is string => Boolean(file))
+            : undefined;
+          this.handleReviewChanges(files);
+          break;
+        }
+        case "undoMessageChanges": {
+          await this.handleUndoMessageChanges(
+            this.firstNonEmptyString(message.messageId),
+            this.firstNonEmptyString(message.sessionId),
+          );
+          break;
+        }
         case "searchFiles":
         case "getMentions": {
           await this.handleSearchFiles(message.query);
@@ -3347,49 +3400,167 @@ export class ChatViewProvider
     });
   }
 
+  private getTimeoutRecoveryPollDelays(failureMessage?: string): number[] {
+    const timeoutLikeFailure = this.isLikelyInteractiveAwaitTimeoutError(
+      this.firstNonEmptyString(failureMessage) || "",
+    );
+    if (!timeoutLikeFailure) {
+      return [500, 1000, 1800, 2800, 4000];
+    }
+
+    // Timeout-like transport failures are often transient while the model is
+    // still working. Keep polling longer before surfacing a hard error.
+    return [500, 1000, 1800, 2800, 4000, 5500, 7000, 9000, 12000, 15000, 20000, 25000, 30000];
+  }
+
+  private async getSessionStatusType(
+    sessionId: string,
+  ): Promise<"idle" | "busy" | "retry" | undefined> {
+    const client = this.serverManager.getClient();
+    if (!client) {
+      return undefined;
+    }
+
+    try {
+      const workspaceDirectory = this.getWorkspaceDirectory();
+      const response = workspaceDirectory
+        ? await client.session.status({
+            query: { directory: workspaceDirectory },
+          })
+        : await client.session.status({});
+      const statusMap =
+        (response?.data as Record<string, { type?: unknown }>) || {};
+      const status = statusMap[sessionId];
+      const type = this.firstNonEmptyString(status?.type)?.toLowerCase();
+      if (type === "idle" || type === "busy" || type === "retry") {
+        return type;
+      }
+      return undefined;
+    } catch (error) {
+      this.logger.debug("Failed to fetch session status during timeout recovery", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
   private async tryRecoverTimedOutResponse(
     sessionId: string,
     baselineAssistantMarker?: AssistantHistoryMarker,
+    failureMessage?: string,
   ): Promise<boolean> {
-    const pollDelaysMs = [500, 1000, 1800, 2800, 4000];
+    const pollDelaysMs = this.getTimeoutRecoveryPollDelays(failureMessage);
+    const timeoutLikeFailure = this.isLikelyInteractiveAwaitTimeoutError(
+      this.firstNonEmptyString(failureMessage) || "",
+    );
+    const startedAt = Date.now();
+    const maxWaitMs = timeoutLikeFailure ? 30 * 60 * 1000 : 60 * 1000;
+    this.logger.info("Attempting timeout recovery from session history", {
+      sessionId,
+      timeoutLikeFailure,
+      pollAttempts: pollDelaysMs.length,
+      maxWaitMs,
+    });
 
-    for (const delayMs of pollDelaysMs) {
+    for (let attemptIndex = 0; ; attemptIndex += 1) {
+      const delayMs =
+        pollDelaysMs[Math.min(attemptIndex, pollDelaysMs.length - 1)];
       await this.sleep(delayMs);
-      const rawMessages = await this.sessionService.getMessages(sessionId);
-      const latestAssistantMarker =
-        this.getLatestAssistantHistoryMarker(rawMessages);
-      if (
-        !this.hasAssistantHistoryAdvanced(
-          latestAssistantMarker,
-          baselineAssistantMarker,
-        )
-      ) {
+      let rawMessages: any[] | undefined;
+      try {
+        rawMessages = await this.sessionService.getMessages(sessionId);
+      } catch (error) {
+        this.logger.warn("Timeout recovery poll failed to fetch session messages", {
+          sessionId,
+          attempt: attemptIndex + 1,
+          delayMs,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      if (Array.isArray(rawMessages)) {
+        const latestAssistantMarker =
+          this.getLatestAssistantHistoryMarker(rawMessages);
+        if (
+          this.hasAssistantHistoryAdvanced(
+            latestAssistantMarker,
+            baselineAssistantMarker,
+          )
+        ) {
+          const processedMessages = await this.processHistoryMessages(
+            rawMessages,
+            sessionId,
+          );
+          this.logHistoryRenderDiagnostics(
+            "timeout-recovery",
+            sessionId,
+            rawMessages,
+            processedMessages,
+          );
+          this.view?.webview.postMessage({
+            type: "chatHistory",
+            sessionId,
+            messages: processedMessages,
+          });
+          this.logger.info("Timeout recovery succeeded from session history", {
+            sessionId,
+            attempt: attemptIndex + 1,
+            delayMs,
+          });
+          try {
+            await this.sendPersistedCompactionViewState(sessionId);
+          } catch {
+            // best effort only
+          }
+          return true;
+        }
+      }
+
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs >= maxWaitMs) {
+        break;
+      }
+
+      if (!timeoutLikeFailure) {
+        if (attemptIndex >= pollDelaysMs.length - 1) {
+          break;
+        }
         continue;
       }
 
-      const processedMessages = await this.processHistoryMessages(
-        rawMessages,
-        sessionId,
-      );
-      this.logHistoryRenderDiagnostics(
-        "timeout-recovery",
-        sessionId,
-        rawMessages,
-        processedMessages,
-      );
-      this.view?.webview.postMessage({
-        type: "chatHistory",
-        sessionId,
-        messages: processedMessages,
-      });
-      try {
-        await this.sendPersistedCompactionViewState(sessionId);
-      } catch {
-        // best effort only
+      // User stopped/cancelled or session switched away from active processing.
+      if (!this.processingSessionIds.has(sessionId)) {
+        this.logger.info("Ending timeout recovery because session is no longer processing", {
+          sessionId,
+          attempt: attemptIndex + 1,
+          elapsedMs,
+        });
+        return false;
       }
-      return true;
+
+      const statusType = await this.getSessionStatusType(sessionId);
+      if (statusType === "idle") {
+        // Server reports idle and still no assistant message advance.
+        break;
+      }
+
+      if (attemptIndex > 0 && attemptIndex % 4 === 0) {
+        this.logger.info("Still waiting for final assistant response after timeout-like transport error", {
+          sessionId,
+          attempt: attemptIndex + 1,
+          elapsedMs,
+          statusType: statusType || "unknown",
+        });
+      }
     }
 
+    this.logger.warn("Timeout recovery exhausted without assistant history advance", {
+      sessionId,
+      timeoutLikeFailure,
+      pollAttempts: pollDelaysMs.length,
+      elapsedMs: Date.now() - startedAt,
+    });
     return false;
   }
 
@@ -3511,13 +3682,13 @@ export class ChatViewProvider
           sessionID,
           hasError: Boolean(result.error),
           hasData: Boolean(result.data),
-          timeout,
+          timeout: timeout,
         });
       }).catch((error: Error) => {
         const sdkDuration = Date.now() - sdkStartTime;
         this.logger.error(`SDK prompt call failed after ${sdkDuration}ms`, {
           sessionID,
-          timeout,
+          timeout: timeout,
           error: error.message,
         });
       });
@@ -4145,6 +4316,9 @@ export class ChatViewProvider
         if (!Array.isArray(merged.thinkingEvents)) {
           merged.thinkingEvents = [];
         }
+        if (!Array.isArray(merged.conversationEvents)) {
+          merged.conversationEvents = [];
+        }
         if (!Array.isArray(merged.timelineEvents)) {
           merged.timelineEvents = [];
         }
@@ -4571,6 +4745,17 @@ export class ChatViewProvider
       message?.info?.role,
       message?.role,
     )?.toLowerCase();
+    const isAssistantLikeRole =
+      role === "assistant" ||
+      (!role &&
+        Boolean(
+          this.firstNonEmptyString(
+            message?.info?.modelID,
+            message?.modelID,
+            message?.info?.providerID,
+            message?.providerID,
+          ),
+        ));
 
     if (role === "system") {
       return {
@@ -4585,7 +4770,7 @@ export class ChatViewProvider
     const structured = this.extractStructuredOutput(message);
     if (!structured) {
       const bodyText = this.extractMessageBodyText(message);
-      if (role === "assistant" && bodyText) {
+      if (isAssistantLikeRole && bodyText) {
         const next: any = {
           ...message,
           structuredOutput: {
@@ -4610,7 +4795,7 @@ export class ChatViewProvider
         }
         return next;
       }
-      if (role === "assistant" && !bodyText) {
+      if (isAssistantLikeRole && !bodyText) {
         // Keep partial stop/activity turns intact so activity/reasoning widgets can render.
         // These turns may have no assistant text body but still contain useful non-text parts.
         if (this.hasNonTextActivityParts(message)) {
@@ -5398,6 +5583,7 @@ export class ChatViewProvider
           const recovered = await this.tryRecoverTimedOutResponse(
             session.id,
             baselineAssistantMarker,
+            errorMessage,
           );
           if (recovered) {
             this.logger.info(
@@ -5759,12 +5945,27 @@ export class ChatViewProvider
               plainTextFallbackReason: normalizedFallbackReason.slice(0, 500),
             }
             : undefined;
-        const finalMessage = plainTextFallbackMetadata
+        let finalMessage = plainTextFallbackMetadata
           ? {
             ...enrichedMessage,
             ...plainTextFallbackMetadata,
           }
           : enrichedMessage;
+
+        const finalAssistantMessageId = this.extractMessageId(finalMessage);
+        if (finalAssistantMessageId) {
+          const changeSummary = await this.summarizeSessionDiffForMessage(
+            client,
+            session.id,
+            finalAssistantMessageId,
+          );
+          if (changeSummary) {
+            finalMessage = {
+              ...finalMessage,
+              changeSummary,
+            };
+          }
+        }
 
         const debugMessage = {
           ...finalMessage,
@@ -5902,6 +6103,7 @@ export class ChatViewProvider
         const recovered = await this.tryRecoverTimedOutResponse(
           drainSessionId,
           baselineAssistantMarker,
+          errorMessage,
         );
         if (recovered) {
           this.logger.info(
@@ -6923,7 +7125,103 @@ export class ChatViewProvider
     }
   }
 
-  private async handleReviewChanges() {
+  private async summarizeSessionDiffForMessage(
+    client: Awaited<ReturnType<OpencodeServerManager["ensureRunning"]>>,
+    sessionId: string,
+    messageId: string,
+  ): Promise<MessageChangeSummary | undefined> {
+    try {
+      const workspaceDir = this.getWorkspaceDirectory();
+      const diffResponse = workspaceDir
+        ? await client.session.diff({
+            path: { id: sessionId },
+            query: { directory: workspaceDir, messageID: messageId },
+          })
+        : await client.session.diff({
+            path: { id: sessionId },
+            query: { messageID: messageId },
+          });
+
+      const rows = Array.isArray(diffResponse?.data)
+        ? (diffResponse.data as FileDiff[])
+            .map((item) => ({
+              file: this.firstNonEmptyString(item?.file),
+              added:
+                typeof item?.additions === "number" && Number.isFinite(item.additions)
+                  ? Math.max(0, item.additions)
+                  : 0,
+              deleted:
+                typeof item?.deletions === "number" && Number.isFinite(item.deletions)
+                  ? Math.max(0, item.deletions)
+                  : 0,
+            }))
+            .filter(
+              (item): item is { file: string; added: number; deleted: number } =>
+                Boolean(item.file),
+            )
+        : [];
+
+      if (rows.length === 0) {
+        return undefined;
+      }
+
+      const added = rows.reduce((sum, row) => sum + row.added, 0);
+      const deleted = rows.reduce((sum, row) => sum + row.deleted, 0);
+
+      return {
+        messageId,
+        filesChanged: rows.length,
+        added,
+        deleted,
+        files: rows,
+      };
+    } catch (error) {
+      this.logger.warn("Failed to summarize session diff for message", {
+        sessionId,
+        messageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  private async handleUndoMessageChanges(
+    messageId?: string,
+    requestedSessionId?: string,
+  ): Promise<void> {
+    const targetMessageId = this.firstNonEmptyString(messageId);
+    const targetSessionId = this.firstNonEmptyString(
+      requestedSessionId,
+      this.currentSessionId,
+    );
+    if (!targetMessageId || !targetSessionId) {
+      return;
+    }
+
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const workspaceDir = this.getWorkspaceDirectory();
+      await client.session.revert({
+        path: { id: targetSessionId },
+        query: workspaceDir ? { directory: workspaceDir } : undefined,
+        body: { messageID: targetMessageId },
+      });
+
+      await this.handleLoadSession(targetSessionId);
+      await this.handleGetSessions();
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error("Failed to undo message changes", {
+        messageId: targetMessageId,
+        sessionId: targetSessionId,
+        error: errorMessage,
+      });
+      vscode.window.showErrorMessage(`Failed to undo changes: ${errorMessage}`);
+    }
+  }
+
+  private async handleReviewChanges(targetFiles?: string[]) {
     try {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) {
@@ -6948,19 +7246,43 @@ export class ChatViewProvider
           );
         });
 
-      const diffOutput = await runGit("diff", "HEAD");
+      const normalizedTargetFiles = Array.isArray(targetFiles)
+        ? targetFiles
+            .map((file) => file.trim())
+            .filter((file) => file.length > 0)
+        : [];
+
+      const diffOutput =
+        normalizedTargetFiles.length > 0
+          ? await runGit("diff", "HEAD", "--", ...normalizedTargetFiles)
+          : await runGit("diff", "HEAD");
+      const stagedDiffOutput =
+        normalizedTargetFiles.length > 0
+          ? await runGit("diff", "--cached", "--", ...normalizedTargetFiles)
+          : await runGit("diff", "--cached");
 
       // Include untracked files as pseudo-diffs
-      const untrackedFilesOutput = await runGit(
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-      );
+      const untrackedFilesOutput =
+        normalizedTargetFiles.length > 0
+          ? await runGit(
+              "ls-files",
+              "--others",
+              "--exclude-standard",
+              "--",
+              ...normalizedTargetFiles,
+            )
+          : await runGit(
+              "ls-files",
+              "--others",
+              "--exclude-standard",
+            );
       const untrackedFiles = untrackedFilesOutput
         .split("\n")
         .filter((f) => f.trim());
 
-      let allDiffs = diffOutput;
+      let allDiffs = [diffOutput, stagedDiffOutput]
+        .filter((chunk) => chunk.trim().length > 0)
+        .join("\n");
       for (const file of untrackedFiles) {
         try {
           const fileUri = vscode.Uri.file(path.join(cwd, String(file)));
@@ -6993,7 +7315,13 @@ export class ChatViewProvider
         }
       }
 
-      // Fallback to SCM view if no diffs found
+      // Fallback to file diff if caller provided a target list.
+      if (normalizedTargetFiles.length > 0) {
+        await this.handleOpenDiff(normalizedTargetFiles[0]);
+        return;
+      }
+
+      // Fallback to SCM view if no diffs found.
       await vscode.commands.executeCommand("workbench.view.scm");
     } catch (error: any) {
       vscode.window.showErrorMessage(

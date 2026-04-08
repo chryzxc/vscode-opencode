@@ -282,6 +282,20 @@ export interface MessageStep {
   filePath?: string;
 }
 
+export interface MessageChangeSummaryFile {
+  file: string;
+  added: number;
+  deleted: number;
+}
+
+export interface MessageChangeSummary {
+  messageId?: string;
+  filesChanged: number;
+  added: number;
+  deleted: number;
+  files: MessageChangeSummaryFile[];
+}
+
 export interface ActivityDiffExcerpt {
   header?: string;
   lines?: string[];
@@ -390,6 +404,16 @@ export interface SubagentThinkingEvent {
   partID?: string;
 }
 
+export interface SubagentConversationEvent {
+  id: string;
+  role: string;
+  kind: 'message' | 'reasoning' | 'step';
+  text: string;
+  createdAt: number;
+  messageID?: string;
+  partID?: string;
+}
+
 export interface SubagentProgressEvent {
   id: string;
   title: string;
@@ -420,6 +444,7 @@ export interface SubagentSummary {
 
 export interface SubagentDetail extends SubagentSummary {
   thinkingEvents: SubagentThinkingEvent[];
+  conversationEvents?: SubagentConversationEvent[];
   progressEvents: SubagentProgressEvent[];
   timelineEvents: SubagentTimelineEvent[];
   tokenUsage?: {
@@ -459,6 +484,7 @@ export interface Message {
   edits?: MessageEdit[];
   steps?: MessageStep[];
   timing?: { duration?: number };
+  changeSummary?: MessageChangeSummary;
   // Optional image attachments as data URLs
   images?: string[];
   // Optional structured attachments

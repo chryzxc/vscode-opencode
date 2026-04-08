@@ -1368,16 +1368,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       // instead of showing the "Thinking..." bubble
       if (action.payload && (!state.streaming || !state.streaming.isActive)) {
         try {
-          // Only create streaming state if we have valid model selection
-          // Otherwise just set isProcessing and let stream events create the state
-          const hasValidModel =
-            state.selectedModel?.modelID && state.selectedModel?.providerID;
-
-          if (!hasValidModel) {
-            // No valid model yet, just set processing flag
-            return { ...state, isProcessing: true };
-          }
-
+          // Initialize streaming state WITHOUT model/provider assumptions.
+          // The actual model used will be set from stream events or the final messageResponse.
+          // This prevents displaying the wrong model when subagents use different models.
           const streamingState: StreamingState = {
             messageId: null,
             content: "",
@@ -1388,12 +1381,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             edits: [],
             isActive: true,
             agent: state.selectedAgent || undefined,
-            model: {
-              modelID: state.selectedModel!.modelID,
-              providerID: state.selectedModel!.providerID,
-            },
-            modelID: state.selectedModel!.modelID,
-            providerID: state.selectedModel!.providerID,
+            // NOTE: model, modelID, providerID intentionally omitted
+            // They will be set from actual stream events or messageResponse
           };
           return {
             ...state,

@@ -7,30 +7,46 @@ const messageComponentsSource = readSource(
   'MessageComponents.tsx',
 );
 
-test('AssistantMessage imports TypingText component', () => {
-  assert.match(
+test('AssistantMessage does NOT import TypingText component', () => {
+  assert.doesNotMatch(
     messageComponentsSource,
-    /TypingText/,
-    'Should import TypingText component'
+    /import.*TypingText/,
+    'Should NOT import TypingText component'
   );
 });
 
-test('AssistantMessageInner uses TypingText for step labels', () => {
+test('AssistantMessageInner uses plain span for step labels', () => {
   const body = extractFunctionBody(messageComponentsSource, 'function AssistantMessageInner(');
 
-  assert.match(
+  assert.doesNotMatch(
     body,
     /<TypingText/,
-    'Should use TypingText component for step labels'
+    'Should NOT use TypingText component for step labels'
+  );
+
+  assert.match(
+    body,
+    /<span[^>]*event\.label/,
+    'Should use plain span element for step labels'
   );
 });
 
-test('TypingText isTyping prop is controlled by step status', () => {
+test('Step labels have oc-refined-event-label class', () => {
   const body = extractFunctionBody(messageComponentsSource, 'function AssistantMessageInner(');
 
   assert.match(
     body,
-    /isTyping.*event\.status|event\.status.*isTyping/,
-    'Should tie isTyping to step status'
+    /oc-refined-event-label/,
+    'Should preserve the oc-refined-event-label styling class'
+  );
+});
+
+test('Step labels preserve data-operation attribute', () => {
+  const body = extractFunctionBody(messageComponentsSource, 'function AssistantMessageInner(');
+
+  assert.match(
+    body,
+    /data-operation.*event\.label\.toLowerCase\(\)|event\.label\.toLowerCase\(\).*data-operation/,
+    'Should preserve the data-operation attribute for testing'
   );
 });

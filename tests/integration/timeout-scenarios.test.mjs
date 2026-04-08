@@ -103,14 +103,14 @@ test("SDK call performance logging includes duration and timeout", async (t) => 
   // Verify performance logging includes timing
   assert.match(
     chatProviderSource,
-    /logger\.performance.*SDK prompt call completed.*sdkDuration.*timeout/,
+    /logger\.performance[\s\S]*SDK prompt call completed[\s\S]*sdkDuration[\s\S]*timeout:\s*timeout/,
     "Performance log should include both duration and timeout value"
   );
 
   // Verify error logging includes timing
   assert.match(
     chatProviderSource,
-    /logger\.error.*SDK prompt call failed after.*sdkDuration.*timeout/,
+    /logger\.error[\s\S]*SDK prompt call failed after[\s\S]*sdkDuration[\s\S]*timeout:\s*timeout/,
     "Error log should include both duration and timeout value"
   );
 
@@ -181,14 +181,14 @@ test("invalid timeout values fall back to safe default", async (t) => {
   // Verify lower bound validation
   assert.match(
     chatProviderSource,
-    /if \(timeout < 10000\)[\s\S]*logger\.warn.*return 120000/,
+    /if \(timeout < 10000 \|\| timeout > 600000\)[\s\S]*logger\.warn[\s\S]*return 120000/,
     "Timeouts below 10 seconds should fall back to default"
   );
 
   // Verify upper bound validation
   assert.match(
     chatProviderSource,
-    /if \(timeout > 600000\)[\s\S]*logger\.warn.*return 120000/,
+    /if \(timeout < 10000 \|\| timeout > 600000\)[\s\S]*logger\.warn[\s\S]*return 120000/,
     "Timeouts above 10 minutes should fall back to default"
   );
 
@@ -226,10 +226,9 @@ test("query complexity flags are correctly passed through call chain", async (t)
   // Verify flags are passed to promptWithStructuredOutput
   assert.match(
     chatProviderSource,
-    /promptWithStructuredOutput\([^{]*\{\s*hasFiles:\s*Boolean\(files\?\.length\),\s*hasContexts:\s*Boolean\(contexts\?\.length\),\s*hasImages:\s*Boolean\(images\?\.length\)\s*\}/,
+    /promptWithStructuredOutput\([\s\S]*hasFiles:\s*Boolean\(files\?\.length\)[\s\S]*hasContexts:\s*Boolean\(contexts\?\.length\)[\s\S]*hasImages:\s*Boolean\(images\?\.length\)/,
     "Complexity flags should be passed in options object"
   );
 
   // ✓ Query complexity flag passing verified
 });
-

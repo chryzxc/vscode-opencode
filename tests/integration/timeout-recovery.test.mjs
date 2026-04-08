@@ -23,8 +23,14 @@ test("timeout recovery mechanism coexists with explicit timeout", async () => {
 
   assert.match(
     chatProviderSource,
-    /const pollDelaysMs = \[500,\s*1000,\s*1800,\s*2800,\s*4000\]/,
-    "Should use exponential backoff for recovery polling"
+    /const pollDelaysMs = this\.getTimeoutRecoveryPollDelays\(failureMessage\)/,
+    "Should derive poll delays from timeout-aware recovery helper"
+  );
+
+  assert.match(
+    chatProviderSource,
+    /return \[500,\s*1000,\s*1800,\s*2800,\s*4000,\s*5500,\s*7000,\s*9000,\s*12000,\s*15000,\s*20000,\s*25000,\s*30000\]/,
+    "Should use an extended backoff window for timeout-like failures"
   );
 });
 
@@ -150,8 +156,14 @@ test("timeout recovery returns false when recovery fails", async () => {
 
   assert.match(
     chatProviderSource,
-    /for \(const delayMs of pollDelaysMs\)/,
-    "Should iterate through poll delays"
+    /for \(let attemptIndex = 0;\s*;\s*attemptIndex \+= 1\)/,
+    "Should keep polling with an incrementing attempt counter"
+  );
+
+  assert.match(
+    chatProviderSource,
+    /pollDelaysMs\[Math\.min\(attemptIndex,\s*pollDelaysMs\.length - 1\)\]/,
+    "Should cap delay selection to the last configured backoff interval"
   );
 
   assert.match(
@@ -181,7 +193,7 @@ test("timeout recovery includes delay between polls", async () => {
 
   assert.match(
     chatProviderSource,
-    /const rawMessages = await this\.sessionService\.getMessages\(session\.id\)/,
+    /rawMessages = await this\.sessionService\.getMessages\(sessionId\)/,
     "Should fetch messages after each delay"
   );
 });
@@ -194,7 +206,7 @@ test("timeout recovery logs suppression for interactive awaits", async () => {
 
   assert.match(
     chatProviderSource,
-    /logger\.info.*Suppressing thrown timeout while awaiting interactive response/,
+    /logger\.info[\s\S]*Suppressing thrown timeout while awaiting interactive response/,
     "Should log timeout suppression for interactive awaits"
   );
 
@@ -213,7 +225,7 @@ test("timeout recovery logs successful recovery", async () => {
 
   assert.match(
     chatProviderSource,
-    /logger\.info.*Recovered thrown timeout from session history without user retry/,
+    /logger\.info[\s\S]*Recovered thrown timeout from session history without user retry/,
     "Should log successful timeout recovery"
   );
 
@@ -232,13 +244,13 @@ test("timeout recovery logs retry attempt", async () => {
 
   assert.match(
     chatProviderSource,
-    /logger\.warn.*Thrown interactive transport failure; retrying once/,
+    /logger\.warn[\s\S]*Thrown interactive transport failure; retrying once/,
     "Should log retry attempt for interactive transport failures"
   );
 
   assert.match(
     chatProviderSource,
-    /isRetry:\s*true/,
+    /return this\.handleSendMessage\([\s\S]*,\s*true,\s*recoveredContext/s,
     "Should pass isRetry flag on retry"
   );
 });
@@ -299,4 +311,3 @@ test("timeout recovery marker comparison handles different formats", async () =>
     "Should normalize both array and object marker formats"
   );
 });
-

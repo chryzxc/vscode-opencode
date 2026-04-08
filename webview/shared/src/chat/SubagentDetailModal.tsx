@@ -154,6 +154,13 @@ export function SubagentDetailModal({
 		}
 		return deduped;
 	}, [detail.timelineEvents]);
+	const renderedConversation = useMemo(() => {
+		const source = Array.isArray(detail.conversationEvents)
+			? detail.conversationEvents
+			: [];
+		const sorted = [...source].sort((a, b) => a.createdAt - b.createdAt);
+		return sorted.filter((event) => cleanLabel(event.text || "").length > 0);
+	}, [detail.conversationEvents]);
 
 	const modalContent = (
 		<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-2 backdrop-blur-sm animate-in fade-in duration-200 sm:p-4 md:p-6">
@@ -268,6 +275,31 @@ export function SubagentDetailModal({
 									<div className="py-2 text-sm italic text-muted-foreground/50">No progress events available.</div>
 								)}
 							</div>
+
+							{renderedConversation.length > 0 && (
+								<div className="flex flex-col gap-2 pt-1">
+									<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+										Conversation ({renderedConversation.length})
+									</span>
+									<div className="space-y-2">
+										{renderedConversation.map((event) => (
+											<div
+												key={event.id}
+												className="rounded-md border border-oc-border bg-oc-bg-soft px-3 py-2.5"
+											>
+												<div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+													<span>{event.role}</span>
+													<span>•</span>
+													<span>{event.kind}</span>
+												</div>
+												<div className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">
+													{event.text}
+												</div>
+											</div>
+										))}
+									</div>
+								</div>
+							)}
 
 							{detail.thinkingEvents && detail.thinkingEvents.length > 0 && (
 								<div className="flex flex-col gap-2 pt-1">

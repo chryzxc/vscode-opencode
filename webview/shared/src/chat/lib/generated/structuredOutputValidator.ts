@@ -359,12 +359,10 @@ export function validateStructuredOutput(
     // IMPORTANT CONTRACT: implementation plans must provide plan.file so the
     // plan viewer/proceed flow can resolve the source-of-truth file path.
     const plan = asRecord(record.plan);
-    const planContent =
-      plan && typeof plan.content === "string" ? plan.content.trim() : "";
     const planFile =
       plan && typeof plan.file === "string" ? plan.file.trim() : "";
-    if (!planContent && !planFile) {
-      errors.push("implementation_plan requires plan.file or plan.content string");
+    if (!planFile) {
+      errors.push("implementation_plan requires plan.file string");
     }
     if (plan && typeof plan.content !== "undefined" && typeof plan.content !== "string") {
       errors.push("plan.content must be a string when provided");

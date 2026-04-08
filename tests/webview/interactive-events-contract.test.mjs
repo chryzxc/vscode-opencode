@@ -467,7 +467,7 @@ test('provider retries one-shot interactive transport failures before surfacing 
 
   assert.match(
     sendMessageBody,
-    /if \(this\.isLikelyInteractiveTransportFailure\(errorMessage\)\)[\s\S]*tryRecoverTimedOutResponse\(\s*session\.id,\s*baselineAssistantMarker/s,
+    /if \(this\.isLikelyInteractiveTransportFailure\(errorMessage\)\)[\s\S]*tryRecoverTimedOutResponse\(\s*session\.id,\s*baselineAssistantMarker,\s*errorMessage/s,
     'response.error path should attempt interactive transport recovery from history before showing failure',
   );
   assert.match(

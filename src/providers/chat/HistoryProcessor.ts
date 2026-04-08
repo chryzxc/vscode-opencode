@@ -50,6 +50,17 @@ export class HistoryProcessor {
       message?.info?.role,
       message?.role,
     )?.toLowerCase();
+    const isAssistantLikeRole =
+      role === "assistant" ||
+      (!role &&
+        Boolean(
+          this.firstNonEmptyString(
+            message?.info?.modelID,
+            message?.modelID,
+            message?.info?.providerID,
+            message?.providerID,
+          ),
+        ));
 
     // System messages get a default structured output
     if (role === "system") {
@@ -68,7 +79,7 @@ export class HistoryProcessor {
     if (!structured) {
       // No structured output - return message with default
       const bodyText = this.extractMessageBodyText(message);
-      if (role === "assistant" && bodyText) {
+      if (isAssistantLikeRole && bodyText) {
         return {
           ...message,
           structuredOutput: {

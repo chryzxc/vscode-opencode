@@ -204,8 +204,8 @@ test('validateStructuredOutput validates implementation_plan responseType', () =
 
   assert.match(fnBody, /if \(responseType === "implementation_plan"\)/, 'Should check for implementation_plan responseType');
   assert.match(fnBody, /const plan = asRecord\(record\.plan\);/, 'Should extract plan');
-  assert.match(fnBody, /!planContent && !planFile/, 'Should validate plan has file or content');
-  assert.match(fnBody, /implementation_plan requires plan\.file or plan\.content string/, 'Should include implementation_plan error');
+  assert.match(fnBody, /if \(!planFile\)/, 'Should validate implementation_plan has plan.file');
+  assert.match(fnBody, /implementation_plan requires plan\.file string/, 'Should include implementation_plan error');
 });
 
 test('validateStructuredOutput validates subagents responseType', () => {
@@ -352,7 +352,7 @@ test('validator validates all nested properties', () => {
 
 test('validator handles all response type specific requirements', () => {
   // implementation_plan
-  assert.match(validatorSource, /implementation_plan requires plan\.file or plan\.content string/, 'Should enforce implementation_plan requirements');
+  assert.match(validatorSource, /implementation_plan requires plan\.file string/, 'Should enforce implementation_plan requirements');
 
   // subagents
   assert.match(validatorSource, /subagents responseType requires subagents array or subagentsDelta\.items/, 'Should enforce subagents requirements');

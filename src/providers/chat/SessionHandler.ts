@@ -55,11 +55,45 @@ export class SessionHandler {
 
     try {
       const sessions = await this.sessionService.listSessions();
-      const sessionsPayload = sessions.map((session: any) => ({
+      const sessionIds = new Set(
+        sessions
+          .map((session: any) =>
+            typeof session?.id === "string" ? session.id.trim() : "",
+          )
+          .filter((id: string) => id.length > 0),
+      );
+      const topLevelSessions = sessions.filter((session: any) => {
+        const sessionId =
+          typeof session?.id === "string" ? session.id.trim() : "";
+        const parentSessionId =
+          typeof session?.parentSessionId === "string" &&
+          session.parentSessionId.trim().length > 0
+            ? session.parentSessionId.trim()
+            : typeof session?.parentID === "string" &&
+              session.parentID.trim().length > 0
+              ? session.parentID.trim()
+              : "";
+        if (!parentSessionId) {
+          return true;
+        }
+        if (sessionId && parentSessionId === sessionId) {
+          return true;
+        }
+        return !sessionIds.has(parentSessionId);
+      });
+      const sessionsPayload = topLevelSessions.map((session: any) => ({
         id: session.id,
         title: session.title || session.id,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
+        parentSessionId:
+          (typeof session.parentSessionId === "string" &&
+          session.parentSessionId.trim().length > 0
+            ? session.parentSessionId
+            : typeof session.parentID === "string" &&
+              session.parentID.trim().length > 0
+              ? session.parentID
+              : undefined),
       }));
 
       const fingerprint = JSON.stringify(sessionsPayload);

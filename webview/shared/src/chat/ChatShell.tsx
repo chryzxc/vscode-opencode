@@ -1,5 +1,4 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
 
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
 import { createMessageHandler } from "./lib/messageHandler";
@@ -56,6 +55,19 @@ function CompactionDivider({ at }: { at?: number }) {
   );
 }
 
+function SessionLoadingSpinner() {
+  return (
+    <div className="flex items-center justify-center gap-2">
+      {/* Three dot loading animation */}
+      <div className="flex gap-1.5">
+        <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0s' }} />
+        <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.2s' }} />
+        <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.4s' }} />
+      </div>
+    </div>
+  );
+}
+
 function ChatContent() {
   const state = useAppState();
   const dispatch = useAppDispatch();
@@ -68,6 +80,9 @@ function ChatContent() {
   });
   const [showSkillInstaller, setShowSkillInstaller] = useState(false);
   const streamViewportRef = useRef(streamViewport);
+  const previousIsLoadingSessionRef = useRef(state.isLoadingSession);
+  const previousReceivedInitStateRef = useRef(state.receivedInitState);
+  const previousStreamingActiveRef = useRef(Boolean(state.streaming?.isActive));
 
   const resolveAgentColor = (agentId?: string) => {
     if (!agentId) return "var(--oc-accent)";
@@ -88,6 +103,39 @@ function ChatContent() {
   useEffect(() => {
     streamViewportRef.current = streamViewport;
   }, [streamViewport]);
+
+  useEffect(() => {
+    const isStreamingNow = Boolean(state.streaming?.isActive);
+    const justLoadedInitialChat =
+      !previousReceivedInitStateRef.current && state.receivedInitState;
+    const justFinishedSessionLoad =
+      previousIsLoadingSessionRef.current && !state.isLoadingSession;
+    const justFinishedAiResponse =
+      previousStreamingActiveRef.current && !isStreamingNow;
+    const shouldSnapToLatest =
+      state.messages.length > 0 &&
+      (justLoadedInitialChat || justFinishedSessionLoad || justFinishedAiResponse);
+
+    if (shouldSnapToLatest) {
+      setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
+      requestAnimationFrame(() => {
+        const root = messagesScrollRef.current;
+        if (root) {
+          root.scrollTop = root.scrollHeight;
+        }
+        messagesEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+      });
+    }
+
+    previousReceivedInitStateRef.current = state.receivedInitState;
+    previousIsLoadingSessionRef.current = state.isLoadingSession;
+    previousStreamingActiveRef.current = isStreamingNow;
+  }, [
+    state.isLoadingSession,
+    state.messages.length,
+    state.receivedInitState,
+    state.streaming?.isActive,
+  ]);
 
   // Register message listener
   useEffect(() => {
@@ -205,15 +253,9 @@ function ChatContent() {
     }
   }, [state.messages, state.streaming]);
 
-  // Detect when session loading is complete and dispatch END_SESSION_LOADING
-  useEffect(() => {
-    if (state.isLoadingSession && state.loadingSessionId === state.currentSessionId) {
-      // Messages are rendered - loading is complete
-      dispatch({ type: "END_SESSION_LOADING" });
-    }
-  }, [state.messages, state.isLoadingSession, state.loadingSessionId, state.currentSessionId, dispatch]);
-
   // Safety net: Clear loading state if it takes too long (10 seconds)
+  // Note: END_SESSION_LOADING is normally dispatched in messageHandler after chatHistory loads
+  // This timeout only handles edge cases where loading state gets stuck
   useEffect(() => {
     if (!state.isLoadingSession) return;
 
@@ -256,6 +298,25 @@ function ChatContent() {
     !state.isLoadingSession && // Direct state check to avoid timing issues
     ((isAiResponding && !state.streaming && !state.isCompacting) ||
     (hasOnlyReasoning && !state.isCompacting));
+
+  // DEBUG: Log EVERY render to see what's happening
+  console.log('🖥️ [ChatShell Render] ALWAYS LOG - State check', {
+    isLoadingSession: state.isLoadingSession,
+    loadingSessionId: state.loadingSessionId,
+    currentSessionId: state.currentSessionId,
+    isProcessing: state.isProcessing,
+    isAiResponding,
+    showAiResponseLoading,
+    streaming: !!state.streaming
+  });
+
+  // VERY OBVIOUS STARTUP LOG
+  // @ts-expect-error - Debug property on window
+  if (!window.debugLogInitialized) {
+    console.log('🚨🚨🚨 [STARTUP] ChatShell.tsx with DEBUG LOGS is LOADED! 🚨🚨🚨');
+    // @ts-expect-error - Debug property on window
+    window.debugLogInitialized = true;
+  }
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
       ? Math.max(
@@ -292,15 +353,16 @@ function ChatContent() {
           style={{ background: "var(--oc-chat-bg)" }}
         >
           {isSwitchingSession ? (
+            (() => {
+              console.log('✅ [RENDER] Session Loading UI showing', {
+                loadingSessionTitle: state.loadingSessionTitle,
+                loadingSessionId: state.loadingSessionId,
+                currentSessionId: state.currentSessionId
+              });
+              return null;
+            })(),
             <div className="flex h-full items-center justify-center">
-              <div className="flex flex-col items-center gap-4">
-                <Loader2 className="h-8 w-8 animate-spin text-oc-accent" />
-                <span className="text-sm text-oc-text-muted">
-                  {state.loadingSessionTitle
-                    ? `Loading "${state.loadingSessionTitle}"...`
-                    : "Loading conversation..."}
-                </span>
-              </div>
+              <SessionLoadingSpinner />
             </div>
           ) : (
             <>
@@ -376,7 +438,7 @@ function ChatContent() {
             let messageNode: JSX.Element;
             if (role === "user") {
               messageNode = <UserMessage message={msg} />;
-            } else if (role === "system" || msg.responseType === "system") {
+            } else if (role === "system") {
               const systemAgentId =
                 msg.info?.agent ?? state.streaming?.agent ?? state.selectedAgent;
 
@@ -417,7 +479,18 @@ function ChatContent() {
           />
 
           {/* Loading status while processing before first stream payload */}
-          {showAiResponseLoading ? <ThinkingBubble /> : null}
+          {showAiResponseLoading ? (
+            (() => {
+              console.log('❌ [RENDER] AI Loading Bubble showing - THIS SHOULD NOT HAPPEN DURING SESSION SWITCH!', {
+                isAiResponding,
+                isProcessing: state.isProcessing,
+                isLoadingSession: state.isLoadingSession,
+                streaming: state.streaming,
+                currentSessionId: state.currentSessionId
+              });
+              return <ThinkingBubble />;
+            })()
+          ) : null}
 
           {state.isCompacting ? (
             <div className="sticky bottom-3 z-20 mb-2 flex justify-center px-4 pointer-events-none">
@@ -446,7 +519,7 @@ function ChatContent() {
         </div>
 
         {/* Input area (queue panel is embedded inside InputWrapper) */}
-        <InputWrapper />
+        {!isSwitchingSession && <InputWrapper />}
       </div>
 
       {/* === RIGHT: Extended panel — desktop only (>= 1100px), contains stats/quota/tasks === */}

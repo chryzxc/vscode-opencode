@@ -29,6 +29,7 @@ import type {
   SubagentReference,
   SubagentThinkingEvent,
   SubagentProgressEvent,
+  SubagentConversationEvent,
   SubagentTimelineEvent,
   TodoItem,
 } from "./types";
@@ -3295,6 +3296,35 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
       .filter((entry): entry is SubagentThinkingEvent => !!entry)
     : [];
 
+  const conversationEvents = Array.isArray(rec.conversationEvents)
+    ? rec.conversationEvents
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const text = asString(evt.text);
+        if (!text) {
+          return null;
+        }
+        const rawKind = asString(evt.kind).toLowerCase();
+        const kind =
+          rawKind === 'reasoning' || rawKind === 'step'
+            ? rawKind
+            : 'message';
+        return {
+          id: asString(evt.id) || `${summary.id}:conversation:${index}`,
+          role: asString(evt.role) || 'assistant',
+          kind,
+          text,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+        };
+      })
+      .filter((entry): entry is SubagentConversationEvent => !!entry)
+    : [];
+
   const progressEvents = Array.isArray(rec.progressEvents)
     ? rec.progressEvents
       .map((entry, index) => {
@@ -3360,6 +3390,7 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
   return {
     ...summary,
     thinkingEvents,
+    conversationEvents,
     progressEvents: normalizedProgressEvents,
     timelineEvents: normalizedTimelineEvents,
     tokenUsage: tokenUsageRec
@@ -3452,6 +3483,7 @@ function hydrateSubagentSummary(
     return {
       ...(summary as SubagentDetail),
       thinkingEvents: [],
+      conversationEvents: [],
       progressEvents: [],
       timelineEvents: [],
     };
@@ -3469,6 +3501,9 @@ function hydrateSubagentSummary(
         : summary.references,
     thinkingEvents: Array.isArray(detail.thinkingEvents)
       ? detail.thinkingEvents
+      : [],
+    conversationEvents: Array.isArray(detail.conversationEvents)
+      ? detail.conversationEvents
       : [],
     progressEvents: Array.isArray(detail.progressEvents)
       ? detail.progressEvents
@@ -3677,6 +3712,7 @@ function normalizeHydratedSubagentSummary(
       : ({
         ...(summary as SubagentDetail),
         thinkingEvents: [],
+        conversationEvents: [],
         progressEvents: [],
         timelineEvents: [],
       } as SubagentDetail),
@@ -3782,6 +3818,7 @@ function areSubagentListsEquivalent(
       (a.durationMs ?? 0) !== (b.durationMs ?? 0) ||
       (a.progressEvents?.length ?? 0) !== (b.progressEvents?.length ?? 0) ||
       (a.thinkingEvents?.length ?? 0) !== (b.thinkingEvents?.length ?? 0) ||
+      (a.conversationEvents?.length ?? 0) !== (b.conversationEvents?.length ?? 0) ||
       (a.timelineEvents?.length ?? 0) !== (b.timelineEvents?.length ?? 0)
     ) {
       return false;
@@ -3848,6 +3885,113 @@ function hasSubagentSummaryEntries(
   return Object.values(summariesByParentMessageId).some(
     (entries) => Array.isArray(entries) && entries.length > 0,
   );
+}
+
+function getSubagentPayloadSessionId(
+  summariesByParentMessageId: Record<string, SubagentSummary[]>,
+  detailsById: Record<string, SubagentDetail>,
+): string | null {
+  for (const summaries of Object.values(summariesByParentMessageId)) {
+    if (!Array.isArray(summaries)) {
+      continue;
+    }
+    for (const summary of summaries) {
+      if (
+        typeof summary?.parentSessionId === "string" &&
+        summary.parentSessionId.length > 0
+      ) {
+        return summary.parentSessionId;
+      }
+    }
+  }
+
+  for (const detail of Object.values(detailsById)) {
+    if (
+      typeof detail?.parentSessionId === "string" &&
+      detail.parentSessionId.length > 0
+    ) {
+      return detail.parentSessionId;
+    }
+  }
+
+  return null;
+}
+
+function filterSubagentMapsForActiveSession(
+  state: AppState,
+  summariesByParentMessageId: Record<string, SubagentSummary[]>,
+  detailsById: Record<string, SubagentDetail>,
+): {
+  summariesByParentMessageId: Record<string, SubagentSummary[]>;
+  detailsById: Record<string, SubagentDetail>;
+} {
+  const activeSessionId = state.currentSessionId;
+  if (!activeSessionId) {
+    return { summariesByParentMessageId, detailsById };
+  }
+
+  const currentMessageIds = new Set<string>();
+  state.messages.forEach((message) => {
+    const messageId = getMessageId(message);
+    if (messageId) {
+      currentMessageIds.add(messageId);
+    }
+  });
+  const streamingMessageId = state.streaming?.messageId || null;
+
+  const filteredSummariesByParentMessageId: Record<string, SubagentSummary[]> = {};
+  const includedSubagentIds = new Set<string>();
+  for (const [parentMessageId, summaries] of Object.entries(
+    summariesByParentMessageId,
+  )) {
+    if (!Array.isArray(summaries) || summaries.length === 0) {
+      continue;
+    }
+
+    const filtered = summaries.filter((summary) => {
+      const explicitSessionId =
+        typeof summary.parentSessionId === "string" &&
+        summary.parentSessionId.length > 0
+          ? summary.parentSessionId
+          : null;
+      if (explicitSessionId) {
+        return explicitSessionId === activeSessionId;
+      }
+      return (
+        currentMessageIds.has(summary.parentMessageId) ||
+        (streamingMessageId !== null &&
+          summary.parentMessageId === streamingMessageId)
+      );
+    });
+
+    if (filtered.length === 0) {
+      continue;
+    }
+
+    filteredSummariesByParentMessageId[parentMessageId] = filtered;
+    filtered.forEach((entry) => {
+      includedSubagentIds.add(entry.id);
+    });
+  }
+
+  const filteredDetailsById: Record<string, SubagentDetail> = {};
+  for (const [detailId, detail] of Object.entries(detailsById)) {
+    if (includedSubagentIds.has(detailId)) {
+      filteredDetailsById[detailId] = detail;
+      continue;
+    }
+    if (
+      typeof detail.parentSessionId === "string" &&
+      detail.parentSessionId === activeSessionId
+    ) {
+      filteredDetailsById[detailId] = detail;
+    }
+  }
+
+  return {
+    summariesByParentMessageId: filteredSummariesByParentMessageId,
+    detailsById: filteredDetailsById,
+  };
 }
 
 function mergeSubagentSummaryPayload(
@@ -3926,6 +4070,13 @@ function mergeSubagentDetailRecord(
     (event, index) =>
       event.id || `${event.createdAt || 0}:${event.text || ""}:${index}`,
   );
+  const conversationEvents = mergeUniqueSubagentEntries(
+    existing?.conversationEvents,
+    incoming.conversationEvents,
+    (event, index) =>
+      event.id ||
+      `${event.role || ""}:${event.kind || ""}:${event.createdAt || 0}:${event.text || ""}:${index}`,
+  );
   const progressEvents = normalizeSubagentProgressEventsForPresentation(
     mergeUniqueSubagentEntries(
       existing?.progressEvents,
@@ -3958,6 +4109,7 @@ function mergeSubagentDetailRecord(
     latestActivity,
     references,
     thinkingEvents,
+    conversationEvents,
     progressEvents,
     timelineEvents,
   };
@@ -6119,6 +6271,7 @@ function handleStreamEvent(
             details[subagent.id] = {
               ...summary,
               thinkingEvents: subagent.thinkingEvents || [],
+              conversationEvents: [],
               progressEvents: subagent.progressEvents || [],
               timelineEvents: subagent.timelineEvents || []
             };
@@ -6174,6 +6327,7 @@ function handleStreamEvent(
               details[subagent.id] = {
                 ...summary,
                 thinkingEvents: subagent.thinkingEvents || [],
+                conversationEvents: [],
                 progressEvents: subagent.progressEvents || [],
                 timelineEvents: subagent.timelineEvents || []
               };
@@ -6803,6 +6957,41 @@ function mergeSubagentsIntoMessage(
   };
 }
 
+function alignMessageSubagentParentIds(
+  message: Message,
+  parentMessageId: string | null,
+): Message {
+  if (!parentMessageId) {
+    return message;
+  }
+
+  const existing = Array.isArray(message.subagents) ? message.subagents : [];
+  if (existing.length === 0) {
+    return message;
+  }
+
+  let changed = false;
+  const nextSubagents = existing.map((entry) => {
+    if (entry.parentMessageId === parentMessageId) {
+      return entry;
+    }
+    changed = true;
+    return {
+      ...entry,
+      parentMessageId,
+    };
+  });
+
+  if (!changed) {
+    return message;
+  }
+
+  return {
+    ...message,
+    subagents: nextSubagents,
+  };
+}
+
 function remapSubagentsToFinalMessageId(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -7315,6 +7504,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 id: streamingMessageId,
               };
             }
+            const preferredParentMessageId =
+              asString(asRecord(sanitized.info)?.id) ||
+              asString(sanitized.id) ||
+              responseMessageId ||
+              streamingMessageId ||
+              null;
+            sanitized = alignMessageSubagentParentIds(
+              sanitized,
+              preferredParentMessageId,
+            );
 
             dispatch({
               type: "SET_MESSAGES",
@@ -7388,6 +7587,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "chatHistory": {
+          // VERY OBVIOUS STARTUP LOG - Verify this code is running
+          console.log('🚨🚨🚨 [STARTUP] messageHandler.ts chatHistory case is LOADED! 🚨🚨🚨');
+
+          console.log('📥 [MESSAGE HANDLER] chatHistory message received', {
+            sessionId: asString(data.sessionId),
+            hasMessages: !!data.messages,
+            messageCount: Array.isArray(data.messages) ? data.messages.length : 0
+          });
+
           try {
             terminalErrorReached = false;
             const rawMessages = asArray(data.messages, isMessage);
@@ -7416,10 +7624,28 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               chatHistorySessionId &&
               currentState.currentSessionId !== chatHistorySessionId
             );
+
+            console.log('🔍 [chatHistory] Session switch check', {
+              chatHistorySessionId,
+              currentSessionId: currentState.currentSessionId,
+              isSwitchingSession,
+              isSessionProcessing,
+              processingSessionIds: currentState.processingSessionIds,
+              willDispatchSTART_SESSION_LOADING: isSwitchingSession
+            });
+
             if (isSwitchingSession) {
               // Look up the session title from the sessions list
               const session = currentState.sessionsList.find(s => s.id === chatHistorySessionId);
               const sessionTitle = session?.title || chatHistorySessionId;
+
+              console.log('🔄 [SESSION SWITCH] Dispatching START_SESSION_LOADING', {
+                chatHistorySessionId,
+                currentSessionId: currentState.currentSessionId,
+                sessionTitle,
+                isSessionProcessing,
+                processingSessionIds: currentState.processingSessionIds
+              });
 
               dispatch({
                 type: "START_SESSION_LOADING",
@@ -7476,6 +7702,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
             // Clear todo items from the previous session so stale tasks are not shown.
             dispatch({ type: "SET_TODO_ITEMS", payload: [] });
+
+            // Session is now fully loaded - clear loading state
+            // This ensures the loading UI stays visible until messages are actually in the state
+            console.log('✅ [chatHistory] Messages loaded, dispatching END_SESSION_LOADING', {
+              sessionId: chatHistorySessionId,
+              messageCount: canonicalMessages.length
+            });
+            dispatch({ type: "END_SESSION_LOADING" });
           }
 
           // FORBIDDEN TO REMOVE - recalculate session stats from full history
@@ -7559,12 +7793,39 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             mode: "hydration",
             sessionProcessing: getState().processing,
           };
-          const summariesByParentMessageId = normalizeSubagentSummaryMap(
+          const rawSummariesByParentMessageId = normalizeSubagentSummaryMap(
             data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
           );
-          const detailsById = normalizeSubagentDetailMap(
+          const rawDetailsById = normalizeSubagentDetailMap(
             data.detailsById ?? data.subagentDetailsById,
           );
+          const activeSessionId = getState().currentSessionId;
+          const payloadSessionId = getSubagentPayloadSessionId(
+            rawSummariesByParentMessageId,
+            rawDetailsById,
+          );
+          if (
+            activeSessionId &&
+            payloadSessionId &&
+            payloadSessionId !== activeSessionId
+          ) {
+            webviewLogger.debug(
+              "Ignoring subagentSnapshot payload for inactive session",
+              {
+                activeSessionId,
+                payloadSessionId,
+              },
+            );
+            break;
+          }
+          const scopedSnapshot = filterSubagentMapsForActiveSession(
+            getState(),
+            rawSummariesByParentMessageId,
+            rawDetailsById,
+          );
+          const summariesByParentMessageId =
+            scopedSnapshot.summariesByParentMessageId;
+          const detailsById = scopedSnapshot.detailsById;
           const hasSnapshotSubagents =
             hasSubagentSummaryEntries(summariesByParentMessageId) ||
             Object.keys(detailsById).length > 0;
@@ -7677,12 +7938,45 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 ? new Set([getState().streaming?.messageId as string])
                 : undefined,
           };
-          const summariesByParentMessageId = normalizeSubagentSummaryMap(
+          const rawSummariesByParentMessageId = normalizeSubagentSummaryMap(
             data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
           );
-          const detailsById = normalizeSubagentDetailMap(
+          const rawDetailsById = normalizeSubagentDetailMap(
             data.detailsById ?? data.subagentDetailsById,
           );
+          const activeSessionId = getState().currentSessionId;
+          const payloadSessionId = getSubagentPayloadSessionId(
+            rawSummariesByParentMessageId,
+            rawDetailsById,
+          );
+          if (
+            activeSessionId &&
+            payloadSessionId &&
+            payloadSessionId !== activeSessionId
+          ) {
+            webviewLogger.debug(
+              "Ignoring subagentUpdate payload for inactive session",
+              {
+                activeSessionId,
+                payloadSessionId,
+              },
+            );
+            break;
+          }
+          const scopedUpdate = filterSubagentMapsForActiveSession(
+            getState(),
+            rawSummariesByParentMessageId,
+            rawDetailsById,
+          );
+          const summariesByParentMessageId =
+            scopedUpdate.summariesByParentMessageId;
+          const detailsById = scopedUpdate.detailsById;
+          const hasScopedSubagents =
+            hasSubagentSummaryEntries(summariesByParentMessageId) ||
+            Object.keys(detailsById).length > 0;
+          if (!hasScopedSubagents) {
+            break;
+          }
           const normalizedUpdate = normalizeHydratedSubagentMaps(
             summariesByParentMessageId,
             detailsById,
