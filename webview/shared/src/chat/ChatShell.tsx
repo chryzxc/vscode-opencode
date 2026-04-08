@@ -235,9 +235,9 @@ function ChatContent() {
 
   // Check if we're switching to a different session (loading conversation)
   // Uses the new isLoadingSession state which is set during session switches
-  const isSwitchingSession =
-    state.isLoadingSession &&
-    state.loadingSessionId === state.currentSessionId;
+  // Note: We don't check if loadingSessionId === currentSessionId because during
+  // the transition, currentSessionId hasn't been updated yet (timing issue)
+  const isSwitchingSession = state.isLoadingSession;
 
   // Show AI response loading indicator (thinking bubble) when:
   // 1. AI is responding but no streaming yet, OR
