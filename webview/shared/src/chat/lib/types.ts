@@ -596,6 +596,9 @@ export interface AppState {
   sessionEdits: Set<string>;
   sessionStats: SessionStats;
   sessionsStatsById?: Record<string, SessionStats>;
+  isLoadingSession: boolean;
+  loadingSessionTitle: string | null;
+  loadingSessionId: string | null;
   streaming: StreamingState | null;
   inputValue: string;
   fileSuggestions: FileResult[];
