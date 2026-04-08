@@ -52,7 +52,6 @@ export const initialState: AppState = {
   isQuotaPopoverOpen: false,
   sessionsList: [],
   processingSessionIds: [],
-  switchingSessionId: null as string | null,
   sessionEdits: new Set<string>(),
   sessionStats: {
     input: 0,
@@ -138,7 +137,6 @@ export type AppAction =
   | { type: "SET_PROCESSING_SESSIONS"; payload: string[] }
   | { type: "START_SESSION_LOADING"; payload: { sessionId: string; title: string } }
   | { type: "END_SESSION_LOADING" }
-  | { type: "SET_SWITCHING_SESSION"; payload: string | null }
   | { type: "ADD_SESSION_EDIT"; payload: string }
   | { type: "CLEAR_SESSION_EDITS" }
   | { type: "UPDATE_SESSION_STATS"; payload: Partial<SessionStats> }
@@ -1316,8 +1314,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         loadingSessionId: null,
         loadingSessionTitle: null
       };
-    case "SET_SWITCHING_SESSION":
-      return { ...state, switchingSessionId: action.payload };
     case "SET_SERVER_VERSION":
       return { ...state, serverVersion: action.payload };
     case "SET_SELECTED_MODEL":

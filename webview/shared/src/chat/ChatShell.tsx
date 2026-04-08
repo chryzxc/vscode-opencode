@@ -205,6 +205,27 @@ function ChatContent() {
     }
   }, [state.messages, state.streaming]);
 
+  // Detect when session loading is complete and dispatch END_SESSION_LOADING
+  useEffect(() => {
+    if (state.isLoadingSession && state.loadingSessionId === state.currentSessionId) {
+      // Messages are rendered - loading is complete
+      dispatch({ type: "END_SESSION_LOADING" });
+    }
+  }, [state.messages, state.isLoadingSession, state.loadingSessionId, state.currentSessionId, dispatch]);
+
+  // Safety net: Clear loading state if it takes too long (10 seconds)
+  useEffect(() => {
+    if (!state.isLoadingSession) return;
+
+    const timeoutId = setTimeout(() => {
+      if (state.isLoadingSession) {
+        dispatch({ type: "END_SESSION_LOADING" });
+      }
+    }, 10000); // 10 second timeout
+
+    return () => clearTimeout(timeoutId);
+  }, [state.isLoadingSession, dispatch]);
+
   // Check if AI is currently responding (processing user message)
   const isAiResponding =
     state.isProcessing &&
@@ -213,11 +234,10 @@ function ChatContent() {
       state.processingSessionIds.includes(state.currentSessionId));
 
   // Check if we're switching to a different session (loading conversation)
-  // This uses switchingSessionId which is ONLY set during session switches,
-  // not during AI response processing
+  // Uses the new isLoadingSession state which is set during session switches
   const isSwitchingSession =
-    state.switchingSessionId === state.currentSessionId &&
-    state.messages.length > 0; // Only show loading state if we have previous messages to hide
+    state.isLoadingSession &&
+    state.loadingSessionId === state.currentSessionId;
 
   // Show AI response loading indicator (thinking bubble) when:
   // 1. AI is responding but no streaming yet, OR
@@ -270,7 +290,11 @@ function ChatContent() {
             <div className="flex h-full items-center justify-center">
               <div className="flex flex-col items-center gap-4">
                 <Loader2 className="h-8 w-8 animate-spin text-oc-accent" />
-                <span className="text-sm text-oc-text-muted">Loading conversation...</span>
+                <span className="text-sm text-oc-text-muted">
+                  {state.loadingSessionTitle
+                    ? `Loading "${state.loadingSessionTitle}"...`
+                    : "Loading conversation..."}
+                </span>
               </div>
             </div>
           ) : (
