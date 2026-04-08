@@ -1309,6 +1309,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         loadingSessionId: action.payload.sessionId,
         loadingSessionTitle: action.payload.title
       };
+    case "END_SESSION_LOADING":
+      return {
+        ...state,
+        isLoadingSession: false,
+        loadingSessionId: null,
+        loadingSessionTitle: null
+      };
     case "SET_SWITCHING_SESSION":
       return { ...state, switchingSessionId: action.payload };
     case "SET_SERVER_VERSION":
