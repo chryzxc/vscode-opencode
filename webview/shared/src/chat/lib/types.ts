@@ -1,4 +1,5 @@
 import type { StructuredResponseType as SharedStructuredResponseType } from "./generated/structuredOutputSchema";
+import type { DisplayError } from "../../../../../src/providers/chat/types";
 
 export interface SessionStats {
   input: number;
@@ -499,6 +500,8 @@ export interface Message {
   plainTextFallbackReason?: string;
   /** Indicates this assistant message was aborted by the user (stop button). */
   aborted?: boolean;
+  /** Optional structured error information for display in the UI */
+  displayError?: DisplayError;
 }
 
 export type StructuredResponseType = SharedStructuredResponseType;
