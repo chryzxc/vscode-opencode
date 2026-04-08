@@ -136,6 +136,8 @@ export type AppAction =
   | { type: "SET_STEERING"; payload: boolean }
   | { type: "SET_SESSIONS_LIST"; payload: Session[] }
   | { type: "SET_PROCESSING_SESSIONS"; payload: string[] }
+  | { type: "START_SESSION_LOADING"; payload: { sessionId: string; title: string } }
+  | { type: "END_SESSION_LOADING" }
   | { type: "SET_SWITCHING_SESSION"; payload: string | null }
   | { type: "ADD_SESSION_EDIT"; payload: string }
   | { type: "CLEAR_SESSION_EDITS" }
