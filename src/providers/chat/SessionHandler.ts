@@ -149,7 +149,7 @@ export class SessionHandler {
 
       const rawMessages = await this.sessionService.loadSessionMessages(sessionId);
       const messages = Array.isArray(rawMessages)
-        ? this.historyProcessor.processHistoryMessages(rawMessages, sessionId)
+        ? await this.historyProcessor.processHistoryMessages(rawMessages, sessionId)
         : [];
 
       await this.subagentPersistence.syncSubagentSnapshotForSession(sessionId, messages);

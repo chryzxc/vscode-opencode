@@ -7,6 +7,7 @@
  * Extracted from ChatViewProvider.ts (~900 lines across multiple sections)
  */
 
+import * as vscode from "vscode";
 import type {
   StructuredAssistantOutput,
 } from "./types";

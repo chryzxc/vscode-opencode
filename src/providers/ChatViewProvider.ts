@@ -3350,7 +3350,7 @@ export class ChatViewProvider
       this.logger.info('[DEBUG] After applySessionMessageOverrides:', { count: overriddenMessages?.length || 0 });
 
       // Then process through the canonical pipeline
-      const processed = this.historyProcessor.processHistoryMessages(overriddenMessages, sessionId);
+      const processed = await this.historyProcessor.processHistoryMessages(overriddenMessages, sessionId);
 
       this.logger.info('[DEBUG] processHistoryMessages output:', { count: processed?.length || 0, sessionId });
 

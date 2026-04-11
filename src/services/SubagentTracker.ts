@@ -199,7 +199,7 @@ function joinConversationText(previous: string, incoming: string): string {
     !/\s/.test(prevChar) &&
     !/\s/.test(nextChar) &&
     !/^[,.;:!?)}\]]/.test(incoming) &&
-    !/[(\[{]$/.test(prevChar);
+    !/[([{]$/ .test(prevChar);
   return needsSpace ? `${previous} ${incoming}` : `${previous}${incoming}`;
 }
 
