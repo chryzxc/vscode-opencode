@@ -28,6 +28,16 @@ test("provider computes message change summary from sdk session.diff", () => {
     /filesChanged:\s*rows\.length[\s\S]*added[\s\S]*deleted[\s\S]*files:\s*rows/s,
     "change summary should include file count, totals, and file rows",
   );
+  assert.match(
+    providerSource,
+    /getDiffActivityEnrichment\(row\.file\)/,
+    "change summary should attempt per-file diff preview enrichment",
+  );
+  assert.match(
+    providerSource,
+    /diffExcerpt:\s*enrichment\?\.diffExcerpt/,
+    "enriched file rows should include diffExcerpt when available",
+  );
 });
 
 test("provider wires undo message changes through sdk session.revert", () => {

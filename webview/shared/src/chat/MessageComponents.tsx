@@ -25,6 +25,8 @@ import {
   Info,
   StopCircle,
   FileCode,
+  ArrowUpRight,
+  Undo2,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -35,7 +37,7 @@ import { StepIndicator } from "@/components/ui/StepIndicator";
 import { cn, formatDuration } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
-import { CompactDiffPreview } from "./components/CompactDiffPreview";
+import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 
@@ -1367,7 +1369,40 @@ function subagentModelLabel(
   if (provider && model) {
     return `${provider}/${model}`;
   }
-  return model || provider || "model pending";
+
+  // If we have partial info, show it
+  if (model || provider) {
+    return model || provider;
+  }
+
+  // No model info available - check status to determine appropriate message
+  const isError = subagent.status === 'error' || subagent.status === 'orphaned';
+  const isTerminal = subagent.status === 'done';
+
+  if (isError || isTerminal) {
+    // For errored/orphaned/completed subagents without model info, show "Unknown"
+    return "Unknown";
+  }
+
+  // For pending/running subagents, check if they've been stuck without model info
+  // This handles cases where subagents were interrupted or stalled
+  const hasStarted = subagent.startedAt && subagent.startedAt > 0;
+  const hasEnded = subagent.endedAt && subagent.endedAt > 0;
+
+  if (hasStarted) {
+    // If started but no model info, check how long it's been running
+    const now = Date.now();
+    const elapsed = hasEnded ? subagent.endedAt! - subagent.startedAt! : now - subagent.startedAt!;
+
+    // If it's been more than 5 seconds without model info, likely not coming
+    // (e.g., interrupted, stalled, or model selection failed)
+    if (elapsed > 5000) {
+      return "Unknown";
+    }
+  }
+
+  // For recently started pending/running subagents, show loading state
+  return "Loading...";
 }
 
 function TypewriterText({
@@ -2071,6 +2106,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const messageBodyRef = useRef<HTMLDivElement>(null);
   const progressTimelineRef = useRef<HTMLDivElement>(null);
+  const requestedSubagentConversationRef = useRef<Set<string>>(new Set());
 
   const content = getMessageContent(message, streaming);
   const liveInteractivePrompt = useMemo(
@@ -2122,58 +2158,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const changeSummary = message?.changeSummary;
   const messageId = info?.id || message?.id || streaming?.messageId;
 
-  useEffect(() => {
-    const partsBody = messageBodyFromParts(message?.parts);
-    const structuredMessage = firstNonEmptyString(structured?.message) ?? "";
-    const topLevelContent = (message?.content ?? message?.text ?? "").trim();
-    const streamingContent = (streaming?.content ?? "").trim();
-    const finalContent = (resolvedContent ?? "").trim();
-    const finalNorm = normalizeComparableText(finalContent);
-    const sourceMatch = {
-      parts: !!partsBody && normalizeComparableText(partsBody) === finalNorm,
-      structuredMessage:
-        !!structuredMessage &&
-        normalizeComparableText(structuredMessage) === finalNorm,
-      topLevel:
-        !!topLevelContent &&
-        normalizeComparableText(topLevelContent) === finalNorm,
-      streaming:
-        !!streamingContent &&
-        normalizeComparableText(streamingContent) === finalNorm,
-    };
-
-    console.info("[OpenCode][assistant-render-source]", {
-      messageId: messageId ?? null,
-      role: message?.role ?? message?.info?.role ?? null,
-      responseType: responseType ?? null,
-      hasParts: Array.isArray(message?.parts) && message.parts.length > 0,
-      streamingActive: !!streaming?.isActive,
-      streamingHasRenderableContent: streaming?.hasRenderableContent ?? null,
-      usedInteractivePromptFallback: shouldUseInteractivePromptFallback,
-      sourceMatch,
-      finalContentPreview: finalContent.slice(0, 240),
-      partsPreview: partsBody.slice(0, 240),
-      structuredMessagePreview: structuredMessage.slice(0, 240),
-      topLevelPreview: topLevelContent.slice(0, 240),
-      streamingPreview: streamingContent.slice(0, 240),
-      interactivePromptPreview: (liveInteractivePrompt ?? "").slice(0, 240),
-    });
-  }, [
-    resolvedContent,
-    messageId,
-    responseType,
-    message?.role,
-    message?.info?.role,
-    message?.content,
-    message?.text,
-    message?.parts,
-    structured?.message,
-    streaming?.content,
-    streaming?.isActive,
-    streaming?.hasRenderableContent,
-    shouldUseInteractivePromptFallback,
-    liveInteractivePrompt,
-  ]);
   const latestAssistantMessageId = useMemo(() => {
     for (let index = state.messages.length - 1; index >= 0; index--) {
       const candidate = state.messages[index];
@@ -2316,6 +2300,45 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       dispatch({ type: "SELECT_SUBAGENT", payload: null });
     }
   }, [subagents.length, dispatch]);
+
+  useEffect(() => {
+    if (!selectedSubagentId) {
+      return;
+    }
+    const selected = subagents.find((entry) => entry.id === selectedSubagentId);
+    if (!selected) {
+      return;
+    }
+    const detail =
+      (subagentDetailsById[selected.id] as SubagentDetail | undefined) ||
+      (selected as SubagentDetail);
+    const childSessionId = detail.childSessionId || selected.childSessionId;
+    const parentSessionId = detail.parentSessionId || selected.parentSessionId;
+    const parentMessageId = detail.parentMessageId || selected.parentMessageId;
+    if (!childSessionId || !parentSessionId || !parentMessageId) {
+      return;
+    }
+    const hasConversation =
+      Array.isArray(detail.conversationEvents) &&
+      detail.conversationEvents.length > 0;
+    if (hasConversation) {
+      return;
+    }
+    const requestKey = `${selected.id}:${childSessionId}`;
+    if (requestedSubagentConversationRef.current.has(requestKey)) {
+      return;
+    }
+    requestedSubagentConversationRef.current.add(requestKey);
+    vscode.postMessage({
+      type: "getSubagentConversation",
+      subagentId: selected.id,
+      childSessionId,
+      parentSessionId,
+      parentMessageId,
+      status: selected.status,
+      latestActivity: selected.latestActivity,
+    });
+  }, [selectedSubagentId, subagents, subagentDetailsById]);
 
   const subagentStatusCounts = useMemo(
     () =>
@@ -2951,6 +2974,144 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
             </section>
           )}
 
+          {subagents.length > 0 && (
+            <div className="mt-3 mb-3 overflow-hidden rounded-md border border-oc-border bg-oc-panel-soft">
+              <button
+                type="button"
+                className="w-full border-b border-oc-border px-2.5 py-2 text-left hover:bg-oc-panel"
+                onClick={() => setShowSubagents((value) => !value)}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Sparkles className="h-3.5 w-3.5 text-oc-accent" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
+                      Spawned Subagents
+                    </span>
+                    <span className="rounded-md border border-oc-border px-1.5 py-0.5 font-mono text-oc-2xs text-oc-text-muted">
+                      {subagents.length}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {subagentStatusCounts.running > 0 && (
+                      <Badge className="h-5 bg-oc-accent/10 px-1.5 text-[10px] text-oc-accent">
+                        {subagentStatusCounts.running} running
+                      </Badge>
+                    )}
+                    {subagentStatusCounts.done > 0 && (
+                      <Badge className="h-5 bg-oc-green/10 px-1.5 text-[10px] text-oc-green">
+                        {subagentStatusCounts.done} done
+                      </Badge>
+                    )}
+                    {subagentStatusCounts.error > 0 && (
+                      <Badge className="h-5 bg-oc-red/10 px-1.5 text-[10px] text-oc-red">
+                        {subagentStatusCounts.error} error
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              </button>
+
+              {showSubagents && (
+                <div className="space-y-2 p-2.5">
+                  <div
+                    className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1 pb-2"
+                    style={{ scrollPaddingBottom: "0.5rem" }}
+                  >
+                    {visibleSubagents.map((subagent: SubagentSummary) => {
+                      const detail = subagentDetailsById[subagent.id] as
+                        | SubagentDetail
+                        | undefined;
+                      const agentLabel = subagentAgentLabel(subagent, detail);
+                      const modelInfo = subagentModelLabel(subagent, detail);
+                      const cardStyle = getSubagentCardStyle(subagent.id);
+                      const accentTextStyle = getSubagentAccentTextStyle(
+                        subagent.id,
+                      );
+                      const metaStyle = getSubagentMetaStyle(subagent.id);
+                      const statusText =
+                        subagentStatusLabel(subagent.status) || "Pending";
+                      const activityText =
+                        subagent.latestActivity ||
+                        statusText ||
+                        "Initializing...";
+                      const shouldShowActivity =
+                        activityText.trim().toLowerCase() !==
+                        statusText.trim().toLowerCase();
+
+                      return (
+                        <button
+                          key={subagent.id}
+                          type="button"
+                          className={cn(
+                            "w-full rounded-md border border-oc-border bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
+                            "hover:bg-oc-panel",
+                          )}
+                          style={cardStyle}
+                          onClick={() => openSubagentModal(subagent.id)}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <div
+                                className="oc-agent-icon shrink-0"
+                                style={accentTextStyle}
+                              >
+                                {subagent.status === "running" ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : subagent.status === "error" ? (
+                                  <X className="h-3 w-3 text-oc-red" />
+                                ) : (
+                                  <Check className="h-3 w-3" />
+                                )}
+                              </div>
+                              <span className="truncate text-oc-xs font-semibold text-oc-text-soft">
+                                {agentLabel}
+                              </span>
+                            </div>
+                            <span className="font-mono text-oc-2xs text-oc-text-muted">
+                              {formatDuration(subagent.durationMs ?? 0)}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex min-w-0 items-center gap-1.5">
+                            <span
+                              className="truncate rounded-sm border px-1 py-0.5 font-mono text-[10px] leading-none text-oc-text-soft"
+                              style={metaStyle}
+                              title={modelInfo}
+                            >
+                              {modelInfo}
+                            </span>
+                            <span className="text-[10px] font-medium text-oc-text-muted">
+                              {statusText}
+                            </span>
+                          </div>
+                          {shouldShowActivity ? (
+                            <div className="mt-0.5 min-h-[14px] font-mono text-[10px] text-oc-text-muted">
+                              <FadeSwapText
+                                text={activityText}
+                                className="block truncate"
+                                durationMs={220}
+                              />
+                            </div>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                    {subagents.length > 10 ? (
+                      <button
+                        type="button"
+                        className="text-oc-2xs font-mono text-oc-accent hover:underline"
+                        onClick={() => setShowAllSubagents((value) => !value)}
+                      >
+                        {showAllSubagents
+                          ? "Show less"
+                          : `Show all (${subagents.length})`}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {showResponseSection && (
             <section
               data-assistant-section="response"
@@ -3229,160 +3390,27 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 colorClass={getSubagentColor(selected.id)}
                 onClose={closeSubagentModal}
                 onCopyRefs={copyRefs}
-                onJumpToParent={() =>
-                  jumpToMessage(selected.parentMessageId || messageId || "")
-                }
+                onJumpToParent={() => {
+                  closeSubagentModal();
+                  jumpToMessage(selected.parentMessageId || messageId || "");
+                }}
               />
             );
           })()}
 
-        {subagents.length > 0 && (
-          <div className="mt-3 mb-3 overflow-hidden rounded-md border border-oc-border bg-oc-panel-soft">
-            <button
-              type="button"
-              className="w-full border-b border-oc-border px-2.5 py-2 text-left hover:bg-oc-panel"
-              onClick={() => setShowSubagents((value) => !value)}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Sparkles className="h-3.5 w-3.5 text-oc-accent" />
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
-                    Spawned Subagents
-                  </span>
-                  <span className="rounded-md border border-oc-border px-1.5 py-0.5 font-mono text-oc-2xs text-oc-text-muted">
-                    {subagents.length}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {subagentStatusCounts.running > 0 && (
-                    <Badge className="h-5 bg-oc-accent/10 px-1.5 text-[10px] text-oc-accent">
-                      {subagentStatusCounts.running} running
-                    </Badge>
-                  )}
-                  {subagentStatusCounts.done > 0 && (
-                    <Badge className="h-5 bg-oc-green/10 px-1.5 text-[10px] text-oc-green">
-                      {subagentStatusCounts.done} done
-                    </Badge>
-                  )}
-                  {subagentStatusCounts.error > 0 && (
-                    <Badge className="h-5 bg-oc-red/10 px-1.5 text-[10px] text-oc-red">
-                      {subagentStatusCounts.error} error
-                    </Badge>
-                  )}
-                </div>
-              </div>
-            </button>
-
-            {showSubagents && (
-              <div className="space-y-2 p-2.5">
-                <div
-                  className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1 pb-2"
-                  style={{ scrollPaddingBottom: "0.5rem" }}
-                >
-                  {visibleSubagents.map((subagent: SubagentSummary) => {
-                    const detail = subagentDetailsById[subagent.id] as
-                      | SubagentDetail
-                      | undefined;
-                    const agentLabel = subagentAgentLabel(subagent, detail);
-                    const modelInfo = subagentModelLabel(subagent, detail);
-                    const cardStyle = getSubagentCardStyle(subagent.id);
-                    const accentTextStyle = getSubagentAccentTextStyle(
-                      subagent.id,
-                    );
-                    const metaStyle = getSubagentMetaStyle(subagent.id);
-                    const statusText =
-                      subagentStatusLabel(subagent.status) || "Pending";
-                    const activityText =
-                      subagent.latestActivity ||
-                      statusText ||
-                      "Initializing...";
-                    const shouldShowActivity =
-                      activityText.trim().toLowerCase() !==
-                      statusText.trim().toLowerCase();
-
-                    return (
-                      <button
-                        key={subagent.id}
-                        type="button"
-                        className={cn(
-                          "w-full rounded-md border border-oc-border bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
-                          "hover:bg-oc-panel",
-                        )}
-                        style={cardStyle}
-                        onClick={() => openSubagentModal(subagent.id)}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <div
-                              className="oc-agent-icon shrink-0"
-                              style={accentTextStyle}
-                            >
-                              {subagent.status === "running" ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : subagent.status === "error" ? (
-                                <X className="h-3 w-3 text-oc-red" />
-                              ) : (
-                                <Check className="h-3 w-3" />
-                              )}
-                            </div>
-                            <span className="truncate text-oc-xs font-semibold text-oc-text-soft">
-                              {agentLabel}
-                            </span>
-                          </div>
-                          <span className="font-mono text-oc-2xs text-oc-text-muted">
-                            {formatDuration(subagent.durationMs ?? 0)}
-                          </span>
-                        </div>
-                        <div className="mt-1 flex min-w-0 items-center gap-1.5">
-                          <span
-                            className="truncate rounded-sm border px-1 py-0.5 font-mono text-[10px] leading-none text-oc-text-soft"
-                            style={metaStyle}
-                            title={modelInfo}
-                          >
-                            {modelInfo}
-                          </span>
-                          <span className="text-[10px] font-medium text-oc-text-muted">
-                            {statusText}
-                          </span>
-                        </div>
-                        {shouldShowActivity ? (
-                          <div className="mt-0.5 min-h-[14px] font-mono text-[10px] text-oc-text-muted">
-                            <FadeSwapText
-                              text={activityText}
-                              className="block truncate"
-                              durationMs={220}
-                            />
-                          </div>
-                        ) : null}
-                      </button>
-                    );
-                  })}
-                  {subagents.length > 10 ? (
-                    <button
-                      type="button"
-                      className="text-oc-2xs font-mono text-oc-accent hover:underline"
-                      onClick={() => setShowAllSubagents((value) => !value)}
-                    >
-                      {showAllSubagents
-                        ? "Show less"
-                        : `Show all (${subagents.length})`}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* File Changes - aggregated diffs at the bottom */}
-        {/* Follows UI design from original image with expand/collapse per file */}
-        {(streaming?.steps.some((s) => s.activityDetail?.diffExcerpt) ||
-          timelineDisplayEvents.some((e) => e.activityDetail?.diffExcerpt) ||
-          (Array.isArray(message?.edits) && message.edits.length > 0)) && (
+        {/* Only show for the specific message that has file changes, not for every message */}
+        {((Array.isArray(message?.edits) && message.edits.length > 0 && messageId) ||
+          (changeSummary &&
+            Array.isArray(changeSummary.files) &&
+            changeSummary.files.length > 0 &&
+            changeSummary.messageId === messageId)) && (
           <FileChangesSection
-            streamingSteps={streaming?.steps.filter((s) => s.activityDetail?.diffExcerpt) || []}
-            timelineEvents={timelineDisplayEvents.filter((e) => e.activityDetail?.diffExcerpt)}
+            streamingSteps={[]}
+            timelineEvents={[]}
             messageEdits={message?.edits || []}
+            changeSummary={changeSummary}
+            messageId={messageId}
           />
         )}
 
@@ -3450,231 +3478,356 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   );
 });
 
-/**
- * FileChangesSection - Shows file changes with expand/collapse functionality
- * Follows UI design from original image with expand/collapse buttons on the right
- */
 function FileChangesSection({
   streamingSteps,
   timelineEvents,
   messageEdits,
+  changeSummary,
+  messageId,
 }: {
-  streamingSteps: Array<{ filePath?: string; title?: string; content?: string; activityDetail?: { diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number } }; diffStats?: { added: number; deleted: number } }>;
-  timelineEvents: Array<{ filePath?: string; summary?: string; description?: string; activityDetail?: { diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number } }; diffStats?: { added: number; deleted: number } }>;
+  streamingSteps: Array<{
+    filePath?: string;
+    title?: string;
+    activityDetail?: {
+      file?: string;
+      diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number };
+    };
+    diffStats?: { added: number; deleted: number };
+  }>;
+  timelineEvents: Array<{
+    filePath?: string;
+    summary?: string;
+    description?: string;
+    activityDetail?: {
+      file?: string;
+      diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number };
+    };
+    diffStats?: { added: number; deleted: number };
+  }>;
   messageEdits: Array<{ file: string; added?: number; deleted?: number }>;
+  changeSummary?: Message["changeSummary"];
+  messageId?: string | null;
 }) {
-  // DEBUG: Log what data we're receiving
-  console.log('[FileChangesSection] DEBUG - Checking all available data sources:', {
-    streamingStepsCount: streamingSteps.length,
-    timelineEventsCount: timelineEvents.length,
-    messageEditsCount: messageEdits.length,
-    // Check if streaming steps have content/detail fields
-    streamingStepsWithContent: streamingSteps.filter(s => s.content || s.detail).length,
-    // Check timeline events for content/detail
-    timelineEventsWithContent: timelineEvents.filter(e => e.content || e.detail).length,
-    streamingStepsSample: streamingSteps.slice(0, 3).map(s => ({
-      filePath: s.filePath,
-      title: s.title,
-      content: s.content?.substring(0, 100),
-      detail: s.detail?.substring(0, 100),
-      hasActivityDetail: !!s.activityDetail,
-      hasDiffExcerpt: !!s.activityDetail?.diffExcerpt,
-      activityDetailKeys: s.activityDetail ? Object.keys(s.activityDetail) : [],
-      diffStats: s.diffStats,
-    })),
-    timelineEventsSample: timelineEvents.slice(0, 3).map(e => ({
-      filePath: e.filePath,
-      summary: e.summary?.substring(0, 100),
-      description: e.description?.substring(0, 100),
-      detail: e.detail?.substring(0, 100),
-      hasActivityDetail: !!e.activityDetail,
-      hasDiffExcerpt: !!e.activityDetail?.diffExcerpt,
-      activityDetailKeys: e.activityDetail ? Object.keys(e.activityDetail) : [],
-      diffStats: e.diffStats,
-    })),
-  });
+  type DiffExcerpt = { header?: string; lines?: string[]; added?: number; deleted?: number };
+  type FileChange = { file: string; added: number; deleted: number; diffExcerpt?: DiffExcerpt };
+  type IndexedFileChange = FileChange & { sourcePriority: number };
 
-  // Combine all file changes with their sources
-  const allFileChanges = [
-    ...streamingSteps.map((step) => ({
-      filePath: step.filePath || step.title || step.content || "",
-      source: "streaming" as const,
-      diffExcerpt: step.activityDetail?.diffExcerpt,
-      diffStats: step.diffStats,
-      rawStep: step,
-      // Also check content/detail fields for diff data
-      content: step.content,
-      detail: step.detail,
-    })),
-    ...timelineEvents.map((event) => ({
-      filePath: event.filePath || event.summary || event.description || "",
-      source: "timeline" as const,
-      diffExcerpt: event.activityDetail?.diffExcerpt,
-      diffStats: event.diffStats,
-      rawEvent: event,
-      // Also check content/detail fields for diff data
-      content: event.content,
-      detail: event.detail,
-    })),
-    ...messageEdits.map((edit) => ({
-      filePath: edit.file,
-      source: "message" as const,
-      diffExcerpt: undefined,
-      diffStats: edit.added || edit.deleted ? { added: edit.added || 0, deleted: edit.deleted || 0 } : undefined,
-    })),
-  ];
+  const normalizePath = (value: string) => {
+    const normalized = value.replace(/\\/g, "/").trim();
+    const lower = normalized.toLowerCase();
 
-  // State for expanded/collapsed files
-  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({});
+    const hiddenSisyphusMarker = "/.sisyphus/";
+    const hiddenIdx = lower.indexOf(hiddenSisyphusMarker);
+    if (hiddenIdx >= 0) {
+      return `sisyphus/${lower.slice(hiddenIdx + hiddenSisyphusMarker.length)}`;
+    }
 
-  // Toggle expand/collapse for a specific file
-  const toggleFile = (filePath: string) => {
-    setExpandedFiles((prev) => ({
-      ...prev,
-      [filePath]: !prev[filePath],
-    }));
+    const plainSisyphusMarker = "/sisyphus/";
+    const plainIdx = lower.indexOf(plainSisyphusMarker);
+    if (plainIdx >= 0) {
+      return lower.slice(plainIdx + 1);
+    }
+
+    if (lower.startsWith(".sisyphus/")) {
+      return `sisyphus/${lower.slice(".sisyphus/".length)}`;
+    }
+
+    return lower;
   };
 
-  // Expand/collapse all files
-  const toggleAll = () => {
-    const allExpanded = Object.values(expandedFiles).every((v) => v === true);
-    const newState: Record<string, boolean> = {};
-    allFileChanges.forEach((file) => {
-      newState[file.filePath] = !allExpanded;
-    });
-    setExpandedFiles(newState);
-  };
+  const fileChanges = useMemo<FileChange[]>(() => {
+    const byFile = new Map<string, IndexedFileChange>();
 
-  if (allFileChanges.length === 0) {
+    const upsert = (
+      filePath: string | undefined,
+      added: number | undefined,
+      deleted: number | undefined,
+      sourcePriority: number,
+      diffExcerpt?: DiffExcerpt,
+    ) => {
+      const file = (filePath || "").trim();
+      if (!file) return;
+
+      const key = normalizePath(file);
+      const resolvedAdded = Math.max(
+        0,
+        typeof added === "number" ? added : typeof diffExcerpt?.added === "number" ? diffExcerpt.added : 0,
+      );
+      const resolvedDeleted = Math.max(
+        0,
+        typeof deleted === "number"
+          ? deleted
+          : typeof diffExcerpt?.deleted === "number"
+            ? diffExcerpt.deleted
+            : 0,
+      );
+
+      const existing = byFile.get(key);
+      if (!existing) {
+        byFile.set(key, {
+          file,
+          added: resolvedAdded,
+          deleted: resolvedDeleted,
+          diffExcerpt,
+          sourcePriority,
+        });
+        return;
+      }
+
+      const shouldReplaceStats = sourcePriority >= existing.sourcePriority;
+      const nextExcerptLines = Array.isArray(diffExcerpt?.lines) ? diffExcerpt.lines.length : 0;
+      const existingExcerptLines = Array.isArray(existing.diffExcerpt?.lines)
+        ? existing.diffExcerpt.lines.length
+        : 0;
+
+      existing.file = existing.file.length >= file.length ? existing.file : file;
+      if (shouldReplaceStats) {
+        existing.added = resolvedAdded;
+        existing.deleted = resolvedDeleted;
+        existing.sourcePriority = sourcePriority;
+      } else {
+        existing.added = Math.max(existing.added, resolvedAdded);
+        existing.deleted = Math.max(existing.deleted, resolvedDeleted);
+      }
+      if (nextExcerptLines > existingExcerptLines) {
+        existing.diffExcerpt = diffExcerpt;
+      }
+    };
+
+    for (const step of streamingSteps) {
+      upsert(
+        step.filePath || step.activityDetail?.file || step.title,
+        step.diffStats?.added,
+        step.diffStats?.deleted,
+        1,
+        step.activityDetail?.diffExcerpt,
+      );
+    }
+
+    for (const event of timelineEvents) {
+      upsert(
+        event.filePath || event.activityDetail?.file || event.summary || event.description,
+        event.diffStats?.added,
+        event.diffStats?.deleted,
+        1,
+        event.activityDetail?.diffExcerpt,
+      );
+    }
+
+    for (const edit of messageEdits) {
+      upsert(edit.file, edit.added, edit.deleted, 2);
+    }
+
+    if (changeSummary && Array.isArray(changeSummary.files)) {
+      for (const summaryFile of changeSummary.files) {
+        upsert(summaryFile.file, summaryFile.added, summaryFile.deleted, 3);
+      }
+    }
+
+    return Array.from(byFile.values())
+      .map((item) => ({
+        file: item.file,
+        added: item.added,
+        deleted: item.deleted,
+        diffExcerpt: item.diffExcerpt,
+      }))
+      .sort((a, b) => a.file.localeCompare(b.file));
+  }, [streamingSteps, timelineEvents, messageEdits, changeSummary]);
+
+  if (fileChanges.length === 0) {
     return null;
   }
 
-  return (
-    <div className="mt-3 mb-2 border-l-2 border-oc-border pl-3">
-      {/* Header with expand/collapse all button */}
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-xs font-semibold text-oc-text-soft">
-          <FileCode className="h-3.5 w-3.5 text-oc-accent" />
-          <span>File Changes</span>
-          <span className="text-[10px] font-normal text-oc-text-muted">
-            ({allFileChanges.length} {allFileChanges.length === 1 ? 'file' : 'files'})
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={toggleAll}
-          className="text-[10px] font-mono text-oc-accent hover:underline"
-        >
-          {Object.values(expandedFiles).every((v) => v === true) ? 'Collapse all' : 'Expand all'}
-        </button>
-      </div>
+  const filesChanged = changeSummary?.filesChanged ?? fileChanges.length;
+  const totalAdded =
+    typeof changeSummary?.added === "number"
+      ? Math.max(0, changeSummary.added)
+      : fileChanges.reduce((sum, file) => sum + file.added, 0);
+  const totalDeleted =
+    typeof changeSummary?.deleted === "number"
+      ? Math.max(0, changeSummary.deleted)
+      : fileChanges.reduce((sum, file) => sum + file.deleted, 0);
 
-      {/* File list with expand/collapse */}
-      <div className="space-y-1.5">
-        {allFileChanges.map((fileChange, idx) => {
-          const isExpanded = expandedFiles[fileChange.filePath] ?? false; // Default collapsed
-          const fileName = fileChange.filePath.split(/[/\\]/).pop() || fileChange.filePath;
-          
-          // Check for diff content in multiple places
-          const hasDiffExcerpt = fileChange.diffExcerpt?.lines && fileChange.diffExcerpt.lines.length > 0;
-          const hasContent = fileChange.content && fileChange.content.length > 0;
-          const hasDetail = fileChange.detail && fileChange.detail.length > 0;
-          const hasDiffContent = hasDiffExcerpt || hasContent || hasDetail;
-          
-          // Log what we found
-          console.log('[FileChangesSection] File data:', {
-            filePath: fileChange.filePath,
-            hasDiffExcerpt,
-            hasContent,
-            hasDetail,
-            hasDiffContent,
-            contentPreview: fileChange.content?.substring(0, 100),
-            detailPreview: fileChange.detail?.substring(0, 100),
-            diffExcerptLines: fileChange.diffExcerpt?.lines?.length,
-          });
+  const visibleChanges = useMemo(() => {
+    const ordered: Array<{
+      file: string;
+      added: number;
+      deleted: number;
+      diffExcerpt?: DiffExcerpt;
+    }> = [];
+    const seen = new Set<string>();
+
+    if (changeSummary && Array.isArray(changeSummary.files)) {
+      for (const summaryFile of changeSummary.files) {
+        const key = normalizePath(summaryFile.file);
+        if (seen.has(key)) continue;
+        const matched = fileChanges.find((file) => normalizePath(file.file) === key);
+        ordered.push({
+          file: summaryFile.file,
+          added: Math.max(0, summaryFile.added || 0),
+          deleted: Math.max(0, summaryFile.deleted || 0),
+          diffExcerpt: matched?.diffExcerpt || summaryFile.diffExcerpt,
+        });
+        seen.add(key);
+      }
+    }
+
+    for (const change of fileChanges) {
+      const key = normalizePath(change.file);
+      if (seen.has(key)) continue;
+      ordered.push(change);
+      seen.add(key);
+    }
+
+    return ordered.slice(0, 12);
+  }, [changeSummary, fileChanges]);
+
+  const handleUndo = () => {
+    vscode.postMessage({
+      type: "undoMessageChanges",
+      messageId: changeSummary?.messageId || messageId,
+    });
+  };
+
+  const handleReview = () => {
+    vscode.postMessage({
+      type: "reviewMessageChanges",
+      files: fileChanges.map((file) => file.file),
+    });
+  };
+  const [expandedByFile, setExpandedByFile] = useState<Record<string, boolean>>({});
+
+  const toggleExpanded = (file: string) => {
+    setExpandedByFile((prev) => ({
+      ...prev,
+      [file]: !prev[file],
+    }));
+  };
+
+  return (
+    <div className="mt-3 mb-2 overflow-hidden rounded-xl border border-oc-border bg-oc-panel-soft/35">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-oc-border/70 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 text-sm text-oc-text-soft">
+          <FileCode className="h-4 w-4 shrink-0 text-oc-accent" />
+          <span className="font-medium">
+            {filesChanged} {filesChanged === 1 ? "file" : "files"} changed
+          </span>
+          {(totalAdded > 0 || totalDeleted > 0) && (
+            <span className="font-mono text-xs">
+              {totalAdded > 0 ? <span className="text-oc-green">+{totalAdded}</span> : null}
+              {totalDeleted > 0 ? (
+                <span className={cn("text-oc-red", totalAdded > 0 ? "ml-1.5" : "")}>
+                  -{totalDeleted}
+                </span>
+              ) : null}
+            </span>
+          )}
+        </div>
+        <div className="ml-auto flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleUndo}
+            className="inline-flex items-center gap-1 rounded-md border border-oc-border/80 px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:text-oc-text-soft"
+          >
+            <Undo2 className="h-3 w-3" />
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={handleReview}
+            className="inline-flex items-center gap-1 rounded-md border border-oc-border/80 px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:text-oc-text-soft"
+          >
+            Review
+            <ArrowUpRight className="h-3 w-3" />
+          </button>
+        </div>
+      </div>
+      <div className="p-2">
+        {visibleChanges.map((fileChange) => {
+          const hasPreview =
+            Array.isArray(fileChange.diffExcerpt?.lines) && fileChange.diffExcerpt.lines.length > 0;
+          const isExpanded = !!expandedByFile[fileChange.file];
 
           return (
             <div
-              key={`${fileChange.source}-${idx}`}
-              className="rounded-md border border-oc-border bg-oc-panel-soft/30 overflow-hidden"
+              key={fileChange.file}
+              className="mb-1.5 overflow-hidden rounded-lg bg-oc-panel-soft/45 last:mb-0"
             >
-              {/* File header row - always visible */}
-              <button
-                type="button"
-                onClick={() => toggleFile(fileChange.filePath)}
-                className="flex w-full items-center justify-between px-2.5 py-1.5 text-left hover:bg-oc-panel-soft transition-colors"
-              >
-                <div className="flex min-w-0 flex-1 items-center gap-2">
-                  {/* File icon */}
-                  <FileText className="h-3.5 w-3.5 shrink-0 text-oc-text-muted" />
-                  
-                  {/* File name */}
-                  <span className="truncate text-[11px] font-medium text-oc-text-soft">
-                    {fileName}
-                  </span>
-                  
-                  {/* Full path as tooltip */}
-                  {fileChange.filePath !== fileName && (
-                    <span className="truncate text-[9px] text-oc-text-muted opacity-70">
-                      ({fileChange.filePath})
-                    </span>
-                  )}
+              <div className="group flex w-full items-center justify-between px-2.5 py-2 transition-colors hover:bg-oc-panel-soft/70">
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  onClick={() =>
+                    vscode.postMessage({
+                      type: "openDiff",
+                      file: fileChange.file,
+                    })
+                  }
+                >
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-oc-text-muted/80 group-hover:text-oc-text-muted" />
+                  <span className="truncate text-[12px] text-oc-text-soft/95">{fileChange.file}</span>
+                </button>
+                <div className="ml-2 flex shrink-0 items-center gap-2">
+                  <div className="font-mono text-xs">
+                    {fileChange.added > 0 ? <span className="text-oc-green">+{fileChange.added}</span> : null}
+                    {fileChange.deleted > 0 ? (
+                      <span className={cn("text-oc-red", fileChange.added > 0 ? "ml-1.5" : "")}>
+                        -{fileChange.deleted}
+                      </span>
+                    ) : null}
+                    {fileChange.added <= 0 && fileChange.deleted <= 0 ? (
+                      <span className="text-oc-text-muted">+/-0</span>
+                    ) : null}
+                  </div>
+
+                  <button
+                    type="button"
+                    aria-label={isExpanded ? "Collapse diff preview" : "Expand diff preview"}
+                    onClick={() => toggleExpanded(fileChange.file)}
+                    className={cn(
+                      "inline-flex h-5 w-5 items-center justify-center rounded text-oc-text-muted transition-colors hover:bg-oc-panel hover:text-oc-text-soft",
+                      !hasPreview && "opacity-80",
+                    )}
+                  >
+                    {isExpanded ? (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    )}
+                  </button>
                 </div>
+              </div>
 
-                {/* Right side: stats + expand/collapse icon */}
-                <div className="flex items-center gap-2 shrink-0">
-                  {/* Diff stats */}
-                  {(fileChange.diffStats || fileChange.diffExcerpt) && (
-                    <span className="text-[10px] font-mono text-oc-text-muted">
-                      {fileChange.diffExcerpt?.added || fileChange.diffStats?.added ? (
-                        <span className="text-oc-green">+{fileChange.diffExcerpt?.added || fileChange.diffStats?.added}</span>
-                      ) : null}
-                      {fileChange.diffExcerpt?.deleted || fileChange.diffStats?.deleted ? (
-                        <span className="text-oc-red ml-1">-{fileChange.diffExcerpt?.deleted || fileChange.diffStats?.deleted}</span>
-                      ) : null}
-                    </span>
-                  )}
-
-                  {/* Expand/collapse icon */}
-                  {hasDiffContent && (
-                    <>
-                      {isExpanded ? (
-                        <ChevronDown className="h-3.5 w-3.5 text-oc-text-muted" />
-                      ) : (
-                        <ChevronRight className="h-3.5 w-3.5 text-oc-text-muted" />
-                      )}
-                    </>
-                  )}
-                </div>
-              </button>
-
-              {/* Expanded diff content */}
-              {isExpanded && hasDiffContent && (
-                <div className="border-t border-oc-border/50 bg-oc-panel/50">
-                  {fileChange.diffExcerpt ? (
-                    <CompactDiffPreview
-                      excerpt={fileChange.diffExcerpt}
-                      filePath={fileChange.filePath}
-                      maxLines={10}
-                    />
-                  ) : fileChange.content || fileChange.detail ? (
-                    <div className="px-2.5 py-1.5">
-                      <div className="text-[9px] text-oc-text-muted mb-1">Diff output:</div>
-                      <pre className="text-[10px] font-mono whitespace-pre-wrap break-words text-oc-text-soft bg-oc-panel rounded p-2 overflow-x-auto">
-                        {fileChange.content || fileChange.detail}
-                      </pre>
+              {isExpanded ? (
+                <div className="border-t border-oc-border/60 bg-oc-panel/55 p-2">
+                  {hasPreview ? (
+                    <div className="max-h-[260px] overflow-auto rounded-md border border-oc-border/70">
+                      <ActivityDiffExcerpt
+                        excerpt={{
+                          header: fileChange.diffExcerpt?.header,
+                          lines: fileChange.diffExcerpt?.lines || [],
+                          added: fileChange.diffExcerpt?.added ?? fileChange.added,
+                          deleted: fileChange.diffExcerpt?.deleted ?? fileChange.deleted,
+                        }}
+                      />
                     </div>
                   ) : (
-                    <div className="px-2.5 py-1.5 text-[10px] text-oc-text-muted italic opacity-70">
-                      No diff preview available
+                    <div className="rounded-md border border-oc-border/70 px-2 py-1.5 text-[11px] text-oc-text-muted">
+                      Diff preview unavailable for this file in the current payload.
                     </div>
                   )}
                 </div>
-              )}
+              ) : null}
             </div>
           );
         })}
       </div>
+
+      {fileChanges.length > visibleChanges.length ? (
+        <div className="border-t border-oc-border/60 px-3 py-1.5 text-[10px] text-oc-text-muted">
+          Showing {visibleChanges.length} of {fileChanges.length} changed files
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3988,6 +4141,3 @@ export function MessageStatus({
     </div>
   );
 }
-
-
-

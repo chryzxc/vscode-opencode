@@ -514,6 +514,39 @@ test('SubagentTracker implements event clamping', () => {
   );
 });
 
+test('SubagentTracker merges streamed assistant chunks into conversation text', () => {
+  assert.match(
+    trackerSource,
+    /function\s+joinConversationText\(/,
+    'Should define joinConversationText helper for streaming chunk merges'
+  );
+  assert.match(
+    trackerSource,
+    /incoming\.startsWith\(previous\)/,
+    'joinConversationText should handle full-text replacement updates'
+  );
+  assert.match(
+    trackerSource,
+    /previous\.endsWith\(incoming\)/,
+    'joinConversationText should skip duplicate trailing chunks'
+  );
+
+  const pushConversationBody = extractFunctionBody(
+    trackerSource,
+    'private pushConversation('
+  );
+  assert.match(
+    pushConversationBody,
+    /joinConversationText\(/,
+    'pushConversation should merge updates for the same message/part'
+  );
+  assert.match(
+    pushConversationBody,
+    /MAX_CONVERSATION_EVENTS/,
+    'pushConversation should clamp conversation history'
+  );
+});
+
 test('SubagentTracker deduplicates noisy timeline events', () => {
   const pushTimelineBody = extractFunctionBody(
     trackerSource,
@@ -575,6 +608,39 @@ test('SubagentTracker suppresses low-signal text timeline spam', () => {
     handlePartBody,
     /!\(partType === "text" && !progress && !thinkingText\.trim\(\)\)/,
     'text-only deltas without progress/thinking should not create timeline entries'
+  );
+  assert.match(
+    handlePartBody,
+    /pushConversation\(detail,\s*\{\s*[\s\S]*kind:\s*"message"/s,
+    'handleMessagePartUpdated should stream assistant text into conversationEvents'
+  );
+  assert.match(
+    handlePartBody,
+    /kind:\s*"reasoning"/,
+    'handleMessagePartUpdated should stream reasoning updates into conversationEvents'
+  );
+  assert.match(
+    handlePartBody,
+    /kind:\s*"step"/,
+    'handleMessagePartUpdated should stream progress/step updates into conversationEvents'
+  );
+});
+
+test('SubagentTracker streams final assistant message updates into conversationEvents', () => {
+  const handleMessageBody = extractFunctionBody(
+    trackerSource,
+    'private handleMessageUpdated('
+  );
+
+  assert.match(
+    handleMessageBody,
+    /messageText/,
+    'handleMessageUpdated should read final message text from update payload'
+  );
+  assert.match(
+    handleMessageBody,
+    /pushConversation\(/,
+    'handleMessageUpdated should push conversation updates for assistant replies'
   );
 });
 

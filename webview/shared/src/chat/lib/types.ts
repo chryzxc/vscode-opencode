@@ -286,6 +286,7 @@ export interface MessageChangeSummaryFile {
   file: string;
   added: number;
   deleted: number;
+  diffExcerpt?: ActivityDiffExcerpt;
 }
 
 export interface MessageChangeSummary {

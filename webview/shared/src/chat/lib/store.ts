@@ -698,7 +698,8 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   let latestTextPart: unknown;
   let latestInteractiveEvents = base.interactiveEvents;
   let latestPlan = base.plan;
-  let latestSubagents = base.subagents;
+  const subagentsByMessageId = new Map<string, Message["subagents"]>();
+  let latestSubagentsWithoutMessageId: Message["subagents"] | undefined;
   let latestError = asStringLocal((base as unknown as Record<string, unknown>).error);
   let latestRawResponse = (base as unknown as Record<string, unknown>).rawResponse;
   let latestStructuredOutput = asRecordLocal(
@@ -738,7 +739,11 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
       latestPlan = message.plan;
     }
     if (Array.isArray(message.subagents) && message.subagents.length > 0) {
-      latestSubagents = message.subagents;
+      if (messageId) {
+        subagentsByMessageId.set(messageId, message.subagents);
+      } else {
+        latestSubagentsWithoutMessageId = message.subagents;
+      }
     }
     if (typeof message.rawResponse === "string") {
       if (message.rawResponse.trim().length > 0) {
@@ -846,8 +851,31 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   if (latestPlan) {
     base.plan = latestPlan;
   }
-  if (latestSubagents) {
-    base.subagents = latestSubagents;
+  const scopedSubagents = (() => {
+    let candidate: Message["subagents"] | undefined;
+    if (canonicalId) {
+      candidate = subagentsByMessageId.get(canonicalId);
+    } else {
+      candidate = latestSubagentsWithoutMessageId;
+    }
+    if (!Array.isArray(candidate) || candidate.length === 0) {
+      return undefined;
+    }
+    if (!canonicalId) {
+      return candidate;
+    }
+    const filtered = candidate.filter((entry) => {
+      const parentMessageId = asStringLocal(
+        asRecordLocal(entry)?.parentMessageId,
+      );
+      return !parentMessageId || parentMessageId === canonicalId;
+    });
+    return filtered.length > 0 ? filtered : undefined;
+  })();
+  if (scopedSubagents) {
+    base.subagents = scopedSubagents;
+  } else {
+    delete (base as Record<string, unknown>).subagents;
   }
   if (latestError) {
     (base as unknown as Record<string, unknown>).error = latestError;

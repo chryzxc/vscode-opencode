@@ -8,8 +8,8 @@ const messageSource = readSource(
 );
 
 const panelSource = readSource(
-  [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
-  'PanelComponents.tsx',
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'components', 'SessionModal.tsx')],
+  'SessionModal.tsx',
 );
 
 test('subagent modal logic uses openSubagentModal and closeSubagentModal', () => {
@@ -36,9 +36,7 @@ test('AssistantMessage component types subagent data to SubagentDetail', () => {
     'SubagentDetailModal.tsx',
   );
   assert.match(modalSource, /detail\.childSessionId/, 'Should use typed detailData childSessionId');
-  assert.match(modalSource, /detail\.thinkingEvents\s*&&\s*detail\.thinkingEvents\.length\s*>\s*0/, 'Should use typed detailData thinkingEvents');
-  assert.match(modalSource, /detail\.progressEvents\?\.length/, 'Should use typed detailData progressEvents');
-  assert.match(modalSource, /detail\.timelineEvents\?\.length/, 'Should use typed detailData timelineEvents');
+  assert.match(modalSource, /detail\.conversationEvents/, 'Should use typed detailData conversationEvents');
 });
 
 test('inline subagent rows are integrated into the assistant item loop', () => {
@@ -79,6 +77,7 @@ test('subagent sessions are filtered out of History Sidebar', () => {
   assert.match(panelSource, /topLevelSessions\s*=\s*sessionsList\.filter\(/, 'Should filter sessionsList to get top-level sessions');
   assert.match(panelSource, /parentSessionId\s*=\s*session\.parentSessionId/, 'Should check parentSessionId property');
   assert.match(panelSource, /if\s*\(!parentSessionId\)/, 'Should include sessions without parentSessionId');
+  assert.match(panelSource, /return\s*!sessionIds\.has\(parentSessionId\)/, 'Should exclude true child sessions when parent exists');
 });
 
 test('ThinkingStatusTicker renders below the spawned subagents UI', () => {
@@ -102,17 +101,63 @@ test('subagent detail modal is responsive and visually aligned with chat surface
   );
   assert.match(
     modalSource,
-    /className="flex min-h-0 flex-1 flex-col lg:flex-row"/,
-    'Modal content should stack on mobile and switch to columns on large screens',
+    /className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5"/,
+    'Modal body should use a single conversation column with responsive padding',
   );
   assert.match(
     modalSource,
-    /className="order-1 w-full shrink-0 max-h-\[38vh\][\s\S]*lg:order-2[\s\S]*lg:w-80[\s\S]*lg:border-l/,
-    'Timeline pane should be mobile-first (top section) and move to right column on desktop',
+    /Assistant Conversation/,
+    'Modal should render a dedicated assistant conversation heading',
   );
   assert.match(
     modalSource,
     /className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-oc-border bg-oc-bg-soft[\s\S]*sm:w-auto"/,
     'Header actions should be full-width on mobile and auto-width on larger screens',
   );
+});
+
+test('subagent modal requests child-session conversation when detail is missing it', () => {
+  assert.match(
+    messageSource,
+    /type:\s*"getSubagentConversation"/,
+    'AssistantMessage should request subagent conversation hydration from extension',
+  );
+  assert.match(
+    messageSource,
+    /requestedSubagentConversationRef/,
+    'AssistantMessage should de-duplicate conversation hydration requests',
+  );
+  assert.match(
+    messageSource,
+    /subagentId:\s*selected\.id[\s\S]*childSessionId[\s\S]*parentSessionId[\s\S]*parentMessageId/s,
+    'Conversation request should include subagent and parent/child identifiers',
+  );
+});
+
+test('jump to parent action closes subagent modal before navigation', () => {
+  assert.match(
+    messageSource,
+    /onJumpToParent=\{\(\)\s*=>\s*\{[\s\S]*closeSubagentModal\(\);[\s\S]*jumpToMessage\(/s,
+    'Jump to Parent should close the modal then jump',
+  );
+});
+
+test('subagent conversation modal renders markdown and removes legacy sections', () => {
+  const modalSource = readSource(
+    [joinFromRoot('webview', 'shared', 'src', 'chat', 'SubagentDetailModal.tsx')],
+    'SubagentDetailModal.tsx',
+  );
+  assert.match(
+    modalSource,
+    /<MarkdownRenderer\s+content=\{event\.text\}\s*\/>/,
+    'Subagent conversation should render message bodies via MarkdownRenderer',
+  );
+  assert.match(
+    modalSource,
+    /\(event\.role\s*\|\|\s*""\)\.toLowerCase\(\)\s*===\s*"assistant"/,
+    'Subagent conversation should only include assistant-authored events',
+  );
+  assert.doesNotMatch(modalSource, /Timeline \(/, 'Legacy timeline section should be removed');
+  assert.doesNotMatch(modalSource, /Progress \(/, 'Legacy progress section should be removed');
+  assert.doesNotMatch(modalSource, /Latest Activity/, 'Legacy latest activity section should be removed');
 });

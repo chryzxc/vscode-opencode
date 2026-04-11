@@ -4482,7 +4482,8 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   let latestTextPart: MessagePart | undefined;
   let latestInteractiveEvents: InteractiveEvent[] | undefined;
   let latestPlan = base.plan;
-  let latestSubagents = base.subagents;
+  const subagentsByMessageId = new Map<string, Message["subagents"]>();
+  let latestSubagentsWithoutMessageId: Message["subagents"] | undefined;
   let latestError = asString((base as unknown as UnknownRecord).error);
   let latestStructuredOutput = asRecord(
     (base as unknown as UnknownRecord).structuredOutput,
@@ -4573,7 +4574,11 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
       latestPlan = message.plan;
     }
     if (Array.isArray(message.subagents) && message.subagents.length > 0) {
-      latestSubagents = message.subagents;
+      if (messageId) {
+        subagentsByMessageId.set(messageId, message.subagents);
+      } else {
+        latestSubagentsWithoutMessageId = message.subagents;
+      }
     }
     const errorText = asString((message as unknown as UnknownRecord).error);
     if (errorText) {
@@ -4634,8 +4639,29 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   if (latestPlan) {
     base.plan = latestPlan;
   }
-  if (latestSubagents) {
-    base.subagents = latestSubagents;
+  const scopedSubagents = (() => {
+    let candidate: Message["subagents"] | undefined;
+    if (canonicalMessageId) {
+      candidate = subagentsByMessageId.get(canonicalMessageId);
+    } else {
+      candidate = latestSubagentsWithoutMessageId;
+    }
+    if (!Array.isArray(candidate) || candidate.length === 0) {
+      return undefined;
+    }
+    if (!canonicalMessageId) {
+      return candidate;
+    }
+    const filtered = candidate.filter((entry) => {
+      const parentMessageId = asString(asRecord(entry)?.parentMessageId);
+      return !parentMessageId || parentMessageId === canonicalMessageId;
+    });
+    return filtered.length > 0 ? filtered : undefined;
+  })();
+  if (scopedSubagents) {
+    base.subagents = scopedSubagents;
+  } else {
+    delete (base as UnknownRecord).subagents;
   }
   if (latestError) {
     (base as unknown as UnknownRecord).error = latestError;
@@ -7003,12 +7029,20 @@ function remapSubagentsToFinalMessageId(
   }
 
   const state = getState();
+  const persistedMessageIds = new Set<string>();
+  state.messages.forEach((message) => {
+    const messageId = getMessageId(message);
+    if (messageId) {
+      persistedMessageIds.add(messageId);
+    }
+  });
   const uniqueSourceIds = Array.from(
     new Set(
       sourceMessageIds.filter(
         (value): value is string =>
           typeof value === "string" &&
           value.length > 0 &&
+          !persistedMessageIds.has(value) &&
           value !== finalMessageId,
       ),
     ),
@@ -7338,10 +7372,87 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "stopRequestHandled": {
-          latestStreamingSnapshot = getState().streaming ?? latestStreamingSnapshot;
+          const currentStreaming = getState().streaming;
+          latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
+
+          // Persist the streaming snapshot to prevent content loss
+          // Once content is rendered, it should be treated as locked data
+          if (latestStreamingSnapshot) {
+            const currentMessages = getState().messages;
+
+            // Convert streaming snapshot to a message
+            let normalizedMessage = buildStreamingMessage(latestStreamingSnapshot);
+
+            // Sanitize the message
+            const sanitized = sanitizeAssistantMessageEcho(
+              normalizedMessage,
+              getState(),
+            );
+
+            // Handle subagents if present
+            const streamingMessageId = latestStreamingSnapshot.messageId || null;
+            const hydratedSubagentsFromState = collectHydratedSubagentsFromState(
+              getState(),
+              [
+                streamingMessageId,
+                ...Array.from(activeSubagentParentMessageIds),
+              ],
+            );
+
+            if (hydratedSubagentsFromState.length > 0) {
+              const withSubagents = mergeSubagentsIntoMessage(
+                sanitized,
+                hydratedSubagentsFromState,
+                {
+                  freezeIncompleteStatuses: true, // Freeze since we're stopping
+                  presentationPolicy: { mode: "stream", sessionProcessing: false },
+                },
+              );
+              if (withSubagents) {
+                normalizedMessage = withSubagents;
+              }
+            }
+
+            // Set aborted flag to indicate user stopped the response
+            (normalizedMessage as unknown as UnknownRecord).aborted = true;
+
+            // Persist to messages array (locked data)
+            dispatch({
+              type: "SET_MESSAGES",
+              payload: [...currentMessages, normalizedMessage],
+            });
+
+            // Extract and persist subagents
+            const { summariesByParentMessageId, detailsById } =
+              extractSubagentsFromMessages([normalizedMessage]);
+            if (Object.keys(summariesByParentMessageId).length > 0) {
+              dispatch({
+                type: "UPSERT_SUBAGENT_SUMMARIES",
+                payload: summariesByParentMessageId,
+              });
+            }
+            if (Object.keys(detailsById).length > 0) {
+              dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
+            }
+
+            // Persist to backend
+            const sessionId = deriveSessionIdFromMessage(
+              normalizedMessage,
+              getState().currentSessionId,
+            );
+            if (sessionId) {
+              vscode.postMessage({
+                type: "persistAssistantMessage",
+                sessionId,
+                message: normalizedMessage,
+              });
+            }
+          }
+
           dispatch({ type: "SET_STEERING", payload: false });
           dispatch({ type: "SET_PROCESSING", payload: false });
           dispatch({ type: "FINISH_STREAMING" });
+          dispatch({ type: "SET_STREAMING", payload: null });
           break;
         }
         case "messageResponse": {
@@ -7587,15 +7698,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "chatHistory": {
-          // VERY OBVIOUS STARTUP LOG - Verify this code is running
-          console.log('🚨🚨🚨 [STARTUP] messageHandler.ts chatHistory case is LOADED! 🚨🚨🚨');
-
-          console.log('📥 [MESSAGE HANDLER] chatHistory message received', {
-            sessionId: asString(data.sessionId),
-            hasMessages: !!data.messages,
-            messageCount: Array.isArray(data.messages) ? data.messages.length : 0
-          });
-
           try {
             terminalErrorReached = false;
             const rawMessages = asArray(data.messages, isMessage);
@@ -7625,27 +7727,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               currentState.currentSessionId !== chatHistorySessionId
             );
 
-            console.log('🔍 [chatHistory] Session switch check', {
-              chatHistorySessionId,
-              currentSessionId: currentState.currentSessionId,
-              isSwitchingSession,
-              isSessionProcessing,
-              processingSessionIds: currentState.processingSessionIds,
-              willDispatchSTART_SESSION_LOADING: isSwitchingSession
-            });
-
             if (isSwitchingSession) {
               // Look up the session title from the sessions list
               const session = currentState.sessionsList.find(s => s.id === chatHistorySessionId);
               const sessionTitle = session?.title || chatHistorySessionId;
-
-              console.log('🔄 [SESSION SWITCH] Dispatching START_SESSION_LOADING', {
-                chatHistorySessionId,
-                currentSessionId: currentState.currentSessionId,
-                sessionTitle,
-                isSessionProcessing,
-                processingSessionIds: currentState.processingSessionIds
-              });
 
               dispatch({
                 type: "START_SESSION_LOADING",
@@ -7705,10 +7790,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
             // Session is now fully loaded - clear loading state
             // This ensures the loading UI stays visible until messages are actually in the state
-            console.log('✅ [chatHistory] Messages loaded, dispatching END_SESSION_LOADING', {
-              sessionId: chatHistorySessionId,
-              messageCount: canonicalMessages.length
-            });
             dispatch({ type: "END_SESSION_LOADING" });
           }
 
@@ -7992,7 +8073,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             getState().subagentDetailsById,
             normalizedUpdate.detailsById,
           );
-          trackActiveSubagentParentIds(mergedSummaryUpdate);
+          trackActiveSubagentParentIds(
+            normalizedUpdate.summariesByParentMessageId,
+          );
           if (hasSubagentSummaryEntries(mergedSummaryUpdate)) {
             dispatch({
               type: "UPSERT_SUBAGENT_SUMMARIES",
@@ -8008,7 +8091,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           bindStreamingToParentMessageIdFromSubagents(
             dispatch,
             getState,
-            mergedSummaryUpdate,
+            normalizedUpdate.summariesByParentMessageId,
           );
           syncSubagentMapsIntoMessages(
             dispatch,
@@ -8037,6 +8120,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           // Reset terminal error flag on explicit stream start
           if (streamEventType === "start" || streamEventType === "streamStart") {
             terminalErrorReached = false;
+            activeSubagentParentMessageIds = new Set<string>();
           }
 
           streamDebug("[OpenCode][webview] streamEvent received", {

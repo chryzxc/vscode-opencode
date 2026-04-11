@@ -174,12 +174,6 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     const session = sessionsList.find(s => s.id === sessionId);
     const sessionTitle = session?.title || sessionId;
 
-    console.log('🖱️ [MODAL CLICK] Session clicked in modal!', {
-      sessionId,
-      sessionTitle,
-      WILL_dispatch_START_SESSION_LOADING: true
-    });
-
     // Start loading state immediately when user clicks session in modal
     // This ensures loading UI shows BEFORE the async operation completes
     dispatch({
@@ -189,8 +183,6 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
         title: sessionTitle
       }
     });
-
-    console.log('✅ [MODAL CLICK] START_SESSION_LOADING dispatched! Loading UI should show NOW!');
 
     vscode.postMessage({ type: "switchSession", sessionId });
     onClose();

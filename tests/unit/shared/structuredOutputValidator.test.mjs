@@ -254,6 +254,11 @@ test('validateStructuredOutput validates progress_update responseType', () => {
   assert.match(fnBody, /if \(responseType === "progress_update"\)/, 'Should check for progress_update responseType');
   assert.match(fnBody, /!Array\.isArray\(record\.progressUpdates\)/, 'Should validate progressUpdates array exists');
   assert.match(fnBody, /progress_update responseType requires progressUpdates array/, 'Should include progress_update error');
+  assert.match(
+    fnBody,
+    /file_edit step requires diffExcerpt\.lines or diffStats for done\/error status/,
+    'Should require diff payload for completed file_edit progress updates',
+  );
 });
 
 test('validateStructuredOutput validates message responseType', () => {

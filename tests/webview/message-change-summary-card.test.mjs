@@ -47,3 +47,21 @@ test("assistant message renders completion change summary card with actions", ()
     "card should render changed file rows",
   );
 });
+
+test("file change summary normalizes .sisyphus absolute and relative paths to avoid duplicates", () => {
+  assert.match(
+    messageComponentsSource,
+    /const\s+hiddenSisyphusMarker\s*=\s*["']\/\.sisyphus\/["']/,
+    "path normalization should detect hidden .sisyphus absolute marker",
+  );
+  assert.match(
+    messageComponentsSource,
+    /return\s+`sisyphus\/\$\{lower\.slice\(hiddenIdx\s*\+\s*hiddenSisyphusMarker\.length\)\}`/,
+    "hidden .sisyphus paths should be canonicalized to sisyphus/*",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const\s+plainSisyphusMarker\s*=\s*["']\/sisyphus\/["']/,
+    "path normalization should also detect plain sisyphus marker",
+  );
+});

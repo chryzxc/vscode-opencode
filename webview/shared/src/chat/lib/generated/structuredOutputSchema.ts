@@ -104,7 +104,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
 
       progressUpdates: {
         type: "array",
-        description: "Execution progress steps. For bash/shell commands, include BOTH the command text in 'command' field AND the terminal output (stdout/stderr) in 'output' field when status is 'done' or 'error'. For file edit operations, include diff information to show code changes.",
+        description: "Execution progress steps. For bash/shell commands, include BOTH the command text in 'command' field AND the terminal output (stdout/stderr) in 'output' field when status is 'done' or 'error'. For file_edit operations, ALWAYS include file path and diff payload (diffExcerpt.lines preferred, plus diffStats).",
         items: {
           type: "object",
           properties: {
@@ -125,11 +125,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             kind: {
               type: "string",
               enum: ["tool_call", "file_edit", "command", "read", "search", "other"],
-              description: "Kind of activity - use 'file_edit' for file modifications, 'command' for shell operations, 'tool_call' for tool invocations",
+              description: "Kind of activity - use 'file_edit' for file modifications, 'command' for shell operations, 'tool_call' for tool invocations. When kind='file_edit' and status is done/error, include file and diffExcerpt.lines.",
             },
             file: {
               type: "string",
-              description: "File path for file_edit operations (e.g., 'src/utils/helpers.ts')",
+              description: "File path for file_edit operations (e.g., 'src/utils/helpers.ts'). REQUIRED for file_edit steps.",
             },
             diffStats: {
               type: "object",
@@ -141,7 +141,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             },
             diffExcerpt: {
               type: "object",
-              description: "Compact diff preview showing representative code changes (3-5 lines). Each line should be prefixed with '+' for additions, '-' for deletions, or no prefix for context lines.",
+              description: "Compact diff preview showing representative code changes (3-10 lines). REQUIRED for file_edit steps in done/error status when possible. Each line should be prefixed with '+' for additions, '-' for deletions, or no prefix for context lines.",
               properties: {
                 header: { type: "string", description: "Diff header (e.g., file path, hunk headers like '@@ -1,3 +1,4 @@')" },
                 lines: {

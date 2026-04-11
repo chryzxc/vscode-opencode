@@ -49,15 +49,20 @@ test('structured output schema is defined in shared module', () => {
   );
 });
 
-test('provider accepts interactive responses from webview', () => {
-  assert.match(providerSource, /case "interactiveResponse"/, 'provider should handle interactiveResponse webview messages');
-  assert.match(providerSource, /case "batchInteractiveResponse"/, 'provider should handle batchInteractiveResponse webview messages');
-  assert.match(providerSource, /dispatchInteractiveResponse\(/, 'interactive responses should route through dedicated dispatch helper');
+test('provider accepts interactive submits via sendMessage', () => {
+  assert.match(providerSource, /case "sendMessage"/, 'provider should handle sendMessage webview messages');
   assert.match(
     providerSource,
-    /Question \$\{index \+ 1\}: \$\{question\}\\nAnswer: \$\{answer\}/,
-    'batch interactive responses should include question context alongside answers in the composed prompt',
+    /const isInteractiveSubmit = message\?\.interactiveSubmit === true;/,
+    'provider should detect interactive submit flag on sendMessage payloads',
   );
+  assert.match(
+    providerSource,
+    /forceSendNow:\s*isInteractiveSubmit[\s\S]*avoidAbortIfProcessing:\s*isInteractiveSubmit/s,
+    'interactive submit should force direct send path without abort fallback',
+  );
+  assert.doesNotMatch(providerSource, /case "interactiveResponse"/, 'legacy interactiveResponse message type should be removed');
+  assert.doesNotMatch(providerSource, /case "batchInteractiveResponse"/, 'legacy batchInteractiveResponse message type should be removed');
 });
 
 test('provider suppresses timeout errors while awaiting interactive answers', () => {
@@ -78,8 +83,8 @@ test('provider suppresses timeout errors while awaiting interactive answers', ()
   );
   assert.match(
     providerSource,
-    /dispatchInteractiveResponse\(\{/,
-    'interactive response dispatch should be routed through dedicated handler',
+    /case "sendMessage"[\s\S]*isInteractiveSubmit/,
+    'interactive response submit path should be routed through sendMessage with interactiveSubmit flag',
   );
   assert.match(
     providerSource,
@@ -312,7 +317,7 @@ test('streaming assistant body renders only after trusted renderable content is 
   );
 });
 
-test('input wrapper renders top popup choices and posts batchInteractiveResponse', () => {
+test('input wrapper renders top popup choices and posts sendMessage', () => {
   const inputBody = extractFunctionBody(
     panelSource,
     'export function InputWrapper()',
@@ -323,7 +328,7 @@ test('input wrapper renders top popup choices and posts batchInteractiveResponse
   assert.match(inputBody, /event\.type === "question"/, 'popup should support question-type interactive events');
   assert.match(inputBody, /event\.type === "message"/, 'popup should support message-type interactive events');
   assert.match(inputBody, /event\.options\.map\(/, 'question popup should render clickable option buttons');
-  assert.match(inputBody, /type:\s*"batchInteractiveResponse"/, 'popup choice clicks should post batchInteractiveResponse');
+  assert.match(inputBody, /type:\s*"sendMessage"/, 'popup choice clicks should post sendMessage');
 });
 
 test('input wrapper preserves rendered assistant turn before clearing streaming on interactive submit', () => {
@@ -340,53 +345,58 @@ test('input wrapper preserves rendered assistant turn before clearing streaming 
 });
 
 test('interactive batch payload includes user-facing display text for persistence', () => {
-  const inputBody = extractFunctionBody(
+  const submitBatchBody = extractFunctionBody(
     panelSource,
-    'export function InputWrapper()',
+    'const submitBatchResponses = (',
   );
 
   assert.match(
-    inputBody,
+    submitBatchBody,
     /displayText/,
     'batch interactive submit path should compute user-facing displayText',
   );
   assert.match(
-    inputBody,
+    submitBatchBody,
     /questionText/,
     'batch interactive responses should include question text for deterministic display reconstruction',
   );
   assert.match(
-    inputBody,
-    /type:\s*"batchInteractiveResponse"[\s\S]*displayText/s,
-    'batchInteractiveResponse payload should include displayText',
+    submitBatchBody,
+    /type:\s*"sendMessage"[\s\S]*text:\s*displayText/s,
+    'interactive submit should send composed Question/Answer text via normal sendMessage payload',
   );
   assert.match(
-    inputBody,
+    submitBatchBody,
     /const displayText = composedPrompt;/,
     'interactive user bubble should preserve the full Question/Answer labeled composed prompt',
   );
   assert.match(
-    inputBody,
-    /dispatch\(\{\s*type:\s*"SET_PROCESSING",\s*payload:\s*true\s*\}\);/,
-    'interactive submit should immediately set processing=true so loading starts without waiting for host round-trip',
+    submitBatchBody,
+    /IMPORTANT:\s*do not append an optimistic local user message for interactive[\s\S]*host append also succeeds,\s*the chat can duplicate[\s\S]*host dispatch fails,\s*optimistic-only messages vanish on refresh/s,
+    'interactive submit should avoid optimistic local user message append to prevent duplicate/vanishing history',
   );
   assert.match(
-    inputBody,
+    submitBatchBody,
+    /\/\/\s*dispatch\(\{\s*type:\s*"SET_PROCESSING",\s*payload:\s*true\s*\}\);/,
+    'interactive submit should keep local processing toggle disabled to avoid stuck loading when host dispatch is delayed',
+  );
+  assert.match(
+    submitBatchBody,
     /type:\s*"SET_INTERACTIVE_EVENTS"[\s\S]*normalize\(resp\.questionText\)\s*===\s*itemPromptNorm/s,
     'interactive submit should defensively clear stale quick-input popover entries by content when event IDs are unstable',
   );
   assert.match(
-    inputBody,
-    /type:\s*"SET_INTERACTIVE_EVENTS"[\s\S]*type:\s*"SET_STREAMING"[\s\S]*type:\s*"SET_PROCESSING"[\s\S]*type:\s*"batchInteractiveResponse"/s,
-    'interactive submit should clear popover state and enter loading mode before posting batchInteractiveResponse',
+    submitBatchBody,
+    /type:\s*"SET_INTERACTIVE_EVENTS"[\s\S]*type:\s*"SET_STREAMING"[\s\S]*type:\s*"sendMessage"/s,
+    'interactive submit should clear popover/streaming state before posting sendMessage',
   );
 });
 
 test('provider persists interactive answers as display text while preserving marker transport text', () => {
   assert.match(
     providerSource,
-    /message\?\.displayText/,
-    'provider should accept optional displayText from batchInteractiveResponse payloads',
+    /interactiveSubmit/,
+    'provider should accept interactiveSubmit marker from popover sendMessage payloads',
   );
   assert.match(
     providerSource,
@@ -397,6 +407,57 @@ test('provider persists interactive answers as display text while preserving mar
     providerSource,
     /content:\s*persistedUserText[\s\S]*parts:\s*\[[\s\S]*text:\s*text/s,
     'persisted user messages should store display content while keeping transport marker text in parts',
+  );
+  assert.match(
+    providerSource,
+    /dispatchInteractiveResponse[\s\S]*await this\.handleSendMessage\(/s,
+    'interactive dispatch should use the same direct send path as normal messages',
+  );
+  assert.doesNotMatch(
+    providerSource,
+    /dispatchInteractiveResponse[\s\S]*if \(this\.processingSessionIds\.has\(sessionId\)\) \{[\s\S]*await this\.handleStopRequest\(sessionId\);/s,
+    'interactive dispatch should not abort waiting turns during interactive answer submit',
+  );
+});
+
+test('interactive popover sendMessage path marks interactive submits to avoid abort/steer fallback', () => {
+  const submitBatchBody = extractFunctionBody(
+    panelSource,
+    'const submitBatchResponses = (',
+  );
+  const sendMessageCaseBody = extractFunctionBody(
+    providerSource,
+    'case "sendMessage":',
+  );
+
+  assert.match(
+    submitBatchBody,
+    /type:\s*"sendMessage"[\s\S]*interactiveSubmit:\s*true/s,
+    'popover submit should mark payload as interactiveSubmit=true',
+  );
+  assert.match(
+    sendMessageCaseBody,
+    /const isInteractiveSubmit = message\?\.interactiveSubmit === true;/,
+    'provider sendMessage path should detect interactive submits',
+  );
+  assert.match(
+    sendMessageCaseBody,
+    /if \(isInteractiveSubmit\) \{[\s\S]*interactiveResponseTransitionUntil\s*=\s*Date\.now\(\)\s*\+\s*15000/s,
+    'interactive sendMessage submit should always arm transition window to suppress expected aborted-banner handoff',
+  );
+  assert.match(
+    sendMessageCaseBody,
+    /forceSendNow:\s*isInteractiveSubmit[\s\S]*avoidAbortIfProcessing:\s*isInteractiveSubmit/s,
+    'provider sendMessage path should force direct send and suppress abort when interactiveSubmit=true',
+  );
+  const schedulePromptDispatchBody = extractFunctionBody(
+    providerSource,
+    'private async schedulePromptDispatch(',
+  );
+  assert.match(
+    schedulePromptDispatchBody,
+    /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*this\.processingSessionIds\.has\(sessionId\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true/s,
+    'interactive force-send path should silently stop waiting request before dispatch to avoid stuck loading and interrupted banner',
   );
 });
 

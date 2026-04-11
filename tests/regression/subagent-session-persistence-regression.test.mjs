@@ -19,6 +19,10 @@ const messageComponentsSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
   'MessageComponents.tsx',
 );
+const storeSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'store.ts')],
+  'store.ts',
+);
 
 test('subagent snapshot hydration rebinds orphaned streaming parent IDs to hydrated assistant messages', () => {
   assert.match(
@@ -73,6 +77,69 @@ test('subagent.parentMessageId is strictly mapped to finalMessageId before final
     messageHandlerSource,
     /source\.forEach\(\(entry\)\s*=>\s*\{[\s\S]*parentMessageId:\s*finalMessageId,/,
     'message handler should ensure all finalized subagents have parentMessageId bound to the final message id',
+  );
+});
+
+test('subagent remap only applies to transient source parent ids (prevents ghosting old messages)', () => {
+  const remapBody = extractFunctionBody(
+    messageHandlerSource,
+    'function remapSubagentsToFinalMessageId(',
+  );
+  assert.match(
+    remapBody,
+    /const persistedMessageIds = new Set<string>\(\)/,
+    'remap should compute persisted message ids so stable history keys are protected',
+  );
+  assert.match(
+    remapBody,
+    /!persistedMessageIds\.has\(value\)/,
+    'remap should skip source parent ids that already belong to persisted messages',
+  );
+});
+
+test('stream lifecycle keeps active subagent parent IDs scoped to the current response', () => {
+  assert.match(
+    messageHandlerSource,
+    /if \(streamEventType === "start" \|\| streamEventType === "streamStart"\) \{[\s\S]*activeSubagentParentMessageIds = new Set<string>\(\);/s,
+    'stream start should reset tracked active subagent parent ids to avoid carrying ids from prior responses',
+  );
+  assert.match(
+    messageHandlerSource,
+    /bindStreamingToParentMessageIdFromSubagents\([\s\S]*normalizedUpdate\.summariesByParentMessageId/s,
+    'stream binding should use scoped incoming update summaries, not merged historical maps',
+  );
+});
+
+test('assistant burst coalescing keeps subagents scoped to the canonical assistant message id', () => {
+  assert.match(
+    messageHandlerSource,
+    /const subagentsByMessageId = new Map<string,\s*Message\["subagents"\]>\(\)/,
+    'messageHandler coalescing should index subagents by source message id',
+  );
+  assert.match(
+    messageHandlerSource,
+    /candidate = subagentsByMessageId\.get\(canonicalMessageId\)/,
+    'messageHandler coalescing should only select subagents from canonical message id',
+  );
+  assert.match(
+    messageHandlerSource,
+    /parentMessageId === canonicalMessageId/,
+    'messageHandler coalescing should filter subagents by canonical parentMessageId',
+  );
+  assert.match(
+    storeSource,
+    /const subagentsByMessageId = new Map<string,\s*Message\["subagents"\]>\(\)/,
+    'store canonicalization should index subagents by source message id',
+  );
+  assert.match(
+    storeSource,
+    /candidate = subagentsByMessageId\.get\(canonicalId\)/,
+    'store canonicalization should only select subagents from canonical message id',
+  );
+  assert.match(
+    storeSource,
+    /parentMessageId === canonicalId/,
+    'store canonicalization should filter subagents by canonical parentMessageId',
   );
 });
 

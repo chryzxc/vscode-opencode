@@ -157,6 +157,12 @@ type MessageChangeSummary = {
     file: string;
     added: number;
     deleted: number;
+    diffExcerpt?: {
+      header?: string;
+      lines: string[];
+      added?: number;
+      deleted?: number;
+    };
   }>;
 };
 
@@ -693,6 +699,8 @@ export class ChatViewProvider
       images?: any[];
       agent?: string;
       userFacingText?: string;
+      avoidAbortIfProcessing?: boolean;
+      forceSendNow?: boolean;
     },
   ): Promise<void> {
     const text = typeof payload.text === "string" ? payload.text.trim() : "";
@@ -706,9 +714,26 @@ export class ChatViewProvider
     }
 
     const effectiveMode =
-      mode === "send-now" && this.processingSessionIds.has(sessionId)
+      mode === "send-now" &&
+      !payload.forceSendNow &&
+      this.processingSessionIds.has(sessionId)
         ? "steer"
         : mode;
+
+    // Interactive submit path: some providers keep the previous turn in a
+    // waiting/processing state until an abort is issued. In that case we must
+    // stop first, but do it silently so the webview does not render an
+    // "Interrupted" banner for expected question/answer handoff.
+    if (
+      mode === "send-now" &&
+      payload.forceSendNow &&
+      this.processingSessionIds.has(sessionId)
+    ) {
+      await this.handleStopRequest(sessionId, {
+        suppressWebviewNotification: true,
+        skipQueueDrain: true,
+      });
+    }
 
     // For normal sends, bypass queue persistence entirely so the queue panel
     // does not show transient "queued" items when there is no active backlog.
@@ -750,6 +775,9 @@ export class ChatViewProvider
     }
 
     if (this.isProcessingRequest) {
+      if (payload.avoidAbortIfProcessing) {
+        return;
+      }
       if (sessionId === this.currentSessionId) {
         await this.handleStopRequest(sessionId);
       }
@@ -871,6 +899,202 @@ export class ChatViewProvider
       type: "sessionsList",
       sessions: sessionsPayload,
     });
+  }
+
+  private async handleGetSubagentConversation(message: {
+    subagentId?: string;
+    childSessionId?: string;
+    parentSessionId?: string;
+    parentMessageId?: string;
+    status?: string;
+    latestActivity?: string;
+  }): Promise<void> {
+    const subagentId = this.firstNonEmptyString(message?.subagentId);
+    const childSessionId = this.firstNonEmptyString(message?.childSessionId);
+    const parentSessionId = this.firstNonEmptyString(
+      message?.parentSessionId,
+      this.currentSessionId,
+    );
+    const parentMessageId = this.firstNonEmptyString(message?.parentMessageId);
+    if (!subagentId || !childSessionId || !parentSessionId || !parentMessageId) {
+      return;
+    }
+
+    try {
+      const rawMessages = await this.sessionService.getMessages(childSessionId);
+      const processedMessages = await this.processHistoryMessages(
+        Array.isArray(rawMessages) ? rawMessages : [],
+        childSessionId,
+      );
+
+      const conversationEvents = this.buildAssistantConversationEvents(
+        processedMessages,
+      );
+      if (conversationEvents.length === 0) {
+        return;
+      }
+
+      const latestConversationText =
+        conversationEvents[conversationEvents.length - 1]?.text || "";
+
+      this.view?.webview.postMessage({
+        type: "subagentUpdate",
+        detailsById: {
+          [subagentId]: {
+            id: subagentId,
+            parentSessionId,
+            parentMessageId,
+            childSessionId,
+            status:
+              this.firstNonEmptyString(message?.status, "done") || "done",
+            latestActivity:
+              this.firstNonEmptyString(
+                message?.latestActivity,
+                latestConversationText.slice(0, 120),
+                "Completed",
+              ) || "Completed",
+            references: [],
+            thinkingEvents: [],
+            progressEvents: [],
+            timelineEvents: [],
+            conversationEvents,
+          },
+        },
+      });
+    } catch (error) {
+      this.logger.warn("Failed to hydrate subagent conversation", {
+        subagentId,
+        childSessionId,
+        error: (error as Error)?.message || String(error),
+      });
+    }
+  }
+
+  private buildAssistantConversationEvents(
+    messages: any[],
+  ): Array<{
+    id: string;
+    role: string;
+    kind: "message" | "reasoning" | "step";
+    text: string;
+    createdAt: number;
+    messageID?: string;
+    partID?: string;
+  }> {
+    const events: Array<{
+      id: string;
+      role: string;
+      kind: "message" | "reasoning" | "step";
+      text: string;
+      createdAt: number;
+      messageID?: string;
+      partID?: string;
+    }> = [];
+
+    const append = (
+      role: string,
+      kind: "message" | "reasoning" | "step",
+      textRaw: string,
+      createdAt: number,
+      messageID?: string,
+      partID?: string,
+    ) => {
+      const text = typeof textRaw === "string" ? textRaw.trim() : "";
+      if (!text) {
+        return;
+      }
+      events.push({
+        id: `${messageID || "msg"}:${kind}:${events.length}`,
+        role: role || "assistant",
+        kind,
+        text,
+        createdAt,
+        messageID,
+        partID,
+      });
+    };
+
+    const getCreatedAt = (message: any): number => {
+      const info = this.asRecord(message?.info) || {};
+      const infoTime = this.asRecord(info.time) || {};
+      const msgTime = this.asRecord(message?.time) || {};
+      const candidates = [
+        infoTime.created,
+        infoTime.updated,
+        infoTime.completed,
+        msgTime.created,
+        msgTime.updated,
+        msgTime.completed,
+        message?.createdAt,
+        message?.created,
+      ];
+      for (const candidate of candidates) {
+        if (typeof candidate === "number" && Number.isFinite(candidate)) {
+          return candidate;
+        }
+      }
+      return Date.now();
+    };
+
+    for (const message of Array.isArray(messages) ? messages : []) {
+      const info = this.asRecord(message?.info) || {};
+      const role = this.firstNonEmptyString(info.role, message?.role, "assistant");
+      if ((role || "").toLowerCase() !== "assistant") {
+        continue;
+      }
+      const messageID = this.firstNonEmptyString(
+        info.id,
+        message?.id,
+        message?.messageID,
+      );
+      const createdAt = getCreatedAt(message);
+      const content = this.extractMessageBodyText(message);
+      if (content) {
+        append("assistant", "message", content, createdAt, messageID);
+      }
+
+      if (Array.isArray(message?.reasoningEvents)) {
+        message.reasoningEvents.forEach((event: any, index: number) => {
+          const text = this.firstNonEmptyString(event?.text);
+          if (!text) {
+            return;
+          }
+          append(
+            "assistant",
+            "reasoning",
+            text,
+            typeof event?.createdAt === "number" ? event.createdAt : createdAt,
+            messageID,
+            this.firstNonEmptyString(event?.partID, event?.partId),
+          );
+        });
+      }
+
+      const steps = Array.isArray(message?.steps)
+        ? message.steps
+        : Array.isArray(message?.progressEvents)
+          ? message.progressEvents
+          : [];
+      steps.forEach((step: any) => {
+        const title = this.firstNonEmptyString(step?.title);
+        const meta = this.firstNonEmptyString(step?.meta);
+        const status = this.firstNonEmptyString(step?.status);
+        const stepText = [title, meta, status].filter(Boolean).join(" - ");
+        if (!stepText) {
+          return;
+        }
+        append(
+          "assistant",
+          "step",
+          stepText,
+          typeof step?.createdAt === "number" ? step.createdAt : createdAt,
+          messageID,
+          this.firstNonEmptyString(step?.partID, step?.partId),
+        );
+      });
+    }
+
+    return events;
   }
 
   /**
@@ -1480,15 +1704,25 @@ export class ChatViewProvider
       this.interactiveResponseTransitionUntil = Date.now() + 15000;
     }
 
-    // Don't force stop ongoing requests - let schedulePromptDispatch handle mode switching
-    // This uses the same intelligent "steer" mode as normal messages instead of blocking
+    // Interactive answers must be sent directly as a real turn.
+    // Do not route through queue/steer scheduling here: when a request is
+    // waiting for interactive input, stale processing flags can cause the answer
+    // to be queued or short-circuited, which presents as "AI loading forever".
+    // Also avoid explicit abort here; an interactive-wait turn is expected to
+    // pause for user input and should not show an "interrupted" banner.
     this.currentSessionId = sessionId;
-    await this.schedulePromptDispatch("send-now", {
-      sessionId,
+    await this.handleSendMessage(
       text,
-      agent: payload.agent,
-      userFacingText: payload.userFacingText,
-    });
+      undefined,
+      undefined,
+      undefined,
+      payload.agent,
+      false,
+      undefined,
+      false,
+      undefined,
+      payload.userFacingText,
+    );
   }
 
   /**
@@ -2091,6 +2325,15 @@ export class ChatViewProvider
           });
 
           try {
+            const isInteractiveSubmit = message?.interactiveSubmit === true;
+            if (isInteractiveSubmit) {
+              // When answering interactive prompts, some providers finalize the
+              // previous waiting turn as aborted during handoff to the new turn.
+              // Arm this unconditionally for interactive submits so expected
+              // handoff aborts never surface as an "Interrupted" banner, even
+              // if awaitingInteractiveAnswer was already cleared by timing.
+              this.interactiveResponseTransitionUntil = Date.now() + 15000;
+            }
             await this.schedulePromptDispatch("send-now", {
               sessionId: message.sessionId,
               text: message.text,
@@ -2098,6 +2341,13 @@ export class ChatViewProvider
               contexts: message.contexts,
               images: message.images,
               agent: message.agent,
+              // Interactive popover submits should behave like a normal direct
+              // user send, even if session processing flags are stale from the
+              // preceding question turn. This prevents automatic abort banners
+              // ("Response stopped by user") when the model is simply waiting
+              // for user input.
+              forceSendNow: isInteractiveSubmit,
+              avoidAbortIfProcessing: isInteractiveSubmit,
             });
             this.logger.endFeatureFlow(correlationId, { success: true });
           } catch (err) {
@@ -2126,77 +2376,6 @@ export class ChatViewProvider
           if (snapshotFromMessage) {
             await this.persistSubagentLiveState(sessionId, snapshotFromMessage);
           }
-          break;
-        }
-        case "interactiveResponse": {
-          const choiceText =
-            this.firstNonEmptyString(
-              message?.selection?.value,
-              message?.selection?.label,
-              message?.text,
-            ) || "";
-          if (!choiceText) {
-            break;
-          }
-
-          // FIX: Send just the choice text, no special formatting
-          const composedPrompt = choiceText;
-          const userFacingText = this.firstNonEmptyString(
-            message?.displayText,
-            choiceText,
-          );
-
-          await this.dispatchInteractiveResponse({
-            sessionId: message?.sessionId,
-            text: composedPrompt,
-            userFacingText,
-            agent: message?.agent,
-          });
-          break;
-        }
-        case "batchInteractiveResponse": {
-          const responses = message.responses as Array<{
-            eventId: string;
-            eventType: string;
-            text: string;
-            questionText?: string;
-          }>;
-          if (!responses || responses.length === 0) {
-            break;
-          }
-
-          // Preserve question context in the prompt so model-side continuation
-          // is grounded, while the webview controls user-facing rendering text.
-          const composedPrompt = responses
-            .map((resp, index) => {
-              const answer = this.firstNonEmptyString(resp.text) || "";
-              if (!answer) {
-                return "";
-              }
-              const question = this.firstNonEmptyString(resp.questionText) || "";
-              if (!question) {
-                return `Answer ${index + 1}: ${answer}`;
-              }
-              return `Question ${index + 1}: ${question}\nAnswer: ${answer}`;
-            })
-            .filter((value) => value.length > 0)
-            .join("\n\n");
-
-          if (!composedPrompt) {
-            break;
-          }
-
-          const userFacingText = this.firstNonEmptyString(
-            message?.displayText,
-            composedPrompt,
-          );
-
-          await this.dispatchInteractiveResponse({
-            sessionId: message?.sessionId,
-            text: composedPrompt,
-            userFacingText,
-            agent: message?.agent,
-          });
           break;
         }
         case "newSession":
@@ -2472,6 +2651,10 @@ export class ChatViewProvider
         }
         case "getSessions": {
           await this.handleGetSessions();
+          break;
+        }
+        case "getSubagentConversation": {
+          await this.handleGetSubagentConversation(message);
           break;
         }
         case "loadSession":
@@ -3587,53 +3770,6 @@ export class ChatViewProvider
     return mentionsFormat && mentionsUnsupported;
   }
 
-  /**
-   * Get the configured request timeout from VSCode settings
-   * @returns Timeout in milliseconds (default: 120000 = 2 minutes)
-   */
-  private getRequestTimeout(): number {
-    const config = vscode.workspace.getConfiguration('opencode');
-    const timeout = config.get<number>('requestTimeout', 120000);
-
-    // Validate timeout is reasonable (between 10s and 10 minutes)
-    if (timeout < 10000 || timeout > 600000) {
-      this.logger.warn(`Invalid requestTimeout configured: ${timeout}ms, using default 120000ms`);
-      return 120000;
-    }
-
-    return timeout;
-  }
-
-  /**
-   * Calculate timeout based on query complexity
-   * @param baseTimeout - Base timeout from configuration
-   * @param hasFiles - Whether the query includes file attachments
-   * @param hasContexts - Whether the query includes context attachments
-   * @param hasImages - Whether the query includes image attachments
-   * @returns Adjusted timeout in milliseconds
-   */
-  private calculateTimeoutForQuery(
-    baseTimeout: number,
-    hasFiles: boolean,
-    hasContexts: boolean,
-    hasImages: boolean,
-  ): number {
-    const config = vscode.workspace.getConfiguration('opencode');
-    const multiplier = config.get<number>('complexQueryMultiplier', 1.5);
-
-    // Calculate complexity score
-    const complexityScore = (hasFiles ? 1 : 0) + (hasContexts ? 1 : 0) + (hasImages ? 1 : 0);
-
-    // Apply multiplier for complex queries
-    if (complexityScore >= 2) {
-      const adjustedTimeout = Math.floor(baseTimeout * multiplier);
-      this.logger.debug(`Using extended timeout for complex query: ${adjustedTimeout}ms (base: ${baseTimeout}ms, complexity: ${complexityScore})`);
-      return adjustedTimeout;
-    }
-
-    return baseTimeout;
-  }
-
   // PROMPT-OWNERSHIP: do not modify — transport-only path
   private async promptWithStructuredOutput(
     client: any,
@@ -3648,20 +3784,10 @@ export class ChatViewProvider
   ) {
     const workspaceDirectory = this.getWorkspaceDirectory();
 
-    // Calculate timeout based on query complexity
-    const baseTimeout = this.getRequestTimeout();
-    const timeout = this.calculateTimeoutForQuery(
-      baseTimeout,
-      options?.hasFiles ?? false,
-      options?.hasContexts ?? false,
-      options?.hasImages ?? false,
-    );
-
     const callPrompt = (requestBody: Record<string, unknown>) => {
       const sdkStartTime = Date.now();
       this.logger.debug("Initiating SDK prompt call", {
         sessionID,
-        timeout,
         useStructuredOutput,
         hasFiles: options?.hasFiles,
         hasContexts: options?.hasContexts,
@@ -3672,7 +3798,6 @@ export class ChatViewProvider
         path: { id: sessionID },
         query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
         body: requestBody as SessionPromptData["body"],
-        timeout,  // Explicit timeout configuration
       });
 
       // Add timing tracking
@@ -3682,13 +3807,11 @@ export class ChatViewProvider
           sessionID,
           hasError: Boolean(result.error),
           hasData: Boolean(result.data),
-          timeout: timeout,
         });
       }).catch((error: Error) => {
         const sdkDuration = Date.now() - sdkStartTime;
         this.logger.error(`SDK prompt call failed after ${sdkDuration}ms`, {
           sessionID,
-          timeout: timeout,
           error: error.message,
         });
       });
@@ -3774,13 +3897,15 @@ export class ChatViewProvider
     if (!normalized) {
       return false;
     }
+    // Don't filter out invoke blocks - they contain structured XML content that should be preserved
+    if (normalized.includes("<invoke>") || normalized.includes("</invoke>")) {
+      return false;
+    }
     return (
-      normalized.includes("<tool_call>") ||
-      normalized.includes("</tool_call>") ||
-      normalized.includes("<arg_key>") ||
-      normalized.includes("</arg_key>") ||
-      normalized.includes("<arg_value>") ||
-      normalized.includes("</arg_value>")
+      normalized.includes("<function_call>") ||
+      normalized.includes("</function_call>") ||
+      normalized.includes("<function_calls>") ||
+      normalized.includes("</function_calls>")
     );
   }
 
@@ -6229,7 +6354,10 @@ export class ChatViewProvider
    * Handles stopping a request
    */
   // FORBIDDEN TO REMOVE: Stop Request Button - backend handler required by webview to abort streaming requests
-  private async handleStopRequest(sessionId?: string): Promise<void> {
+  private async handleStopRequest(
+    sessionId?: string,
+    options?: { suppressWebviewNotification?: boolean; skipQueueDrain?: boolean },
+  ): Promise<void> {
     let resolvedSessionId: string | undefined;
     try {
       resolvedSessionId = await this.resolveStopSessionId(sessionId);
@@ -6262,11 +6390,13 @@ export class ChatViewProvider
         this.processingSessionIds.delete(resolvedSessionId);
         this.sendProcessingSessionsUpdate();
       }
-      this.view?.webview.postMessage({
-        type: "stopRequestHandled",
-        sessionId: resolvedSessionId,
-      });
-      if (resolvedSessionId) {
+      if (!options?.suppressWebviewNotification) {
+        this.view?.webview.postMessage({
+          type: "stopRequestHandled",
+          sessionId: resolvedSessionId,
+        });
+      }
+      if (resolvedSessionId && !options?.skipQueueDrain) {
         void this.handleExecuteQueue(resolvedSessionId);
       }
     }
@@ -6465,7 +6595,11 @@ export class ChatViewProvider
       undefined,
       undefined,
       "build",
-      true,
+      false,
+      undefined,
+      false,
+      undefined,
+      "Proceed on this plan.",
     ).catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       vscode.window.showErrorMessage(`Failed to proceed with plan: ${message}`);
@@ -7165,15 +7299,38 @@ export class ChatViewProvider
         return undefined;
       }
 
-      const added = rows.reduce((sum, row) => sum + row.added, 0);
-      const deleted = rows.reduce((sum, row) => sum + row.deleted, 0);
+      const MAX_PREVIEW_FILES = 20;
+      const enrichedRows = await Promise.all(
+        rows.map(async (row, index) => {
+          if (index >= MAX_PREVIEW_FILES) {
+            return row;
+          }
+          const enrichment = await this.getDiffActivityEnrichment(row.file);
+          const diffStats = enrichment?.diffStats;
+          return {
+            ...row,
+            added:
+              row.added > 0 || row.deleted > 0
+                ? row.added
+                : diffStats?.added ?? row.added,
+            deleted:
+              row.added > 0 || row.deleted > 0
+                ? row.deleted
+                : diffStats?.deleted ?? row.deleted,
+            diffExcerpt: enrichment?.diffExcerpt,
+          };
+        }),
+      );
+
+      const added = enrichedRows.reduce((sum, row) => sum + row.added, 0);
+      const deleted = enrichedRows.reduce((sum, row) => sum + row.deleted, 0);
 
       return {
         messageId,
-        filesChanged: rows.length,
+        filesChanged: enrichedRows.length,
         added,
         deleted,
-        files: rows,
+        files: enrichedRows,
       };
     } catch (error) {
       this.logger.warn("Failed to summarize session diff for message", {
@@ -7374,10 +7531,12 @@ export class ChatViewProvider
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) return undefined;
 
+      const workspacePath = workspaceFolder.uri.fsPath;
       const fullPath = path.isAbsolute(filePath)
         ? filePath
-        : path.join(workspaceFolder.uri.fsPath, filePath);
-      const cwd = workspaceFolder.uri.fsPath;
+        : path.join(workspacePath, filePath);
+      const relativePath = path.relative(workspacePath, fullPath).replace(/\\/g, "/");
+      const cwd = workspacePath;
 
       const runGit = (...args: string[]): Promise<string> =>
         new Promise((resolve, reject) => {
@@ -7395,11 +7554,24 @@ export class ChatViewProvider
           );
         });
 
+      const candidates = Array.from(
+        new Set(
+          [filePath, relativePath, fullPath]
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0 && !value.startsWith("..")),
+        ),
+      );
+
       let diffOutput = "";
       try {
-        diffOutput = await runGit("diff", "HEAD", "--", fullPath);
-        if (!diffOutput) {
-          diffOutput = await runGit("diff", "--cached", "--", fullPath);
+        for (const candidate of candidates) {
+          diffOutput = await runGit("diff", "HEAD", "--", candidate);
+          if (!diffOutput) {
+            diffOutput = await runGit("diff", "--cached", "--", candidate);
+          }
+          if (diffOutput) {
+            break;
+          }
         }
         if (!diffOutput) {
           // New file fallback

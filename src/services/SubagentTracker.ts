@@ -176,6 +176,33 @@ function sanitizeActivityLabel(value: string): string {
   return trimmed.replace(/\s+/g, " ");
 }
 
+function joinConversationText(previous: string, incoming: string): string {
+  if (!previous) {
+    return incoming;
+  }
+  if (!incoming) {
+    return previous;
+  }
+  if (incoming === previous) {
+    return previous;
+  }
+  if (incoming.startsWith(previous)) {
+    return incoming;
+  }
+  if (previous.endsWith(incoming)) {
+    return previous;
+  }
+
+  const prevChar = previous[previous.length - 1];
+  const nextChar = incoming[0];
+  const needsSpace =
+    !/\s/.test(prevChar) &&
+    !/\s/.test(nextChar) &&
+    !/^[,.;:!?)}\]]/.test(incoming) &&
+    !/[(\[{]$/.test(prevChar);
+  return needsSpace ? `${previous} ${incoming}` : `${previous}${incoming}`;
+}
+
 function normalizeProgressStatus(value: unknown): "pending" | "done" | "error" {
   const status = asString(value).toLowerCase();
   if (
@@ -801,6 +828,48 @@ export class SubagentTracker {
     );
   }
 
+  private pushConversation(
+    detail: SubagentDetail,
+    event: Omit<SubagentConversationEvent, "id">,
+  ): void {
+    const text = sanitizeReasoningText(event.text);
+    if (!text) {
+      return;
+    }
+
+    const role = sanitizeActivityLabel(event.role) || "assistant";
+    const normalizedEvent: SubagentConversationEvent = {
+      ...event,
+      role,
+      text,
+      id: `${event.messageID || "msg"}:${event.kind}:${event.partID || "part"}:${event.createdAt}`,
+    };
+
+    for (let index = detail.conversationEvents.length - 1; index >= 0; index -= 1) {
+      const existing = detail.conversationEvents[index];
+      if (
+        existing.role !== normalizedEvent.role ||
+        existing.kind !== normalizedEvent.kind
+      ) {
+        continue;
+      }
+      if (
+        existing.messageID !== normalizedEvent.messageID ||
+        existing.partID !== normalizedEvent.partID
+      ) {
+        continue;
+      }
+      existing.text = joinConversationText(existing.text, normalizedEvent.text);
+      existing.createdAt = Math.max(existing.createdAt, normalizedEvent.createdAt);
+      return;
+    }
+
+    detail.conversationEvents = clampEvents(
+      [...detail.conversationEvents, normalizedEvent],
+      MAX_CONVERSATION_EVENTS,
+    );
+  }
+
   private pushProgress(
     detail: SubagentDetail,
     event: SubagentProgressEvent,
@@ -964,12 +1033,24 @@ export class SubagentTracker {
     }
 
     const delta = asString(properties.delta) || asString(part.delta);
+    const messageText =
+      asString(part.text) ||
+      asString(part.content) ||
+      (isReasoningPart(part) ? "" : delta);
     const thinkingText = sanitizeReasoningText(
       asString(part.reasoning) ||
         asString(part.thought) ||
         asString(part.thinking) ||
         (isReasoningPart(part) ? delta : ""),
     );
+    const role =
+      asString(part.role) ||
+      asString(properties.role) ||
+      asString(part.author) ||
+      "assistant";
+    const isAssistantRole =
+      !role || role.toLowerCase() === "assistant" || role.toLowerCase() === "model";
+
     if (thinkingText) {
       this.pushThinking(detail, {
         id: `${detail.id}:thought:${createdAt}:${detail.thinkingEvents.length}`,
@@ -978,6 +1059,16 @@ export class SubagentTracker {
         messageID: messageId,
         partID: partId,
       });
+      if (isAssistantRole) {
+        this.pushConversation(detail, {
+          role: "assistant",
+          kind: "reasoning",
+          text: thinkingText.trim(),
+          createdAt,
+          messageID: messageId,
+          partID: partId,
+        });
+      }
       detail.latestActivity = thinkingText.trim().slice(0, 120);
     }
 
@@ -988,7 +1079,30 @@ export class SubagentTracker {
         messageID: messageId,
         partID: partId,
       });
+      if (isAssistantRole) {
+        const progressText = [progress.title, progress.meta]
+          .filter((value): value is string => Boolean(value))
+          .join(" - ");
+        this.pushConversation(detail, {
+          role: "assistant",
+          kind: "step",
+          text: progressText,
+          createdAt,
+          messageID: messageId,
+          partID: partId,
+        });
+      }
       detail.latestActivity = progress.title;
+    }
+    if (isAssistantRole && messageText.trim()) {
+      this.pushConversation(detail, {
+        role: "assistant",
+        kind: "message",
+        text: messageText,
+        createdAt,
+        messageID: messageId,
+        partID: partId,
+      });
     }
 
     const eventLabel = sanitizeActivityLabel(
@@ -1051,6 +1165,19 @@ export class SubagentTracker {
     }
 
     const createdAt = Date.now();
+    const role = asString(info.role).toLowerCase();
+    const messageText =
+      asString(info.content) || asString(info.text) || asString(properties.content);
+    if ((role === "" || role === "assistant" || role === "model") && messageText.trim()) {
+      this.pushConversation(detail, {
+        role: "assistant",
+        kind: "message",
+        text: messageText,
+        createdAt,
+        messageID: messageId || undefined,
+      });
+    }
+
     detail.providerID = asString(info.providerID) || detail.providerID;
     detail.modelID = asString(info.modelID) || detail.modelID;
 

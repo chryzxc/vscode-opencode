@@ -16,10 +16,6 @@ const TOP_LEVEL_FIELDS = Object.keys(
 );
 const LEGACY_COMPAT_TOP_LEVEL_FIELDS = new Set(["interactiveEvents"]);
 
-// DEBUG: Log what fields are considered valid top-level fields
-console.log('🔍 [STRUCTURED_OUTPUT_SCHEMA] TOP_LEVEL_FIELDS:', TOP_LEVEL_FIELDS);
-console.log('🔍 [STRUCTURED_OUTPUT_SCHEMA] Has "plan" field?', TOP_LEVEL_FIELDS.includes('plan'));
-
 const RESPONSE_TYPES = new Set(
   (structuredOutputSchema.schema.properties as { responseType?: { enum?: string[] } })
     ?.responseType?.enum ?? [],
@@ -153,6 +149,42 @@ export function validateStructuredOutput(
           "progressUpdates must only contain objects with non-empty title/message",
         );
       }
+
+      record.progressUpdates.forEach((item, index) => {
+        const update = asRecord(item);
+        if (!update) {
+          return;
+        }
+        const kind = typeof update.kind === "string"
+          ? update.kind.trim().toLowerCase()
+          : "";
+        const status = typeof update.status === "string"
+          ? update.status.trim().toLowerCase()
+          : "";
+        const hasFile = isNonEmptyString(update.file) || isNonEmptyString(update.filePath);
+        const isFileEdit = kind === "file_edit" || hasFile;
+        const isFinalStep = status === "done" || status === "error";
+        if (!isFileEdit || !isFinalStep) {
+          return;
+        }
+
+        const diffExcerpt = asRecord(update.diffExcerpt);
+        const hasExcerptLines =
+          Array.isArray(diffExcerpt?.lines) &&
+          diffExcerpt.lines.some(
+            (line) => typeof line === "string" && line.trim().length > 0,
+          );
+        const diffStats = asRecord(update.diffStats);
+        const hasDiffStats =
+          typeof diffStats?.added === "number" ||
+          typeof diffStats?.deleted === "number";
+
+        if (!hasExcerptLines && !hasDiffStats) {
+          errors.push(
+            `progressUpdates[${index}] file_edit step requires diffExcerpt.lines or diffStats for done/error status`,
+          );
+        }
+      });
     }
   }
 
@@ -594,15 +626,6 @@ function normalizeQuestionOptions(
 export function sanitizeStructuredOutput(
   value: Record<string, unknown>,
 ): Record<string, unknown> {
-  // DEBUG: Log input
-  console.log('🔍 [sanitizeStructuredOutput] INPUT:', {
-    inputKeys: Object.keys(value),
-    hasPlan: 'plan' in value,
-    planValue: value.plan,
-    responseType: value.responseType,
-    TOP_LEVEL_FIELDS: TOP_LEVEL_FIELDS
-  });
-
   const sanitized: Record<string, unknown> = {};
   TOP_LEVEL_FIELDS.forEach((key) => {
     if (typeof value[key] !== "undefined") {
@@ -613,13 +636,6 @@ export function sanitizeStructuredOutput(
     if (typeof value[key] !== "undefined") {
       sanitized[key] = value[key];
     }
-  });
-
-  // DEBUG: Log output after basic copy
-  console.log('🔍 [sanitizeStructuredOutput] AFTER BASIC COPY:', {
-    sanitizedKeys: Object.keys(sanitized),
-    hasPlan: 'plan' in sanitized,
-    planValue: sanitized.plan
   });
 
   // Handle malformed question structure where responseType is "question"
@@ -720,14 +736,6 @@ export function sanitizeStructuredOutput(
     }
 
     return event;
-  });
-
-  // DEBUG: Log final output
-  console.log('🔍 [sanitizeStructuredOutput] FINAL OUTPUT:', {
-    outputKeys: Object.keys(sanitized),
-    hasPlan: 'plan' in sanitized,
-    planValue: sanitized.plan,
-    responseType: sanitized.responseType
   });
 
   return sanitized;

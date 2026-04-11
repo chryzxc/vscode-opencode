@@ -1,10 +1,12 @@
-import { Check, Copy, Sparkles, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Copy, Sparkles, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { cn } from "@/utils";
 import { Badge } from "@/components/ui/badge";
+import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
+import { StepIndicator } from "@/components/ui/StepIndicator";
 
 import type { SubagentDetail } from "./lib/types";
 
@@ -51,7 +53,6 @@ export function SubagentDetailModal({
 	colorClass,
 }: SubagentDetailModalProps) {
 	const [copied, setCopied] = useState(false);
-	const timelineScrollRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
 		if (!isOpen) return;
@@ -64,13 +65,6 @@ export function SubagentDetailModal({
 		return () => window.removeEventListener("keydown", onKeyDown);
 	}, [isOpen, onClose]);
 
-	// Auto-scroll timeline to latest activity
-	useEffect(() => {
-		if (timelineScrollRef.current && detail.timelineEvents?.length > 0) {
-			timelineScrollRef.current.scrollTop = timelineScrollRef.current.scrollHeight;
-		}
-	}, [detail.timelineEvents?.length]);
-
 	if (!isOpen) return null;
 
 	const handleCopy = () => {
@@ -82,85 +76,68 @@ export function SubagentDetailModal({
 	const status = detail.status || "running";
 	const isDone = status === "done";
 	const isError = status === "error";
-	const hasRawProgressEvents = (detail.progressEvents?.length || 0) > 0;
-	const latestActivity = cleanLabel(detail.latestActivity || "") || "Initializing...";
-	const renderedProgress = useMemo(() => {
-		const source = Array.isArray(detail.progressEvents) ? detail.progressEvents : [];
-		const mergedByCall = new Map<string, (typeof source)[number]>();
-		const kept: typeof source = [];
-		for (const event of source) {
-			const title = cleanLabel(event.title || "");
-			if (!title) {
-				continue;
-			}
-			const normalized = {
-				...event,
-				title,
-				meta: cleanLabel(event.meta || "") || undefined,
-			};
-			if (normalized.callID) {
-				const existing = mergedByCall.get(normalized.callID);
-				if (!existing) {
-					mergedByCall.set(normalized.callID, normalized);
-					kept.push(normalized);
-					continue;
-				}
-				existing.createdAt = Math.max(existing.createdAt, normalized.createdAt);
-				existing.status =
-					normalized.status === "error"
-						? "error"
-						: normalized.status === "done" || existing.status === "done"
-							? "done"
-							: "pending";
-				existing.title = normalized.title || existing.title;
-				existing.meta = normalized.meta || existing.meta;
-				existing.filePath = normalized.filePath || existing.filePath;
-				continue;
-			}
-			const previous = kept[kept.length - 1];
-			if (
-				previous &&
-				previous.title === normalized.title &&
-				previous.status === normalized.status &&
-				previous.filePath === normalized.filePath &&
-				previous.meta === normalized.meta
-			) {
-				continue;
-			}
-			kept.push(normalized);
-		}
-		return kept;
-	}, [detail.progressEvents]);
-	const renderedTimeline = useMemo(() => {
-		const source = Array.isArray(detail.timelineEvents) ? detail.timelineEvents : [];
-		const sorted = [...source].sort((a, b) => a.createdAt - b.createdAt);
-		const deduped: typeof sorted = [];
-		for (const event of sorted) {
-			const label = cleanLabel(event.label || "");
-			if (!label) {
-				continue;
-			}
-			const normalized = { ...event, label };
-			const previous = deduped[deduped.length - 1];
-			if (
-				previous &&
-				previous.type === normalized.type &&
-				previous.label.toLowerCase() === normalized.label.toLowerCase()
-			) {
-				previous.createdAt = Math.max(previous.createdAt, normalized.createdAt);
-				continue;
-			}
-			deduped.push(normalized);
-		}
-		return deduped;
-	}, [detail.timelineEvents]);
+
+	// Filter and deduplicate conversation events for stepper display
 	const renderedConversation = useMemo(() => {
 		const source = Array.isArray(detail.conversationEvents)
 			? detail.conversationEvents
 			: [];
+
+		// Sort by creation time
 		const sorted = [...source].sort((a, b) => a.createdAt - b.createdAt);
-		return sorted.filter((event) => cleanLabel(event.text || "").length > 0);
+
+		// Filter out non-assistant events, stop events, and empty text
+		const filtered = sorted.filter((event) => {
+			const role = (event.role || "").toLowerCase();
+			const kind = (event.kind || "").toLowerCase();
+			const hasContent = cleanLabel(event.text || "").length > 0;
+
+			// Only show assistant messages with content
+			if (role !== "assistant" || !hasContent) return false;
+
+			// Filter out stop, error, and other non-content events
+			const excludedKinds = ["stop", "error", "exception", "cancelled", "cancel"];
+			if (excludedKinds.includes(kind)) return false;
+
+			return true;
+		});
+
+		// Remove duplicate messages based on text content
+		const seenTexts = new Set<string>();
+		const deduped: typeof filtered = [];
+
+		for (const event of filtered) {
+			const normalizedText = (event.text || "").trim().toLowerCase();
+			// Create a simple hash of the text for comparison
+			const textHash = normalizedText.slice(0, 100); // First 100 chars as signature
+
+			if (!seenTexts.has(textHash)) {
+				seenTexts.add(textHash);
+				deduped.push(event);
+			}
+		}
+
+		return deduped;
 	}, [detail.conversationEvents]);
+
+	// Determine step status based on event kind and position
+	const getStepStatus = (index: number, total: number, kind?: string): 'pending' | 'done' | 'error' | 'running' => {
+		// Last step is "running" if subagent is still active
+		if (index === total - 1 && !isDone && !isError) return 'running';
+		return 'done';
+	};
+
+	// Get step label from event kind
+	const getStepLabel = (kind?: string): string => {
+		if (!kind) return "Response";
+		const kindLower = kind.toLowerCase();
+		switch (kindLower) {
+			case 'message': return "Message";
+			case 'reasoning': return "Reasoning";
+			case 'step': return "Step";
+			default: return kind.charAt(0).toUpperCase() + kind.slice(1);
+		}
+	};
 
 	const modalContent = (
 		<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-2 backdrop-blur-sm animate-in fade-in duration-200 sm:p-4 md:p-6">
@@ -239,149 +216,62 @@ export function SubagentDetailModal({
 					</div>
 				</div>
 
-				<div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-					<div className="order-2 flex min-h-0 flex-1 flex-col overflow-y-auto p-3 sm:p-4 lg:order-1 lg:p-5">
-						<div className="space-y-6">
-							<div className="flex flex-col gap-2">
-								<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-									Latest Activity
-								</span>
-								<div className="rounded-md border border-oc-border bg-oc-bg-soft px-3 py-2.5 text-[13px] font-mono text-foreground shadow-inner break-words">
-									{latestActivity}
-								</div>
-							</div>
-
-							<div className="flex flex-col gap-2">
-								<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-									Progress ({renderedProgress.length})
-								</span>
-								{renderedProgress.length > 0 || hasRawProgressEvents ? (
-									<div className="space-y-2">
-										{renderedProgress.map((ev) => (
-											<div
-												key={ev.id}
-												className="rounded-md border border-oc-border bg-oc-bg-soft px-3 py-2.5 shadow-sm transition-colors hover:bg-oc-panel"
-											>
-												<div className="text-sm font-medium text-foreground break-words">{ev.title}</div>
-												{ev.meta ? (
-													<div className="mt-1 text-[11px] font-mono text-muted-foreground opacity-80 break-words">
-														{ev.meta}
-													</div>
-												) : null}
-											</div>
-										))}
-									</div>
-								) : (
-									<div className="py-2 text-sm italic text-muted-foreground/50">No progress events available.</div>
-								)}
-							</div>
-
-							{renderedConversation.length > 0 && (
-								<div className="flex flex-col gap-2 pt-1">
-									<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-										Conversation ({renderedConversation.length})
-									</span>
-									<div className="space-y-2">
-										{renderedConversation.map((event) => (
-											<div
-												key={event.id}
-												className="rounded-md border border-oc-border bg-oc-bg-soft px-3 py-2.5"
-											>
-												<div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-													<span>{event.role}</span>
-													<span>•</span>
-													<span>{event.kind}</span>
-												</div>
-												<div className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">
-													{event.text}
-												</div>
-											</div>
-										))}
-									</div>
-								</div>
-							)}
-
-							{detail.thinkingEvents && detail.thinkingEvents.length > 0 && (
-								<div className="flex flex-col gap-2 pt-1">
-									<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-										Thinking ({detail.thinkingEvents.length})
-									</span>
-									<div className="space-y-2">
-										{detail.thinkingEvents.map((ev) => (
-											<div
-												key={ev.id}
-												className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2.5 text-[13px] font-sans leading-relaxed text-foreground whitespace-pre-wrap"
-											>
-												{ev.text}
-											</div>
-										))}
-									</div>
-								</div>
-							)}
-						</div>
+				<div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5">
+					<div className="sticky top-0 z-[1] mb-3 flex items-center justify-between border-b border-oc-border/70 bg-oc-panel/95 pb-2 backdrop-blur-sm">
+						<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+							Assistant Conversation
+						</span>
+						<span className="rounded-md border border-oc-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
+							{renderedConversation.length} messages
+						</span>
 					</div>
 
-					<div
-						ref={timelineScrollRef}
-						className="order-1 w-full shrink-0 max-h-[38vh] overflow-y-auto overflow-x-hidden border-b border-oc-border bg-oc-bg-soft/40 p-3 sm:p-4 lg:order-2 lg:max-h-none lg:w-80 lg:border-b-0 lg:border-l lg:p-5"
-					>
-						<div className="flex flex-col gap-4">
-							<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-								Timeline ({renderedTimeline.length})
-							</span>
+					{renderedConversation.length > 0 ? (
+						<Stepper
+							className="oc-refined-stepper max-h-[600px] overflow-y-auto pl-2"
+							autoScrollToBottom={!isDone && !isError}
+						>
+							{renderedConversation.map((event, index) => {
+								const isLast = index === renderedConversation.length - 1;
+								const stepStatus = getStepStatus(index, renderedConversation.length, event.kind);
+								const stepLabel = getStepLabel(event.kind);
 
-							{renderedTimeline.length > 0 ? (
-								<div className="pr-1 text-sm">
-									<Stepper>
-										{renderedTimeline.map((ev, index) => {
-											const isLast = index === renderedTimeline.length - 1;
-											const time = new Date(ev.createdAt).toLocaleTimeString([], {
-												hour: "2-digit",
-												minute: "2-digit",
-												second: "2-digit",
-											});
-											const eventLooksError =
-												ev.type.toLowerCase().includes("error") ||
-												ev.label.toLowerCase().includes("error") ||
-												ev.label.toLowerCase().includes("failed");
-											const eventLooksDone =
-												ev.label.toLowerCase() === "completed" ||
-												ev.label.toLowerCase().includes("done") ||
-												ev.label.toLowerCase().includes("finished");
+								return (
+									<StepperItem
+										key={event.id}
+										isLast={isLast}
+										indicator={<StepIndicator status={stepStatus} />}
+										className="oc-refined-stepper-item group"
+									>
+										<div className="flex min-w-0 flex-col gap-2 w-full">
+											{/* Step header with label and timestamp */}
+											<div className="flex items-center gap-2 flex-wrap">
+												<span className="inline-block min-w-[70px] shrink-0 rounded border border-oc-border px-2 py-[3px] text-center font-mono text-[10px] font-semibold text-oc-text-muted bg-oc-bg-soft/50">
+													{stepLabel}
+												</span>
+												<span className="text-[10px] font-mono text-oc-text-muted/70">
+													{new Date(event.createdAt).toLocaleTimeString([], {
+														hour: "2-digit",
+														minute: "2-digit",
+														second: "2-digit",
+													})}
+												</span>
+											</div>
 
-											const dotIndicator = eventLooksError || isError ? (
-												<X className="h-3 w-3 text-destructive" />
-											) : isLast && !isDone && !isError && !eventLooksDone ? (
-												<div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
-											) : (
-												<Check className="h-3 w-3 text-emerald-500" />
-											);
-
-											return (
-												<StepperItem
-													key={ev.key}
-													isLast={isLast}
-													indicator={dotIndicator}
-													className="group"
-												>
-													<div className="mt-[-2px] flex flex-col gap-0.5">
-														<div className="break-words text-[13px] font-medium text-foreground/90 transition-colors group-hover:text-foreground">
-															{ev.label}
-														</div>
-														<div className="mb-3 text-[10px] font-mono tracking-tight text-muted-foreground/70">
-															{time}
-														</div>
-													</div>
-												</StepperItem>
-											);
-										})}
-									</Stepper>
-								</div>
-							) : (
-								<div className="text-sm italic text-muted-foreground/50">No timeline events recorded.</div>
-							)}
+											{/* Step content */}
+											<div className="overflow-hidden rounded-md border border-oc-border/60 bg-oc-panel/60 px-3 py-2">
+												<MarkdownRenderer content={event.text} />
+											</div>
+										</div>
+									</StepperItem>
+								);
+							})}
+						</Stepper>
+					) : (
+						<div className="rounded-lg border border-dashed border-oc-border bg-oc-bg-soft/50 p-6 text-center text-sm italic text-muted-foreground/70">
+							No assistant conversation available yet for this subagent session.
 						</div>
-					</div>
+					)}
 				</div>
 			</div>
 		</div>

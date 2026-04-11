@@ -174,7 +174,9 @@ function ChatContent() {
     const root = messagesScrollRef.current;
     if (!root) return;
 
-    const onScroll = () => {
+    let rafId: number | null = null;
+    const updateViewportState = () => {
+      rafId = null;
       const nearBottom =
         root.scrollHeight - root.scrollTop - root.clientHeight <=
         AUTO_FOLLOW_THRESHOLD_PX;
@@ -191,9 +193,20 @@ function ChatContent() {
         return { ...prev, isFollowing: false };
       });
     };
+    const onScroll = () => {
+      if (rafId !== null) {
+        return;
+      }
+      rafId = requestAnimationFrame(updateViewportState);
+    };
 
     root.addEventListener("scroll", onScroll, { passive: true });
-    return () => root.removeEventListener("scroll", onScroll);
+    return () => {
+      root.removeEventListener("scroll", onScroll);
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -299,24 +312,6 @@ function ChatContent() {
     ((isAiResponding && !state.streaming && !state.isCompacting) ||
     (hasOnlyReasoning && !state.isCompacting));
 
-  // DEBUG: Log EVERY render to see what's happening
-  console.log('🖥️ [ChatShell Render] ALWAYS LOG - State check', {
-    isLoadingSession: state.isLoadingSession,
-    loadingSessionId: state.loadingSessionId,
-    currentSessionId: state.currentSessionId,
-    isProcessing: state.isProcessing,
-    isAiResponding,
-    showAiResponseLoading,
-    streaming: !!state.streaming
-  });
-
-  // VERY OBVIOUS STARTUP LOG
-  // @ts-expect-error - Debug property on window
-  if (!window.debugLogInitialized) {
-    console.log('🚨🚨🚨 [STARTUP] ChatShell.tsx with DEBUG LOGS is LOADED! 🚨🚨🚨');
-    // @ts-expect-error - Debug property on window
-    window.debugLogInitialized = true;
-  }
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
       ? Math.max(
@@ -353,14 +348,6 @@ function ChatContent() {
           style={{ background: "var(--oc-chat-bg)" }}
         >
           {isSwitchingSession ? (
-            (() => {
-              console.log('✅ [RENDER] Session Loading UI showing', {
-                loadingSessionTitle: state.loadingSessionTitle,
-                loadingSessionId: state.loadingSessionId,
-                currentSessionId: state.currentSessionId
-              });
-              return null;
-            })(),
             <div className="flex h-full items-center justify-center">
               <SessionLoadingSpinner />
             </div>
@@ -480,16 +467,7 @@ function ChatContent() {
 
           {/* Loading status while processing before first stream payload */}
           {showAiResponseLoading ? (
-            (() => {
-              console.log('❌ [RENDER] AI Loading Bubble showing - THIS SHOULD NOT HAPPEN DURING SESSION SWITCH!', {
-                isAiResponding,
-                isProcessing: state.isProcessing,
-                isLoadingSession: state.isLoadingSession,
-                streaming: state.streaming,
-                currentSessionId: state.currentSessionId
-              });
-              return <ThinkingBubble />;
-            })()
+            <ThinkingBubble />
           ) : null}
 
           {state.isCompacting ? (

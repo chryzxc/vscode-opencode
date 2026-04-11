@@ -1748,6 +1748,11 @@ export function InputWrapper() {
     executingQueueSessionIds,
   );
 
+  // Single derived state for AI actively responding
+  // This uses the EXACT same logic as ChatShell.tsx to ensure perfect consistency
+  // The Stop button visibility should match when AI is actually responding
+  const isAiResponding = isProcessing;
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
@@ -2013,7 +2018,7 @@ export function InputWrapper() {
 
   const steerPrompt = () => {
     const text = inputValue.trim();
-    if (!text || !isProcessing || isSteering) return;
+    if (!text || !isAiResponding || isSteering) return;
 
     dispatch({ type: "SET_STEERING", payload: true });
     vscode.postMessage({
@@ -2142,6 +2147,7 @@ export function InputWrapper() {
     const displayText = composedPrompt;
 
     const nextMessages = [...messages];
+    let didAppendFrozenAssistant = false;
     if (hasRenderableStreamingPayload(streaming)) {
       const frozenAssistant = buildAssistantMessageFromStreaming(streaming!);
       const frozenMessageId = frozenAssistant.info?.id || frozenAssistant.id;
@@ -2165,6 +2171,7 @@ export function InputWrapper() {
 
       if (!alreadyPresent) {
         nextMessages.push(frozenAssistant);
+        didAppendFrozenAssistant = true;
         if (currentSessionId) {
           vscode.postMessage({
             type: "persistAssistantMessage",
@@ -2175,17 +2182,17 @@ export function InputWrapper() {
       }
     }
 
-    nextMessages.push({
-      id: `interactive-${Date.now()}`,
-      role: "user",
-      content: displayText,
-      parts: [{ type: "text", text: composedPrompt }],
-    });
-
-    dispatch({
-      type: "SET_MESSAGES",
-      payload: nextMessages,
-    });
+    // IMPORTANT: do not append an optimistic local user message for interactive
+    // answers. The extension host is responsible for appending/persisting the
+    // canonical user message once it actually dispatches the prompt upstream.
+    // If we append here and host append also succeeds, the chat can duplicate.
+    // If host dispatch fails, optimistic-only messages vanish on refresh.
+    if (didAppendFrozenAssistant) {
+      dispatch({
+        type: "SET_MESSAGES",
+        payload: nextMessages,
+      });
+    }
 
     // Dismiss all events that were part of this batch immediately to prevent stale popover UI.
     // Be defensive: some legacy/hydrated events may have missing/unstable IDs.
@@ -2221,12 +2228,15 @@ export function InputWrapper() {
     // This prevents UI from showing "stuck" loading state when request is delayed
     // dispatch({ type: "SET_PROCESSING", payload: true });
 
+    // Send interactive answers through the exact same transport path as a
+    // normal user message so provider-side lifecycle/state handling is
+    // identical to chatbox submits.
     vscode.postMessage({
-      type: "batchInteractiveResponse",
+      type: "sendMessage",
       ...(currentSessionId ? { sessionId: currentSessionId } : {}),
-      responses: batch,
-      displayText,
+      text: displayText,
       agent: selectedAgent || null,
+      interactiveSubmit: true,
     });
 
     // Reset state immediately after sending
@@ -2779,7 +2789,7 @@ export function InputWrapper() {
 
             {/* Right: action buttons */}
             <div className="oc-toolbar-right">
-              {isProcessing ? (
+              {isAiResponding ? (
                 <Button
                   variant="destructive"
                   size="chip"
@@ -2790,7 +2800,7 @@ export function InputWrapper() {
                   Stop
                 </Button>
               ) : null}
-              {isProcessing ? (
+              {isAiResponding ? (
                 <Button
                   variant="secondary"
                   size="chip"
@@ -2807,12 +2817,12 @@ export function InputWrapper() {
                 onClick={sendPrompt}
                 disabled={isSteering}
               >
-                {isProcessing ? (
+                {isAiResponding ? (
                   <AlertCircle className="h-3.5 w-3.5" />
                 ) : (
                   <Send className="h-3.5 w-3.5" />
                 )}
-                {isProcessing ? "Queue" : "Send"}
+                {isAiResponding ? "Queue" : "Send"}
               </Button>
             </div>
           </div>

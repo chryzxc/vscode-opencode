@@ -6,7 +6,6 @@ export default {
     extend: {
       colors: {
         // ── shadcn semantic tokens (maps to --vscode-* via index.css) ──────────
-        border: "var(--border)",
         input: "var(--input)",
         ring: "var(--ring)",
         background: "var(--background)",
@@ -49,6 +48,10 @@ export default {
         "oc-panel-soft": "var(--oc-panel-soft)",
 
         // Borders
+        border: {
+          DEFAULT: "var(--oc-border)",
+          soft: "var(--oc-border-soft)",
+        },
         "oc-border": "var(--oc-border)",
         "oc-border-soft": "var(--oc-border-soft)",
 

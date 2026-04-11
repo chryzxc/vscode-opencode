@@ -54,6 +54,10 @@ test('proceed flow forwards plan payload, returns status feedback, and sends exp
     planProviderSource,
     '(',
   );
+  const planProceedBody = extractFunctionBody(
+    chatProviderSource,
+    '  async handlePlanProceed(payload:',
+  );
   assert.match(planShellSource, /vscode\?\.postMessage\(\{\s*type:\s*["']proceedWithPlan["'],\s*rawPlan,\s*comments,\s*sourceFile\s*\}\)/, 'plan shell should post proceedWithPlan including rawPlan, comments, and sourceFile');
   assert.match(ctorBody, /case\s+["']proceedWithPlan["']:\s*\{[\s\S]*opencode\.planProceed/, 'plan provider should route proceedWithPlan to opencode.planProceed command');
   assert.match(ctorBody, /type:\s*['"]planProceedStatus['"]/, 'plan provider should emit planProceedStatus messages for UI feedback');
@@ -65,6 +69,8 @@ test('proceed flow forwards plan payload, returns status feedback, and sends exp
   assert.doesNotMatch(chatProviderSource, /createPlanFilename|createPlanCommentsFilename/, 'plan proceed handler should not generate legacy unique plan/comments filenames');
   assert.match(chatProviderSource, /PlanViewProvider\.closeCurrentPanel\(\)/, 'plan proceed handler should close plan viewer immediately after triggering proceed');
   assert.match(chatProviderSource, /void this\.handleSendMessage\([\s\S]*proceedMessage,\s*attachedFiles[\s\S]*\)/, 'plan proceed handler should dispatch send asynchronously to avoid blocking the plan tab');
+  assert.match(planProceedBody, /void this\.handleSendMessage\([\s\S]*proceedMessage,\s*attachedFiles,\s*undefined,\s*undefined,\s*"build",\s*false/s, 'plan proceed should send as a normal request (not retry) so realtime UI appends user message');
+  assert.match(planProceedBody, /"Proceed on this plan\."\s*,?\s*\)\.catch/s, 'plan proceed should pass canonical userFacingText for realtime Plan Approved UI');
   assert.match(planShellSource, /"Proceed"/, 'plan shell should present explicit proceed action label');
 });
 

@@ -116,8 +116,8 @@ test('InputWrapper batches interactive responses', () => {
   // Verify batch submission logic
   assert.match(
     body,
-    /type:\s*['"]batchInteractiveResponse['"]/,
-    'InputWrapper should send batchInteractiveResponse type',
+    /type:\s*['"]sendMessage['"]/,
+    'InputWrapper should send interactive answers via normal sendMessage type',
   );
 
   // Verify auto-advance logic
