@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "icon": "resources/extension-icon.png",
   "publisher": "your-publisher-name",
+  "type": "module",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -206,8 +207,8 @@
     "build": "npm run structured-output:sync && npm run webview:build && npm run compile",
     "verify": "npm run structured-output:check && npm run build && npm run lint && npm test",
     "vscode:prepublish": "npm run build",
-    "compile": "node esbuild.config.js",
-    "watch": "node esbuild.config.js --watch",
+    "compile": "node esbuild.config.cjs",
+    "watch": "node esbuild.config.cjs --watch",
     "dev": "node scripts/dev-simple.mjs",
     "dev:full": "node scripts/dev-hotreload.mjs",
     "webview:build": "npm run structured-output:sync && npm --prefix webview/shared run build",
