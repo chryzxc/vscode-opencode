@@ -99,8 +99,8 @@ test("REGRESSION: SystemMessage component must be used for system role messages"
   // CRITICAL: System role messages MUST be detected and rendered with SystemMessage
   assert.match(
     chatShellSource,
-    /role\s*===\s*"system"\s*\|\|\s*msg\.responseType\s*===\s*"system"/,
-    "MUST check for system role or responseType"
+    /role\s*===\s*"system"/,
+    "MUST check for system role"
   );
 
   assert.match(

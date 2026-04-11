@@ -25,7 +25,7 @@ test("provider computes message change summary from sdk session.diff", () => {
   );
   assert.match(
     providerSource,
-    /filesChanged:\s*rows\.length[\s\S]*added[\s\S]*deleted[\s\S]*files:\s*rows/s,
+    /filesChanged:\s*enrichedRows\.length[\s\S]*added[\s\S]*deleted[\s\S]*files:\s*enrichedRows/s,
     "change summary should include file count, totals, and file rows",
   );
   assert.match(

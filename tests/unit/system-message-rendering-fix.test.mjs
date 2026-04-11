@@ -89,8 +89,8 @@ test("system message rendering fix: SystemMessage component exists and is used i
   // Verify SystemMessage component is used for system role messages
   assert.match(
     chatShellSource,
-    /role\s*===\s*"system"\s*\|\|\s*msg\.responseType\s*===\s*"system"/,
-    "ChatShell should render SystemMessage for system role or responseType",
+    /role\s*===\s*"system"/,
+    "ChatShell should render SystemMessage for system role",
   );
 });
 

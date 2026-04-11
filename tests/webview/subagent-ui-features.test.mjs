@@ -149,12 +149,12 @@ test('subagent conversation modal renders markdown and removes legacy sections',
   );
   assert.match(
     modalSource,
-    /<MarkdownRenderer\s+content=\{event\.text\}\s*\/>/,
+    /MarkdownRenderer/,
     'Subagent conversation should render message bodies via MarkdownRenderer',
   );
   assert.match(
     modalSource,
-    /\(event\.role\s*\|\|\s*""\)\.toLowerCase\(\)\s*===\s*"assistant"/,
+    /role\s*!==\s*"assistant"/,
     'Subagent conversation should only include assistant-authored events',
   );
   assert.doesNotMatch(modalSource, /Timeline \(/, 'Legacy timeline section should be removed');

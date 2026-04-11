@@ -11,7 +11,7 @@ const chatProviderSource = readAllSources([
 ], "Chat modularized logic");
 
 test("history hydration reuses canonical processing path and disables synthetic fallback errors", () => {
-  const processBody = extractFunctionBody(chatProviderSource, 'processHistoryMessages(rawMessages: any[], sessionId: string): any[]',
+  const processBody = extractFunctionBody(chatProviderSource, 'async processHistoryMessages(rawMessages: any[], sessionId: string): Promise<any[]>',
   );
 
   assert.match(
@@ -26,7 +26,7 @@ test("history hydration reuses canonical processing path and disables synthetic 
   );
   assert.match(
     processBody,
-    /\.filter\(\(message\)\s*=>\s*this\.isRenderableHistoryMessage\(message\)\)/,
+    /\.filter\(\(message\)\s*=>\s*this\.isRenderableHistoryMessage/s,
     "processHistoryMessages should drop non-renderable transport artifacts",
   );
   assert.match(

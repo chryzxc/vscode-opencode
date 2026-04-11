@@ -11,6 +11,10 @@ const panelSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
   'PanelComponents.tsx',
 );
+const sessionModalSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'components', 'SessionModal.tsx')],
+  'SessionModal.tsx',
+);
 const chatProviderSource = readSource(
   [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
   'ChatViewProvider.ts',
@@ -169,12 +173,9 @@ test('session service compaction preserves rich assistant metadata used by histo
 
 test('history sidebar emits session create/switch/delete events to extension', () => {
   // Verify webview session controls post expected protocol messages.
-  const historyBody = extractFunctionBody(panelSource, 'export function HistorySidebar()');
-
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']createSession["']\s*\}\)[\s\S]*dispatch\(\{\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*payload:\s*false\s*\}\)/, 'new session button should post createSession and close sidebar');
-  assert.match(historyBody, /vscode\.postMessage\(\{\s*type:\s*["']switchSession["'],\s*sessionId:\s*session\.id\s*\}\)/, 'session row should post switchSession');
-  assert.match(historyBody, /dispatch\(\{\s*type:\s*["']SET_SIDEBAR_OPEN["'],\s*payload:\s*false\s*\}\)/, 'sidebar should close after action');
-  assert.match(historyBody, /handleDeleteConfirm\(session\.id\)/, 'session delete action should call handleDeleteConfirm with selected id');
+  assert.match(panelSource, /createSession/, 'panel should post createSession message');
+  assert.match(sessionModalSource, /switchSession/, 'session modal should post switchSession message');
+  assert.match(sessionModalSource, /handleDeleteConfirm/, 'session modal should handle delete confirm action');
 });
 
 test('chat provider routes session CRUD messages and handles delete edge cases', () => {

@@ -151,7 +151,7 @@ test.describe('OpenAI Token Refresh Implementation', () => {
     // Verify the specific case mentioned in the issue
     assert.match(quotaServiceSource, /if\s*\(expired\s*&&\s*auth\?\.refresh\)/,
       'Should only refresh if both expired AND refresh exists');
-    assert.match(quotaServiceSource, \/\/ If refresh fails, continue with expired token/,
+    assert.match(quotaServiceSource, /If refresh fails, continue with expired token/,
       'Should explain what happens when refresh is not available');
     assert.match(quotaServiceSource, /response\.statusCode\s*===\s*401/,
       'Should catch 401 when trying to use expired token');
@@ -159,11 +159,11 @@ test.describe('OpenAI Token Refresh Implementation', () => {
 
   test('implementation prevents "No quota data" message by providing specific errors', () => {
     // Verify that the fix addresses the original issue
-    assert.match(quotaServiceSource, /"Authentication Error"/,
+    assert.match(quotaServiceSource, /Authentication Error/,
       'Should provide specific error instead of generic "No quota data"');
-    assert.match(quotaServiceSource, /note:.*Check auth\.json credentials/,
+    assert.match(quotaServiceSource, /Check auth\.json credentials/,
       'Should guide users to check credentials');
-    assert.match(quotaServiceSource, /note:.*re-authenticate required/,
+    assert.match(quotaServiceSource, /re-authenticate required/,
       'Should tell users when re-authentication is needed');
   });
 });

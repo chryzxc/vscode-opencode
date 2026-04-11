@@ -219,7 +219,7 @@ test('HistoryProcessor deduplicates and merges messages correctly', () => {
   // None of these should remove assistant messages with parts
   assert.match(
     historyProcessorSource,
-    /const processed\s*=\s*rawMessages[\s\S]*const ordered\s*=\s*this\.orderHistoryMessagesChronologically\(processed\)[\s\S]*return\s*this\.mergeConsecutiveAssistantBursts/,
+    /const processed\s*=\s*processedMessages\.filter[\s\S]*const ordered\s*=\s*this\.orderHistoryMessagesChronologically\(processed\)[\s\S]*return\s*this\.mergeConsecutiveAssistantBursts/,
     'should return processed messages after all transformations'
   );
 });

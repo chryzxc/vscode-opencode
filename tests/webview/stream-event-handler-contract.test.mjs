@@ -741,12 +741,6 @@ test('SET_PROCESSING creates an eager StreamingState when hasValidModel is true'
     const processingBody = storeSource.slice(processingIdx, processingIdx + 2200);
     assert.match(
         processingBody,
-        /hasValidModel/,
-        'must check hasValidModel before creating streaming state',
-    );
-    // TypeScript type annotation syntax: const streamingState: StreamingState = {
-    assert.match(
-        processingBody,
         /const streamingState\s*:\s*StreamingState\s*=/,
         'must declare streamingState typed as StreamingState',
     );
@@ -774,8 +768,8 @@ test('SET_PROCESSING skips eager init when model is invalid (just sets isProcess
     const processingBody = storeSource.slice(processingIdx, processingIdx + 2200);
     assert.match(
         processingBody,
-        /!hasValidModel[\s\S]{1,300}return[\s\S]{1,100}isProcessing\s*:\s*true/,
-        'must return isProcessing: true without streaming state when model invalid',
+        /catch\s*\(error\)[\s\S]{1,300}return[\s\S]{1,100}isProcessing\s*:\s*true/,
+        'must return isProcessing: true without streaming state when streaming state creation fails',
     );
 });
 

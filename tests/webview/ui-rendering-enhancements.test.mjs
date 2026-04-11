@@ -110,8 +110,13 @@ test('AssistantMessage renders structured activityDetail chips and diff excerpt 
   );
   assert.match(
     messageComponentsSource,
-    /<ActivityDiffExcerpt\s+excerpt=\{event\.activityDetail\.diffExcerpt\}/,
-    'Activity detail panel should render unified diff excerpts via ActivityDiffExcerpt'
+    /activityDetail\.diffExcerpt/,
+    'Activity detail panel should extract diff stats from activityDetail.diffExcerpt'
+  );
+  assert.match(
+    messageComponentsSource,
+    /typeof activityDetail\.diffExcerpt\.(added|deleted)/,
+    'Activity detail panel should check for added/deleted in diffExcerpt'
   );
 });
 

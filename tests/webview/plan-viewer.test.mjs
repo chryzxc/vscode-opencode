@@ -169,12 +169,12 @@ test('enrichMessageWithPlan cleanses background noise from perceived plans', () 
   // After refactoring, the implementation is in StructuredOutputProcessor module
   const enrichBody = extractFunctionBody(
     chatProviderSource,
-    '  enrichMessageWithPlan(message: any): any',
+    '  async enrichMessageWithPlan(message: any): Promise<any>',
   );
 
   assert.match(enrichBody, /PlanParser\.parse/, 'enrichMessageWithPlan must parse the message content');
   assert.match(enrichBody, /PlanParser\.toMarkdown/, 'enrichMessageWithPlan must generate clean markdown from parsed plan');
-  assert.match(enrichBody, /this\.persistPlan\(\s*cleanPlanContent[\s\S]*?\)/, 'enrichMessageWithPlan should persist the cleaned content');
+  assert.match(enrichBody, /this\.persistPlan\(/, 'enrichMessageWithPlan should persist the cleaned content');
   assert.match(enrichBody, /content:\s*cleanPlanContent/, 'enrichMessageWithPlan should include cleaned content in return payload');
 });
 

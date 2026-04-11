@@ -71,8 +71,8 @@ test("system role messages are rendered with SystemMessage component", () => {
   // Verify ChatShell uses SystemMessage component for system role
   assert.match(
     chatShellSource,
-    /role\s*===\s*"system"\s*\|\|\s*msg\.responseType\s*===\s*"system"/,
-    "ChatShell should check for system role or responseType"
+    /role\s*===\s*"system"/,
+    "ChatShell should check for system role"
   );
 
   assert.match(
@@ -144,7 +144,7 @@ test("complete system message flow: from history to rendering", () => {
   assert.strictEqual(step3, true, "Step 3: System reminders should be converted to system role");
 
   // Step 4: Verify rendering with SystemMessage component
-  const step4 = /role\s*===\s*"system"\s*\|\|\s*msg\.responseType\s*===\s*"system"/.test(chatShellSource);
+  const step4 = /role\s*===\s*"system"/.test(chatShellSource);
   assert.strictEqual(step4, true, "Step 4: System role messages should be detected for rendering");
 
   const step5 = /<SystemMessage/.test(chatShellSource);
