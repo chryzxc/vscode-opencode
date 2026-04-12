@@ -640,6 +640,7 @@ export interface AppState {
   commandsLoaded: boolean;
   receivedInitState: boolean;
   serverStatus: string;
+  serverError?: string;
   serverVersion?: string;
   modelDropdownOpen: boolean;
   agentDropdownOpen: boolean;

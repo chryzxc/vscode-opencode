@@ -4084,6 +4084,28 @@ export function ThinkingBubble() {
 }
 
 export function EmptyState() {
+  const { serverStatus, serverError } = useAppState();
+
+  // Show error state when server has failed to start
+  if (serverStatus === "error" && serverError) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+        <div className="oc-empty-icon mb-4 text-red-500">
+          <AlertCircle className="h-6 w-6" />
+        </div>
+        <div className="text-xl font-semibold text-oc-text tracking-tight mb-1">
+          OpenCode Server Error
+        </div>
+        <div className="text-sm text-red-400 max-w-[400px] leading-relaxed mt-2">
+          {serverError}
+        </div>
+        <div className="text-xs text-oc-text-soft opacity-70 max-w-[400px] leading-relaxed mt-2">
+          Please check the extension logs for more details or try restarting the server.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col items-center justify-center px-6 text-center">
       <div className="oc-empty-icon mb-4">

@@ -7177,6 +7177,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           terminalErrorReached = false;
           activeSubagentParentMessageIds = new Set<string>();
           const state = asRecord(data.state) ?? data;
+          const stateBeforeInit = getState();
           const sessionId =
             asString(state.sessionId) || asString(state.currentSessionId) || null;
 
@@ -7188,12 +7189,34 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             }
             : null;
 
+          if (
+            sessionId &&
+            !stateBeforeInit.receivedInitState &&
+            stateBeforeInit.messages.length === 0 &&
+            !stateBeforeInit.isLoadingSession
+          ) {
+            const existingSession = stateBeforeInit.sessionsList.find(
+              (session) => session.id === sessionId,
+            );
+            dispatch({
+              type: "START_SESSION_LOADING",
+              payload: {
+                sessionId,
+                title: existingSession?.title || sessionId,
+              },
+            });
+          }
+
           if (sessionId) {
             dispatch({ type: "SET_SESSION_ID", payload: sessionId });
           }
           dispatch({
             type: "SET_SERVER_STATUS",
             payload: asString(state.serverStatus, "connected"),
+          });
+          dispatch({
+            type: "SET_SERVER_ERROR",
+            payload: asString(state.serverError) || undefined,
           });
           dispatch({
             type: "SET_SELECTED_MODEL",
@@ -7787,11 +7810,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
             // Clear todo items from the previous session so stale tasks are not shown.
             dispatch({ type: "SET_TODO_ITEMS", payload: [] });
-
-            // Session is now fully loaded - clear loading state
-            // This ensures the loading UI stays visible until messages are actually in the state
-            dispatch({ type: "END_SESSION_LOADING" });
           }
+          // Session is now fully loaded - clear loading state.
+          // This is intentionally unconditional so startup hydration clears loading
+          // even when chatHistory omits sessionId.
+          dispatch({ type: "END_SESSION_LOADING" });
 
           // FORBIDDEN TO REMOVE - recalculate session stats from full history
           const stats = { input: 0, output: 0, read: 0, write: 0, duration: 0 };

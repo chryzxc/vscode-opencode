@@ -448,3 +448,48 @@ test('mergeStats correctly accumulates stats', () => {
     'Should accumulate duration'
   );
 });
+
+test.describe('SET_SERVER_ERROR action', () => {
+
+  test('SET_SERVER_ERROR action type exists', () => {
+    assert.match(
+      storeSource,
+      /case\s+["']SET_SERVER_ERROR["']\s*:/,
+      'SET_SERVER_ERROR action should be defined'
+    );
+  });
+
+  test('SET_SERVER_ERROR updates serverError in state', () => {
+    assert.match(
+      storeSource,
+      /case\s+["']SET_SERVER_ERROR["']\s*:.*?serverError:\s*action\.payload/s,
+      'SET_SERVER_ERROR should update serverError field'
+    );
+  });
+
+  test('SET_SERVER_ERROR maintains state immutability', () => {
+    assert.match(
+      storeSource,
+      /case\s+["']SET_SERVER_ERROR["']\s*:.*?return\s*\{\s*\.\.\.state/s,
+      'SET_SERVER_ERROR should return new state object'
+    );
+  });
+
+  test('AppState includes serverError field', () => {
+    assert.match(
+      typesSource,
+      /serverError\?:/,
+      'AppState should include serverError field'
+    );
+  });
+
+  test('AppState serverError is optional', () => {
+    assert.match(
+      typesSource,
+      /serverError\?:\s*string/,
+      'AppState serverError should be optional'
+    );
+  });
+
+});
+

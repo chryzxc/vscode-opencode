@@ -1129,6 +1129,7 @@ export class ChatViewProvider
       this.view?.webview.postMessage({
         type: "initState",
         serverStatus: this.serverManager.getStatus(),
+        serverError: this.serverManager.getStatus() === "error" ? this.serverManager.getLastError() : undefined,
         selectedModel: this.modelAndAgentManager.getSelectedModel(),
         selectedAgent: this.modelAndAgentManager.getSelectedAgent(),
         serverVersion: this.serverManager.getVersion(),
@@ -2155,6 +2156,7 @@ export class ChatViewProvider
             this.view?.webview.postMessage({
               type: "initState",
               serverStatus: this.serverManager.getStatus(),
+              serverError: this.serverManager.getStatus() === "error" ? this.serverManager.getLastError() : undefined,
               selectedModel: this.selectedModel,
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
@@ -2198,6 +2200,7 @@ export class ChatViewProvider
             this.view?.webview.postMessage({
               type: "initState",
               serverStatus: this.serverManager.getStatus(),
+              serverError: this.serverManager.getStatus() === "error" ? this.serverManager.getLastError() : undefined,
               selectedModel: this.selectedModel,
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),

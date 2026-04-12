@@ -426,6 +426,22 @@ test('chatHistory dispatches SET_SESSION_ID', () => {
   );
 });
 
+test('initState starts session loading during first startup hydration for existing sessions', () => {
+  assert.match(
+    messageHandlerSource,
+    /case\s+["']initState["']\s*:\s*case\s+["']init["']\s*:[\s\S]*stateBeforeInit\s*=\s*getState\(\)[\s\S]*!stateBeforeInit\.receivedInitState[\s\S]*stateBeforeInit\.messages\.length\s*===\s*0[\s\S]*type:\s*["']START_SESSION_LOADING["']/s,
+    'initState should trigger START_SESSION_LOADING while startup history is still hydrating'
+  );
+});
+
+test('chatHistory always clears session loading after hydration', () => {
+  assert.match(
+    messageHandlerSource,
+    /case\s+['"]chatHistory['"]\s*:[\s\S]*dispatch\(\{\s*type:\s*["']SET_MESSAGES["'][\s\S]*dispatch\(\{\s*type:\s*["']END_SESSION_LOADING["']\s*\}\)/s,
+    'chatHistory should clear loading after setting hydrated messages'
+  );
+});
+
 test('normalizeMessage does not throw when processing chatHistory messages', () => {
   // This test verifies the fix for the bug where normalizeMessage would throw
   // "firstNonEmptyString is not defined" when processing messages from session history
@@ -485,4 +501,40 @@ test('message handler deduplicates and merges subagent progress/timeline for pre
     /previous\.type === event\.type[\s\S]*normalizeComparableText\(previous\.label\)\s*===/s,
     'Timeline normalization should collapse consecutive duplicate labels'
   );
+});
+
+test.describe('messageHandler - Server Error Handling', () => {
+
+  test('initState handler dispatches SET_SERVER_ERROR', () => {
+    assert.match(
+      messageHandlerSource,
+      /case\s+["']initState["']\s*:.*?type:\s*["']SET_SERVER_ERROR["']/s,
+      'initState should dispatch SET_SERVER_ERROR action'
+    );
+  });
+
+  test('initState extracts serverError from state', () => {
+    assert.match(
+      messageHandlerSource,
+      /type:\s*["']SET_SERVER_ERROR["'][\s\S]*?payload:\s*asString\(state\.serverError\)/s,
+      'initState should extract serverError from state'
+    );
+  });
+
+  test('initState converts serverError to string or undefined', () => {
+    assert.match(
+      messageHandlerSource,
+      /type:\s*["']SET_SERVER_ERROR["'][\s\S]*?payload:\s*asString\(state\.serverError\)\s*\|\|\s*undefined/s,
+      'initState should convert serverError to string or undefined'
+    );
+  });
+
+  test('initState handles missing serverError gracefully', () => {
+    assert.match(
+      messageHandlerSource,
+      /type:\s*["']SET_SERVER_ERROR["'][\s\S]*?payload:\s*asString\(state\.serverError\)\s*\|\|\s*undefined/s,
+      'initState should handle missing serverError field'
+    );
+  });
+
 });

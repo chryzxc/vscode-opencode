@@ -583,3 +583,67 @@ test.describe('OpencodeServerManager - Memory Management', () => {
   });
 
 });
+
+test.describe('OpencodeServerManager - Error Tracking', () => {
+
+  test('setStatus stores error message on error state', () => {
+    const source = serverManagerSource;
+
+    assert.match(
+      source,
+      /setStatus[\s\S]*status\s*===\s*"error".*error.*_lastError|_lastError\s*=\s*error/s,
+      'must store error message when transitioning to error state'
+    );
+  });
+
+  test('setStatus clears error on non-error state', () => {
+    const source = serverManagerSource;
+
+    assert.match(
+      source,
+      /setStatus[\s\S]*status\s*!==\s*"error".*_lastError\s*=\s*undefined|_lastError\s*=\s*undefined/s,
+      'must clear error when transitioning to non-error state'
+    );
+  });
+
+  test('getLastError returns stored error', () => {
+    const source = serverManagerSource;
+
+    assert.match(
+      source,
+      /getLastError[\s\S]*return.*this\._lastError/s,
+      'must return the last error message'
+    );
+  });
+
+  test('spawn error handler captures error message', () => {
+    const source = serverManagerSource;
+
+    assert.match(
+      source,
+      /on.*error[\s\S]*setStatus.*error.*error\.message|String\(error\)/s,
+      'must capture spawn error message'
+    );
+  });
+
+  test('exit handler captures error with recent output', () => {
+    const source = serverManagerSource;
+
+    assert.match(
+      source,
+      /on.*exit[\s\S]*code\s*!==\s*0.*setStatus.*error.*recentTail/s,
+      'must capture exit error with recent output'
+    );
+  });
+
+  test('timeout handler captures error with timeout message', () => {
+    const source = serverManagerSource;
+
+    assert.match(
+      source,
+      /startupTimeout[\s\S]*setStatus.*error.*Server startup timeout/s,
+      'must capture timeout error message'
+    );
+  });
+
+});

@@ -144,6 +144,9 @@ export class OpencodeServerManager {
   /** Current server status (for state machine) */
   private _status: ServerStatus = "idle";
 
+  /** Last error message when status is 'error' */
+  private _lastError: string | undefined;
+
   /** Event emitter for status change notifications */
   private _onStatusChange = new vscode.EventEmitter<ServerStatus>();
 
@@ -593,7 +596,7 @@ export class OpencodeServerManager {
       // Handle spawn errors (e.g., opencode CLI not found)
       spawnedProcess.on("error", (error) => {
         log.error("Failed to start server", { port: this.port, error });
-        this.setStatus("error");
+        this.setStatus("error", error instanceof Error ? error.message : String(error));
 
         if (error.message.includes("ENOENT")) {
           vscode.window.showErrorMessage(
@@ -617,7 +620,7 @@ export class OpencodeServerManager {
         if (exitedPort > 0) {
           void this.persistManagedPort(0);
         }
-        this.setStatus(code === 0 ? "idle" : "error");
+        this.setStatus(code === 0 ? "idle" : "error", recentTail ? `Server exited with code ${code}${details}` : undefined);
 
         if (!serverReady) {
           const recentTail = recentServerOutput.trim().slice(-800);
@@ -645,7 +648,7 @@ export class OpencodeServerManager {
       // If server doesn't become ready within 10 seconds, fail fast
       startupTimeout = setTimeout(() => {
         if (!serverReady) {
-          this.setStatus("error");
+          this.setStatus("error", recentTail ? `Server startup timeout${details}` : undefined);
           const recentTail = recentServerOutput.trim().slice(-800);
           const details = recentTail ? ` Recent output: ${recentTail}` : "";
           settleReject(new Error(`Server startup timeout.${details}`));
@@ -800,6 +803,33 @@ export class OpencodeServerManager {
    */
   getVersion(): string | undefined {
     return this.serverVersion;
+  }
+
+  /**
+   * Gets the last error message when status is 'error'.
+   *
+   * **When Available:**
+   * - Server failed to start (CLI not found, timeout)
+   * - Server crashed during execution
+   * - Connection failed
+   *
+   * **When Returns Undefined:**
+   * - Status is not 'error'
+   * - No error has occurred yet
+   * - Error was cleared by successful operation
+   *
+   * **Usage:**
+   * ```typescript
+   * if (manager.getStatus() === "error") {
+   *   const error = manager.getLastError();
+   *   console.error("Server error:", error);
+   * }
+   * ```
+   *
+   * @returns The last error message, or undefined if no error
+   */
+  getLastError(): string | undefined {
+    return this._lastError;
   }
 
   /**
@@ -993,14 +1023,22 @@ export class OpencodeServerManager {
    *
    * @see onStatusChange for subscribing to status changes
    */
-  private setStatus(status: ServerStatus): void {
+  private setStatus(status: ServerStatus, error?: string): void {
     // Only fire event if status actually changed
     // This prevents redundant notifications and UI updates
     if (this._status !== status) {
       const oldStatus = this._status;
       this._status = status;
-      log.logStateChange('server_status', oldStatus, status, 'setStatus');
-      log.debug("Server status changed", { oldStatus, newStatus: status });
+
+      // Store error message when transitioning to error state
+      if (status === "error" && error) {
+        this._lastError = error;
+      } else if (status !== "error") {
+        this._lastError = undefined;
+      }
+
+      log.logStateChange('server_status', oldStatus, status, 'setStatus', { error });
+      log.debug("Server status changed", { oldStatus, newStatus: status, error });
       this._onStatusChange.fire(status);
     }
   }

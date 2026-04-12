@@ -1326,6 +1326,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "SET_SERVER_STATUS":
       return { ...state, serverStatus: action.payload };
+    case "SET_SERVER_ERROR":
+      return { ...state, serverError: action.payload };
     case "SET_PROCESSING_SESSIONS":
       return { ...state, processingSessionIds: action.payload };
     case "START_SESSION_LOADING":
