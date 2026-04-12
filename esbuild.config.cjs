@@ -5,7 +5,7 @@ const watch = process.argv.includes('--watch');
 const ctx = esbuild.context({
 	entryPoints: ['src/extension.ts'],
 	bundle: true,
-	outfile: 'dist/extension.js',
+	outfile: 'dist/extension.cjs',
 	external: ['vscode'],
 	format: 'cjs',
 	platform: 'node',
