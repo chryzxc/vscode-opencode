@@ -5176,7 +5176,16 @@ function extractInteractiveAnswerSignature(message: Message): string | undefined
     asOptionalString(message.content) ||
     asOptionalString(message.text) ||
     contentFromParts(Array.isArray(message.parts) ? message.parts : []);
-  if (!visibleText || !hasQuestionFormattingForInteractiveDisplay(visibleText)) {
+  if (!visibleText) {
+    return undefined;
+  }
+
+  // Special handling for "Plan approved" messages - they should be deduplicated even without question formatting
+  if (/\bproceed on this plan\./i.test(visibleText)) {
+    return normalizeComparableText(visibleText.trim());
+  }
+
+  if (!hasQuestionFormattingForInteractiveDisplay(visibleText)) {
     return undefined;
   }
 
@@ -5315,47 +5324,90 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
     return messages;
   }
 
+  // Always log that we're running (using console.log to ensure visibility)
+  console.log('[dedupePlanProceedMessages] Running deduplication', {
+    totalMessages: messages.length,
+    timestamp: new Date().toISOString()
+  });
+
   const deduped: Message[] = [];
   const seenPlanProceedMessages = new Set<string>();
 
+  // Debug: Log all user messages to understand what we're working with
+  const userMessages = messages.filter(m => {
+    const role = asString(m.role) || asString(asRecord(m.info)?.role);
+    return role === 'user';
+  });
+
+  if (userMessages.length > 0) {
+    console.log('[dedupePlanProceedMessages] Processing user messages', {
+      totalUserMessages: userMessages.length,
+      messages: userMessages.map(m => ({
+        role: asString(m.role),
+        content: (asString(m.content) || '').substring(0, 50),
+        text: (asString(m.text) || '').substring(0, 50),
+        hasParts: Array.isArray(m.parts) && m.parts.length > 0,
+      }))
+    });
+  }
+
   for (const message of messages) {
     const role = asString(message.role) || asString(asRecord(message.info)?.role);
-    const content = asString(message.content) || '';
+
+    // Extract content from all possible locations (content, text, parts)
+    // Note: hydrateLegacyInteractiveUserMessages runs before this, so interactive markers
+    // should already be stripped and the answer text should be in content/text fields
+    const content =
+      asString(message.content) ||
+      asString(message.text) ||
+      contentFromParts(Array.isArray(message.parts) ? message.parts : []) ||
+      '';
 
     // Check if this is a "Plan Approved" user message
     const isPlanProceed = role === 'user' && /\bproceed on this plan\./i.test(content);
 
+    console.log('[dedupePlanProceedMessages] Processing message', {
+      role,
+      contentPreview: content.substring(0, 50),
+      isPlanProceed,
+      contentLength: content.length
+    });
+
     if (isPlanProceed) {
-      // Normalize content for deduplication
-      const normalizedContent = content.trim();
+      // Extract only the "Plan approved" portion for deduplication
+      // This handles cases where messages have additional content beyond "proceed on this plan."
+      // We match the same pattern used for detection and use that as the deduplication key
+      const planProceedMatch = content.match(/\bproceed on this plan\./i);
+      const planProceedSignature = planProceedMatch ? planProceedMatch[0].trim().toLowerCase() : content.trim().toLowerCase().replace(/\s+/g, ' ');
+
+      console.log('[dedupePlanProceedMessages] Found Plan Approved message', {
+        originalContent: content.substring(0, 100),
+        planProceedSignature,
+        alreadySeen: seenPlanProceedMessages.has(planProceedSignature),
+        seenCount: seenPlanProceedMessages.size,
+        contentLength: content.length
+      });
 
       // Skip duplicate "Plan Approved" messages
-      if (seenPlanProceedMessages.has(normalizedContent)) {
-        webviewLogger.debug('[dedupePlanProceedMessages] Skipping duplicate Plan Approved message', {
-          content: normalizedContent.substring(0, 100),
-          totalSkipped: seenPlanProceedMessages.size,
-        });
+      if (seenPlanProceedMessages.has(planProceedSignature)) {
+        console.log('[dedupePlanProceedMessages] SKIPPING duplicate Plan Approved message');
         continue;
       }
 
-      seenPlanProceedMessages.add(normalizedContent);
-      webviewLogger.debug('[dedupePlanProceedMessages] Keeping unique Plan Approved message', {
-        content: normalizedContent.substring(0, 100),
-        index: deduped.length,
-      });
+      seenPlanProceedMessages.add(planProceedSignature);
+      console.log('[dedupePlanProceedMessages] KEEPING unique Plan Approved message');
     }
 
     deduped.push(message);
   }
 
-  if (seenPlanProceedMessages.size > 0) {
-    webviewLogger.debug('[dedupePlanProceedMessages] Deduplication complete', {
-      inputCount: messages.length,
-      outputCount: deduped.length,
-      duplicatesRemoved: messages.length - deduped.length,
-      planProceedMessageCount: seenPlanProceedMessages.size,
-    });
-  }
+  console.log('[dedupePlanProceedMessages] Deduplication complete', {
+    inputCount: messages.length,
+    outputCount: deduped.length,
+    duplicatesRemoved: messages.length - deduped.length,
+    planProceedMessageCount: seenPlanProceedMessages.size,
+    finalMessageCount: deduped.length
+  });
 
   return deduped;
 }

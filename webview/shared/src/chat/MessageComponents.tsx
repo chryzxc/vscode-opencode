@@ -381,6 +381,94 @@ function normalizeComparableText(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+function collectReasoningFingerprints(message?: Message): Set<string> {
+  const fingerprints = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const normalized = normalizeComparableText(value);
+    if (normalized) {
+      fingerprints.add(normalized);
+    }
+  };
+
+  if (!message) {
+    return fingerprints;
+  }
+
+  if (Array.isArray(message.reasoningEvents)) {
+    message.reasoningEvents.forEach((event) => add(event?.text));
+  }
+
+  const payloadRec = asRecord((message as Record<string, unknown>).reasoningPayload);
+  const payloadEvents = Array.isArray(payloadRec?.events) ? payloadRec.events : [];
+  payloadEvents.forEach((event) => add(asRecord(event)?.text));
+
+  if (Array.isArray(message.parts)) {
+    message.parts.forEach((part) => {
+      add(part.reasoning);
+      add(part.thought);
+      add(part.thinking);
+    });
+  }
+
+  return fingerprints;
+}
+
+function looksLikeReasoningPlanningText(value: string): boolean {
+  const normalized = normalizeComparableText(value);
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.startsWith("let me ") ||
+    normalized.startsWith("i should ") ||
+    normalized.startsWith("i need to ") ||
+    normalized.startsWith("i will ") ||
+    normalized.startsWith("the user wants ") ||
+    normalized.startsWith("the user asked ")
+  );
+}
+
+function isReasoningLeakCandidate(
+  value: string,
+  source: "parts" | "structured" | "content" | "text" | "summary",
+  message?: Message,
+  hasRenderableParts?: boolean,
+): boolean {
+  if (!value.trim()) {
+    return false;
+  }
+  if (source !== "content" && source !== "text") {
+    return false;
+  }
+  if (hasRenderableParts) {
+    return false;
+  }
+  const candidateNorm = normalizeComparableText(value);
+  if (!candidateNorm) {
+    return false;
+  }
+
+  const reasoningFingerprints = collectReasoningFingerprints(message);
+  for (const reasoningNorm of reasoningFingerprints) {
+    if (!reasoningNorm) continue;
+    if (candidateNorm === reasoningNorm) {
+      return true;
+    }
+    if (
+      candidateNorm.length < 220 &&
+      (candidateNorm.includes(reasoningNorm) ||
+        reasoningNorm.includes(candidateNorm))
+    ) {
+      return true;
+    }
+  }
+
+  return reasoningFingerprints.size > 0 && looksLikeReasoningPlanningText(value);
+}
+
 function isLowValueInteractiveBodyText(value: string): boolean {
   const normalized = normalizeComparableText(value);
   if (!normalized) {
@@ -629,25 +717,38 @@ function getMessageContent(
   const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
   const partsBody = messageBodyFromParts(message.parts);
   const hasParts = Array.isArray(message.parts) && message.parts.length > 0;
+  const hasRenderableParts =
+    Array.isArray(message.parts) &&
+    message.parts.some((part) => isRenderableAssistantTextPart(part));
   const isMessageResponseType = responseType === "message";
   const structuredMessage = firstNonEmptyString(structured?.message);
-  const candidates = hasParts
+  const candidates: Array<{
+    source: "parts" | "structured" | "content" | "text" | "summary";
+    value: string | undefined;
+  }> = hasParts
     ? [
-      partsBody,
-      isMessageResponseType ? structuredMessage : "",
-      summaryText(message),
+      { source: "parts", value: partsBody },
+      { source: "structured", value: isMessageResponseType ? structuredMessage : "" },
+      { source: "summary", value: summaryText(message) },
     ]
     : [
-      partsBody,
-      message.content,
-      message.text,
-      summaryText(message),
+      { source: "parts", value: partsBody },
+      { source: "content", value: message.content },
+      { source: "text", value: message.text },
+      { source: "summary", value: summaryText(message) },
     ];
-  const baseContent =
-    candidates.find(
-      (candidate) =>
-        typeof candidate === "string" && candidate.trim().length > 0,
-    ) ?? "";
+  const selectedCandidate = candidates.find((candidate) => {
+    if (typeof candidate.value !== "string" || candidate.value.trim().length === 0) {
+      return false;
+    }
+    return !isReasoningLeakCandidate(
+      candidate.value,
+      candidate.source,
+      message,
+      hasRenderableParts,
+    );
+  });
+  const baseContent = selectedCandidate?.value ?? "";
   const safeBaseContent = baseContent;
   const questionPrompt = questionPromptFromMessage(message);
   if (!questionPrompt) {
@@ -1051,7 +1152,7 @@ function TodoInlineSummary({ todoItems }: { todoItems: TodoItem[] }) {
   return (
     <section
       data-assistant-section="todo-inline-summary"
-      className="rounded-md border border-oc-border/70 bg-oc-panel-soft/30 px-2.5 py-2"
+      className="rounded-md border border-oc-border-soft/70 bg-oc-panel-soft/30 px-2.5 py-2"
     >
       <div className="text-[11px] font-mono text-oc-text-muted">
         {totalCount} {totalCount === 1 ? "task" : "tasks"} - {inProgressCount} in
@@ -1280,12 +1381,9 @@ function buildStreamingTimeline(
 
 
 
-const MAX_VISIBLE_COMPLETED_ACTIVITY = 5;
-
 type MessageViewState = {
   showActivityDetails: boolean;
   showThinkingDetails: boolean;
-  showAllCompletedActivity: boolean;
   showInternalActivity: boolean;
 };
 
@@ -1929,7 +2027,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
                   key={src}
                   src={src}
                   alt="attachment"
-                  className="max-h-20 rounded-lg border border-oc-border cursor-zoom-in"
+                  className="max-h-20 rounded-lg border border-oc-border-soft cursor-zoom-in"
                 />
               ))}
             </div>
@@ -2129,7 +2227,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
   const plan = responseType === "implementation_plan" ? message?.plan : undefined;
   const changeSummary = message?.changeSummary;
-  const messageId = info?.id || message?.id || streaming?.messageId;
+  // Match the same ID extraction logic as backend extractMessageId()
+  // https://github.com/anthropics/opencode-vscode/blob/main/src/providers/ChatViewProvider.ts#L1988-L2000
+  const messageId =
+    info?.id ||
+    message?.id ||
+    message?.messageId ||
+    info?.messageId ||
+    streaming?.messageId;
 
   const latestAssistantMessageId = useMemo(() => {
     for (let index = state.messages.length - 1; index >= 0; index--) {
@@ -2141,22 +2246,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     }
     return undefined;
   }, [state.messages]);
-  const isLatestAssistantMessage =
-    !!messageId && latestAssistantMessageId === messageId;
-  const [viewState, setViewState] = useState<MessageViewState>({
+  const viewState: MessageViewState = {
     showActivityDetails: false,
     showThinkingDetails: false,
-    showAllCompletedActivity: false,
     showInternalActivity: false,
-  });
-  const hasCompletedCondensedActivity =
-    !isStreamingActive &&
-    !isLatestAssistantMessage &&
-    displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY &&
-    !viewState.showAllCompletedActivity;
-  const visibleDisplayEvents = hasCompletedCondensedActivity
-    ? displayEvents.slice(-MAX_VISIBLE_COMPLETED_ACTIVITY)
-    : displayEvents;
+  };
+  const visibleDisplayEvents = displayEvents;
   const userFacingDisplayEvents = visibleDisplayEvents.filter(
     (event) => !event.internal,
   );
@@ -2167,10 +2262,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     viewState.showInternalActivity && internalDisplayEvents.length > 0
       ? visibleDisplayEvents
       : userFacingDisplayEvents;
-  const hiddenActivityEventCount = Math.max(
-    0,
-    displayEvents.length - visibleDisplayEvents.length,
-  );
   const shouldShowTodoInlineSummary =
     todoItems.length > 0 &&
     (!latestAssistantMessageId || latestAssistantMessageId === messageId);
@@ -2590,7 +2681,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   {hasTokens && (
                     <div className="oc-msg-token-chips flex min-w-0 flex-wrap items-center gap-2 text-[11px] sm:ml-auto sm:text-[12px]">
                       {/* Prompt - Uses existing oc-yellow for warmth */}
-                      <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                      <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
                         <div className="h-1 w-1 rounded-full bg-oc-yellow" />
                         <div className="flex items-baseline gap-1">
                           <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
@@ -2603,7 +2694,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       </div>
 
                       {/* Response - Uses oc-accent for primary action */}
-                      <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                      <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
                         <div className="h-1 w-1 rounded-full bg-oc-accent" />
                         <div className="flex items-baseline gap-1">
                           <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
@@ -2616,7 +2707,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       </div>
 
                       {reasoningTok > 0 && (
-                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
                           <div className="h-1 w-1 rounded-full bg-oc-amber-custom" />
                           <div className="flex items-baseline gap-1">
                             <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
@@ -2630,7 +2721,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       )}
 
                       {cacheRead > 0 && (
-                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
                           <div className="h-1 w-1 rounded-full bg-oc-green" />
                           <div className="flex items-baseline gap-1">
                             <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
@@ -2644,7 +2735,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       )}
 
                       {cacheWrite > 0 && (
-                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
+                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
                           <div className="h-1 w-1 rounded-full bg-oc-orange" />
                           <div className="flex items-baseline gap-1">
                             <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
@@ -2658,7 +2749,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       )}
 
                       {typeof duration === "number" && (
-                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200">
+                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200">
                           <svg className="h-3 w-3 text-oc-text-muted opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <circle cx="12" cy="12" r="10" />
                             <path d="M12 6v6l4 2" />
@@ -2676,7 +2767,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
             <div className="flex shrink-0 items-center gap-1">
               {plainTextFallback && (
                 <span
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-oc-border text-oc-text-muted"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-oc-border-soft text-oc-text-muted"
                   title={plainTextFallbackTooltip}
                 >
                   <AlertCircle className="h-3.5 w-3.5 text-oc-yellow" />
@@ -2704,7 +2795,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           {(displayEvents.length > 0 || showThinkingPlaceholder) && (
             <section
               data-assistant-section="activity"
-              className="rounded-md border border-oc-border bg-oc-panel-soft/40"
+              className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40"
             >
               <div className="px-3 py-2.5">
                 {timelineDisplayEvents.length > 0 && (
@@ -2876,7 +2967,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                               {event.viewDiffFile && (
                                 <button
                                   type="button"
-                                  className="shrink-0 rounded border border-oc-border px-2 py-0.5 text-[10px] font-medium text-oc-text-muted hover:text-oc-text-soft"
+                                  className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium text-oc-text-muted hover:text-oc-text-soft"
                                   onClick={() =>
                                     vscode.postMessage({
                                       type: "openDiff",
@@ -2903,7 +2994,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           }
                         >
                           <div className="flex min-w-0 items-start gap-2.5 pt-[3px]">
-                            <span className="inline-block min-w-[64px] shrink-0 rounded border border-oc-border px-1.5 py-[3px] text-center font-mono text-[10px] font-semibold text-oc-text-muted">
+                            <span className="inline-block min-w-[64px] shrink-0 rounded border border-oc-border-soft px-1.5 py-[3px] text-center font-mono text-[10px] font-semibold text-oc-text-muted">
                               Reasoning
                             </span>
                             <span
@@ -2919,27 +3010,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       </Stepper>
                     )}
 
-                    {!isStreamingActive &&
-                      displayEvents.length >
-                      MAX_VISIBLE_COMPLETED_ACTIVITY && (
-                        <button
-                          type="button"
-                          className="mt-2 text-[11px] font-mono text-oc-accent hover:underline"
-                          onClick={() =>
-                            setViewState((prev) => ({
-                              ...prev,
-                              showAllCompletedActivity:
-                                !prev.showAllCompletedActivity,
-                            }))
-                          }
-                        >
-                          {hasCompletedCondensedActivity
-                            ? "Show " +
-                            hiddenActivityEventCount +
-                            " older events"
-                            : "Show fewer events"}
-                        </button>
-                      )}
                   </>
                 )}
               </div>
@@ -2947,10 +3017,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           )}
 
           {subagents.length > 0 && (
-            <div className="mt-3 mb-3 overflow-hidden rounded-md border border-oc-border bg-oc-panel-soft">
+            <div className="mt-3 mb-3 overflow-hidden rounded-md border border-oc-border-soft bg-oc-panel-soft">
               <button
                 type="button"
-                className="w-full border-b border-oc-border px-2.5 py-2 text-left hover:bg-oc-panel"
+                className="w-full border-b border-oc-border-soft px-2.5 py-2 text-left hover:bg-oc-panel"
                 onClick={() => setShowSubagents((value) => !value)}
               >
                 <div className="flex items-center justify-between gap-2">
@@ -2959,7 +3029,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
                       Spawned Subagents
                     </span>
-                    <span className="rounded-md border border-oc-border px-1.5 py-0.5 font-mono text-oc-2xs text-oc-text-muted">
+                    <span className="rounded-md border border-oc-border-soft px-1.5 py-0.5 font-mono text-oc-2xs text-oc-text-muted">
                       {subagents.length}
                     </span>
                   </div>
@@ -3013,7 +3083,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           key={subagent.id}
                           type="button"
                           className={cn(
-                            "w-full rounded-md border border-oc-border bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
+                            "w-full rounded-md border border-oc-border-soft bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
                             "hover:bg-oc-panel",
                           )}
                           style={cardStyle}
@@ -3078,7 +3148,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           {showResponseSection && (
             <section
               data-assistant-section="response"
-              className="rounded-md border border-oc-border bg-background p-3.5 shadow-sm"
+              className="rounded-md border border-oc-border-soft bg-background p-3.5 shadow-sm"
             >
               {hasResponseContent && (
                 <div className={responseBodyClass}>
@@ -3093,7 +3163,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 <div
                   className={
                     hasResponseContent
-                      ? "mt-3 pt-3 border-t border-oc-border/30"
+                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
                       : undefined
                   }
                 >
@@ -3119,7 +3189,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </span>
                         )}
                         {planStatus === "Draft" && (
-                          <span className="rounded border border-oc-border text-oc-text-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          <span className="rounded border border-oc-border-soft text-oc-text-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
                             Draft
                           </span>
                         )}
@@ -3166,11 +3236,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   <div
                     className={
                       hasResponseContent || !!plan
-                        ? "mt-3 pt-3 border-t border-oc-border/30"
+                        ? "mt-3 pt-3 border-t border-oc-border-soft/30"
                         : undefined
                     }
                   >
-                    <div className="rounded-md border border-oc-border bg-oc-panel-soft/50">
+                    <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/50">
                       <div className="flex items-center justify-between gap-2 px-3 py-2">
                         <div className="text-sm font-medium text-oc-text-soft">
                           {changeSummary.filesChanged} file
@@ -3190,7 +3260,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
-                            className="rounded border border-oc-border px-2 py-0.5 text-xs text-oc-text-muted hover:text-oc-text-soft"
+                            className="rounded border border-oc-border-soft px-2 py-0.5 text-xs text-oc-text-muted hover:text-oc-text-soft"
                             onClick={() =>
                               vscode.postMessage({
                                 type: "undoMessageChanges",
@@ -3202,7 +3272,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </button>
                           <button
                             type="button"
-                            className="rounded border border-oc-border px-2 py-0.5 text-xs text-oc-text-muted hover:text-oc-text-soft"
+                            className="rounded border border-oc-border-soft px-2 py-0.5 text-xs text-oc-text-muted hover:text-oc-text-soft"
                             onClick={() =>
                               vscode.postMessage({
                                 type: "reviewMessageChanges",
@@ -3214,7 +3284,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </button>
                         </div>
                       </div>
-                      <div className="border-t border-oc-border/50">
+                      <div className="border-t border-oc-border-soft/50">
                         {changeSummary.files.slice(0, 12).map((file) => (
                           <button
                             key={file.file}
@@ -3245,7 +3315,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   data-assistant-section="raw-response-debug"
                   className={
                     hasPrimaryResponseBody
-                      ? "mt-3 pt-3 border-t border-oc-border/30"
+                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
                       : undefined
                   }
                 >
@@ -3254,7 +3324,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       Raw Response (Debug)
                     </div>
                   </div>
-                  <pre className="max-h-[260px] overflow-auto rounded border border-oc-border bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-mono">
+                  <pre className="max-h-[260px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-mono">
                     {rawResponseText}
                   </pre>
                 </div>
@@ -3368,13 +3438,15 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
             Array.isArray(changeSummary.files) &&
             changeSummary.files.length > 0 &&
             changeSummary.messageId === messageId)) && (
-          <FileChangesSection
-            streamingSteps={[]}
-            timelineEvents={[]}
-            messageEdits={message?.edits || []}
-            changeSummary={changeSummary}
-            messageId={messageId}
-          />
+          <div className="mt-4">
+            <FileChangesSection
+              streamingSteps={[]}
+              timelineEvents={[]}
+              messageEdits={message?.edits || []}
+              changeSummary={changeSummary}
+              messageId={messageId}
+            />
+          </div>
         )}
 
         {isStreamingActive && !showResponseSection && hasStreamingActivity && (
@@ -3391,7 +3463,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               </span>
               <span className="opacity-50">Raw Data</span>
             </summary>
-            <div className="mt-2 rounded-md border border-oc-border bg-oc-panel-soft p-2.5">
+            <div className="mt-2 rounded-md border border-oc-border-soft bg-oc-panel-soft p-2.5">
               <pre className="overflow-x-auto text-oc-2xs font-mono text-oc-text-soft whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
                 {JSON.stringify(
                   {
@@ -3668,29 +3740,33 @@ function FileChangesSection({
   };
 
   return (
-    <div className="mt-3 mb-2 overflow-hidden rounded-xl border border-oc-border bg-oc-panel-soft/35">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-oc-border/70 px-3 py-2">
+    <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2 text-sm text-oc-text-soft">
           <FileCode className="h-4 w-4 shrink-0 text-oc-accent" />
           <span className="font-medium">
             {filesChanged} {filesChanged === 1 ? "file" : "files"} changed
           </span>
           {(totalAdded > 0 || totalDeleted > 0) && (
-            <span className="font-mono text-xs">
-              {totalAdded > 0 ? <span className="text-oc-green">+{totalAdded}</span> : null}
-              {totalDeleted > 0 ? (
-                <span className={cn("text-oc-red", totalAdded > 0 ? "ml-1.5" : "")}>
+            <div className="flex items-center gap-1.5 font-mono text-xs">
+              {totalAdded > 0 && (
+                <span className="text-oc-green">
+                  +{totalAdded}
+                </span>
+              )}
+              {totalDeleted > 0 && (
+                <span className="text-oc-red">
                   -{totalDeleted}
                 </span>
-              ) : null}
-            </span>
+              )}
+            </div>
           )}
         </div>
         <div className="ml-auto flex items-center gap-1.5">
           <button
             type="button"
             onClick={handleUndo}
-            className="inline-flex items-center gap-1 rounded-md border border-oc-border/80 px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:text-oc-text-soft"
+            className="inline-flex items-center gap-1 rounded border border-oc-border-soft/50 px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border-soft hover:bg-oc-panel-soft/50 hover:text-oc-text-soft"
           >
             <Undo2 className="h-3 w-3" />
             Undo
@@ -3698,96 +3774,95 @@ function FileChangesSection({
           <button
             type="button"
             onClick={handleReview}
-            className="inline-flex items-center gap-1 rounded-md border border-oc-border/80 px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:text-oc-text-soft"
+            className="inline-flex items-center gap-1 rounded border border-oc-border-soft/50 px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border-soft hover:bg-oc-panel-soft/50 hover:text-oc-text-soft"
           >
-            Review
             <ArrowUpRight className="h-3 w-3" />
+            Review
           </button>
         </div>
       </div>
-      <div className="p-2">
-        {visibleChanges.map((fileChange) => {
-          const hasPreview =
-            Array.isArray(fileChange.diffExcerpt?.lines) && fileChange.diffExcerpt.lines.length > 0;
-          const isExpanded = !!expandedByFile[fileChange.file];
+      <div className="border-t border-oc-border-soft-soft">
+        <div className="space-y-1 p-2">
+          {visibleChanges.map((fileChange) => {
+            const hasPreview =
+              Array.isArray(fileChange.diffExcerpt?.lines) && fileChange.diffExcerpt.lines.length > 0;
+            const isExpanded = !!expandedByFile[fileChange.file];
 
-          return (
-            <div
-              key={fileChange.file}
-              className="mb-1.5 overflow-hidden rounded-lg bg-oc-panel-soft/45 last:mb-0"
-            >
-              <div className="group flex w-full items-center justify-between px-2.5 py-2 transition-colors hover:bg-oc-panel-soft/70">
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  onClick={() =>
-                    vscode.postMessage({
-                      type: "openDiff",
-                      file: fileChange.file,
-                    })
-                  }
-                >
-                  <FileText className="h-3.5 w-3.5 shrink-0 text-oc-text-muted/80 group-hover:text-oc-text-muted" />
-                  <span className="truncate text-[12px] text-oc-text-soft/95">{fileChange.file}</span>
-                </button>
-                <div className="ml-2 flex shrink-0 items-center gap-2">
-                  <div className="font-mono text-xs">
-                    {fileChange.added > 0 ? <span className="text-oc-green">+{fileChange.added}</span> : null}
-                    {fileChange.deleted > 0 ? (
-                      <span className={cn("text-oc-red", fileChange.added > 0 ? "ml-1.5" : "")}>
-                        -{fileChange.deleted}
-                      </span>
-                    ) : null}
-                    {fileChange.added <= 0 && fileChange.deleted <= 0 ? (
-                      <span className="text-oc-text-muted">+/-0</span>
-                    ) : null}
-                  </div>
-
+            return (
+              <div
+                key={fileChange.file}
+                className="rounded border border-oc-border-soft-soft overflow-hidden"
+              >
+                <div className="flex items-center justify-between px-2.5 py-2 hover:bg-oc-panel-soft/30 transition-colors">
                   <button
                     type="button"
-                    aria-label={isExpanded ? "Collapse diff preview" : "Expand diff preview"}
-                    onClick={() => toggleExpanded(fileChange.file)}
-                    className={cn(
-                      "inline-flex h-5 w-5 items-center justify-center rounded text-oc-text-muted transition-colors hover:bg-oc-panel hover:text-oc-text-soft",
-                      !hasPreview && "opacity-80",
-                    )}
+                    className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                    onClick={() =>
+                      vscode.postMessage({
+                        type: "openDiff",
+                        file: fileChange.file,
+                      })
+                    }
                   >
-                    {isExpanded ? (
-                      <ChevronDown className="h-3.5 w-3.5" />
-                    ) : (
-                      <ChevronRight className="h-3.5 w-3.5" />
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {isExpanded ? (
-                <div className="border-t border-oc-border/60 bg-oc-panel/55 p-2">
-                  {hasPreview ? (
-                    <div className="max-h-[260px] overflow-auto rounded-md border border-oc-border/70">
-                      <ActivityDiffExcerpt
-                        excerpt={{
-                          header: fileChange.diffExcerpt?.header,
-                          lines: fileChange.diffExcerpt?.lines || [],
-                          added: fileChange.diffExcerpt?.added ?? fileChange.added,
-                          deleted: fileChange.diffExcerpt?.deleted ?? fileChange.deleted,
+                    {hasPreview && (
+                      <button
+                        type="button"
+                        aria-label={isExpanded ? "Collapse" : "Expand"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleExpanded(fileChange.file);
                         }}
-                      />
-                    </div>
-                  ) : (
-                    <div className="rounded-md border border-oc-border/70 px-2 py-1.5 text-[11px] text-oc-text-muted">
-                      Diff preview unavailable for this file in the current payload.
-                    </div>
-                  )}
+                        className="shrink-0"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5 text-oc-text-muted" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5 text-oc-text-muted" />
+                        )}
+                      </button>
+                    )}
+                    <FileText className="h-3.5 w-3.5 shrink-0 text-oc-text-muted" />
+                    <span className="text-xs font-mono text-oc-text truncate">{fileChange.file}</span>
+                  </button>
+
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {fileChange.added > 0 && (
+                      <span className="text-xs font-mono text-oc-green">
+                        +{fileChange.added}
+                      </span>
+                    )}
+                    {fileChange.deleted > 0 && (
+                      <span className="text-xs font-mono text-oc-red">
+                        -{fileChange.deleted}
+                      </span>
+                    )}
+                  </div>
                 </div>
-              ) : null}
-            </div>
-          );
-        })}
+
+                {isExpanded && hasPreview ? (
+                  <div className="border-t border-oc-border-soft-soft bg-oc-panel-soft/20">
+                    <ActivityDiffExcerpt
+                      excerpt={{
+                        header: fileChange.diffExcerpt?.header,
+                        lines: fileChange.diffExcerpt?.lines || [],
+                        added: fileChange.diffExcerpt?.added ?? fileChange.added,
+                        deleted: fileChange.diffExcerpt?.deleted ?? fileChange.deleted,
+                      }}
+                    />
+                  </div>
+                ) : isExpanded && !hasPreview ? (
+                  <div className="border-t border-oc-border-soft-soft px-2.5 py-2 text-xs text-oc-text-muted italic">
+                    Diff preview unavailable for this file in the current payload.
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {fileChanges.length > visibleChanges.length ? (
-        <div className="border-t border-oc-border/60 px-3 py-1.5 text-[10px] text-oc-text-muted">
+        <div className="border-t border-oc-border-soft/50 px-3 py-2 text-xs text-oc-text-muted text-center">
           Showing {visibleChanges.length} of {fileChanges.length} changed files
         </div>
       ) : null}
@@ -4082,19 +4157,19 @@ export function EmptyState() {
       </div>
       <div className="mt-6 flex flex-col items-center gap-2 text-oc-xs text-oc-text-soft opacity-70 font-mono">
         <span className="flex items-center gap-2">
-          <kbd className="rounded border border-oc-border bg-oc-panel-soft px-1.5 py-0.5 text-oc-2xs">
+          <kbd className="rounded border border-oc-border-soft bg-oc-panel-soft px-1.5 py-0.5 text-oc-2xs">
             Enter
           </kbd>
           send message
         </span>
         <span className="flex items-center gap-2">
-          <kbd className="rounded border border-oc-border bg-oc-panel-soft px-1.5 py-0.5 text-oc-2xs">
+          <kbd className="rounded border border-oc-border-soft bg-oc-panel-soft px-1.5 py-0.5 text-oc-2xs">
             @
           </kbd>
           mention files
         </span>
         <span className="flex items-center gap-2">
-          <kbd className="rounded border border-oc-border bg-oc-panel-soft px-1.5 py-0.5 text-oc-2xs">
+          <kbd className="rounded border border-oc-border-soft bg-oc-panel-soft px-1.5 py-0.5 text-oc-2xs">
             /
           </kbd>
           commands

@@ -603,3 +603,105 @@ test.describe('messageHandler - Server Error Handling', () => {
   });
 
 });
+
+test('dedupePlanProceedMessages checks all content fields', () => {
+  const dedupeFunctionBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function dedupePlanProceedMessages(messages: Message[]): Message[]'
+  );
+
+  assert.match(
+    dedupeFunctionBody,
+    /asString\(message\.content\)\s*\|\|\s*asString\(message\.text\)\s*\|\|\s*contentFromParts/,
+    'dedupePlanProceedMessages should check all content fields (content, text, parts)'
+  );
+});
+
+test('dedupePlanProceedMessages filters duplicates with content in text field', () => {
+  const dedupeFunctionBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function dedupePlanProceedMessages(messages: Message[]): Message[]'
+  );
+
+  assert.match(
+    dedupeFunctionBody,
+    /const\s+content\s*=\s*asString\(message\.content\)\s*\|\|\s*asString\(message\.text\)\s*\|\|\s*contentFromParts/,
+    'Should extract content from multiple fields'
+  );
+  assert.match(
+    dedupeFunctionBody,
+    /const\s+isPlanProceed\s*=\s*role\s*===\s*['"]user['"]\s*&&\s*\/\\bproceed\s+on\s+this\s+plan\\\.\/i/,
+    'Should detect plan proceed messages regardless of content field'
+  );
+});
+
+test('dedupePlanProceedMessages deduplicates messages with different additional content', () => {
+  const dedupeFunctionBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function dedupePlanProceedMessages(messages: Message[]): Message[]'
+  );
+
+  assert.match(
+    dedupeFunctionBody,
+    /const\s+planProceedMatch\s*=\s*content\.match\s*\(\s*\/\\bproceed\s+on\s+this\s+plan\\\.\/i\s*\)/,
+    'Should extract plan proceed signature using regex match'
+  );
+  assert.match(
+    dedupeFunctionBody,
+    /const\s+planProceedSignature\s*=\s*planProceedMatch\s*\?\s*planProceedMatch\[\s*0\s*\]\s*\.trim\(\)\s*\.toLowerCase\(\)/,
+    'Should normalize the matched signature to lowercase and trim'
+  );
+  assert.match(
+    dedupeFunctionBody,
+    /seenPlanProceedMessages\.has\s*\(\s*planProceedSignature\s*\)/,
+    'Should use extracted signature for deduplication check'
+  );
+});
+
+test('dedupePlanProceedMessages handles case variations', () => {
+  const dedupeFunctionBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function dedupePlanProceedMessages(messages: Message[]): Message[]'
+  );
+
+  assert.match(
+    dedupeFunctionBody,
+    /\[0\]\s*\.\s*trim\(\)\s*\.\s*toLowerCase\(\s*\)/,
+    'Should convert signature to lowercase for case-insensitive comparison'
+  );
+});
+
+test('extractInteractiveAnswerSignature handles Plan approved messages', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+extractInteractiveAnswerSignature/,
+    'extractInteractiveAnswerSignature function should be defined'
+  );
+  assert.match(
+    messageHandlerSource,
+    /\/\\bproceed\s+on\s+this\s+plan\\\.\/i\.test\s*\(\s*visibleText\s*\)/,
+    'Should check for "proceed on this plan." pattern in visible text'
+  );
+  assert.match(
+    messageHandlerSource,
+    /normalizeComparableText\s*\(\s*visibleText\.trim\(\)\s*\)/,
+    'Should return normalized text for Plan approved messages'
+  );
+});
+
+test('FileChangesSection uses regex test instead of includes', () => {
+  const messageComponentsSource = readSource(
+    [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
+    'MessageComponents.tsx'
+  );
+
+  // Verify that MessageComponents.tsx doesn't use String.includes() with regex arguments
+  // This would cause a TypeError: "First argument to String.prototype.includes must not be a regular expression"
+  // Pattern matches: .includes(  /  or .includes(/ where / starts a regex literal
+  const includesWithRegexPattern = /\.includes\s*\(\s*\//;
+  assert.doesNotMatch(
+    messageComponentsSource,
+    includesWithRegexPattern,
+    'MessageComponents should not use includes() with regex pattern (would cause TypeError)'
+  );
+});
