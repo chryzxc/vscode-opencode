@@ -11,6 +11,10 @@ const messageSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "MessageComponents.tsx")],
   "MessageComponents.tsx",
 );
+const panelSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "PanelComponents.tsx")],
+  "PanelComponents.tsx",
+);
 const typesSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "types.ts")],
   "types.ts",
@@ -113,11 +117,34 @@ test("question flow lock: streaming trust bit is defined and only elevated by ex
   );
 });
 
-test("question flow lock: interactive answer submission clears stale stream snapshots", () => {
+test("question flow lock: interactive answer submission freezes visible snapshot before reset", () => {
   assert.match(
     handlerSource,
-    /isLikelyInteractiveAnswerSubmissionMessage\(message\)[\s\S]*latestStreamingSnapshot = null;[\s\S]*SET_STREAMING[\s\S]*payload:\s*null/s,
-    "interactive answer submit should clear stale streaming snapshot/state before next assistant turn",
+    /isLikelyInteractiveAnswerSubmissionMessage\(message\)[\s\S]*interactiveResponseTransitionUntil = Date\.now\(\) \+ 15000[\s\S]*SET_INTERACTIVE_EVENTS[\s\S]*payload:\s*\[\]/s,
+    "interactive answer submit should only open the transition window and clear stale popover state",
+  );
+  assert.doesNotMatch(
+    handlerSource,
+    /isLikelyInteractiveAnswerSubmissionMessage\(message\)[\s\S]*persistStreamingSnapshotBeforeInteractivePause\(dispatch,\s*getState\)/s,
+    "interactive answer submit should not freeze a second assistant snapshot inside messageHandler",
+  );
+});
+
+test("question flow lock: interactive submit leaves assistant stream ownership to host flow", () => {
+  assert.match(
+    panelSource,
+    /IMPORTANT:\s*do not append optimistic assistant or user messages here\./s,
+    "popover submit should document that the host owns the canonical interactive turn transition",
+  );
+  assert.doesNotMatch(
+    panelSource,
+    /submitBatchResponses[\s\S]*type:\s*"SET_STREAMING"[\s\S]*payload:\s*null/s,
+    "popover submit should not locally clear streaming while the assistant block is still rendered",
+  );
+  assert.doesNotMatch(
+    panelSource,
+    /submitBatchResponses[\s\S]*type:\s*"SET_MESSAGES"/s,
+    "popover submit should not locally replace the message timeline during interactive answers",
   );
 });
 
@@ -134,11 +161,104 @@ test("question flow lock: messageResponse drops mismatched snapshots when final 
   );
 });
 
+test("question flow lock: interactive handoff abort errors are suppressed as expected transitions", () => {
+  assert.match(
+    handlerSource,
+    /function isLikelyInteractiveAbortHandoff\(/,
+    "message handler should classify expected interactive handoff abort errors",
+  );
+  assert.match(
+    handlerSource,
+    /const suppressAsAwaitingInteractive =[\s\S]*isLikelyInteractiveAwaitTimeout\(errorMsg\)[\s\S]*interactiveHandoffAbort/s,
+    "error handling should suppress timeout or aborted handoff errors during interactive transition windows",
+  );
+  assert.match(
+    handlerSource,
+    /if \(suppressAsAwaitingInteractive\) \{[\s\S]*SET_PROCESSING[\s\S]*FINISH_STREAMING[\s\S]*SET_STREAMING[\s\S]*payload:\s*null/s,
+    "suppressed interactive handoff errors should clear stale streaming state to avoid stuck partial assistant text",
+  );
+});
+
+test("question flow lock: blocking interactive stream paths freeze assistant snapshot before finishing stream", () => {
+  assert.match(
+    handlerSource,
+    /hasBlockingInteractiveEvents\(toolInteractiveEvents\)[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING/s,
+    "tool-question blocking path should finish the live stream without injecting a second assistant snapshot",
+  );
+  assert.match(
+    handlerSource,
+    /if \(hasBlockingInteractive\) \{[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING/s,
+    "structured/question blocking paths should finish the live stream directly",
+  );
+  assert.doesNotMatch(
+    handlerSource,
+    /hasBlockingInteractive[\s\S]*persistStreamingSnapshotBeforeInteractivePause\(dispatch,\s*getState\)/s,
+    "blocking interactive paths should not freeze an extra assistant snapshot before finish",
+  );
+});
+
+test("question flow lock: fixture timeline keeps optimistic answer bubble and clears stale partial stream text", () => {
+  assert.match(
+    panelSource,
+    /IMPORTANT:\s*do not append optimistic assistant or user messages here\.[\s\S]*host\/message handler owns the canonical turn transition/s,
+    "interactive submit should avoid local timeline rewrites so the rendered assistant block stays stable during handoff",
+  );
+  assert.match(
+    handlerSource,
+    /if \(suppressAsAwaitingInteractive\) \{[\s\S]*SET_PROCESSING[\s\S]*FINISH_STREAMING[\s\S]*break;/s,
+    "aborted interactive handoff should finish the stream without tearing down the assistant block immediately",
+  );
+});
+
 test("question flow lock: suppress stale popover re-show during interactive transition", () => {
   assert.match(
     handlerSource,
     /const suppressInteractiveReshow =[\s\S]*inInteractiveTransitionWindow[\s\S]*isLikelyInteractiveAnswerSubmissionMessage\(latestMessage\)[\s\S]*hasBlockingInteractiveEvents\(interactiveEvents\);/s,
     "messageResponse should suppress stale blocking interactive events during post-answer transition",
+  );
+});
+
+test("question flow lock: terminal finish strings trigger structured question handling", () => {
+  assert.match(
+    handlerSource,
+    /function isTerminalFinish\(value: unknown\): boolean \{[\s\S]*finish === "tool-calls"[\s\S]*finish === "error"/s,
+    "message handler should treat terminal finish reason strings as finalized responses",
+  );
+  assert.match(
+    handlerSource,
+    /const finish = isTerminalFinish\(\s*info \? \(info as UnknownRecord\)\.finish : undefined,\s*\);/s,
+    "message.updated should use terminal finish parsing so structured question payloads are processed",
+  );
+});
+
+test("question flow lock: hydration restores popover for unresolved question responses", () => {
+  assert.match(
+    handlerSource,
+    /function latestPendingInteractiveEventsFromHydration\(/,
+    "hydration should resolve pending interactive state through a dedicated selector",
+  );
+  assert.match(
+    handlerSource,
+    /const unresolvedAssistantTail = messages\.slice\(lastUserIndex \+ 1\);[\s\S]*if \(!isQuestionResponseMessage\(msg\)\) \{[\s\S]*continue;[\s\S]*synthesizeInteractiveEventsFromQuestionMessage\(msg\)/s,
+    "chatHistory hydration should prioritize the latest unresolved assistant question message after the last user turn",
+  );
+});
+
+test("question flow lock: lenient fallback reads info.structured question payloads during hydration", () => {
+  assert.match(
+    handlerSource,
+    /function rawStructuredFromMessageRecord\(/,
+    "message handler should expose a raw structured extractor for legacy/info.structured payloads",
+  );
+  assert.match(
+    handlerSource,
+    /const rawStructuredResponseType = asString\(rawStructured\?\.responseType\);/,
+    "interactive extraction should consult raw info.structured responseType when strict normalization fails",
+  );
+  assert.match(
+    handlerSource,
+    /if \(hasQuestionLikePayload\) \{[\s\S]*Lenient fallback for hydration\/debug payloads[\s\S]*type: "question"/s,
+    "interactive extraction should synthesize question events from raw question payloads even without strict schema pass",
   );
 });
 

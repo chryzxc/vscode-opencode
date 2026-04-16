@@ -83,6 +83,15 @@ function ChatContent() {
   const previousIsLoadingSessionRef = useRef(state.isLoadingSession);
   const previousReceivedInitStateRef = useRef(state.receivedInitState);
   const previousStreamingActiveRef = useRef(Boolean(state.streaming?.isActive));
+  // Throttle "unseen updates" increments while the user is scrolled away from the
+  // bottom. Stream events can arrive dozens of times per second, and incrementing
+  // this counter for every tick causes avoidable React work during manual scrolling.
+  const lastUnseenIncrementAtRef = useRef(0);
+  // Throttle follow-mode scroll writes to roughly one frame (33ms ~= 30fps).
+  // Writing scrollTop on every tiny stream mutation can fight user input and create
+  // visible hitching. A small throttle preserves "stick to bottom" behavior without
+  // overdriving layout/reflow during heavy token streams.
+  const lastFollowAutoScrollAtRef = useRef(0);
 
   const resolveAgentColor = (agentId?: string) => {
     if (!agentId) return "var(--oc-accent)";
@@ -123,7 +132,6 @@ function ChatContent() {
         if (root) {
           root.scrollTop = root.scrollHeight;
         }
-        messagesEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
       });
     }
 
@@ -210,44 +218,17 @@ function ChatContent() {
   }, []);
 
   useEffect(() => {
-    const root = messagesScrollRef.current;
-    if (!root) return;
-
-    let rafId: number | null = null;
-    const scheduleFollow = () => {
-      if (!streamViewportRef.current.isFollowing) {
-        return;
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
-        root.scrollTop = root.scrollHeight;
-      });
-    };
-
-    const observer = new MutationObserver(() => {
-      scheduleFollow();
-    });
-
-    observer.observe(root, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
-
-    return () => {
-      observer.disconnect();
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
     if (streamViewportRef.current.isFollowing) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      const root = messagesScrollRef.current;
+      if (root) {
+        const now = Date.now();
+        // Keep follow-mode pinned, but at a controlled cadence. This replaced a
+        // MutationObserver-per-change strategy that was too eager during streaming.
+        if (now - lastFollowAutoScrollAtRef.current >= 33) {
+          root.scrollTop = root.scrollHeight;
+          lastFollowAutoScrollAtRef.current = now;
+        }
+      }
       if (streamViewportRef.current.unseenUpdateCount > 0) {
         setStreamViewport((prev) =>
           prev.unseenUpdateCount === 0
@@ -259,9 +240,17 @@ function ChatContent() {
     }
 
     if (state.streaming?.isActive) {
+      const now = Date.now();
+      // When user is not following, we still surface activity via the "Jump to latest"
+      // badge. Throttle count updates so the badge reflects progress without creating
+      // a render storm on high-frequency stream bursts.
+      if (now - lastUnseenIncrementAtRef.current < 120) {
+        return;
+      }
+      lastUnseenIncrementAtRef.current = now;
       setStreamViewport((prev) => ({
         ...prev,
-        unseenUpdateCount: prev.unseenUpdateCount + 1,
+        unseenUpdateCount: Math.min(prev.unseenUpdateCount + 1, 999),
       }));
     }
   }, [state.messages, state.streaming]);
@@ -328,7 +317,10 @@ function ChatContent() {
 
   const jumpToLatest = () => {
     setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const root = messagesScrollRef.current;
+    if (root) {
+      root.scrollTop = root.scrollHeight;
+    }
   };
 
   return (
@@ -521,10 +513,12 @@ function ChatContent() {
       />
 
       {/* Session Modal */}
-      <SessionModal
-        isOpen={state.isSessionModalOpen}
-        onClose={() => dispatch({ type: "SET_SESSION_MODAL_OPEN", payload: false })}
-      />
+      {state.isSessionModalOpen ? (
+        <SessionModal
+          isOpen={state.isSessionModalOpen}
+          onClose={() => dispatch({ type: "SET_SESSION_MODAL_OPEN", payload: false })}
+        />
+      ) : null}
 
       {/* Quota Popover */}
       <QuotaPopover />

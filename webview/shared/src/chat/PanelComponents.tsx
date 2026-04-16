@@ -263,87 +263,6 @@ function isQuickInputInteractiveEvent(event: InteractiveEvent): boolean {
   );
 }
 
-function hasRenderableStreamingPayload(
-  streaming?: StreamingState | null,
-): boolean {
-  if (!streaming) {
-    return false;
-  }
-  if ((streaming.content || "").trim().length > 0) {
-    return true;
-  }
-  if ((streaming.reasoning || "").trim().length > 0) {
-    return true;
-  }
-  if (
-    Array.isArray(streaming.reasoningEvents) &&
-    streaming.reasoningEvents.length > 0
-  ) {
-    return true;
-  }
-  if (Array.isArray(streaming.steps) && streaming.steps.length > 0) {
-    return true;
-  }
-  if (
-    Array.isArray(streaming.progressEvents) &&
-    streaming.progressEvents.length > 0
-  ) {
-    return true;
-  }
-  if (Array.isArray(streaming.edits) && streaming.edits.length > 0) {
-    return true;
-  }
-  if (
-    Array.isArray(streaming.interactiveEvents) &&
-    streaming.interactiveEvents.length > 0
-  ) {
-    return true;
-  }
-  return false;
-}
-
-function buildAssistantMessageFromStreaming(streaming: StreamingState): Message {
-  const content = streaming.content || "";
-  const parts = content
-    ? [{ type: "text", text: content }]
-    : ([] as Message["parts"]);
-  const canonicalSteps =
-    Array.isArray(streaming.steps) && streaming.steps.length > 0
-      ? streaming.steps.map((step) => ({
-        id: step.id,
-        callID: step.callID,
-        type: step.type,
-        title: step.title,
-        status: step.status,
-        meta: step.meta,
-        diffStats: step.diffStats,
-        streamSeq: step.streamSeq,
-      }))
-      : [];
-
-  return {
-    id: streaming.messageId || undefined,
-    role: "assistant",
-    content,
-    parts,
-    interactiveEvents: Array.isArray(streaming.interactiveEvents)
-      ? streaming.interactiveEvents
-      : undefined,
-    reasoningEvents: streaming.reasoningEvents,
-    progressEvents: canonicalSteps,
-    steps: canonicalSteps,
-    edits: streaming.edits.map((file) => ({ file })),
-    info: {
-      id: streaming.messageId || undefined,
-      agent: streaming.agent,
-      model: streaming.model,
-      modelID: streaming.modelID,
-      providerID: streaming.providerID,
-      duration: streaming.usage?.duration,
-    },
-  };
-}
-
 export function StickyHeader() {
   const {
     currentSessionId,
@@ -2146,53 +2065,10 @@ export function InputWrapper() {
     // "Question N" and "Answer" labels remain visible after submit/hydration.
     const displayText = composedPrompt;
 
-    const nextMessages = [...messages];
-    let didAppendFrozenAssistant = false;
-    if (hasRenderableStreamingPayload(streaming)) {
-      const frozenAssistant = buildAssistantMessageFromStreaming(streaming!);
-      const frozenMessageId = frozenAssistant.info?.id || frozenAssistant.id;
-      const alreadyPresent = frozenMessageId
-        ? nextMessages.some(
-          (message) =>
-            (message.info?.id || message.id || null) === frozenMessageId,
-        )
-        : nextMessages.some((message) => {
-          const role = message.role || message.info?.role;
-          return (
-            role === "assistant" &&
-            (message.content || "").trim() ===
-            (frozenAssistant.content || "").trim() &&
-            (message.steps?.length || 0) ===
-            (frozenAssistant.steps?.length || 0) &&
-            (message.reasoningEvents?.length || 0) ===
-            (frozenAssistant.reasoningEvents?.length || 0)
-          );
-        });
-
-      if (!alreadyPresent) {
-        nextMessages.push(frozenAssistant);
-        didAppendFrozenAssistant = true;
-        if (currentSessionId) {
-          vscode.postMessage({
-            type: "persistAssistantMessage",
-            sessionId: currentSessionId,
-            message: frozenAssistant,
-          });
-        }
-      }
-    }
-
-    // IMPORTANT: do not append an optimistic local user message for interactive
-    // answers. The extension host is responsible for appending/persisting the
-    // canonical user message once it actually dispatches the prompt upstream.
-    // If we append here and host append also succeeds, the chat can duplicate.
-    // If host dispatch fails, optimistic-only messages vanish on refresh.
-    if (didAppendFrozenAssistant) {
-      dispatch({
-        type: "SET_MESSAGES",
-        payload: nextMessages,
-      });
-    }
+    // IMPORTANT: do not append optimistic assistant or user messages here.
+    // The host/message handler owns the canonical turn transition. Clearing or
+    // replacing local assistant state from this component can hide the already
+    // rendered assistant activity/subagent UI until the next stream update lands.
 
     // Dismiss all events that were part of this batch immediately to prevent stale popover UI.
     // Be defensive: some legacy/hydrated events may have missing/unstable IDs.
@@ -2223,7 +2099,6 @@ export function InputWrapper() {
       }),
     });
 
-    dispatch({ type: "SET_STREAMING", payload: null });
     // Don't show processing state immediately - let extension confirm when actually processing
     // This prevents UI from showing "stuck" loading state when request is delayed
     // dispatch({ type: "SET_PROCESSING", payload: true });
@@ -2800,17 +2675,6 @@ export function InputWrapper() {
                   Stop
                 </Button>
               ) : null}
-              {isAiResponding ? (
-                <Button
-                  variant="secondary"
-                  size="chip"
-                  onClick={steerPrompt}
-                  disabled={!inputValue.trim() || isSteering}
-                >
-                  <Zap className="h-3 w-3" />
-                  {isSteering ? "Steering..." : "Steer now"}
-                </Button>
-              ) : null}
               <Button
                 variant="send"
                 size="chip"
@@ -2822,7 +2686,7 @@ export function InputWrapper() {
                 ) : (
                   <Send className="h-3.5 w-3.5" />
                 )}
-                {isAiResponding ? "Queue" : "Send"}
+                "Send"
               </Button>
             </div>
           </div>

@@ -1125,7 +1125,80 @@ export class ChatViewProvider
       // Restore per-session agent / model / thinking selections
       await this.modelAndAgentManager.applySessionSettings(sessionId);
 
-      // Notify the webview of the restored selections for this session
+      // ============================================================================
+      // CRITICAL: Message Ordering for Session Switch
+      // ============================================================================
+      //
+      // PROBLEM: When switching sessions, if we send initState BEFORE chatHistory,
+      // the webview updates its currentSessionId to the new session ID. When the
+      // chatHistory message arrives later, the webview compares:
+      //   currentState.currentSessionId === chatHistorySessionId
+      // Both are the new session ID, so it thinks it's NOT a session switch and
+      // doesn't properly reload the conversation.
+      //
+      // SOLUTION: Send chatHistory BEFORE initState so:
+      // 1. chatHistory arrives with NEW session ID while webview still has OLD session ID
+      // 2. Webview detects the mismatch and properly handles session switch
+      // 3. initState arrives after and updates the session ID for subsequent operations
+      //
+      // See: webview/shared/src/chat/lib/messageHandler.ts case "chatHistory"
+      // Lines 8274-8278: Session switch detection logic
+      // ============================================================================
+
+      // Step 1: Load and process messages for the new session
+      const rawMessages = await this.sessionService.getMessages(sessionId);
+
+      this.logger.info('[handleLoadSession] Fetched raw messages', {
+        sessionId,
+        rawCount: rawMessages?.length || 0,
+        isRawMessagesArray: Array.isArray(rawMessages)
+      });
+
+      const messages = Array.isArray(rawMessages)
+        ? await this.processHistoryMessages(rawMessages, sessionId)
+        : [];
+
+      this.logger.info('[handleLoadSession] Processed messages', {
+        sessionId,
+        processedCount: messages.length,
+        willSendToWebview: true
+      });
+
+      // Step 2: Sync subagent state for the new session
+      const subagentSnapshotPayload =
+        await this.subagentPersistence.syncSubagentSnapshotForSession(
+          sessionId,
+          messages,
+        );
+      await this.compactionManager.sendPersistedCompactionViewState(sessionId);
+
+      // Step 3: Log diagnostic information for debugging
+      const planMessages = messages.filter((m: any) => m?.plan);
+      log.debug('Sending messages to webview', {
+        totalMessages: messages.length,
+        planMessagesCount: planMessages.length,
+        samplePlanMessage: planMessages[0] ? {
+          hasPlan: !!planMessages[0].plan,
+          planKeys: planMessages[0].plan ? Object.keys(planMessages[0].plan) : [],
+          planFile: planMessages[0].plan?.file,
+          planValue: planMessages[0].plan
+        } : null
+      });
+
+      // Step 4: Send chatHistory FIRST (before initState)
+      // This ensures the webview can detect the session switch properly
+      this.view?.webview.postMessage({
+        type: "chatHistory",
+        sessionId: sessionId,
+        messages: messages,
+      });
+      this.view?.webview.postMessage({
+        type: "subagentSnapshot",
+        ...subagentSnapshotPayload,
+      });
+
+      // Step 5: NOW send initState with the updated session ID
+      // This comes AFTER chatHistory so the session switch is already detected
       this.view?.webview.postMessage({
         type: "initState",
         serverStatus: this.serverManager.getStatus(),
@@ -1173,55 +1246,6 @@ export class ChatViewProvider
             // best-effort only
           }
         });
-
-      // Reload history for the new session
-      const rawMessages = await this.sessionService.getMessages(sessionId);
-
-      this.logger.info('[handleLoadSession] Fetched raw messages', {
-        sessionId,
-        rawCount: rawMessages?.length || 0,
-        isRawMessagesArray: Array.isArray(rawMessages)
-      });
-
-      const messages = Array.isArray(rawMessages)
-        ? await this.processHistoryMessages(rawMessages, sessionId)
-        : [];
-
-      this.logger.info('[handleLoadSession] Processed messages', {
-        sessionId,
-        processedCount: messages.length,
-        willSendToWebview: true
-      });
-
-      const subagentSnapshotPayload =
-        await this.subagentPersistence.syncSubagentSnapshotForSession(
-          sessionId,
-          messages,
-        );
-      await this.compactionManager.sendPersistedCompactionViewState(sessionId);
-
-      // DEBUG: Log messages before sending to webview
-      const planMessages = messages.filter((m: any) => m?.plan);
-      log.debug('Sending messages to webview', {
-        totalMessages: messages.length,
-        planMessagesCount: planMessages.length,
-        samplePlanMessage: planMessages[0] ? {
-          hasPlan: !!planMessages[0].plan,
-          planKeys: planMessages[0].plan ? Object.keys(planMessages[0].plan) : [],
-          planFile: planMessages[0].plan?.file,
-          planValue: planMessages[0].plan
-        } : null
-      });
-
-      this.view?.webview.postMessage({
-        type: "chatHistory",
-        sessionId: sessionId,
-        messages: messages,
-      });
-      this.view?.webview.postMessage({
-        type: "subagentSnapshot",
-        ...subagentSnapshotPayload,
-      });
 
       // Update the list selection
       await this.handleGetSessions();
@@ -2392,6 +2416,7 @@ export class ChatViewProvider
           try {
             const createdSession = await this.sessionService.createNewSession();
             this.currentSessionId = createdSession.id;
+            this.selectedAgent = "build";
             this.logger.info(`${LoggingCategories.UI_INTERACTION} New session created`, {
               correlationId,
               sessionId: createdSession.id,
@@ -2404,18 +2429,10 @@ export class ChatViewProvider
             // Clear in-memory todo cache for the newly created session.
             this.clearSessionTodos();
             this.subagentTracker.resetForSession(createdSession.id);
-            await this.clearPersistedSubagentSnapshot(createdSession.id);
             this.sendQueueUpdate(createdSession.id);
 
-            // Always use "build" as the default agent for new sessions
-            // This prevents new sessions from inheriting an agent that was
-            // selected in a previous session (e.g., "Sisyphus (Ultraworker)")
-            this.selectedAgent = "build";
-            await this.persistSessionSettings(createdSession.id, {
-              agent: "build",
-            });
-
-            await this.handleGetSessions(); // Update list
+            // Always use "build" as the default agent for new sessions.
+            // Apply this before refresh so the UI updates immediately.
             this.refreshView();
 
             // Clear webview messages
@@ -2427,6 +2444,30 @@ export class ChatViewProvider
               type: "subagentSnapshot",
               ...this.subagentTracker.getSnapshotPayload(),
             });
+
+            // Non-blocking follow-up work:
+            // - Persist per-session defaults
+            // - Clear persisted subagent snapshot
+            // - Refresh sessions list from server
+            void (async () => {
+              try {
+                await Promise.all([
+                  this.clearPersistedSubagentSnapshot(createdSession.id),
+                  this.persistSessionSettings(createdSession.id, {
+                    agent: "build",
+                  }),
+                ]);
+                await this.handleGetSessions(); // Update list
+              } catch (backgroundError) {
+                this.logger.warn("Post-create session sync failed", {
+                  sessionId: createdSession.id,
+                  error:
+                    backgroundError instanceof Error
+                      ? backgroundError.message
+                      : String(backgroundError),
+                });
+              }
+            })();
           } catch (error) {
             this.logger.error(
               `${LoggingCategories.UI_INTERACTION} Failed to create session`,

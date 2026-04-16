@@ -1429,7 +1429,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       // messageResponse/chatHistory explicitly clears it. This prevents the
       // streamed assistant content from disappearing between finish and finalize.
       if (!action.payload) {
+        // High-frequency stream paths may dispatch SET_PROCESSING(false) repeatedly.
+        // If we are already in the exact same "not processing/not steering" state,
+        // returning the existing object avoids a full tree rerender.
+        if (!state.isProcessing && !state.isSteering) {
+          return state;
+        }
         return { ...state, isProcessing: false, isSteering: false };
+      }
+      // Same principle for repeated SET_PROCESSING(true) events: preserve identity
+      // when there is no semantic state change.
+      if (state.isProcessing === action.payload) {
+        return state;
       }
       return { ...state, isProcessing: action.payload };
     case "SET_STEERING":
@@ -1500,15 +1511,26 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           : content.trim().length > 0
             ? Date.now()
             : undefined;
+      const hasRenderableContent =
+        state.streaming.hasRenderableContent ||
+        !!action.payload.renderable;
+      // Stream providers sometimes resend identical snapshots/chunks.
+      // If content/renderability metadata is unchanged, keep the same state
+      // reference so React can skip rerendering the chat tree.
+      if (
+        content === state.streaming.content &&
+        contentStartSeq === state.streaming.contentStartSeq &&
+        hasRenderableContent === state.streaming.hasRenderableContent
+      ) {
+        return state;
+      }
       return {
         ...state,
         streaming: {
           ...state.streaming,
           content,
           contentStartSeq,
-          hasRenderableContent:
-            state.streaming.hasRenderableContent ||
-            !!action.payload.renderable,
+          hasRenderableContent,
         },
       };
     }
@@ -1546,14 +1568,29 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           );
         }
       }
+      const inThoughtBlock =
+        action.payload.inThoughtBlock ?? state.streaming.inThoughtBlock;
+      const inReasoningPart =
+        action.payload.inReasoningPart ?? state.streaming.inReasoningPart;
+      // Reasoning updates are one of the hottest paths during streaming.
+      // Returning the current state on true no-op updates reduces commit pressure
+      // while preserving all behavior for real reasoning/flag changes.
+      if (
+        reasoning === state.streaming.reasoning &&
+        reasoningEvents === state.streaming.reasoningEvents &&
+        inThoughtBlock === state.streaming.inThoughtBlock &&
+        inReasoningPart === state.streaming.inReasoningPart
+      ) {
+        return state;
+      }
       return {
         ...state,
         streaming: {
           ...state.streaming,
           reasoning,
           reasoningEvents,
-          inThoughtBlock: action.payload.inThoughtBlock ?? state.streaming.inThoughtBlock,
-          inReasoningPart: action.payload.inReasoningPart ?? state.streaming.inReasoningPart,
+          inThoughtBlock,
+          inReasoningPart,
         },
       };
     }

@@ -209,14 +209,6 @@ function getSubagentAccentTextStyle(id: string): CSSProperties {
   };
 }
 
-function getSubagentMetaStyle(id: string): CSSProperties {
-  const hue = getSubagentHue(id);
-  return {
-    borderColor: `hsla(${hue}, 75%, 68%, 0.3)`,
-    backgroundColor: `hsla(${hue}, 72%, 56%, 0.08)`,
-  };
-}
-
 // Component to extract bash output from message content
 function TerminalBlockWithOutput({
   event,
@@ -1341,25 +1333,6 @@ function subagentStatusLabel(status: SubagentSummary["status"]): string {
   }
 }
 
-function subagentAgentLabel(
-  subagent: SubagentSummary,
-  detail?: SubagentDetail,
-): string {
-  // Try explicit agent ID first
-  if (subagent.agentId || detail?.agentId) {
-    return subagent.agentId || detail?.agentId || "Unknown Agent";
-  }
-
-  // For orphaned subagents, use childSessionId for unique identifier
-  if (subagent.childSessionId && subagent.status === 'orphaned') {
-    // Use last 8 chars of child session ID for a unique but readable identifier
-    return `Agent ${subagent.childSessionId.slice(-8)}`;
-  }
-
-  // Last resort: use first 4 chars of subagent ID
-  return `Agent ${subagent.id.slice(0, 4)}`;
-}
-
 function subagentModelLabel(
   subagent: SubagentSummary,
   detail?: SubagentDetail,
@@ -2290,9 +2263,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       setShowSubagents(true);
     }
   }, [streaming, subagents.length]);
-  const visibleSubagents = showAllSubagents
-    ? subagents
-    : subagents.slice(0, 10);
+  const visibleSubagents = (showAllSubagents ? subagents : subagents.slice(0, 10))
+    .filter((subagent: SubagentSummary) => subagent.status !== 'orphaned');
 
   useEffect(() => {
     if (subagents.length === 0) {
@@ -2738,7 +2710,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 {timelineDisplayEvents.length > 0 && (
                   <>
                     <Stepper
-                      className="oc-refined-stepper max-h-[400px] overflow-y-auto pl-2"
+                      className="oc-refined-stepper max-h-[400px] overflow-y-auto"
                       ref={progressTimelineRef}
                       autoScrollToBottom={isStreamingActive}
                     >
@@ -2923,7 +2895,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     </Stepper>
 
                     {showThinkingPlaceholder && !hasThinkingEvents && (
-                      <Stepper className="mt-2 max-h-[120px] overflow-y-auto pl-1 font-sans text-[12px]">
+                      <Stepper className="mt-2 max-h-[120px] overflow-y-auto font-sans text-[12px]">
                         <StepperItem
                           isLast={true}
                           indicator={
@@ -3021,13 +2993,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       const detail = subagentDetailsById[subagent.id] as
                         | SubagentDetail
                         | undefined;
-                      const agentLabel = subagentAgentLabel(subagent, detail);
                       const modelInfo = subagentModelLabel(subagent, detail);
                       const cardStyle = getSubagentCardStyle(subagent.id);
                       const accentTextStyle = getSubagentAccentTextStyle(
                         subagent.id,
                       );
-                      const metaStyle = getSubagentMetaStyle(subagent.id);
                       const statusText =
                         subagentStatusLabel(subagent.status) || "Pending";
                       const activityText =
@@ -3064,7 +3034,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                 )}
                               </div>
                               <span className="truncate text-oc-xs font-semibold text-oc-text-soft">
-                                {agentLabel}
+                                {modelInfo}
                               </span>
                             </div>
                             <span className="font-mono text-oc-2xs text-oc-text-muted">
@@ -3072,13 +3042,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                             </span>
                           </div>
                           <div className="mt-1 flex min-w-0 items-center gap-1.5">
-                            <span
-                              className="truncate rounded-sm border px-1 py-0.5 font-mono text-[10px] leading-none text-oc-text-soft"
-                              style={metaStyle}
-                              title={modelInfo}
-                            >
-                              {modelInfo}
-                            </span>
                             <span className="text-[10px] font-medium text-oc-text-muted">
                               {statusText}
                             </span>
@@ -3379,7 +3342,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 timelineEvents: [],
               } as SubagentDetail);
             const providerLabel = subagentModelLabel(selected, detailData);
-            const displayTitle = subagentAgentLabel(selected, detailData);
+            const displayTitle = providerLabel; // Use provider/model instead of agent name
 
             return (
               <SubagentDetailModal

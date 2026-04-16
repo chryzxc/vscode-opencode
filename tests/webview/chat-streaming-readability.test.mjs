@@ -72,8 +72,13 @@ test('ChatShell implements smart auto-follow pause and jump-to-latest control', 
   );
   assert.match(
     chatShellSource,
-    /new MutationObserver\(/,
-    'chat shell should observe DOM mutations so follow-mode stays pinned while streaming cards expand',
+    /lastFollowAutoScrollAtRef/,
+    'chat shell should track a throttled follow timestamp to avoid per-mutation scroll churn',
+  );
+  assert.match(
+    chatShellSource,
+    /now - lastFollowAutoScrollAtRef\.current >= 33/,
+    'chat shell should throttle follow-mode scroll writes during streaming',
   );
   assert.match(
     chatShellSource,

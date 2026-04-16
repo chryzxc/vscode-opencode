@@ -403,18 +403,21 @@ test('chatHistory filters normalized messages', () => {
   );
 });
 
-test('chatHistory dispatches CLEAR_MESSAGES before SET_MESSAGES', () => {
-  // Verify the dispatch order: CLEAR_MESSAGES comes before SET_MESSAGES
-  const clearMessagesIndex = messageHandlerSource.indexOf('dispatch({ type: "CLEAR_MESSAGES" })');
-  const setMessagesIndex = messageHandlerSource.indexOf('dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages })');
-
-  assert.ok(
-    clearMessagesIndex > 0 && setMessagesIndex > 0,
-    'Both CLEAR_MESSAGES and SET_MESSAGES should be dispatched in chatHistory'
+test('chatHistory avoids clearing already-rendered messages during active processing hydration', () => {
+  assert.match(
+    messageHandlerSource,
+    /const isActiveSessionHydrationDuringProcessing =[\s\S]*currentState\.messages\.length > 0[\s\S]*currentState\.streaming/s,
+    'chatHistory should detect active-session in-flight hydration updates',
   );
-  assert.ok(
-    clearMessagesIndex < setMessagesIndex,
-    'CLEAR_MESSAGES should be dispatched before SET_MESSAGES'
+  assert.match(
+    messageHandlerSource,
+    /if \(!isActiveSessionHydrationDuringProcessing\) \{[\s\S]*SET_STREAMING[\s\S]*SET_PROCESSING/s,
+    'chatHistory should only clear stream/loading state when not in active in-flight hydration',
+  );
+  assert.match(
+    messageHandlerSource,
+    /if \(!isActiveSessionHydrationDuringProcessing\) \{[\s\S]*SET_MESSAGES[\s\S]*\} else \{[\s\S]*stabilizedHydratedMessages = currentState\.messages;/s,
+    'chatHistory should preserve currently rendered messages instead of replacing them with stale snapshots mid-stream',
   );
 });
 
@@ -434,11 +437,73 @@ test('initState starts session loading during first startup hydration for existi
   );
 });
 
+test('initState uses startup loading placeholder when active session id is not yet known', () => {
+  assert.match(
+    messageHandlerSource,
+    /STARTUP_SESSION_LOADING_ID\s*=\s*["']__startup__["']/,
+    'messageHandler should define a startup loading placeholder id'
+  );
+
+  assert.match(
+    messageHandlerSource,
+    /case\s+["']initState["']\s*:\s*case\s+["']init["']\s*:[\s\S]*if\s*\(\s*sessionId\s*\)[\s\S]*else\s*\{[\s\S]*type:\s*["']START_SESSION_LOADING["'][\s\S]*sessionId:\s*STARTUP_SESSION_LOADING_ID/s,
+    'initState should start temporary startup loading when sessionId is missing'
+  );
+});
+
 test('chatHistory always clears session loading after hydration', () => {
   assert.match(
     messageHandlerSource,
     /case\s+['"]chatHistory['"]\s*:[\s\S]*dispatch\(\{\s*type:\s*["']SET_MESSAGES["'][\s\S]*dispatch\(\{\s*type:\s*["']END_SESSION_LOADING["']\s*\}\)/s,
     'chatHistory should clear loading after setting hydrated messages'
+  );
+});
+
+test('sessionsList clears startup placeholder loading when no active session exists', () => {
+  assert.match(
+    messageHandlerSource,
+    /case\s+["']sessionsList["']\s*:[\s\S]*if\s*\(\s*currentSessionId\s*\)[\s\S]*else\s*\{[\s\S]*loadingSessionId\s*===\s*STARTUP_SESSION_LOADING_ID[\s\S]*dispatch\(\{\s*type:\s*["']END_SESSION_LOADING["']\s*\}\)/s,
+    'sessionsList should clear startup loading when startup resolves to no active session'
+  );
+});
+
+test('startup sequence keeps loading UI until history hydration completes', () => {
+  const initStateCaseIndex = messageHandlerSource.indexOf('case "initState":');
+  const resolvedSessionLoadingIndex = messageHandlerSource.indexOf(
+    'title: existingSession?.title || sessionId',
+    initStateCaseIndex,
+  );
+  const startupPlaceholderIndex = messageHandlerSource.indexOf(
+    'sessionId: STARTUP_SESSION_LOADING_ID',
+    initStateCaseIndex,
+  );
+  const loadingTitleIndex = messageHandlerSource.indexOf(
+    'title: "Loading session"',
+    startupPlaceholderIndex,
+  );
+  const chatHistoryCaseIndex = messageHandlerSource.indexOf('case "chatHistory":');
+  const endLoadingAfterHistoryIndex = messageHandlerSource.indexOf(
+    'dispatch({ type: "END_SESSION_LOADING" });',
+    chatHistoryCaseIndex,
+  );
+
+  assert.ok(initStateCaseIndex >= 0, 'initState handler should exist');
+  assert.ok(
+    resolvedSessionLoadingIndex > initStateCaseIndex,
+    'initState should support resolved loading state when session id becomes available',
+  );
+  assert.ok(
+    startupPlaceholderIndex > initStateCaseIndex,
+    'initState should support startup placeholder loading when session id is initially unknown',
+  );
+  assert.ok(
+    loadingTitleIndex > startupPlaceholderIndex,
+    'startup placeholder loading should include a loading title',
+  );
+  assert.ok(chatHistoryCaseIndex > initStateCaseIndex, 'chatHistory handler should exist after initState logic');
+  assert.ok(
+    endLoadingAfterHistoryIndex > chatHistoryCaseIndex,
+    'chatHistory should end loading only after hydration path is processed',
   );
 });
 

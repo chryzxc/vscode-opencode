@@ -105,3 +105,14 @@ test('chat shell wires inbound webview message handling', () => {
     'ChatContent must clean up the window message listener',
   );
 });
+
+test('chat shell only renders EmptyState after initState is received', () => {
+  const source = getChatShellSource();
+  const contentBody = getNamedFunctionBody(source, 'function ChatContent()');
+
+  assert.match(
+    contentBody,
+    /state\.messages\.length\s*===\s*0[\s\S]*state\.receivedInitState[\s\S]*<EmptyState\s*\/>/s,
+    'EmptyState should be gated by receivedInitState to avoid startup flicker before hydration starts',
+  );
+});

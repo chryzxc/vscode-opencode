@@ -292,7 +292,7 @@ test('streaming assistant body renders only after trusted renderable content is 
   );
   assert.match(
     storeSource,
-    /hasRenderableContent:\s*state\.streaming\.hasRenderableContent[\s\S]*\|\|[\s\S]*!!action\.payload\.renderable/s,
+    /const hasRenderableContent =[\s\S]*state\.streaming\.hasRenderableContent[\s\S]*!!action\.payload\.renderable/s,
     'UPDATE_STREAMING_CONTENT should only mark renderable content via explicit trusted writes',
   );
   assert.match(
@@ -339,8 +339,18 @@ test('input wrapper preserves rendered assistant turn before clearing streaming 
   );
   assert.match(
     panelSource,
-    /function buildAssistantMessageFromStreaming\([\s\S]*interactiveEvents:\s*Array\.isArray\(streaming\.interactiveEvents\)/s,
-    'frozen assistant snapshot should preserve interactiveEvents before streaming is cleared',
+    /function buildAssistantMessageFromStreaming\([\s\S]*interactiveEvents:[\s\S]*streaming\.interactiveEvents[\s\S]*interactiveFallback/s,
+    'frozen assistant snapshot should preserve or backfill interactiveEvents before streaming is cleared',
+  );
+  assert.match(
+    panelSource,
+    /const frozenId = streaming\.messageId \|\| `interactive-frozen-\$\{Date\.now\(\)\}`;/,
+    'frozen assistant snapshot should always mint a concrete id when stream messageId is missing',
+  );
+  assert.match(
+    panelSource,
+    /const alreadyPresent = frozenMessageId[\s\S]*:\s*false;/s,
+    'interactive freeze should avoid fuzzy global duplicate matching that can drop visible assistant turns',
   );
 });
 
