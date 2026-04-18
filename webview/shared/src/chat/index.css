@@ -2813,7 +2813,7 @@ body {
 
 .oc-metrics-rail {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: flex-end;
   gap: 0.4rem;
@@ -2823,7 +2823,7 @@ body {
 .oc-metrics-rail-primary,
 .oc-metrics-rail-secondary {
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.35rem;
 }
@@ -2871,6 +2871,7 @@ body {
 @media (max-width: 900px) {
   .oc-metrics-rail {
     width: 100%;
+    flex-wrap: wrap;
     justify-content: flex-start;
     row-gap: 0.35rem;
   }
@@ -2878,6 +2879,7 @@ body {
   .oc-metrics-rail-primary,
   .oc-metrics-rail-secondary {
     width: 100%;
+    flex-wrap: wrap;
   }
 
   .oc-token-chip {

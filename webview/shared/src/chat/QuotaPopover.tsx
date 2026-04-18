@@ -332,10 +332,7 @@ export function QuotaPopover() {
           )}
         </div>
 
-        {/* Footer */}
-        <div className="px-3 py-2 border-t border-oc-border text-[10px] text-center text-[var(--oc-text-soft)] opacity-70 font-mono">
-          <span>◆</span>
-        </div>
+
       </div>
     </div>
   );
