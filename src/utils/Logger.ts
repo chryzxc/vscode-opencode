@@ -29,6 +29,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 
 /**
  * Log level severity enumeration.
@@ -115,17 +116,26 @@ class Logger {
     const minLevel = this.parseLogLevel(levelStr);
 
     const enableConsole = config.get<boolean>("enableConsole", true);
-    const enableFile = config.get<boolean>("enableFile", false);
+    let enableFile = config.get<boolean>("enableFile", false);
 
     let logDir: string;
     if (this.context) {
       logDir = path.join(this.context.globalStorageUri.fsPath, "logs");
     } else {
-      logDir = path.join(process.cwd(), "logs");
+      // Fallback to home directory logs if context not available yet
+      // This avoids trying to create /logs at filesystem root
+      logDir = path.join(os.homedir(), ".opencode", "logs");
     }
 
-    if (!fs.existsSync(logDir)) {
-      fs.mkdirSync(logDir, { recursive: true });
+    // Only create directory if file logging is enabled
+    if (enableFile && !fs.existsSync(logDir)) {
+      try {
+        fs.mkdirSync(logDir, { recursive: true });
+      } catch (error) {
+        console.warn(`Failed to create log directory ${logDir}:`, error);
+        // Disable file logging if directory creation fails
+        enableFile = false;
+      }
     }
     const logFilePath = path.join(logDir, "opencode.log");
 

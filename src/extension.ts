@@ -118,7 +118,11 @@ export async function activate(context: vscode.ExtensionContext) {
     sessionService = new SessionService(context, serverManager);
     statusBarProvider = new StatusBarProvider(serverManager);
     skillManagementService = new SkillManagementService(context);
-    await skillManagementService.initialize();
+    
+    // Initialize skill management in the background (don't block extension activation)
+    skillManagementService.initialize().catch((error) => {
+      log.warn("Failed to initialize skill management service", { error });
+    });
 
     context.subscriptions.push(
       serverManager.onStatusChange(() => {
@@ -518,7 +522,26 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const config = vscode.workspace.getConfiguration("opencode");
     if (config.get("autoStart", true)) {
-      await serverManager.ensureRunning();
+      log.info("Auto-starting OpenCode server...");
+      try {
+        await serverManager.ensureRunning();
+        log.info("OpenCode server started successfully");
+      } catch (serverError) {
+        log.error(
+          "Failed to auto-start server (extension will continue with degraded functionality)",
+          { error: serverError },
+          serverError instanceof Error ? serverError : undefined,
+        );
+        // Show user-friendly message about server not being available
+        vscode.window.showWarningMessage(
+          "OpenCode server failed to start. Make sure 'opencode' CLI is installed (npm install -g opencode-ai).",
+          "Install Guide"
+        ).then((choice) => {
+          if (choice === "Install Guide") {
+            vscode.env.openExternal(vscode.Uri.parse("https://github.com/opencode-ai/opencode"));
+          }
+        });
+      }
     }
 
     log.info("OpenCode extension activated successfully");
@@ -527,6 +550,9 @@ export async function activate(context: vscode.ExtensionContext) {
       "Extension activation failed",
       { error },
       error instanceof Error ? error : undefined,
+    );
+    vscode.window.showErrorMessage(
+      `OpenCode extension activation failed: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 }

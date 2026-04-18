@@ -541,7 +541,6 @@ export class OpencodeServerManager {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       const spawnOptions: cp.SpawnOptions = {
         stdio: ["ignore", "pipe", "pipe"], // stdin ignored, stdout/stderr piped
-        shell: true, // Use shell for better cross-platform compatibility
       };
 
       if (workspaceFolder && workspaceFolder.uri.scheme === "file") {
@@ -549,15 +548,30 @@ export class OpencodeServerManager {
         log.info("Server CWD set", { cwd: spawnOptions.cwd });
       }
 
-      // Step 3: Spawn the OpenCode CLI server process
+      // Step 3: Find the full path to opencode binary
+      // On macOS/Linux, use 'which' to resolve the binary path for more reliable spawning
+      // This avoids PATH resolution issues in VS Code's extension host environment
+      let opencodeBinary = "opencode";
+      try {
+        const whichResult = cp.execSync("which opencode", { encoding: "utf-8" }).trim();
+        if (whichResult) {
+          opencodeBinary = whichResult;
+          log.debug("Resolved opencode binary path", { path: opencodeBinary });
+        }
+      } catch (error) {
+        log.debug("Could not resolve opencode path via 'which', will try direct spawn", { error });
+        // Fall back to direct spawn with "opencode"
+      }
+
+      // Step 4: Spawn the OpenCode CLI server process
       const spawnedProcess = cp.spawn(
-        "opencode",
+        opencodeBinary,
         ["serve", "--port", this.port.toString()],
         spawnOptions,
       );
       this.serverProcess = spawnedProcess;
 
-      // Step 4: Monitor stdout for server ready indicator
+      // Step 5: Monitor stdout for server ready indicator
       // The server prints "Server running" or "listening" when ready
       spawnedProcess.stdout?.on("data", (data) => {
         if (this.serverProcess !== spawnedProcess) {
@@ -620,11 +634,11 @@ export class OpencodeServerManager {
         if (exitedPort > 0) {
           void this.persistManagedPort(0);
         }
+        const recentTail = recentServerOutput.trim().slice(-800);
+        const details = recentTail ? ` Recent output: ${recentTail}` : "";
         this.setStatus(code === 0 ? "idle" : "error", recentTail ? `Server exited with code ${code}${details}` : undefined);
 
         if (!serverReady) {
-          const recentTail = recentServerOutput.trim().slice(-800);
-          const details = recentTail ? ` Recent output: ${recentTail}` : "";
           settleReject(
             new Error(
               `OpenCode server exited before ready (code ${code}).${details}`,
@@ -644,13 +658,13 @@ export class OpencodeServerManager {
         }
       });
 
-      // Step 5: Timeout after 10 seconds
+      // Step 6: Timeout after 10 seconds
       // If server doesn't become ready within 10 seconds, fail fast
       startupTimeout = setTimeout(() => {
         if (!serverReady) {
-          this.setStatus("error", recentTail ? `Server startup timeout${details}` : undefined);
           const recentTail = recentServerOutput.trim().slice(-800);
           const details = recentTail ? ` Recent output: ${recentTail}` : "";
+          this.setStatus("error", recentTail ? `Server startup timeout${details}` : undefined);
           settleReject(new Error(`Server startup timeout.${details}`));
         }
       }, 10000);
