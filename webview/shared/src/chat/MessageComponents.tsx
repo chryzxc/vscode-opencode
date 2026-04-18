@@ -3351,7 +3351,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                 )} */}
 
-              {hasRawResponseDebug && (
+              {/* Temporarily hidden: Raw Response Debug Component */}
+              {/*hasRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
                   className={
@@ -3369,7 +3370,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     {rawResponseText}
                   </pre>
                 </div>
-              )}
+              )*/}
 
             </section>
           )}
