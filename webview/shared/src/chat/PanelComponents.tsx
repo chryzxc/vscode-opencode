@@ -1537,9 +1537,8 @@ export function InputWrapper() {
     executingQueueSessionIds,
   );
 
-  // Single derived state for AI actively responding
-  // This uses the EXACT same logic as ChatShell.tsx to ensure perfect consistency
-  // The Stop button visibility should match when AI is actually responding
+  // Stop button only visible when AI is responding AND input is empty
+  // Send button icon reflects: Send icon when idle/input has value, AlertCircle when responding with input
   const isAiResponding = isProcessing;
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -2545,7 +2544,7 @@ export function InputWrapper() {
 
             {/* Right: action buttons */}
             <div className="oc-toolbar-right">
-              {isAiResponding ? (
+              {isAiResponding && inputValue.trim().length === 0 ? (
                 <Button
                   variant="destructive"
                   size="chip"
@@ -2556,19 +2555,23 @@ export function InputWrapper() {
                   Stop
                 </Button>
               ) : null}
-              <Button
-                variant="send"
-                size="chip"
-                onClick={sendPrompt}
-                disabled={isSteering}
-              >
-                {isAiResponding ? (
-                  <AlertCircle className="h-3.5 w-3.5" />
-                ) : (
-                  <Send className="h-3.5 w-3.5" />
-                )}
-                "Send"
-              </Button>
+              {!isAiResponding || inputValue.trim().length > 0 ? (
+                <Button
+                  variant="send"
+                  size="chip"
+                  onClick={sendPrompt}
+                  disabled={isSteering}
+                >
+                  {!isAiResponding ? (
+                    <Send className="h-3.5 w-3.5" />
+                  ) : inputValue.trim().length > 0 ? (
+                    <AlertCircle className="h-3.5 w-3.5" />
+                  ) : (
+                    <Send className="h-3.5 w-3.5" />
+                  )}
+                  Send
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>

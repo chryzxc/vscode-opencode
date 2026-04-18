@@ -2460,7 +2460,66 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const cacheRead = cache?.read ?? 0;
   const cacheWrite = cache?.write ?? 0;
   const duration = getDuration(message, streaming);
-  const hasTokens = inputTok > 0 || outputTok > 0 || reasoningTok > 0;
+  const hasMetrics =
+    inputTok > 0 ||
+    outputTok > 0 ||
+    reasoningTok > 0 ||
+    cacheRead > 0 ||
+    cacheWrite > 0 ||
+    typeof duration === "number";
+  const tokenMetricChips = [
+    {
+      key: "prompt",
+      label: "prompt",
+      value: inputTok,
+      dotClassName: "bg-oc-yellow",
+      emphasis: "primary" as const,
+      tier: "primary" as const,
+      visible: inputTok > 0,
+    },
+    {
+      key: "response",
+      label: "response",
+      value: outputTok,
+      dotClassName: "bg-oc-accent",
+      emphasis: "primary" as const,
+      tier: "primary" as const,
+      visible: outputTok > 0,
+    },
+    {
+      key: "reasoning",
+      label: "reasoning",
+      value: reasoningTok,
+      dotClassName: "bg-oc-amber-custom",
+      emphasis: "muted" as const,
+      tier: "secondary" as const,
+      visible: reasoningTok > 0,
+    },
+    {
+      key: "cache-read",
+      label: "cache read",
+      value: cacheRead,
+      dotClassName: "bg-oc-green",
+      emphasis: "subtle" as const,
+      tier: "secondary" as const,
+      visible: cacheRead > 0,
+    },
+    {
+      key: "cache-write",
+      label: "cache write",
+      value: cacheWrite,
+      dotClassName: "bg-oc-orange",
+      emphasis: "subtle" as const,
+      tier: "secondary" as const,
+      visible: cacheWrite > 0,
+    },
+  ].filter((chip) => chip.visible);
+  const primaryMetricChips = tokenMetricChips.filter(
+    (chip) => chip.tier === "primary",
+  );
+  const secondaryMetricChips = tokenMetricChips.filter(
+    (chip) => chip.tier === "secondary",
+  );
   const showThinkingPlaceholder =
     !streaming && thoughtItems.length === 0 && reasoningTok > 0;
   const thinkingPlaceholderText =
@@ -2678,87 +2737,69 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       )}
                     </div>
                   </div>
-                  {hasTokens && (
-                    <div className="oc-msg-token-chips flex min-w-0 flex-wrap items-center gap-2 text-[11px] sm:ml-auto sm:text-[12px]">
-                      {/* Prompt - Uses existing oc-yellow for warmth */}
-                      <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
-                        <div className="h-1 w-1 rounded-full bg-oc-yellow" />
-                        <div className="flex items-baseline gap-1">
-                          <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
-                            prompt
-                          </span>
-                          <span className="font-mono font-medium text-oc-text tabular-nums">
-                            {inputTok.toLocaleString()}
-                          </span>
-                        </div>
+                  {hasMetrics && (
+                    <div className="oc-metrics-rail sm:ml-auto">
+                      <div className="oc-metrics-rail-primary" role="list" aria-label="Primary response metrics">
+                        {primaryMetricChips.map((chip) => (
+                          <div
+                            key={chip.key}
+                            role="listitem"
+                            className={cn(
+                              "oc-token-chip group/token relative inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-all duration-200",
+                              chip.emphasis === "primary"
+                                ? "border-oc-border bg-oc-panel"
+                                : chip.emphasis === "subtle"
+                                  ? "border-oc-border-soft bg-oc-panel-soft"
+                                  : "border-oc-border-soft-soft bg-oc-panel-soft",
+                            )}
+                            title={`${chip.label}: ${chip.value.toLocaleString()} tokens`}
+                          >
+                            <div className={cn("h-1.5 w-1.5 rounded-full", chip.dotClassName)} />
+                            <span className="oc-token-chip-label text-[10px] uppercase tracking-[0.11em] text-oc-text-muted">
+                              {chip.label}
+                            </span>
+                            <span className="oc-token-chip-value font-mono font-semibold text-oc-text tabular-nums">
+                              {chip.value.toLocaleString()}
+                            </span>
+                          </div>
+                        ))}
                       </div>
 
-                      {/* Response - Uses oc-accent for primary action */}
-                      <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
-                        <div className="h-1 w-1 rounded-full bg-oc-accent" />
-                        <div className="flex items-baseline gap-1">
-                          <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
-                            response
-                          </span>
-                          <span className="font-mono font-medium text-oc-text tabular-nums">
-                            {outputTok.toLocaleString()}
-                          </span>
-                        </div>
+                      <div className="oc-metrics-rail-secondary" role="list" aria-label="Secondary response metrics">
+                        {secondaryMetricChips.map((chip) => (
+                          <div
+                            key={chip.key}
+                            role="listitem"
+                            className={cn(
+                              "oc-token-chip oc-token-chip-secondary group/token relative inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-all duration-200",
+                              chip.emphasis === "subtle"
+                                ? "border-oc-border-soft bg-oc-panel-soft"
+                                : "border-oc-border-soft-soft bg-oc-panel-soft",
+                            )}
+                            title={`${chip.label}: ${chip.value.toLocaleString()} tokens`}
+                          >
+                            <div className={cn("h-1.5 w-1.5 rounded-full", chip.dotClassName)} />
+                            <span className="oc-token-chip-label text-[10px] uppercase tracking-[0.11em] text-oc-text-muted">
+                              {chip.label}
+                            </span>
+                            <span className="oc-token-chip-value font-mono font-semibold text-oc-text tabular-nums">
+                              {chip.value.toLocaleString()}
+                            </span>
+                          </div>
+                        ))}
+
+                        {typeof duration === "number" && (
+                          <div
+                            className="oc-token-chip oc-token-chip-duration inline-flex items-center gap-1.5 rounded-full border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1 transition-all duration-200"
+                            title={`Duration: ${duration.toFixed(1)} seconds`}
+                          >
+                            <Clock className="h-3 w-3 text-oc-text-muted opacity-80" />
+                            <span className="oc-token-chip-value font-mono font-semibold text-oc-text-muted tabular-nums">
+                              {duration.toFixed(1)}s
+                            </span>
+                          </div>
+                        )}
                       </div>
-
-                      {reasoningTok > 0 && (
-                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
-                          <div className="h-1 w-1 rounded-full bg-oc-amber-custom" />
-                          <div className="flex items-baseline gap-1">
-                            <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
-                              reasoning
-                            </span>
-                            <span className="font-mono font-medium text-oc-text tabular-nums">
-                              {reasoningTok.toLocaleString()}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-
-                      {cacheRead > 0 && (
-                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
-                          <div className="h-1 w-1 rounded-full bg-oc-green" />
-                          <div className="flex items-baseline gap-1">
-                            <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
-                              cache read
-                            </span>
-                            <span className="font-mono font-medium text-oc-text tabular-nums">
-                              {cacheRead.toLocaleString()}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-
-                      {cacheWrite > 0 && (
-                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200 cursor-help">
-                          <div className="h-1 w-1 rounded-full bg-oc-orange" />
-                          <div className="flex items-baseline gap-1">
-                            <span className="text-[10px] uppercase tracking-wide text-oc-text-muted">
-                              cache write
-                            </span>
-                            <span className="font-mono font-medium text-oc-text tabular-nums">
-                              {cacheWrite.toLocaleString()}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-
-                      {typeof duration === "number" && (
-                        <div className="group/token relative inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border border-oc-border-soft bg-oc-panel-soft hover:bg-oc-panel transition-all duration-200">
-                          <svg className="h-3 w-3 text-oc-text-muted opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <circle cx="12" cy="12" r="10" />
-                            <path d="M12 6v6l4 2" />
-                          </svg>
-                          <span className="font-mono text-oc-text-muted tabular-nums">
-                            {duration.toFixed(1)}s
-                          </span>
-                        </div>
-                      )}
                     </div>
                   )}
                 </>
