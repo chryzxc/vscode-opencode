@@ -162,6 +162,59 @@ function reducer(state, action) {
                 promptQueue: [...state.promptQueue, action.payload],
             };
 
+        case "ADD_TO_LOCAL_QUEUE": {
+            const item = action.payload;
+            const sessionId = item.sessionId || state.currentSessionId;
+            if (!sessionId) return state;
+            const alreadyExists = state.promptQueue.some(q => q.id === item.id);
+            if (alreadyExists) return state;
+            const nextBySession = { ...state.queueBySessionId };
+            nextBySession[sessionId] = [...(nextBySession[sessionId] || []), item];
+            const updatedQueue = sessionId === state.currentSessionId
+                ? [...state.promptQueue, item]
+                : state.promptQueue;
+            return {
+                ...state,
+                queueBySessionId: nextBySession,
+                promptQueue: updatedQueue,
+                isQueueOpen: true,
+            };
+        }
+
+        case "SET_QUEUE": {
+            const targetSessionId = action.payload.sessionId;
+            if (!targetSessionId) return state;
+            const sessionQueue = action.payload.queue.filter(
+                (item) => !targetSessionId || item.sessionId === targetSessionId
+            );
+            const nextBySession = { ...state.queueBySessionId };
+            if (sessionQueue.length > 0) {
+                nextBySession[targetSessionId] = sessionQueue;
+            } else {
+                delete nextBySession[targetSessionId];
+            }
+            return {
+                ...state,
+                queueBySessionId: nextBySession,
+                promptQueue: targetSessionId === state.currentSessionId
+                    ? sessionQueue
+                    : state.promptQueue,
+            };
+        }
+
+        case "SET_QUEUE_OPEN":
+            return { ...state, isQueueOpen: action.payload };
+
+        case "SET_EXECUTING_QUEUE": {
+            const next = new Set(state.executingQueueSessionIds);
+            if (action.payload.executing) {
+                next.add(action.payload.sessionId);
+            } else {
+                next.delete(action.payload.sessionId);
+            }
+            return { ...state, executingQueueSessionIds: next };
+        }
+
         case "REMOVE_FROM_QUEUE":
             return {
                 ...state,
@@ -948,6 +1001,87 @@ describe("Store/Reducer Logic Tests", () => {
             state = reducer(state, { type: "SET_PROCESSING", payload: false });
             assert.strictEqual(state.promptQueue.length, 0);
             assert.strictEqual(state.isProcessing, false);
+        });
+
+        it("should handle SET_QUEUE drain from backend — items removed one by one", () => {
+            let state = { ...initialState, currentSessionId: "s-1" };
+
+            const item1 = { id: "q-1", text: "Msg 1", sessionId: "s-1", createdAt: 1 };
+            const item2 = { id: "q-2", text: "Msg 2", sessionId: "s-1", createdAt: 2 };
+            const item3 = { id: "q-3", text: "Msg 3", sessionId: "s-1", createdAt: 3 };
+
+            // Backend sends full queue
+            state = reducer(state, {
+                type: "SET_QUEUE",
+                payload: { sessionId: "s-1", queue: [item1, item2, item3] },
+            });
+            assert.strictEqual(state.promptQueue.length, 3);
+
+            // After first item dispatched, backend sends updated queue with remaining items
+            state = reducer(state, {
+                type: "SET_QUEUE",
+                payload: { sessionId: "s-1", queue: [item2, item3] },
+            });
+            assert.strictEqual(state.promptQueue.length, 2);
+            assert.strictEqual(state.promptQueue[0].id, "q-2");
+
+            // After second item dispatched
+            state = reducer(state, {
+                type: "SET_QUEUE",
+                payload: { sessionId: "s-1", queue: [item3] },
+            });
+            assert.strictEqual(state.promptQueue.length, 1);
+
+            // After last item dispatched — empty queue
+            state = reducer(state, {
+                type: "SET_QUEUE",
+                payload: { sessionId: "s-1", queue: [] },
+            });
+            assert.strictEqual(state.promptQueue.length, 0);
+        });
+
+        it("should handle ADD_TO_LOCAL_QUEUE optimistic add and SET_QUEUE reconciliation", () => {
+            let state = { ...initialState, currentSessionId: "s-1" };
+
+            const optimisticItem = {
+                id: "pending-123",
+                text: "My queued message",
+                sessionId: "s-1",
+                createdAt: Date.now(),
+            };
+
+            // User sends while processing — optimistic local add
+            state = reducer(state, { type: "ADD_TO_LOCAL_QUEUE", payload: optimisticItem });
+            assert.strictEqual(state.promptQueue.length, 1);
+            assert.strictEqual(state.promptQueue[0].id, "pending-123");
+            assert.strictEqual(state.isQueueOpen, true);
+
+            // Backend confirms with authoritative data (different id, same text)
+            const backendItem = { id: "q-1", text: "My queued message", sessionId: "s-1", createdAt: Date.now() };
+            state = reducer(state, {
+                type: "SET_QUEUE",
+                payload: { sessionId: "s-1", queue: [backendItem] },
+            });
+            assert.strictEqual(state.promptQueue.length, 1);
+            assert.strictEqual(state.promptQueue[0].id, "q-1");
+
+            // Backend drains — item sent
+            state = reducer(state, {
+                type: "SET_QUEUE",
+                payload: { sessionId: "s-1", queue: [] },
+            });
+            assert.strictEqual(state.promptQueue.length, 0);
+        });
+
+        it("should deduplicate ADD_TO_LOCAL_QUEUE by id", () => {
+            let state = { ...initialState, currentSessionId: "s-1" };
+
+            const item = { id: "dup-1", text: "Msg", sessionId: "s-1", createdAt: Date.now() };
+            state = reducer(state, { type: "ADD_TO_LOCAL_QUEUE", payload: item });
+            assert.strictEqual(state.promptQueue.length, 1);
+
+            state = reducer(state, { type: "ADD_TO_LOCAL_QUEUE", payload: item });
+            assert.strictEqual(state.promptQueue.length, 1);
         });
     });
 

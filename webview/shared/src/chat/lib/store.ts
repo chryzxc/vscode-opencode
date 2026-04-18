@@ -169,6 +169,7 @@ export type AppAction =
   }
   | { type: "SET_EXECUTING_QUEUE"; payload: { sessionId: string; executing: boolean } }
   | { type: "SET_QUEUE_OPEN"; payload: boolean }
+  | { type: "ADD_TO_LOCAL_QUEUE"; payload: QueueItem }
   | { type: "SET_SIDEBAR_OPEN"; payload: boolean }
   | { type: "SET_SESSION_MODAL_OPEN"; payload: boolean }
   | { type: "SET_QUOTA_POPOVER_OPEN"; payload: boolean }
@@ -1732,6 +1733,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "SET_QUEUE_OPEN":
       return { ...state, isQueueOpen: action.payload };
+    case "ADD_TO_LOCAL_QUEUE": {
+      const item = action.payload;
+      const sessionId = item.sessionId || state.currentSessionId;
+      if (!sessionId) return state;
+      const alreadyExists = state.promptQueue.some(q => q.id === item.id);
+      if (alreadyExists) return state;
+      const nextBySession = { ...state.queueBySessionId };
+      nextBySession[sessionId] = [...(nextBySession[sessionId] || []), item];
+      const updatedQueue = sessionId === state.currentSessionId
+        ? [...state.promptQueue, item]
+        : state.promptQueue;
+      return {
+        ...state,
+        queueBySessionId: nextBySession,
+        promptQueue: updatedQueue,
+        isQueueOpen: true,
+      };
+    }
     case "SET_SIDEBAR_OPEN":
       return { ...state, isSidebarOpen: action.payload };
     case "SET_SESSION_MODAL_OPEN":

@@ -47,12 +47,12 @@ test('chat flow handles paste attachments and queued sends while processing', ()
   assert.match(inputBody, /type:\s*["']REMOVE_ATTACHMENT["']/, 'attachment chips must support removing individual attachments');
 });
 
-test('queue row actions switch between steer and send-now based on processing state', () => {
+test('queue row supports removing queued items and auto-executes after response', () => {
   const queueBody = extractFunctionBody(panelSource, 'export function QueueContainer()');
 
-  assert.match(queueBody, /type:\s*["']steerQueuedItem["']/, 'Queue row action should steer queued item when processing');
-  assert.match(queueBody, /type:\s*["']sendQueuedItemNow["']/, 'Queue row action should send queued item immediately when idle');
-  assert.match(queueBody, /type:\s*["']removeFromQueue["']/, 'Queue row should still support removing queued item');
+  assert.match(queueBody, /type:\s*["']removeFromQueue["']/, 'Queue row should support removing queued item');
+  assert.match(queueBody, /type:\s*["']clearQueue["']/, 'Queue should support clearing all items');
+  assert.match(queueBody, /Pending|sending after response/, 'Queue should indicate pending status and auto-execution');
 });
 
 test('message thread renders user and assistant content including image thumbnails', () => {

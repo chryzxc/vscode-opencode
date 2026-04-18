@@ -1400,9 +1400,6 @@ export function AgentDropdown() {
 export function QueueContainer() {
   const {
     promptQueue,
-    isQueueOpen,
-    isExecutingQueue: isExecutingQueueGlobal,
-    executingQueueSessionIds,
     processingSessionIds,
     isProcessing: globalIsProcessing,
     isSteering,
@@ -1416,40 +1413,7 @@ export function QueueContainer() {
     processingSessionIds,
   );
 
-  const isExecutingQueue = isExecutingQueueInCurrentSession(
-    isExecutingQueueGlobal,
-    currentSessionId,
-    executingQueueSessionIds,
-  );
-  const [expandedQueueItemId, setExpandedQueueItemId] = useState<string | null>(
-    null,
-  );
-
-  // Only render when there are queued items
   if (promptQueue.length === 0) return null;
-
-  const runQueuedItem = (item: (typeof promptQueue)[number], index: number) => {
-    const itemSessionId = item.sessionId;
-    if (!itemSessionId) return;
-
-    if (isProcessing) {
-      dispatch({ type: "SET_STEERING", payload: true });
-      vscode.postMessage({
-        type: "steerQueuedItem",
-        sessionId: itemSessionId,
-        id: item.id,
-        index,
-      });
-      return;
-    }
-
-    vscode.postMessage({
-      type: "sendQueuedItemNow",
-      sessionId: itemSessionId,
-      id: item.id,
-      index,
-    });
-  };
 
   const removeQueuedItem = (
     item: (typeof promptQueue)[number],
@@ -1466,167 +1430,73 @@ export function QueueContainer() {
   };
 
   return (
-    <div className="mx-[0.625rem] overflow-hidden rounded-xl rounded-b-none border border-b-0 border-oc-border bg-oc-panel">
-      {/* Collapsible header - always visible when items exist */}
-      <div className="flex items-center justify-between px-3 py-2 transition-colors hover:bg-oc-panel-soft">
-        <button
-          type="button"
-          className="flex items-center gap-2"
-          onClick={() =>
-            dispatch({ type: "SET_QUEUE_OPEN", payload: !isQueueOpen })
-          }
-          aria-expanded={isQueueOpen}
-          aria-label={
-            isQueueOpen ? "Collapse queue panel" : "Expand queue panel"
-          }
-        >
+    <div className="mx-[0.625rem] space-y-1.5 overflow-hidden rounded-xl rounded-b-none border border-b-0 border-oc-border bg-oc-panel p-2">
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-2">
           <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-oc-text-muted">
-            Queue
+            Pending
           </span>
           <span className="rounded-full bg-oc-accent-soft px-1.5 py-0.5 font-mono text-[9px] font-bold text-oc-accent">
             {promptQueue.length}
           </span>
-          {isQueueOpen ? (
-            <ChevronDown className="h-3.5 w-3.5 text-oc-text-muted" />
-          ) : (
-            <ChevronUp className="h-3.5 w-3.5 text-oc-text-muted" />
-          )}
-        </button>
-        {isQueueOpen && (
-          <button
-            type="button"
-            className="rounded px-1.5 py-0.5 font-mono text-[10px] text-oc-red transition-colors hover:bg-[rgba(248,81,73,0.12)]"
-            title="Clear all queued prompts"
-            onClick={() => {
-              if (!currentSessionId) return;
-              vscode.postMessage({
-                type: "clearQueue",
-                sessionId: currentSessionId,
-              });
-            }}
-          >
-            Clear all
-          </button>
-        )}
-      </div>
-
-      {/* Expanded list */}
-      {isQueueOpen && (
-        <div className="border-t border-oc-border">
-          <div className="max-h-48 space-y-2 overflow-y-auto p-2">
-            {promptQueue.map((item, index) => {
-              const itemSessionId = item.sessionId;
-              const isExpanded = expandedQueueItemId === item.id;
-
-              return (
-                <div
-                  key={item.id || `${item.text}-${index}`}
-                  className="rounded-xl border border-oc-border bg-oc-bg-soft px-2.5 py-2"
-                >
-                  <div className="flex items-start gap-2.5">
-                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-oc-border text-oc-text-muted">
-                      <ChevronRight className="h-3 w-3" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div
-                        className={`${isExpanded ? "whitespace-pre-wrap" : "line-clamp-2"} font-mono text-[11px] text-[var(--oc-text-soft)]`}
-                      >
-                        {item.text || "(empty)"}
-                      </div>
-                      {(item.files?.length || item.contexts?.length) && (
-                        <div className="mt-1.5 flex items-center gap-2 font-mono text-[9px] text-oc-text-muted">
-                          {item.files?.length ? (
-                            <span>
-                              {item.files.length} file
-                              {item.files.length > 1 ? "s" : ""}
-                            </span>
-                          ) : null}
-                          {item.contexts?.length ? (
-                            <span>
-                              {item.contexts.length} context
-                              {item.contexts.length > 1 ? "s" : ""}
-                            </span>
-                          ) : null}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Button
-                        type="button"
-                        variant="queue"
-                        size="chip"
-                        className="h-6 px-2 text-[10px]"
-                        title={
-                          isProcessing
-                            ? "Steer this queued prompt now"
-                            : "Send this queued prompt now"
-                        }
-                        disabled={
-                          !itemSessionId || isSteering || isExecutingQueue
-                        }
-                        onClick={() => runQueuedItem(item, index)}
-                      >
-                        {isProcessing ? (
-                          <Zap className="mr-1 h-3 w-3" />
-                        ) : (
-                          <Send className="mr-1 h-3 w-3" />
-                        )}
-                        {isProcessing
-                          ? isSteering
-                            ? "Steering..."
-                            : "Steer"
-                          : "Send"}
-                      </Button>
-                      <button
-                        type="button"
-                        className="rounded-md p-1.5 text-oc-text-muted transition-colors hover:bg-[rgba(248,81,73,0.12)] hover:text-oc-red disabled:cursor-not-allowed disabled:opacity-50"
-                        title="Remove from queue"
-                        disabled={
-                          !itemSessionId || isSteering || isExecutingQueue
-                        }
-                        onClick={() => removeQueuedItem(item, index)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md p-1.5 text-oc-text-muted transition-colors hover:bg-oc-panel-soft hover:text-oc-text-soft"
-                        title={isExpanded ? "Show less" : "Show more"}
-                        onClick={() =>
-                          setExpandedQueueItemId((currentId) =>
-                            currentId === item.id ? null : item.id,
-                          )
-                        }
-                      >
-                        <MoreHorizontal className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="flex items-center justify-between border-t border-oc-border px-3 py-2">
-            <span className="font-mono text-[10px] text-oc-text-muted">
-              {promptQueue.length} queued
-            </span>
-            <Button
-              className="oc-queue-btn h-6 text-[10px]"
-              variant="secondary"
-              size="sm"
-              disabled={isExecutingQueue || isSteering || !currentSessionId}
-              onClick={() =>
-                vscode.postMessage({
-                  type: "executeQueue",
-                  sessionId: currentSessionId,
-                })
-              }
-            >
-              <Play className="mr-1 h-3 w-3" /> Execute All
-            </Button>
-          </div>
+          <span className="text-[10px] text-oc-text-muted">
+            {isProcessing ? "· sending after response" : ""}
+          </span>
         </div>
-      )}
+        <button
+          type="button"
+          className="rounded px-1.5 py-0.5 font-mono text-[10px] text-oc-red transition-colors hover:bg-[rgba(248,81,73,0.12)]"
+          title="Clear all pending prompts"
+          onClick={() => {
+            if (!currentSessionId) return;
+            vscode.postMessage({
+              type: "clearQueue",
+              sessionId: currentSessionId,
+            });
+          }}
+        >
+          Clear all
+        </button>
+      </div>
+      {promptQueue.map((item, index) => {
+        const itemSessionId = item.sessionId;
+        return (
+          <div
+            key={item.id || `${item.text}-${index}`}
+            className="group flex items-start gap-2 rounded-lg border border-oc-border bg-oc-bg-soft px-2.5 py-1.5"
+          >
+            <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-oc-accent-soft">
+              <span className="font-mono text-[8px] font-bold text-oc-accent">
+                {index + 1}
+              </span>
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="line-clamp-2 font-mono text-[11px] text-[var(--oc-text-soft)]">
+                {item.text || "(empty)"}
+              </div>
+              {(item.files?.length || item.contexts?.length) ? (
+                <div className="mt-0.5 flex items-center gap-2 font-mono text-[9px] text-oc-text-muted">
+                  {item.files?.length ? (
+                    <span>{item.files.length} file{item.files.length > 1 ? "s" : ""}</span>
+                  ) : null}
+                  {item.contexts?.length ? (
+                    <span>{item.contexts.length} ctx</span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              className="mt-0.5 shrink-0 rounded-md p-1 text-oc-text-muted opacity-0 transition-all group-hover:opacity-100 hover:bg-[rgba(248,81,73,0.12)] hover:text-oc-red disabled:opacity-50"
+              title="Remove from queue"
+              disabled={!itemSessionId || isSteering}
+              onClick={() => removeQueuedItem(item, index)}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1893,6 +1763,7 @@ export function InputWrapper() {
     const text = inputValue.trim();
     if (!text) return;
     if (isProcessing) {
+      const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       vscode.postMessage({
         type: "addToQueue",
         ...(currentSessionId ? { sessionId: currentSessionId } : {}),
@@ -1902,7 +1773,18 @@ export function InputWrapper() {
         agent: selectedAgent || null,
         images: attachments || [],
       });
-      dispatch({ type: "SET_QUEUE_OPEN", payload: true });
+      dispatch({
+        type: "ADD_TO_LOCAL_QUEUE",
+        payload: {
+          id: optimisticId,
+          sessionId: currentSessionId || "",
+          createdAt: Date.now(),
+          text,
+          files: selectedFiles.length > 0 ? [...selectedFiles] : undefined,
+          contexts: selectedContexts.length > 0 ? [...selectedContexts] : undefined,
+          agent: selectedAgent || undefined,
+        },
+      });
       dispatch({ type: "SET_INPUT_VALUE", payload: "" });
       dispatch({ type: "CLEAR_ATTACHMENTS" });
       setSlashTrigger(null);
@@ -1949,7 +1831,6 @@ export function InputWrapper() {
       agent: selectedAgent || null,
       images: attachments || [],
     });
-    dispatch({ type: "SET_QUEUE_OPEN", payload: true });
     dispatch({ type: "SET_INPUT_VALUE", payload: "" });
     dispatch({ type: "CLEAR_ATTACHMENTS" });
     setSlashTrigger(null);

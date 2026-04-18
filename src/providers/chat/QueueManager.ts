@@ -134,7 +134,8 @@ export class QueueManager {
    * Execute queue with logging
    */
   async executeQueue(
-    executePrompt: (prompt: QueuedPrompt) => Promise<void>
+    executePrompt: (prompt: QueuedPrompt) => Promise<void>,
+    onItemCompleted?: () => void,
   ): Promise<void> {
     if (this.queue.length === 0) {
       this.logger.debug('Execute queue called with empty queue', {
@@ -154,6 +155,7 @@ export class QueueManager {
       queueSize: this.queue.length,
     });
     const startTime = Date.now();
+    const totalCount = this.queue.length;
 
     this.logger.logStateChange('queue-executing', false, true, 'execute-queue-start');
     this.isExecuting = true;
@@ -161,18 +163,22 @@ export class QueueManager {
     try {
       this.logger.info('Starting queue execution', {
         correlationId,
-        promptCount: this.queue.length,
+        promptCount: totalCount,
       });
 
       let completedCount = 0;
       let failedCount = 0;
 
-      for (const prompt of this.queue) {
+      while (this.queue.length > 0) {
+        const prompt = this.queue.shift()!;
+
         this.logger.featureStep(correlationId, 'execute-prompt', {
           promptId: prompt.id,
           position: completedCount + 1,
-          total: this.queue.length,
+          total: totalCount,
         });
+
+        onItemCompleted?.();
 
         try {
           await executePrompt(prompt);
@@ -202,20 +208,18 @@ export class QueueManager {
       const duration = Date.now() - startTime;
 
       this.logger.performance('execute-queue', duration, {
-        totalPrompts: this.queue.length,
+        totalPrompts: totalCount,
         completedPrompts: completedCount,
         failedPrompts: failedCount,
       });
 
       this.logger.info('Queue execution completed', {
         correlationId,
-        totalPrompts: this.queue.length,
+        totalPrompts: totalCount,
         completedCount,
         failedCount,
         duration,
       });
-
-      this.queue = [];
 
       this.logger.endFeatureFlow(correlationId, {
         success: true,
@@ -271,12 +275,21 @@ export class QueueManager {
   /**
    * Get queue state
    */
-  getQueueState(): { size: number; isExecuting: boolean; prompts: Array<{ id: string; text: string }> } {
-    return {
-      size: this.queue.length,
-      isExecuting: this.isExecuting,
-      prompts: this.queue.map(p => ({ id: p.id, text: p.text.slice(0, 50) })),
-    };
+  /**
+   * Returns the full queue item array for serialization to the webview.
+   * The webview QueueItem type expects: { id, sessionId, createdAt, text, files?, contexts?, images?, agent? }.
+   * Images (base64 dataUrls) are omitted to avoid ballooning the postMessage payload.
+   */
+  getQueueState(): Array<Record<string, unknown>> {
+    return this.queue.map(p => ({
+      id: p.id,
+      sessionId: p.sessionId,
+      createdAt: p.createdAt,
+      text: p.text,
+      files: p.files,
+      contexts: p.contexts,
+      agent: p.agent,
+    }));
   }
 
   /**
@@ -433,29 +446,32 @@ export class QueueManager {
       prompt.sessionId = sessionId;
     }
 
-    // Execute queue
-    await this.executeQueue(async (prompt) => {
-      await this.handleSendMessage(
-        prompt.text,
-        prompt.files,
-        prompt.contexts,
-        prompt.images,
-        prompt.agent,
-        false,
-        undefined,
-        false,
-        undefined,
-        prompt.userFacingText,
-      );
-    });
+    // Execute queue — send queue update after each item so the webview
+    // can remove it from the pending stack in real time.
+    await this.executeQueue(
+      async (prompt) => {
+        await this.handleSendMessage(
+          prompt.text,
+          prompt.files,
+          prompt.contexts,
+          prompt.images,
+          prompt.agent,
+          false,
+          undefined,
+          false,
+          undefined,
+          prompt.userFacingText,
+        );
+      },
+      () => {
+        this.sendQueueUpdate(sessionId);
+      },
+    );
 
     this.logger.info('Queue execution completed', {
       sessionId,
       itemsExecuted: queueSize,
     });
     this.logger.endFeatureFlow(flow, { status: 'completed', itemsExecuted: queueSize });
-
-    // Send update after execution
-    this.sendQueueUpdate(sessionId);
   }
 }
