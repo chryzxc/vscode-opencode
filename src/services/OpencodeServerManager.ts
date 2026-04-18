@@ -1051,7 +1051,7 @@ export class OpencodeServerManager {
         this._lastError = undefined;
       }
 
-      log.logStateChange('server_status', oldStatus, status, 'setStatus', { error });
+      log.logStateChange('server_status', oldStatus, status, 'setStatus');
       log.debug("Server status changed", { oldStatus, newStatus: status, error });
       this._onStatusChange.fire(status);
     }
