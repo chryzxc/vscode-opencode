@@ -120,7 +120,7 @@ test('Assistant responses include dedicated enter transition classes', () => {
   assert.match(chatCssSource, /\.oc-assistant-streaming-enter\s*\{[\s\S]*assistant-streaming-in/, 'chat css should define animation for streaming assistant responses');
 });
 
-test('assistant header is responsive on small screens for agent/model/tokens row', () => {
+test('assistant header is responsive on small screens for agent/model/metrics rail', () => {
   assert.match(
     messageSource,
     /mb-2\.5 flex flex-wrap items-start justify-between gap-2/,
@@ -128,8 +128,18 @@ test('assistant header is responsive on small screens for agent/model/tokens row
   );
   assert.match(
     messageSource,
-    /oc-msg-token-chips flex min-w-0 flex-wrap items-center gap-2 text-\[11px\] sm:ml-auto sm:text-\[12px\]/,
-    'token row should wrap with compact typography and shift right on larger screens',
+    /oc-metrics-rail sm:ml-auto/,
+    'metrics rail should align to the right on wider screens',
+  );
+  assert.match(
+    messageSource,
+    /oc-metrics-rail-primary[\s\S]*Primary response metrics[\s\S]*oc-metrics-rail-secondary[\s\S]*Secondary response metrics/s,
+    'assistant header should expose the two-tier primary/secondary metrics rail',
+  );
+  assert.match(
+    chatCssSource,
+    /@media \(max-width: 900px\) \{[\s\S]*\.oc-metrics-rail \{[\s\S]*width: 100%;[\s\S]*justify-content: flex-start;[\s\S]*\.oc-metrics-rail-primary,[\s\S]*\.oc-metrics-rail-secondary \{[\s\S]*width: 100%;/s,
+    'metrics rail should stack and left-align on narrower screens',
   );
 });
 

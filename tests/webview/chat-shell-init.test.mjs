@@ -106,13 +106,13 @@ test('chat shell wires inbound webview message handling', () => {
   );
 });
 
-test('chat shell only renders EmptyState after initState is received', () => {
+test('chat shell renders EmptyState only when the timeline is actually empty', () => {
   const source = getChatShellSource();
   const contentBody = getNamedFunctionBody(source, 'function ChatContent()');
 
   assert.match(
     contentBody,
-    /state\.messages\.length\s*===\s*0[\s\S]*state\.receivedInitState[\s\S]*<EmptyState\s*\/>/s,
-    'EmptyState should be gated by receivedInitState to avoid startup flicker before hydration starts',
+    /state\.messages\.length === 0[\s\S]*!state\.streaming[\s\S]*!isAiResponding[\s\S]*<EmptyState\s*\/>/s,
+    'EmptyState should render only when there are no real messages and no active stream',
   );
 });

@@ -273,7 +273,7 @@ test("handleStreamEvent 'start' case dispatches SET_STREAMING with all required 
     assert.ok(body, 'handleStreamEvent must exist');
     const startCaseIndex = body.indexOf("case 'start':");
     assert.ok(startCaseIndex >= 0, "start case must exist in switch");
-    const startCaseBody = body.slice(startCaseIndex, startCaseIndex + 2000);
+    const startCaseBody = body.slice(startCaseIndex, startCaseIndex + 4500);
     assert.match(
         startCaseBody,
         /SET_STREAMING/,

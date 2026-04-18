@@ -331,26 +331,21 @@ test('input wrapper renders top popup choices and posts sendMessage', () => {
   assert.match(inputBody, /type:\s*"sendMessage"/, 'popup choice clicks should post sendMessage');
 });
 
-test('input wrapper preserves rendered assistant turn before clearing streaming on interactive submit', () => {
+test('input wrapper leaves rendered assistant turn ownership to the host on interactive submit', () => {
   assert.match(
     panelSource,
-    /function hasRenderableStreamingPayload\([\s\S]*streaming\.interactiveEvents[\s\S]*return true/s,
-    'streaming snapshot should be considered renderable when it only carries interactive events',
+    /IMPORTANT:\s*do not append optimistic assistant or user messages here\.[\s\S]*host\/message handler owns the canonical turn transition/s,
+    'interactive submit should document that host-side state owns the rendered assistant turn transition',
   );
-  assert.match(
+  assert.doesNotMatch(
     panelSource,
-    /function buildAssistantMessageFromStreaming\([\s\S]*interactiveEvents:[\s\S]*streaming\.interactiveEvents[\s\S]*interactiveFallback/s,
-    'frozen assistant snapshot should preserve or backfill interactiveEvents before streaming is cleared',
+    /submitBatchResponses[\s\S]*type:\s*"SET_STREAMING"[\s\S]*payload:\s*null/s,
+    'interactive submit should not clear streaming locally while the rendered assistant turn is still owned by host state',
   );
-  assert.match(
+  assert.doesNotMatch(
     panelSource,
-    /const frozenId = streaming\.messageId \|\| `interactive-frozen-\$\{Date\.now\(\)\}`;/,
-    'frozen assistant snapshot should always mint a concrete id when stream messageId is missing',
-  );
-  assert.match(
-    panelSource,
-    /const alreadyPresent = frozenMessageId[\s\S]*:\s*false;/s,
-    'interactive freeze should avoid fuzzy global duplicate matching that can drop visible assistant turns',
+    /submitBatchResponses[\s\S]*type:\s*"SET_MESSAGES"/s,
+    'interactive submit should not rewrite the message timeline locally and risk duplicate or vanishing turns',
   );
 });
 
@@ -382,8 +377,8 @@ test('interactive batch payload includes user-facing display text for persistenc
   );
   assert.match(
     submitBatchBody,
-    /IMPORTANT:\s*do not append an optimistic local user message for interactive[\s\S]*host append also succeeds,\s*the chat can duplicate[\s\S]*host dispatch fails,\s*optimistic-only messages vanish on refresh/s,
-    'interactive submit should avoid optimistic local user message append to prevent duplicate/vanishing history',
+    /IMPORTANT:\s*do not append optimistic assistant or user messages here\.[\s\S]*rendered assistant activity\/subagent UI until the next stream update lands\./s,
+    'interactive submit should avoid optimistic local timeline rewrites because host state owns persistence and rendered assistant continuity',
   );
   assert.match(
     submitBatchBody,
@@ -397,8 +392,8 @@ test('interactive batch payload includes user-facing display text for persistenc
   );
   assert.match(
     submitBatchBody,
-    /type:\s*"SET_INTERACTIVE_EVENTS"[\s\S]*type:\s*"SET_STREAMING"[\s\S]*type:\s*"sendMessage"/s,
-    'interactive submit should clear popover/streaming state before posting sendMessage',
+    /type:\s*"SET_INTERACTIVE_EVENTS"[\s\S]*type:\s*"sendMessage"/s,
+    'interactive submit should clear stale popover state before posting sendMessage without locally tearing down streaming',
   );
 });
 

@@ -140,14 +140,33 @@ test('stepper is rendered directly in simplified container', () => {
     );
 });
 
-test('activity section no longer has nested div structure', () => {
-    // Check that the old complex nested structure is removed
-    // The old structure had a header div with justify-between and a separate stepper container div
-    assert.doesNotMatch(
-        messageComponentsSource,
-        /flex flex-wrap items-center justify-between gap-2 px-3 py-2\.5.*border-t border-oc-border/s,
-        'Activity section should not have the old nested header + container structure',
-    );
+test('activity section now uses compact metrics rail instead of header', () => {
+  // Old activity section with header + count badges has been removed
+  // New structure: compact metrics rail with two-tier (primary + secondary) tokens
+  
+  assert.match(
+    messageComponentsSource,
+    /data-assistant-section=["']activity["']/,
+    'Activity section should expose a secondary activity section',
+  );
+  
+   assert.doesNotMatch(
+    messageComponentsSource,
+    /const\s+MAX_VISIBLE_COMPLETED_ACTIVITY\s*=\s*5/,
+    'Condensed threshold constant should not exist (feature removed)',
+  );
+  
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /flex flex-wrap items-center justify-between.*activityStatusCounts/,
+    'Old header with status counts has been removed',
+  );
+  
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /text-oc-accent.*activityStatusCounts/,
+    'Old pending/done count badges have been removed',
+  );
 });
 
 // ---------------------------------------------------------------------------
