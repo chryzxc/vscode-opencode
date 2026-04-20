@@ -90,6 +90,12 @@ export function setupConversationTest(options = {}) {
         assert.equal(count, expectedCount, `Expected session to have ${expectedCount} messages, got ${count}`);
       },
 
+      // Get user message(s) from session (user message is always first after a single send)
+      getUserMessage: async (sessionId) => {
+        const messages = await mockSessionService.getMessages(sessionId);
+        return messages.find(m => m.role === 'user');
+      },
+
       // Verify last message in session
       lastSessionMessage: (sessionId, role) => {
         const message = mockSessionService._getLastMessage(sessionId);
@@ -152,7 +158,8 @@ export async function simulateMessageSend(env, messageText, options = {}) {
     content: messageText,
     text: messageText,
     parts: [{ type: 'text', text: messageText }],
-    images,
+    ...(files.length > 0 ? { files } : {}),
+    ...(images.length > 0 ? { images } : {}),
     time: { created: Date.now() },
   };
 
@@ -170,7 +177,14 @@ export async function simulateMessageSend(env, messageText, options = {}) {
 
   // If stream events provided, simulate them
   if (streamEvents.length > 0) {
-    await simulateStreamEvents(env, streamEvents);
+    await simulateStreamEvents(env, streamEvents, { sessionId: session.id });
+
+    // Extract assistant message from completion event and persist in session
+    const completionEvent = streamEvents.find(e => e.type === 'message.updated');
+    if (completionEvent && completionEvent.properties && completionEvent.properties.message) {
+      const assistantMessage = completionEvent.properties.message;
+      await mocks.sessionService.appendMessage(session.id, assistantMessage);
+    }
   }
 
   return {
@@ -187,7 +201,7 @@ export async function simulateMessageSend(env, messageText, options = {}) {
  * @param {Object} options - Options
  */
 export async function simulateStreamEvents(env, events, options = {}) {
-  const { delay = 0 } = options;
+  const { delay = 0, sessionId = 'test-session-123' } = options;
   const { mocks } = env;
 
   for (const event of events) {
@@ -197,6 +211,13 @@ export async function simulateStreamEvents(env, events, options = {}) {
 
     // Emit event to all stream subscribers
     mocks.streamService._emit(event);
+
+    // Also post to webview as streamEvent (simulates ChatViewProvider forwarding)
+    mocks.webview.postMessage({
+      type: 'streamEvent',
+      event,
+      sessionId,
+    });
   }
 }
 

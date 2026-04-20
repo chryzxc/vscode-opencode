@@ -27,9 +27,9 @@ test('single message: user sends text message and receives streamed response', a
       streamEvents: StreamFixtures.reactExplanation,
     });
 
-    // Verify user message was persisted
-    verify.sessionHasMessageCount(result.sessionId, 1);
-    const userMessage = verify.lastSessionMessage(result.sessionId, 'user');
+    // Verify user and assistant messages were persisted
+    verify.sessionHasMessageCount(result.sessionId, 2);
+    const userMessage = await verify.getUserMessage(result.sessionId);
     assert.equal(userMessage.text, 'Explain React hooks');
 
     // Verify webview was notified of user message
@@ -60,7 +60,7 @@ test('single message: user sends message with file attachments', async () => {
     });
 
     // Verify message was persisted with files
-    const userMessage = verify.lastSessionMessage(result.sessionId, 'user');
+    const userMessage = await verify.getUserMessage(result.sessionId);
     assert.ok(userMessage.files, 'Message should include files');
     assert.equal(userMessage.files.length, 2);
     assert.deepEqual(userMessage.files, files);
@@ -82,7 +82,7 @@ test('single message: user sends message with image attachments', async () => {
     });
 
     // Verify message was persisted with images
-    const userMessage = verify.lastSessionMessage(result.sessionId, 'user');
+    const userMessage = await verify.getUserMessage(result.sessionId);
     assert.ok(userMessage.images, 'Message should include images');
     assert.equal(userMessage.images.length, 1);
     assert.equal(userMessage.images[0], images[0]);
@@ -104,7 +104,7 @@ test('single message: user sends message with all attachment types', async () =>
     });
 
     // Verify all attachments present
-    const userMessage = verify.lastSessionMessage(result.sessionId, 'user');
+    const userMessage = await verify.getUserMessage(result.sessionId);
     assert.ok(userMessage.files, 'Should have files');
     assert.ok(userMessage.images, 'Should have images');
     assert.equal(userMessage.files.length, 1);
@@ -191,7 +191,7 @@ test('single message: message structure is correct', async () => {
     });
 
     // Verify user message structure
-    const userMessage = verify.lastSessionMessage('test-session-123', 'user');
+    const userMessage = await verify.getUserMessage('test-session-123');
     assertMessageStructure(userMessage, {
       role: 'user',
       hasContent: true,
@@ -264,8 +264,8 @@ test('single message: preserves message order in session', async () => {
       streamEvents: StreamFixtures.simpleGreeting,
     });
 
-    // Verify both messages in session
-    verify.sessionHasMessageCount('test-session-123', 2);
+    // Verify all four messages in session (user + assistant × 2)
+    verify.sessionHasMessageCount('test-session-123', 4);
 
     // Verify order (user, assistant, user, assistant)
     const messages = await mocks.sessionService.getMessages('test-session-123');
