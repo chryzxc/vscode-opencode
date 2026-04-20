@@ -18,10 +18,10 @@ const buttonVariants = cva(
         secondary: "bg-secondary text-secondary-foreground hover:opacity-90",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
-        chip: "rounded-full border border-oc-border bg-transparent text-oc-text-muted font-mono text-xs hover:bg-oc-panel-soft hover:border-oc-accent hover:text-oc-text-soft",
+        chip: "rounded-full border border-oc-border-soft bg-oc-panel-soft/60 text-oc-text-muted font-mono text-xs font-medium hover:bg-oc-panel-soft hover:border-oc-border hover:text-oc-text-soft transition-all active:scale-95",
         queue:
           "rounded-full border border-oc-border bg-transparent text-oc-text-muted font-mono text-xs hover:bg-oc-panel-soft hover:text-oc-text-soft",
-        send: "rounded-full border border-transparent bg-oc-accent text-white font-mono text-xs font-semibold hover:opacity-90 active:opacity-75",
+        send: "rounded-full border border-transparent bg-oc-accent text-white font-mono text-xs font-semibold shadow-lg shadow-oc-accent/30 hover:opacity-90 hover:shadow-oc-accent/50 active:scale-95 transition-all",
         stop: "rounded-full border border-oc-red/40 bg-oc-red/10 text-oc-red font-mono text-xs hover:bg-oc-red/20 hover:border-oc-red/70",
         "ghost-accent": "hover:bg-oc-accent-soft hover:text-oc-accent",
       },
@@ -30,7 +30,7 @@ const buttonVariants = cva(
         sm: "h-7 rounded-md px-3 text-oc-sm",
         lg: "h-9 rounded-md px-6",
         icon: "h-7 w-7 p-0",
-        chip: "h-auto px-2 py-1 leading-none",
+        chip: "h-auto px-3 py-1.5 leading-none text-[13px]",
       },
     },
     defaultVariants: {

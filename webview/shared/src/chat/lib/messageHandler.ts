@@ -2804,11 +2804,32 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     !nonReasoningPartsContent &&
     rawHasReasoning &&
     !rawHasRenderableText;
+  const streamingContentMatchesReasoning = (() => {
+    const streamNorm = normalizeComparableText(streamingContent);
+    if (!streamNorm || streamNorm.length < 40) return false;
+    const allReasoning = [
+      hasReasoningAfterDirect,
+      ...(streaming?.reasoningEvents?.map((e) => e.content || e.text || '') ?? []),
+      ...detachedReasoningChunks,
+    ].filter((r) => r && r.trim().length > 0);
+    for (const reasoningChunk of allReasoning) {
+      const chunkNorm = normalizeComparableText(reasoningChunk);
+      if (!chunkNorm) continue;
+      const streamTokens = comparableTokens(streamNorm);
+      const reasoningTokens = comparableTokens(chunkNorm);
+      if (streamTokens.length < 5 || reasoningTokens.length < 5) continue;
+      const overlap = streamTokens.filter((t) => reasoningTokens.includes(t)).length;
+      const ratio = overlap / streamTokens.length;
+      if (ratio > 0.6) return true;
+    }
+    return false;
+  })();
   const shouldUseStreamingContent =
     hasRenderableStreamingContent &&
     !shouldSuppressStreamingFallbackForReasoningOnly &&
     !nonReasoningPartsContent &&
-    preferStreamingContent;
+    preferStreamingContent &&
+    !streamingContentMatchesReasoning;
   if (shouldSuppressStreamingFallbackForReasoningOnly) {
     webviewLogger.info("Suppressing streaming fallback: raw debug indicates reasoning-only final payload", {
       messageId: sourceMessageId,
@@ -8265,6 +8286,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
             dispatch({ type: "SET_PROCESSING", payload: false });
             dispatch({ type: "FINISH_STREAMING" });
+            break;
+          }
+
+          // When the AI is actively streaming meaningful content and a transport
+          // timeout fires (e.g. undici headers timeout), the response is still
+          // arriving — suppress the error banner so the live response isn't
+          // interrupted by a stale transport timeout notification.
+          const isTimeoutError = isLikelyInteractiveAwaitTimeout(errorMsg);
+          const streamHasContent = currentStreaming &&
+            currentStreaming.content &&
+            currentStreaming.content.trim().length > 0 &&
+            !looksLikeReasoningTrace(currentStreaming.content, "");
+          if (isTimeoutError && streamHasContent) {
+            latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
             break;
           }
 

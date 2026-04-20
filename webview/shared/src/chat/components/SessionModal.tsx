@@ -322,13 +322,13 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                           </button>
                         </div>
                       ) : isConfirmingDelete ? (
-                        <div className="flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-2">
-                          <span className="flex-1 truncate text-xs text-muted-foreground">
+                        <div className="oc-delete-confirm">
+                          <span className="oc-delete-confirm-text">
                             Delete "{session.title || "Untitled chat"}"?
                           </span>
                           <button
                             type="button"
-                            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-red-400 hover:bg-red-500/20 transition-colors"
+                            className="oc-delete-btn"
                             onClick={() => handleDeleteConfirm(session.id)}
                           >
                             Delete
@@ -391,7 +391,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                               type="button"
                               title="Delete session"
                               aria-label={`Delete session ${session.title ?? session.id}`}
-                              className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-red-500/15 hover:text-red-400"
+                              className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-red-500/15 oc-delete-btn-hover"
                               onClick={() => setConfirmDeleteId(session.id)}
                             >
                               <Trash2 className="h-3 w-3" />

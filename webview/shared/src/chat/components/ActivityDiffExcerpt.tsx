@@ -67,10 +67,10 @@ function DiffLine({
     <div
       className={cn(
         "group relative flex min-w-0 font-mono text-[10.5px] leading-relaxed",
-        isAdded && "bg-emerald-950/30",
-        isRemoved && "bg-red-950/30",
-        isHeader && "bg-blue-950/25",
-        !isAdded && !isRemoved && !isHeader && "hover:bg-white/[0.03]",
+        isAdded && "oc-diff-line-added",
+        isRemoved && "oc-diff-line-removed",
+        isHeader && "oc-diff-line-header",
+        !isAdded && !isRemoved && !isHeader && "oc-diff-line-neutral",
       )}
     >
       <div
@@ -82,7 +82,7 @@ function DiffLine({
         <span
           className={cn(
             "inline-block w-8 py-0.5 pr-1.5 text-right",
-            isRemoved ? "text-oc-red opacity-60" : "text-oc-text-muted opacity-40",
+            isRemoved ? "text-oc-red/70" : "text-oc-text-muted opacity-40",
           )}
         >
           {oldNum ?? ""}
@@ -90,7 +90,7 @@ function DiffLine({
         <span
           className={cn(
             "inline-block w-8 py-0.5 pr-1.5 text-right",
-            isAdded ? "text-oc-green opacity-60" : "text-oc-text-muted opacity-40",
+            isAdded ? "text-oc-green/70" : "text-oc-text-muted opacity-40",
           )}
         >
           {newNum ?? ""}
@@ -102,7 +102,7 @@ function DiffLine({
           "flex w-5 flex-shrink-0 select-none items-center justify-center border-r border-oc-border-soft py-0.5 font-semibold",
           isAdded && "text-oc-green",
           isRemoved && "text-oc-red",
-          isHeader && "text-blue-400",
+          isHeader && "text-oc-accent",
           !isAdded && !isRemoved && !isHeader && "text-oc-text-muted opacity-30",
         )}
       >
@@ -112,9 +112,9 @@ function DiffLine({
       <div
         className={cn(
           "flex-1 overflow-x-auto whitespace-pre px-2.5 py-0.5",
-          isAdded && "text-emerald-300",
-          isRemoved && "text-red-300",
-          isHeader && "font-semibold text-blue-300",
+          isAdded && "text-oc-green",
+          isRemoved && "text-oc-red",
+          isHeader && "font-semibold text-oc-accent",
           !isAdded && !isRemoved && !isHeader && "text-oc-text opacity-75",
         )}
       >
@@ -154,8 +154,8 @@ export function ActivityDiffExcerpt({ excerpt }: { excerpt: DiffExcerpt }) {
   }
 
   return (
-    <div className="overflow-hidden rounded border border-oc-border bg-oc-bg-soft">
-      <div className="flex items-center justify-between border-b border-oc-border/80 bg-oc-panel-soft/40 px-2 py-1">
+    <div className="overflow-hidden rounded border border-oc-border-soft bg-oc-bg">
+      <div className="flex items-center justify-between border-b border-oc-border-soft bg-oc-panel-soft/40 px-2 py-1">
         <span className="font-mono text-[10px] uppercase tracking-wide text-oc-text-muted">
           patch excerpt
         </span>

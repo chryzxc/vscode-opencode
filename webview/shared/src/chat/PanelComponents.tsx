@@ -33,6 +33,7 @@ import logger from "./lib/logger";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { JsonFormEditor } from "./JsonFormEditor";
+import { StepIndicator } from "@/components/ui/StepIndicator";
 import { formatDuration } from "../utils";
 
 import { Button } from "@/components/ui/button";
@@ -761,13 +762,7 @@ export function ActiveTaskPanel() {
                     className="flex items-start gap-1.5 py-0.5 text-xs"
                   >
                     <span className="mt-px shrink-0">
-                      {step.status === "pending" ? (
-                        <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
-                      ) : step.status === "error" ? (
-                        <X className="h-3 w-3 text-oc-red" />
-                      ) : (
-                        <Check className="h-3 w-3 text-oc-green opacity-70" />
-                      )}
+                      <StepIndicator status={step.status ?? 'pending'} />
                     </span>
                     <span
                       className={`min-w-0 flex-1 leading-relaxed ${step.status === "pending"
@@ -810,10 +805,10 @@ export function ActiveTaskPanel() {
                   </div>
                   <div
                     className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums tracking-wider ${pct > 90
-                        ? "bg-red-500/15 text-red-500"
+                        ? "oc-context-critical"
                         : pct > 75
-                          ? "bg-amber-500/15 text-amber-500"
-                          : "bg-oc-green/15 text-oc-green"
+                          ? "oc-context-warning"
+                          : "oc-context-healthy"
                       }`}
                   >
                     {pct}%
@@ -2734,9 +2729,9 @@ export function QuotaMonitor() {
   };
 
   const barColor = (pct: number) => {
-    if (pct >= 50) return "linear-gradient(90deg, #2ea043, #3fb950)";
-    if (pct >= 20) return "linear-gradient(90deg, #bf8700, #d29922)";
-    return "linear-gradient(90deg, #da3633, #f85149)";
+    if (pct >= 50) return "oc-quota-bar-healthy";
+    if (pct >= 20) return "oc-quota-bar-warning";
+    return "oc-quota-bar-critical";
   };
 
   return (
@@ -2829,7 +2824,7 @@ export function QuotaMonitor() {
                         ) : platform.status === "warning" ? (
                           <Badge
                             variant="warning"
-                            className="text-[#d29922] text-xs uppercase"
+                            className="oc-quota-warning text-xs uppercase"
                           >
                             warning
                           </Badge>
@@ -2863,7 +2858,7 @@ export function QuotaMonitor() {
                         return (
                           <div
                             key={quota.label}
-                            className="rounded-lg border border-oc-border bg-[rgba(0,0,0,0.16)] p-2"
+                            className="oc-quota-item"
                           >
                             <div className="mb-1 flex items-center justify-between gap-2">
                               <span className="text-xs font-medium text-[var(--oc-text-soft)]">
@@ -2876,10 +2871,9 @@ export function QuotaMonitor() {
                             </div>
                             <div className="h-1 w-full overflow-hidden rounded-full bg-oc-border">
                               <div
-                                className="h-full rounded-full transition-all duration-300"
+                                className={`h-full rounded-full transition-all duration-300 ${barColor(pct)}`}
                                 style={{
                                   width: `${pct}%`,
-                                  background: barColor(pct),
                                 }}
                               />
                             </div>
@@ -2931,7 +2925,7 @@ export function QuotaMonitor() {
                               className={`font-mono text-[10px] uppercase h-5 px-1.5 border-none ${budgetInfo.warningLevel === "critical"
                                   ? "bg-oc-red/10 text-oc-red"
                                   : budgetInfo.warningLevel === "warning"
-                                    ? "bg-[#d29922]/10 text-[#d29922]"
+                                    ? "oc-quota-warning-bg"
                                     : "bg-oc-accent/10 text-oc-accent"
                                 }`}
                             >
@@ -2977,7 +2971,7 @@ export function QuotaMonitor() {
                                 className={`text-sm font-bold leading-tight ${budgetInfo.warningLevel === "critical"
                                     ? "text-oc-red"
                                     : budgetInfo.warningLevel === "warning"
-                                      ? "text-[#d29922]"
+                                      ? "oc-quota-warning"
                                       : "text-oc-accent"
                                   }`}
                               >
@@ -3082,7 +3076,7 @@ export function TodoPanel() {
   const statusTone = (status?: TodoItem["status"]) => {
     switch (status) {
       case "pending":
-        return "text-[#d29922] bg-[#d29922]/10 border-[#d29922]/30";
+        return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
       case "in_progress":
         return "text-oc-accent bg-oc-accent/10 border-oc-accent/30";
       case "completed":
@@ -3137,7 +3131,7 @@ export function TodoPanel() {
                           : t.status === "in_progress"
                             ? "text-oc-accent"
                             : t.status === "pending"
-                              ? "text-[#d29922]"
+                              ? "oc-quota-warning"
                               : "text-[var(--oc-text-soft)]"
                       }`}
                   >

@@ -89,6 +89,6 @@ test('TodoPanel Contract - Deep Dive', async (t) => {
     await t.test('applies semantic tones for statuses', () => {
         assert.ok(todoPanelBody.includes('text-oc-green bg-oc-green/10'), 'Should use green tone for completed');
         assert.ok(todoPanelBody.includes('text-oc-red bg-oc-red/10'), 'Should use red tone for failed');
-        assert.ok(todoPanelBody.includes('text-[#d29922]'), 'Should use amber tone for pending');
+        assert.ok(todoPanelBody.includes('oc-quota-warning'), 'Should use semantic quota-warning class for pending');
     });
 });

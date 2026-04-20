@@ -243,10 +243,9 @@ export function SubagentDetailModal({
 										indicator={<StepIndicator status={stepStatus} />}
 										className="oc-refined-stepper-item group"
 									>
-										<div className="flex min-w-0 flex-col gap-2 w-full">
-											{/* Step header with label and timestamp */}
+										<div className="flex min-w-0 flex-col items-start gap-2 w-full">
 											<div className="flex items-center gap-2 flex-wrap">
-												<span className="inline-block min-w-[70px] shrink-0 rounded border border-oc-border px-2 py-[3px] text-center font-mono text-[10px] font-semibold text-oc-text-muted bg-oc-bg-soft/50">
+												<span className="oc-refined-event-label">
 													{stepLabel}
 												</span>
 												<span className="text-[10px] font-mono text-oc-text-muted/70">
@@ -258,8 +257,7 @@ export function SubagentDetailModal({
 												</span>
 											</div>
 
-											{/* Step content */}
-											<div className="overflow-hidden rounded-md border border-oc-border/60 bg-oc-panel/60 px-3 py-2">
+											<div className="oc-refined-event-content">
 												<MarkdownRenderer content={event.text} />
 											</div>
 										</div>

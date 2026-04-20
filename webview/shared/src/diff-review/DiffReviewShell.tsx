@@ -22,6 +22,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/utils';
+import { DiffStats } from '@/chat/DiffStats';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -309,7 +310,7 @@ function DiffItem({
         decided === 'approved' && 'border-oc-green/30 bg-emerald-950/15',
         decided === 'rejected' && 'border-oc-red/30 bg-red-950/15',
         !decided && isActive
-          ? 'border-oc-accent/40 bg-oc-accent-soft shadow-sm shadow-oc-accent/10'
+          ? 'border-oc-border-soft bg-white/[0.04]'
           : !decided && 'border-oc-border bg-white/[0.02] hover:border-oc-border-soft hover:bg-white/[0.04]',
       )}
     >
@@ -348,22 +349,17 @@ function DiffItem({
             {typeLabel}
           </Badge>
 
-          {/* Stats bar */}
-          <DiffStatsBar added={file.added} deleted={file.deleted} />
+           {/* Stats bar */}
+           <DiffStatsBar added={file.added} deleted={file.deleted} />
 
-          {/* +/- counts */}
-          <div className="flex items-center gap-1 font-mono">
-            {file.added > 0 && (
-              <span className="flex items-center gap-0.5 text-oc-2xs text-oc-green">
-                <Plus className="h-2.5 w-2.5" />{file.added}
-              </span>
-            )}
-            {file.deleted > 0 && (
-              <span className="flex items-center gap-0.5 text-oc-2xs text-oc-red">
-                <Minus className="h-2.5 w-2.5" />{file.deleted}
-              </span>
-            )}
-          </div>
+           {/* +/- counts */}
+           <DiffStats 
+             added={file.added} 
+             deleted={file.deleted} 
+             showIcons={true}
+             iconSize="sm"
+             className="text-oc-2xs"
+           />
 
           {decided ? (
             <Badge
@@ -786,20 +782,15 @@ export default function DiffReviewShell() {
             </Badge>
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* Total stats */}
-            <div className="flex items-center gap-1.5 font-mono text-oc-2xs">
-              {totalAdded > 0 && (
-                <span className="flex items-center gap-0.5 text-oc-green">
-                  <Plus className="h-2.5 w-2.5" />{totalAdded}
-                </span>
-              )}
-              {totalDeleted > 0 && (
-                <span className="flex items-center gap-0.5 text-oc-red">
-                  <Minus className="h-2.5 w-2.5" />{totalDeleted}
-                </span>
-              )}
-            </div>
+           <div className="flex items-center gap-2">
+             {/* Total stats */}
+             <DiffStats 
+               added={totalAdded} 
+               deleted={totalDeleted} 
+               showIcons={true}
+               iconSize="sm"
+               className="text-oc-2xs"
+             />
 
             <div className="h-3 w-px bg-oc-border" />
 

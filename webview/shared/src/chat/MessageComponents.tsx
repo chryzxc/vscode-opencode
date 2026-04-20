@@ -32,6 +32,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
 import { TerminalBlock } from "@/components/ui/TerminalBlock";
+import { SearchBlock } from "@/components/ui/SearchBlock";
 import { ExpandableStep } from "@/components/ui/ExpandableStep";
 import { StepIndicator } from "@/components/ui/StepIndicator";
 import { cn, formatDuration } from "@/utils";
@@ -40,6 +41,7 @@ import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
+import { DiffStats } from "./DiffStats";
 
 import type {
   ActivityDetail,
@@ -208,6 +210,8 @@ function getSubagentAccentTextStyle(id: string): CSSProperties {
     color: `hsl(${hue}, 80%, 70%)`,
   };
 }
+
+const SEARCH_LABELS = new Set(["grep", "search", "glob", "ripgrep", "ast-grep", "find"]);
 
 // Component to extract bash output from message content
 function TerminalBlockWithOutput({
@@ -701,8 +705,7 @@ function getMessageContent(
       return '';
     }
 
-    if (!streamingFinished && hasReasoningEvents && content.length < 100) {
-      // Streaming is live and content is very short — likely reasoning leak, hide it.
+    if (!streamingFinished && hasReasoningEvents) {
       return '';
     }
 
@@ -1936,7 +1939,7 @@ export const SystemMessage = memo(function SystemMessage({
           }}
         >
           <pre
-            className="max-h-[220px] overflow-y-auto whitespace-pre-wrap break-words bg-transparent py-1 pl-4 pr-2 font-mono text-[10.5px] leading-6 tracking-[0.01em] text-[#aeb7d8] select-text sm:pl-5"
+            className="oc-code max-h-[220px] overflow-y-auto whitespace-pre-wrap break-words py-1 pl-4 pr-2 sm:pl-5"
           >
             {content}
           </pre>
@@ -2691,7 +2694,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           <div className="mb-2.5 flex flex-wrap items-start justify-between gap-2">
             <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
               {showStreamingLoading ? (
-                <ThinkingStatusTicker className="text-[#4e648c]" />
+               <ThinkingStatusTicker className="oc-thinking-status" />
               ) : (
                 <>
                   <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
@@ -2930,6 +2933,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                           event={event}
                                           messageContent={content}
                                         />
+                                      ) : SEARCH_LABELS.has(event.label) ? (
+                                        <SearchBlock
+                                          pattern={event.activityDetail?.query || event.summary}
+                                          scope={event.label}
+                                        />
                                       ) : (
                                         <MarkdownRenderer
                                           content={event.summary}
@@ -3027,15 +3035,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     </Stepper>
 
                     {showThinkingPlaceholder && !hasThinkingEvents && (
-                      <Stepper className="mt-2 max-h-[120px] overflow-y-auto font-sans text-[12px]">
+                      <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
                         <StepperItem
                           isLast={true}
-                          indicator={
-                            <div className="h-2 w-2 rounded-full border border-oc-accent/70 bg-oc-accent/30 animate-pulse" />
-                          }
+                          indicator={<StepIndicator status="pending" />}
                         >
-                          <div className="flex min-w-0 items-start gap-2.5 pt-[3px]">
-                            <span className="inline-block min-w-[64px] shrink-0 rounded border border-oc-border-soft px-1.5 py-[3px] text-center font-mono text-[10px] font-semibold text-oc-text-muted">
+                          <div className="flex min-w-0 items-start gap-2 flex-wrap">
+                            <span className="oc-refined-event-label reasoning">
                               Reasoning
                             </span>
                             <span
@@ -3493,7 +3499,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
         {isStreamingActive && !showResponseSection && hasStreamingActivity && (
           <div className="mt-2 mb-2 px-1">
-            <ThinkingStatusTicker className="text-[#4e648c]" />
+            <ThinkingStatusTicker className="oc-thinking-status" />
           </div>
         )}
         {/* Raw Data â€" moved last so it doesn't interrupt the reading flow */}
@@ -3782,63 +3788,56 @@ function FileChangesSection({
   };
 
   return (
-    <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40">
+    <div className="rounded-lg border border-oc-border-soft bg-oc-bg overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2 text-sm text-oc-text-soft">
-          <FileCode className="h-4 w-4 shrink-0 text-oc-accent" />
-          <span className="font-medium">
+        <div className="flex min-w-0 items-center gap-2 text-sm text-oc-text">
+          <FileCode className="h-3.5 w-3.5 shrink-0 text-oc-accent/80" />
+          <span className="font-medium text-oc-text-soft">
             {filesChanged} {filesChanged === 1 ? "file" : "files"} changed
           </span>
           {(totalAdded > 0 || totalDeleted > 0) && (
-            <div className="flex items-center gap-1.5 font-mono text-xs">
-              {totalAdded > 0 && (
-                <span className="text-oc-green">
-                  +{totalAdded}
-                </span>
-              )}
-              {totalDeleted > 0 && (
-                <span className="text-oc-red">
-                  -{totalDeleted}
-                </span>
-              )}
-            </div>
+            <DiffStats added={totalAdded} deleted={totalDeleted} />
           )}
         </div>
         <div className="ml-auto flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={handleUndo}
-            className="inline-flex items-center gap-1 rounded border border-oc-border-soft/50 px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border-soft hover:bg-oc-panel-soft/50 hover:text-oc-text-soft"
-          >
-            <Undo2 className="h-3 w-3" />
-            Undo
-          </button>
-          <button
-            type="button"
-            onClick={handleReview}
-            className="inline-flex items-center gap-1 rounded border border-oc-border-soft/50 px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border-soft hover:bg-oc-panel-soft/50 hover:text-oc-text-soft"
-          >
-            <ArrowUpRight className="h-3 w-3" />
-            Review
-          </button>
+            <button
+              type="button"
+              onClick={handleUndo}
+              className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
+            >
+              <Undo2 className="h-3 w-3" />
+              Undo
+            </button>
+            <button
+              type="button"
+              onClick={handleReview}
+              className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
+            >
+              <ArrowUpRight className="h-3 w-3" />
+              Review
+            </button>
         </div>
       </div>
-      <div className="border-t border-oc-border-soft-soft">
-        <div className="space-y-1 p-2">
-          {visibleChanges.map((fileChange) => {
-            const hasPreview =
-              Array.isArray(fileChange.diffExcerpt?.lines) && fileChange.diffExcerpt.lines.length > 0;
-            const isExpanded = !!expandedByFile[fileChange.file];
+       <div className="border-t border-oc-border-soft">
+         <div className="space-y-0.5 p-1.5">
+           {visibleChanges.map((fileChange) => {
+             const hasPreview =
+               Array.isArray(fileChange.diffExcerpt?.lines) && fileChange.diffExcerpt.lines.length > 0;
+             const isExpanded = !!expandedByFile[fileChange.file];
+             const filename = fileChange.file.split(/[\\/]/).pop() ?? fileChange.file;
+             const dirname = fileChange.file !== filename
+               ? fileChange.file.slice(0, fileChange.file.length - filename.length - 1)
+               : '';
 
-            return (
-              <div
-                key={fileChange.file}
-                className="rounded border border-oc-border-soft-soft overflow-hidden"
-              >
-                <div className="flex items-center justify-between px-2.5 py-2 hover:bg-oc-panel-soft/30 transition-colors">
+             return (
+               <div
+                 key={fileChange.file}
+                 className="rounded border border-oc-border-soft overflow-hidden transition-colors hover:border-oc-border"
+               >
+                <div className="flex items-center justify-between px-2.5 py-1.5 hover:bg-white/[0.025] transition-colors">
                   <button
                     type="button"
-                    className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                    className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
                     onClick={() =>
                       vscode.postMessage({
                         type: "openDiff",
@@ -3846,7 +3845,7 @@ function FileChangesSection({
                       })
                     }
                   >
-                    {hasPreview && (
+                    {hasPreview ? (
                       <button
                         type="button"
                         aria-label={isExpanded ? "Collapse" : "Expand"}
@@ -3854,35 +3853,38 @@ function FileChangesSection({
                           e.stopPropagation();
                           toggleExpanded(fileChange.file);
                         }}
-                        className="shrink-0"
+                        className="shrink-0 text-oc-text-muted/60 hover:text-oc-text-muted transition-colors"
                       >
                         {isExpanded ? (
-                          <ChevronDown className="h-3.5 w-3.5 text-oc-text-muted" />
+                          <ChevronDown className="h-3 w-3" />
                         ) : (
-                          <ChevronRight className="h-3.5 w-3.5 text-oc-text-muted" />
+                          <ChevronRight className="h-3 w-3" />
                         )}
                       </button>
+                    ) : (
+                      <span className="w-3 shrink-0" />
                     )}
-                    <FileText className="h-3.5 w-3.5 shrink-0 text-oc-text-muted" />
-                    <span className="text-xs font-mono text-oc-text truncate">{fileChange.file}</span>
+                    <FileText className="h-3 w-3 shrink-0 text-oc-text-muted/50" />
+                    <span className="text-[11px] font-mono text-oc-text truncate">{filename}</span>
+                    {dirname && (
+                      <span className="text-[10px] font-mono text-oc-text-muted/40 truncate hidden sm:inline">
+                        {dirname}
+                      </span>
+                    )}
                   </button>
 
-                  <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="flex items-center gap-1.5 flex-shrink-0 font-mono text-[11px]">
                     {fileChange.added > 0 && (
-                      <span className="text-xs font-mono text-oc-green">
-                        +{fileChange.added}
-                      </span>
+                      <span className="text-oc-green">+{fileChange.added}</span>
                     )}
                     {fileChange.deleted > 0 && (
-                      <span className="text-xs font-mono text-oc-red">
-                        -{fileChange.deleted}
-                      </span>
+                      <span className="text-oc-red">-{fileChange.deleted}</span>
                     )}
                   </div>
                 </div>
 
                 {isExpanded && hasPreview ? (
-                  <div className="border-t border-oc-border-soft-soft bg-oc-panel-soft/20">
+                  <div className="border-t border-oc-border-soft bg-black/10">
                     <ActivityDiffExcerpt
                       excerpt={{
                         header: fileChange.diffExcerpt?.header,
@@ -3893,7 +3895,7 @@ function FileChangesSection({
                     />
                   </div>
                 ) : isExpanded && !hasPreview ? (
-                  <div className="border-t border-oc-border-soft-soft px-2.5 py-2 text-xs text-oc-text-muted italic">
+                  <div className="border-t border-oc-border-soft px-2.5 py-2 text-xs text-oc-text-muted/60 italic">
                     Diff preview unavailable for this file in the current payload.
                   </div>
                 ) : null}
@@ -3903,11 +3905,11 @@ function FileChangesSection({
         </div>
       </div>
 
-      {fileChanges.length > visibleChanges.length ? (
-        <div className="border-t border-oc-border-soft/50 px-3 py-2 text-xs text-oc-text-muted text-center">
-          Showing {visibleChanges.length} of {fileChanges.length} changed files
-        </div>
-      ) : null}
+       {fileChanges.length > visibleChanges.length ? (
+         <div className="border-t border-oc-border-soft px-3 py-1.5 text-[11px] text-oc-text-muted/60 text-center">
+           Showing {visibleChanges.length} of {fileChanges.length} changed files
+         </div>
+       ) : null}
     </div>
   );
 }
@@ -3979,9 +3981,9 @@ export function ErrorBanner({
 
   return (
     <div className="mb-2 px-4">
-      <div className="flex flex-col gap-2 rounded-lg border border-[#dc262680] bg-[#7f1d1d26] p-2.5 text-oc-xs text-[#fee2e2] shadow-[0_4px_14px_rgba(127,29,29,0.18)] transition-all duration-200">
+      <div className="oc-error flex flex-col gap-2">
         <div className="flex items-center gap-2">
-          <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-[#ef444480] bg-[#ef444426]">
+          <span className="oc-error-icon">
             <AlertCircle className="h-3 w-3 shrink-0 text-[#fca5a5]" />
           </span>
           <span className="text-[10px] font-semibold uppercase tracking-[0.07em] text-[#fca5a5]">
@@ -3989,11 +3991,11 @@ export function ErrorBanner({
           </span>
         </div>
 
-        <div className="rounded-md border border-[#ef444440] bg-[#450a0a59] px-2 py-1.5">
-          <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#fca5a5]">
+        <div className="oc-error-detail">
+          <div className="oc-error-detail-title">
             Error message
           </div>
-          <div className="overflow-hidden text-[11px] leading-snug text-[#fee2e2] whitespace-pre-wrap break-words">
+          <div className="oc-error-detail-content">
             {errorDetails}
           </div>
         </div>
@@ -4003,7 +4005,7 @@ export function ErrorBanner({
             <button
               type="button"
               onClick={onRetry}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[#ef444480] bg-[#ef444426] px-2.5 py-1 text-[11px] font-medium text-[#fecaca] transition-all hover:bg-[#ef444440] active:scale-95"
+              className="oc-error-action"
             >
               <RotateCw className="h-3 w-3" />
               <span>{retryLabel || "Retry"}</span>
@@ -4021,7 +4023,7 @@ export function ErrorBanner({
 export function AbortedBanner({ onRetry }: { onRetry?: () => void }) {
   return (
     <div className="mb-3">
-      <div className="relative overflow-hidden rounded-lg border border-[#d9770640] bg-gradient-to-br from-[#d9770615] to-[#b4530910] backdrop-blur-sm">
+      <div className="oc-warning relative overflow-hidden">
         {/* Decorative geometric pattern - diagonal stripes */}
         <div className="absolute inset-0 opacity-[0.03]">
           <div className="absolute inset-0" style={{
@@ -4040,51 +4042,48 @@ export function AbortedBanner({ onRetry }: { onRetry?: () => void }) {
           <div className="flex items-center gap-3">
             {/* Refined icon container with glow */}
             <div className="relative">
-              <div className="absolute inset-0 rounded-full bg-[#d9770620] blur-md" />
-              <div className="relative flex h-8 w-8 items-center justify-center rounded-full border border-[#d9770640] bg-[#d9770625] backdrop-blur-sm">
-                <StopCircle className="h-4 w-4 text-[#fbbf24] drop-shadow-sm" />
-              </div>
-            </div>
+              <div className="absolute inset-0 rounded-full oc-warning-icon blur-md" style={{ background: 'rgba(217, 119, 6, 0.125)' }} />
+               <div className="oc-warning-icon relative flex h-8 w-8 items-center justify-center">
+                 <StopCircle className="h-4 w-4 oc-warning-icon-color drop-shadow-sm" />
+               </div>
+             </div>
 
-            {/* Typography - editorial style with hierarchy */}
-            <div className="flex flex-col gap-0.5">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold tracking-wide text-[#fbbf24] uppercase" style={{ fontFamily: "'SF Mono', 'Cascadia Code', monospace" }}>
-                  Interrupted
+             {/* Typography - editorial style with hierarchy */}
+             <div className="flex flex-col gap-0.5">
+               <div className="flex items-center gap-2">
+                 <span className="oc-warning-text-primary text-[11px] font-semibold tracking-wide uppercase">
+                   Interrupted
+                 </span>
+                 <span className="oc-warning-marker" />
+               </div>
+               <span className="oc-warning-text-secondary text-[12px] leading-snug opacity-90">
+                 Response stopped by user
+               </span>
+             </div>
+           </div>
+
+           {/* Right side - retry button with refined styling */}
+           {onRetry && (
+             <div className="flex flex-col items-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="oc-warning-action"
+                >
+                  <RotateCw className="h-3 w-3 transition-transform duration-500 group-hover:rotate-180" />
+                  <span className="tracking-wide">RETRY</span>
+                </button>
+                <span className="oc-warning-hint">
+                  Resume generation
                 </span>
-                <span className="h-3 w-px rounded-full bg-[#d9770640]" />
               </div>
-              <span className="text-[12px] text-[#d6d3d1]/90 leading-snug" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-                Response stopped by user
-              </span>
-            </div>
+            )}
           </div>
-
-          {/* Right side - retry button with refined styling */}
-          {onRetry && (
-            <div className="flex flex-col items-end gap-1.5">
-              <button
-                type="button"
-                onClick={onRetry}
-                className="group relative inline-flex items-center gap-1.5 rounded-md border border-[#d9770650] bg-[#d9770620] px-3 py-1.5 text-[11px] font-medium text-[#fbbf24] backdrop-blur-sm transition-all duration-200 hover:border-[#d9770670] hover:bg-[#d9770630] active:scale-95"
-                style={{ fontFamily: "'SF Mono', 'Cascadia Code', monospace" }}
-              >
-                <RotateCw className="h-3 w-3 transition-transform duration-500 group-hover:rotate-180" />
-                <span className="tracking-wide">RETRY</span>
-              </button>
-              <span className="text-[9px] text-[#d6d3d1]/60 uppercase tracking-wider" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-                Resume generation
-              </span>
-            </div>
-          )}
         </div>
-
-        {/* Bottom accent line with subtle gradient */}
-        <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-[#d9770640] to-transparent" />
       </div>
-    </div>
-  );
-}
+    );
+  }
+
 
 interface InfoBannerProps {
   message?: string;
@@ -4092,30 +4091,26 @@ interface InfoBannerProps {
 }
 
 export function InfoBanner({ message, error }: InfoBannerProps) {
-  // Error type styling configuration
+  // Error type styling configuration - maps to semantic CSS classes
   const errorStyles = {
     api_error: {
-      borderColor: 'border-red-500/50',
-      bgColor: 'bg-red-500/10',
-      textColor: 'text-red-200',
+      bannerClass: 'oc-banner-error',
+      iconClass: 'oc-banner-error-icon',
       icon: AlertCircle
     },
     timeout: {
-      borderColor: 'border-orange-500/50',
-      bgColor: 'bg-orange-500/10',
-      textColor: 'text-orange-200',
+      bannerClass: 'oc-banner-timeout',
+      iconClass: 'oc-banner-timeout-icon',
       icon: Clock
     },
     structured_output_failure: {
-      borderColor: 'border-blue-500/50',
-      bgColor: 'bg-blue-500/10',
-      textColor: 'text-blue-200',
+      bannerClass: 'oc-banner-structured-output',
+      iconClass: 'oc-banner-structured-output-icon',
       icon: AlertTriangle
     },
     unknown: {
-      borderColor: 'border-gray-500/50',
-      bgColor: 'bg-gray-500/10',
-      textColor: 'text-gray-200',
+      bannerClass: 'oc-banner-unknown',
+      iconClass: 'oc-banner-unknown-icon',
       icon: HelpCircle
     }
   };
@@ -4143,9 +4138,9 @@ export function InfoBanner({ message, error }: InfoBannerProps) {
 
   return (
     <div className="mb-2 px-4">
-      <div className={`flex flex-col gap-2 rounded-lg border ${styles.borderColor} ${styles.bgColor} p-2.5 text-oc-xs ${styles.textColor} shadow-[0_4px_14px_rgba(30,58,138,0.18)] transition-all duration-200`}>
+      <div className={`oc-banner-container ${styles.bannerClass} flex flex-col gap-2 rounded-lg border p-2.5 text-oc-xs shadow-[0_4px_14px_rgba(30,58,138,0.18)] transition-all duration-200`}>
         <div className="flex items-center gap-2">
-          <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${styles.borderColor} ${styles.bgColor}`}>
+          <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${styles.iconClass}`}>
             <Icon className="h-3 w-3" />
           </span>
           <span className="flex-1 font-medium">{displayMessage}</span>
@@ -4158,25 +4153,42 @@ export function InfoBanner({ message, error }: InfoBannerProps) {
 export function ThinkingBubble() {
   return (
     <div className="mb-4 px-4">
-      <ThinkingStatusTicker className="pl-1 text-[#4e648c]" />
+      <ThinkingStatusTicker className="pl-1 oc-thinking-status" />
     </div>
   );
 }
 
 export function EmptyState() {
-  const { serverStatus, serverError } = useAppState();
+  const { serverStatus, serverError, receivedInitState } = useAppState();
+
+  const isConnecting = !receivedInitState || serverStatus === "connecting";
+
+  if (isConnecting) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+        <div className="flex gap-1.5 mb-4">
+          <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0s' }} />
+          <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.2s' }} />
+          <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.4s' }} />
+        </div>
+        <div className="text-sm text-oc-text-soft opacity-70 font-mono">
+          Connecting…
+        </div>
+      </div>
+    );
+  }
 
   // Show error state when server has failed to start
   if (serverStatus === "error" && serverError) {
     return (
       <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-        <div className="oc-empty-icon mb-4 text-red-500">
+        <div className="oc-empty-icon mb-4">
           <AlertCircle className="h-6 w-6" />
         </div>
         <div className="text-xl font-semibold text-oc-text tracking-tight mb-1">
           OpenCode Server Error
         </div>
-        <div className="text-sm text-red-400 max-w-[400px] leading-relaxed mt-2">
+        <div className="oc-empty-state-error-message text-sm max-w-[400px] leading-relaxed mt-2">
           {serverError}
         </div>
         <div className="text-xs text-oc-text-soft opacity-70 max-w-[400px] leading-relaxed mt-2">

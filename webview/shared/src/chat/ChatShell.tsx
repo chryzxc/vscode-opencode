@@ -283,6 +283,25 @@ function ChatContent() {
   // the transition, currentSessionId hasn't been updated yet (timing issue)
   const isSwitchingSession = state.isLoadingSession;
 
+  const isConnecting = !state.receivedInitState || state.serverStatus === "connecting";
+
+  if (isConnecting) {
+    return (
+      <div className="oc-shell relative flex h-screen items-center justify-center overflow-hidden bg-oc-bg text-oc-text">
+        <div className="flex flex-col items-center gap-4">
+          <div className="flex gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0s' }} />
+            <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.2s' }} />
+            <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.4s' }} />
+          </div>
+          <div className="text-sm text-oc-text-soft opacity-70 font-mono">
+            Connecting…
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Show AI response loading indicator (thinking bubble) when:
   // 1. AI is responding but no streaming yet, OR
   // 2. Streaming but only have reasoning (no actual content yet)
