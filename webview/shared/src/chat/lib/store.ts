@@ -8,6 +8,7 @@ import type {
   InteractiveEvent,
   LspServerInfo,
   McpServerInfo,
+  MentionResult,
   ThinkingLevel,
   TodoItem,
   ContextItem,
@@ -66,6 +67,9 @@ export const initialState: AppState = {
   fileSuggestions: [],
   showFileSuggestions: false,
   selectedSuggestionIndex: 0,
+  mentionSuggestions: [],
+  showMentionSuggestions: false,
+  selectedMentionIndex: 0,
   availableCommands: [],
   commandsLoaded: false,
   receivedInitState: false,
@@ -157,6 +161,9 @@ export type AppAction =
   | { type: "SET_FILE_SUGGESTIONS"; payload: FileResult[] }
   | { type: "SET_SHOW_FILE_SUGGESTIONS"; payload: boolean }
   | { type: "SET_SUGGESTION_INDEX"; payload: number }
+  | { type: "SET_MENTION_SUGGESTIONS"; payload: MentionResult[] }
+  | { type: "SET_SHOW_MENTION_SUGGESTIONS"; payload: boolean }
+  | { type: "SET_MENTION_INDEX"; payload: number }
   | {
     type: "SET_COMMANDS_LIST";
     payload: AppState["availableCommands"];
@@ -1688,6 +1695,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, showFileSuggestions: action.payload };
     case "SET_SUGGESTION_INDEX":
       return { ...state, selectedSuggestionIndex: action.payload };
+    case "SET_MENTION_SUGGESTIONS":
+      return { ...state, mentionSuggestions: action.payload };
+    case "SET_SHOW_MENTION_SUGGESTIONS":
+      return { ...state, showMentionSuggestions: action.payload };
+    case "SET_MENTION_INDEX":
+      return { ...state, selectedMentionIndex: action.payload };
     case "SET_COMMANDS_LIST":
       return {
         ...state,

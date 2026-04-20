@@ -153,7 +153,7 @@ function DiffLine({
         isAdded && 'bg-emerald-950/30',
         isRemoved && 'bg-red-950/30',
         isHunkHeader && 'bg-blue-950/25',
-        !isAdded && !isRemoved && !isHunkHeader && 'hover:bg-white/[0.03]',
+        !isAdded && !isRemoved && !isHunkHeader && 'hover:bg-oc-bg-soft',
       )}
     >
       {/* Gutter: line numbers */}
@@ -217,7 +217,7 @@ function DiffLine({
           className={cn(
             'absolute right-1 top-0.5 flex h-4 w-4 items-center justify-center rounded',
             'opacity-0 group-hover:opacity-100 transition-opacity',
-            'text-oc-text-muted hover:text-oc-text hover:bg-white/10',
+            'text-oc-text-muted hover:text-oc-text hover:bg-oc-bg',
           )}
         >
           {copied ? (
@@ -310,8 +310,8 @@ function DiffItem({
         decided === 'approved' && 'border-oc-green/30 bg-emerald-950/15',
         decided === 'rejected' && 'border-oc-red/30 bg-red-950/15',
         !decided && isActive
-          ? 'border-oc-border-soft bg-white/[0.04]'
-          : !decided && 'border-oc-border bg-white/[0.02] hover:border-oc-border-soft hover:bg-white/[0.04]',
+          ? 'border-oc-border-soft bg-oc-panel-soft'
+          : !decided && 'border-oc-border bg-oc-bg hover:border-oc-border-soft hover:bg-oc-panel-soft',
       )}
     >
       {/* File header */}
@@ -460,7 +460,7 @@ function ApprovalProgressBar({
 
   return (
     <div className="flex items-center gap-2">
-      <div className="flex-1 h-1 rounded-full bg-white/10 overflow-hidden flex">
+      <div className="flex-1 h-1 rounded-full bg-oc-bg overflow-hidden flex">
         <div
           className="h-full bg-oc-green/70 transition-all duration-300"
           style={{ width: `${approvedPct}%` }}
@@ -487,7 +487,7 @@ function KeyboardHint() {
     <div className="relative">
       <button
         type="button"
-        className="flex items-center gap-1 rounded px-1.5 py-1 text-oc-2xs text-oc-text-muted hover:text-oc-text hover:bg-white/10 transition-colors"
+        className="flex items-center gap-1 rounded px-1.5 py-1 text-oc-2xs text-oc-text-muted hover:text-oc-text hover:bg-oc-bg transition-colors"
         title="Keyboard shortcuts"
         onClick={() => setVisible((v) => !v)}
       >
@@ -506,7 +506,7 @@ function KeyboardHint() {
               ['r', 'Reject active'],
             ].map(([key, desc]) => (
               <div key={key} className="flex justify-between gap-3">
-                <kbd className="font-mono bg-white/10 px-1 rounded text-oc-text">{key}</kbd>
+                <kbd className="font-mono bg-oc-bg px-1 rounded text-oc-text">{key}</kbd>
                 <span>{desc}</span>
               </div>
             ))}
@@ -835,7 +835,7 @@ export default function DiffReviewShell() {
                   'rounded px-2.5 py-1 text-oc-2xs font-medium transition-colors',
                   filter === f.value
                     ? 'bg-oc-accent-soft text-oc-accent border border-oc-accent/20'
-                    : 'text-oc-text-muted hover:bg-white/10 hover:text-oc-text',
+                    : 'text-oc-text-muted hover:bg-oc-bg hover:text-oc-text',
                 )}
                 onClick={() => setFilter(f.value)}
               >
@@ -964,7 +964,7 @@ export default function DiffReviewShell() {
             <button
               type="button"
               onClick={() => setCommentsPanelOpen(false)}
-              className="rounded p-1 hover:bg-white/10 text-oc-text-muted hover:text-oc-text transition-colors"
+              className="rounded p-1 hover:bg-oc-bg text-oc-text-muted hover:text-oc-text transition-colors"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -983,7 +983,7 @@ export default function DiffReviewShell() {
               comments.map((comment) => (
                 <div
                   key={comment.id}
-                  className="rounded-lg border border-oc-border bg-white/[0.03] p-2.5 text-oc-xs"
+                  className="rounded-lg border border-oc-border bg-oc-bg-soft p-2.5 text-oc-xs"
                 >
                   <p className="italic text-oc-text-muted truncate mb-1.5 text-oc-2xs">
                     &ldquo;{comment.anchor.selectedText}&rdquo;

@@ -1390,6 +1390,7 @@ export class SessionService {
     }
 
     this.sessionHistory = this.sessionHistory.filter((s) => s.id !== sessionId);
+    // Clear persisted messages for the deleted session.
     await this.context.workspaceState.update(
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
       undefined,

@@ -129,7 +129,7 @@ function DiffLine({
           className={cn(
             "absolute right-1 top-0.5 flex h-4 w-4 items-center justify-center rounded",
             "opacity-0 transition-opacity group-hover:opacity-100",
-            "text-oc-text-muted hover:bg-white/10 hover:text-oc-text",
+            "text-oc-text-muted hover:bg-oc-bg hover:text-oc-text",
           )}
         >
           {copied ? (

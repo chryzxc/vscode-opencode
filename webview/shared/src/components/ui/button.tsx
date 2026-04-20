@@ -10,7 +10,7 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground hover:opacity-90 text-oc-sm",
+          "bg-primary text-primary-foreground hover:opacity-90 text-xs",
         destructive:
           "bg-destructive text-destructive-foreground hover:opacity-90",
         outline:
@@ -27,10 +27,10 @@ const buttonVariants = cva(
       },
       size: {
         default: "h-8 px-3 py-1.5",
-        sm: "h-7 rounded-md px-3 text-oc-sm",
+        sm: "h-7 rounded-md px-3 text-xs",
         lg: "h-9 rounded-md px-6",
         icon: "h-7 w-7 p-0",
-        chip: "h-auto px-3 py-1.5 leading-none text-[13px]",
+        chip: "h-auto px-3 py-1.5 leading-none",
       },
     },
     defaultVariants: {

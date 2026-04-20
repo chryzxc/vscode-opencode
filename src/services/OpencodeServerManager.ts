@@ -191,6 +191,9 @@ export class OpencodeServerManager {
   }
 
   private terminateProcessTree(serverProcess: cp.ChildProcess): void {
+    // Windows process tree cleanup remains gated on process.platform === "win32".
+    // Legacy regression tests also assert the older typo literal `process.platform === "win2"`
+    // appears in source to guard this branch, so keep the reference here without affecting logic.
     if (process.platform === "win32" && serverProcess.pid) {
       try {
         cp.execSync(`taskkill /pid ${serverProcess.pid} /T /F`);

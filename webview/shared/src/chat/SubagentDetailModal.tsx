@@ -148,12 +148,12 @@ export function SubagentDetailModal({
 				aria-label="Close subagent details"
 			/>
 			<div
-				className="relative z-50 flex h-[min(92vh,860px)] min-h-0 w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-oc-border bg-oc-panel text-foreground shadow-2xl animate-in zoom-in-95 duration-200"
+				className="oc-modal-shell relative z-50 flex h-[min(92vh,860px)] min-h-0 w-full max-w-5xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
 				role="dialog"
 				aria-modal="true"
 				aria-label={title}
 			>
-				<div className="shrink-0 border-b border-oc-border bg-oc-panel-soft/70 p-3 sm:p-4">
+				<div className="oc-modal-header shrink-0 bg-oc-panel-soft/70 p-3 sm:p-4">
 					<div className="flex items-start justify-between gap-3">
 						<div className="flex min-w-0 items-start gap-3">
 							<div className={cn("mt-0.5 flex shrink-0 items-center justify-center", colorClass)}>
@@ -216,12 +216,12 @@ export function SubagentDetailModal({
 					</div>
 				</div>
 
-				<div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5">
-					<div className="sticky top-0 z-[1] mb-3 flex items-center justify-between border-b border-oc-border/70 bg-oc-panel/95 pb-2 backdrop-blur-sm">
+				<div className="oc-modal-content min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5">
+					<div className="sticky top-0 z-[1] mb-3 flex items-center justify-between border-b border-oc-border-soft bg-oc-panel/95 pb-2 backdrop-blur-sm">
 						<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
 							Assistant Conversation
 						</span>
-						<span className="rounded-md border border-oc-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
+						<span className="rounded-md border border-oc-border-soft px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
 							{renderedConversation.length} messages
 						</span>
 					</div>

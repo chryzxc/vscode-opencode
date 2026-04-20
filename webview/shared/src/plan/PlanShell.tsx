@@ -392,7 +392,7 @@ export default function PlanShell() {
             ref={planContentRef}
             content={renderedHtml}
             isPreParsed={true}
-            className="prose prose-invert max-w-none text-xs leading-relaxed text-[var(--vscode-editor-foreground)] select-text cursor-text mb-6 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mb-3 [&_h2]:text-xs [&_h2]:font-semibold [&_h2]:mb-2 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mb-1.5 [&_pre]:bg-white/5 [&_pre]:rounded [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:bg-white/10 [&_code]:px-1 [&_code]:rounded [&_pre_code]:bg-transparent [&_pre_code]:px-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:mb-0.5 [&_p]:mb-2 [&_strong]:font-semibold [&_em]:italic"
+            className="prose prose-invert max-w-none text-xs leading-relaxed text-[var(--vscode-editor-foreground)] select-text cursor-text mb-6 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mb-3 [&_h2]:text-xs [&_h2]:font-semibold [&_h2]:mb-2 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mb-1.5 [&_pre]:bg-white/5 [&_pre]:rounded [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:bg-oc-bg [&_code]:px-1 [&_code]:rounded [&_pre_code]:bg-transparent [&_pre_code]:px-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:mb-0.5 [&_p]:mb-2 [&_strong]:font-semibold [&_em]:italic"
           />
         ) : (
           <div className="py-8 text-xs text-[var(--vscode-descriptionForeground)]">
@@ -479,7 +479,7 @@ export default function PlanShell() {
           <h2 className="text-xs font-semibold">
             Comments
             {comments.length > 0 && (
-              <span className="ml-2 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-mono">
+              <span className="ml-2 rounded-full bg-oc-bg px-1.5 py-0.5 text-[10px] font-mono">
                 {comments.length}
               </span>
             )}
@@ -487,7 +487,7 @@ export default function PlanShell() {
           <button
             type="button"
             onClick={() => setCommentsPanelOpen(false)}
-            className="rounded p-1 hover:bg-white/10 text-[var(--vscode-descriptionForeground)]"
+            className="rounded p-1 hover:bg-oc-bg text-[var(--vscode-descriptionForeground)]"
             aria-label="Close comments panel"
           >
             <X className="h-4 w-4" />
@@ -517,7 +517,7 @@ export default function PlanShell() {
                 <div
                   key={comment.id}
                   className={`relative rounded-md border border-[var(--vscode-panel-border)] p-3 shadow-sm text-xs transition-all duration-300 ease-in-out ${
-                    comment.resolved ? "opacity-50 grayscale bg-transparent" : "bg-white/[0.03] hover:bg-white/[0.05]"
+                    comment.resolved ? "opacity-50 grayscale bg-transparent" : "bg-oc-bg-soft hover:bg-white/[0.05]"
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2 mb-1">

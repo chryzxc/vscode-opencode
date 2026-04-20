@@ -46,6 +46,12 @@ export interface FileResult {
   name: string;
 }
 
+/** Mirrors TUI @ autocomplete categories: agents, files, MCP resources. */
+export type MentionResult =
+  | { type: "agent"; id: string; name: string; description?: string; color?: string }
+  | { type: "file"; path: string; name: string }
+  | { type: "resource"; uri: string; name: string; description?: string; clientName: string; mimeType?: string };
+
 export interface SlashCommand {
   name: string;
   description?: string;
@@ -636,6 +642,9 @@ export interface AppState {
   fileSuggestions: FileResult[];
   showFileSuggestions: boolean;
   selectedSuggestionIndex: number;
+  mentionSuggestions: MentionResult[];
+  showMentionSuggestions: boolean;
+  selectedMentionIndex: number;
   availableCommands: SlashCommand[];
   commandsLoaded: boolean;
   receivedInitState: boolean;

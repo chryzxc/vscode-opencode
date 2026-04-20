@@ -96,13 +96,13 @@ test('subagent detail modal is responsive and visually aligned with chat surface
 
   assert.match(
     modalSource,
-    /className="relative z-50 flex h-\[min\(92vh,860px\)\] min-h-0 w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-oc-border bg-oc-panel/,
-    'Modal container should use responsive constrained height and shared oc surface tokens',
+    /className="oc-modal-shell relative z-50 flex h-\[min\(92vh,860px\)\] min-h-0 w-full max-w-5xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200"/,
+    'Modal container should use responsive constrained height and shared modal shell tokens',
   );
   assert.match(
     modalSource,
-    /className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5"/,
-    'Modal body should use a single conversation column with responsive padding',
+    /className="oc-modal-content min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5"/,
+    'Modal body should use the shared modal content class with responsive padding',
   );
   assert.match(
     modalSource,

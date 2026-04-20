@@ -101,13 +101,13 @@ export function SkillInstallerModal({
 
       {/* Modal panel */}
       <div
-        className="relative z-50 w-full max-w-md flex-col overflow-hidden rounded-xl border border-oc-border bg-oc-panel text-foreground shadow-2xl animate-in zoom-in-95 duration-200"
+        className="oc-modal-shell relative z-50 w-full max-w-md flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
         role="dialog"
         aria-modal="true"
         aria-label="Install Skill"
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-oc-border bg-oc-panel-soft/70 px-4 py-3">
+        <div className="oc-modal-header flex items-center justify-between bg-oc-panel-soft/70">
           <div className="flex items-center gap-2">
             <Download className="h-4 w-4 text-oc-accent" />
             <span className="text-sm font-semibold text-foreground">Install Skill</span>
@@ -125,7 +125,7 @@ export function SkillInstallerModal({
         </div>
 
         {/* Body */}
-        <div className="flex flex-col gap-4 p-4">
+        <div className="oc-modal-content flex flex-col gap-4">
           {/* Status messages */}
           {status.type === "success" && (
             <div className="flex items-center gap-2 rounded-lg border border-oc-green/30 bg-oc-green/10 px-3 py-2.5 text-xs text-oc-green">
@@ -142,7 +142,7 @@ export function SkillInstallerModal({
           )}
 
           {/* URL input */}
-          <div className="flex flex-col gap-1.5">
+          <div className="oc-panel-section flex flex-col gap-1.5 p-3">
             <Label htmlFor="skill-url" className="text-xs font-medium text-muted-foreground">
               Skill URL
             </Label>
@@ -171,7 +171,7 @@ export function SkillInstallerModal({
           )}
 
           {/* Actions */}
-          <div className="flex items-center justify-end gap-2 pt-1">
+          <div className="oc-modal-footer px-0 pb-0 pt-3">
             <Button
               type="button"
               variant="ghost"

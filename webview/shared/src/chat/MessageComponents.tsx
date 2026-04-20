@@ -2854,7 +2854,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           index === timelineDisplayEvents.length - 1;
                         const isLatestStreamingEvent =
                           isStreamingActive && isLast;
-                        const indicatorNode = <StepIndicator status={event.status} />;
+                        const indicatorNode = (
+                          <StepIndicator
+                            status={isLatestStreamingEvent && event.status === "pending" ? "running" : event.status}
+                          />
+                        );
                         const fileName = event.filePath
                           ? event.filePath.split(/[/\\]/).pop()
                           : undefined;
@@ -2886,7 +2890,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                 >
                                   {event.label}
                                 </span>
-                                {event.kind === "activity" && event.source && (
+                                {event.kind === "activity" && event.source && event.source !== "stream" && (
                                   <span className="oc-refined-meta-badge">
                                     {event.source === "raw_debug"
                                       ? "raw"

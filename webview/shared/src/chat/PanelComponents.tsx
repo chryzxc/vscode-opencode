@@ -54,6 +54,7 @@ import type {
   ThinkingLevel,
   TodoItem,
   FileResult,
+  MentionResult,
   ContextItem,
   Model,
 } from "./lib/types";
@@ -371,7 +372,7 @@ export function StickyHeader() {
   const durationLabel = formatDuration(sessionStats.duration);
 
   return (
-    <div className="oc-header sticky top-0 z-10 flex items-center justify-between border-b px-3 py-1.5 text-xs">
+    <div className="oc-header sticky top-0 z-10 flex items-center justify-between border-b border-oc-border-soft px-3 py-1.5 text-xs">
       {/* Left side: Session title only */}
       <div className="oc-header-left flex items-center min-w-0">
         <span className="oc-title text-sm font-medium truncate">{sessionTitle}</span>
@@ -489,7 +490,7 @@ function MiniSection({
 }) {
   const [open, setOpen] = useMiniSectionState(defaultOpen);
   return (
-    <div className="mb-1.5 overflow-hidden rounded-md border border-oc-border">
+    <div className="oc-panel-section mb-1.5 overflow-hidden p-0">
       <Button
         type="button"
         variant="ghost"
@@ -517,9 +518,7 @@ function MiniSection({
           <ChevronDown className="h-3 w-3 text-[var(--oc-text-soft)] opacity-70" />
         </span>
       </Button>
-      {open && (
-        <div className="bg-oc-bg-soft px-2.5 pb-2.5 pt-1.5">{children}</div>
-      )}
+      {open && <div className="px-2.5 pb-2.5 pt-1.5">{children}</div>}
     </div>
   );
 }
@@ -1191,7 +1190,7 @@ export function ModelDropdown() {
                 dispatch({ type: "SET_MODEL_SEARCH", payload: e.target.value })
               }
               placeholder="Search models..."
-              className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-oc-sm font-mono outline-none focus:border-oc-accent transition-colors"
+              className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-mono outline-none focus:border-oc-accent transition-colors"
             />
             {subscribedProviders.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
@@ -1252,7 +1251,7 @@ export function ModelDropdown() {
                       }}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-oc-sm font-medium truncate">
+                        <span className="text-xs font-medium truncate">
                           {model.name}
                         </span>
                         {isCurrent && (
@@ -1351,17 +1350,17 @@ export function AgentDropdown() {
                 dispatch({ type: "SET_AGENT_SEARCH", payload: e.target.value })
               }
               placeholder="Search agents..."
-              className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-oc-sm font-mono outline-none focus:border-oc-accent transition-colors"
+              className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-mono outline-none focus:border-oc-accent transition-colors"
             />
           </div>
           <div className="max-h-52 overflow-y-auto px-1.5 pb-1.5">
             {availableAgents.length === 0 && (
-              <div className="px-2.5 py-3 text-oc-sm text-oc-text-muted text-center font-mono">
+              <div className="px-2.5 py-3 text-xs text-oc-text-muted text-center font-mono">
                 Loading agents…
               </div>
             )}
             {availableAgents.length > 0 && filtered.length === 0 && (
-              <div className="px-2.5 py-3 text-oc-sm text-oc-text-muted text-center font-mono">
+              <div className="px-2.5 py-3 text-xs text-oc-text-muted text-center font-mono">
                 No agents found
               </div>
             )}
@@ -1379,7 +1378,7 @@ export function AgentDropdown() {
                   vscode.postMessage({ type: "selectAgent", agent: agent.id });
                 }}
               >
-                <div className="text-oc-sm font-medium">{agent.name}</div>
+                <div className="text-xs font-medium">{agent.name}</div>
                 <div className="text-xs font-mono text-oc-text-muted truncate mt-0.5">
                   {agent.description}
                 </div>
@@ -1458,7 +1457,7 @@ export function QueueContainer() {
         return (
           <div
             key={item.id || `${item.text}-${index}`}
-            className="group flex items-start gap-2 rounded-lg border border-oc-border bg-oc-bg-soft px-2.5 py-1.5"
+            className="oc-panel-section group flex items-start gap-2 p-0 px-2.5 py-1.5"
           >
             <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-oc-accent-soft">
               <span className="font-mono text-[8px] font-bold text-oc-accent">
@@ -1513,6 +1512,9 @@ export function InputWrapper() {
     showFileSuggestions,
     fileSuggestions,
     selectedSuggestionIndex,
+    mentionSuggestions,
+    showMentionSuggestions,
+    selectedMentionIndex,
     availableCommands,
     commandsLoaded,
     attachments = [],
@@ -1609,6 +1611,13 @@ export function InputWrapper() {
   useEffect(() => {
     if (mentionTrigger) {
       vscode.postMessage({ type: "getMentions", query: mentionTrigger.query });
+    } else {
+      if (showFileSuggestions) {
+        dispatch({ type: "SET_SHOW_FILE_SUGGESTIONS", payload: false });
+      }
+      if (showMentionSuggestions) {
+        dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: false });
+      }
     }
   }, [mentionTrigger?.query]);
 
@@ -1745,6 +1754,59 @@ export function InputWrapper() {
     setMentionTrigger(null);
     dispatch({ type: "SET_SHOW_FILE_SUGGESTIONS", payload: false });
     dispatch({ type: "SET_SUGGESTION_INDEX", payload: 0 });
+
+    requestAnimationFrame(() => {
+      if (!textareaRef.current) return;
+      textareaRef.current.focus();
+      textareaRef.current.setSelectionRange(before.length, before.length);
+    });
+  };
+
+  const applyMentionResult = (result: MentionResult) => {
+    if (!mentionTrigger) return;
+
+    if (result.type === "agent") {
+      dispatch({ type: "SET_SELECTED_AGENT", payload: result.id });
+    } else if (result.type === "file") {
+      const contextItem: ContextItem = {
+        file: result.path,
+        lineInfo: "",
+        content: "",
+      };
+      const alreadySelected = selectedContexts.some(
+        (c) => c.file === contextItem.file && c.lineInfo === contextItem.lineInfo
+      );
+      if (!alreadySelected) {
+        dispatch({
+          type: "SET_SELECTED_CONTEXTS",
+          payload: [...selectedContexts, contextItem],
+        });
+      }
+    } else if (result.type === "resource") {
+      const contextItem: ContextItem = {
+        file: `resource:${result.uri}`,
+        lineInfo: "",
+        content: "",
+      };
+      const alreadySelected = selectedContexts.some(
+        (c) => c.file === contextItem.file
+      );
+      if (!alreadySelected) {
+        dispatch({
+          type: "SET_SELECTED_CONTEXTS",
+          payload: [...selectedContexts, contextItem],
+        });
+      }
+    }
+
+    const before = inputValue.slice(0, mentionTrigger.replaceFrom);
+    const after = inputValue.slice(mentionTrigger.replaceTo);
+    const nextValue = `${before}${after}`;
+
+    dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
+    setMentionTrigger(null);
+    dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: false });
+    dispatch({ type: "SET_MENTION_INDEX", payload: 0 });
 
     requestAnimationFrame(() => {
       if (!textareaRef.current) return;
@@ -2017,17 +2079,17 @@ export function InputWrapper() {
       <QueueContainer />
       <div
         className="oc-input-area"
-        style={promptQueue.length > 0 ? { borderTop: "none" } : undefined}
-      >
-        {event && (
-          <div className="mb-2 rounded-lg border border-[var(--oc-border)] bg-[var(--oc-panel-soft)] px-3 py-2">
-            <div className="mb-2 flex items-center justify-between gap-2 border-b border-[var(--oc-border)] pb-1.5">
-              <div className="flex items-center gap-2">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-muted)]">
-                  {event.title || "Quick Input"}
-                </div>
-                {displayInteractiveEvents.length > 1 && (
-                  <div className="flex items-center gap-1.5 ml-2 border-l border-[var(--oc-border)] pl-3">
+         style={promptQueue.length > 0 ? { borderTop: "none" } : undefined}
+       >
+         {event && (
+           <div className="mb-2 rounded-lg border border-oc-border-soft bg-[var(--oc-panel-soft)] px-3 py-2">
+             <div className="mb-2 flex items-center justify-between gap-2 border-b border-oc-border-soft pb-1.5">
+               <div className="flex items-center gap-2">
+                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-muted)]">
+                   {event.title || "Quick Input"}
+                 </div>
+                 {displayInteractiveEvents.length > 1 && (
+                   <div className="flex items-center gap-1.5 ml-2 border-l border-oc-border-soft pl-3">
                     <button
                       type="button"
                       disabled={currentInteractiveIndex === 0}
@@ -2294,42 +2356,50 @@ export function InputWrapper() {
                 {file}
               </Badge>
             ))}
-            {selectedContexts.map((context) => (
-              <Badge
-                key={`${context.file}:${context.lineInfo}`}
-                variant="secondary"
-                className="flex items-center gap-1 font-mono text-[10px] pr-1.5 hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
-              >
-                <FileIcon filePath={context.file} />
-                <span>
-                  {context.file} {context.lineInfo}
-                </span>
-                {context.languageId && (
-                  <span className="opacity-60 text-[9px] font-semibold">
-                    {context.languageId}
+            {selectedContexts.map((context) => {
+              const isResource = context.file.startsWith("resource:");
+              const displayFile = isResource ? context.file.replace("resource:", "") : context.file;
+              return (
+                <Badge
+                  key={`${context.file}:${context.lineInfo}`}
+                  variant="secondary"
+                  className="flex items-center gap-1 font-mono text-[10px] pr-1.5 hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
+                >
+                  {isResource ? (
+                    <Wrench className="h-3 w-3 shrink-0" />
+                  ) : (
+                    <FileIcon filePath={context.file} />
+                  )}
+                  <span>
+                    {displayFile} {context.lineInfo}
                   </span>
-                )}
-                {context.isAuto && (
-                  <button
-                    type="button"
-                    className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      dispatch({
-                        type: "SET_SELECTED_CONTEXTS",
-                        payload: selectedContexts.filter(
-                          (c) =>
-                            c.file !== context.file ||
-                            c.lineInfo !== context.lineInfo,
-                        ),
-                      });
-                    }}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </Badge>
-            ))}
+                  {context.languageId && !isResource && (
+                    <span className="opacity-60 text-[9px] font-semibold">
+                      {context.languageId}
+                    </span>
+                  )}
+                  {context.isAuto && (
+                    <button
+                      type="button"
+                      className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-oc-bg transition-colors"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        dispatch({
+                          type: "SET_SELECTED_CONTEXTS",
+                          payload: selectedContexts.filter(
+                            (c) =>
+                              c.file !== context.file ||
+                              c.lineInfo !== context.lineInfo,
+                          ),
+                        });
+                      }}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </Badge>
+              );
+            })}
           </div>
         )}
 
@@ -2420,8 +2490,40 @@ export function InputWrapper() {
                 }
               }
 
-              if (mentionTrigger && showFileSuggestions) {
-                if (e.key === "ArrowDown" && fileSuggestions.length > 0) {
+              if (mentionTrigger && showMentionSuggestions && mentionSuggestions.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  dispatch({
+                    type: "SET_MENTION_INDEX",
+                    payload: Math.min(selectedMentionIndex + 1, mentionSuggestions.length - 1)
+                  });
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  dispatch({
+                    type: "SET_MENTION_INDEX",
+                    payload: Math.max(selectedMentionIndex - 1, 0)
+                  });
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  applyMentionResult(
+                    mentionSuggestions[selectedMentionIndex] || mentionSuggestions[0]
+                  );
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setMentionTrigger(null);
+                  dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: false });
+                  return;
+                }
+              }
+
+              if (mentionTrigger && showFileSuggestions && fileSuggestions.length > 0 && !showMentionSuggestions) {
+                if (e.key === "ArrowDown") {
                   e.preventDefault();
                   dispatch({
                     type: "SET_SUGGESTION_INDEX",
@@ -2429,7 +2531,7 @@ export function InputWrapper() {
                   });
                   return;
                 }
-                if (e.key === "ArrowUp" && fileSuggestions.length > 0) {
+                if (e.key === "ArrowUp") {
                   e.preventDefault();
                   dispatch({
                     type: "SET_SUGGESTION_INDEX",
@@ -2437,7 +2539,7 @@ export function InputWrapper() {
                   });
                   return;
                 }
-                if ((e.key === "Enter" || e.key === "Tab") && fileSuggestions.length > 0) {
+                if ((e.key === "Enter" || e.key === "Tab")) {
                   e.preventDefault();
                   applyMentionSuggestion(
                     fileSuggestions[selectedSuggestionIndex] || fileSuggestions[0]
@@ -2509,8 +2611,8 @@ export function InputWrapper() {
             </div>
           )}
 
-          {/* File suggestions */}
-          {showFileSuggestions && fileSuggestions.length > 0 && (
+          {/* File suggestions (legacy path) */}
+          {showFileSuggestions && fileSuggestions.length > 0 && !showMentionSuggestions && (
             <div className="oc-suggestions" ref={suggestionsContainerRef}>
               {fileSuggestions.map((suggestion, index) => (
                 <button
@@ -2523,6 +2625,54 @@ export function InputWrapper() {
                   onClick={() => applyMentionSuggestion(suggestion)}
                 >
                   {suggestion.name}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Mention suggestions (agents + files + MCP resources) */}
+          {showMentionSuggestions && mentionSuggestions.length > 0 && (
+            <div className="oc-suggestions" ref={suggestionsContainerRef}>
+              {mentionSuggestions.map((item, index) => (
+                <button
+                  key={`${item.type}:${item.type === "agent" ? item.id : item.type === "file" ? item.path : item.uri}`}
+                  type="button"
+                  className={`oc-suggestion-item ${index === selectedMentionIndex ? "active" : ""}`}
+                  onMouseEnter={() => dispatch({ type: "SET_MENTION_INDEX", payload: index })}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => applyMentionResult(item)}
+                >
+                  <span className="flex items-center gap-2 w-full min-w-0">
+                    {item.type === "agent" && (
+                      <Bot className="h-3.5 w-3.5 shrink-0 text-[var(--vscode-textLink-foreground)]" />
+                    )}
+                    {item.type === "file" && (
+                      <span className="shrink-0 text-oc-text-muted text-[10px]">📄</span>
+                    )}
+                    {item.type === "resource" && (
+                      <Wrench className="h-3.5 w-3.5 shrink-0 text-[var(--vscode-notificationsWarningIcon-foreground)]" />
+                    )}
+                    <span className="truncate text-[11px]">
+                      {item.type === "agent" && item.name}
+                      {item.type === "file" && item.name}
+                      {item.type === "resource" && item.name}
+                    </span>
+                    {item.type === "agent" && item.description && (
+                      <span className="ml-auto text-[9px] text-oc-text-muted truncate max-w-[140px]">
+                        {item.description}
+                      </span>
+                    )}
+                    {item.type === "file" && (
+                      <span className="ml-auto text-[9px] text-oc-text-muted truncate max-w-[140px]" title={item.path}>
+                        {item.path}
+                      </span>
+                    )}
+                    {item.type === "resource" && (
+                      <span className="ml-auto text-[9px] text-oc-text-muted truncate max-w-[140px]">
+                        {item.clientName}
+                      </span>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>
@@ -2671,7 +2821,7 @@ export function ThinkingLevelControl() {
                 onClick={() => setLevel(level)}
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-oc-sm font-medium capitalize">
+                  <span className="text-xs font-medium capitalize">
                     {level}
                   </span>
                   {thinkingLevel === level && (
@@ -2807,11 +2957,11 @@ export function QuotaMonitor() {
                 .map((platform) => (
                   <div
                     key={`${platform.platform}-${platform.account}`}
-                    className="overflow-hidden rounded-xl border border-oc-border bg-[linear-gradient(180deg,var(--oc-panel)_0%,var(--oc-panel-soft)_100%)] shadow-[0_6px_20px_rgba(0,0,0,0.2)]"
+                    className="oc-modal-shell overflow-hidden p-0 bg-[linear-gradient(180deg,var(--oc-panel)_0%,var(--oc-panel-soft)_100%)] shadow-[0_6px_20px_rgba(0,0,0,0.2)]"
                   >
-                    <div className="border-b border-oc-border px-3 py-2.5">
+                    <div className="oc-modal-header px-3 py-2.5">
                       <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <span className="text-oc-sm font-semibold tracking-tight text-[var(--oc-text-soft)]">
+                        <span className="text-xs font-semibold tracking-tight text-[var(--oc-text-soft)]">
                           {toProviderName(platform.platform, platform.title)}
                         </span>
                         {platform.status === "error" ? (
@@ -2840,7 +2990,7 @@ export function QuotaMonitor() {
                       </div>
                     </div>
 
-                    <div className="space-y-2.5 px-3 py-2.5">
+                    <div className="oc-modal-content space-y-2.5 px-3 py-2.5">
                       {platform.error ? (
                         <div className="rounded-md border border-oc-red/40 bg-oc-red/10 px-2.5 py-2 text-oc-red">
                           {platform.error.length > 130
@@ -2909,9 +3059,12 @@ export function QuotaMonitor() {
 
                       {/* Budget info - integrated into GitHub Copilot card */}
                       {platform.platform === "github-copilot" && budgetInfo ? (
-                        <div className="mt-3 overflow-hidden rounded-xl border border-oc-border bg-[var(--oc-panel-soft)]/40 shadow-sm">
+                        <div className="oc-modal-panel mt-3 overflow-hidden p-0 bg-[var(--oc-panel-soft)]/40 shadow-sm">
                           {/* Header */}
-                          <div className="border-b border-oc-border/50 px-3 py-2 flex items-center justify-between">
+                          <div
+                            className="oc-modal-header flex items-center justify-between px-3 py-2"
+                            style={{ borderBottomColor: "color-mix(in srgb, var(--oc-border) 50%, transparent)" }}
+                          >
                             <div className="flex items-center gap-2">
                               <div className="flex h-5 w-5 items-center justify-center rounded-md bg-oc-accent/10 text-oc-accent">
                                 <Zap className="h-3 w-3 fill-current" />
@@ -2934,7 +3087,7 @@ export function QuotaMonitor() {
                           </div>
 
                           {/* Progress bar section */}
-                          <div className="px-3 pt-2.5 pb-2">
+                          <div className="oc-modal-content px-3 pt-2.5 pb-2">
                             <div className="mb-1.5 flex items-center justify-between">
                               <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--oc-text-soft)] opacity-50">
                                 Used Today
@@ -3007,7 +3160,10 @@ export function QuotaMonitor() {
 
                           {/* Advice footer */}
                           {budgetInfo.advice && budgetInfo.advice.length > 0 ? (
-                            <div className="border-t border-oc-border/30 bg-oc-accent/5 px-3 py-1.5">
+                            <div
+                              className="oc-modal-footer justify-start bg-oc-accent/5 px-3 py-1.5"
+                              style={{ borderTopColor: "color-mix(in srgb, var(--oc-border) 30%, transparent)" }}
+                            >
                               <p className="text-[10px] leading-relaxed text-[var(--oc-text-soft)] opacity-75 italic">
                                 {budgetInfo.advice[0].replace(
                                   /^(?:💡|✅|⚠️|🚨)\s*/,
@@ -3121,7 +3277,7 @@ export function TodoPanel() {
               {todoItems.map((t) => (
                 <div
                   key={t.id}
-                  className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-panel-soft p-2"
+                  className="oc-panel-section flex items-start gap-2 bg-oc-panel-soft p-2"
                 >
                   <div
                     className={`text-[14px] leading-none mt-0.5 ${t.status === "failed"
@@ -3269,7 +3425,7 @@ export function McpPanel() {
               return (
                 <div
                   key={server.name}
-                  className="rounded-md border border-oc-border bg-oc-panel-soft"
+                  className="oc-panel-section bg-oc-panel-soft p-0"
                 >
                   {/* Server row */}
                   <div className="flex items-center gap-2 p-2">
@@ -3407,7 +3563,7 @@ export function LspPanel() {
             lspServers.map((server) => (
               <div
                 key={server.id}
-                className="rounded-md border border-oc-border bg-oc-panel-soft p-2"
+                className="oc-panel-section bg-oc-panel-soft p-2"
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
@@ -3568,7 +3724,7 @@ export function SkillsPanel() {
               return (
                 <div
                   key={skill.name}
-                  className="rounded-md border border-oc-border bg-oc-panel-soft"
+                  className="oc-panel-section bg-oc-panel-soft p-0"
                 >
                   <div className="flex items-center gap-2 p-2">
                     <span className="font-mono text-xs font-medium text-oc-accent shrink-0">
@@ -3734,7 +3890,7 @@ export function AgentsPanel() {
               return (
                 <div
                   key={agent.id}
-                  className="rounded-md border border-oc-border bg-oc-panel-soft"
+                  className="oc-panel-section bg-oc-panel-soft p-0"
                 >
                   <div className="flex items-center gap-2 p-2">
                     {/* Color dot — uses agent's color if set, else accent */}
@@ -4169,8 +4325,8 @@ export function SettingsModal({
         className="oc-image-preview-backdrop backdrop-blur-sm bg-black/40"
         onClick={onClose}
       />
-      <div className="oc-image-preview-modal max-w-3xl w-[94vw] h-[84vh] flex flex-col overflow-hidden border border-oc-border shadow-2xl animate-in zoom-in-95 duration-200">
-        <div className="oc-image-preview-header flex items-center justify-between px-4 py-3 border-b border-oc-border bg-oc-bg-soft">
+      <div className="oc-image-preview-modal oc-modal-shell max-w-3xl w-[94vw] h-[84vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="oc-image-preview-header oc-modal-header flex items-center justify-between bg-oc-bg-soft">
           <div className="flex items-center gap-2">
             <Wrench className="h-4 w-4 text-oc-accent" />
             <span className="font-semibold text-sm">
@@ -4200,7 +4356,7 @@ export function SettingsModal({
           </button>
         </div>
 
-        <div className="flex-1 flex flex-col p-4 space-y-3 overflow-hidden bg-oc-bg">
+        <div className="oc-modal-content flex-1 flex flex-col space-y-3 overflow-hidden bg-oc-bg">
           <div className="flex items-center justify-between text-xs gap-3">
             <div className="flex items-center gap-2 text-oc-text-muted min-w-0">
               <FileIcon filePath="opencode.json" className="h-3.5 w-3.5 shrink-0" />
@@ -4252,7 +4408,7 @@ export function SettingsModal({
                 </div>
               ) : (
                 <div className="h-full overflow-y-auto space-y-3 pr-1">
-                  <div className="rounded-md border border-oc-border/70 bg-oc-bg-soft p-2 text-[10px] text-oc-text-muted">
+                   <div className="oc-panel-section border-oc-border-soft p-2 text-[10px] text-oc-text-muted">
                     GUI mode: Edit nested objects, arrays, and primitives with full JSON structure support.
                   </div>
                   <JsonFormEditor
@@ -4294,7 +4450,7 @@ export function SettingsModal({
           ) : null}
         </div>
 
-        <div className="p-4 border-t border-oc-border bg-oc-bg-soft flex justify-between items-center gap-3">
+        <div className="oc-modal-footer items-center justify-between bg-oc-bg-soft">
           <p className="text-[10px] text-oc-text-muted">
             {isDirty
               ? "Unsaved changes detected."
@@ -4394,7 +4550,7 @@ export function SettingsPanel() {
       </div>
 
       <div className="space-y-3">
-        <div className="flex flex-col gap-1.5 p-2 rounded-lg bg-oc-bg-soft border border-oc-border/50 shadow-sm transition-all hover:border-oc-accent/30">
+         <div className="oc-panel-section flex flex-col gap-1.5 border-oc-border-soft p-2 shadow-sm transition-all hover:border-oc-accent/30">
           <div className="flex items-center justify-between text-[10px] text-oc-text-muted font-medium uppercase tracking-wider">
             <span>Current Model</span>
             <Badge
@@ -4439,9 +4595,9 @@ export function SettingsPanel() {
           </div>
         ) : null}
 
-        {/* File Selector Dropdown */}
-        {opencodeConfig?.files && opencodeConfig.files.length > 1 && (
-          <div className="flex flex-col gap-1.5 p-2 rounded-lg bg-oc-bg-soft border border-oc-border/50 shadow-sm">
+         {/* File Selector Dropdown */}
+         {opencodeConfig?.files && opencodeConfig.files.length > 1 && (
+           <div className="oc-panel-section flex flex-col gap-1.5 border-oc-border-soft p-2 shadow-sm">
             <div className="text-[10px] text-oc-text-muted font-medium uppercase tracking-wider">
               Config Files ({opencodeConfig.files.length})
             </div>

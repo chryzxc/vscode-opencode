@@ -204,13 +204,13 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
 
       {/* Modal panel */}
       <div
-        className="relative z-50 flex w-full max-w-md flex-col overflow-hidden rounded-xl border border-oc-border bg-oc-panel text-foreground shadow-2xl animate-in zoom-in-95 duration-200 max-h-[80vh]"
+        className="oc-modal-shell relative z-50 flex w-full max-w-md flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200 max-h-[80vh]"
         role="dialog"
         aria-modal="true"
         aria-label="Sessions"
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-oc-border bg-oc-panel-soft/70 px-4 py-3">
+        <div className="oc-modal-header flex items-center justify-between bg-oc-panel-soft/70">
           <div className="flex items-center gap-2">
             <History className="h-4 w-4 text-oc-accent" />
             <span className="text-sm font-semibold text-foreground">Untitled</span>
@@ -408,7 +408,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
         </div>
 
         {/* Footer - New Chat Button */}
-        <div className="shrink-0 px-4 py-3 border-t border-oc-border bg-oc-panel-soft/50">
+        <div className="oc-modal-footer bg-oc-panel-soft/50 justify-center">
           <button
             type="button"
             className="flex w-full items-center justify-center gap-1.5 rounded-md border border-oc-accent bg-oc-accent-soft py-2 text-xs font-medium text-oc-accent transition-all hover:bg-oc-accent hover:text-white active:scale-[0.98]"

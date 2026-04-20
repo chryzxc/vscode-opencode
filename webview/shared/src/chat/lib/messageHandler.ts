@@ -14,6 +14,7 @@ import type {
   LspServerInfo,
   McpServerInfo,
   McpServerStatus,
+  MentionResult,
   Message,
   MessagePart,
   MessageStep,
@@ -3092,6 +3093,16 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
 function isFileResult(value: unknown): value is FileResult {
   const rec = asRecord(value);
   return !!rec && typeof rec.path === 'string' && typeof rec.name === 'string';
+}
+
+function isMentionResult(value: unknown): value is MentionResult {
+  const rec = asRecord(value);
+  if (!rec || typeof rec.type !== 'string') return false;
+  const t = rec.type;
+  if (t === 'agent') return typeof rec.id === 'string' && typeof rec.name === 'string';
+  if (t === 'file') return typeof rec.path === 'string' && typeof rec.name === 'string';
+  if (t === 'resource') return typeof rec.uri === 'string' && typeof rec.name === 'string' && typeof rec.clientName === 'string';
+  return false;
 }
 
 function isSlashCommand(value: unknown): value is SlashCommand {
@@ -8421,6 +8432,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             payload: results.length > 0,
           });
           dispatch({ type: "SET_SUGGESTION_INDEX", payload: 0 });
+          break;
+        }
+        case "mentionResults": {
+          const results = asArray(data.results, isMentionResult);
+          dispatch({ type: "SET_MENTION_SUGGESTIONS", payload: results });
+          dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: results.length > 0 });
+          dispatch({ type: "SET_MENTION_INDEX", payload: 0 });
           break;
         }
         case "commandsList": {

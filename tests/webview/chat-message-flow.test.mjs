@@ -123,8 +123,8 @@ test('Assistant responses include dedicated enter transition classes', () => {
 test('assistant header is responsive on small screens for agent/model/metrics rail', () => {
   assert.match(
     messageSource,
-    /mb-2\.5 flex flex-wrap items-start justify-between gap-2/,
-    'assistant header container should wrap and align from top on narrow widths',
+    /mb-2\.5 flex items-start justify-between gap-2/,
+    'assistant header container should not wrap and align from top',
   );
   assert.match(
     messageSource,

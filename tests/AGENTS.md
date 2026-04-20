@@ -17,7 +17,9 @@
 ## CONVENTIONS
 - Most high-value tests are contract/regression named; use filenames to choose intent, not just folder location.
 - Root-level `.test.mjs` files are the main Node runner suite; `tests/unit/` and `tests/integration/` narrow scope when you know the affected layer.
+- `tests/unit/**/*.test.ts` runs via Vitest with 100% coverage thresholds; separate from the main Node suite.
 - When changing prompt paths or structured output, prioritise policy/contract tests before broader UI sweeps.
+- Test impact selection: `scripts/test-impact-map.json` maps source files → test files; run via `npm run test:impacted`.
 
 ## ANTI-PATTERNS
 - Do not run only happy-path unit tests when touching prompt ownership, structured output, or chat asset wiring.

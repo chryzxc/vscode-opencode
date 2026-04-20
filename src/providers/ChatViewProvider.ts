@@ -2521,7 +2521,7 @@ export class ChatViewProvider
         }
         case "searchFiles":
         case "getMentions": {
-          await this.handleSearchFiles(message.query);
+          await this.handleMentions(message.query);
           break;
         }
         case "getOpenCodeConfig": {
@@ -5557,10 +5557,23 @@ export class ChatViewProvider
       // Add context fragments if any
       if (contexts && contexts.length > 0) {
         for (const ctx of contexts) {
-          parts.push({
-            type: "text",
-            text: `\`\`\`${ctx.languageId}\n// ${ctx.file}:${ctx.lineInfo}\n${ctx.content}\n\`\`\``,
-          });
+          if (ctx.file && ctx.file.startsWith("resource:")) {
+            const resourceUri = ctx.file.replace("resource:", "");
+            parts.push({
+              type: "file",
+              mime: ctx.languageId || "text/plain",
+              url: resourceUri,
+              source: {
+                type: "resource" as const,
+                uri: resourceUri,
+              } as any,
+            });
+          } else if (ctx.content) {
+            parts.push({
+              type: "text",
+              text: `\`\`\`${ctx.languageId}\n// ${ctx.file}:${ctx.lineInfo}\n${ctx.content}\n\`\`\``,
+            });
+          }
         }
       }
 
@@ -7005,52 +7018,31 @@ export class ChatViewProvider
   }
 
   /**
-   * Handles file search requests from the webview
+   * Handles file search via OpenCode SDK (fuzzy + frecency), falls back to VS Code.
    */
   private async handleSearchFiles(query: string) {
-    const flow = log.startFeatureFlow('FileSearch', { queryLength: query.length });
-
-    if (!query) {
-      log.endFeatureFlow(flow, { result: 'skipped', reason: 'Empty query' });
-      this.view?.webview.postMessage({
-        type: "fileSearchResults",
-        results: [],
-      });
-      return;
-    }
+    const flow = log.startFeatureFlow('FileSearch', { queryLength: query?.length ?? 0 });
 
     try {
-      log.featureStep(flow, 'searching_files', { query, maxResults: 20 });
+      log.featureStep(flow, 'searching_files_sdk', { query });
       const startTime = Date.now();
 
-      // Simple file search using VS Code API
-      // Limit to 20 results for performance
-      const files = await vscode.workspace.findFiles(
-        `**/*${query}*`,
-        "**/node_modules/**",
-        20,
-      );
+      const results = await this.searchFilesViaSDK(query);
 
       const duration = Date.now() - startTime;
-      const results = files.map((f) => {
-        const relativePath = vscode.workspace.asRelativePath(f);
-        return {
-          path: relativePath,
-          name: relativePath.split(/[\\/]/).pop() || relativePath,
-        };
-      });
 
       log.featureStep(flow, 'search_completed', {
-        resultCount: results.length,
+        source: results.source,
+        resultCount: results.items.length,
         duration,
       });
 
       this.view?.webview.postMessage({
         type: "fileSearchResults",
-        results: results,
+        results: results.items,
       });
 
-      log.endFeatureFlow(flow, { result: 'completed', resultCount: results.length, duration });
+      log.endFeatureFlow(flow, { result: 'completed', source: results.source, resultCount: results.items.length, duration });
     } catch (error) {
       log.error('File search failed', { query }, error as Error);
       log.endFeatureFlow(flow, { result: 'failed', error: String(error) });
@@ -7058,6 +7050,205 @@ export class ChatViewProvider
         type: "fileSearchResults",
         results: [],
       });
+    }
+  }
+
+  /**
+   * Search files via SDK with VS Code fallback.
+   */
+  private async searchFilesViaSDK(query: string): Promise<{ items: Array<{ path: string; name: string }>; source: string }> {
+    try {
+      const client = await this.serverManager.ensureRunning();
+
+      const response = await client.find.files({
+        query: {
+          query: query || "",
+        },
+      });
+
+      if (response.data && Array.isArray(response.data)) {
+        const items = response.data.map((filePath: string) => {
+          const name = filePath.split(/[\\/]/).pop() || filePath;
+          return { path: filePath, name };
+        });
+        return { items, source: 'opencode-sdk' };
+      }
+
+    } catch (error) {
+      log.warn('SDK file search failed, falling back to VS Code', { query, error: String(error) });
+    }
+
+    return this.searchFilesViaVSCode(query);
+  }
+
+  /**
+   * Fallback file search using VS Code workspace API.
+   */
+  private async searchFilesViaVSCode(query: string): Promise<{ items: Array<{ path: string; name: string }>; source: string }> {
+    if (!query) {
+      return { items: [], source: 'vscode-fallback' };
+    }
+
+    const files = await vscode.workspace.findFiles(
+      `**/*${query}*`,
+      "**/node_modules/**",
+      20,
+    );
+
+    const items = files.map((f) => {
+      const relativePath = vscode.workspace.asRelativePath(f);
+      return {
+        path: relativePath,
+        name: relativePath.split(/[\\/]/).pop() || relativePath,
+      };
+    });
+
+    return { items, source: 'vscode-fallback' };
+  }
+
+  private async handleMentions(query: string) {
+    const flow = log.startFeatureFlow('Mentions', { queryLength: query?.length ?? 0 });
+
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const q = (query || "").toLowerCase();
+      const results: Array<{
+        type: "agent" | "file" | "resource";
+        [key: string]: unknown;
+      }> = [];
+
+      const [agentResults, fileResults, resourceResults] = await Promise.all([
+        this.searchAgents(client, q).catch((e) => {
+          log.warn("Agent search failed in handleMentions", { error: String(e) });
+          return [] as Array<{ type: "agent"; id: string; name: string; description?: string; color?: string }>;
+        }),
+        this.searchFilesForMentions(client, q).catch((e) => {
+          log.warn("File search failed in handleMentions", { error: String(e) });
+          return [] as Array<{ type: "file"; path: string; name: string }>;
+        }),
+        this.searchMcpResources(client, q).catch((e) => {
+          log.warn("Resource search failed in handleMentions", { error: String(e) });
+          return [] as Array<{ type: "resource"; uri: string; name: string; description?: string; clientName: string; mimeType?: string }>;
+        }),
+      ]);
+
+      results.push(...agentResults, ...fileResults, ...resourceResults);
+
+      log.featureStep(flow, "mentions_completed", {
+        agentCount: agentResults.length,
+        fileCount: fileResults.length,
+        resourceCount: resourceResults.length,
+      });
+
+      this.view?.webview.postMessage({
+        type: "mentionResults",
+        results,
+      });
+
+      log.endFeatureFlow(flow, { result: "completed", totalCount: results.length });
+    } catch (error) {
+      log.error("Mentions failed", { query }, error as Error);
+      log.endFeatureFlow(flow, { result: "failed", error: String(error) });
+      this.view?.webview.postMessage({ type: "mentionResults", results: [] });
+    }
+  }
+
+  private async searchAgents(
+    client: NonNullable<Awaited<ReturnType<typeof this.serverManager.ensureRunning>>>,
+    query: string,
+  ): Promise<Array<{ type: "agent"; id: string; name: string; description?: string; color?: string }>> {
+    if (!client || typeof (client as any).app?.agents !== "function") {
+      return [];
+    }
+
+    const HIDDEN_AGENTS = new Set(["compaction", "title", "summary"]);
+    const response = await (client as any).app.agents();
+    if (!response?.data || !Array.isArray(response.data)) {
+      return [];
+    }
+
+    const agents = response.data
+      .filter((a: any) => {
+        const mode = a.mode as string;
+        return (
+          (mode === "primary" || mode === "all") &&
+          !HIDDEN_AGENTS.has(a.name as string)
+        );
+      })
+      .map((a: any) => {
+        const id = a.name as string;
+        const displayName = id.charAt(0).toUpperCase() + id.slice(1);
+        return {
+          type: "agent" as const,
+          id,
+          name: displayName,
+          description: (a.description as string | undefined) ?? `OpenCode ${displayName} agent`,
+          color: a.color as string | undefined,
+        };
+      });
+
+    if (!query) return agents.slice(0, 10);
+    return agents
+      .filter((a: { name: string; id: string }) => a.name.toLowerCase().includes(query) || a.id.toLowerCase().includes(query))
+      .slice(0, 10);
+  }
+
+  private async searchFilesForMentions(
+    client: NonNullable<Awaited<ReturnType<typeof this.serverManager.ensureRunning>>>,
+    query: string,
+  ): Promise<Array<{ type: "file"; path: string; name: string }>> {
+    const sdkResult = await this.searchFilesViaSDK(query);
+    return sdkResult.items.map((item) => ({
+      type: "file" as const,
+      ...item,
+    }));
+  }
+
+  private async searchMcpResources(
+    client: NonNullable<Awaited<ReturnType<typeof this.serverManager.ensureRunning>>>,
+    query: string,
+  ): Promise<Array<{ type: "resource"; uri: string; name: string; description?: string; clientName: string; mimeType?: string }>> {
+    const port = this.serverManager.getPort();
+    if (!port) return [];
+
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    const workspace = workspaceFolders?.[0]?.uri?.fsPath ?? "";
+
+    try {
+      const fetchUrl = `${baseUrl}/experimental/resource?workspace=${encodeURIComponent(workspace)}`;
+      const resp = await fetch(fetchUrl);
+      if (!resp.ok) return [];
+
+      const body = await resp.json() as Record<string, {
+        name?: string;
+        uri?: string;
+        description?: string;
+        mimeType?: string;
+        client?: string;
+      }>;
+
+      const resources = Object.values(body || {})
+        .filter((r) => r.name && r.uri && r.client)
+        .map((r) => ({
+          type: "resource" as const,
+          uri: r.uri!,
+          name: r.name!,
+          description: r.description,
+          clientName: r.client!,
+          mimeType: r.mimeType,
+        }));
+
+      if (!query) return resources.slice(0, 10);
+      return resources
+        .filter((r) =>
+          r.name.toLowerCase().includes(query) ||
+          (r.description && r.description.toLowerCase().includes(query)) ||
+          r.clientName.toLowerCase().includes(query)
+        )
+        .slice(0, 10);
+    } catch {
+      return [];
     }
   }
 

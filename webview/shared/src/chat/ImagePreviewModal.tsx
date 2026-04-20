@@ -42,12 +42,12 @@ export function ImagePreviewModal({
         aria-label="Close image preview"
       />
       <div
-        className="oc-image-preview-modal"
+        className="oc-image-preview-modal oc-modal-shell"
         role="dialog"
         aria-modal="true"
         aria-label={title ?? imageAlt}
       >
-        <div className="oc-image-preview-header">
+        <div className="oc-image-preview-header oc-modal-header">
           <span className="oc-image-preview-title">{title ?? imageAlt}</span>
           <button
             type="button"
@@ -59,7 +59,7 @@ export function ImagePreviewModal({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="oc-image-preview-content">
+        <div className="oc-image-preview-content oc-modal-content">
           <img src={imageSrc} alt={imageAlt} className="oc-image-preview-img" />
         </div>
       </div>

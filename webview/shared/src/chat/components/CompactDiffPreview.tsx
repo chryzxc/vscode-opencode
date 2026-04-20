@@ -120,12 +120,12 @@ export function CompactDiffPreview({
               key={`line-${index}`}
               className={cn(
                 "oc-diff-line group relative flex min-w-0 items-start gap-1.5 font-mono text-[10px] leading-tight py-0.5 px-1.5 rounded",
-                "border border-transparent transition-colors",
-                // Operation type-specific styling
-                isAdded && "bg-emerald-950/20 border-emerald-950/30 text-emerald-300",
-                isRemoved && "bg-red-950/20 border-red-950/30 text-red-300",
-                isContext && "bg-oc-bg/40 border-oc-border/50 text-oc-text-muted",
-              )}
+                 "border border-transparent transition-colors",
+                 // Operation type-specific styling
+                 isAdded && "bg-emerald-950/20 border-emerald-950/30 text-emerald-300",
+                 isRemoved && "bg-red-950/20 border-red-950/30 text-red-300",
+                 isContext && "bg-oc-bg/40 border-oc-border-soft text-oc-text-muted",
+               )}
             >
               {/* Diff indicator */}
               <span
