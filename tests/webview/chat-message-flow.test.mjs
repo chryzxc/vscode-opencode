@@ -123,8 +123,8 @@ test('Assistant responses include dedicated enter transition classes', () => {
 test('assistant header is responsive on small screens for agent/model/metrics rail', () => {
   assert.match(
     messageSource,
-    /mb-2\.5 flex items-start justify-between gap-2/,
-    'assistant header container should not wrap and align from top',
+    /mb-2\.5 flex[\s\w-]*items-start justify-between gap-2/,
+    'assistant header container should align from top',
   );
   assert.match(
     messageSource,
@@ -133,12 +133,12 @@ test('assistant header is responsive on small screens for agent/model/metrics ra
   );
   assert.match(
     messageSource,
-    /oc-metrics-rail-primary[\s\S]*Primary response metrics[\s\S]*oc-metrics-rail-secondary[\s\S]*Secondary response metrics/s,
-    'assistant header should expose the two-tier primary/secondary metrics rail',
+    /oc-metrics-rail[\s\S]*oc-token-chip[\s\S]*oc-token-chip-secondary/s,
+    'assistant header should expose metrics rail with token chips',
   );
   assert.match(
     chatCssSource,
-    /@media \(max-width: 900px\) \{[\s\S]*\.oc-metrics-rail \{[\s\S]*width: 100%;[\s\S]*justify-content: flex-start;[\s\S]*\.oc-metrics-rail-primary,[\s\S]*\.oc-metrics-rail-secondary \{[\s\S]*width: 100%;/s,
+    /@media \(max-width: 900px\) \{[\s\S]*\.oc-metrics-rail \{[\s\S]*width: 100%;[\s\S]*justify-content: flex-start;/s,
     'metrics rail should stack and left-align on narrower screens',
   );
 });

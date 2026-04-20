@@ -39,8 +39,8 @@ test('AssistantMessage uses the simplified activity rail instead of local comple
   );
   assert.match(
     messageSource,
-    /oc-metrics-rail-primary[\s\S]*oc-metrics-rail-secondary/s,
-    'assistant message should expose the new two-tier metrics rail for activity context',
+    /oc-metrics-rail[\s\S]*oc-token-chip[\s\S]*oc-token-chip-secondary/s,
+    'assistant message should expose metrics rail with token chips for activity context',
   );
 });
 
