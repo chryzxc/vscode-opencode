@@ -8482,11 +8482,26 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               // This prevents already-answered prompts from lingering in the composer.
               dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
             }
-            // Get current state and append the new message
-            const currentMessages = getState().messages || [];
+            // Get current state
+            const currentState = getState();
+            const currentMessages = currentState.messages || [];
+            const updatedMessages = [...currentMessages];
+            
+            // BUG FIX: If there is an inactive streaming message, flush it to messages
+            // before appending the new user message. Otherwise, the queued user message appears
+            // ABOVE the finished AI response (which would still be sitting in state.streaming).
+            const currentStreaming = currentState.streaming;
+            if (currentStreaming && !currentStreaming.isActive) {
+              const flushedMessage = buildStreamingMessage(currentStreaming);
+              updatedMessages.push(flushedMessage);
+              dispatch({ type: "SET_STREAMING", payload: null });
+            }
+            
+            updatedMessages.push(message);
+
             dispatch({
               type: "SET_MESSAGES",
-              payload: [...currentMessages, message],
+              payload: updatedMessages,
             });
           }
           break;

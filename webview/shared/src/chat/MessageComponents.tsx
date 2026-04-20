@@ -2715,7 +2715,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         }
                       />
                     </div>
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <div className="flex min-w-0 items-center gap-1.5">
                       <span
                         className="oc-msg-agent-name font-semibold text-oc-sm truncate shrink-0"
                         style={
@@ -2741,9 +2741,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     </div>
                   </div>
                   {hasMetrics && (
-                    <div className="oc-metrics-rail sm:ml-auto">
-                      <div className="oc-metrics-rail-primary" role="list" aria-label="Primary response metrics">
-                        {primaryMetricChips.map((chip) => (
+                    <div className="oc-metrics-rail sm:ml-auto" role="list" aria-label="Response metrics">
+                        {tokenMetricChips.map((chip) => (
                           <div
                             key={chip.key}
                             role="listitem"
@@ -2752,32 +2751,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                               chip.emphasis === "primary"
                                 ? "border-oc-border bg-oc-panel"
                                 : chip.emphasis === "subtle"
-                                  ? "border-oc-border-soft bg-oc-panel-soft"
-                                  : "border-oc-border-soft-soft bg-oc-panel-soft",
-                            )}
-                            title={`${chip.label}: ${chip.value.toLocaleString()} tokens`}
-                          >
-                            <div className={cn("h-1.5 w-1.5 rounded-full", chip.dotClassName)} />
-                            <span className="oc-token-chip-label text-[10px] uppercase tracking-[0.11em] text-oc-text-muted">
-                              {chip.label}
-                            </span>
-                            <span className="oc-token-chip-value font-mono font-semibold text-oc-text tabular-nums">
-                              {chip.value.toLocaleString()}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="oc-metrics-rail-secondary" role="list" aria-label="Secondary response metrics">
-                        {secondaryMetricChips.map((chip) => (
-                          <div
-                            key={chip.key}
-                            role="listitem"
-                            className={cn(
-                              "oc-token-chip oc-token-chip-secondary group/token relative inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-all duration-200",
-                              chip.emphasis === "subtle"
-                                ? "border-oc-border-soft bg-oc-panel-soft"
-                                : "border-oc-border-soft-soft bg-oc-panel-soft",
+                                  ? "border-oc-border-soft bg-oc-panel-soft oc-token-chip-secondary"
+                                  : "border-oc-border-soft-soft bg-oc-panel-soft oc-token-chip-secondary",
                             )}
                             title={`${chip.label}: ${chip.value.toLocaleString()} tokens`}
                           >
@@ -2793,6 +2768,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
                         {typeof duration === "number" && (
                           <div
+                            role="listitem"
                             className="oc-token-chip oc-token-chip-duration inline-flex items-center gap-1.5 rounded-full border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1 transition-all duration-200"
                             title={`Duration: ${duration.toFixed(1)} seconds`}
                           >
