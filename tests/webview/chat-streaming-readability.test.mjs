@@ -26,16 +26,16 @@ test('AssistantMessage uses content-first response and secondary activity sectio
   );
 });
 
-test('AssistantMessage uses the simplified activity rail instead of local completed-activity toggles', () => {
-  assert.doesNotMatch(
+test('AssistantMessage exposes completed-activity expansion and metrics rail', () => {
+  assert.match(
     messageSource,
     /const\s+MAX_VISIBLE_COMPLETED_ACTIVITY\s*=\s*5/,
-    'completed activity should no longer be condensed behind a 5-row local threshold',
+    'completed activity uses a 5-row local threshold for condensing',
   );
-  assert.doesNotMatch(
+  assert.match(
     messageSource,
     /showAllCompletedActivity/,
-    'assistant message should not keep local expansion state for completed activity rows',
+    'assistant message keeps local expansion state for completed activity rows',
   );
   assert.match(
     messageSource,

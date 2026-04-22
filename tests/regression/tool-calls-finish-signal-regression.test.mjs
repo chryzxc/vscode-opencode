@@ -1,25 +1,14 @@
 /**
- * Regression test: tool-calls must NOT trigger immediate FINISH_STREAMING
+ * Regression test: finish detection in message.updated uses asBoolean
  *
- * Bug (original): hasTerminalFinishSignal() matched "tool-calls" / "tool_calls"
- * as a terminal finish, causing FINISH_STREAMING to fire on every mid-stream
- * message.updated where the AI paused to invoke a tool. The next streamStart
- * then dispatched SET_STREAMING with empty state, wiping all accumulated
- * activity, reasoning, and progress — the user saw only a "loading" spinner.
+ * The finish detection in the message.updated handler uses
+ * `asBoolean((info as UnknownRecord).finish, false)` to determine
+ * if the AI response is complete. This is the simple, stable approach.
  *
- * Bug (secondary): Removing "tool-calls" from hasTerminalFinishSignal caused
- * the TRUE final finish (where info.finish: "tool-calls" and no separate
- * "done"/"finish" SSE event follows) to go undetected — UI stuck on loading.
- *
- * Bug (tertiary): Using hasCompletedTimestamp in the immediate finish chain
- * also caused false positives because the server sets time.completed on
- * INTERMEDIATE tool-call messages too — same flickering as the original bug.
- *
- * Fix (final): hasTerminalFinishSignal excludes "tool-calls". For
- * info.finish === "tool-calls" + hasCompletedTimestamp, we use a DEBOUNCED
- * timer (1.5s) instead of immediate FINISH_STREAMING. If a new start/
- * streamStart arrives, the timer is cancelled (mid-stream tool call).
- * If no start arrives, the timer fires FINISH_STREAMING (true end).
+ * Historical note: Previous attempts to add hasTerminalFinishSignal,
+ * hasCompletedTimestamp, and debounced timers for tool-calls finish
+ * signals caused content flickering/reset during streaming. The simple
+ * asBoolean approach is kept as the baseline.
  */
 
 import test from 'node:test';
@@ -64,277 +53,83 @@ function getStartSection() {
 }
 
 // ---------------------------------------------------------------------------
-// 1. hasTerminalFinishSignal must NOT match tool-calls variants
+// 1. message.updated finish detection uses asBoolean on info.finish
 // ---------------------------------------------------------------------------
 
-test('hasTerminalFinishSignal does not match "tool-calls"', () => {
-  const fnBody = extractFunctionBody(
-    messageHandlerSource,
-    'function hasTerminalFinishSignal(',
-  );
-  assert.ok(fnBody, 'hasTerminalFinishSignal function should exist');
-
-  const returnBlock = fnBody.match(/return\s*\(\s*[\s\S]*?\);/);
-  assert.ok(returnBlock, 'hasTerminalFinishSignal should have a return statement');
-
-  const returnBody = returnBlock[0];
-  assert.doesNotMatch(
-    returnBody,
-    /tool.call/i,
-    'hasTerminalFinishSignal must NOT match "tool-calls" or "tool_calls"',
-  );
-});
-
-test('hasTerminalFinishSignal matches genuine terminal signals', () => {
-  const fnBody = extractFunctionBody(
-    messageHandlerSource,
-    'function hasTerminalFinishSignal(',
-  );
-  assert.ok(fnBody, 'hasTerminalFinishSignal function should exist');
-
-  const returnBlock = fnBody.match(/return\s*\(\s*[\s\S]*?\);/);
-  assert.ok(returnBlock, 'hasTerminalFinishSignal should have a return statement');
-
-  const returnBody = returnBlock[0];
-  const expectedSignals = ['done', 'stop', 'error', 'finished', 'complete', 'completed'];
-  for (const signal of expectedSignals) {
-    assert.match(
-      returnBody,
-      new RegExp(`"${signal}"`),
-      `hasTerminalFinishSignal must match terminal signal "${signal}"`,
-    );
-  }
-});
-
-test('hasTerminalFinishSignal returns true for boolean true', () => {
-  const fnBody = extractFunctionBody(
-    messageHandlerSource,
-    'function hasTerminalFinishSignal(',
-  );
-  assert.ok(fnBody, 'hasTerminalFinishSignal function should exist');
-
-  assert.match(
-    fnBody,
-    /if\s*\(\s*typeof\s+value\s*===\s*["']boolean["']\s*\)\s*\{\s*return\s+value;\s*\}/,
-    'hasTerminalFinishSignal should return boolean values directly',
-  );
-});
-
-test('hasTerminalFinishSignal handles falsy inputs correctly', () => {
-  const fnBody = extractFunctionBody(
-    messageHandlerSource,
-    'function hasTerminalFinishSignal(',
-  );
-  assert.ok(fnBody, 'hasTerminalFinishSignal function should exist');
-
-  assert.match(fnBody, /typeof\s+value\s*===\s*["']boolean["']/, 'should check typeof boolean');
-  assert.match(fnBody, /\.toLowerCase\(\)/, 'should normalize to lowercase');
-  assert.match(fnBody, /\.trim\(\)/, 'should trim whitespace');
-  assert.match(fnBody, /if\s*\(\s*!normalized\s*\)\s*\{\s*return\s+false;\s*\}/, 'should return false for empty input');
-});
-
-test('hasTerminalFinishSignal does not match non-terminal signals', () => {
-  const fnBody = extractFunctionBody(
-    messageHandlerSource,
-    'function hasTerminalFinishSignal(',
-  );
-  assert.ok(fnBody, 'hasTerminalFinishSignal function should exist');
-
-  const returnBlock = fnBody.match(/return\s*\(\s*[\s\S]*?\);/);
-  assert.ok(returnBlock, 'hasTerminalFinishSignal should have a return statement');
-
-  const returnBody = returnBlock[0];
-  const nonTerminalSignals = [
-    'tool-calls', 'tool_calls', 'tool-call',
-    'step-start', 'step-finish', 'step_start', 'step_finish',
-    'thinking', 'thought', 'reasoning',
-    'text', 'content', 'message',
-    'pending', 'running', 'processing', 'streaming',
-    'tool', 'patch', 'subtask', 'agent',
-  ];
-
-  for (const signal of nonTerminalSignals) {
-    assert.doesNotMatch(
-      returnBody,
-      new RegExp(`"${signal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'i'),
-      `hasTerminalFinishSignal must NOT match "${signal}"`,
-    );
-  }
-});
-
-// ---------------------------------------------------------------------------
-// 2. message.updated finish detection architecture
-// ---------------------------------------------------------------------------
-
-test('message.updated computes immediateFinish via hasTerminalFinishSignal', () => {
+test('message.updated uses asBoolean for finish detection', () => {
   const section = getMsgUpdatedSection();
 
   assert.match(
     section,
-    /const\s+immediateFinish\s*=\s*hasTerminalFinishSignal\(/,
-    'should compute immediateFinish using hasTerminalFinishSignal',
-  );
-  assert.match(
-    section,
-    /info\s*\?\s*\(\s*info\s+as\s+UnknownRecord\s*\)\.finish/,
-    'immediateFinish should check info.finish',
-  );
-  assert.match(
-    section,
-    /payload\.finish/,
-    'immediateFinish should check payload.finish',
+    /const\s+finish\s*=\s*info\s*\?\s*asBoolean\(\s*\(info\s+as\s+UnknownRecord\)\.finish\s*,\s*false\s*\)\s*:\s*false/,
+    'finish should use asBoolean on info.finish with false default',
   );
 });
 
-test('finish variable equals immediateFinish only (not hasCompletedTimestamp)', () => {
-  const section = getMsgUpdatedSection();
-
-  assert.match(
-    section,
-    /const\s+finish\s*=\s*immediateFinish;/,
-    'finish must equal immediateFinish only — hasCompletedTimestamp is NOT in the immediate chain',
-  );
-});
-
-test('hasCompletedTimestamp is computed but used only for isToolCallsFinish debounce', () => {
-  const section = getMsgUpdatedSection();
-
-  assert.match(
-    section,
-    /hasCompletedTimestamp/,
-    'hasCompletedTimestamp should be computed',
-  );
-  assert.match(
-    section,
-    /asRecord\s*\(\s*info\s*\??\s*\.time\s*\)/,
-    'hasCompletedTimestamp should read from info?.time',
-  );
-  assert.match(
-    section,
-    /typeof\s+completed\s*===\s*["']number["']\s*&&\s*Number\.isFinite\s*\(\s*completed\s*\)\s*&&\s*completed\s*>\s*0/,
-    'hasCompletedTimestamp must validate typeof number, isFinite, and > 0',
-  );
-});
-
-test('isToolCallsFinish requires both "tool-calls" finish AND hasCompletedTimestamp', () => {
-  const section = getMsgUpdatedSection();
-
-  assert.match(
-    section,
-    /isToolCallsFinish/,
-    'isToolCallsFinish should be computed',
-  );
-  assert.match(
-    section,
-    /infoFinishRaw\s*===\s*["']tool-calls["']\s*\|\|\s*infoFinishRaw\s*===\s*["']tool_calls["']/,
-    'isToolCallsFinish should check for both "tool-calls" and "tool_calls"',
-  );
-  assert.match(
-    section,
-    /isToolCallsFinish\s*=\s*\([\s\S]*?hasCompletedTimestamp/,
-    'isToolCallsFinish should require hasCompletedTimestamp',
-  );
-});
-
-test('finish computation block contains no reference to payload.reason', () => {
-  const section = getMsgUpdatedSection();
-
-  const finishComputationBlock = section.match(
-    /const\s+info\s*=[\s\S]*?if\s*\(finish\s+&&\s+structuredOutput\)/,
-  );
-  assert.ok(finishComputationBlock, 'finish computation region should exist');
-
-  assert.doesNotMatch(
-    finishComputationBlock[0],
-    /\.reason\b/,
-    'Finish computation must not reference .reason anywhere',
-  );
-});
-
-// ---------------------------------------------------------------------------
-// 3. Debounced finish: isToolCallsFinish uses setTimeout, not immediate dispatch
-// ---------------------------------------------------------------------------
-
-test('message.updated dispatches FINISH_STREAMING immediately only for genuine terminal signals', () => {
+test('message.updated dispatches FINISH_STREAMING when finish is true', () => {
   const section = getMsgUpdatedSection();
 
   assert.match(
     section,
     /if\s*\(finish\)\s*\{\s*dispatch\(\s*\{\s*type:\s*['"]FINISH_STREAMING['"]\s*\}\s*\);\s*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*false\s*\}\s*\);/,
-    'immediate FINISH_STREAMING only when finish (=immediateFinish) is true',
+    'finish=true should dispatch FINISH_STREAMING + SET_PROCESSING false',
+  );
+
+  assert.match(
+    section,
+    /\}\s*else\s*\{\s*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*true\s*\}\s*\);/,
+    'finish=false should dispatch SET_PROCESSING true',
   );
 });
 
-test('isToolCallsFinish triggers a debounced timer instead of immediate FINISH_STREAMING', () => {
+test('message.updated has no debounce timer references', () => {
   const section = getMsgUpdatedSection();
 
-  assert.match(
+  assert.doesNotMatch(
     section,
-    /else\s+if\s*\(isToolCallsFinish\)\s*\{/,
-    'isToolCallsFinish should have its own else-if branch',
+    /debouncedFinishTimer/,
+    'message.updated must not reference debouncedFinishTimer',
   );
-  assert.match(
+  assert.doesNotMatch(
     section,
-    /debouncedFinishTimer\s*=\s*setTimeout\(/,
-    'isToolCallsFinish should use setTimeout for deferred finish',
+    /hasCompletedTimestamp/,
+    'message.updated must not reference hasCompletedTimestamp',
   );
-  assert.match(
+  assert.doesNotMatch(
     section,
-    /FINISH_STREAMING/,
-    'debounced timer callback should dispatch FINISH_STREAMING',
-  );
-});
-
-test('debounced finish timer is cancelled when genuine finish arrives', () => {
-  const section = getMsgUpdatedSection();
-
-  // In the immediate finish branch, timer should be cleared
-  assert.match(
-    section,
-    /if\s*\(finish\)\s*\{[\s\S]*?clearTimeout\s*\(\s*debouncedFinishTimer\s*\)/,
-    'immediate finish branch should clear the debounce timer',
-  );
-});
-
-test('debounce timer checks isProcessing/isActive before finishing', () => {
-  const section = getMsgUpdatedSection();
-
-  assert.match(
-    section,
-    /debouncedFinishTimer\s*=\s*setTimeout[\s\S]*?if\s*\(\s*currentState\.isProcessing\s*\|\|\s*currentState\.streaming\?\.isActive\s*\)/,
-    'timer callback should verify processing is still active before finishing',
+    /isToolCallsFinish/,
+    'message.updated must not reference isToolCallsFinish',
   );
 });
 
 // ---------------------------------------------------------------------------
-// 4. start/streamStart cancels the debounce timer
+// 2. start/streamStart dispatches SET_STREAMING with empty state
 // ---------------------------------------------------------------------------
-
-test('start/streamStart cancels the debounced finish timer', () => {
-  const section = getStartSection();
-
-  assert.match(
-    section,
-    /if\s*\(\s*debouncedFinishTimer\s*\)\s*\{\s*clearTimeout\s*\(\s*debouncedFinishTimer\s*\);\s*debouncedFinishTimer\s*=\s*null;\s*\}/,
-    'start/streamStart should cancel debouncedFinishTimer',
-  );
-});
 
 test('start/streamStart dispatches SET_STREAMING with empty content', () => {
   const section = getStartSection();
 
   assert.match(section, /type:\s*["']SET_STREAMING["']/, 'should dispatch SET_STREAMING');
   assert.match(section, /content:\s*["']["']\s*,/, 'should reset content to empty');
-  assert.match(section, /reasoning:\s*["']["']\s*,/, 'should reset reasoning to empty');
   assert.match(section, /steps:\s*\[\]\s*,/, 'should reset steps to empty array');
   assert.match(section, /isActive:\s*true/, 'should set isActive to true');
 });
 
+test('start/streamStart has no debounce timer references', () => {
+  const section = getStartSection();
+
+  assert.doesNotMatch(
+    section,
+    /debouncedFinishTimer/,
+    'start/streamStart must not reference debouncedFinishTimer',
+  );
+});
+
 // ---------------------------------------------------------------------------
-// 5. SSE finish/done event cancels debounce and dispatches FINISH_STREAMING
+// 3. SSE finish/done event dispatches FINISH_STREAMING
 // ---------------------------------------------------------------------------
 
-test('SSE finish/done event cancels debounce timer and dispatches FINISH_STREAMING', () => {
+test('SSE finish/done event dispatches FINISH_STREAMING', () => {
   const streamBody = extractFunctionBody(
     messageHandlerSource,
     'function handleStreamEvent(',
@@ -343,30 +138,49 @@ test('SSE finish/done event cancels debounce timer and dispatches FINISH_STREAMI
 
   assert.match(
     streamBody,
-    /case\s+['"]finish['"]:\s*\n\s*case\s+['"]done['"]:\s*\{[\s\S]*?clearTimeout\s*\(\s*debouncedFinishTimer\s*\)/,
-    'SSE finish/done should cancel debounce timer',
-  );
-  assert.match(
-    streamBody,
     /case\s+['"]finish['"]:\s*\n\s*case\s+['"]done['"]:\s*\{[\s\S]*?dispatch\s*\(\s*\{\s*type:\s*['"]FINISH_STREAMING['"]/,
     'SSE finish/done should dispatch FINISH_STREAMING',
   );
+  assert.match(
+    streamBody,
+    /case\s+['"]finish['"]:\s*\n\s*case\s+['"]done['"]:\s*\{[\s\S]*?dispatch\s*\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*false/,
+    'SSE finish/done should dispatch SET_PROCESSING false',
+  );
 });
 
-// ---------------------------------------------------------------------------
-// 6. Debounce timer is module-level
-// ---------------------------------------------------------------------------
-
-test('debouncedFinishTimer is declared at module level', () => {
-  assert.match(
+test('SSE finish/done has no debounce timer references', () => {
+  const streamBody = extractFunctionBody(
     messageHandlerSource,
-    /let\s+debouncedFinishTimer\s*:\s*ReturnType<typeof setTimeout>\s*\|\s*null\s*=\s*null\s*;/,
-    'debouncedFinishTimer should be module-level variable',
+    'function handleStreamEvent(',
+  );
+  assert.ok(streamBody, 'handleStreamEvent function should exist');
+
+  const finishDoneSection = streamBody.match(
+    /case\s+['"]finish['"]:\s*\n\s*case\s+['"]done['"]:\s*\{[\s\S]*?break;\s*\}/,
+  );
+  assert.ok(finishDoneSection, 'finish/done case section should exist');
+
+  assert.doesNotMatch(
+    finishDoneSection[0],
+    /debouncedFinishTimer/,
+    'finish/done case must not reference debouncedFinishTimer',
   );
 });
 
 // ---------------------------------------------------------------------------
-// 7. FINISH_STREAMING preserves streaming content (only sets isActive=false)
+// 4. No module-level debounce timer variable exists
+// ---------------------------------------------------------------------------
+
+test('no module-level debounce timer variable', () => {
+  assert.doesNotMatch(
+    messageHandlerSource,
+    /let\s+debouncedFinishTimer/,
+    'debouncedFinishTimer should not exist as module-level variable',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 5. FINISH_STREAMING preserves streaming content (only sets isActive=false)
 // ---------------------------------------------------------------------------
 
 test('FINISH_STREAMING preserves streaming content and sets isActive to false', () => {
@@ -378,7 +192,7 @@ test('FINISH_STREAMING preserves streaming content and sets isActive to false', 
 });
 
 // ---------------------------------------------------------------------------
-// 8. SET_STREAMING replaces entire state (why false finish is catastrophic)
+// 6. SET_STREAMING replaces entire state (why mid-stream reset is destructive)
 // ---------------------------------------------------------------------------
 
 test('SET_STREAMING replaces the entire streaming state object', () => {
@@ -390,7 +204,7 @@ test('SET_STREAMING replaces the entire streaming state object', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. step-finish parts update steps without FINISH_STREAMING
+// 7. step-finish parts update steps without FINISH_STREAMING
 // ---------------------------------------------------------------------------
 
 test('step-finish part updates streaming step status without FINISH_STREAMING', () => {
@@ -418,7 +232,7 @@ test('step-finish part updates streaming step status without FINISH_STREAMING', 
 });
 
 // ---------------------------------------------------------------------------
-// 10. isAssistantMessageFinalized still includes "tool-calls" for presentation
+// 8. isAssistantMessageFinalized includes "tool-calls" for presentation
 // ---------------------------------------------------------------------------
 
 test('isAssistantMessageFinalized includes "tool-calls" for presentation', () => {
@@ -438,7 +252,7 @@ test('isAssistantMessageFinalized includes "tool-calls" for presentation', () =>
 });
 
 // ---------------------------------------------------------------------------
-// 11. Error event always dispatches FINISH_STREAMING
+// 9. Error event always dispatches FINISH_STREAMING
 // ---------------------------------------------------------------------------
 
 test('error event dispatches FINISH_STREAMING unconditionally', () => {

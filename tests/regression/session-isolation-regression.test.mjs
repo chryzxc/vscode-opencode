@@ -131,8 +131,8 @@ test('ChatViewProvider stamps active sessionId onto every streamEvent forwarded 
     // server event does not carry a session ID field.
     assert.match(
         chatViewProviderSource,
-        /type:\s*["']streamEvent["'][\s\S]{0,200}event:\s*\{\s*\.\.\.enrichedEvent\s*,\s*sessionId:\s*this\.currentSessionId\s*\}/,
-        'streamEvent postMessage must spread enrichedEvent and add sessionId: this.currentSessionId',
+        /type:\s*["']streamEvent["'][\s\S]{0,200}event:\s*\{\s*\.\.\.enrichedEvent\s*,\s*sessionId:\s*resolvedSessionId\s*\}/,
+        'streamEvent postMessage must spread enrichedEvent and add sessionId: resolvedSessionId',
     );
 });
 

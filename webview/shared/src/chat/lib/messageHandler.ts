@@ -468,24 +468,6 @@ function normalizeProgressStatus(
   return "pending";
 }
 
-function hasTerminalFinishSignal(value: unknown): boolean {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  const normalized = asString(value).trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized === "done" ||
-    normalized === "stop" ||
-    normalized === "error" ||
-    normalized === "finished" ||
-    normalized === "complete" ||
-    normalized === "completed"
-  );
-}
-
 function normalizeDiffStats(
   value: unknown,
 ): { added: number; deleted: number } | undefined {
@@ -5632,8 +5614,6 @@ function buildStreamingMessage(streaming: StreamingState): Message {
   };
 }
 
-let debouncedFinishTimer: ReturnType<typeof setTimeout> | null = null;
-
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -6330,19 +6310,7 @@ function handleStreamEvent(
         hasInfo: !!asRecord(payload.info),
       });
       const info = asRecord(payload.info) ?? asRecord(payload.properties)?.info;
-      const immediateFinish =
-        hasTerminalFinishSignal(info ? (info as UnknownRecord).finish : undefined) ||
-        hasTerminalFinishSignal(payload.finish);
-      const infoFinishRaw = asString(info ? (info as UnknownRecord).finish : undefined).trim().toLowerCase();
-      const hasCompletedTimestamp = (() => {
-        const timeRec = asRecord(info?.time);
-        const completed = asOptionalNumber(timeRec?.completed);
-        return typeof completed === "number" && Number.isFinite(completed) && completed > 0;
-      })();
-      const isToolCallsFinish =
-        (infoFinishRaw === "tool-calls" || infoFinishRaw === "tool_calls") &&
-        hasCompletedTimestamp;
-      const finish = immediateFinish;
+      const finish = info ? asBoolean((info as UnknownRecord).finish, false) : false;
 
       if (finish && structuredOutput) {
         if (structuredOutput.reasoning) {
@@ -6660,23 +6628,6 @@ function handleStreamEvent(
       if (finish) {
         dispatch({ type: 'FINISH_STREAMING' });
         dispatch({ type: 'SET_PROCESSING', payload: false });
-        if (debouncedFinishTimer) {
-          clearTimeout(debouncedFinishTimer);
-          debouncedFinishTimer = null;
-        }
-      } else if (isToolCallsFinish) {
-        if (debouncedFinishTimer) {
-          clearTimeout(debouncedFinishTimer);
-        }
-        debouncedFinishTimer = setTimeout(() => {
-          debouncedFinishTimer = null;
-          const currentState = getState();
-          if (currentState.isProcessing || currentState.streaming?.isActive) {
-            webviewLogger.debug('Debounced tool-calls finish: no new start arrived, finishing stream');
-            dispatch({ type: 'FINISH_STREAMING' });
-            dispatch({ type: 'SET_PROCESSING', payload: false });
-          }
-        }, 1500);
       } else {
         dispatch({ type: 'SET_PROCESSING', payload: true });
       }
@@ -6694,10 +6645,6 @@ function handleStreamEvent(
     }
     case 'start':
     case 'streamStart': {
-      if (debouncedFinishTimer) {
-        clearTimeout(debouncedFinishTimer);
-        debouncedFinishTimer = null;
-      }
       webviewLogger.debug(`Processing stream start`, {
         messageId,
         eventAgent: asString(infoRecord?.agent) || asString(payload.agent),
@@ -6954,10 +6901,6 @@ function handleStreamEvent(
     }
     case 'finish':
     case 'done': {
-      if (debouncedFinishTimer) {
-        clearTimeout(debouncedFinishTimer);
-        debouncedFinishTimer = null;
-      }
       dispatch({
         type: 'FINISH_STREAMING',
         payload: {

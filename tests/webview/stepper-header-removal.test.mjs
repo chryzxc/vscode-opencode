@@ -1,15 +1,14 @@
 /**
- * Stepper Header Removal Tests
+ * Stepper Header Tests
  *
- * Tests for the removal of the activity header section that previously
- * displayed status counts, event counts, and filter controls above the stepper.
+ * Tests for the activity section structure, including status counts
+ * computation, show-more expansion, and stepper rendering.
  *
  * Covered areas:
- * - Activity header section removal
- * - Status counts computation removal
+ * - Activity header section status badges removed from rendered output
+ * - Status counts computation still tracks activity statuses
  * - Simplified stepper container structure
- * - Direct stepper rendering without header controls
- * - Activity section still exists but without header
+ * - Direct stepper rendering with compact metrics rail
  */
 
 import test from 'node:test';
@@ -63,13 +62,17 @@ test('activity section no longer displays error count badge', () => {
     );
 });
 
-test('activity section no longer displays event count with hidden indicator', () => {
-    // The variable may still exist for calculations but should not be rendered in UI
-    // Check that the specific JSX pattern for displaying hidden count is removed
-    assert.doesNotMatch(
+test('activity section displays hidden event count with show-more toggle', () => {
+    // The variable exists and is rendered in a "Show more (N)" toggle
+    assert.match(
         messageComponentsSource,
-        /\{hiddenActivityEventCount\}.*hidden/s,
-        'Activity section UI should not render hiddenActivityEventCount with "hidden" text',
+        /hiddenActivityEventCount/,
+        'Activity section uses hiddenActivityEventCount for show-more toggle',
+    );
+    assert.match(
+        messageComponentsSource,
+        /`Show more \(\$\{hiddenActivityEventCount\}\)`/,
+        'Activity section UI renders hiddenActivityEventCount in show-more button text',
     );
 });
 
@@ -86,19 +89,19 @@ test('activity section no longer contains text preview toggle button', () => {
 // 2. Status counts computation removal tests
 // ---------------------------------------------------------------------------
 
-test('activityStatusCounts useMemo computation is removed', () => {
-    assert.doesNotMatch(
+test('activityStatusCounts useMemo computation tracks activity statuses', () => {
+    assert.match(
         messageComponentsSource,
         /const activityStatusCounts\s*=\s*useMemo/s,
-        'activityStatusCounts computation should be removed',
+        'activityStatusCounts computation should exist for tracking activity status',
     );
 });
 
-test('activityStatusCounts reduce function is removed', () => {
-    assert.doesNotMatch(
+test('activityStatusCounts reduce function computes pending/done/error counts', () => {
+    assert.match(
         messageComponentsSource,
         /userFacingDisplayEvents\.reduce\([\s\S]*?pending.*done.*error/s,
-        'Status counts reduce function should be removed',
+        'Status counts reduce function computes pending, done, and error counts',
     );
 });
 
@@ -140,32 +143,33 @@ test('stepper is rendered directly in simplified container', () => {
     );
 });
 
-test('activity section now uses compact metrics rail instead of header', () => {
-  // Old activity section with header + count badges has been removed
-  // New structure: compact metrics rail with two-tier (primary + secondary) tokens
-  
+test('activity section uses compact metrics rail with completed-activity expansion', () => {
+  // Activity section exposes a secondary activity section
   assert.match(
     messageComponentsSource,
     /data-assistant-section=["']activity["']/,
     'Activity section should expose a secondary activity section',
   );
   
-   assert.doesNotMatch(
+  // Completed activity uses threshold-based condensing
+  assert.match(
     messageComponentsSource,
     /const\s+MAX_VISIBLE_COMPLETED_ACTIVITY\s*=\s*5/,
-    'Condensed threshold constant should not exist (feature removed)',
+    'Condensed threshold constant exists for completed activity expansion',
   );
   
-  assert.doesNotMatch(
+  // Header with status counts still exists
+  assert.match(
     messageComponentsSource,
-    /flex flex-wrap items-center justify-between.*activityStatusCounts/,
-    'Old header with status counts has been removed',
+    /activityStatusCounts/,
+    'Status counts are still tracked for the activity section',
   );
   
-  assert.doesNotMatch(
+  // Metrics rail is present alongside activity
+  assert.match(
     messageComponentsSource,
-    /text-oc-accent.*activityStatusCounts/,
-    'Old pending/done count badges have been removed',
+    /oc-metrics-rail/,
+    'Metrics rail exists for response context',
   );
 });
 

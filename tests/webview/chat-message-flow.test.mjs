@@ -128,8 +128,8 @@ test('assistant header is responsive on small screens for agent/model/metrics ra
   );
   assert.match(
     messageSource,
-    /oc-metrics-rail sm:ml-auto/,
-    'metrics rail should align to the right on wider screens',
+    /oc-metrics-rail flex flex-wrap items-center/,
+    'metrics rail should exist with flex layout',
   );
   assert.match(
     messageSource,

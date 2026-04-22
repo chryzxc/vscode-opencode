@@ -50,8 +50,8 @@ test('ChatViewProvider backfills missing stream event sessionId from active sess
 
   assert.match(
     registerHandlersBody,
-    /event:\s*\{\s*\.\.\.enrichedEvent,\s*sessionId:\s*this\.currentSessionId\s*\}/,
-    'ChatViewProvider should stamp current session ID onto all stream events',
+    /event:\s*\{\s*\.\.\.enrichedEvent,\s*sessionId:\s*resolvedSessionId\s*\}/,
+    'ChatViewProvider should stamp resolved session ID onto all stream events',
   );
 });
 
