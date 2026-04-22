@@ -266,6 +266,10 @@ export class ChatViewProvider
 
   /** ID of the session currently active in the webview (undefined until first bootstrap) */
   private currentSessionId: string | undefined;
+  /** Session ID that owns the currently active AI stream. Used to prevent
+   *  cross-session event leakage when the user switches sessions while a
+   *  response is still streaming from the server. */
+  private activeStreamSessionId: string | undefined;
   private currentTodoItems: unknown[] = [];
   private awaitingInteractiveAnswer = false;
   private interactiveResponseTransitionUntil = 0;
@@ -3110,6 +3114,12 @@ export class ChatViewProvider
       if (eventSessionId && this.currentSessionId && eventSessionId !== this.currentSessionId) {
         return;
       }
+      // When the event carries no sessionId, use activeStreamSessionId to decide:
+      // if we switched sessions after the stream started, these orphaned events
+      // belong to the old session and must not leak into the new one.
+      if (!eventSessionId && this.activeStreamSessionId && this.currentSessionId && this.activeStreamSessionId !== this.currentSessionId) {
+        return;
+      }
 
       // Track token usage from message.updated events
       if (event.type === "message.updated" && event.properties) {
@@ -3239,12 +3249,14 @@ export class ChatViewProvider
         }
       }
 
-      // Stamp the active session ID onto every event so the webview can always
-      // perform a reliable session-scoped filter even when the raw event payload
-      // does not carry a sessionId field.
+      // Only stamp sessionId when we can be confident the event belongs to the
+      // current session.  If the event already carries a sessionId, preserve it;
+      // otherwise use activeStreamSessionId (set when the prompt was dispatched)
+      // so the webview receives a reliable session-scoped event.
+      const resolvedSessionId = eventSessionId || this.activeStreamSessionId || this.currentSessionId;
       this.view?.webview.postMessage({
         type: "streamEvent",
-        event: { ...enrichedEvent, sessionId: this.currentSessionId },
+        event: { ...enrichedEvent, sessionId: resolvedSessionId },
       });
       if (this.shouldVerboseStreamDebug()) {
         this.logger.debug("streamEvent forwarded", {
@@ -5478,6 +5490,7 @@ export class ChatViewProvider
       this.processingSessionIds.add(drainSessionId);
       this.sendProcessingSessionsUpdate();
       this.currentSessionId = session.id;
+      this.activeStreamSessionId = session.id;
       this.subagentTracker.setActiveSession(session.id);
       // Note: awaitingInteractiveAnswer flag is NOT cleared here
       // It will be cleared naturally when stream events arrive
@@ -6359,6 +6372,9 @@ export class ChatViewProvider
       }
       if (drainSessionId) {
         this.processingSessionIds.delete(drainSessionId);
+        if (this.activeStreamSessionId === drainSessionId) {
+          this.activeStreamSessionId = undefined;
+        }
         this.sendProcessingSessionsUpdate();
       }
       this.logger.info("Processing request finished", {
@@ -6445,6 +6461,9 @@ export class ChatViewProvider
     } finally {
       if (resolvedSessionId) {
         this.processingSessionIds.delete(resolvedSessionId);
+        if (this.activeStreamSessionId === resolvedSessionId) {
+          this.activeStreamSessionId = undefined;
+        }
         this.sendProcessingSessionsUpdate();
       }
       if (!options?.suppressWebviewNotification) {

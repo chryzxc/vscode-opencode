@@ -252,12 +252,12 @@ function TerminalBlockWithOutput({
           const lineLower = line.trim().toLowerCase();
           // Skip if it looks like another step
           if (lineLower.startsWith('step') ||
-              lineLower.startsWith('running') ||
-              lineLower.startsWith('reading') ||
-              lineLower.startsWith('writing') ||
-              lineLower.startsWith('starting') ||
-              lineLower.match(/^\d+\./) || // numbered lists
-              line.length < 3) { // too short
+            lineLower.startsWith('running') ||
+            lineLower.startsWith('reading') ||
+            lineLower.startsWith('writing') ||
+            lineLower.startsWith('starting') ||
+            lineLower.match(/^\d+\./) || // numbered lists
+            line.length < 3) { // too short
             return false;
           }
           return true;
@@ -729,17 +729,17 @@ function getMessageContent(
     source: "parts" | "structured" | "content" | "text" | "summary";
     value: string | undefined;
   }> = hasParts
-    ? [
-      { source: "parts", value: partsBody },
-      { source: "structured", value: isMessageResponseType ? structuredMessage : "" },
-      { source: "summary", value: summaryText(message) },
-    ]
-    : [
-      { source: "parts", value: partsBody },
-      { source: "content", value: message.content },
-      { source: "text", value: message.text },
-      { source: "summary", value: summaryText(message) },
-    ];
+      ? [
+        { source: "parts", value: partsBody },
+        { source: "structured", value: isMessageResponseType ? structuredMessage : "" },
+        { source: "summary", value: summaryText(message) },
+      ]
+      : [
+        { source: "parts", value: partsBody },
+        { source: "content", value: message.content },
+        { source: "text", value: message.text },
+        { source: "summary", value: summaryText(message) },
+      ];
   const selectedCandidate = candidates.find((candidate) => {
     if (typeof candidate.value !== "string" || candidate.value.trim().length === 0) {
       return false;
@@ -1384,9 +1384,12 @@ function buildStreamingTimeline(
 
 
 
+const MAX_VISIBLE_COMPLETED_ACTIVITY = 5;
+
 type MessageViewState = {
   showActivityDetails: boolean;
   showThinkingDetails: boolean;
+  showAllCompletedActivity: boolean;
   showInternalActivity: boolean;
 };
 
@@ -2226,9 +2229,51 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const info = message?.info;
   const messageRec = asRecord(message);
   const infoRec = asRecord(messageRec?.info);
-  const structured = asRecord(messageRec?.structuredOutput) || asRecord(infoRec?.structuredOutput);
-  const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
-  const plan = responseType === "implementation_plan" ? message?.plan : undefined;
+  const structured =
+    asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured) ||
+    asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured);
+  const responseType = firstNonEmptyString(
+    message?.responseType,
+    typeof structured?.responseType === "string" ? structured.responseType : undefined,
+  )?.toLowerCase();
+  let plan = responseType === "implementation_plan" ? message?.plan : undefined;
+  if (!plan && responseType === "implementation_plan") {
+    const structuredPlanRec = asRecord(structured?.plan);
+    if (structuredPlanRec) {
+      plan = {
+        file:
+          typeof structuredPlanRec.file === "string"
+            ? structuredPlanRec.file
+            : undefined,
+        files: Array.isArray(structuredPlanRec.files)
+          ? structuredPlanRec.files
+          : undefined,
+        content:
+          typeof structuredPlanRec.content === "string"
+            ? structuredPlanRec.content
+            : undefined,
+        title:
+          typeof structuredPlanRec.title === "string"
+            ? structuredPlanRec.title
+            : undefined,
+        intro:
+          typeof structuredPlanRec.intro === "string"
+            ? structuredPlanRec.intro
+            : undefined,
+        summary:
+          typeof structuredPlanRec.summary === "string"
+            ? structuredPlanRec.summary
+            : undefined,
+        fileCount:
+          typeof structuredPlanRec.fileCount === "number" &&
+            Number.isFinite(structuredPlanRec.fileCount)
+            ? structuredPlanRec.fileCount
+            : undefined,
+      };
+    }
+  }
   const changeSummary = message?.changeSummary;
   // Match the same ID extraction logic as backend extractMessageId()
   // https://github.com/anthropics/opencode-vscode/blob/main/src/providers/ChatViewProvider.ts#L1988-L2000
@@ -2249,12 +2294,20 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     }
     return undefined;
   }, [state.messages]);
-  const viewState: MessageViewState = {
+  const isLatestAssistantMessage =
+    !!messageId && latestAssistantMessageId === messageId;
+  const [viewState, setViewState] = useState<MessageViewState>({
     showActivityDetails: false,
     showThinkingDetails: false,
+    showAllCompletedActivity: false,
     showInternalActivity: false,
-  };
-  const visibleDisplayEvents = displayEvents;
+  });
+  const hasCompletedCondensedActivity =
+    displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY &&
+    !viewState.showAllCompletedActivity;
+  const visibleDisplayEvents = hasCompletedCondensedActivity
+    ? displayEvents.slice(-MAX_VISIBLE_COMPLETED_ACTIVITY)
+    : displayEvents;
   const userFacingDisplayEvents = visibleDisplayEvents.filter(
     (event) => !event.internal,
   );
@@ -2265,6 +2318,23 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     viewState.showInternalActivity && internalDisplayEvents.length > 0
       ? visibleDisplayEvents
       : userFacingDisplayEvents;
+  const hiddenActivityEventCount = Math.max(
+    0,
+    displayEvents.length - visibleDisplayEvents.length,
+  );
+  const activityStatusCounts = useMemo(
+    () =>
+      userFacingDisplayEvents.reduce(
+        (acc, event) => {
+          if (event.status === "error") acc.error += 1;
+          else if (event.status === "done") acc.done += 1;
+          else acc.pending += 1;
+          return acc;
+        },
+        { pending: 0, done: 0, error: 0 },
+      ),
+    [userFacingDisplayEvents],
+  );
   const shouldShowTodoInlineSummary =
     todoItems.length > 0 &&
     (!latestAssistantMessageId || latestAssistantMessageId === messageId);
@@ -2692,9 +2762,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       >
         {!isContiguous && (
           <div className="mb-2.5 flex flex-wrap items-start justify-between gap-2">
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
               {showStreamingLoading ? (
-               <ThinkingStatusTicker className="oc-thinking-status" />
+                <ThinkingStatusTicker className="oc-thinking-status" />
               ) : (
                 <>
                   <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
@@ -2740,51 +2810,50 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       )}
                     </div>
                   </div>
-                  {hasMetrics && (
-                    <div className="oc-metrics-rail sm:ml-auto" role="list" aria-label="Response metrics">
-                        {tokenMetricChips.map((chip) => (
-                          <div
-                            key={chip.key}
-                            role="listitem"
-                            className={cn(
-                              "oc-token-chip group/token relative inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-all duration-200",
-                              chip.emphasis === "primary"
-                                ? "border-oc-border bg-oc-panel"
-                                : chip.emphasis === "subtle"
-                                  ? "border-oc-border-soft bg-oc-panel-soft oc-token-chip-secondary"
-                                  : "border-oc-border-soft-soft bg-oc-panel-soft oc-token-chip-secondary",
-                            )}
-                            title={`${chip.label}: ${chip.value.toLocaleString()} tokens`}
-                          >
-                            <div className={cn("h-1.5 w-1.5 rounded-full", chip.dotClassName)} />
-                            <span className="oc-token-chip-label text-[10px] uppercase tracking-[0.11em] text-oc-text-muted">
-                              {chip.label}
-                            </span>
-                            <span className="oc-token-chip-value font-mono font-semibold text-oc-text tabular-nums">
-                              {chip.value.toLocaleString()}
-                            </span>
-                          </div>
-                        ))}
-
-                        {typeof duration === "number" && (
-                          <div
-                            role="listitem"
-                            className="oc-token-chip oc-token-chip-duration inline-flex items-center gap-1.5 rounded-full border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1 transition-all duration-200"
-                            title={`Duration: ${duration.toFixed(1)} seconds`}
-                          >
-                            <Clock className="h-3 w-3 text-oc-text-muted opacity-80" />
-                            <span className="oc-token-chip-value font-mono font-semibold text-oc-text-muted tabular-nums">
-                              {duration.toFixed(1)}s
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
                 </>
               )}
             </div>
-            <div className="flex shrink-0 items-center gap-1">
+            <div className="flex shrink-0 items-center gap-1.5">
+              {hasMetrics && !showStreamingLoading && (
+                <div className="oc-metrics-rail flex flex-wrap items-center gap-1.5" role="list" aria-label="Response metrics">
+                  {tokenMetricChips.map((chip) => (
+                    <div
+                      key={chip.key}
+                      role="listitem"
+                      className={cn(
+                        "oc-token-chip group/token relative inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-all duration-200",
+                        chip.emphasis === "primary"
+                          ? "border-oc-border bg-oc-panel"
+                          : chip.emphasis === "subtle"
+                            ? "border-oc-border-soft bg-oc-panel-soft oc-token-chip-secondary"
+                            : "border-oc-border-soft-soft bg-oc-panel-soft oc-token-chip-secondary",
+                      )}
+                      title={`${chip.label}: ${chip.value.toLocaleString()} tokens`}
+                    >
+                      <div className={cn("h-1.5 w-1.5 rounded-full", chip.dotClassName)} />
+                      <span className="oc-token-chip-label text-[10px] uppercase tracking-[0.11em] text-oc-text-muted">
+                        {chip.label}
+                      </span>
+                      <span className="oc-token-chip-value font-mono font-semibold text-oc-text tabular-nums">
+                        {chip.value.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+
+                  {typeof duration === "number" && (
+                    <div
+                      role="listitem"
+                      className="oc-token-chip oc-token-chip-duration inline-flex items-center gap-1.5 rounded-full border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1 transition-all duration-200"
+                      title={`Duration: ${duration.toFixed(1)} seconds`}
+                    >
+                      <Clock className="h-3 w-3 text-oc-text-muted opacity-80" />
+                      <span className="oc-token-chip-value font-mono font-semibold text-oc-text-muted tabular-nums">
+                        {duration.toFixed(1)}s
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
               {plainTextFallback && (
                 <span
                   className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-oc-border-soft text-oc-text-muted"
@@ -2821,7 +2890,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 {timelineDisplayEvents.length > 0 && (
                   <>
                     <Stepper
-                      className="oc-refined-stepper max-h-[400px] overflow-y-auto"
+                      className={cn(
+                        "oc-refined-stepper pl-2",
+                        viewState.showAllCompletedActivity && "max-h-[400px] overflow-y-auto",
+                      )}
                       ref={progressTimelineRef}
                       autoScrollToBottom={isStreamingActive}
                     >
@@ -2854,160 +2926,160 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           >
                             <ExpandableStep>
                               <div className="flex min-w-0 flex-col items-start gap-2 w-full">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span
-                                  className={cn(
-                                    "oc-refined-event-label",
-                                    event.kind === "reasoning" && "reasoning",
-                                    // event.kind === "activity" && "uppercase"
-                                    event.kind === "activity" && "activity",
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span
+                                    className={cn(
+                                      "oc-refined-event-label",
+                                      event.kind === "reasoning" && "reasoning",
+                                      // event.kind === "activity" && "uppercase"
+                                      event.kind === "activity" && "activity",
+                                    )}
+                                    data-operation={event.label.toLowerCase()}
+                                  >
+                                    {event.label}
+                                  </span>
+                                  {event.kind === "activity" && event.source && event.source !== "stream" && (
+                                    <span className="oc-refined-meta-badge">
+                                      {event.source === "raw_debug"
+                                        ? "raw"
+                                        : event.source}
+                                    </span>
                                   )}
-                                  data-operation={event.label.toLowerCase()}
-                                >
-                                  {event.label}
-                                </span>
-                                {event.kind === "activity" && event.source && event.source !== "stream" && (
-                                  <span className="oc-refined-meta-badge">
-                                    {event.source === "raw_debug"
-                                      ? "raw"
-                                      : event.source}
-                                  </span>
-                                )}
-                                {event.kind === "activity" && event.internal && (
-                                  <span className="oc-refined-meta-badge">
-                                    internal
-                                  </span>
-                                )}
-                              </div>
+                                  {event.kind === "activity" && event.internal && (
+                                    <span className="oc-refined-meta-badge">
+                                      internal
+                                    </span>
+                                  )}
+                                </div>
 
-                              <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
-                                {event.filePath ? (
+                                <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
+                                  {event.filePath ? (
+                                    <button
+                                      type="button"
+                                      className="oc-refined-file-link"
+                                      title={event.filePath}
+                                      onClick={() =>
+                                        vscode.postMessage({
+                                          type: "openFile",
+                                          file: event.filePath!,
+                                        })
+                                      }
+                                    >
+                                      <FileIcon filePath={event.filePath} />
+                                      <span className="break-words whitespace-pre-wrap">
+                                        {fileName || event.summary}
+                                      </span>
+                                    </button>
+                                  ) : (
+                                    event.summary && (
+                                      <div
+                                        className={cn(
+                                          "oc-refined-event-summary",
+                                          event.kind === "reasoning" &&
+                                          !viewState.showThinkingDetails &&
+                                          "line-clamp-2",
+                                        )}
+                                      >
+                                        {event.label === "bash" ? (
+                                          <TerminalBlockWithOutput
+                                            event={event}
+                                            messageContent={content}
+                                          />
+                                        ) : SEARCH_LABELS.has(event.label) ? (
+                                          <SearchBlock
+                                            pattern={event.activityDetail?.query || event.summary}
+                                            scope={event.label}
+                                          />
+                                        ) : (
+                                          <MarkdownRenderer
+                                            content={event.summary}
+                                            className="markdown-body"
+                                          />
+                                        )}
+                                      </div>
+                                    )
+                                  )}
+
+                                  {/* For non-bash events, render description separately */}
+                                  {event.label !== "bash" && event.description && (
+                                    <div className="oc-refined-event-content">
+                                      <MarkdownRenderer
+                                        content={event.description}
+                                        className="markdown-body"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {event.updateCount > 1 && (
+                                    <span className="oc-refined-update-count">
+                                      x{event.updateCount} updates
+                                    </span>
+                                  )}
+
+                                  {shouldShowDetail && event.detail && (
+                                    <div className="oc-refined-event-content">
+                                      <MarkdownRenderer
+                                        content={event.detail}
+                                        className="markdown-body"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {shouldShowDetail && event.activityDetail && (
+                                    <div className="oc-refined-activity-details flex flex-col gap-2">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        {event.activityDetail.tool && (
+                                          <span className="oc-refined-detail-badge">
+                                            tool {event.activityDetail.tool}
+                                          </span>
+                                        )}
+                                        {event.activityDetail.query && (
+                                          <span className="oc-refined-detail-badge">
+                                            query {event.activityDetail.query}
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      {/* Don't show TerminalBlock here for bash - already shown in summary section above */}
+                                      {event.label !== "bash" && event.activityDetail.command && (
+                                        <TerminalBlock command={event.activityDetail.command} />
+                                      )}
+                                    </div>
+                                  )}
+                                </span>
+
+                                {event.diffStats &&
+                                  (event.diffStats.added > 0 ||
+                                    event.diffStats.deleted > 0) && (
+                                    <span className="oc-refined-diff-stats">
+                                      {event.diffStats.added > 0 && (
+                                        <span className="oc-refined-diff-add">
+                                          +{event.diffStats.added}
+                                        </span>
+                                      )}
+                                      {event.diffStats.deleted > 0 && (
+                                        <span className="oc-refined-diff-del">
+                                          -{event.diffStats.deleted}
+                                        </span>
+                                      )}
+                                    </span>
+                                  )}
+
+                                {event.viewDiffFile && (
                                   <button
                                     type="button"
-                                    className="oc-refined-file-link"
-                                    title={event.filePath}
+                                    className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium text-oc-text-muted hover:text-oc-text-soft"
                                     onClick={() =>
                                       vscode.postMessage({
-                                        type: "openFile",
-                                        file: event.filePath!,
+                                        type: "openDiff",
+                                        file: event.viewDiffFile,
                                       })
                                     }
                                   >
-                                    <FileIcon filePath={event.filePath} />
-                                    <span className="break-words whitespace-pre-wrap">
-                                      {fileName || event.summary}
-                                    </span>
+                                    View diff
                                   </button>
-                                ) : (
-                                  event.summary && (
-                                    <div
-                                      className={cn(
-                                        "oc-refined-event-summary",
-                                        event.kind === "reasoning" &&
-                                        !viewState.showThinkingDetails &&
-                                        "line-clamp-2",
-                                      )}
-                                    >
-                                      {event.label === "bash" ? (
-                                        <TerminalBlockWithOutput
-                                          event={event}
-                                          messageContent={content}
-                                        />
-                                      ) : SEARCH_LABELS.has(event.label) ? (
-                                        <SearchBlock
-                                          pattern={event.activityDetail?.query || event.summary}
-                                          scope={event.label}
-                                        />
-                                      ) : (
-                                        <MarkdownRenderer
-                                          content={event.summary}
-                                          className="markdown-body"
-                                        />
-                                      )}
-                                    </div>
-                                  )
                                 )}
-
-                                {/* For non-bash events, render description separately */}
-                                {event.label !== "bash" && event.description && (
-                                  <div className="oc-refined-event-content">
-                                    <MarkdownRenderer
-                                      content={event.description}
-                                      className="markdown-body"
-                                    />
-                                  </div>
-                                )}
-
-                                {event.updateCount > 1 && (
-                                  <span className="oc-refined-update-count">
-                                    x{event.updateCount} updates
-                                  </span>
-                                )}
-
-                                {shouldShowDetail && event.detail && (
-                                  <div className="oc-refined-event-content">
-                                    <MarkdownRenderer
-                                      content={event.detail}
-                                      className="markdown-body"
-                                    />
-                                  </div>
-                                )}
-
-                                {shouldShowDetail && event.activityDetail && (
-                                  <div className="oc-refined-activity-details flex flex-col gap-2">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      {event.activityDetail.tool && (
-                                        <span className="oc-refined-detail-badge">
-                                          tool {event.activityDetail.tool}
-                                        </span>
-                                      )}
-                                      {event.activityDetail.query && (
-                                        <span className="oc-refined-detail-badge">
-                                          query {event.activityDetail.query}
-                                        </span>
-                                      )}
-                                    </div>
-
-                                    {/* Don't show TerminalBlock here for bash - already shown in summary section above */}
-                                    {event.label !== "bash" && event.activityDetail.command && (
-                                      <TerminalBlock command={event.activityDetail.command} />
-                                    )}
-                                  </div>
-                                )}
-                              </span>
-
-                              {event.diffStats &&
-                                (event.diffStats.added > 0 ||
-                                  event.diffStats.deleted > 0) && (
-                                  <span className="oc-refined-diff-stats">
-                                    {event.diffStats.added > 0 && (
-                                      <span className="oc-refined-diff-add">
-                                        +{event.diffStats.added}
-                                      </span>
-                                    )}
-                                    {event.diffStats.deleted > 0 && (
-                                      <span className="oc-refined-diff-del">
-                                        -{event.diffStats.deleted}
-                                      </span>
-                                    )}
-                                  </span>
-                                )}
-
-                              {event.viewDiffFile && (
-                                <button
-                                  type="button"
-                                  className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium text-oc-text-muted hover:text-oc-text-soft"
-                                  onClick={() =>
-                                    vscode.postMessage({
-                                      type: "openDiff",
-                                      file: event.viewDiffFile,
-                                    })
-                                  }
-                                >
-                                  View diff
-                                </button>
-                              )}
-                            </div>
+                              </div>
                             </ExpandableStep>
                           </StepperItem>
                         );
@@ -3035,6 +3107,23 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </div>
                         </StepperItem>
                       </Stepper>
+                    )}
+
+                    {displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY && (
+                      <button
+                        type="button"
+                        className="mt-4 rounded-full border border-oc-border px-2.5 py-0.5 text-left font-mono text-[10px] text-oc-text-muted transition-colors hover:bg-oc-panel hover:text-oc-text-soft"
+                        onClick={() =>
+                          setViewState((prev) => ({
+                            ...prev,
+                            showAllCompletedActivity: !prev.showAllCompletedActivity,
+                          }))
+                        }
+                      >
+                        {viewState.showAllCompletedActivity
+                          ? "Show less"
+                          : `Show more (${hiddenActivityEventCount})`}
+                      </button>
                     )}
 
                   </>
@@ -3186,7 +3275,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 </div>
               )}
 
-              {plan && !message?.interactiveEvents?.length && (
+              {plan && (
                 <div
                   className={
                     hasResponseContent
@@ -3338,7 +3427,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 )} */}
 
               {/* Temporarily hidden: Raw Response Debug Component */}
-              {/*hasRawResponseDebug && (
+              {hasRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
                   className={
@@ -3356,7 +3445,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     {rawResponseText}
                   </pre>
                 </div>
-              )*/}
+              )}
 
             </section>
           )}
@@ -3466,16 +3555,16 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
             Array.isArray(changeSummary.files) &&
             changeSummary.files.length > 0 &&
             changeSummary.messageId === messageId)) && (
-          <div className="mt-4">
-            <FileChangesSection
-              streamingSteps={[]}
-              timelineEvents={[]}
-              messageEdits={message?.edits || []}
-              changeSummary={changeSummary}
-              messageId={messageId}
-            />
-          </div>
-        )}
+            <div className="mt-4">
+              <FileChangesSection
+                streamingSteps={[]}
+                timelineEvents={[]}
+                messageEdits={message?.edits || []}
+                changeSummary={changeSummary}
+                messageId={messageId}
+              />
+            </div>
+          )}
 
         {isStreamingActive && !showResponseSection && hasStreamingActivity && (
           <div className="mt-2 mb-2 px-1">
@@ -3780,40 +3869,40 @@ function FileChangesSection({
           )}
         </div>
         <div className="ml-auto flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={handleUndo}
-              className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
-            >
-              <Undo2 className="h-3 w-3" />
-              Undo
-            </button>
-            <button
-              type="button"
-              onClick={handleReview}
-              className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
-            >
-              <ArrowUpRight className="h-3 w-3" />
-              Review
-            </button>
+          <button
+            type="button"
+            onClick={handleUndo}
+            className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
+          >
+            <Undo2 className="h-3 w-3" />
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={handleReview}
+            className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
+          >
+            <ArrowUpRight className="h-3 w-3" />
+            Review
+          </button>
         </div>
       </div>
-       <div className="border-t border-oc-border-soft">
-         <div className="space-y-0.5 p-1.5">
-           {visibleChanges.map((fileChange) => {
-             const hasPreview =
-               Array.isArray(fileChange.diffExcerpt?.lines) && fileChange.diffExcerpt.lines.length > 0;
-             const isExpanded = !!expandedByFile[fileChange.file];
-             const filename = fileChange.file.split(/[\\/]/).pop() ?? fileChange.file;
-             const dirname = fileChange.file !== filename
-               ? fileChange.file.slice(0, fileChange.file.length - filename.length - 1)
-               : '';
+      <div className="border-t border-oc-border-soft">
+        <div className="space-y-0.5 p-1.5">
+          {visibleChanges.map((fileChange) => {
+            const hasPreview =
+              Array.isArray(fileChange.diffExcerpt?.lines) && fileChange.diffExcerpt.lines.length > 0;
+            const isExpanded = !!expandedByFile[fileChange.file];
+            const filename = fileChange.file.split(/[\\/]/).pop() ?? fileChange.file;
+            const dirname = fileChange.file !== filename
+              ? fileChange.file.slice(0, fileChange.file.length - filename.length - 1)
+              : '';
 
-             return (
-               <div
-                 key={fileChange.file}
-                 className="rounded border border-oc-border-soft overflow-hidden transition-colors hover:border-oc-border"
-               >
+            return (
+              <div
+                key={fileChange.file}
+                className="rounded border border-oc-border-soft overflow-hidden transition-colors hover:border-oc-border"
+              >
                 <div className="flex items-center justify-between px-2.5 py-1.5 hover:bg-white/[0.025] transition-colors">
                   <button
                     type="button"
@@ -3885,11 +3974,11 @@ function FileChangesSection({
         </div>
       </div>
 
-       {fileChanges.length > visibleChanges.length ? (
-         <div className="border-t border-oc-border-soft px-3 py-1.5 text-[11px] text-oc-text-muted/60 text-center">
-           Showing {visibleChanges.length} of {fileChanges.length} changed files
-         </div>
-       ) : null}
+      {fileChanges.length > visibleChanges.length ? (
+        <div className="border-t border-oc-border-soft px-3 py-1.5 text-[11px] text-oc-text-muted/60 text-center">
+          Showing {visibleChanges.length} of {fileChanges.length} changed files
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -4023,46 +4112,46 @@ export function AbortedBanner({ onRetry }: { onRetry?: () => void }) {
             {/* Refined icon container with glow */}
             <div className="relative">
               <div className="absolute inset-0 rounded-full oc-warning-icon blur-md" style={{ background: 'rgba(217, 119, 6, 0.125)' }} />
-               <div className="oc-warning-icon relative flex h-8 w-8 items-center justify-center">
-                 <StopCircle className="h-4 w-4 oc-warning-icon-color drop-shadow-sm" />
-               </div>
-             </div>
-
-             {/* Typography - editorial style with hierarchy */}
-             <div className="flex flex-col gap-0.5">
-               <div className="flex items-center gap-2">
-                 <span className="oc-warning-text-primary text-[11px] font-semibold tracking-wide uppercase">
-                   Interrupted
-                 </span>
-                 <span className="oc-warning-marker" />
-               </div>
-               <span className="oc-warning-text-secondary text-[12px] leading-snug opacity-90">
-                 Response stopped by user
-               </span>
-             </div>
-           </div>
-
-           {/* Right side - retry button with refined styling */}
-           {onRetry && (
-             <div className="flex flex-col items-end gap-1.5">
-                <button
-                  type="button"
-                  onClick={onRetry}
-                  className="oc-warning-action"
-                >
-                  <RotateCw className="h-3 w-3 transition-transform duration-500 group-hover:rotate-180" />
-                  <span className="tracking-wide">RETRY</span>
-                </button>
-                <span className="oc-warning-hint">
-                  Resume generation
-                </span>
+              <div className="oc-warning-icon relative flex h-8 w-8 items-center justify-center">
+                <StopCircle className="h-4 w-4 oc-warning-icon-color drop-shadow-sm" />
               </div>
-            )}
+            </div>
+
+            {/* Typography - editorial style with hierarchy */}
+            <div className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-2">
+                <span className="oc-warning-text-primary text-[11px] font-semibold tracking-wide uppercase">
+                  Interrupted
+                </span>
+                <span className="oc-warning-marker" />
+              </div>
+              <span className="oc-warning-text-secondary text-[12px] leading-snug opacity-90">
+                Response stopped by user
+              </span>
+            </div>
           </div>
+
+          {/* Right side - retry button with refined styling */}
+          {onRetry && (
+            <div className="flex flex-col items-end gap-1.5">
+              <button
+                type="button"
+                onClick={onRetry}
+                className="oc-warning-action"
+              >
+                <RotateCw className="h-3 w-3 transition-transform duration-500 group-hover:rotate-180" />
+                <span className="tracking-wide">RETRY</span>
+              </button>
+              <span className="oc-warning-hint">
+                Resume generation
+              </span>
+            </div>
+          )}
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
 
 interface InfoBannerProps {

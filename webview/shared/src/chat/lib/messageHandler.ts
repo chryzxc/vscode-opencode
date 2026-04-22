@@ -468,6 +468,24 @@ function normalizeProgressStatus(
   return "pending";
 }
 
+function hasTerminalFinishSignal(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = asString(value).trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized === "done" ||
+    normalized === "stop" ||
+    normalized === "error" ||
+    normalized === "finished" ||
+    normalized === "complete" ||
+    normalized === "completed"
+  );
+}
+
 function normalizeDiffStats(
   value: unknown,
 ): { added: number; deleted: number } | undefined {
@@ -1597,6 +1615,124 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   };
 }
 
+function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
+  const rec = asRecord(value);
+  if (!rec) {
+    return undefined;
+  }
+
+  const rawResponseType = firstNonEmptyString(
+    asString(rec.responseType),
+    asString(rec.type),
+    asString(rec.kind),
+  );
+  const responseType =
+    rawResponseType?.toLowerCase() === "interactive"
+      ? "question"
+      : rawResponseType?.toLowerCase();
+
+  const message = asString(rec.message).trim() || undefined;
+  const planRec = asRecord(rec.plan);
+  const plan = planRec
+    ? {
+        file: asString(planRec.file) || undefined,
+        files: Array.isArray(planRec.files) ? planRec.files : undefined,
+        content: asString(planRec.content) || undefined,
+        title: asString(planRec.title) || undefined,
+        intro: asString(planRec.intro) || undefined,
+        summary: asString(planRec.summary) || undefined,
+        fileCount:
+          typeof planRec.fileCount === "number" && Number.isFinite(planRec.fileCount)
+            ? planRec.fileCount
+            : undefined,
+      }
+    : undefined;
+  const hasPlan =
+    !!plan &&
+    !!(
+      asString(plan.file).trim() ||
+      asString(plan.content).trim() ||
+      (Array.isArray(plan.files) && plan.files.length > 0)
+    );
+
+  const normalizedResponseType =
+    responseType || (hasPlan ? "implementation_plan" : undefined);
+
+  if (!normalizedResponseType && !message && !hasPlan) {
+    return undefined;
+  }
+
+  return {
+    responseType: normalizedResponseType,
+    message,
+    plan: hasPlan ? plan : undefined,
+  };
+}
+
+function normalizeStructuredOutputWithFallback(value: unknown): StructuredOutput | undefined {
+  return normalizeStructuredOutput(value) ?? salvageStructuredOutput(value);
+}
+
+function structuredOutputFromRawDebug(parsedRawDebug: ParsedRawDebug): StructuredOutput | undefined {
+  const candidates: unknown[] = [];
+  for (const part of parsedRawDebug.parts) {
+    const partType = asString(part.type).toLowerCase();
+    const toolName = asString(part.tool);
+    const stateRec = asRecord(part.state);
+    if (
+      (partType === "tool" || toolName.length > 0) &&
+      (isInternalToolName(toolName) ||
+        isInternalToolName(asString(stateRec?.title)) ||
+        isInternalToolName(asString(stateRec?.tool)))
+    ) {
+      candidates.push(stateRec?.input);
+      candidates.push((stateRec as UnknownRecord | null)?.payload);
+      candidates.push(part.input);
+      candidates.push((part as UnknownRecord).payload);
+    }
+  }
+
+  const infoRec = asRecord(parsedRawDebug.info);
+  candidates.push(infoRec?.structuredOutput);
+  candidates.push((infoRec as UnknownRecord | null)?.structured_output);
+  candidates.push((infoRec as UnknownRecord | null)?.structured);
+
+  for (const candidate of candidates) {
+    const normalized = normalizeStructuredOutputWithFallback(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): StructuredOutput | undefined {
+  const infoRec = asRecord(rec.info);
+  const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
+  const fromRawDebug = structuredOutputFromRawDebug(parsedRawDebug);
+  if (fromRawDebug) {
+    return fromRawDebug;
+  }
+  const infoStructuredLegacy = normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured);
+  const localCandidates: unknown[] = [
+    rec.structuredOutput,
+    (rec as UnknownRecord).structured_output,
+    infoRec?.structuredOutput,
+    (infoRec as UnknownRecord | null)?.structured_output,
+  ];
+
+  for (const candidate of localCandidates) {
+    const normalized = normalizeStructuredOutputWithFallback(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  if (infoStructuredLegacy) {
+    return infoStructuredLegacy;
+  }
+  return undefined;
+}
+
 function parseNumberedQuestionsFromText(text: string): StructuredInteractiveEvent[] {
   if (!text) return [];
   const lines = text.split('\n');
@@ -2703,12 +2839,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
 
   // Normalize structured output early so content-source selection can rely on
   // structured responseType/message without falling back to free-form text.
-  const normalizedStructuredOutput =
-    normalizeStructuredOutput(rec.structuredOutput) ??
-    normalizeStructuredOutput((rec as Record<string, unknown>).structured_output) ??
-    normalizeStructuredOutput(asRecord(rec.info)?.structuredOutput) ??
-    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured_output) ??
-    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured);
+  const normalizedStructuredOutput = resolveStructuredOutputFromMessageRecord(rec);
 
   const role = asString(rec.role) || asString(asRecord(rec.info)?.role);
   const nonReasoningPartsContent = contentFromParts(sanitizedMergedParts).trim();
@@ -2719,19 +2850,25 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   ]);
   const structuredMessage = asString(normalizedStructuredOutput?.message).trim();
   const provisionalResponseType = firstNonEmptyString(
-    asString(rec.responseType),
     normalizedStructuredOutput?.responseType,
+    asString(rec.responseType),
   )?.toLowerCase();
+  const shouldPreferStructuredMessage =
+    provisionalResponseType === "implementation_plan" && structuredMessage.length > 0;
   const hasParts = Array.isArray(parts) && parts.length > 0;
   // Structured-first rule: when provider parts exist, non-reasoning text parts
   // are authoritative for assistant body rendering.
   let content = hasParts
-    ? nonReasoningPartsContent || (provisionalResponseType === "message" ? structuredMessage : "")
+    ? shouldPreferStructuredMessage
+      ? structuredMessage
+      : nonReasoningPartsContent || (provisionalResponseType === "message" ? structuredMessage : "")
     : structuredMessage || contentFromTopLevel;
   const sourceMessageId =
     asString(asRecord(rec.info)?.id) || asString((rec as UnknownRecord).id) || null;
   const contentSelectedSource = hasParts
-    ? nonReasoningPartsContent
+    ? shouldPreferStructuredMessage
+      ? "structured.message"
+      : nonReasoningPartsContent
       ? "parts"
       : provisionalResponseType === "message" && structuredMessage
         ? "structured.message"
@@ -2882,10 +3019,24 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     normalized.responseType,
     normalizedStructuredOutput?.responseType,
   )?.toLowerCase();
-  if (responseType !== "implementation_plan" && normalized.plan) {
+  const hasPlanAttachment =
+    !!normalized.plan &&
+    typeof normalized.plan === "object" &&
+    !!(
+      asString(normalized.plan.file).trim() ||
+      asString(normalized.plan.content).trim() ||
+      (Array.isArray(normalized.plan.files) && normalized.plan.files.length > 0)
+    );
+  if (!hasPlanAttachment && normalized.plan) {
     delete (normalized as Record<string, unknown>).plan;
   }
-  if (responseType === "implementation_plan" && normalized.plan) {
+  if (hasPlanAttachment && responseType !== "implementation_plan") {
+    normalized.responseType = "implementation_plan";
+  }
+  if (
+    (responseType === "implementation_plan" || normalized.responseType === "implementation_plan") &&
+    normalized.plan
+  ) {
     const introFromPlan = asString(normalized.plan.intro).trim();
     const summaryFromPlan = asString(normalized.plan.summary).trim();
     const currentContent = asString(normalized.content).trim();
@@ -4991,12 +5142,7 @@ function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
   if (!rec) {
     return [];
   }
-  const structured =
-    normalizeStructuredOutput(rec.structuredOutput) ??
-    normalizeStructuredOutput((rec as UnknownRecord).structured_output) ??
-    normalizeStructuredOutput(asRecord(rec.info)?.structuredOutput) ??
-    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured_output) ??
-    normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured);
+  const structured = resolveStructuredOutputFromMessageRecord(rec);
   const fromStructured = toInteractiveEvents(structured);
   if (fromStructured.length > 0) {
     return fromStructured;
@@ -5486,6 +5632,8 @@ function buildStreamingMessage(streaming: StreamingState): Message {
   };
 }
 
+let debouncedFinishTimer: ReturnType<typeof setTimeout> | null = null;
+
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -5680,9 +5828,13 @@ function handleStreamEvent(
       // Detect end of reasoning part (when we get ANY non-reasoning part after reasoning)
       // This ensures that if the assistant skips the text part and goes straight to a tool call
       // (e.g. for a question), we still reset the reasoning filter so the synthesized text is shown.
+      // isInReasoningPart is read before dispatch and may be stale; track the effective value locally
+      // to prevent the first non-reasoning part after reasoning from being misrouted.
+      let effectiveInReasoningPart = isInReasoningPart;
       if (isInReasoningPart && !isReasoning) {
         webviewLogger.debug(`Ending reasoning part sequence - current part type is ${currentPartType}`);
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: false } });
+        effectiveInReasoningPart = false;
       }
 
       // Check for system message patterns early (before any content processing)
@@ -5828,7 +5980,7 @@ function handleStreamEvent(
       const isReasoningPart =
         partType === 'reasoning' ||
         structuredKind === 'thinking' ||
-        isInReasoningPart ||
+        effectiveInReasoningPart ||
         hasExplicitReasoningOnlyChunk;
 
       if (isReasoningPart) {
@@ -6178,7 +6330,19 @@ function handleStreamEvent(
         hasInfo: !!asRecord(payload.info),
       });
       const info = asRecord(payload.info) ?? asRecord(payload.properties)?.info;
-      const finish = info ? asBoolean((info as UnknownRecord).finish, false) : false;
+      const immediateFinish =
+        hasTerminalFinishSignal(info ? (info as UnknownRecord).finish : undefined) ||
+        hasTerminalFinishSignal(payload.finish);
+      const infoFinishRaw = asString(info ? (info as UnknownRecord).finish : undefined).trim().toLowerCase();
+      const hasCompletedTimestamp = (() => {
+        const timeRec = asRecord(info?.time);
+        const completed = asOptionalNumber(timeRec?.completed);
+        return typeof completed === "number" && Number.isFinite(completed) && completed > 0;
+      })();
+      const isToolCallsFinish =
+        (infoFinishRaw === "tool-calls" || infoFinishRaw === "tool_calls") &&
+        hasCompletedTimestamp;
+      const finish = immediateFinish;
 
       if (finish && structuredOutput) {
         if (structuredOutput.reasoning) {
@@ -6496,6 +6660,23 @@ function handleStreamEvent(
       if (finish) {
         dispatch({ type: 'FINISH_STREAMING' });
         dispatch({ type: 'SET_PROCESSING', payload: false });
+        if (debouncedFinishTimer) {
+          clearTimeout(debouncedFinishTimer);
+          debouncedFinishTimer = null;
+        }
+      } else if (isToolCallsFinish) {
+        if (debouncedFinishTimer) {
+          clearTimeout(debouncedFinishTimer);
+        }
+        debouncedFinishTimer = setTimeout(() => {
+          debouncedFinishTimer = null;
+          const currentState = getState();
+          if (currentState.isProcessing || currentState.streaming?.isActive) {
+            webviewLogger.debug('Debounced tool-calls finish: no new start arrived, finishing stream');
+            dispatch({ type: 'FINISH_STREAMING' });
+            dispatch({ type: 'SET_PROCESSING', payload: false });
+          }
+        }, 1500);
       } else {
         dispatch({ type: 'SET_PROCESSING', payload: true });
       }
@@ -6513,6 +6694,10 @@ function handleStreamEvent(
     }
     case 'start':
     case 'streamStart': {
+      if (debouncedFinishTimer) {
+        clearTimeout(debouncedFinishTimer);
+        debouncedFinishTimer = null;
+      }
       webviewLogger.debug(`Processing stream start`, {
         messageId,
         eventAgent: asString(infoRecord?.agent) || asString(payload.agent),
@@ -6769,6 +6954,10 @@ function handleStreamEvent(
     }
     case 'finish':
     case 'done': {
+      if (debouncedFinishTimer) {
+        clearTimeout(debouncedFinishTimer);
+        debouncedFinishTimer = null;
+      }
       dispatch({
         type: 'FINISH_STREAMING',
         payload: {
