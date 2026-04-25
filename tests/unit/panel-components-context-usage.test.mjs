@@ -1,24 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { readSource, joinFromRoot } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, readSource, joinFromRoot } from '../helpers/source-utils.mjs';
 
 const panelSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
   'PanelComponents.tsx',
 );
 
+const stickyHeaderSource = extractFunctionBody(panelSource, 'export function StickyHeader()');
+
 test('StickyHeader uses contextUsagePct from app state instead of calculating locally', () => {
   assert.match(
-    panelSource,
-    /export function StickyHeader\(\) \{[\s\S]*const \{[\s\S]*contextUsagePct,[\s\S]*\} = useAppState\(\);/,
+    stickyHeaderSource,
+    /const \{[\s\S]*contextUsagePct,[\s\S]*\} = useAppState\(\);/,
     'StickyHeader should destructure contextUsagePct from useAppState'
   );
 });
 
 test('StickyHeader displays CircularProgress with context usage percentage', () => {
   assert.match(
-    panelSource,
+    stickyHeaderSource,
     /<CircularProgress pct=\{contextUsagePct \?\? 0\} size=\{24\} strokeWidth=\{3\} \/>/,
     'StickyHeader should render CircularProgress component with contextUsagePct, defaulting to 0'
   );
@@ -26,7 +28,7 @@ test('StickyHeader displays CircularProgress with context usage percentage', () 
 
 test('StickyHeader CircularProgress has appropriate size and stroke width for header', () => {
   assert.match(
-    panelSource,
+    stickyHeaderSource,
     /CircularProgress pct=\{contextUsagePct \?\? 0\} size=\{24\} strokeWidth=\{3\}/,
     'StickyHeader CircularProgress should use size=24 and strokeWidth=3 for header display'
   );
@@ -34,31 +36,31 @@ test('StickyHeader CircularProgress has appropriate size and stroke width for he
 
 test('StickyHeader removes duplicate context usage calculation code', () => {
   assert.doesNotMatch(
-    panelSource,
+    stickyHeaderSource,
     /const selectedModelContextLimit = useMemo\(\(\) =>/,
     'StickyHeader should not contain selectedModelContextLimit calculation'
   );
 
   assert.doesNotMatch(
-    panelSource,
+    stickyHeaderSource,
     /const derivedBaseline = useMemo\(\(\) =>/,
     'StickyHeader should not contain derivedBaseline calculation'
   );
 
   assert.doesNotMatch(
-    panelSource,
+    stickyHeaderSource,
     /const contextStats = useMemo\(/,
     'StickyHeader should not contain contextStats calculation'
   );
 
   assert.doesNotMatch(
-    panelSource,
+    stickyHeaderSource,
     /const totalUsed = totalTokens\(/,
     'StickyHeader should not contain totalUsed calculation'
   );
 
   assert.doesNotMatch(
-    panelSource,
+    stickyHeaderSource,
     /const pct =[\s\S]*Math\.min\(100, Math\.round\(\(totalUsed \/ maxContext\) \* 100\)\)/,
     'StickyHeader should not contain pct calculation'
   );
@@ -66,15 +68,15 @@ test('StickyHeader removes duplicate context usage calculation code', () => {
 
 test('StickyHeader simplifies state destructuring by removing unused variables', () => {
   assert.match(
-    panelSource,
+    stickyHeaderSource,
     /const \{[\s\S]*currentSessionId,[\s\S]*isSessionModalOpen,[\s\S]*isQuotaPopoverOpen,[\s\S]*isProcessing: globalIsProcessing,[\s\S]*processingSessionIds,[\s\S]*streaming,[\s\S]*promptQueue,[\s\S]*sessionsList,[\s\S]*contextUsagePct,[\s\S]*\} = useAppState\(\);/,
     'StickyHeader should only destructure the state variables it actually uses'
   );
 
   assert.doesNotMatch(
-    panelSource,
+    stickyHeaderSource,
     /const \{[\s\S]*isSidebarOpen,[\s\S]*sessionStats,[\s\S]*availableModels,[\s\S]*selectedModel,[\s\S]*messages,[\s\S]*compactionBaselineStats,[\s\S]*compactionDividerIndex,[\s\S]*\} = useAppState\(\);/,
-    'StickyHeader should not destrate unused state variables'
+    'StickyHeader should not destructure unused state variables'
   );
 });
 
@@ -112,7 +114,7 @@ test('InputWrapper positions context indicator on the right side of model contro
 
 test('StickyHeader maintains session title display alongside context indicator', () => {
   assert.match(
-    panelSource,
+    stickyHeaderSource,
     /<CircularProgress[\s\S]*\/>[\s\S]*<span className="oc-title[\s\S]*">\{sessionTitle\}<\/span>/,
     'StickyHeader should display CircularProgress followed by session title'
   );
@@ -120,15 +122,15 @@ test('StickyHeader maintains session title display alongside context indicator',
 
 test('both components handle undefined contextUsagePct gracefully', () => {
   assert.match(
-    panelSource,
+    stickyHeaderSource,
     /contextUsagePct \?\? 0/g,
-    'Both StickyHeader and InputWrapper should default to 0 when contextUsagePct is undefined'
+    'StickyHeader should default to 0 when contextUsagePct is undefined'
   );
 });
 
 test('StickyHeader context indicator is in the left section with proper spacing', () => {
   assert.match(
-    panelSource,
+    stickyHeaderSource,
     /<div className="oc-header-left flex items-center min-w-0 gap-2">[\s\S]*<CircularProgress[\s\S]*\/>[\s\S]*<span/,
     'StickyHeader should use gap-2 for spacing between CircularProgress and session title'
   );

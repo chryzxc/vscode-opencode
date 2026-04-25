@@ -181,9 +181,10 @@ test('StickyHeader left section contains no action buttons', () => {
   const leftSection = leftSectionMatch[1];
 
   // Verify no button components in left section
+  // Use more specific patterns to avoid matching CircularProgress props
   assert.doesNotMatch(
     leftSection,
-    /Button|variant=|size=/,
+    /<Button|variant=|<button/,
     'Left section must not contain Button components',
   );
 

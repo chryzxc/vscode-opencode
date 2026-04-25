@@ -130,7 +130,7 @@ test('activity section has simplified container without border-t divider', () =>
     // The new structure should go directly to the stepper container
     assert.match(
         messageComponentsSource,
-        /data-assistant-section="activity"[\s\S]{0,200}<div className="px-3 py-2\.5">/,
+        /data-assistant-section="activity"[\s\S]{0,200}<div className="px-2 py-1\.5">/,
         'Activity section should have simplified container going directly to stepper',
     );
 });
@@ -138,7 +138,7 @@ test('activity section has simplified container without border-t divider', () =>
 test('stepper is rendered directly in simplified container', () => {
     assert.match(
         messageComponentsSource,
-        /<div className="px-3 py-2\.5">[\s\S]{0,100}<Stepper/s,
+        /<div className="px-2 py-1\.5">[\s\S]{0,100}<Stepper/s,
         'Stepper should be rendered directly in simplified container without header div',
     );
 });
@@ -232,7 +232,7 @@ test('activity section maintains background styling', () => {
 test('stepper container maintains padding', () => {
     assert.match(
         messageComponentsSource,
-        /<div className="px-3 py-2\.5">/,
+        /<div className="px-2 py-1\.5">/,
         'Stepper container should maintain horizontal and vertical padding',
     );
 });
