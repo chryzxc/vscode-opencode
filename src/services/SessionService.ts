@@ -1422,6 +1422,19 @@ export class SessionService {
    * console.log('Renamed session:', session.title);
    * ```
    */
+  updateLocalSessionTitle(sessionId: string, title: string): void {
+    const localSession = this.sessionHistory.find((s) => s.id === sessionId);
+    if (localSession) {
+      localSession.title = title;
+    }
+
+    if (this.currentSession?.id === sessionId) {
+      this.currentSession.title = title;
+    }
+
+    this.persistState();
+  }
+
   async renameSession(sessionId: string, newTitle: string): Promise<Session> {
     try {
       const client = await this.serverManager.ensureRunning();

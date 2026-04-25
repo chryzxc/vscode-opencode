@@ -1696,17 +1696,17 @@ body {
 /* Enhanced stepper item - subtle, no hover effects */
 .oc-refined-stepper-item {
   position: relative;
-  padding: 8px 12px;
-  margin: 3px 0;
-  border-radius: 8px;
+  padding: 3px 8px;
+  margin: 0;
+  border-radius: 6px;
   background: transparent;
   border: none;
   z-index: 1;
 }
 
-/* Active streaming state - minimal */
+/* Active streaming state - minimal, no background */
 .oc-refined-stepper-item.is-streaming {
-  background: color-mix(in srgb, var(--oc-accent) 3%, transparent);
+  background: transparent;
   border-radius: 6px;
 }
 
@@ -1778,11 +1778,11 @@ body {
 /* Enhanced event label - subtle */
 .oc-refined-event-label {
   display: inline-block;
-  padding: 4px 10px;
+  padding: 3px 8px;
   border-radius: 12px;
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-  font-size: 10px;
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   min-width: 65px;
@@ -1827,7 +1827,7 @@ body {
   padding: 3px 7px;
   border-radius: 8px;
   font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 400;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -1840,7 +1840,7 @@ body {
 /* Enhanced event content - markdown support */
 .oc-refined-event-content {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--oc-text-soft);
   padding: 2px 0;
@@ -1848,7 +1848,7 @@ body {
 
 /* Markdown styling within event content */
 .oc-refined-event-content .markdown-body {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -1881,7 +1881,7 @@ body {
   color: var(--oc-text);
   display: block;
   margin-bottom: 4px;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 /* File path - minimal inline styling */
@@ -2017,7 +2017,7 @@ body {
   background: color-mix(in srgb, var(--oc-bg) 40%, transparent);
   border: 1px solid var(--oc-border-soft);
   font-family: 'SF Mono', Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 500;
 }
 
@@ -2169,7 +2169,7 @@ body {
   padding: 2px 6px;
   border-radius: 4px;
   font-family: 'SF Mono', Consolas, monospace;
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 400;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -2188,7 +2188,7 @@ body {
   background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--oc-accent) 12%, transparent);
   font-family: 'SF Mono', Consolas, monospace;
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--oc-accent);
 }
@@ -2237,7 +2237,7 @@ body {
 
 .oc-search-block-scope {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -2249,7 +2249,7 @@ body {
   align-items: center;
   gap: 3px;
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--oc-text-muted);
 }
 

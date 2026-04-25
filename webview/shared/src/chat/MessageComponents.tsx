@@ -2886,7 +2886,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               data-assistant-section="activity"
               className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40"
             >
-              <div className="px-3 py-2.5">
+              <div className="px-2 py-1.5">
                 {timelineDisplayEvents.length > 0 && (
                   <>
                     <Stepper

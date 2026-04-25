@@ -66,7 +66,7 @@ function DiffLine({
   return (
     <div
       className={cn(
-        "group relative flex min-w-0 font-mono text-[10.5px] leading-relaxed",
+        "group relative flex min-w-0 font-mono text-[11px] leading-relaxed",
         isAdded && "oc-diff-line-added",
         isRemoved && "oc-diff-line-removed",
         isHeader && "oc-diff-line-header",
@@ -156,11 +156,11 @@ export function ActivityDiffExcerpt({ excerpt }: { excerpt: DiffExcerpt }) {
   return (
     <div className="overflow-hidden rounded border border-oc-border-soft bg-oc-bg">
       <div className="flex items-center justify-between border-b border-oc-border-soft bg-oc-panel-soft/40 px-2 py-1">
-        <span className="font-mono text-[10px] uppercase tracking-wide text-oc-text-muted">
+        <span className="font-mono text-[11px] uppercase tracking-wide text-oc-text-muted">
           patch excerpt
         </span>
         {(typeof excerpt.added === "number" || typeof excerpt.deleted === "number") && (
-          <span className="flex items-center gap-1 font-mono text-[10px]">
+          <span className="flex items-center gap-1 font-mono text-[11px]">
             {typeof excerpt.added === "number" && excerpt.added > 0 ? (
               <span className="text-oc-green">+{excerpt.added}</span>
             ) : null}

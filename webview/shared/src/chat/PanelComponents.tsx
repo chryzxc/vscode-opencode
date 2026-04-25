@@ -268,20 +268,14 @@ function isQuickInputInteractiveEvent(event: InteractiveEvent): boolean {
 export function StickyHeader() {
   const {
     currentSessionId,
-    isSidebarOpen,
     isSessionModalOpen,
     isQuotaPopoverOpen,
-    sessionStats,
     isProcessing: globalIsProcessing,
     processingSessionIds,
     streaming,
     promptQueue,
-    availableModels,
-    selectedModel,
-    messages,
-    compactionBaselineStats,
-    compactionDividerIndex,
     sessionsList,
+    contextUsagePct,
   } = useAppState();
   const dispatch = useAppDispatch();
   const isProcessing = isProcessingInCurrentSession(
@@ -290,91 +284,16 @@ export function StickyHeader() {
     processingSessionIds,
   );
 
-  // Replicate context usage calculation from ActiveTaskPanel for header indicator
-  const selectedModelContextLimit = useMemo(() => {
-    if (!selectedModel) return undefined;
-    const matched = availableModels.find(
-      (m) =>
-        m.providerID === selectedModel.providerID &&
-        m.modelID === selectedModel.modelID,
-    );
-    const limit = matched?.contextLimit;
-    return typeof limit === "number" && Number.isFinite(limit) && limit > 0
-      ? Math.floor(limit)
-      : undefined;
-  }, [availableModels, selectedModel]);
-
-  const safeDividerIdx =
-    typeof compactionDividerIndex === "number"
-      ? Math.max(0, Math.min(compactionDividerIndex, messages.length))
-      : undefined;
-
-  const derivedBaseline = useMemo(() => {
-    const b = { input: 0, output: 0, read: 0, write: 0 };
-    if (safeDividerIdx === undefined || safeDividerIdx <= 0) return b;
-    for (let i = 0; i < safeDividerIdx; i += 1) {
-      const s = messageTokenStats(messages[i]);
-      b.input += s.input;
-      b.output += s.output;
-      b.read += s.read;
-      b.write += s.write;
-    }
-    return b;
-  }, [messages, safeDividerIdx]);
-
-  const effectiveBaseline = compactionBaselineStats
-    ? {
-      input: compactionBaselineStats.input,
-      output: compactionBaselineStats.output,
-      read: compactionBaselineStats.read,
-      write: compactionBaselineStats.write,
-    }
-    : derivedBaseline;
-
-  const contextStats = useMemo(
-    () => ({
-      input: Math.max(0, sessionStats.input - effectiveBaseline.input),
-      output: Math.max(0, sessionStats.output - effectiveBaseline.output),
-      read: Math.max(0, sessionStats.read - effectiveBaseline.read),
-      write: Math.max(0, sessionStats.write - effectiveBaseline.write),
-    }),
-    [sessionStats, effectiveBaseline],
-  );
-
-  const totalUsed = totalTokens(
-    contextStats.input,
-    contextStats.output,
-    contextStats.read,
-    contextStats.write,
-  );
-  const maxContext = selectedModelContextLimit ?? 128_000;
-  const pct =
-    totalUsed > 0
-      ? Math.min(100, Math.round((totalUsed / maxContext) * 100))
-      : 0;
-
-  const sessionLabel = currentSessionId ? currentSessionId.slice(0, 8) : "new";
-
-  // Get current session title
   const currentSession = currentSessionId
     ? sessionsList.find((s) => s.id === currentSessionId)
     : undefined;
   const sessionTitle = currentSession?.title || "Untitled chat";
 
-  const taskName =
-    isProcessing || streaming ? "Active request" : "No active task";
-  const taskStatus =
-    isProcessing || streaming
-      ? "RUNNING"
-      : promptQueue.length > 0
-        ? "PENDING"
-        : "IDLE";
-  const durationLabel = formatDuration(sessionStats.duration);
-
   return (
     <div className="oc-header sticky top-0 z-10 flex items-center justify-between border-b border-oc-border-soft px-3 py-1.5 text-xs">
-      {/* Left side: Session title only */}
-      <div className="oc-header-left flex items-center min-w-0">
+      {/* Left side: Context indicator + Session title */}
+      <div className="oc-header-left flex items-center min-w-0 gap-2">
+        <CircularProgress pct={contextUsagePct ?? 0} size={24} strokeWidth={3} />
         <span className="oc-title text-sm font-medium truncate">{sessionTitle}</span>
       </div>
 
@@ -1519,6 +1438,7 @@ export function InputWrapper() {
     commandsLoaded,
     attachments = [],
     interactiveEvents,
+    contextUsagePct,
   } = useAppState();
   const dispatch = useAppDispatch();
 
@@ -2685,6 +2605,9 @@ export function InputWrapper() {
               <ModelDropdown />
               <AgentDropdown />
               <ThinkingLevelControl />
+              <div className="flex items-center gap-1 ml-auto" title={`Context: ${contextUsagePct ?? 0}%`}>
+                <CircularProgress pct={contextUsagePct ?? 0} size={18} strokeWidth={2.5} />
+              </div>
             </div>
 
             {/* Right: action buttons */}

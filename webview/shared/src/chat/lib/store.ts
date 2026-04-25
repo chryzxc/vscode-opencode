@@ -138,6 +138,7 @@ export type AppAction =
   | { type: "SET_PROCESSING"; payload: boolean }
   | { type: "SET_STEERING"; payload: boolean }
   | { type: "SET_SESSIONS_LIST"; payload: Session[] }
+  | { type: "UPDATE_SESSION_TITLE"; payload: { sessionId: string; title: string } }
   | { type: "SET_PROCESSING_SESSIONS"; payload: string[] }
   | { type: "START_SESSION_LOADING"; payload: { sessionId: string; title: string } }
   | { type: "END_SESSION_LOADING" }
@@ -1455,6 +1456,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, isSteering: action.payload };
     case "SET_SESSIONS_LIST":
       return { ...state, sessionsList: action.payload };
+    case "UPDATE_SESSION_TITLE": {
+      const { sessionId, title } = action.payload;
+      const updated = state.sessionsList.map((s) =>
+        s.id === sessionId ? { ...s, title } : s,
+      );
+      return { ...state, sessionsList: updated };
+    }
     case "ADD_SESSION_EDIT": {
       const edits = new Set(state.sessionEdits);
       edits.add(action.payload);

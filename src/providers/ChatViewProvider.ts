@@ -119,7 +119,6 @@ import {
   SubagentTracker,
   type SubagentUpdatePayload,
 } from "../services/SubagentTracker";
-import { TitleGeneratorService } from "../services/TitleGeneratorService";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
 import {
@@ -424,8 +423,46 @@ export class ChatViewProvider
     }
   }
 
+  private handleServerSessionTitleUpdate(sessionId: string, title: string): void {
+    if (!title || title === "Untitled chat") return;
+
+    this.sessionService.updateLocalSessionTitle(sessionId, title);
+
+    this.view?.webview.postMessage({
+      type: "sessionTitleUpdated",
+      sessionId,
+      title,
+    });
+
+    this.sessionHandler.handleGetSessions().catch((err) => {
+      this.logger.warn("Failed to refresh sessions list after title update", { error: String(err) });
+    });
+  }
+
+  private fetchServerSessionTitle(sessionId: string): void {
+    this.sessionsNeedingTitle ??= new Set();
+    this.sessionsNeedingTitle.add(sessionId);
+  }
+
+  private async triggerSessionTitleGeneration(sessionId: string): Promise<void> {
+    const client = await this.serverManager.ensureRunning();
+    for (const delay of [2000, 5000, 10000]) {
+      await new Promise((r) => setTimeout(r, delay));
+      try {
+        const resp = await client.session.get({ path: { id: sessionId } });
+        if (resp.data?.title && resp.data.title !== "Untitled chat") {
+          this.handleServerSessionTitleUpdate(sessionId, resp.data.title);
+          return;
+        }
+      } catch {
+        break;
+      }
+    }
+  }
+
   /** Session-scoped queue of prompts awaiting execution */
   private queueBySessionId = new Map<string, QueuedPrompt[]>();
+  private sessionsNeedingTitle?: Set<string>;
   private queueItemSequence = 0;
 
   /** Set of session IDs currently executing their queue */
@@ -3109,6 +3146,16 @@ export class ChatViewProvider
         });
       }
 
+      // Sync server-generated session title from session.updated events.
+      // The OpenCode server generates titles using a small model after processing
+      // the first message — we pick up the AI-generated title here.
+      if (event.type === "session.updated" && event.properties) {
+        const sessionInfo = (event.properties as any)?.info;
+        if (sessionInfo?.id && typeof sessionInfo.title === "string") {
+          this.handleServerSessionTitleUpdate(sessionInfo.id, sessionInfo.title);
+        }
+      }
+
       // We process all events for internal logic (tracking, persistence),
       // but drop early if the stream event belongs to a different active session.
       if (eventSessionId && this.currentSessionId && eventSessionId !== this.currentSessionId) {
@@ -5521,8 +5568,7 @@ export class ChatViewProvider
         const config = vscode.workspace.getConfiguration('opencode');
         const autoGenerateTitle = config.get<boolean>('autoGenerateSessionTitle', true);
         if (autoGenerateTitle) {
-          const generatedTitle = TitleGeneratorService.generateTitle(text);
-          await this.updateSessionTitle(session.id, generatedTitle);
+          this.fetchServerSessionTitle(session.id);
         }
       }
 
@@ -6376,6 +6422,11 @@ export class ChatViewProvider
           this.activeStreamSessionId = undefined;
         }
         this.sendProcessingSessionsUpdate();
+
+        if (this.sessionsNeedingTitle?.has(drainSessionId)) {
+          this.sessionsNeedingTitle.delete(drainSessionId);
+          void this.triggerSessionTitleGeneration(drainSessionId);
+        }
       }
       this.logger.info("Processing request finished", {
         sessionId: drainSessionId,

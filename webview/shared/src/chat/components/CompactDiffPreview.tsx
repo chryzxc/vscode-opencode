@@ -119,7 +119,7 @@ export function CompactDiffPreview({
             <div
               key={`line-${index}`}
               className={cn(
-                "oc-diff-line group relative flex min-w-0 items-start gap-1.5 font-mono text-[10px] leading-tight py-0.5 px-1.5 rounded",
+                "oc-diff-line group relative flex min-w-0 items-start gap-1.5 font-mono text-[11px] leading-tight py-0.5 px-1.5 rounded",
                  "border border-transparent transition-colors",
                  // Operation type-specific styling
                  isAdded && "bg-emerald-950/20 border-emerald-950/30 text-emerald-300",
@@ -157,7 +157,7 @@ export function CompactDiffPreview({
       {/* More indicator */}
       {processedLines.hasMore && (
         <div className="oc-compact-diff-more mt-1.5 flex items-center justify-between">
-          <span className="text-[9px] font-mono text-oc-text-muted uppercase tracking-wide">
+          <span className="text-[11px] font-mono text-oc-text-muted uppercase tracking-wide">
             {processedLines.remainingCount > 0 && (
               <>
                 {processedLines.totalAdditions > 0 && (
@@ -174,7 +174,7 @@ export function CompactDiffPreview({
           {filePath && (
             <span
               className={cn(
-                "text-[9px] font-mono text-oc-accent hover:underline cursor-pointer",
+                "text-[11px] font-mono text-oc-accent hover:underline cursor-pointer",
                 "transition-colors"
               )}
             >

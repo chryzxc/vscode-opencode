@@ -3625,7 +3625,13 @@ function extractSubagentsFromMessages(messages: Message[]): {
       continue;
     }
     const details = message.subagents
-      .map((entry) => normalizeSubagentDetail(entry))
+      .map((entry) => {
+        const rec = asRecord(entry);
+        if (rec && !asString(rec.parentMessageId)) {
+          rec.parentMessageId = messageId;
+        }
+        return normalizeSubagentDetail(rec ?? entry);
+      })
       .filter((entry): entry is SubagentDetail => !!entry);
     if (details.length === 0) {
       continue;
@@ -7701,10 +7707,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const currentMessages = getState().messages;
 
           // FORBIDDEN TO REMOVE - token accumulation for sticky header
+          const tokensInput = msg.tokens?.input || msg.info?.tokens?.input || 0;
           dispatch({
             type: "ACCUMULATE_SESSION_STATS",
             payload: {
-              input: msg.tokens?.input || msg.info?.tokens?.input || 0,
+              input: tokensInput,
               output: msg.tokens?.output || msg.info?.tokens?.output || 0,
               read: msg.tokens?.cache?.read || msg.info?.tokens?.cache?.read || 0,
               write:
@@ -7713,6 +7720,24 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 msg.duration || msg.timing?.duration || msg.info?.duration || 0,
             },
           });
+
+          if (tokensInput > 0) {
+            const { selectedModel, availableModels } = getState();
+            const matched = selectedModel
+              ? availableModels.find(
+                  (m) =>
+                    m.providerID === selectedModel.providerID &&
+                    m.modelID === selectedModel.modelID,
+                )
+              : undefined;
+            const contextLimit = matched?.contextLimit;
+            if (contextLimit && contextLimit > 0) {
+              dispatch({
+                type: "SET_CONTEXT_USAGE_PCT",
+                payload: Math.min(100, Math.round((tokensInput / contextLimit) * 100)),
+              });
+            }
+          }
 
           const responseMessageId =
             asString(msg.id) || asString(asRecord(msg.info)?.id);
@@ -8594,6 +8619,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               type: "SET_SESSION_ID",
               payload: currentSessionId,
             });
+          }
+          break;
+        }
+        case "sessionTitleUpdated": {
+          const sessionId = asString(data.sessionId);
+          const title = asString(data.title);
+          if (sessionId && title) {
+            dispatch({ type: "UPDATE_SESSION_TITLE", payload: { sessionId, title } });
           }
           break;
         }

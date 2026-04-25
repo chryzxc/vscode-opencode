@@ -80,7 +80,7 @@ const StepperItem = React.forwardRef<
 >(({ className, isLast, indicator, children, ...props }, ref) => (
   <div ref={ref} className={cn("flex items-start", className)} {...props}>
     {/* Left column: dot + line below */}
-    <div className="flex flex-col items-center shrink-0 mr-2.5 self-stretch">
+    <div className="flex flex-col items-center shrink-0 mr-1.5 self-stretch">
       {/* Dot wrapper — keeps indicator centred in a fixed-size box */}
       <div className="flex h-5 w-5 shrink-0 items-center justify-center mt-[3px]">
         {indicator}
@@ -92,7 +92,7 @@ const StepperItem = React.forwardRef<
     </div>
 
     {/* Right: main content */}
-    <div className={cn("flex-1 min-w-0 pb-1.5")}>
+    <div className={cn("flex-1 min-w-0 pb-0.5")}>
       {children}
     </div>
   </div>

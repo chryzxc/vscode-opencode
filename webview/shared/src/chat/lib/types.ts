@@ -677,7 +677,7 @@ export interface AppState {
   budgetInfo: BudgetInfo | null | undefined;
   mcpServers: McpServerInfo[];
   lspServers: LspServerInfo[];
-  contextUsagePct?: number; // 0–1, latest context window usage percentage
+  contextUsagePct?: number; // 0–100, context window usage from tokens.input / contextLimit
   opencodeConfig?: {
     content: string;
     filePath: string;
