@@ -1,0 +1,48 @@
+/* ── OpenCode Neutral Color Theme ───────────────────────────────────────────── */
+/* Centralized color configuration for easy theme customization */
+
+:root {
+  /* Primary Neutral Accent - The main accent color used throughout the UI */
+  --oc-neutral-accent: #71717a;
+  --oc-neutral-accent-soft: rgba(113, 113, 122, 0.1);
+  --oc-neutral-accent-glow: rgba(113, 113, 122, 0.2);
+  --oc-neutral-accent-hover: rgba(113, 113, 122, 0.15);
+
+  /* Border Colors */
+  --oc-neutral-border-light: rgba(113, 113, 122, 0.28);
+  --oc-neutral-border-medium: rgba(113, 113, 122, 0.22);
+  --oc-neutral-border-thin: rgba(113, 113, 122, 0.16);
+  --oc-neutral-border-faint: rgba(113, 113, 122, 0.11);
+
+  /* Background Colors */
+  --oc-neutral-bg-subtle: rgba(113, 113, 122, 0.07);
+  --oc-neutral-bg-faint: rgba(113, 113, 122, 0.04);
+  --oc-neutral-bg-light: rgba(113, 113, 122, 0.1);
+  --oc-neutral-bg-hover: rgba(113, 113, 122, 0.14);
+
+  /* Operation Colors - All using neutral theme */
+  --oc-op-1: #71717a;
+  --oc-op-2: #71717a;
+  --oc-op-3: #71717a;
+  --oc-op-4: #71717a;
+  --oc-op-5: #71717a;
+
+  /* Terminal Colors - Neutral theme */
+  --oc-term-accent: #71717a;
+  --oc-term-accent-light: #a1a1aa;
+  --oc-term-bg: rgba(113, 113, 122, 0.08);
+  --oc-term-border: rgba(113, 113, 122, 0.15);
+
+  /* Gradient Colors */
+  --oc-neutral-gradient-start: #71717a;
+  --oc-neutral-gradient-end: #a1a1aa;
+}
+
+/* Dark theme overrides */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --oc-neutral-accent: #71717a;
+    --oc-term-accent: #71717a;
+    --oc-term-accent-light: #a1a1aa;
+  }
+}

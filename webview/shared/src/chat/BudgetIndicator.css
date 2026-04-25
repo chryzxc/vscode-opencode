@@ -16,8 +16,8 @@
   --budget-text-primary: #ffffff;
   --budget-text-secondary: #888888;
   --budget-text-tertiary: #555555;
-  --budget-accent-blue: #0066ff;
-  --budget-accent-orange: #ff6b00;
+  --budget-accent-primary: var(--oc-neutral-accent, #d1d5db);
+  --budget-accent-secondary: #ff6b00;
   --budget-grid-line: #1a1a1a;
 
   position: relative;
@@ -99,7 +99,7 @@
 .budget-used {
   font-size: 20px;
   font-weight: 700;
-  color: var(--budget-accent-blue);
+  color: var(--budget-accent-primary);
 }
 
 .budget-separator {
@@ -237,7 +237,7 @@
   transform: translateX(-50%);
   width: 40px;
   height: 1px;
-  background: var(--budget-accent-blue);
+  background: var(--budget-accent-primary);
 }
 
 .budget-stat-label {
@@ -251,7 +251,7 @@
 .budget-stat-value {
   font-size: 28px;
   font-weight: 700;
-  color: var(--budget-accent-blue);
+  color: var(--budget-accent-primary);
   line-height: 1;
   margin-bottom: 4px;
 }
@@ -289,7 +289,7 @@
 }
 
 .budget-advice-marker {
-  color: var(--budget-accent-blue);
+  color: var(--budget-accent-primary);
   font-size: 10px;
   flex-shrink: 0;
 }
@@ -307,7 +307,7 @@
 
 .budget-tech-decoration span:nth-child(1) {
   flex: 1;
-  background: var(--budget-accent-blue);
+  background: var(--budget-accent-primary);
 }
 
 .budget-tech-decoration span:nth-child(2) {
@@ -333,11 +333,11 @@
 
 /* Hover effect */
 .budget-indicator-brutalist:hover {
-  border-color: var(--budget-accent-blue);
+  border-color: var(--budget-accent-primary);
 }
 
 .budget-indicator-brutalist:hover .budget-tech-marker {
-  color: var(--budget-accent-blue);
+  color: var(--budget-accent-primary);
 }
 
 .budget-indicator-brutalist:hover::before {

@@ -765,7 +765,7 @@ export function ActiveTaskPanel() {
                         ? "linear-gradient(90deg, #f0883e, #f85149)"
                         : pct > 50
                           ? "linear-gradient(90deg, #d29922, #f0883e)"
-                          : "linear-gradient(90deg, #1f6feb, #58a6ff)",
+                          : "linear-gradient(90deg, #a1a1aa, #c4c4c8)",
                   }}
                 />
               </div>

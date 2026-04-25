@@ -158,9 +158,9 @@ export function QuotaPopover() {
 
           {/* GitHub Copilot Budget Info */}
           {budgetInfo && budgetInfo.enabled && !quotaIsRefreshing && (
-            <div className="overflow-hidden rounded-xl border border-oc-border bg-[var(--oc-panel-soft)]/40 shadow-sm">
+            <>
               {/* Header */}
-               <div className="border-b border-oc-border-soft px-3 py-2 flex items-center justify-between">
+              <div className="border-b border-oc-border-soft px-3 py-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <div className="flex h-5 w-5 items-center justify-center rounded-md bg-oc-accent/10 text-oc-accent">
                     <Zap className="h-3 w-3 fill-current" />
@@ -216,14 +216,14 @@ export function QuotaPopover() {
                   </div>
                 </div>
               </div>
-            </div>
+            </>
           )}
 
           {/* Platform Cards */}
           {!quotaIsRefreshing && quotaData?.platforms?.map((platform) => (
             <div
               key={`${platform.platform}-${platform.account}`}
-              className="overflow-hidden rounded-xl border border-oc-border bg-[linear-gradient(180deg,var(--oc-panel)_0%,var(--oc-panel-soft)_100%)] shadow-[0_6px_20px_rgba(0,0,0,0.2)]"
+              className="space-y-2.5"
             >
               {/* Platform Header */}
               <div className="border-b border-oc-border px-3 py-2.5">

@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+@import './colors.css';
 
 @tailwind base;
 @tailwind components;
@@ -24,8 +25,8 @@
     --vscode-editorWidget-foreground,
     var(--vscode-editor-foreground, #cdd6f4)
   );
-  --primary: var(--vscode-button-background, #89b4fa);
-  --primary-foreground: var(--vscode-button-foreground, #1e1e2e);
+  --primary: #71717a;
+  --primary-foreground: #1e1e2e;
   --secondary: var(
     --vscode-button-secondaryBackground,
     var(--vscode-input-background, #313244)
@@ -34,18 +35,18 @@
     --vscode-button-secondaryForeground,
     var(--vscode-editor-foreground, #cdd6f4)
   );
-  --muted: var(--vscode-editorWidget-background, rgba(205, 214, 244, 0.05));
+  --muted: var(--vscode-editorWidget-background, rgba(161, 161, 170, 0.05));
   --muted-foreground: var(--vscode-descriptionForeground, #a6adc8);
-  --accent: var(--vscode-list-hoverBackground, rgba(205, 214, 244, 0.05));
+  --accent: var(--vscode-list-hoverBackground, rgba(161, 161, 170, 0.05));
   --accent-foreground: var(--vscode-editor-foreground, #cdd6f4);
   --destructive: var(--vscode-errorForeground, #f38ba8);
   --destructive-foreground: var(--vscode-editor-background, #1e1e2e);
   --border: var(
     --vscode-panel-border,
-    var(--vscode-widget-border, rgba(205, 214, 244, 0.04))
+    var(--vscode-widget-border, rgba(161, 161, 170, 0.04))
   );
-  --input: var(--vscode-input-background, rgba(205, 214, 244, 0.05));
-  --ring: var(--vscode-focusBorder, #89b4fa);
+  --input: var(--vscode-input-background, rgba(161, 161, 170, 0.05));
+  --ring: var(--vscode-focusBorder, #a1a1aa);
   --radius: 0.75rem;
 }
 
@@ -98,19 +99,21 @@ body.vscode-high-contrast-light {
     var(--vscode-descriptionForeground, #a6adc8)
   );
 
-  /* Accent */
-  --oc-accent: var(
-    --vscode-textLink-foreground,
-    var(--vscode-button-background, #89b4fa)
-  );
-  --oc-accent-soft: rgba(137, 180, 250, 0.1);
-  --oc-accent-glow: rgba(137, 180, 250, 0.2);
+  /* Accent - Light neutral grey */
+  --oc-accent: #71717a;
+  --oc-accent-soft: rgba(113, 113, 122, 0.1);
+  --oc-accent-glow: rgba(113, 113, 122, 0.2);
 
    /* Status */
    --oc-green: var(--vscode-terminal-ansiGreen, #a6e3a1);
    --oc-yellow: var(--vscode-terminal-ansiYellow, #f9e2af);
    --oc-red: var(--vscode-terminal-ansiRed, var(--vscode-errorForeground, #f38ba8));
    --oc-orange: var(--vscode-terminal-ansiBrightRed, #fab387);
+
+  /* Operation Colors - Neutral Theme */
+  --oc-op-accent-1: #71717a;
+  --oc-op-accent-2: #71717a;
+  --oc-op-accent-3: #71717a;
 
   /* AI Response Enhanced Colors */
   --oc-amber-custom: #d97706;
@@ -1214,14 +1217,14 @@ body {
   border-radius: 2px;
   background: var(
     --vscode-scrollbarSlider-background,
-    rgba(205, 214, 244, 0.15)
+    rgba(161, 161, 170, 0.15)
   );
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(
     --vscode-scrollbarSlider-hoverBackground,
-    rgba(205, 214, 244, 0.3)
+    rgba(161, 161, 170, 0.3)
   );
 }
 
@@ -1265,37 +1268,37 @@ body {
 
 /* ── Utility Classes ─────────────────────────────────────────────────────── */
 .oc-accent-border-light {
-  border-color: rgba(137, 180, 250, 0.28);
+  border-color: rgba(161, 161, 170, 0.28);
 }
 .oc-accent-border-medium {
-  border-color: rgba(137, 180, 250, 0.22);
+  border-color: rgba(161, 161, 170, 0.22);
 }
 .oc-accent-border-thin {
-  border-color: rgba(137, 180, 250, 0.16);
+  border-color: rgba(161, 161, 170, 0.16);
 }
 .oc-accent-border-faint {
-  border-color: rgba(137, 180, 250, 0.11);
+  border-color: rgba(161, 161, 170, 0.11);
 }
 .oc-accent-bg-subtle {
-  background: rgba(137, 180, 250, 0.07);
+  background: rgba(161, 161, 170, 0.07);
 }
 .oc-accent-bg-faint {
-  background: rgba(137, 180, 250, 0.04);
+  background: rgba(161, 161, 170, 0.04);
 }
 .oc-accent-bg-light {
-  background: rgba(137, 180, 250, 0.1);
+  background: rgba(161, 161, 170, 0.1);
 }
 .oc-accent-bg-avatar {
-  background: rgba(137, 180, 250, 0.1);
+  background: rgba(161, 161, 170, 0.1);
 }
 .oc-accent-bg-hover {
-  background: rgba(137, 180, 250, 0.14);
+  background: rgba(161, 161, 170, 0.14);
 }
 .oc-accent-border-hover {
-  border-color: rgba(137, 180, 250, 0.22);
+  border-color: rgba(161, 161, 170, 0.22);
 }
 .oc-accent-border-thought {
-  border-color: rgba(137, 180, 250, 0.18);
+  border-color: rgba(161, 161, 170, 0.18);
 }
 
 .oc-warning-border {
@@ -1445,7 +1448,7 @@ body {
 }
 .oc-input-box:focus-within {
   border-color: var(--oc-accent);
-  box-shadow: 0 4px 16px rgba(137, 180, 250, 0.15);
+  box-shadow: 0 4px 16px rgba(161, 161, 170, 0.15);
 }
 
 /* Textarea inside the box */
@@ -1800,25 +1803,25 @@ body {
   box-shadow: 0 0 12px color-mix(in srgb, var(--oc-accent) 15%, transparent);
 }
 
-/* Event type-specific label colors - subtle */
+/* Event type-specific label colors - neutral */
 .oc-refined-event-label.reasoning {
-  color: var(--oc-purple);
-  background: color-mix(in srgb, var(--oc-purple) 8%, transparent);
+  color: var(--oc-op-accent-1);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
 }
 
 .oc-refined-event-label.reasoning:hover {
-  background: color-mix(in srgb, var(--oc-purple) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-purple) 15%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
 .oc-refined-event-label.activity {
-  color: var(--oc-blue);
-  background: color-mix(in srgb, var(--oc-blue) 8%, transparent);
+  color: var(--oc-op-accent-1);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
 }
 
 .oc-refined-event-label.activity:hover {
-  background: color-mix(in srgb, var(--oc-blue) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-blue) 15%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
 /* Enhanced source/internal badges - minimal */
@@ -1918,26 +1921,26 @@ body {
   box-shadow: 0 0 12px color-mix(in srgb, var(--oc-green) 15%, transparent);
 }
 
-/* Edit operation specific styling - analytical blue */
+/* Edit operation specific styling */
 .oc-refined-event-label[data-operation="edit"] {
-  color: var(--oc-blue);
-  background: color-mix(in srgb, var(--oc-blue) 8%, transparent);
+  color: var(--oc-op-accent-1);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
 }
 
 .oc-refined-event-label[data-operation="edit"]:hover {
-  background: color-mix(in srgb, var(--oc-blue) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-blue) 15%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
-/* Modify operation specific styling - adaptive purple */
+/* Modify operation specific styling */
 .oc-refined-event-label[data-operation="modify"] {
-  color: var(--oc-purple);
-  background: color-mix(in srgb, var(--oc-purple) 8%, transparent);
+  color: var(--oc-op-accent-1);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
 }
 
 .oc-refined-event-label[data-operation="modify"]:hover {
-  background: color-mix(in srgb, var(--oc-purple) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-purple) 15%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
 /* Update operation specific styling - progressive amber */
@@ -1951,27 +1954,27 @@ body {
   box-shadow: 0 0 12px color-mix(in srgb, var(--oc-orange) 15%, transparent);
 }
 
-/* Patch operation specific styling - technical teal */
+/* Patch operation specific styling */
 .oc-refined-event-label[data-operation="patch"] {
-  color: var(--oc-teal);
-  background: color-mix(in srgb, var(--oc-teal) 8%, transparent);
+  color: var(--oc-op-accent-1);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
 }
 
 .oc-refined-event-label[data-operation="patch"]:hover {
-  background: color-mix(in srgb, var(--oc-teal) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-teal) 15%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
-/* Edit operation specific styling - analytical blue */
+/* Edit operation specific styling */
 .oc-refined-event-label[data-operation="edit"] {
-  color: var(--oc-blue);
-  border-color: color-mix(in srgb, var(--oc-blue) 40%, transparent);
+  color: var(--oc-op-accent-1);
+  border-color: color-mix(in srgb, var(--oc-op-accent-1) 40%, transparent);
 }
 
-/* Modify operation specific styling - adaptive purple */
+/* Modify operation specific styling */
 .oc-refined-event-label[data-operation="modify"] {
-  color: var(--oc-purple);
-  border-color: color-mix(in srgb, var(--oc-purple) 40%, transparent);
+  color: var(--oc-op-accent-1);
+  border-color: color-mix(in srgb, var(--oc-op-accent-1) 40%, transparent);
 }
 
 /* Update operation specific styling - progressive amber */
@@ -1980,10 +1983,10 @@ body {
   border-color: color-mix(in srgb, var(--oc-orange) 40%, transparent);
 }
 
-/* Patch operation specific styling - technical teal */
+/* Patch operation specific styling */
 .oc-refined-event-label[data-operation="patch"] {
-  color: var(--oc-teal);
-  border-color: color-mix(in srgb, var(--oc-teal) 40%, transparent);
+  color: var(--oc-op-accent-1);
+  border-color: color-mix(in srgb, var(--oc-op-accent-1) 40%, transparent);
 }
 
 /* Enhanced typography for file operations */
@@ -2134,11 +2137,11 @@ body {
 }
 
 .oc-refined-stepper-item:has([data-operation="edit"]) .oc-compact-diff-preview {
-  border-left-color: color-mix(in srgb, #3b82f6 20%, transparent);
+  border-left-color: color-mix(in srgb, var(--oc-op-blue) 20%, transparent);
 }
 
 .oc-refined-stepper-item:has([data-operation="edit"]) .oc-compact-diff-preview::before {
-  color: color-mix(in srgb, #3b82f6 30%, transparent);
+  color: color-mix(in srgb, var(--oc-op-blue) 30%, transparent);
 }
 
 /* Enhanced diff line indicators */
@@ -2241,7 +2244,7 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #38bdf8;
+  color: var(--oc-neutral-accent);
 }
 
 .oc-search-block-filter {
@@ -2393,7 +2396,7 @@ body {
 }
 
 .terminal-prompt {
-  color: #58a6ff;
+  color: var(--oc-term-accent);
   font-weight: 600;
 }
 
@@ -2402,11 +2405,11 @@ body {
 }
 
 .terminal-path {
-  color: #58a6ff;
+  color: var(--oc-term-accent);
 }
 
 .terminal-cursor {
-  color: #58a6ff;
+  color: var(--oc-term-accent);
   animation: blink 1s step-end infinite;
 }
 
@@ -2460,13 +2463,13 @@ body {
 }
 
 .terminal-line-streaming {
-  background: rgba(88, 166, 255, 0.08);
+  background: var(--oc-term-bg);
   animation: pulse-stream 2s ease-in-out infinite;
 }
 
 @keyframes pulse-stream {
-  0%, 100% { background: rgba(88, 166, 255, 0.08); }
-  50% { background: rgba(88, 166, 255, 0.12); }
+  0%, 100% { background: var(--oc-term-bg); }
+  50% { background: var(--oc-neutral-bg-hover); }
 }
 
 /* Terminal Line Header */
@@ -2487,7 +2490,7 @@ body {
 }
 
 .terminal-status-pending {
-  color: #58a6ff;
+  color: var(--oc-term-accent);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
@@ -2521,7 +2524,7 @@ body {
 
 .terminal-operation-reasoning {
   background: rgba(137, 87, 229, 0.2);
-  color: #a5d6ff;
+  color: var(--oc-term-accent-light);
   border: 1px solid rgba(137, 87, 229, 0.4);
 }
 
@@ -2548,7 +2551,7 @@ body {
   background: rgba(48, 54, 61, 0.3);
   border: 1px solid #30363d;
   border-radius: 4px;
-  color: #58a6ff;
+  color: var(--oc-term-accent);
   text-decoration: none;
   font-size: 11px;
   transition: all 0.15s ease;
@@ -2558,9 +2561,9 @@ body {
 }
 
 .terminal-file-link:hover {
-  background: rgba(88, 166, 255, 0.15);
-  border-color: #58a6ff;
-  color: #a5d6ff;
+  background: var(--oc-term-bg);
+  border-color: var(--oc-term-accent);
+  color: var(--oc-term-accent-light);
 }
 
 .terminal-file-icon {
@@ -2643,7 +2646,7 @@ body {
 
 .terminal-tool-value,
 .terminal-query-value {
-  color: #58a6ff;
+  color: var(--oc-term-accent);
   font-family: 'SF Mono', Consolas, monospace;
 }
 
@@ -2667,7 +2670,7 @@ body {
 }
 
 .terminal-prompt-user {
-  color: #58a6ff;
+  color: var(--oc-term-accent);
   font-weight: 600;
 }
 
@@ -2684,7 +2687,7 @@ body {
 }
 
 .terminal-prompt-path {
-  color: #58a6ff;
+  color: var(--oc-term-accent);
 }
 
 .terminal-prompt-symbol {
@@ -2734,7 +2737,7 @@ body {
   padding: 4px 8px;
   font-size: 9px;
   font-family: 'SF Mono', Consolas, monospace;
-  color: #58a6ff;
+  color: var(--oc-term-accent);
   background: transparent;
   border: 1px solid #30363d;
   border-radius: 3px;
@@ -2746,9 +2749,9 @@ body {
 }
 
 .terminal-view-diff:hover {
-  background: rgba(88, 166, 255, 0.15);
-  border-color: #58a6ff;
-  color: #a5d6ff;
+  background: var(--oc-term-bg);
+  border-color: var(--oc-term-accent);
+  color: var(--oc-term-accent-light);
 }
 
 /* Terminal Thinking Placeholder */
@@ -2760,7 +2763,7 @@ body {
 
 .terminal-thinking-text {
   font-size: 11px;
-  color: #a5d6ff;
+  color: var(--oc-term-accent-light);
   font-style: italic;
   padding-left: 22px;
 }
@@ -2778,7 +2781,7 @@ body {
   padding: 8px 14px;
   font-size: 10px;
   font-family: 'SF Mono', Consolas, monospace;
-  color: #58a6ff;
+  color: var(--oc-term-accent);
   background: rgba(48, 54, 61, 0.3);
   border: none;
   border-top: 1px solid #30363d;
@@ -2790,8 +2793,8 @@ body {
 }
 
 .terminal-expand-button:hover {
-  background: rgba(88, 166, 255, 0.15);
-  color: #a5d6ff;
+  background: var(--oc-term-bg);
+  color: var(--oc-term-accent-light);
 }
 
 /* ============================================
@@ -2820,7 +2823,7 @@ body {
 
 .oc-expandable-toggle:hover {
   color: var(--oc-text);
-  background: rgba(137, 180, 250, 0.1);
+  background: rgba(161, 161, 170, 0.1);
 }
 
 .oc-expandable-toggle:focus-visible {
