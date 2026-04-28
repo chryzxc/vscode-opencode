@@ -98,6 +98,7 @@ import type { FileDiff, SessionPromptData } from "@opencode-ai/sdk" with { "reso
 import * as cp from "child_process";
 import * as path from "path";
 import * as vscode from "vscode";
+import { TitleGeneratorService } from "../services/TitleGeneratorService";
 import { ErrorBuilder } from "./chat/ErrorBuilder";
 import type { DisplayError } from "./chat/types";
 import {
@@ -112,7 +113,6 @@ import { MessageStreamService } from "../services/MessageStreamService";
 import { ModelCapabilitiesService } from "../services/ModelCapabilitiesService";
 import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { QuotaService } from "../services/QuotaService";
-import { RequestBudgeter } from "../services/RequestBudgeter";
 import { SessionService } from "../services/SessionService";
 import { SkillManagerService } from "../services/SkillManagerService";
 import {
@@ -227,8 +227,6 @@ export class ChatViewProvider
 
   /** Service for tracking Gemini token usage from stream events */
   private geminiTokenTracker: GeminiTokenUsageTracker;
-  /** Service for managing daily request budgets */
-  private budgeter: RequestBudgeter;
 
   private fileThemeProcessor: FileThemeProcessor;
   private cssGenerator: CssGenerator;
@@ -446,18 +444,37 @@ export class ChatViewProvider
 
   private async triggerSessionTitleGeneration(sessionId: string): Promise<void> {
     const client = await this.serverManager.ensureRunning();
-    for (const delay of [2000, 5000, 10000]) {
+    for (const delay of [3000, 6000, 12000]) {
       await new Promise((r) => setTimeout(r, delay));
       try {
         const resp = await client.session.get({ path: { id: sessionId } });
-        if (resp.data?.title && resp.data.title !== "Untitled chat") {
-          this.handleServerSessionTitleUpdate(sessionId, resp.data.title);
+        const title = resp.data?.title;
+        if (title && title !== "Untitled chat" && title !== "New Session") {
+          this.handleServerSessionTitleUpdate(sessionId, title);
           return;
         }
       } catch {
         break;
       }
     }
+
+    // OpenCode server title generation is unreliable — use local fallback.
+    try {
+      const messages = await this.sessionService.getMessages(sessionId);
+      const firstUserMsg = (messages as any[]).find((m) => m.role === "user");
+      const text: string = firstUserMsg?.content || firstUserMsg?.text || "";
+      if (text) {
+        const localTitle = TitleGeneratorService.generateTitle(text);
+        if (localTitle && localTitle !== "Untitled chat") {
+          this.handleServerSessionTitleUpdate(sessionId, localTitle);
+          try {
+            await this.updateSessionTitle(sessionId, localTitle);
+          } catch { /* best effort */ }
+        }
+      }
+    } catch { /* best effort */ }
+
+    await this.sessionHandler.handleGetSessions();
   }
 
   /** Session-scoped queue of prompts awaiting execution */
@@ -536,7 +553,6 @@ export class ChatViewProvider
     this.streamService = new MessageStreamService(serverManager);
     this.quotaService = new QuotaService();
     this.subagentTracker = new SubagentTracker();
-    this.budgeter = new RequestBudgeter();
     this.configFilesProvider = new ConfigFilesProvider();
     this.skillManager = new SkillManagerService(context);
     this.skillManager.initialize().catch((error) => {
@@ -547,7 +563,6 @@ export class ChatViewProvider
     this.geminiTokenTracker = GeminiTokenUsageTracker.getInstance();
     this.quotaService.on("quotaUpdate", (data) => {
       this.view?.webview.postMessage({ type: "quotaData", data });
-      this.sendBudgetInfo();
     });
 
     // Initialize file theme processor
@@ -2311,9 +2326,6 @@ export class ChatViewProvider
                 }
               });
 
-            // Send initial budget status
-            this.sendBudgetInfo();
-
             // Fetch and send chat history and sessions list
             if (currentSession) {
               this.subagentTracker.setActiveSession(currentSession.id);
@@ -3149,10 +3161,24 @@ export class ChatViewProvider
       // Sync server-generated session title from session.updated events.
       // The OpenCode server generates titles using a small model after processing
       // the first message — we pick up the AI-generated title here.
-      if (event.type === "session.updated" && event.properties) {
-        const sessionInfo = (event.properties as any)?.info;
-        if (sessionInfo?.id && typeof sessionInfo.title === "string") {
-          this.handleServerSessionTitleUpdate(sessionInfo.id, sessionInfo.title);
+      if (event.type === "session.updated") {
+        const eventAny = event as any;
+        const props = eventAny.properties as any ?? {};
+        const title =
+          eventAny.title ||
+          props.title ||
+          props.info?.title ||
+          props.session?.title;
+        const titleSessionId =
+          eventAny.id ||
+          eventAny.sessionId ||
+          eventAny.sessionID ||
+          props.id ||
+          props.sessionId ||
+          props.sessionID ||
+          props.info?.id;
+        if (titleSessionId && typeof title === "string" && title !== "Untitled chat") {
+          this.handleServerSessionTitleUpdate(titleSessionId, title);
         }
       }
 
@@ -5542,17 +5568,6 @@ export class ChatViewProvider
       // Note: awaitingInteractiveAnswer flag is NOT cleared here
       // It will be cleared naturally when stream events arrive
 
-      // Check budget before sending
-      const budgetCheck = this.budgeter.canMakeRequest();
-      if (!budgetCheck.allowed) {
-        this.sendBudgetInfo();
-        // Show warning to user
-        vscode.window.showWarningMessage(
-          `Request limit reached: ${budgetCheck.reason}`,
-        );
-        return;
-      }
-
       const messagesStartTime = Date.now();
       this.logger.info("⏳ [TIMING] Loading existing messages...");
       const existingMessages = await this.sessionService.getMessages(
@@ -5783,13 +5798,6 @@ export class ChatViewProvider
       });
       if (response.data && capturePromptDebug) {
         this.logPromptResponseDiagnostics(session.id, response.data);
-      }
-
-      // Update budget info after successful send
-      // Note: recordRequest() temporarily disabled - budget now reads from actual Copilot quota data
-      if (!response.error) {
-        // this.budgeter.recordRequest(); // DISABLED - was tracking all requests, not just Copilot
-        this.sendBudgetInfo();
       }
 
       if (response.error) {
@@ -7071,6 +7079,10 @@ export class ChatViewProvider
       ),
     );
 
+    const themeCssBlock = this.currentThemeCss
+      ? `<style id="vscode-theme-icons">${this.currentThemeCss}</style>`
+      : "";
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7078,6 +7090,7 @@ export class ChatViewProvider
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: blob:; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource};">
   <link href="${styleUri}" rel="stylesheet">
+  ${themeCssBlock}
   <title>OpenCode Chat</title>
 </head>
 <body>
@@ -8069,123 +8082,6 @@ export class ChatViewProvider
   /**
    * Executes a session queue sequentially. Only one queue drain can run at a time.
    */
-  /**
-   * Sends the current budget status to the webview
-   */
-  private sendBudgetInfo() {
-    try {
-      // Get actual Copilot quota data from QuotaService
-      const quotaData = this.quotaService.cachedData;
-      const copilotPlatform = quotaData?.platforms?.find(
-        (p) => p.platform === "github-copilot",
-      );
-
-      if (!copilotPlatform) {
-        return;
-      }
-
-      // Extract data from Copilot quota
-      const copilotQuota = copilotPlatform.quotas?.[0]; // "Premium" quota
-      if (!copilotQuota) {
-        return;
-      }
-
-      // Parse "usedTotalDisplay" which is in format "X / Y"
-      const usedTotalMatch =
-        copilotQuota.usedTotalDisplay?.match(/(\d+)\s*\/\s*(\d+)/);
-      const totalUsed = usedTotalMatch ? parseInt(usedTotalMatch[1], 10) : 0;
-      const monthlyQuota = usedTotalMatch
-        ? parseInt(usedTotalMatch[2], 10)
-        : 300;
-
-      // Calculate daily allowance
-      const today = new Date();
-      const todayStr = today.toISOString().split("T")[0];
-      const daysInMonth = new Date(
-        today.getFullYear(),
-        today.getMonth() + 1,
-        0,
-      ).getDate();
-      const dayOfMonth = today.getDate();
-      const dailyAllowance = Math.ceil(monthlyQuota / daysInMonth);
-
-      // --- NEW ACCURATE USAGE CALCULATION ---
-      // Get baseline for today. If none exists, this is the first time we're seeing
-      // quota data today, so current totalUsed becomes the baseline.
-      let baseline = this.budgeter.getBaselineForDate(todayStr);
-      if (baseline === null) {
-        this.budgeter.setBaselineForDate(todayStr, totalUsed);
-        baseline = totalUsed;
-      }
-
-      // Today's usage is the difference between current total and morning's baseline
-      const usedToday = Math.max(0, totalUsed - baseline);
-      // --------------------------------------
-
-      // Calculate accumulated budget up to today (days passed × daily allowance)
-      const budgetSoFar = dayOfMonth * dailyAllowance;
-
-      // Available today = (accumulated budget - baseline) - used today
-      // Simplified: accumulated budget - totalUsed
-      const availableToday = Math.max(0, budgetSoFar - totalUsed);
-
-      const remainingToday = Math.max(0, dailyAllowance - usedToday);
-
-      // Project monthly usage (current rate × days in month)
-      const projectedMonthlyUsage =
-        dayOfMonth > 0 ? Math.round((totalUsed / dayOfMonth) * daysInMonth) : 0;
-
-      // Determine warning level
-      let warningLevel: "ok" | "warning" | "critical" = "ok";
-      if (remainingToday === 0) {
-        warningLevel = "critical";
-      } else if (remainingToday < dailyAllowance * 0.3) {
-        warningLevel = "warning";
-      }
-
-      // Generate advice
-      const advice: string[] = [];
-      if (remainingToday === 0) {
-        advice.push(
-          "⚠️ You've used your available requests for today. Consider reducing usage to avoid running out this month.",
-        );
-      } else if (availableToday > dailyAllowance * 2) {
-        advice.push(
-          `💡 You have ${availableToday} requests available today (including ${availableToday - dailyAllowance
-          } unused from previous days)!`,
-        );
-      } else if (projectedMonthlyUsage > monthlyQuota) {
-        advice.push(
-          `🚨 At your current rate, you'll exceed your monthly quota! Try to stay under ${dailyAllowance} requests/day.`,
-        );
-      } else if (warningLevel === "ok") {
-        advice.push(
-          `✅ You have ${remainingToday} requests available today. Base daily allowance: ${dailyAllowance}.`,
-        );
-      }
-
-      const budgetInfo = {
-        planName: copilotPlatform.accountLabel?.replace(/[()]/g, "") || "Pro",
-        monthlyQuota: monthlyQuota,
-        usedToday: usedToday,
-        dailyAllowance: dailyAllowance,
-        availableToday: availableToday,
-        remainingToday: remainingToday,
-        daysRemaining: daysInMonth - dayOfMonth + 1,
-        projectedMonthlyUsage: projectedMonthlyUsage,
-        warningLevel: warningLevel,
-        advice: advice,
-      };
-
-      this.view?.webview.postMessage({
-        type: "budgetInfo",
-        data: budgetInfo,
-      });
-    } catch (error) {
-      log.error("Failed to send budget info", {}, error as Error);
-    }
-  }
-
   /**
    * Sends the current queue state to the webview
    */

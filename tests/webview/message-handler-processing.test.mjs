@@ -119,17 +119,6 @@ function processQuotaData(message, currentState) {
     };
 }
 
-function processBudgetInfo(message, currentState) {
-    if (!message.budgetInfo || typeof message.budgetInfo !== "object") {
-        return null;
-    }
-
-    return {
-        type: "SET_BUDGET_INFO",
-        payload: message.budgetInfo,
-    };
-}
-
 function processCompactionStatus(message, currentState) {
     if (!message.status) {
         return null;
@@ -396,32 +385,6 @@ describe("Message Handler Tests", () => {
             };
 
             const processed = processQuotaData(message, {});
-
-            assert.strictEqual(processed, null);
-        });
-    });
-
-    describe("Budget Info Processing", () => {
-        it("should process budget info", () => {
-            const message = {
-                type: "budgetInfo",
-                budgetInfo: {
-                    dailyBudget: 100,
-                    usedToday: 25,
-                    remaining: 75,
-                },
-            };
-
-            const processed = processBudgetInfo(message, {});
-
-            assert.ok(processed);
-            assert.strictEqual(processed.payload.remaining, 75);
-        });
-
-        it("should handle missing budget info", () => {
-            const message = { type: "budgetInfo" };
-
-            const processed = processBudgetInfo(message, {});
 
             assert.strictEqual(processed, null);
         });

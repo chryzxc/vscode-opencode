@@ -516,15 +516,23 @@ export class SubagentTracker {
       return null;
     }
 
-    const statusValue = asString(rec.status) as SubagentStatus;
+    const statusValue = asString(rec.status).toLowerCase();
     const status: SubagentStatus =
       statusValue === "pending" ||
       statusValue === "running" ||
       statusValue === "done" ||
       statusValue === "error" ||
       statusValue === "orphaned"
-        ? statusValue
-        : "pending";
+        ? (statusValue as SubagentStatus)
+        : statusValue === "completed" ||
+          statusValue === "finished" ||
+          statusValue === "success"
+          ? "done"
+          : statusValue === "failed" ||
+              statusValue === "cancelled" ||
+              statusValue === "canceled"
+            ? "error"
+            : "pending";
 
     const references = Array.isArray(rec.references)
       ? rec.references

@@ -51,11 +51,6 @@ test('QuotaPopover uses app state', () => {
   );
   assert.match(
     popoverBody,
-    /budgetInfo/,
-    'Should access budgetInfo'
-  );
-  assert.match(
-    popoverBody,
     /isQuotaPopoverOpen/,
     'Should access popover state'
   );
@@ -295,125 +290,6 @@ test('QuotaPopover renders close button', () => {
     popoverBody,
     /aria-label=["']Close popover["']/,
     'Should have accessibility label'
-  );
-});
-
-// GitHub Copilot Budget Tests
-test('QuotaPopover conditionally renders budget section', () => {
-  const popoverBody = extractFunctionBody(
-    quotaPopoverSource,
-    'export function QuotaPopover()'
-  );
-
-  assert.match(
-    popoverBody,
-    /budgetInfo\s*&&\s*budgetInfo\.enabled/,
-    'Should check if budget is enabled'
-  );
-});
-
-test('QuotaPopover shows daily budget header', () => {
-  const popoverBody = extractFunctionBody(
-    quotaPopoverSource,
-    'export function QuotaPopover()'
-  );
-
-  assert.match(
-    popoverBody,
-    /Daily Budget/,
-    'Should show budget title'
-  );
-  assert.match(
-    popoverBody,
-    /<Zap\s+className=["']h-3 w-3 fill-current["']\s*\/>/,
-    'Should render Zap icon'
-  );
-});
-
-test('QuotaPopover calculates budget percentage', () => {
-  const popoverBody = extractFunctionBody(
-    quotaPopoverSource,
-    'export function QuotaPopover()'
-  );
-
-  assert.match(
-    popoverBody,
-    /budgetPercent/,
-    'Should calculate budget percentage'
-  );
-  assert.match(
-    popoverBody,
-    /budgetInfo\.usedToday\s*\/\s*budgetInfo\.dailyAllowance\)\s*\*\s*100/,
-    'Should calculate from used today and daily allowance'
-  );
-  assert.match(
-    popoverBody,
-    /budgetInfo\.dailyAllowance\s*>\s*0/,
-    'Should check for positive allowance'
-  );
-});
-
-test('QuotaPopover displays budget usage stats', () => {
-  const popoverBody = extractFunctionBody(
-    quotaPopoverSource,
-    'export function QuotaPopover()'
-  );
-
-  assert.match(
-    popoverBody,
-    /budgetInfo\.usedToday/,
-    'Should show used today'
-  );
-  assert.match(
-    popoverBody,
-    /budgetInfo\.dailyAllowance/,
-    'Should show daily allowance'
-  );
-  assert.match(
-    popoverBody,
-    /budgetInfo\.remainingToday/,
-    'Should show remaining today'
-  );
-});
-
-test('QuotaPopover shows warning badges', () => {
-  const popoverBody = extractFunctionBody(
-    quotaPopoverSource,
-    'export function QuotaPopover()'
-  );
-
-  assert.match(
-    popoverBody,
-    /budgetInfo\.warningLevel\s*!==\s*['"]ok['"]/,
-    'Should check for non-ok warning level'
-  );
-  assert.match(
-    popoverBody,
-    /variant=\{budgetInfo\.warningLevel\s*===\s*['"]critical['"]\s*\?\s*['"]destructive['"]\s*:\s*['"]warning['"]\}/,
-    'Should use appropriate badge variant'
-  );
-});
-
-test('QuotaPopover renders budget progress bar', () => {
-  const popoverBody = extractFunctionBody(
-    quotaPopoverSource,
-    'export function QuotaPopover()'
-  );
-
-  assert.match(
-    popoverBody,
-    /h-1\s+w-full/,
-    'Should render progress bar'
-  );
-  assert.match(
-    popoverBody,
-    /Math\.min\(100,\s*budgetPercent\)/,
-    'Should clamp at 100%'
-  );
-  assert.match(
-    popoverBody,
-    /barColor\(budgetPercent\)/,
-    'Should use barColor function'
   );
 });
 
@@ -659,11 +535,6 @@ test('QuotaPopover imports lucide-react icons', () => {
   );
   assert.match(
     quotaPopoverSource,
-    /import\s+.*\{.*Zap.*\}\s+from\s+['"]lucide-react['"]/,
-    'Should import Zap icon'
-  );
-  assert.match(
-    quotaPopoverSource,
     /import\s+.*\{.*Award.*\}\s+from\s+['"]lucide-react['"]/,
     'Should import Award icon'
   );
@@ -738,7 +609,7 @@ test('QuotaPopover shows empty state when no data', () => {
 
   assert.match(
     popoverBody,
-    /\(!budgetInfo\s*\|\|\s*!budgetInfo\.enabled\)\s*&&\s*\(!quotaData\?\.platforms/,
+    /!quotaData\?\.platforms\s*\|\|\s*quotaData\.platforms\.length\s*===\s*0/,
     'Should check for no data'
   );
   assert.match(

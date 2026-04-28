@@ -6,7 +6,6 @@ import type {
   ActivityDetail,
   ActivityDiffExcerpt,
   AppState,
-  BudgetInfo,
   ContextItem,
   FileResult,
   InteractiveChoice,
@@ -1400,6 +1399,14 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     const lowered = value.toLowerCase();
     if (lowered === 'running' || lowered === 'done' || lowered === 'error' || lowered === 'orphaned') {
       return lowered;
+    }
+    // Accept legacy persisted synonyms that were produced by an earlier
+    // normalizer (e.g. "completed" instead of "done", "failed" instead of "error").
+    if (lowered === 'completed' || lowered === 'finished' || lowered === 'success') {
+      return 'done';
+    }
+    if (lowered === 'failed' || lowered === 'cancelled' || lowered === 'canceled') {
+      return 'error';
     }
     return 'pending';
   };
@@ -8662,7 +8669,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               dispatch({ type: "SET_STREAMING", payload: null });
             }
             
-            updatedMessages.push(message);
+            const messageText = asString(message.content).trim();
+            const lastMsg = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1] : null;
+            const isDuplicateOptimistic = lastMsg &&
+              lastMsg.role === "user" &&
+              asString(lastMsg.content).trim() === messageText;
+
+            if (!isDuplicateOptimistic) {
+              updatedMessages.push(message);
+            }
 
             dispatch({
               type: "SET_MESSAGES",
@@ -8723,10 +8738,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "quotaData":
         case "quotaUpdate": {
           dispatch({ type: "SET_QUOTA_DATA", payload: data.data as QuotaData });
-          break;
-        }
-        case "budgetInfo": {
-          dispatch({ type: "SET_BUDGET_INFO", payload: data.data as BudgetInfo });
           break;
         }
         case "mcpStatus": {

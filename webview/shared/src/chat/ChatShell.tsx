@@ -123,9 +123,13 @@ function ChatContent() {
       previousStreamingActiveRef.current && !isStreamingNow;
     const shouldSnapToLatest =
       state.messages.length > 0 &&
-      (justLoadedInitialChat || justFinishedSessionLoad || justFinishedAiResponse);
+      (justLoadedInitialChat || justFinishedSessionLoad);
 
-    if (shouldSnapToLatest) {
+    // Only auto-scroll after AI finishes if user is already near the bottom.
+    const shouldFollowAfterResponse =
+      justFinishedAiResponse && streamViewportRef.current.isFollowing;
+
+    if (shouldSnapToLatest || shouldFollowAfterResponse) {
       setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
       requestAnimationFrame(() => {
         const root = messagesScrollRef.current;
@@ -133,6 +137,12 @@ function ChatContent() {
           root.scrollTop = root.scrollHeight;
         }
       });
+    } else if (justFinishedAiResponse) {
+      setStreamViewport((prev) =>
+        prev.unseenUpdateCount === 0
+          ? prev
+          : { ...prev, unseenUpdateCount: 0 },
+      );
     }
 
     previousReceivedInitStateRef.current = state.receivedInitState;

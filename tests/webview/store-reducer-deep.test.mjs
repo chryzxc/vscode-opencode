@@ -136,7 +136,6 @@ const actionContracts = [
   { type: 'SELECT_SUBAGENT', patterns: [/selectedSubagentId:\s*action\.payload/] },
   { type: 'SET_INTERACTIVE_EVENTS', patterns: [/interactiveEvents:\s*action\.payload/] },
   { type: 'DISMISS_INTERACTIVE_EVENT', patterns: [/interactiveEvents:[\s\S]*filter\([\s\S]*event\.id !== action\.payload/] },
-  { type: 'SET_BUDGET_INFO', patterns: [/budgetInfo:\s*action\.payload/] },
   { type: 'SET_MCP_SERVERS', patterns: [/mcpServers:\s*action\.payload/] },
   { type: 'SET_LSP_SERVERS', patterns: [/lspServers:\s*action\.payload/] },
   { type: 'SET_OPENCODE_CONFIG', patterns: [/opencodeConfig:\s*\{[\s\S]*\.\.\.action\.payload[\s\S]*files: action\.payload\.files \|\| \[\]/] },

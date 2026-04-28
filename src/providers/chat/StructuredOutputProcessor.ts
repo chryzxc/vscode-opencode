@@ -458,23 +458,25 @@ export class StructuredOutputProcessor {
    * Normalize subagent status
    */
   normalizeSubagentStatus(status: unknown): string {
-    if (!status) return "unknown";
+    if (!status) return "pending";
     const str = String(status).toLowerCase().trim();
     const statusMap: Record<string, string> = {
       running: "running",
       active: "running",
       in_progress: "running",
-      completed: "completed",
-      done: "completed",
-      finished: "completed",
-      failed: "failed",
-      error: "failed",
-      cancelled: "cancelled",
-      canceled: "cancelled",
+      completed: "done",
+      done: "done",
+      finished: "done",
+      success: "done",
+      failed: "error",
+      error: "error",
+      cancelled: "error",
+      canceled: "error",
       pending: "pending",
       queued: "pending",
+      orphaned: "orphaned",
     };
-    return statusMap[str] || "unknown";
+    return statusMap[str] || "pending";
   }
 
   /**

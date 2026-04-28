@@ -371,7 +371,6 @@ body {
 
 .oc-input-card:focus-within {
   border-color: color-mix(in srgb, var(--oc-accent) 30%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--oc-accent) 5%, transparent);
 }
 
 /* Legacy alias for any existing references */
@@ -386,7 +385,6 @@ body {
 
 .oc-input-container:focus-within {
   border-color: color-mix(in srgb, var(--oc-accent) 30%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--oc-accent) 5%, transparent);
 }
 
 .oc-textarea {
@@ -456,7 +454,6 @@ body {
 .oc-dropdown-search:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--oc-accent) 25%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--oc-accent) 5%, transparent);
 }
 
 .oc-group-label {
@@ -856,10 +853,12 @@ body {
 
 @keyframes oc-message-focus-pulse {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--oc-accent) 35%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--oc-accent) 35%, transparent);
+    outline-offset: 2px;
   }
   100% {
-    box-shadow: 0 0 0 6px transparent;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
   }
 }
 
@@ -1448,7 +1447,6 @@ body {
 }
 .oc-input-box:focus-within {
   border-color: var(--oc-accent);
-  box-shadow: 0 4px 16px rgba(161, 161, 170, 0.15);
 }
 
 /* Textarea inside the box */
@@ -1716,7 +1714,6 @@ body {
 .oc-refined-stepper-item.is-streaming .oc-refined-event-label.activity {
   background: var(--oc-accent-soft) !important;
   color: var(--oc-accent) !important;
-  box-shadow: 0 0 10px var(--oc-accent-soft);
 }
 
 .oc-refined-stepper-item.is-streaming .oc-refined-event-summary {
@@ -1795,12 +1792,10 @@ body {
   color: var(--oc-accent);
   position: relative;
   transition: all 0.2s ease-out;
-  box-shadow: 0 0 8px color-mix(in srgb, var(--oc-accent) 0%, transparent);
 }
 
 .oc-refined-event-label:hover {
   background: color-mix(in srgb, var(--oc-accent) 12%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-accent) 15%, transparent);
 }
 
 /* Event type-specific label colors - neutral */
@@ -1811,7 +1806,6 @@ body {
 
 .oc-refined-event-label.reasoning:hover {
   background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
 .oc-refined-event-label.activity {
@@ -1821,7 +1815,6 @@ body {
 
 .oc-refined-event-label.activity:hover {
   background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
 /* Enhanced source/internal badges - minimal */
@@ -1907,7 +1900,6 @@ body {
 .oc-refined-file-link:hover {
   color: var(--oc-accent);
   background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--oc-accent) 10%, transparent);
 }
 
 /* Write operation specific styling - creative green */
@@ -1918,7 +1910,6 @@ body {
 
 .oc-refined-event-label[data-operation="write"]:hover {
   background: color-mix(in srgb, var(--oc-green) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-green) 15%, transparent);
 }
 
 /* Edit operation specific styling */
@@ -1929,7 +1920,6 @@ body {
 
 .oc-refined-event-label[data-operation="edit"]:hover {
   background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
 /* Modify operation specific styling */
@@ -1940,7 +1930,6 @@ body {
 
 .oc-refined-event-label[data-operation="modify"]:hover {
   background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
 /* Update operation specific styling - progressive amber */
@@ -1951,7 +1940,6 @@ body {
 
 .oc-refined-event-label[data-operation="update"]:hover {
   background: color-mix(in srgb, var(--oc-orange) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-orange) 15%, transparent);
 }
 
 /* Patch operation specific styling */
@@ -1962,7 +1950,6 @@ body {
 
 .oc-refined-event-label[data-operation="patch"]:hover {
   background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--oc-op-accent-1) 15%, transparent);
 }
 
 /* Edit operation specific styling */
@@ -3076,7 +3063,6 @@ body {
   border-color: rgba(239, 68, 68, 0.5);
   background-color: rgba(127, 29, 29, 0.15);
   color: rgba(254, 226, 226, 1);
-  box-shadow: 0 4px 14px rgba(127, 29, 29, 0.12);
 }
 
 .oc-error-icon {

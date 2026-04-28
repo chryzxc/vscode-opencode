@@ -23,12 +23,6 @@ test('handleSendMessage is async and marks the session as processing', () => {
   assert.match(body, /this\.sendProcessingSessionsUpdate\(\);/, 'handleSendMessage should notify the webview about processing sessions');
 });
 
-test('handleSendMessage checks budget before sending the prompt', () => {
-  const body = extractFunctionBody(source, '  private async handleSendMessage(');
-  assert.match(body, /const budgetCheck = this\.budgeter\.canMakeRequest\(\);/, 'handleSendMessage should call budgeter.canMakeRequest');
-  assert.match(body, /if \(!budgetCheck\.allowed\) \{[\s\S]*return;/, 'handleSendMessage should stop when request budget is exhausted');
-});
-
 test('handleSendMessage appends the user message before the prompt call', () => {
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
   assert.match(body, /await this\.sessionService\.appendMessage\(session\.id, userMessage\);/, 'handleSendMessage should persist the user message');

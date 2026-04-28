@@ -1,7 +1,7 @@
 # TEST SUITE KNOWLEDGE BASE
 
 ## OVERVIEW
-`tests/` is a regression-first suite guarding product contracts: prompt ownership, structured output, React chat wiring, subagent UI, quota/budget behaviour, session persistence, and plan workflow.
+`tests/` is a regression-first suite guarding product contracts: prompt ownership, structured output, React chat wiring, subagent UI, quota behaviour, session persistence, and plan workflow.
 
 ## WHERE TO LOOK
 | Change area | Test cluster | Notes |
@@ -11,7 +11,7 @@
 | Chat webview rendering | `chat-*.test.mjs`, `panel-layout.test.mjs`, `ui-rendering-enhancements.test.mjs` | Covers layout, CSS, streaming, readability |
 | Subagent UI and tracking | `subagent-*.test.mjs`, `active-task-panel.test.mjs`, `interactive-events.test.mjs` | Inline cards, timelines, persistence |
 | Plan workflow | `plan-*.test.mjs`, `plan-viewer.test.mjs` | Detection, parsing, viewer behaviour |
-| Budget / quota | `request-budgeter.test.mjs`, `quota-service.test.mjs`, `integration/budget-quota-integration-regression.test.mjs` | Warning/enforcement flows |
+| Quota | `quota-service.test.mjs` | Provider quota polling |
 | Extension/provider plumbing | `status-bar-provider.test.mjs`, `diff-review.test.mjs`, `session-crud.test.mjs`, `message-stream-service.test.mjs` | Host-side correctness |
 
 ## CONVENTIONS
@@ -31,7 +31,7 @@
 - Structured output/schema change → `structured-output-contract-sync.test.mjs` + `structured-output-validator.test.mjs` + `structured-output-streaming.test.mjs`
 - Chat layout/component change → `chat-css-regression.test.mjs` + `panel-layout.test.mjs` + relevant subagent/todo/MCP panel tests
 - Plan workflow change → `plan-detection.test.mjs` + `plan-parser.test.mjs` + `plan-viewer.test.mjs`
-- Budget/quota change → `quota-service.test.mjs` + `request-budgeter.test.mjs` + integration regression
+- Quota change → `quota-service.test.mjs`
 
 ## NOTES
 - This tree is intentionally broad because it protects user-visible behaviour more than isolated implementation details.

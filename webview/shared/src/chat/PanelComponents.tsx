@@ -2766,7 +2766,7 @@ export function ThinkingLevelControl() {
 }
 
 export function QuotaMonitor() {
-  const { quotaData, quotaIsRefreshing, budgetInfo } = useAppState();
+  const { quotaData, quotaIsRefreshing } = useAppState();
   const dispatch = useAppDispatch();
 
   const [open, setOpen] = useState(true);
@@ -2980,123 +2980,6 @@ export function QuotaMonitor() {
                         );
                       })}
 
-                      {/* Budget info - integrated into GitHub Copilot card */}
-                      {platform.platform === "github-copilot" && budgetInfo ? (
-                        <div className="oc-modal-panel mt-3 overflow-hidden p-0 bg-[var(--oc-panel-soft)]/40 shadow-sm">
-                          {/* Header */}
-                          <div
-                            className="oc-modal-header flex items-center justify-between px-3 py-2"
-                            style={{ borderBottomColor: "color-mix(in srgb, var(--oc-border) 50%, transparent)" }}
-                          >
-                            <div className="flex items-center gap-2">
-                              <div className="flex h-5 w-5 items-center justify-center rounded-md bg-oc-accent/10 text-oc-accent">
-                                <Zap className="h-3 w-3 fill-current" />
-                              </div>
-                              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-soft)]">
-                                Daily Budget
-                              </span>
-                            </div>
-                            <Badge
-                              variant="accent"
-                              className={`font-mono text-[10px] uppercase h-5 px-1.5 border-none ${budgetInfo.warningLevel === "critical"
-                                  ? "bg-oc-red/10 text-oc-red"
-                                  : budgetInfo.warningLevel === "warning"
-                                    ? "oc-quota-warning-bg"
-                                    : "bg-oc-accent/10 text-oc-accent"
-                                }`}
-                            >
-                              {budgetInfo.warningLevel}
-                            </Badge>
-                          </div>
-
-                          {/* Progress bar section */}
-                          <div className="oc-modal-content px-3 pt-2.5 pb-2">
-                            <div className="mb-1.5 flex items-center justify-between">
-                              <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--oc-text-soft)] opacity-50">
-                                Used Today
-                              </span>
-                              <span className="font-mono text-[10px] font-bold text-[var(--oc-text-soft)] opacity-70">
-                                {budgetInfo.usedToday} /{" "}
-                                {budgetInfo.dailyAllowance}
-                              </span>
-                            </div>
-                            <div className="relative h-1 w-full overflow-hidden rounded-full bg-oc-border/40">
-                              <div
-                                className="h-full rounded-full transition-all duration-500 ease-out"
-                                style={{
-                                  width: `${budgetInfo.dailyAllowance > 0 ? Math.min(100, (budgetInfo.usedToday / budgetInfo.dailyAllowance) * 100) : 0}%`,
-                                  background: barColor(
-                                    budgetInfo.dailyAllowance > 0
-                                      ? (budgetInfo.remainingToday /
-                                        budgetInfo.dailyAllowance) *
-                                      100
-                                      : 100,
-                                  ),
-                                }}
-                              />
-                            </div>
-                          </div>
-
-                          {/* 3-column stats grid */}
-                          <div className="grid grid-cols-3 divide-x divide-oc-border/30 border-t border-oc-border/30 px-1 py-2">
-                            <div className="px-2 text-center">
-                              <div className="text-[9px] font-semibold uppercase tracking-tighter text-[var(--oc-text-soft)] opacity-50">
-                                Available
-                              </div>
-                              <div
-                                className={`text-sm font-bold leading-tight ${budgetInfo.warningLevel === "critical"
-                                    ? "text-oc-red"
-                                    : budgetInfo.warningLevel === "warning"
-                                      ? "oc-quota-warning"
-                                      : "text-oc-accent"
-                                  }`}
-                              >
-                                {budgetInfo.availableToday}
-                              </div>
-                              {budgetInfo.availableToday >
-                                budgetInfo.dailyAllowance ? (
-                                <div className="mt-0.5 text-[9px] font-medium text-oc-accent/70 leading-none">
-                                  +
-                                  {budgetInfo.availableToday -
-                                    budgetInfo.dailyAllowance}{" "}
-                                  rollover
-                                </div>
-                              ) : null}
-                            </div>
-                            <div className="px-2 text-center">
-                              <div className="text-[9px] font-semibold uppercase tracking-tighter text-[var(--oc-text-soft)] opacity-50">
-                                Used
-                              </div>
-                              <div className="text-sm font-bold leading-tight text-[var(--oc-text-soft)]">
-                                {budgetInfo.usedToday}
-                              </div>
-                            </div>
-                            <div className="px-2 text-center">
-                              <div className="text-[9px] font-semibold uppercase tracking-tighter text-[var(--oc-text-soft)] opacity-50">
-                                Days Left
-                              </div>
-                              <div className="text-sm font-bold leading-tight text-[var(--oc-text-soft)]">
-                                {budgetInfo.daysRemaining}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Advice footer */}
-                          {budgetInfo.advice && budgetInfo.advice.length > 0 ? (
-                            <div
-                              className="oc-modal-footer justify-start bg-oc-accent/5 px-3 py-1.5"
-                              style={{ borderTopColor: "color-mix(in srgb, var(--oc-border) 30%, transparent)" }}
-                            >
-                              <p className="text-[10px] leading-relaxed text-[var(--oc-text-soft)] opacity-75 italic">
-                                {budgetInfo.advice[0].replace(
-                                  /^(?:💡|✅|⚠️|🚨)\s*/,
-                                  "",
-                                )}
-                              </p>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
                     </div>
                   </div>
                 ))}

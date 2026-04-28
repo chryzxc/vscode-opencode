@@ -75,9 +75,6 @@ function createInitialState() {
             duration: 0,
         },
 
-        // Budget
-        budgetInfo: null,
-
         // Quota
         quotaData: null,
 
@@ -226,9 +223,6 @@ function reducer(state, action) {
 
         case "SET_SESSIONS_LIST":
             return { ...state, sessionsList: action.payload };
-
-        case "SET_BUDGET_INFO":
-            return { ...state, budgetInfo: action.payload };
 
         case "SET_QUOTA_DATA":
             return { ...state, quotaData: action.payload };
@@ -680,23 +674,7 @@ describe("Store/Reducer Logic Tests", () => {
         });
     });
 
-    describe("Budget and Quota Management", () => {
-        it("should set budget info", () => {
-            const budgetInfo = {
-                dailyBudget: 100,
-                usedToday: 25,
-                remaining: 75,
-            };
-
-            const newState = reducer(initialState, {
-                type: "SET_BUDGET_INFO",
-                payload: budgetInfo,
-            });
-
-            assert.deepStrictEqual(newState.budgetInfo, budgetInfo);
-            assert.strictEqual(newState.budgetInfo.remaining, 75);
-        });
-
+    describe("Quota Management", () => {
         it("should set quota data", () => {
             const quotaData = {
                 provider: "openai",

@@ -68,23 +68,82 @@ const FILE_COLOR_MAP: Record<string, string> = {
   js: "#f1e05a",
   tsx: "#3178c6",
   jsx: "#f1e05a",
+  mjs: "#f1e05a",
+  cjs: "#f1e05a",
   css: "#563d7c",
+  scss: "#c6538c",
+  less: "#1d365d",
   html: "#e34c26",
+  htm: "#e34c26",
   json: "#f1e05a",
+  jsonc: "#f1e05a",
   md: "#083fa1",
+  mdx: "#083fa1",
   vue: "#41b883",
+  svelte: "#ff3e00",
   py: "#3572A5",
+  pyi: "#3572A5",
   go: "#00ADD8",
+  mod: "#00ADD8",
   java: "#b07219",
   rs: "#dea584",
   php: "#4F5D95",
   rb: "#701516",
   swift: "#ffac45",
   kt: "#F18E33",
+  kts: "#F18E33",
   c: "#555555",
   cpp: "#f34b7d",
+  cc: "#f34b7d",
+  cxx: "#f34b7d",
   h: "#a8ff97",
   hpp: "#a8ff97",
+  hxx: "#a8ff97",
+  cs: "#178600",
+  fs: "#b845fc",
+  dart: "#00B4AB",
+  lua: "#000080",
+  zig: "#f7a41d",
+  nim: "#ffc200",
+  r: "#198CE7",
+  scala: "#c22d40",
+  elixir: "#6e4a7e",
+  erl: "#0d7377",
+  clj: "#db5855",
+  hs: "#5e5086",
+  ml: "#f39e02",
+  sql: "#e38c00",
+  graphql: "#e535ab",
+  gql: "#e535ab",
+  prisma: "#0c344b",
+  yaml: "#cb171e",
+  yml: "#cb171e",
+  toml: "#9c4221",
+  xml: "#0060ac",
+  svg: "#ff9900",
+  sh: "#89e051",
+  bash: "#89e051",
+  zsh: "#89e051",
+  fish: "#89e051",
+  ps1: "#012456",
+  bat: "#c1f12e",
+  dockerfile: "#384d54",
+  makefile: "#427819",
+  cmake: "#064f8c",
+  lock: "#6e7681",
+  env: "#ecd53f",
+  gitignore: "#f54d27",
+  config: "#6e7681",
+  conf: "#6e7681",
+  ini: "#6e7681",
+  txt: "#6e7681",
+  log: "#6e7681",
+  csv: "#239124",
+  tsv: "#239124",
+  wasm: "#654ff0",
+  proto: "#e535ab",
+  tf: "#7b42bc",
+  hcl: "#7b42bc",
 };
 
 // Extract file extension from path
@@ -274,7 +333,17 @@ function TerminalBlockWithOutput({
   return <TerminalBlock command={command} output={output} />;
 }
 
-// SVG file icon
+const FALLBACK_ICON_COLOR = "#6e7681";
+
+function cleanFileIconKey(key: string): string {
+  return key
+    .replace(/\./g, "-")
+    .replace(/\//g, "-")
+    .replace(/\+/g, "p")
+    .replace(/#/g, "h")
+    .replace(/,/g, "");
+}
+
 export function FileIcon({
   filePath,
   className,
@@ -282,72 +351,47 @@ export function FileIcon({
   filePath?: string;
   className?: string;
 }) {
-  const ext = filePath ? getFileExtension(filePath) : "";
-
-  if (filePath) {
-    const fileName = (filePath.split(/[\\/]/).pop() || "").toLowerCase();
-    const cleanKey = (key: string) =>
-      key
-        .replace(/\./g, "-")
-        .replace(/\//g, "-")
-        .replace(/\+/g, "p")
-        .replace(/#/g, "h")
-        .replace(/[^a-z0-9_-]/g, "_");
-
-    // The library uses .file-icon and .file-icon-type-[ext]
-    // We add both filename and extension classes to maximize match chances
-    // We also use a more aggressive sanitization to match processor's likely output
+  if (!filePath) {
     return (
-      <div
-        className={cn(
-          "file-icon",
-          `file-icon-type-${cleanKey(fileName)}`,
-          `file-icon-type-${cleanKey(ext)}`,
-          className,
-        )}
+      <span
+        className={cn("file-icon", "file-icon-type-file", className)}
+        aria-hidden="true"
         style={{
-          width: "16px",
-          height: "16px",
           display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
           flexShrink: 0,
           marginRight: "4px",
-          verticalAlign: "text-bottom",
+          verticalAlign: "middle",
+          width: "16px",
+          height: "16px",
+          overflow: "hidden",
         }}
       />
     );
   }
 
-  const color = getFileColor(ext);
+  const ext = getFileExtension(filePath);
+  const fileName = (filePath.split(/[\\/]/).pop() || "").toLowerCase();
+
   return (
-    <svg
-      role="img"
-      aria-label={filePath ?? "file"}
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      className={cn("file-icon-svg", className)}
-    >
-      <title>{filePath ?? "file"}</title>
-      <path
-        d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"
-        stroke={color}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill={color}
-        fillOpacity="0.1"
-      ></path>
-      <polyline
-        points="14 2 14 8 20 8"
-        stroke={color}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      ></polyline>
-    </svg>
+    <span
+      className={cn(
+        "file-icon",
+        ext && `file-icon-type-${cleanFileIconKey(ext)}`,
+        fileName && `file-icon-type-${cleanFileIconKey(fileName)}`,
+        "file-icon-type-file",
+        className,
+      )}
+      aria-hidden="true"
+      style={{
+        display: "inline-flex",
+        flexShrink: 0,
+        marginRight: "4px",
+        verticalAlign: "middle",
+        width: "16px",
+        height: "16px",
+        overflow: "hidden",
+      }}
+    />
   );
 }
 
@@ -4049,7 +4093,7 @@ export function ErrorBanner({
       : "Unknown error";
 
   return (
-    <div className="mb-2 px-4">
+    <div className="mb-2">
       <div className="oc-error flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <span className="oc-error-icon">
@@ -4206,8 +4250,8 @@ export function InfoBanner({ message, error }: InfoBannerProps) {
   }
 
   return (
-    <div className="mb-2 px-4">
-      <div className={`oc-banner-container ${styles.bannerClass} flex flex-col gap-2 rounded-lg border p-2.5 text-oc-xs shadow-[0_4px_14px_rgba(30,58,138,0.18)] transition-all duration-200`}>
+    <div className="mb-2">
+      <div className={`oc-banner-container ${styles.bannerClass} flex flex-col gap-2 rounded-lg border p-2.5 text-oc-xs transition-all duration-200`}>
         <div className="flex items-center gap-2">
           <span className={`inline-flex h-5 w-5 items-center justify-center rounded-md border ${styles.iconClass}`}>
             <Icon className="h-3 w-3" />

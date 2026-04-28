@@ -36,7 +36,7 @@ export function DiffStats({
           style={{ color: 'var(--oc-green)' }}
         >
           {showIcons && <Plus className={iconSizeClass} />}
-          {added}
+          {showIcons ? added : `+${added}`}
         </span>
       )}
       {deleted > 0 && (
@@ -45,7 +45,7 @@ export function DiffStats({
           style={{ color: 'var(--oc-red)' }}
         >
           {showIcons && <Minus className={iconSizeClass} />}
-          {deleted}
+          {showIcons ? deleted : `-${deleted}`}
         </span>
       )}
     </div>

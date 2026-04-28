@@ -13,7 +13,6 @@ import type {
   TodoItem,
   ContextItem,
   FileResult,
-  BudgetInfo,
   Message,
   Model,
   QueueItem,
@@ -100,7 +99,6 @@ export const initialState: AppState = {
   selectedSubagentId: null,
   subagentsPanelOpen: true,
   interactiveEvents: [],
-  budgetInfo: undefined,
   mcpServers: [],
   lspServers: [],
   contextUsagePct: undefined,
@@ -236,7 +234,6 @@ export type AppAction =
   | { type: "CLEAR_SUBAGENTS_FOR_SESSION" }
   | { type: "SET_INTERACTIVE_EVENTS"; payload: InteractiveEvent[] }
   | { type: "DISMISS_INTERACTIVE_EVENT"; payload: string }
-  | { type: "SET_BUDGET_INFO"; payload: import("./types").BudgetInfo | null }
   | { type: "SET_MCP_SERVERS"; payload: McpServerInfo[] }
   | { type: "SET_LSP_SERVERS"; payload: LspServerInfo[] }
   | { type: "SET_SERVER_VERSION"; payload: string | undefined }
@@ -566,11 +563,14 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
         }
         const createdA = getMessageCreatedAtForCanonical(entry);
         const createdB = getMessageCreatedAtForCanonical(message);
-        if (
-          typeof createdA === "number" &&
-          typeof createdB === "number" &&
-          Math.abs(createdA - createdB) > 4_000
-        ) {
+        // If either message lacks a timestamp we cannot verify the time
+        // window, so we must NOT deduplicate — otherwise optimistic messages
+        // (which carry no timestamp) are incorrectly collapsed with earlier
+        // messages that happen to share the same text.
+        if (typeof createdA !== "number" || typeof createdB !== "number") {
+          return false;
+        }
+        if (Math.abs(createdA - createdB) > 4_000) {
           return false;
         }
         return true;
@@ -2056,8 +2056,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ),
       };
     }
-    case "SET_BUDGET_INFO":
-      return { ...state, budgetInfo: action.payload };
     case "SET_MCP_SERVERS":
       return { ...state, mcpServers: action.payload };
     case "SET_LSP_SERVERS":

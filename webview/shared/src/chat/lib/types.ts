@@ -590,21 +590,6 @@ export interface LspServerInfo {
   status: 'connected' | 'error';
 }
 
-// ── Budget Management Types ─────────────────────────────────────────────────────
-
-export interface BudgetInfo {
-  planName: string;
-  monthlyQuota: number;
-  usedToday: number;
-  dailyAllowance: number;
-  availableToday: number;
-  remainingToday: number;
-  daysRemaining: number;
-  projectedMonthlyUsage: number;
-  warningLevel: "ok" | "warning" | "critical";
-  advice: string[];
-}
-
 export interface AppState {
   selectedFiles: string[];
   selectedContexts: ContextItem[];
@@ -674,7 +659,6 @@ export interface AppState {
   selectedSubagentId: string | null;
   subagentsPanelOpen: boolean;
   interactiveEvents: InteractiveEvent[];
-  budgetInfo: BudgetInfo | null | undefined;
   mcpServers: McpServerInfo[];
   lspServers: LspServerInfo[];
   contextUsagePct?: number; // 0–100, context window usage from tokens.input / contextLimit

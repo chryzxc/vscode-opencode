@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { X, Calendar, CalendarRange, Clock, Zap, Award, RefreshCw } from 'lucide-react';
+import { X, Calendar, CalendarRange, Clock, Award, RefreshCw } from 'lucide-react';
 import { useAppDispatch, useAppState } from './lib/store';
 import vscode from './lib/vscode';
 import { Badge } from '@/components/ui/badge';
@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import './QuotaPopover.css';
 
 export function QuotaPopover() {
-  const { quotaData, budgetInfo, isQuotaPopoverOpen, quotaIsRefreshing } = useAppState();
+  const { quotaData, isQuotaPopoverOpen, quotaIsRefreshing } = useAppState();
   const dispatch = useAppDispatch();
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -99,11 +99,6 @@ export function QuotaPopover() {
     return null;
   };
 
-  // Calculate budget percentage
-  const budgetPercent = budgetInfo && budgetInfo.enabled && budgetInfo.dailyAllowance > 0
-    ? (budgetInfo.usedToday / budgetInfo.dailyAllowance) * 100
-    : 0;
-
   return (
     <div className="quota-popover-overlay">
       <div ref={popoverRef} className="quota-popover">
@@ -154,69 +149,6 @@ export function QuotaPopover() {
                 />
               ))}
             </div>
-          )}
-
-          {/* GitHub Copilot Budget Info */}
-          {budgetInfo && budgetInfo.enabled && !quotaIsRefreshing && (
-            <>
-              {/* Header */}
-              <div className="border-b border-oc-border-soft py-2 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="flex h-5 w-5 items-center justify-center rounded-md bg-oc-accent/10 text-oc-accent">
-                    <Zap className="h-3 w-3 fill-current" />
-                  </div>
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-soft)]">
-                    Daily Budget
-                  </span>
-                </div>
-                {budgetInfo.warningLevel !== 'ok' && (
-                  <Badge
-                    variant={budgetInfo.warningLevel === 'critical' ? 'destructive' : 'warning'}
-                    className={`font-mono text-[10px] uppercase h-5 px-1.5 border-none ${
-                      budgetInfo.warningLevel === 'critical'
-                        ? 'bg-oc-red/10 text-oc-red'
-                        : 'bg-oc-yellow/10 text-oc-yellow'
-                    }`}
-                  >
-                    {budgetInfo.warningLevel === 'critical' ? 'Critical' : 'Warning'}
-                  </Badge>
-                )}
-              </div>
-
-              {/* Budget Content */}
-              <div className="py-2">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-[var(--oc-text-soft)]">
-                    Used Today
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-[var(--oc-text-soft)]">
-                      {budgetInfo.usedToday} / {budgetInfo.dailyAllowance}
-                    </span>
-                    <span className="font-mono text-xs text-[var(--oc-text-soft)]">
-                      {Math.round(budgetPercent)}%
-                    </span>
-                  </div>
-                </div>
-                <div className="h-1 w-full overflow-hidden rounded-full bg-oc-border">
-                  <div
-                    className="h-full rounded-full transition-all duration-300"
-                    style={{
-                      width: `${Math.min(100, budgetPercent)}%`,
-                      background: barColor(budgetPercent),
-                    }}
-                  />
-                </div>
-                <div className="mt-1.5 space-y-0.5 text-xs text-[var(--oc-text-soft)] opacity-70">
-                  <div className="flex items-center justify-between gap-2">
-                    <span>Remaining today</span>
-                    <span className="font-mono text-[var(--oc-text-soft)]">
-                      {budgetInfo.remainingToday}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </>
           )}
 
           {/* Platform Cards */}
@@ -323,7 +255,7 @@ export function QuotaPopover() {
           ))}
 
           {/* Empty state */}
-          {!quotaIsRefreshing && (!budgetInfo || !budgetInfo.enabled) && (!quotaData?.platforms || quotaData.platforms.length === 0) && (
+          {!quotaIsRefreshing && (!quotaData?.platforms || quotaData.platforms.length === 0) && (
             <div className="py-4 text-center text-[var(--oc-text-soft)] opacity-60 text-xs">
               No quota data available.
               <br />
