@@ -160,7 +160,7 @@ export function QuotaPopover() {
           {budgetInfo && budgetInfo.enabled && !quotaIsRefreshing && (
             <>
               {/* Header */}
-              <div className="border-b border-oc-border-soft px-3 py-2 flex items-center justify-between">
+              <div className="border-b border-oc-border-soft py-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <div className="flex h-5 w-5 items-center justify-center rounded-md bg-oc-accent/10 text-oc-accent">
                     <Zap className="h-3 w-3 fill-current" />
@@ -184,7 +184,7 @@ export function QuotaPopover() {
               </div>
 
               {/* Budget Content */}
-              <div className="px-3 py-2">
+              <div className="py-2">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-[var(--oc-text-soft)]">
                     Used Today
@@ -226,7 +226,7 @@ export function QuotaPopover() {
               className="space-y-2.5"
             >
               {/* Platform Header */}
-              <div className="border-b border-oc-border px-3 py-2.5">
+              <div className="border-b border-oc-border py-2.5">
                 <div className="mb-1.5 flex items-center justify-between gap-2">
                   <span className="text-oc-sm font-semibold tracking-tight text-[var(--oc-text-soft)]">
                     {toProviderName(platform.platform, platform.title)}
@@ -252,7 +252,7 @@ export function QuotaPopover() {
               </div>
 
               {/* Quota Items */}
-              <div className="space-y-2.5 px-3 py-2.5">
+              <div className="space-y-2.5 py-2.5">
                 {platform.error ? (
                   <div className="rounded-md border border-oc-red/40 bg-oc-red/10 px-2.5 py-2 text-oc-red">
                     {platform.error.length > 130
