@@ -4,10 +4,17 @@ A VS Code extension that wraps the [OpenCode](https://opencode.ai) AI coding ass
 
 ---
 
+> [!IMPORTANT]
+> **Disclaimer:** This extension is an independent personal project and is **not affiliated with, endorsed by, or maintained by OpenCode or its creators**.
+
+> [!NOTE]
+> Marketplace publishing, releases, and support for this extension are managed by the project author (`chryzxc`) only.
+
 ## Table of Contents
 
 - [Overview](#overview)
 - [Features](#features)
+- [Screenshots & GIFs](#screenshots--gifs)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
@@ -26,9 +33,12 @@ A VS Code extension that wraps the [OpenCode](https://opencode.ai) AI coding ass
 
 ## Overview
 
-This extension embeds the OpenCode CLI server inside VS Code and exposes it through a polished chat panel. It communicates with the OpenCode server over HTTP using the `@opencode-ai/sdk`, streams events in real time via SSE, and renders everything in a React-based webview with Tailwind CSS styling.
+This extension provides a VS Code-native UI on top of the OpenCode runtime. It communicates with the local OpenCode server over HTTP using the `@opencode-ai/sdk`, streams events in real time via SSE, and renders everything in a React-based webview with Tailwind CSS styling.
 
-Key differentiators over a plain terminal-based OpenCode setup:
+> [!IMPORTANT]
+> This repository is a personal integration project. It is not an official OpenCode client.
+
+Key differentiators over a plain terminal OpenCode workflow:
 
 - **Implementation Plan workflow** — AI generates a structured `implementation_plan.md` before touching any code; plans are parsed and rendered interactively
 - **Subagent orchestration UI** — background tasks are tracked, rendered inline as cards, and inspectable in a detail modal
@@ -59,6 +69,7 @@ Key differentiators over a plain terminal-based OpenCode setup:
 - "View Implementation Plan" button appears on every AI response that generated a plan
 - Dedicated plan viewer (`PlanViewProvider`) with interactive checklist tracking
 - Plan can be commented on, revised, and then executed
+- **Interactive plan editing workflow** inspired by Antigravity-style planning loops (review -> revise -> proceed)
 
 ### Agents & Skills
 
@@ -72,6 +83,13 @@ Key differentiators over a plain terminal-based OpenCode setup:
 - Active task panel with live status dots and step progress
 - Expandable subagent detail modal with full timeline, thinking events, and tool calls
 - Subagent cards rendered inline inside assistant messages
+- Dedicated subagent UI for monitoring parallel task execution and detailed per-subagent inspection
+
+### Interactive Q&A Flow
+
+- Supports interactive question/answer exchanges inside the chat timeline
+- Handles multiple interaction types (question, quick actions, confirm) with inline response controls
+- Preserves interactive context across session hydration/reload
 
 ### Session Management
 
@@ -86,6 +104,12 @@ Key differentiators over a plain terminal-based OpenCode setup:
 - `QuotaMonitor` panel in the right sidebar with usage bars and projected monthly consumption
 - `RequestBudgeter` calculates a daily request allowance to last the full billing month
 - Configurable warning thresholds and optional hard enforcement
+- Live quota status monitor for rapid provider/account health checks while working
+
+### Plugin Ecosystem Support
+
+- Works with OpenCode plugin-driven workflows (including community plugin collections like **Oh My OpenCode**)
+- Surfaces plugin-provided agents, skills, and capabilities directly in the extension UI
 
 ### Extended Right Panel (Desktop ≥ 1100 px)
 
@@ -106,6 +130,56 @@ Key differentiators over a plain terminal-based OpenCode setup:
 
 ---
 
+## Demo
+
+<img src="./assets/demo.gif" alt="Demo" width="700" />
+
+## Screenshots & GIFs
+
+Use this section for Marketplace visuals. If your repository is private, do **not** rely on `raw.githubusercontent.com` links. Instead, keep assets inside the extension package (recommended: `resources/marketplace/`) and reference them with relative paths.
+
+### Recommended Asset Set
+
+- Chat main view (assistant response + metrics chips)
+- Session history modal
+- Active Task panel (streaming progress)
+- Quota Monitor panel
+- Subagent detail modal
+- Plan view (`implementation_plan.md`)
+- Short GIF: end-to-end flow (prompt -> stream -> plan/task panel update)
+
+### Example Markdown
+
+```md
+## Screenshots
+
+### Chat Panel
+
+![Chat panel](resources/marketplace/chat-panel.png)
+
+### Session Management
+
+![Session modal](resources/marketplace/session-modal.png)
+
+### Quota Monitor
+
+![Quota monitor](resources/marketplace/quota-monitor.png)
+
+## Demo
+
+![OpenCode demo](resources/marketplace/opencode-demo.gif)
+```
+
+### Asset Tips
+
+- Use PNG for screenshots and GIF/WebM for demos.
+- Keep screenshot width around `1400px` for crisp Marketplace rendering.
+- Keep GIFs short (8-20s) and optimized to avoid large Marketplace payloads.
+- Prefer dark-theme captures if your extension is primarily dark-themed.
+- For private repos, prefer relative asset links from `resources/marketplace/` so Marketplace can still render visuals.
+
+---
+
 ## Architecture
 
 ```
@@ -113,7 +187,7 @@ Key differentiators over a plain terminal-based OpenCode setup:
 │                    VS Code Extension Host                    │
 │                                                             │
 │  extension.ts                                               │
-│    ├── OpencodeServerManager  (spawns `opencode serve`)     │
+│    ├── OpencodeServerManager  (manages local OpenCode server)│
 │    ├── SessionService         (persistence + sync)          │
 │    ├── StatusBarProvider      (connection indicator)        │
 │    ├── ChatViewProvider       (main webview host)           │
@@ -131,8 +205,8 @@ Key differentiators over a plain terminal-based OpenCode setup:
                      │  HTTP + SSE via @opencode-ai/sdk
                      │  (port: auto-assigned or configured)
 ┌────────────────────▼────────────────────────────────────────┐
-│                    OpenCode CLI Server                       │
-│                    (`opencode serve`)                       │
+│                    OpenCode Local Server                     │
+│                (accessed via `@opencode-ai/sdk`)            │
 │                                                             │
 │  REST API                                                   │
 │    GET  /agent         — list agents                        │
@@ -172,11 +246,11 @@ Key differentiators over a plain terminal-based OpenCode setup:
 
 1. **Node.js** ≥ 18
 2. **VS Code** ≥ 1.85.0
-3. **OpenCode CLI** installed globally:
+3. **OpenCode installed on your device** (required runtime):
    ```bash
    npm install -g opencode-ai
    ```
-4. Configure at least one AI provider:
+4. Configure at least one AI provider in OpenCode:
    ```bash
    opencode
    /connect
@@ -341,7 +415,7 @@ vscode-opencode/
 │   │   ├── PlanViewProvider.ts   # Implementation plan viewer
 │   │   └── StatusBarProvider.ts  # Status bar connection indicator
 │   ├── services/
-│   │   ├── OpencodeServerManager.ts    # CLI server lifecycle management
+│   │   ├── OpencodeServerManager.ts    # OpenCode server lifecycle management
 │   │   ├── SessionService.ts           # Session persistence and sync
 │   │   ├── MessageStreamService.ts     # SSE event streaming
 │   │   ├── SubagentTracker.ts          # Background task tracking
@@ -392,7 +466,7 @@ vscode-opencode/
 
 ### `OpencodeServerManager`
 
-Spawns and manages `opencode serve` as a child process. Handles:
+Starts and manages the local OpenCode server process. Handles:
 
 - Dynamic port allocation (default start: 4097)
 - Server readiness detection (stdout scan for `"Server running"` / `"listening"`)
@@ -572,6 +646,7 @@ Operations taking >3 seconds automatically log a warning:
 ```
 
 See [LOGGING.md](LOGGING.md) for complete documentation including:
+
 - All logging methods and usage patterns
 - Feature flow tracking best practices
 - Log analysis CLI and API
@@ -619,7 +694,7 @@ What this enforces:
 - webview build check when webview files changed
 - impacted contract/regression suites (or full `npm test` on high-risk changes)
 
---- 
+---
 
 ## Contributing
 

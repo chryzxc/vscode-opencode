@@ -1,7 +1,11 @@
 {
-  "name": "opencode-vscode",
+  "name": "opencode-vscode-chryzxc",
   "displayName": "OpenCode",
   "description": "OpenCode integration for VS Code",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chryzxc/vscode-opencode.git"
+  },
   "version": "0.1.0",
   "icon": "resources/extension-icon.png",
   "publisher": "chryzxc",

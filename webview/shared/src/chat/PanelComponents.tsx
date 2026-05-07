@@ -1506,22 +1506,30 @@ export function InputWrapper() {
       ...skillsFromService.map(skill => ({
         name: skill.name,
         description: skill.description,
-        source: skill.source
+        source: "skill"
       }))
     ];
+    const dedupedSlashItems = Array.from(
+      new Map(
+        allSlashItems.map((item) => [
+          `${item.source || "command"}:${item.name}`,
+          item,
+        ]),
+      ).values(),
+    );
 
     logger.debug('filteredCommands: Filtering commands', {
       query,
-      baseCount: allSlashItems.length,
-      baseNames: allSlashItems.map(c => c.name)
+      baseCount: dedupedSlashItems.length,
+      baseNames: dedupedSlashItems.map(c => c.name)
     });
 
     if (!query) {
-      logger.debug('filteredCommands: No query, returning all commands', { count: allSlashItems.length });
-      return allSlashItems;
+      logger.debug('filteredCommands: No query, returning all commands', { count: dedupedSlashItems.length });
+      return dedupedSlashItems;
     }
 
-    const filtered = allSlashItems.filter((command) => {
+    const filtered = dedupedSlashItems.filter((command) => {
       const name = command.name.toLowerCase();
       return name.includes(query);
     });

@@ -1019,17 +1019,107 @@ body {
 }
 
 /* ── Empty State ─────────────────────────────────────────────────────────── */
-.oc-empty-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--oc-accent) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--oc-accent) 18%, transparent);
+.oc-empty-state {
+  position: relative;
   display: flex;
+  min-height: 100%;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: var(--oc-accent);
-  font-size: 22px;
+  padding: 28px 24px;
+  text-align: center;
+  color: var(--oc-text);
+}
+
+.oc-empty-state::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(320px, 72vw);
+  height: min(320px, 72vw);
+  transform: translate(-50%, -58%);
+  border-radius: 999px;
+  background:
+    radial-gradient(
+      circle,
+      color-mix(in srgb, var(--oc-accent) 14%, transparent) 0%,
+      transparent 64%
+    );
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.oc-empty-copy {
+  position: relative;
+  max-width: 360px;
+}
+
+.oc-empty-copy h1 {
+  margin: 0;
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-accent));
+  font-size: clamp(28px, 6.5vw, 38px);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: 0;
+}
+
+.oc-empty-copy p {
+  margin: 10px auto 0;
+  max-width: 320px;
+  color: var(--oc-text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.oc-empty-shortcuts {
+  position: relative;
+  display: grid;
+  width: min(100%, 330px);
+  gap: 8px;
+  margin-top: 28px;
+}
+
+.oc-empty-shortcut {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 6px 8px 6px 6px;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 74%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 78%, var(--oc-accent));
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.oc-empty-shortcut-icon {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--oc-accent) 10%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 56%, var(--oc-accent));
+}
+
+.oc-empty-shortcut kbd {
+  min-width: 24px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 86%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--oc-bg) 88%, transparent);
+  color: var(--oc-text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
 }
 
 .oc-empty-state-error-message {

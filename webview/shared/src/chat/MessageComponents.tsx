@@ -16,6 +16,9 @@ import {
   Loader2,
   X,
   Sparkles,
+  CornerDownLeft,
+  AtSign,
+  Terminal,
   RotateCw,
   Zap,
   AlertCircle,
@@ -4279,35 +4282,34 @@ export function EmptyState() {
   }
 
   return (
-    <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-      <div className="oc-empty-icon mb-4">
-        <Sparkles className="h-6 w-6" />
+    <div className="oc-empty-state">
+      <div className="oc-empty-copy">
+        <h1>OpenCode</h1>
+        <p>Ask about the workspace, plan a change, or build the next piece.</p>
       </div>
-      <div className="text-xl font-semibold text-oc-text tracking-tight mb-1">
-        OpenCode
-      </div>
-      <div className="text-xs text-oc-text-soft opacity-70 max-w-[240px] leading-relaxed">
-        AI-powered coding assistant. Ask anything, build anything.
-      </div>
-      <div className="mt-6 flex flex-col items-center gap-2 text-oc-xs text-oc-text-soft opacity-70 font-medium">
-        <span className="flex items-center gap-2">
-          <kbd className="rounded border border-oc-border-soft bg-oc-panel-soft px-1.5 py-0.5 text-oc-2xs">
-            Enter
-          </kbd>
-          send message
-        </span>
-        <span className="flex items-center gap-2">
-          <kbd className="rounded border border-oc-border-soft bg-oc-panel-soft px-1.5 py-0.5 text-oc-2xs">
-            @
-          </kbd>
-          mention files
-        </span>
-        <span className="flex items-center gap-2">
-          <kbd className="rounded border border-oc-border-soft bg-oc-panel-soft px-1.5 py-0.5 text-oc-2xs">
-            /
-          </kbd>
-          commands
-        </span>
+
+      <div className="oc-empty-shortcuts" aria-label="Chat shortcuts">
+        <div className="oc-empty-shortcut">
+          <span className="oc-empty-shortcut-icon" aria-hidden="true">
+            <CornerDownLeft className="h-3.5 w-3.5" />
+          </span>
+          <span>Send message</span>
+          <kbd>Enter</kbd>
+        </div>
+        <div className="oc-empty-shortcut">
+          <span className="oc-empty-shortcut-icon" aria-hidden="true">
+            <AtSign className="h-3.5 w-3.5" />
+          </span>
+          <span>Mention files</span>
+          <kbd>@</kbd>
+        </div>
+        <div className="oc-empty-shortcut">
+          <span className="oc-empty-shortcut-icon" aria-hidden="true">
+            <Terminal className="h-3.5 w-3.5" />
+          </span>
+          <span>Run commands</span>
+          <kbd>/</kbd>
+        </div>
       </div>
     </div>
   );

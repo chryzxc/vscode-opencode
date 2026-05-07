@@ -8,7 +8,7 @@ const chatProviderSource = readAllSources([
   joinFromRoot('src', 'providers', 'chat', '*.ts'),
 ], 'ChatViewProvider.ts');
 
-test('slash commands are fetched from OpenCode server via client.tool.list', () => {
+test('slash suggestions fetch OpenCode commands and skills', () => {
   // Verify handleGetCommands method exists and has correct implementation
   const getCommandsBody = extractFunctionBody(
     chatProviderSource,
@@ -24,7 +24,13 @@ test('slash commands are fetched from OpenCode server via client.tool.list', () 
   assert.match(
     getCommandsBody,
     /client\.tool\.list\(/,
-    'handleGetCommands must fetch tools from server via client.tool.list',
+    'handleGetCommands must fetch tools from server via client.tool.list for skills',
+  );
+
+  assert.match(
+    getCommandsBody,
+    /client\.command\.list\(/,
+    'handleGetCommands must fetch command catalog via client.command.list',
   );
 
   assert.match(
@@ -37,6 +43,25 @@ test('slash commands are fetched from OpenCode server via client.tool.list', () 
     getCommandsBody,
     /sendCommandsToWebview\(/,
     'handleGetCommands must send commands to webview',
+  );
+});
+
+test('slash suggestions label command and skill sources', () => {
+  const getCommandsBody = extractFunctionBody(
+    chatProviderSource,
+    'private async handleGetCommands(): Promise<void> {',
+  );
+
+  assert.match(
+    getCommandsBody,
+    /source:\s*["']command["']/,
+    'command catalog entries should be labelled as commands',
+  );
+
+  assert.match(
+    getCommandsBody,
+    /source:\s*["']skill["']/,
+    'skill entries should be labelled as skills',
   );
 });
 

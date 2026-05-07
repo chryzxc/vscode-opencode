@@ -1414,6 +1414,31 @@ export class ChatViewProvider
         currentModel = { provider: 'anthropic', model: 'claude-sonnet-4-6' };
       }
 
+      const commands: Array<{ name: string; description?: string; source?: string }> = [];
+
+      try {
+        const commandResponse = await client.command.list();
+        const commandItems = Array.isArray(commandResponse.data)
+          ? commandResponse.data
+          : [];
+        for (const item of commandItems) {
+          const rawName = this.firstNonEmptyString(item?.name);
+          const name = rawName?.replace(/^\//, "");
+          if (!name) {
+            continue;
+          }
+          commands.push({
+            name,
+            description: this.firstNonEmptyString(item?.description),
+            source: "command",
+          });
+        }
+      } catch (error) {
+        this.logger.warn('[handleGetCommands] Failed to load command catalog', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       this.logger.info('[handleGetCommands] Fetching tools from OpenCode server', {
         provider: currentModel.provider,
         model: currentModel.model
@@ -1429,7 +1454,7 @@ export class ChatViewProvider
 
       if (!toolsResponse.data) {
         this.logger.warn('[handleGetCommands] No tools data returned from server');
-        this.sendCommandsToWebview([]);
+        this.sendCommandsToWebview(commands);
         return;
       }
 
@@ -1453,8 +1478,6 @@ export class ChatViewProvider
         descPreview: skillTool?.description?.substring(0, 200)
       });
 
-      const commands: Array<{ name: string; description: string }> = [];
-
       if (skillTool && skillTool.description) {
         // Parse the available skills from the skill tool's description
         // Format: ## Available Skills\n- **skill-name**: description
@@ -1471,7 +1494,7 @@ export class ChatViewProvider
         });
 
         let inAvailableSection = false;
-        let currentSkill: { name: string; description: string } | null = null;
+        let currentSkill: { name: string; description: string; source?: string } | null = null;
 
         for (const line of lines) {
           if (line.includes('## Available Skills') || line.includes('Available Skills')) {
@@ -1490,7 +1513,8 @@ export class ChatViewProvider
               // Start new skill
               currentSkill = {
                 name: match[1].trim(),
-                description: match[2].trim()
+                description: match[2].trim(),
+                source: "skill",
               };
             } else if (line.startsWith('##') || line.startsWith('---')) {
               // End of skills section - save last skill
@@ -1516,7 +1540,7 @@ export class ChatViewProvider
 
         this.logger.info('[handleGetCommands] Parsed ALL skills from skill tool', {
           count: commands.length,
-          skills: commands.map(c => ({ name: c.name, descLength: c.description.length }))
+          skills: commands.map(c => ({ name: c.name, descLength: c.description?.length || 0 }))
         });
       } else {
         this.logger.warn('[handleGetCommands] No skill tool found or no description');
@@ -1562,7 +1586,7 @@ export class ChatViewProvider
    * Send commands to the webview
    * Centralized method for sending slash commands to the chat interface
    */
-  private sendCommandsToWebview(commands: Array<{ name: string; description: string }>): void {
+  private sendCommandsToWebview(commands: Array<{ name: string; description?: string; source?: string }>): void {
     // CRITICAL: Check if view is available before sending message
     if (!this.view) {
       this.logger.error('[sendCommandsToWebview] Cannot send commands - webview is not available');
@@ -3934,6 +3958,128 @@ export class ChatViewProvider
     return mentionsFormat && mentionsUnsupported;
   }
 
+  private parseSlashSkillInvocation(text: string): { name: string; request: string } | null {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith("/")) {
+      return null;
+    }
+
+    if (this.planManager.isPlanProceedMessageText(trimmed)) {
+      return null;
+    }
+
+    const match = trimmed.match(/^\/([^\s/]+)(?:\s+([\s\S]*))?$/);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      name: match[1],
+      request: match[2]?.trim() || "",
+    };
+  }
+
+  private skillNameMatches(candidate: string, requested: string): boolean {
+    return (
+      candidate === requested ||
+      candidate.endsWith(`:${requested}`) ||
+      requested.endsWith(`:${candidate}`)
+    );
+  }
+
+  private async resolveSlashSkillInvocation(
+    client: any,
+    text: string,
+  ): Promise<{ name: string; request: string; description?: string } | null> {
+    const invocation = this.parseSlashSkillInvocation(text);
+    if (!invocation || !this.skillManagementService) {
+      return null;
+    }
+
+    const skills = await this.skillManagementService.getAllSkills(client);
+    const skill = skills.find((item) =>
+      this.skillNameMatches(item.name, invocation.name),
+    );
+    if (!skill) {
+      return null;
+    }
+
+    return {
+      ...invocation,
+      name: skill.name,
+      description: skill.description,
+    };
+  }
+
+  private async resolveSlashCommandInvocation(
+    client: any,
+    text: string,
+  ): Promise<{ command: string; arguments: string } | null> {
+    const invocation = this.parseSlashSkillInvocation(text);
+    if (!invocation) {
+      return null;
+    }
+
+    try {
+      const response = await client.command.list();
+      const commands = Array.isArray(response.data) ? response.data : [];
+      const match = commands.find((item: any) => {
+        const name = this.firstNonEmptyString(item?.name)?.replace(/^\//, "");
+        return name === invocation.name;
+      });
+      if (!match) {
+        return null;
+      }
+      return {
+        command: invocation.name,
+        arguments: invocation.request,
+      };
+    } catch (error) {
+      this.logger.warn('[resolveSlashCommandInvocation] Failed to load command catalog', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  private async executeSlashCommandInvocation(
+    client: any,
+    sessionID: string,
+    slashInvocation: { command: string; arguments: string },
+    agent?: string,
+  ) {
+    const workspaceDirectory = this.getWorkspaceDirectory();
+    return client.session.command({
+      path: { id: sessionID },
+      query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
+      body: {
+        command: slashInvocation.command,
+        arguments: slashInvocation.arguments,
+        agent: agent || this.selectedAgent,
+        model: this.selectedModel.modelID,
+      },
+    });
+  }
+
+  private buildSlashSkillSystemReminder(invocation: {
+    name: string;
+    request: string;
+    description?: string;
+  }): string {
+    const lines = [
+      "<auto-slash-command>",
+      `Skill invoked: ${invocation.name}`,
+    ];
+    if (invocation.description) {
+      lines.push(`Description: ${invocation.description}`);
+    }
+    lines.push(
+      `Use the skill tool with name="${invocation.name}" before answering, then apply the loaded skill instructions to the user request.`,
+      "</auto-slash-command>",
+    );
+    return lines.join("\n");
+  }
+
   // PROMPT-OWNERSHIP: do not modify — transport-only path
   private async promptWithStructuredOutput(
     client: any,
@@ -5622,10 +5768,46 @@ export class ChatViewProvider
         }
       }
 
+      const slashSkillInvocation = await this.resolveSlashSkillInvocation(
+        client,
+        text,
+      );
+      const slashCommandInvocation = slashSkillInvocation
+        ? null
+        : await this.resolveSlashCommandInvocation(client, text);
+      const slashSkillSystemReminder = slashSkillInvocation
+        ? this.buildSlashSkillSystemReminder(slashSkillInvocation)
+        : undefined;
+      const modelInputText = slashSkillSystemReminder
+        ? `${slashSkillSystemReminder}\n\n${slashSkillInvocation?.request || text}`
+        : text;
+
       // Save user message to local history immediately, unless this is a retry
       if (!isRetry) {
         const persistedUserText =
           this.firstNonEmptyString(userFacingText, text) || text;
+        if (slashSkillSystemReminder) {
+          const systemMessage = {
+            role: "system" as const,
+            content: slashSkillSystemReminder,
+            text: slashSkillSystemReminder,
+            responseType: "system" as const,
+            parts: [
+              {
+                type: "text",
+                text: slashSkillSystemReminder,
+              },
+            ],
+            time: {
+              created: Date.now(),
+            },
+          };
+          await this.sessionService.appendMessage(session.id, systemMessage);
+          this.view?.webview.postMessage({
+            type: "userMessageAppended",
+            message: systemMessage,
+          });
+        }
         const userMessage = {
           role: "user" as const,
           content: persistedUserText,
@@ -5633,7 +5815,7 @@ export class ChatViewProvider
           parts: [
             {
               type: "text",
-              text: text,
+              text: persistedUserText,
             },
           ],
           images: imageUrls,
@@ -5659,7 +5841,7 @@ export class ChatViewProvider
       const parts: NonNullable<SessionPromptData["body"]>["parts"] = [
         {
           type: "text",
-          text: text,
+          text: modelInputText,
         },
       ];
 
@@ -5793,6 +5975,7 @@ export class ChatViewProvider
       // Send the message using the SDK
       const startTime = Date.now();
       const useStructuredOutput =
+        !slashCommandInvocation &&
         !retryWithoutStructuredOutput &&
         this.shouldUseStructuredOutput(
           this.getStructuredOutputModelKey(this.selectedModel.providerID, this.selectedModel.modelID)
@@ -5823,19 +6006,28 @@ export class ChatViewProvider
         hasFiles: Boolean(files?.length),
         hasContexts: Boolean(contexts?.length),
         hasImages: Boolean(images?.length),
+        slashSkill: slashSkillInvocation?.name,
+        slashCommand: slashCommandInvocation?.command,
       });
 
-      const response = await this.promptWithStructuredOutput(
-        client,
-        session.id,
-        promptBody,
-        useStructuredOutput,
-        {
-          hasFiles: Boolean(files?.length),
-          hasContexts: Boolean(contexts?.length),
-          hasImages: Boolean(images?.length),
-        },
-      );
+      const response = slashCommandInvocation
+        ? await this.executeSlashCommandInvocation(
+          client,
+          session.id,
+          slashCommandInvocation,
+          agent,
+        )
+        : await this.promptWithStructuredOutput(
+          client,
+          session.id,
+          promptBody,
+          useStructuredOutput,
+          {
+            hasFiles: Boolean(files?.length),
+            hasContexts: Boolean(contexts?.length),
+            hasImages: Boolean(images?.length),
+          },
+        );
 
       const promptDuration = Date.now() - promptStartTime;
       this.logger.info(`✅ [TIMING] Prompt response received (${promptDuration}ms)`, {

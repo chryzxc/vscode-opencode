@@ -44,6 +44,9 @@ test('posts interactive answers through sendMessage with interactiveSubmit', () 
 test('includes slash command trigger and suggestion list', () => {
   assert.match(panelComponents, /getSlashTrigger\(/, 'slash trigger helper is missing');
   assert.match(panelComponents, /slashTrigger && \([\s\S]*oc-suggestions[\s\S]*\/\{command\.name\.replace/, 'slash command suggestions are missing');
+  assert.match(panelComponents, /availableCommands[\s\S]*availableSkills/, 'slash suggestions should combine commands and skills');
+  assert.match(panelComponents, /source:\s*"skill"/, 'skill suggestions should be labelled separately from commands');
+  assert.match(panelComponents, /new Map\([\s\S]*\$\{item\.source \|\| "command"\}:\$\{item\.name\}/, 'slash suggestions should dedupe command and skill rows by source and name');
 });
 
 test('includes mention trigger and mention suggestions', () => {
