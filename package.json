@@ -4,7 +4,7 @@
   "description": "OpenCode integration for VS Code",
   "version": "0.1.0",
   "icon": "resources/extension-icon.png",
-  "publisher": "Christian Rey Villablanca",
+  "publisher": "chryzxc",
   "type": "module",
   "engines": {
     "vscode": "^1.85.0"
