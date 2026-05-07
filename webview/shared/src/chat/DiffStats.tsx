@@ -29,7 +29,7 @@ export function DiffStats({
   const iconSizeClass = iconSize === 'sm' ? 'h-2.5 w-2.5' : 'h-3 w-3';
 
   return (
-    <div className={`flex items-center gap-1 font-mono text-xs ${className}`}>
+    <div className={`flex items-center gap-1 font-medium text-xs ${className}`}>
       {added > 0 && (
         <span 
           className={showIcons ? 'flex items-center gap-0.5' : ''}

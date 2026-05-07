@@ -309,4 +309,37 @@ describe('Session Loading State Reducer', () => {
       expect(state.isLoadingSession).toBe(true);
     });
   });
+
+  describe('Session Message Cache', () => {
+    it('should cache messages by current session when setting messages', () => {
+      const message = { id: 'm1', role: 'user', content: 'hello' } as any;
+      const state = reducer(
+        { ...initialState, currentSessionId: 'session-1' },
+        { type: 'SET_MESSAGES', payload: [message] },
+      );
+
+      expect(state.messagesBySessionId?.['session-1']).toEqual([message]);
+    });
+
+    it('should hydrate messages from cache and clear loading state', () => {
+      const cachedMessage = { id: 'cached-1', role: 'user', content: 'cached hello' } as any;
+      const state = reducer(
+        {
+          ...initialState,
+          currentSessionId: 'session-1',
+          isLoadingSession: true,
+          loadingSessionId: 'session-1',
+          loadingSessionTitle: 'Session 1',
+          messagesBySessionId: { 'session-1': [cachedMessage] },
+        },
+        { type: 'HYDRATE_SESSION_FROM_CACHE', payload: { sessionId: 'session-1' } },
+      );
+
+      expect(state.messages).toEqual([cachedMessage]);
+      expect(state.currentSessionId).toBe('session-1');
+      expect(state.isLoadingSession).toBe(false);
+      expect(state.loadingSessionId).toBe(null);
+      expect(state.loadingSessionTitle).toBe(null);
+    });
+  });
 });

@@ -108,7 +108,7 @@ export function QuotaPopover() {
             <div className="text-oc-sm font-semibold tracking-tight text-[var(--oc-text-soft)]">
               Quota Status
             </div>
-            <div className="text-[10px] text-[var(--oc-text-soft)] opacity-70 font-mono">
+            <div className="text-[10px] text-[var(--oc-text-soft)] opacity-70 font-medium">
               {quotaIsRefreshing ? 'Refreshing...' : `Updated ${formatLastUpdated()}`}
             </div>
           </div>
@@ -117,7 +117,7 @@ export function QuotaPopover() {
               type="button"
               variant="ghost-accent"
               size="sm"
-              className="h-6 px-2 text-xs font-mono"
+              className="h-6 px-2 text-xs font-medium"
               title="Refresh quota"
               aria-label="Refresh quota"
               disabled={quotaIsRefreshing}
@@ -174,10 +174,10 @@ export function QuotaPopover() {
                   ) : null}
                 </div>
                 <div className="grid grid-cols-[auto_1fr] gap-x-2 text-xs">
-                  <span className="font-mono uppercase tracking-wider text-[var(--oc-text-soft)] opacity-80">
+                  <span className="text-xs font-medium text-[var(--oc-text-soft)] opacity-85">
                     Account:
                   </span>
-                  <span className="truncate font-mono text-[var(--oc-text-soft)]">
+                  <span className="truncate text-xs text-[var(--oc-text-soft)]">
                     {platform.account} {platform.accountLabel ?? ''}
                   </span>
                 </div>
@@ -186,7 +186,7 @@ export function QuotaPopover() {
               {/* Quota Items */}
               <div className="space-y-2.5 py-2.5">
                 {platform.error ? (
-                  <div className="rounded-md border border-oc-red/40 bg-oc-red/10 px-2.5 py-2 text-oc-red">
+                  <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40 px-2.5 py-2 text-oc-red">
                     {platform.error.length > 130
                       ? `${platform.error.slice(0, 127)}...`
                       : platform.error}
@@ -207,7 +207,7 @@ export function QuotaPopover() {
                               {quota.label}
                             </span>
                           </div>
-                          <span className="font-mono text-xs text-[var(--oc-text-soft)]">
+                          <span className="font-medium text-xs text-[var(--oc-text-soft)]">
                             {quota.percentLabel ?? `${Math.round(pct)}% remaining`}
                           </span>
                         </div>
@@ -225,7 +225,7 @@ export function QuotaPopover() {
                           {quota.usedTotalDisplay ? (
                             <div className="flex items-center justify-between gap-2">
                               <span>Used</span>
-                              <span className="font-mono text-[var(--oc-text-soft)]">
+                              <span className="font-medium text-[var(--oc-text-soft)]">
                                 {quota.usedTotalDisplay}
                               </span>
                             </div>
@@ -233,7 +233,7 @@ export function QuotaPopover() {
                           {quota.resetLabel ? (
                             <div className="flex items-center justify-between gap-2">
                               <span>Resets in</span>
-                              <span className="font-mono text-[var(--oc-text-soft)]">
+                              <span className="font-medium text-[var(--oc-text-soft)]">
                                 {quota.resetLabel}
                               </span>
                             </div>

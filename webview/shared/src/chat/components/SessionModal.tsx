@@ -12,7 +12,12 @@ type SessionModalProps = {
 };
 
 export function SessionModal({ isOpen, onClose }: SessionModalProps) {
-  const { sessionsList, currentSessionId, processingSessionIds } = useAppState();
+  const {
+    sessionsList,
+    currentSessionId,
+    processingSessionIds,
+    messagesBySessionId,
+  } = useAppState();
   const dispatch = useAppDispatch();
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
@@ -173,16 +178,19 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     // Find the session to get its title
     const session = sessionsList.find(s => s.id === sessionId);
     const sessionTitle = session?.title || sessionId;
+    const hasCachedMessages =
+      (messagesBySessionId?.[sessionId]?.length ?? 0) > 0;
 
-    // Start loading state immediately when user clicks session in modal
-    // This ensures loading UI shows BEFORE the async operation completes
-    dispatch({
-      type: "START_SESSION_LOADING",
-      payload: {
-        sessionId,
-        title: sessionTitle
-      }
-    });
+    // Skip full loading state when we already have a local render cache.
+    if (!hasCachedMessages) {
+      dispatch({
+        type: "START_SESSION_LOADING",
+        payload: {
+          sessionId,
+          title: sessionTitle
+        }
+      });
+    }
 
     vscode.postMessage({ type: "switchSession", sessionId });
     onClose();

@@ -46,7 +46,7 @@ function CompactionDivider({ at }: { at?: number }) {
 
   return (
     <div className="-mx-4 py-2">
-      <div className="flex w-full items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-oc-text-muted">
+      <div className="flex w-full items-center gap-2 text-[10px] font-medium text-oc-text-muted">
         <span className="h-px flex-1 bg-current opacity-50" />
         <span className="shrink-0 text-center opacity-80">{label}</span>
         <span className="h-px flex-1 bg-current opacity-50" />
@@ -304,7 +304,7 @@ function ChatContent() {
             <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.2s' }} />
             <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.4s' }} />
           </div>
-          <div className="text-sm text-oc-text-soft opacity-70 font-mono">
+          <div className="text-sm text-oc-text-soft opacity-70 font-medium">
             Connecting…
           </div>
         </div>
@@ -327,8 +327,9 @@ function ChatContent() {
   // 3. Streaming but only have reasoning (no actual content yet)
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
-    ((isAiResponding && !state.streaming && !state.isCompacting) ||
-    (hasOnlyReasoning && !state.isCompacting));
+    isAiResponding && // Must still be processing (not stopped)
+    !state.isCompacting &&
+    (!state.streaming || hasOnlyReasoning);
 
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
@@ -382,7 +383,7 @@ function ChatContent() {
 
               {hasCompactedSegment ? (
             <div className="-mx-4 py-2">
-              <div className="flex w-full items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-oc-text-muted">
+              <div className="flex w-full items-center gap-2 text-[10px] font-medium text-oc-text-muted">
                 <span className="h-px flex-1 bg-current opacity-50" />
                 <button
                   type="button"
@@ -407,7 +408,7 @@ function ChatContent() {
                       });
                     }
                   }}
-                  className="shrink-0 px-1 py-0 text-[10px] font-mono uppercase tracking-wider text-oc-text-muted opacity-80 hover:opacity-100 hover:underline transition-colors"
+                  className="shrink-0 px-1 py-0 text-[10px] font-medium text-oc-text-muted opacity-80 hover:opacity-100 hover:underline transition-colors"
                   title={
                     isCompressed
                       ? "Show compacted messages"
@@ -493,7 +494,7 @@ function ChatContent() {
 
           {state.isCompacting ? (
             <div className="sticky bottom-3 z-20 mb-2 flex justify-center px-4 pointer-events-none">
-              <div className="rounded-full border border-oc-accent bg-oc-panel px-3 py-1 text-[11px] font-mono uppercase tracking-wider text-oc-accent shadow-sm">
+              <div className="rounded-full border border-oc-accent bg-oc-panel px-3 py-1 text-[11px] font-medium text-oc-accent shadow-sm">
                 Compacting conversation...
               </div>
             </div>
@@ -505,7 +506,7 @@ function ChatContent() {
               <button
                 type="button"
                 onClick={jumpToLatest}
-                className="rounded-md border border-oc-border bg-oc-panel px-2.5 py-1.5 text-[11px] font-mono text-oc-accent shadow-sm hover:bg-oc-panel-soft"
+                className="rounded-md border border-oc-border bg-oc-panel px-2.5 py-1.5 text-[11px] font-medium text-oc-accent shadow-sm hover:bg-oc-panel-soft"
               >
                 Jump to latest ({streamViewport.unseenUpdateCount})
               </button>

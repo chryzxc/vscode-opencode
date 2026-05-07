@@ -64,7 +64,7 @@ export function ProgressStep({ step }: { step: StreamingStep }) {
               <FileText
                 className={`h-3.5 w-3.5 shrink-0 ${extClass(step.filePath)}`}
               />
-              <span className="truncate font-mono">{step.title}</span>
+              <span className="truncate font-medium">{step.title}</span>
             </button>
           ) : (
             <span className={isDone ? 'text-oc-text-soft' : 'text-oc-text'}>
@@ -109,7 +109,7 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-oc-text-muted" />
         )}
         <span className="flex-1 font-medium text-oc-text-soft">Steps</span>
-        <span className={`font-mono tabular-nums ${accentColor}`}>
+        <span className={`font-medium tabular-nums ${accentColor}`}>
           {doneCount}/{steps.length}
         </span>
       </button>

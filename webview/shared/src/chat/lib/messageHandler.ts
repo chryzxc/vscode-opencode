@@ -20,6 +20,7 @@ import type {
   QueueItem,
   QuotaData,
   ReasoningEvent,
+  Skill,
   SlashCommand,
   Session,
   StreamingState,
@@ -1043,13 +1044,38 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   if (!rec) {
     return undefined;
   }
-  const validation = validateStructuredOutput(rec);
+  // IMPORTANT ORDERING CONTRACT:
+  // 1) sanitizeStructuredOutput(rec)
+  // 2) validateStructuredOutput(sanitizedRec)
+  //
+  // We intentionally sanitize BEFORE validating because providers/models often emit
+  // "development-shaped" question payloads that are semantically valid but structurally
+  // loose, for example:
+  // - responseType: "question"
+  // - question: "..."                    (string instead of object)
+  // - options: "[{...},{...}]"           (JSON-stringified options array)
+  //
+  // sanitizeStructuredOutput() canonicalizes those forms into schema-compatible shape
+  // (question object + parsed options), which allows validation to succeed and preserves
+  // the interactive question event for UI rendering.
+  //
+  // If we validate the raw record first, those payloads fail validation and are dropped,
+  // which causes the question popover/stepper UI to disappear and only raw debug text to
+  // remain visible. Keep this ordering unless the validator itself is redesigned to accept
+  // all legacy/development aliases directly.
+  const sanitizedRec = sanitizeStructuredOutput(rec);
+  const validation = validateStructuredOutput(sanitizedRec);
   if (!validation.valid) {
     // Enhanced logging for debugging model-specific validation failures
     const inputPreview = JSON.stringify(rec).slice(0, 500);
+    const sanitizedPreview = JSON.stringify(sanitizedRec).slice(0, 500);
     webviewLogger.warn("Structured output validation failed", {
       errors: validation.errors,
       inputPreview: inputPreview.length < 500 ? inputPreview : inputPreview + "...",
+      sanitizedPreview:
+        sanitizedPreview.length < 500
+          ? sanitizedPreview
+          : sanitizedPreview + "...",
       hasResponseType: typeof rec.responseType !== 'undefined',
       responseTypeValue: rec.responseType,
       hasMessage: typeof rec.message !== 'undefined',
@@ -1059,8 +1085,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     });
     return undefined;
   }
-  const sanitizedRec = sanitizeStructuredOutput(rec);
-
   const rawResponseType =
     asString(sanitizedRec.responseType) || asString(rec.type) || asString(rec.kind) || undefined;
   if (!rawResponseType) {
@@ -2392,6 +2416,11 @@ function upsertStreamingStep(
     return;
   }
 
+  // Ignore streaming steps if we're no longer processing (user stopped the request)
+  if (!getState().isProcessing) {
+    return;
+  }
+
   const streaming = getState().streaming;
   if (!streaming) {
     dispatch({
@@ -3248,6 +3277,17 @@ function isMentionResult(value: unknown): value is MentionResult {
 function isSlashCommand(value: unknown): value is SlashCommand {
   const rec = asRecord(value);
   return !!rec && typeof rec.name === "string";
+}
+
+function isSkill(value: unknown): value is Skill {
+  const rec = asRecord(value);
+  return (
+    !!rec &&
+    typeof rec.name === "string" &&
+    typeof rec.description === "string" &&
+    typeof rec.enabled === "boolean" &&
+    typeof rec.source === "string"
+  );
 }
 
 function isQueueItem(value: unknown): value is QueueItem {
@@ -7409,6 +7449,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const stateBeforeInit = getState();
           const sessionId =
             asString(state.sessionId) || asString(state.currentSessionId) || null;
+          const cachedInitMessages =
+            sessionId
+              ? stateBeforeInit.messagesBySessionId?.[sessionId] ?? []
+              : [];
 
           const selectedModelRecord = asRecord(state.selectedModel);
           const selectedModel = selectedModelRecord
@@ -7422,6 +7466,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             sessionId &&
             !stateBeforeInit.receivedInitState &&
             stateBeforeInit.messages.length === 0 &&
+            cachedInitMessages.length === 0 &&
             !stateBeforeInit.isLoadingSession
           ) {
             const existingSession = stateBeforeInit.sessionsList.find(
@@ -7991,6 +8036,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const currentState = getState();
             const isSessionProcessing = !!(chatHistorySessionId &&
               currentState.processingSessionIds.includes(chatHistorySessionId));
+            const cachedMessagesForSwitch =
+              chatHistorySessionId
+                ? currentState.messagesBySessionId?.[chatHistorySessionId] ?? []
+                : [];
 
             // Set loading state if we're loading a different session
             const isSwitchingSession = !!(
@@ -7998,7 +8047,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               currentState.currentSessionId !== chatHistorySessionId
             );
 
-            if (isSwitchingSession) {
+            if (isSwitchingSession && cachedMessagesForSwitch.length > 0) {
+              dispatch({
+                type: "HYDRATE_SESSION_FROM_CACHE",
+                payload: { sessionId: chatHistorySessionId },
+              });
+            } else if (isSwitchingSession) {
               // Look up the session title from the sessions list
               const session = currentState.sessionsList.find(s => s.id === chatHistorySessionId);
               const sessionTitle = session?.title || chatHistorySessionId;
@@ -8051,6 +8105,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           // Use the just-normalized hydration snapshot directly. Reading getState()
           // immediately after dispatch can observe stale messages in the same tick.
           const canonicalMessages = stabilizedHydratedMessages;
+          if (chatHistorySessionId) {
+            dispatch({
+              type: "CACHE_SESSION_MESSAGES",
+              payload: {
+                sessionId: chatHistorySessionId,
+                messages: canonicalMessages,
+              },
+            });
+          }
 
           // If the backend included a sessionId (e.g. on session switch), update it BEFORE
           // storing stats so RESET_SESSION_STATS writes under the correct key.
@@ -8378,6 +8441,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "streamEvent": {
+          // Ignore streaming events if we're no longer processing (user stopped the request)
+          if (!getState().isProcessing) {
+            break;
+          }
           if (terminalErrorReached && getState().isProcessing) {
             terminalErrorReached = false;
           }
@@ -8417,6 +8484,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "streamEventEnrich": {
+          // Ignore streaming events if we're no longer processing (user stopped the request)
+          if (!getState().isProcessing) {
+            break;
+          }
           const callID = asString(data.callID);
           const diffStatsRec = asRecord(data.diffStats);
           const activityDetail = normalizeActivityDetail(data.activityDetail);
@@ -8613,6 +8684,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           webviewLogger.debug('Filtered commands', { commands, count: commands.length });
 
           dispatch({ type: "SET_COMMANDS_LIST", payload: commands });
+          break;
+        }
+        case "mySkills": {
+          webviewLogger.debug('Received mySkills message', { data });
+          const skills = asArray(data.skills, isSkill);
+          dispatch({ type: "SET_SKILLS_LIST", payload: skills });
           break;
         }
         case "sessionsList": {

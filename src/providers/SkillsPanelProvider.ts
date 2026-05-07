@@ -24,6 +24,7 @@ export class SkillsPanelProvider {
     context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ) {
+    this.logger.info('[SkillsPanel] resolveWebviewView called');
     this._view = webviewView;
 
     webviewView.webview.options = {
@@ -32,6 +33,7 @@ export class SkillsPanelProvider {
     };
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+    this.logger.info('[SkillsPanel] HTML set, webview ready');
 
     // Listen for messages from the webview
     webviewView.webview.onDidReceiveMessage(
@@ -44,11 +46,20 @@ export class SkillsPanelProvider {
 
     // Listen for skill changes
     this.skillManagementService.onDidChangeSkills(() => {
+      this.logger.info('[SkillsPanel] onDidChangeSkills fired');
+      this._sendSkillsToWebview();
+    });
+
+    // Listen for initialization completion
+    // This handles the case where the webview is opened before initialization completes
+    this.skillManagementService.onInitialized(() => {
+      this.logger.info('[SkillsPanel] SkillManagementService initialized, sending skills to webview');
       this._sendSkillsToWebview();
     });
 
     // Send initial data after a short delay to ensure webview is ready
     setTimeout(() => {
+      this.logger.info('[SkillsPanel] Initial setTimeout fired, sending skills to webview');
       this._sendSkillsToWebview();
     }, 100);
   }
@@ -130,7 +141,21 @@ export class SkillsPanelProvider {
   }
 
   private async _sendSkillsToWebview(): Promise<void> {
+    this.logger.info('[_sendSkillsToWebview] Called', {
+      hasView: !!this._view,
+      isInitialized: this.skillManagementService.isInitialized()
+    });
+
     if (!this._view) {
+      this.logger.warn('[_sendSkillsToWebview] No view available');
+      return;
+    }
+
+    // Wait for initialization if not already done
+    if (!this.skillManagementService.isInitialized()) {
+      this.logger.info('[_sendSkillsToWebview] Waiting for SkillManagementService initialization');
+      // Wait a bit and retry
+      setTimeout(() => this._sendSkillsToWebview(), 500);
       return;
     }
 
@@ -169,6 +194,11 @@ export class SkillsPanelProvider {
     ));
 
     const skills = this.skillManagementService.getSkills();
+    this.logger.info('[_getHtmlForWebview] Generating initial HTML', {
+      skillCount: skills.length,
+      isInitialized: this.skillManagementService.isInitialized()
+    });
+
     const initialData = JSON.stringify({
       skills,
       stats: {

@@ -46,7 +46,6 @@ vscode-opencode/
 | SSE streaming | `src/services/MessageStreamService.ts` | Event stream transport; feeds providers/tracker |
 | Subagent orchestration | `src/services/SubagentTracker.ts` | Parent/child task state and detail timeline assembly |
 | Quota polling | `src/services/QuotaService.ts` | Multi-provider quota APIs (OpenAI, Copilot, Gemini, Zhipu, Z.ai) |
-| Budget enforcement | `src/services/RequestBudgeter.ts` | Daily allowance / warning logic (singleton `budgeter`) |
 | Plan parsing | `src/services/PlanParser.ts` | Parses `implementation_plan.md` into structured data |
 | Skill management | `src/services/SkillManagerService.ts`, `src/services/SkillManagementService.ts` | Install/validate/discover/enable-disable skills |
 | Model capabilities | `src/services/ModelCapabilitiesService.ts` | Reasoning detection via static map + models.dev |
@@ -76,7 +75,6 @@ vscode-opencode/
 | `SubagentTracker` | class | `src/services/SubagentTracker.ts` | Subagent timeline/state collation |
 | `PlanParser` | class | `src/services/PlanParser.ts` | Parses `implementation_plan.md` into structured data |
 | `QuotaService` | class | `src/services/QuotaService.ts` | Multi-provider quota polling |
-| `RequestBudgeter` | class | `src/services/RequestBudgeter.ts` | Daily allowance / warning logic |
 | `SkillManagerService` | class | `src/services/SkillManagerService.ts` | Skill install/validate/discover |
 | `SkillManagementService` | class | `src/services/SkillManagementService.ts` | Skill enable/disable lifecycle |
 | `ModelCapabilitiesService` | class | `src/services/ModelCapabilitiesService.ts` | Reasoning detection for model selection |

@@ -88,7 +88,7 @@ function StatPill({
       >
         {value}
       </span>
-      <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
+      <span className="font-medium text-[9px] uppercase tracking-widest text-muted-foreground">
         {label}
       </span>
     </div>
@@ -129,7 +129,7 @@ function SkillRow({
           </span>
           <Badge
             variant="outline"
-            className="h-auto shrink-0 rounded border-oc-border bg-oc-panel-soft px-1 py-0 font-mono text-[9px] uppercase tracking-wider text-muted-foreground"
+            className="h-auto shrink-0 rounded border-oc-border bg-oc-panel-soft px-1 py-0 font-medium text-[9px] uppercase tracking-wider text-muted-foreground"
           >
             {skill.source}
           </Badge>
@@ -320,7 +320,7 @@ export function SkillsShell() {
 
       {presetsOpen && (
         <div className="shrink-0 border-b border-oc-border bg-oc-panel-soft/40 px-3 py-2">
-          <p className="mb-1.5 font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
+          <p className="mb-1.5 font-medium text-[9px] uppercase tracking-widest text-muted-foreground">
             Presets
           </p>
           <div className="flex flex-wrap gap-1.5">
@@ -330,7 +330,7 @@ export function SkillsShell() {
                 type="button"
                 onClick={() => applyPreset(id)}
                 className={cn(
-                  "flex items-center gap-1 rounded border px-2 py-1 font-mono text-[11px] font-medium transition-all",
+                  "flex items-center gap-1 rounded border px-2 py-1 font-medium text-[11px] font-medium transition-all",
                   danger
                     ? "border-oc-red/30 text-oc-red hover:border-oc-red/70 hover:bg-oc-red/10"
                     : "border-oc-border text-muted-foreground hover:border-oc-accent/40 hover:bg-oc-accent-soft hover:text-oc-accent",
@@ -369,7 +369,7 @@ export function SkillsShell() {
       {selected.size > 0 && (
         <div className="flex shrink-0 items-center gap-2 border-b border-oc-border bg-oc-accent-soft px-3 py-1.5">
           <ListChecks className="h-3.5 w-3.5 shrink-0 text-oc-accent" />
-          <span className="flex-1 font-mono text-[11px] text-foreground">
+          <span className="flex-1 font-medium text-[11px] text-foreground">
             {selected.size} selected
           </span>
           <Button
@@ -407,7 +407,7 @@ export function SkillsShell() {
           className="h-3 w-3 cursor-pointer accent-[var(--oc-accent)]"
           aria-label="Select all visible skills"
         />
-        <span className="flex-1 font-mono text-[10px] text-muted-foreground">
+        <span className="flex-1 font-medium text-[10px] text-muted-foreground">
           {filtered.length} skill{filtered.length !== 1 ? "s" : ""}
         </span>
         <Button

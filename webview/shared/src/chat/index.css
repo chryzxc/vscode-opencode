@@ -317,11 +317,10 @@ body {
 }
 
 .oc-panel-title {
-  letter-spacing: 0.09em;
-  font-family: "SF Mono", "Cascadia Code", monospace;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--oc-text-soft);
 }
 
@@ -918,6 +917,9 @@ body {
   font-size: 11px;
   color: var(--oc-text-soft);
   opacity: 0.9;
+  max-width: min(42vw, 300px);
+  display: inline-block;
+  vertical-align: bottom;
 }
 
 /* ── Token Statistics Display ─────────────────────────────────────────────── */
@@ -1355,7 +1357,7 @@ body {
 
 /* Monospace for data */
 .font-mono {
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  font-family: inherit;
 }
 
 /* ─── OpenCode Input Area Redesign ─────────────────────────────────────────── */
@@ -3205,7 +3207,7 @@ body {
 
 /* Code block - monospace text styling */
 .oc-code {
-  @apply font-mono text-[10.5px] leading-6 tracking-[0.01em] select-text;
+  @apply font-medium text-[10.5px] leading-6 tracking-[0.01em] select-text;
   color: #aeb7d8;
   background-color: transparent;
 }

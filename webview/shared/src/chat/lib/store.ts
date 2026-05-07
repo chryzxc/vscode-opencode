@@ -42,6 +42,7 @@ export const initialState: AppState = {
   isSteering: false,
   currentSessionId: null,
   messages: [],
+  messagesBySessionId: {},
   promptQueue: [],
   queueBySessionId: {},
   isExecutingQueue: false,
@@ -70,6 +71,7 @@ export const initialState: AppState = {
   showMentionSuggestions: false,
   selectedMentionIndex: 0,
   availableCommands: [],
+  availableSkills: [],
   commandsLoaded: false,
   receivedInitState: false,
   serverStatus: "connecting",
@@ -132,6 +134,14 @@ export type AppAction =
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
   | { type: "SET_MESSAGES"; payload: Message[] }
+  | {
+    type: "CACHE_SESSION_MESSAGES";
+    payload: { sessionId: string; messages: Message[] };
+  }
+  | {
+    type: "HYDRATE_SESSION_FROM_CACHE";
+    payload: { sessionId: string };
+  }
   | { type: "CLEAR_MESSAGES" }
   | { type: "SET_PROCESSING"; payload: boolean }
   | { type: "SET_STEERING"; payload: boolean }
@@ -166,6 +176,10 @@ export type AppAction =
   | {
     type: "SET_COMMANDS_LIST";
     payload: AppState["availableCommands"];
+  }
+  | {
+    type: "SET_SKILLS_LIST";
+    payload: AppState["availableSkills"];
   }
   | { type: "SET_SELECTED_FILES"; payload: string[] }
   | { type: "SET_SELECTED_CONTEXTS"; payload: ContextItem[] }
@@ -1382,6 +1396,57 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         messages: canonicalMessages,
+        messagesBySessionId:
+          state.currentSessionId
+            ? {
+              ...(state.messagesBySessionId ?? {}),
+              [state.currentSessionId]: canonicalMessages,
+            }
+            : state.messagesBySessionId,
+        compactionDividerIndex: resolvedDividerIndex,
+        compactionDividerBeforeMessageId:
+          resolvedAnchors.compactionDividerBeforeMessageId,
+        compactionDividerAfterMessageId:
+          resolvedAnchors.compactionDividerAfterMessageId,
+      };
+    }
+    case "CACHE_SESSION_MESSAGES":
+      return {
+        ...state,
+        messagesBySessionId: {
+          ...(state.messagesBySessionId ?? {}),
+          [action.payload.sessionId]: canonicalizeMessagesForRender(
+            action.payload.messages,
+          ),
+        },
+      };
+    case "HYDRATE_SESSION_FROM_CACHE": {
+      const cachedMessages =
+        state.messagesBySessionId?.[action.payload.sessionId] ?? [];
+      if (cachedMessages.length === 0) {
+        return state;
+      }
+      const resolvedDividerIndex = resolveCompactionDividerIndex(cachedMessages, {
+        compactionDividerIndex: state.compactionDividerIndex,
+        compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
+        compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
+        lastCompactedAt: state.lastCompactedAt,
+      });
+      const resolvedAnchors =
+        typeof resolvedDividerIndex === "number"
+          ? resolveCompactionDividerAnchors(cachedMessages, resolvedDividerIndex)
+          : {
+            compactionDividerBeforeMessageId:
+              state.compactionDividerBeforeMessageId,
+            compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
+          };
+      return {
+        ...state,
+        currentSessionId: action.payload.sessionId,
+        messages: cachedMessages,
+        isLoadingSession: false,
+        loadingSessionId: null,
+        loadingSessionTitle: null,
         compactionDividerIndex: resolvedDividerIndex,
         compactionDividerBeforeMessageId:
           resolvedAnchors.compactionDividerBeforeMessageId,
@@ -1714,6 +1779,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         availableCommands: action.payload,
         commandsLoaded: true,
+      };
+    case "SET_SKILLS_LIST":
+      return {
+        ...state,
+        availableSkills: action.payload,
       };
     case "SET_SELECTED_FILES":
       return { ...state, selectedFiles: action.payload };

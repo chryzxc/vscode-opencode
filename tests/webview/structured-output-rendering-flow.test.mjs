@@ -65,8 +65,8 @@ test('plan status states include draft executing and revision requested', () => 
 
 test('structured output is normalized before rendering', () => {
   assert.match(messageHandler, /function normalizeStructuredOutput\(value: unknown\): StructuredOutput \| undefined/, 'structured output normalizer is missing');
-  assert.match(messageHandler, /const validation = validateStructuredOutput\(rec\);/, 'structured output validation is missing');
   assert.match(messageHandler, /const sanitizedRec = sanitizeStructuredOutput\(rec\);/, 'structured output sanitization is missing');
+  assert.match(messageHandler, /const validation = validateStructuredOutput\(sanitizedRec\);/, 'structured output validation is missing');
 });
 
 test('raw stream debug can be converted back into structured output', () => {

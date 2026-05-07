@@ -34,7 +34,6 @@ function cleanLabel(value: string): string {
 type SubagentDetailModalProps = {
 	isOpen: boolean;
 	title: string;
-	providerLabel?: string;
 	detail: SubagentDetail;
 	onClose: () => void;
 	onCopyRefs: (detail: SubagentDetail) => void;
@@ -45,7 +44,6 @@ type SubagentDetailModalProps = {
 export function SubagentDetailModal({
 	isOpen,
 	title,
-	providerLabel,
 	detail,
 	onClose,
 	onCopyRefs,
@@ -167,9 +165,9 @@ export function SubagentDetailModal({
 									<Badge
 										variant="outline"
 										className={cn(
-											"h-5 px-2 text-[10px] font-mono tracking-wider",
+											"h-5 px-2 text-[10px] font-medium tracking-wider",
 											isDone
-												? "border-muted-foreground/50 bg-transparent text-muted-foreground"
+												? "border-none bg-transparent text-muted-foreground"
 												: isError
 													? "border-destructive bg-transparent text-destructive"
 													: "border-primary bg-transparent text-primary pulse-border",
@@ -178,11 +176,8 @@ export function SubagentDetailModal({
 										{status.toUpperCase()}
 									</Badge>
 								</div>
-								<div className="mt-1 text-xs font-mono text-muted-foreground break-words">
-									{providerLabel ?? "Unknown provider"}
-								</div>
 								{detail.childSessionId && (
-									<div className="mt-1 text-xs font-mono text-muted-foreground break-words">
+									<div className="mt-1 text-xs font-medium text-muted-foreground break-words">
 										Session: {detail.childSessionId}
 									</div>
 								)}
@@ -221,7 +216,7 @@ export function SubagentDetailModal({
 						<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
 							Assistant Conversation
 						</span>
-						<span className="rounded-md border border-oc-border-soft px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
+						<span className="rounded-md border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
 							{renderedConversation.length} messages
 						</span>
 					</div>
@@ -248,7 +243,7 @@ export function SubagentDetailModal({
 												<span className="oc-refined-event-label">
 													{stepLabel}
 												</span>
-												<span className="text-[10px] font-mono text-oc-text-muted/70">
+												<span className="text-[10px] font-medium text-oc-text-muted/70">
 													{new Date(event.createdAt).toLocaleTimeString([], {
 														hour: "2-digit",
 														minute: "2-digit",

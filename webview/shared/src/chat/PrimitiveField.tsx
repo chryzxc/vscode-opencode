@@ -100,7 +100,7 @@ export function PrimitiveField({ value, path, onChange, type, fieldKey, availabl
         <select
           value={stringValue}
           onChange={(e) => handleChange(e.target.value)}
-          className="flex-1 h-8 text-xs font-mono border border-oc-border rounded px-2 bg-oc-bg"
+          className="flex-1 h-8 text-xs font-medium border border-oc-border rounded px-2 bg-oc-bg"
         >
           <option value="">Select a model...</option>
           {modelOptions.map((option) => (
@@ -112,7 +112,7 @@ export function PrimitiveField({ value, path, onChange, type, fieldKey, availabl
         <select
           value={type}
           onChange={(e) => handleTypeChange(e.target.value)}
-          className="h-8 text-xs border rounded px-2 bg-background"
+          className="h-8 text-xs border border-oc-border rounded px-2 bg-background"
         >
           <option value="string">str</option>
           <option value="number">num</option>
@@ -146,13 +146,13 @@ export function PrimitiveField({ value, path, onChange, type, fieldKey, availabl
             handleChange(e.target.value);
           }
         }}
-        className="flex-1 h-8 text-xs font-mono"
+        className="flex-1 h-8 text-xs font-medium"
         step={type === 'number' ? 1 : undefined}
       />
       <select
         value={type}
         onChange={(e) => handleTypeChange(e.target.value)}
-        className="h-8 text-xs border rounded px-2 bg-background"
+        className="h-8 text-xs border border-oc-border rounded px-2 bg-background"
       >
         <option value="string">str</option>
         <option value="number">num</option>

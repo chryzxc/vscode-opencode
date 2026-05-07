@@ -135,4 +135,26 @@ test('Session loading: MessageHandler dispatches START_SESSION_LOADING when load
     /dispatch\s*\(\s*{\s*type:\s*["']END_SESSION_LOADING["']/s,
     'MessageHandler should dispatch END_SESSION_LOADING after messages are loaded'
   );
+  assert.match(
+    messageHandlerSource,
+    /cachedMessagesForSwitch[\s\S]*HYDRATE_SESSION_FROM_CACHE/s,
+    "MessageHandler should hydrate cached session messages before showing loading spinner",
+  );
+  assert.match(
+    messageHandlerSource,
+    /type:\s*["']CACHE_SESSION_MESSAGES["']/,
+    "MessageHandler should cache normalized session messages",
+  );
+});
+
+test("Session loading: SessionModal checks cache before immediate loading dispatch", () => {
+  const sessionModalSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "components", "SessionModal.tsx")],
+    "SessionModal.tsx",
+  );
+  assert.match(
+    sessionModalSource,
+    /messagesBySessionId[\s\S]*hasCachedMessages[\s\S]*START_SESSION_LOADING/s,
+    "SessionModal should skip eager loading state when cached messages exist",
+  );
 });

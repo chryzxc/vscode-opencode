@@ -17,7 +17,7 @@ const badgeVariants = cva(
         error:       'border-transparent bg-oc-red/10 text-oc-red',
         warning:     'border-transparent bg-oc-yellow/10 text-oc-yellow',
         muted:       'border-transparent bg-oc-panel-soft text-oc-text-muted',
-        status:      'border-transparent font-mono uppercase tracking-wider bg-oc-panel-soft',
+        status:      'border-transparent font-medium bg-oc-panel-soft',
       }
     },
     defaultVariants: {

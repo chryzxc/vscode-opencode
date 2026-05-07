@@ -149,7 +149,7 @@ function DiffLine({
   return (
     <div
       className={cn(
-        'group relative flex min-w-0 font-mono text-oc-2xs leading-relaxed',
+        'group relative flex min-w-0 font-medium text-oc-2xs leading-relaxed',
         isAdded && 'bg-emerald-950/30',
         isRemoved && 'bg-red-950/30',
         isHunkHeader && 'bg-blue-950/25',
@@ -334,9 +334,9 @@ function DiffItem({
           <TypeIcon className={cn('h-3.5 w-3.5 flex-shrink-0', getFileTypeConfig(file.type).colorClass)} />
 
           <div className="min-w-0 flex-1 flex items-center gap-2">
-            <span className="text-oc-xs font-mono font-medium text-oc-text truncate">{filename}</span>
+            <span className="text-oc-xs font-medium font-medium text-oc-text truncate">{filename}</span>
             {dirname && (
-              <span className="text-oc-2xs font-mono text-oc-text-muted truncate hidden sm:inline">
+              <span className="text-oc-2xs font-medium text-oc-text-muted truncate hidden sm:inline">
                 {dirname}
               </span>
             )}
@@ -345,7 +345,7 @@ function DiffItem({
 
         <div className="flex items-center gap-2 flex-shrink-0">
           {/* Type badge */}
-          <Badge variant={badgeVariant} className="text-[9px] px-1.5 py-0 leading-4 font-mono tracking-wider uppercase">
+          <Badge variant={badgeVariant} className="text-[9px] px-1.5 py-0 leading-4 font-medium">
             {typeLabel}
           </Badge>
 
@@ -364,7 +364,7 @@ function DiffItem({
           {decided ? (
             <Badge
               variant={decided === 'approved' ? 'success' : 'error'}
-              className="text-[9px] px-1.5 font-mono uppercase tracking-wider"
+              className="text-[9px] px-1.5 font-medium"
             >
               {decided === 'approved' ? (
                 <><CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />Approved</>
@@ -470,7 +470,7 @@ function ApprovalProgressBar({
           style={{ width: `${rejectedPct}%` }}
         />
       </div>
-      <span className="text-oc-2xs font-mono text-oc-text-muted whitespace-nowrap">
+      <span className="text-oc-2xs font-medium text-oc-text-muted whitespace-nowrap">
         {approved}/{total} reviewed
         {pending > 0 && <span className="text-oc-yellow"> · {pending} pending</span>}
       </span>
@@ -506,7 +506,7 @@ function KeyboardHint() {
               ['r', 'Reject active'],
             ].map(([key, desc]) => (
               <div key={key} className="flex justify-between gap-3">
-                <kbd className="font-mono bg-oc-bg px-1 rounded text-oc-text">{key}</kbd>
+                <kbd className="font-medium bg-oc-bg px-1 rounded text-oc-text">{key}</kbd>
                 <span>{desc}</span>
               </div>
             ))}
@@ -777,7 +777,7 @@ export default function DiffReviewShell() {
               <GitMerge className="h-3 w-3" />
             </div>
             <h1 className="text-oc-sm font-semibold text-oc-text">Diff Review</h1>
-            <Badge variant="secondary" className="text-[9px] font-mono px-1.5">
+            <Badge variant="secondary" className="text-[9px] font-medium px-1.5">
               {data.files.length} file{data.files.length !== 1 ? 's' : ''}
             </Badge>
           </div>
@@ -956,7 +956,7 @@ export default function DiffReviewShell() {
               <MessageSquare className="h-3.5 w-3.5 text-oc-accent" />
               Comments
               {comments.length > 0 && (
-                <span className="rounded-full bg-oc-accent-soft px-1.5 py-0.5 text-[9px] font-mono text-oc-accent">
+                <span className="rounded-full bg-oc-accent-soft px-1.5 py-0.5 text-[9px] font-medium text-oc-accent">
                   {comments.length}
                 </span>
               )}

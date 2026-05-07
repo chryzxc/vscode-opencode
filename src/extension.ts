@@ -142,6 +142,7 @@ export async function activate(context: vscode.ExtensionContext) {
       context,
       serverManager,
       sessionService,
+      skillManagementService,
       modelCapabilitiesService,
     );
     context.subscriptions.push(

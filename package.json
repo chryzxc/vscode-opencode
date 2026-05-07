@@ -4,7 +4,7 @@
   "description": "OpenCode integration for VS Code",
   "version": "0.1.0",
   "icon": "resources/extension-icon.png",
-  "publisher": "your-publisher-name",
+  "publisher": "Christian Rey Villablanca",
   "type": "module",
   "engines": {
     "vscode": "^1.85.0"
@@ -35,13 +35,6 @@
           "id": "opencode.chatView",
           "name": "Chat",
           "icon": "resources/icon.svg"
-        },
-        {
-          "type": "webview",
-          "id": "opencode.skillsPanel",
-          "name": "Skills",
-          "icon": "resources/icon.svg",
-          "contextualTitle": "Skills Management"
         }
       ]
     },

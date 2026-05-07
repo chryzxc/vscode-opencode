@@ -288,12 +288,16 @@ export function StickyHeader() {
     ? sessionsList.find((s) => s.id === currentSessionId)
     : undefined;
   const sessionTitle = currentSession?.title || "Untitled chat";
+  const hasContextUsage =
+    typeof contextUsagePct === "number" && Number.isFinite(contextUsagePct);
 
   return (
     <div className="oc-header sticky top-0 z-10 flex items-center justify-between border-b border-oc-border-soft px-3 py-1.5 text-xs">
       {/* Left side: Context indicator + Session title */}
-      <div className="oc-header-left flex items-center min-w-0 gap-2">
-        <CircularProgress pct={contextUsagePct ?? 0} size={24} strokeWidth={3} />
+      <div className={`oc-header-left flex items-center min-w-0 ${hasContextUsage ? "gap-2" : "gap-0"}`}>
+        {hasContextUsage ? (
+          <CircularProgress pct={contextUsagePct} size={24} strokeWidth={3} />
+        ) : null}
         <span className="oc-title text-sm font-medium truncate">{sessionTitle}</span>
       </div>
 
@@ -423,7 +427,7 @@ function MiniSection({
             }`}
         />
         <span
-          className={`font-mono text-xs uppercase tracking-widest font-semibold ${open
+          className={`font-medium text-xs uppercase tracking-widest font-semibold ${open
               ? "text-[var(--oc-text-soft)]"
               : "text-[var(--oc-text-soft)] opacity-70"
             }`}
@@ -733,7 +737,7 @@ export function ActiveTaskPanel() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5 opacity-70">
-                  <span className="font-mono tabular-nums text-[11px] text-[var(--oc-text-soft)]">
+                  <span className="font-medium tabular-nums text-[11px] text-[var(--oc-text-soft)]">
                     {total.toLocaleString()} /{" "}
                     <span
                       title={
@@ -781,12 +785,12 @@ export function ActiveTaskPanel() {
                 </div>
                 <div className="flex items-center gap-2">
                   {!isCompacting && compactedAtLabel ? (
-                    <span className="rounded-full bg-oc-border-soft px-1.5 py-0.5 text-[9px] font-mono tracking-wider text-oc-text-muted opacity-80">
+                    <span className="rounded-full bg-oc-border-soft px-1.5 py-0.5 text-[9px] font-medium tracking-wider text-oc-text-muted opacity-80">
                       {compactedAtLabel}
                     </span>
                   ) : null}
                   {isCompacting ? (
-                    <span className="animate-pulse rounded-full bg-oc-accent-soft px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-oc-accent">
+                    <span className="animate-pulse rounded-full bg-oc-accent-soft px-1.5 py-0.5 text-[9px] font-medium text-oc-accent">
                       Compacting...
                     </span>
                   ) : null}
@@ -830,20 +834,20 @@ export function ActiveTaskPanel() {
             <div className="space-y-1.5 text-xs">
               <div className="flex items-center justify-between">
                 <span className="text-[var(--oc-text-soft)] opacity-80">Input</span>
-                <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.input.toLocaleString()}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[var(--oc-text-soft)] opacity-80">Output</span>
-                <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.output.toLocaleString()}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[var(--oc-text-soft)] opacity-80">Cache hits</span>
                 <span
-                  className={`font-mono tabular-nums transition-colors duration-300 ${contextStats.read > 0
+                  className={`font-medium tabular-nums transition-colors duration-300 ${contextStats.read > 0
                       ? "text-oc-green font-semibold"
                       : "text-[var(--oc-text-soft)]"
                     }`}
@@ -855,13 +859,13 @@ export function ActiveTaskPanel() {
                 <span className="text-[var(--oc-text-soft)] opacity-80">
                   Cache writes
                 </span>
-                <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.write.toLocaleString()}
                 </span>
               </div>
               <div className="flex items-center justify-between pt-1 border-t border-oc-border mt-2">
                 <span className="text-[var(--oc-text-soft)] opacity-80">Duration</span>
-                <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
                   {formatDuration(sessionStats.duration)}
                 </span>
               </div>
@@ -873,7 +877,7 @@ export function ActiveTaskPanel() {
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
             <div className="flex items-center justify-between col-span-2">
               <span className="text-[var(--oc-text-soft)] opacity-80">ID</span>
-              <span className="font-mono text-xs text-[var(--oc-text-soft)] opacity-70">
+              <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
                 {currentSessionId ? currentSessionId.slice(0, 16) : "—"}
               </span>
             </div>
@@ -882,7 +886,7 @@ export function ActiveTaskPanel() {
                 <span className="text-[var(--oc-text-soft)] opacity-80">
                   OpenCode Version
                 </span>
-                <span className="font-mono text-xs text-[var(--oc-text-soft)] opacity-70">
+                <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
                   {serverVersion}
                 </span>
               </div>
@@ -891,7 +895,7 @@ export function ActiveTaskPanel() {
               <span className="text-[var(--oc-text-soft)] opacity-80">
                 Messages
               </span>
-              <span className="font-mono tabular-nums text-[var(--oc-text-soft)]">
+              <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
                 {messageCount}
               </span>
             </div>
@@ -900,7 +904,7 @@ export function ActiveTaskPanel() {
                 Date started
               </span>
               <span
-                className={`font-mono tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)]"
+                className={`font-medium tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)]"
                   }`}
               >
                 {startedLabel}
@@ -911,7 +915,7 @@ export function ActiveTaskPanel() {
                 Status
               </span>
               <span
-                className={`font-mono text-xs uppercase tracking-wider font-semibold ${isActive
+                className={`font-medium text-xs uppercase tracking-wider font-semibold ${isActive
                     ? "text-oc-accent"
                     : "text-[var(--oc-text-soft)] opacity-70"
                   }`}
@@ -942,7 +946,7 @@ export function MobileRightSummary() {
   return (
     <div className="block [@media(min-width:1100px)]:hidden border-b border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs text-oc-text">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 font-mono text-xs">
+        <div className="flex items-center gap-2 font-medium text-xs">
           <span className="text-oc-text-muted">In</span>
           <span className="tabular-nums text-[var(--oc-text-soft)]">
             {sessionStats.input.toLocaleString()}
@@ -956,7 +960,7 @@ export function MobileRightSummary() {
 
         <div className="flex items-center">
           {isProcessing ? (
-            <span className="rounded-md bg-oc-accent-soft px-2 py-0.5 text-xs font-medium text-oc-accent font-mono tracking-wider">
+            <span className="rounded-md bg-oc-accent-soft px-2 py-0.5 text-xs font-medium text-oc-accent font-medium tracking-wider">
               PROCESSING
             </span>
           ) : null}
@@ -1109,7 +1113,7 @@ export function ModelDropdown() {
                 dispatch({ type: "SET_MODEL_SEARCH", payload: e.target.value })
               }
               placeholder="Search models..."
-              className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-mono outline-none focus:border-oc-accent transition-colors"
+              className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium outline-none focus:border-oc-accent transition-colors"
             />
             {subscribedProviders.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
@@ -1174,12 +1178,12 @@ export function ModelDropdown() {
                           {model.name}
                         </span>
                         {isCurrent && (
-                          <span className="text-xs font-mono uppercase tracking-wider text-oc-accent shrink-0">
+                          <span className="text-xs font-medium text-oc-accent shrink-0">
                             active
                           </span>
                         )}
                       </div>
-                      <div className="text-xs font-mono text-oc-text-muted truncate mt-0.5">
+                      <div className="text-xs font-medium text-oc-text-muted truncate mt-0.5">
                         {model.modelID}
                       </div>
                     </button>
@@ -1188,7 +1192,7 @@ export function ModelDropdown() {
               </div>
             ))}
             {grouped.size === 0 && (
-              <div className="px-2.5 py-4 text-center text-xs text-oc-text-muted font-mono italic">
+              <div className="px-2.5 py-4 text-center text-xs text-oc-text-muted font-medium italic">
                 No models found
               </div>
             )}
@@ -1269,17 +1273,17 @@ export function AgentDropdown() {
                 dispatch({ type: "SET_AGENT_SEARCH", payload: e.target.value })
               }
               placeholder="Search agents..."
-              className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-mono outline-none focus:border-oc-accent transition-colors"
+              className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium outline-none focus:border-oc-accent transition-colors"
             />
           </div>
           <div className="max-h-52 overflow-y-auto px-1.5 pb-1.5">
             {availableAgents.length === 0 && (
-              <div className="px-2.5 py-3 text-xs text-oc-text-muted text-center font-mono">
+              <div className="px-2.5 py-3 text-xs text-oc-text-muted text-center font-medium">
                 Loading agents…
               </div>
             )}
             {availableAgents.length > 0 && filtered.length === 0 && (
-              <div className="px-2.5 py-3 text-xs text-oc-text-muted text-center font-mono">
+              <div className="px-2.5 py-3 text-xs text-oc-text-muted text-center font-medium">
                 No agents found
               </div>
             )}
@@ -1298,7 +1302,7 @@ export function AgentDropdown() {
                 }}
               >
                 <div className="text-xs font-medium">{agent.name}</div>
-                <div className="text-xs font-mono text-oc-text-muted truncate mt-0.5">
+                <div className="text-xs font-medium text-oc-text-muted truncate mt-0.5">
                   {agent.description}
                 </div>
               </button>
@@ -1343,13 +1347,13 @@ export function QueueContainer() {
   };
 
   return (
-    <div className="mx-[0.625rem] space-y-1.5 overflow-hidden rounded-xl rounded-b-none border border-b-0 border-oc-border bg-oc-panel p-2">
+    <div className="mx-3 space-y-1.5 overflow-hidden rounded-lg border border-oc-border-soft bg-oc-panel p-2">
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-oc-text-muted">
+          <span className="font-medium text-[10px] font-semibold uppercase tracking-widest text-oc-text-muted">
             Pending
           </span>
-          <span className="rounded-full bg-oc-accent-soft px-1.5 py-0.5 font-mono text-[9px] font-bold text-oc-accent">
+          <span className="rounded-full bg-oc-accent-soft px-1.5 py-0.5 font-medium text-[9px] font-bold text-oc-accent">
             {promptQueue.length}
           </span>
           <span className="text-[10px] text-oc-text-muted">
@@ -1358,7 +1362,7 @@ export function QueueContainer() {
         </div>
         <button
           type="button"
-          className="rounded px-1.5 py-0.5 font-mono text-[10px] text-oc-red transition-colors hover:bg-[rgba(248,81,73,0.12)]"
+          className="rounded px-1.5 py-0.5 font-medium text-[10px] text-oc-text-muted transition-colors hover:bg-oc-accent-soft hover:text-oc-accent"
           title="Clear all pending prompts"
           onClick={() => {
             if (!currentSessionId) return;
@@ -1379,16 +1383,16 @@ export function QueueContainer() {
             className="oc-panel-section group flex items-start gap-2 p-0 px-2.5 py-1.5"
           >
             <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-oc-accent-soft">
-              <span className="font-mono text-[8px] font-bold text-oc-accent">
+              <span className="font-medium text-[8px] font-bold text-oc-accent">
                 {index + 1}
               </span>
             </div>
             <div className="min-w-0 flex-1">
-              <div className="line-clamp-2 font-mono text-[11px] text-[var(--oc-text-soft)]">
+              <div className="line-clamp-2 font-medium text-[11px] text-[var(--oc-text-soft)]">
                 {item.text || "(empty)"}
               </div>
               {(item.files?.length || item.contexts?.length) ? (
-                <div className="mt-0.5 flex items-center gap-2 font-mono text-[9px] text-oc-text-muted">
+                <div className="mt-0.5 flex items-center gap-2 font-medium text-[9px] text-oc-text-muted">
                   {item.files?.length ? (
                     <span>{item.files.length} file{item.files.length > 1 ? "s" : ""}</span>
                   ) : null}
@@ -1400,7 +1404,7 @@ export function QueueContainer() {
             </div>
             <button
               type="button"
-              className="mt-0.5 shrink-0 rounded-md p-1 text-oc-text-muted opacity-0 transition-all group-hover:opacity-100 hover:bg-[rgba(248,81,73,0.12)] hover:text-oc-red disabled:opacity-50"
+              className="mt-0.5 shrink-0 rounded-md p-1 text-oc-text-muted opacity-0 transition-all group-hover:opacity-100 hover:bg-oc-accent-soft hover:text-oc-accent disabled:opacity-50"
               title="Remove from queue"
               disabled={!itemSessionId || isSteering}
               onClick={() => removeQueuedItem(item, index)}
@@ -1435,6 +1439,7 @@ export function InputWrapper() {
     showMentionSuggestions,
     selectedMentionIndex,
     availableCommands,
+    availableSkills,
     commandsLoaded,
     attachments = [],
     interactiveEvents,
@@ -1480,7 +1485,9 @@ export function InputWrapper() {
     logger.debug('filteredCommands: useMemo called', {
       slashTrigger,
       availableCommandsCount: availableCommands.length,
-      availableCommandsNames: availableCommands.map(c => c.name)
+      availableSkillsCount: availableSkills.length,
+      availableCommandsNames: availableCommands.map(c => c.name),
+      availableSkillsNames: availableSkills.map(s => s.name)
     });
 
     if (!slashTrigger) {
@@ -1489,19 +1496,32 @@ export function InputWrapper() {
     }
 
     const query = slashTrigger.query.trim().toLowerCase();
-    const base = availableCommands || [];
+
+    // Combine both commands and skills for slash suggestions
+    const commandsFromServer = availableCommands || [];
+    const skillsFromService = availableSkills || [];
+    const allSlashItems = [
+      ...commandsFromServer,
+      // Convert skills to SlashCommand format
+      ...skillsFromService.map(skill => ({
+        name: skill.name,
+        description: skill.description,
+        source: skill.source
+      }))
+    ];
+
     logger.debug('filteredCommands: Filtering commands', {
       query,
-      baseCount: base.length,
-      baseNames: base.map(c => c.name)
+      baseCount: allSlashItems.length,
+      baseNames: allSlashItems.map(c => c.name)
     });
 
     if (!query) {
-      logger.debug('filteredCommands: No query, returning all commands', { count: base.length });
-      return base;
+      logger.debug('filteredCommands: No query, returning all commands', { count: allSlashItems.length });
+      return allSlashItems;
     }
 
-    const filtered = base.filter((command) => {
+    const filtered = allSlashItems.filter((command) => {
       const name = command.name.toLowerCase();
       return name.includes(query);
     });
@@ -1512,7 +1532,7 @@ export function InputWrapper() {
     });
 
     return filtered;
-  }, [slashTrigger, availableCommands]);
+  }, [slashTrigger, availableCommands, availableSkills]);
 
   useEffect(() => {
     logger.debug('slashCommand useEffect: Trigger check', {
@@ -1652,7 +1672,7 @@ export function InputWrapper() {
     const contextItem: ContextItem = {
       file: suggestion.path,
       lineInfo: "",
-      content: "", // Content can be fetched downstream or attached implicitly
+      content: "",
     };
 
     const isAlreadySelected = selectedContexts.some(
@@ -1666,6 +1686,7 @@ export function InputWrapper() {
       });
     }
 
+    // Remove the @mention from input (it will be shown as a chip instead)
     const before = inputValue.slice(0, mentionTrigger.replaceFrom);
     const after = inputValue.slice(mentionTrigger.replaceTo);
     const nextValue = `${before}${after}`;
@@ -1687,6 +1708,26 @@ export function InputWrapper() {
 
     if (result.type === "agent") {
       dispatch({ type: "SET_SELECTED_AGENT", payload: result.id });
+      // For agents: keep @agentname in the input
+      const before = inputValue.slice(0, mentionTrigger.replaceFrom);
+      const after = inputValue.slice(mentionTrigger.replaceTo);
+      const displayName = result.name || result.id;
+      const mentionText = `@${displayName}`;
+      const nextValue = after.startsWith(' ')
+        ? `${before}${mentionText}${after}`
+        : `${before}${mentionText} ${after}`;
+
+      dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
+      setMentionTrigger(null);
+      dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: false });
+      dispatch({ type: "SET_MENTION_INDEX", payload: 0 });
+
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return;
+        const cursorPos = before.length + mentionText.length + 1;
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(cursorPos, cursorPos);
+      });
     } else if (result.type === "file") {
       const contextItem: ContextItem = {
         file: result.path,
@@ -1702,6 +1743,21 @@ export function InputWrapper() {
           payload: [...selectedContexts, contextItem],
         });
       }
+      // For files: remove @filename from input (shows as chip above)
+      const before = inputValue.slice(0, mentionTrigger.replaceFrom);
+      const after = inputValue.slice(mentionTrigger.replaceTo);
+      const nextValue = `${before}${after}`;
+
+      dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
+      setMentionTrigger(null);
+      dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: false });
+      dispatch({ type: "SET_MENTION_INDEX", payload: 0 });
+
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return;
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(before.length, before.length);
+      });
     } else if (result.type === "resource") {
       const contextItem: ContextItem = {
         file: `resource:${result.uri}`,
@@ -1717,64 +1773,93 @@ export function InputWrapper() {
           payload: [...selectedContexts, contextItem],
         });
       }
+      // For resources: remove @resource from input
+      const before = inputValue.slice(0, mentionTrigger.replaceFrom);
+      const after = inputValue.slice(mentionTrigger.replaceTo);
+      const nextValue = `${before}${after}`;
+
+      dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
+      setMentionTrigger(null);
+      dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: false });
+      dispatch({ type: "SET_MENTION_INDEX", payload: 0 });
+
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return;
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(before.length, before.length);
+      });
     }
-
-    const before = inputValue.slice(0, mentionTrigger.replaceFrom);
-    const after = inputValue.slice(mentionTrigger.replaceTo);
-    const nextValue = `${before}${after}`;
-
-    dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
-    setMentionTrigger(null);
-    dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: false });
-    dispatch({ type: "SET_MENTION_INDEX", payload: 0 });
-
-    requestAnimationFrame(() => {
-      if (!textareaRef.current) return;
-      textareaRef.current.focus();
-      textareaRef.current.setSelectionRange(before.length, before.length);
-    });
   };
 
   const sendPrompt = () => {
     const text = inputValue.trim();
     if (!text) return;
+
+    // Capture values before clearing state
+    const currentFiles = selectedFiles.length > 0 ? [...selectedFiles] : undefined;
+    const currentContexts = selectedContexts.length > 0 ? [...selectedContexts] : undefined;
+    const currentAttachments = attachments || [];
+    const currentAgent = selectedAgent || null;
+    const sessionId = currentSessionId;
+
+    // Build message parts including file contexts
+    const messageParts: Array<{ type: string; text?: string; filename?: string; source?: { path: string } }> = [
+      { type: "text", text },
+    ];
+    currentContexts?.forEach((context) => {
+      if (!context.file.startsWith("resource:")) {
+        messageParts.push({
+          type: "file",
+          filename: context.file,
+          source: { path: context.file },
+        });
+      }
+    });
+
+    // Clear UI state immediately for better UX
+    dispatch({ type: "SET_INPUT_VALUE", payload: "" });
+    dispatch({ type: "CLEAR_ATTACHMENTS" });
+    dispatch({ type: "SET_SELECTED_CONTEXTS", payload: [] });
+    dispatch({ type: "SET_SELECTED_FILES", payload: [] });
+    setSlashTrigger(null);
+
     if (isProcessing) {
       const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       vscode.postMessage({
         type: "addToQueue",
-        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+        ...(sessionId ? { sessionId } : {}),
         text,
-        files: selectedFiles,
-        contexts: selectedContexts,
-        agent: selectedAgent || null,
-        images: attachments || [],
+        files: currentFiles,
+        contexts: currentContexts,
+        agent: currentAgent,
+        images: currentAttachments,
       });
       dispatch({
         type: "ADD_TO_LOCAL_QUEUE",
         payload: {
           id: optimisticId,
-          sessionId: currentSessionId || "",
+          sessionId: sessionId || "",
           createdAt: Date.now(),
           text,
-          files: selectedFiles.length > 0 ? [...selectedFiles] : undefined,
-          contexts: selectedContexts.length > 0 ? [...selectedContexts] : undefined,
-          agent: selectedAgent || undefined,
+          files: currentFiles,
+          contexts: currentContexts,
+          agent: currentAgent || undefined,
+          parts: messageParts,
         },
       });
-      dispatch({ type: "SET_INPUT_VALUE", payload: "" });
-      dispatch({ type: "CLEAR_ATTACHMENTS" });
-      setSlashTrigger(null);
       return;
     }
+
     vscode.postMessage({
       type: "sendMessage",
-      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+      ...(sessionId ? { sessionId } : {}),
       text,
-      files: selectedFiles,
-      contexts: selectedContexts,
-      agent: selectedAgent || null,
-      images: attachments || [],
+      files: currentFiles,
+      contexts: currentContexts,
+      agent: currentAgent,
+      images: currentAttachments,
     });
+
     dispatch({
       type: "SET_MESSAGES",
       payload: [
@@ -1782,15 +1867,12 @@ export function InputWrapper() {
         {
           role: "user",
           content: text,
-          parts: [{ type: "text", text }],
-          images: (attachments || []).map((a) => a.dataUrl),
+          parts: messageParts,
+          images: currentAttachments.map((a) => a.dataUrl),
         },
       ],
     });
     dispatch({ type: "SET_PROCESSING", payload: true });
-    dispatch({ type: "SET_INPUT_VALUE", payload: "" });
-    dispatch({ type: "CLEAR_ATTACHMENTS" });
-    setSlashTrigger(null);
   };
 
   const steerPrompt = () => {
@@ -2023,7 +2105,7 @@ export function InputWrapper() {
                     >
                       <ArrowLeft className="h-3 w-3" />
                     </button>
-                    <span className="text-[10px] font-mono text-[var(--oc-text-muted)] tabular-nums">
+                    <span className="text-[10px] font-medium text-[var(--oc-text-muted)] tabular-nums">
                       {currentInteractiveIndex + 1} /{" "}
                       {displayInteractiveEvents.length}
                     </span>
@@ -2270,7 +2352,7 @@ export function InputWrapper() {
               <Badge
                 key={file}
                 variant="secondary"
-                className="flex items-center gap-1 font-mono text-[10px] hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
+                className="flex items-center gap-1 font-medium text-[10px] hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
               >
                 <FileIcon filePath={file} />
                 {file}
@@ -2283,7 +2365,7 @@ export function InputWrapper() {
                 <Badge
                   key={`${context.file}:${context.lineInfo}`}
                   variant="secondary"
-                  className="flex items-center gap-1 font-mono text-[10px] pr-1.5 hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
+                  className="flex items-center gap-1 font-medium text-[10px] pr-1.5 hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
                 >
                   {isResource ? (
                     <Wrench className="h-3 w-3 shrink-0" />
@@ -2298,25 +2380,24 @@ export function InputWrapper() {
                       {context.languageId}
                     </span>
                   )}
-                  {context.isAuto && (
-                    <button
-                      type="button"
-                      className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-oc-bg transition-colors"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        dispatch({
-                          type: "SET_SELECTED_CONTEXTS",
-                          payload: selectedContexts.filter(
-                            (c) =>
-                              c.file !== context.file ||
-                              c.lineInfo !== context.lineInfo,
-                          ),
-                        });
-                      }}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-oc-bg transition-colors"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      dispatch({
+                        type: "SET_SELECTED_CONTEXTS",
+                        payload: selectedContexts.filter(
+                          (c) =>
+                            c.file !== context.file ||
+                            c.lineInfo !== context.lineInfo,
+                        ),
+                      });
+                    }}
+                    title="Remove file"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
                 </Badge>
               );
             })}
@@ -2492,7 +2573,7 @@ export function InputWrapper() {
           {slashTrigger && (
             <div className="oc-suggestions" ref={suggestionsContainerRef}>
               {!commandsLoaded ? (
-                <div className="px-3 py-2 text-[11px] font-mono text-oc-text-muted">
+                <div className="px-3 py-2 text-[11px] font-medium text-oc-text-muted">
                   Loading commands...
                 </div>
               ) : filteredCommands.length > 0 ? (
@@ -2524,7 +2605,7 @@ export function InputWrapper() {
                   </button>
                 ))
               ) : (
-                <div className="px-3 py-2 text-[11px] font-mono text-oc-text-muted">
+                <div className="px-3 py-2 text-[11px] font-medium text-oc-text-muted">
                   No matching commands.
                 </div>
               )}
@@ -2748,12 +2829,12 @@ export function ThinkingLevelControl() {
                     {level}
                   </span>
                   {thinkingLevel === level && (
-                    <span className="text-xs font-mono uppercase tracking-wider text-oc-accent">
+                    <span className="text-xs font-medium text-oc-accent">
                       active
                     </span>
                   )}
                 </div>
-                <div className="text-xs font-mono text-oc-text-muted mt-0.5">
+                <div className="text-xs font-medium text-oc-text-muted mt-0.5">
                   {level.charAt(0).toUpperCase() + level.slice(1)}
                 </div>
               </button>
@@ -2818,7 +2899,7 @@ export function QuotaMonitor() {
             type="button"
             variant="ghost-accent"
             size="sm"
-            className="h-7 px-2 text-xs font-mono"
+            className="h-7 px-2 text-xs font-medium normal-case tracking-normal"
             title="Refresh quota"
             aria-label="Refresh quota"
             disabled={quotaIsRefreshing}
@@ -2904,10 +2985,10 @@ export function QuotaMonitor() {
                         ) : null}
                       </div>
                       <div className="grid grid-cols-[auto_1fr] gap-x-2 text-xs">
-                        <span className="font-mono uppercase tracking-wider text-[var(--oc-text-soft)] opacity-80">
+                        <span className="text-xs font-medium text-[var(--oc-text-soft)] opacity-85">
                           Account:
                         </span>
-                        <span className="truncate font-mono text-[var(--oc-text-soft)]">
+                        <span className="truncate text-xs text-[var(--oc-text-soft)]">
                           {platform.account} {platform.accountLabel ?? ""}
                         </span>
                       </div>
@@ -2915,7 +2996,7 @@ export function QuotaMonitor() {
 
                     <div className="oc-modal-content space-y-2.5 px-3 py-2.5">
                       {platform.error ? (
-                        <div className="rounded-md border border-oc-red/40 bg-oc-red/10 px-2.5 py-2 text-oc-red">
+                        <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40 px-2.5 py-2 text-oc-red">
                           {platform.error.length > 130
                             ? `${platform.error.slice(0, 127)}...`
                             : platform.error}
@@ -2937,7 +3018,7 @@ export function QuotaMonitor() {
                               <span className="text-xs font-medium text-[var(--oc-text-soft)]">
                                 {quota.label}
                               </span>
-                              <span className="font-mono text-xs text-[var(--oc-text-soft)]">
+                              <span className="font-medium text-xs text-[var(--oc-text-soft)]">
                                 {quota.percentLabel ??
                                   `${Math.round(pct)}% remaining`}
                               </span>
@@ -2955,7 +3036,7 @@ export function QuotaMonitor() {
                               {quota.usedTotalDisplay ? (
                                 <div className="flex items-center justify-between gap-2">
                                   <span>Used</span>
-                                  <span className="font-mono text-[var(--oc-text-soft)]">
+                                  <span className="font-medium text-[var(--oc-text-soft)]">
                                     {quota.usedTotalDisplay}
                                   </span>
                                 </div>
@@ -2963,7 +3044,7 @@ export function QuotaMonitor() {
                               {quota.resetLabel ? (
                                 <div className="flex items-center justify-between gap-2">
                                   <span>Resets in</span>
-                                  <span className="font-mono text-[var(--oc-text-soft)]">
+                                  <span className="font-medium text-[var(--oc-text-soft)]">
                                     {quota.resetLabel}
                                   </span>
                                 </div>
@@ -2985,7 +3066,7 @@ export function QuotaMonitor() {
                 ))}
 
               {lastUpdatedLabel ? (
-                <div className="text-center text-xs text-[var(--oc-text-soft)] opacity-50 font-mono">
+                <div className="text-center text-xs text-[var(--oc-text-soft)] opacity-50 font-medium">
                   Updated: {lastUpdatedLabel}
                 </div>
               ) : null}
@@ -3239,7 +3320,7 @@ export function McpPanel() {
                       className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(server.status)}`}
                       aria-hidden="true"
                     />
-                    <span className="flex-1 truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
+                    <span className="flex-1 truncate font-medium text-xs font-medium text-[var(--oc-text-soft)]">
                       {server.name}
                     </span>
                     <StatusIcon status={server.status} />
@@ -3290,7 +3371,7 @@ export function McpPanel() {
                         {server.tools.map((tool) => (
                           <li
                             key={tool}
-                            className="truncate rounded px-1 py-0.5 font-mono text-[10px] text-[var(--oc-text-soft)] opacity-80 hover:bg-oc-border/40"
+                            className="truncate rounded px-1 py-0.5 font-medium text-[10px] text-[var(--oc-text-soft)] opacity-80 hover:bg-oc-border/40"
                             title={tool}
                           >
                             {tool}
@@ -3380,7 +3461,7 @@ export function LspPanel() {
                         }`}
                       aria-hidden="true"
                     />
-                    <span className="truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
+                    <span className="truncate font-medium text-xs font-medium text-[var(--oc-text-soft)]">
                       {server.name}
                     </span>
                   </div>
@@ -3418,42 +3499,39 @@ export function SkillsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const { availableCommands, commandsLoaded, serverStatus } = useAppState();
+  const { availableSkills, serverStatus } = useAppState();
   const dispatch = useAppDispatch();
 
-  const hasSkills = availableCommands.length > 0;
+  const hasSkills = availableSkills.length > 0;
 
   // Debug logging to track state changes
   useEffect(() => {
     logger.debug('SkillsPanel: State updated', {
-      availableCommandsCount: availableCommands.length,
-      commandsLoaded,
+      availableSkillsCount: availableSkills.length,
       serverStatus,
       hasSkills,
-      commandNames: availableCommands.map(c => c.name)
+      skillNames: availableSkills.map(s => s.name)
     });
-  }, [availableCommands, commandsLoaded, serverStatus, hasSkills]);
+  }, [availableSkills, serverStatus, hasSkills]);
 
-  // Load commands on mount if server is ready and commands not yet loaded
-  // This ensures SkillsPanel shows data immediately on desktop ≥1100px
+  // Load skills on mount if server is ready
   useEffect(() => {
     logger.debug('SkillsPanel: useEffect triggered', {
       serverStatus,
-      commandsLoaded,
-      shouldFetch: serverStatus === "running" && !commandsLoaded
+      shouldFetch: serverStatus === "running"
     });
 
-    if (serverStatus === "running" && !commandsLoaded) {
-      logger.debug('SkillsPanel: Sending getCommands message');
-      vscode.postMessage({ type: "getCommands" });
+    if (serverStatus === "running") {
+      logger.debug('SkillsPanel: Sending getMySkills message');
+      vscode.postMessage({ type: "getMySkills" });
     }
-  }, [serverStatus, commandsLoaded]);
+  }, [serverStatus]);
 
   function handleRefresh() {
     logger.debug('SkillsPanel: Manual refresh triggered');
     setIsRefreshing(true);
-    dispatch({ type: "SET_COMMANDS_LIST", payload: [] });
-    vscode.postMessage({ type: "getCommands" });
+    dispatch({ type: "SET_SKILLS_LIST", payload: [] });
+    vscode.postMessage({ type: "getMySkills" });
     setTimeout(() => setIsRefreshing(false), 3000);
   }
 
@@ -3480,7 +3558,7 @@ export function SkillsPanel() {
           <span>Skills</span>
           {hasSkills && (
             <span className="text-[10px] text-[var(--oc-text-soft)] opacity-50">
-              {availableCommands.length}
+              {availableSkills.length}
             </span>
           )}
         </div>
@@ -3520,31 +3598,27 @@ export function SkillsPanel() {
               No skills configured
             </div>
           ) : (
-            availableCommands.map((skill) => {
+            availableSkills.map((skill) => {
               const isExpanded = expandedSkills.has(skill.name);
-              const hasDetail = !!(
-                skill.description ||
-                skill.agent ||
-                skill.model
-              );
+              const hasDetail = !!skill.description;
               return (
                 <div
                   key={skill.name}
                   className="oc-panel-section bg-oc-panel-soft p-0"
                 >
                   <div className="flex items-center gap-2 p-2">
-                    <span className="font-mono text-xs font-medium text-oc-accent shrink-0">
+                    <span className="font-medium text-xs font-medium text-oc-accent shrink-0">
                       /
                     </span>
-                    <span className="flex-1 truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
+                    <span className="flex-1 truncate font-medium text-xs font-medium text-[var(--oc-text-soft)]">
                       {skill.name}
                     </span>
-                    {skill.subtask && (
+                    {skill.source && (
                       <span
                         className="shrink-0 rounded px-1 py-0.5 text-[10px] text-[var(--oc-text-soft)] opacity-50"
-                        title="Runs as a subtask"
+                        title={`Source: ${skill.source}`}
                       >
-                        subtask
+                        {skill.source}
                       </span>
                     )}
                     {hasDetail && (
@@ -3586,7 +3660,7 @@ export function SkillsPanel() {
                       {skill.model && (
                         <div className="flex items-center gap-1 text-[10px] text-[var(--oc-text-soft)] opacity-60">
                           <Wrench className="h-2.5 w-2.5" />
-                          <span className="font-mono">{skill.model}</span>
+                          <span className="font-medium">{skill.model}</span>
                         </div>
                       )}
                     </div>
@@ -3707,7 +3781,7 @@ export function AgentsPanel() {
                       }}
                       aria-hidden="true"
                     />
-                    <span className="flex-1 truncate font-mono text-xs font-medium text-[var(--oc-text-soft)]">
+                    <span className="flex-1 truncate font-medium text-xs font-medium text-[var(--oc-text-soft)]">
                       {agent.name}
                     </span>
                     {agent.mode && (
@@ -4189,7 +4263,7 @@ export function SettingsModal({
               <TabsTrigger value="gui" className="text-xs">
                 GUI
               </TabsTrigger>
-              <TabsTrigger value="json" className="text-xs font-mono">
+              <TabsTrigger value="json" className="text-xs font-medium">
                 JSON / JSONC
               </TabsTrigger>
             </TabsList>
@@ -4234,7 +4308,7 @@ export function SettingsModal({
               <Textarea
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
-                className="h-full w-full resize-none font-mono text-[13px] leading-relaxed p-4 bg-oc-bg-soft border-oc-border focus-visible:ring-1 focus-visible:ring-oc-accent"
+                className="h-full w-full resize-none font-medium text-[13px] leading-relaxed p-4 bg-oc-bg-soft border-oc-border focus-visible:ring-1 focus-visible:ring-oc-accent"
                 spellCheck={false}
                 placeholder='{ "default_model": "provider/model" }'
               />
@@ -4368,7 +4442,7 @@ export function SettingsPanel() {
           </div>
           <div className="flex items-center gap-2">
             <Bot className="h-3.5 w-3.5 text-oc-accent opacity-70" />
-            <span className="text-[11px] font-mono truncate text-oc-text opacity-90">
+            <span className="text-[11px] font-medium truncate text-oc-text opacity-90">
               {previewModel}
             </span>
           </div>
@@ -4418,7 +4492,7 @@ export function SettingsPanel() {
                   });
                 }
               }}
-              className="w-full h-7 text-[11px] font-mono border border-oc-border bg-oc-bg rounded px-2"
+              className="w-full h-7 text-[11px] font-medium border border-oc-border bg-oc-bg rounded px-2"
             >
               {opencodeConfig.files.map(file => (
                 <option key={file.name} value={file.name}>

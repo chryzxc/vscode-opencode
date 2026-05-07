@@ -63,6 +63,17 @@ export interface SlashCommand {
 }
 
 /**
+ * Skill info from SkillManagementService
+ */
+export interface Skill {
+  name: string;
+  description: string;
+  path: string;
+  enabled: boolean;
+  source: "project" | "global" | "server";
+}
+
+/**
  * Custom skill definition stored locally
  */
 export interface SkillDefinition {
@@ -603,6 +614,7 @@ export interface AppState {
   isSteering: boolean;
   currentSessionId: string | null;
   messages: Message[];
+  messagesBySessionId?: Record<string, Message[]>;
   promptQueue: QueueItem[];
   queueBySessionId: Record<string, QueueItem[]>;
   isExecutingQueue: boolean; // Legacy global flag, to be removed or used carefully

@@ -47,7 +47,7 @@ export const BashPreview = React.forwardRef<
         "oc-bash-preview",
         "inline-flex items-center gap-1.5 px-2 py-1 rounded-md",
         "bg-oc-panel-soft border border-oc-border",
-        "font-mono text-[10px] text-oc-text-soft",
+        "font-medium text-[10px] text-oc-text-soft",
         "hover:bg-oc-accent-soft hover:border-oc-accent/30",
         "transition-colors duration-150 cursor-pointer group",
         className

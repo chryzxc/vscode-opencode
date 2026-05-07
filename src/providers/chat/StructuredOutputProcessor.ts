@@ -1228,9 +1228,21 @@ export class StructuredOutputProcessor {
       }
     }
 
-    // Only honor implementation plans when the structured payload explicitly
-    // declares responseType="implementation_plan".
-    if (structuredResponseType !== "implementation_plan") {
+    const normalizedStructuredResponseType = (structuredResponseType || "")
+      .toLowerCase()
+      .trim();
+    // Hardened behavior: when providers emit plan-like content as plain
+    // `responseType="message"` (or omit responseType), still run fallback plan
+    // heuristics below so we can promote into `implementation_plan`.
+    //
+    // We still do NOT run fallback plan heuristics for non-message structured
+    // families (question/progress/etc.) to avoid cross-family misclassification.
+    const shouldRunFallbackPlanHeuristics =
+      !normalizedStructuredResponseType ||
+      normalizedStructuredResponseType === "implementation_plan" ||
+      normalizedStructuredResponseType === "message";
+
+    if (!shouldRunFallbackPlanHeuristics) {
       // During hydration, if the message already has a plan field from a previous
       // enrichment, preserve it instead of removing it. This ensures that implementation
       // plans loaded from storage are still displayed in the UI even if the structured

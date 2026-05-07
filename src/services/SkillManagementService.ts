@@ -30,8 +30,11 @@ export class SkillManagementService {
   private skills: Map<string, SkillInfo> = new Map();
   private config: SkillPermissionConfig = {};
   private _onDidChangeSkills = new vscode.EventEmitter<Map<string, SkillInfo>>();
+  private _onInitialized = new vscode.EventEmitter<void>();
+  private _initialized: boolean = false;
   private logger = createLogger(LoggingCategories.UI_INTERACTION);
   readonly onDidChangeSkills = this._onDidChangeSkills.event;
+  readonly onInitialized = this._onInitialized.event;
 
   constructor(private context: vscode.ExtensionContext) {
     this.configPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
@@ -40,6 +43,16 @@ export class SkillManagementService {
   async initialize(): Promise<void> {
     await this.loadConfig();
     await this.discoverSkills();
+    this._initialized = true;
+    this.logger.info('[SkillManagementService] Initialization complete', {
+      skillsCount: this.skills.size,
+      skillNames: Array.from(this.skills.keys()).slice(0, 10)
+    });
+    this._onInitialized.fire();
+  }
+
+  isInitialized(): boolean {
+    return this._initialized;
   }
 
   private async loadConfig(): Promise<void> {
@@ -78,7 +91,42 @@ export class SkillManagementService {
       await this.scanSkillDirectory(dir.path, dir.source);
     }
 
+    // Also scan plugin cache directories for skills
+    await this.scanPluginCacheSkills();
+
     this._onDidChangeSkills.fire(this.skills);
+  }
+
+  private async scanPluginCacheSkills(): Promise<void> {
+    try {
+      // Read installed plugins to find which ones have skills
+      const installedPluginsPath = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+      const installedPluginsContent = await fs.readFile(installedPluginsPath, 'utf-8');
+      const installedPlugins = JSON.parse(installedPluginsContent);
+
+      this.logger.info('[scanPluginCacheSkills] Found plugins', {
+        pluginCount: Object.keys(installedPlugins.plugins || {}).length
+      });
+
+      if (installedPlugins.plugins) {
+        for (const [pluginKey, pluginEntries] of Object.entries(installedPlugins.plugins)) {
+          const entries = Array.isArray(pluginEntries) ? pluginEntries : [pluginEntries];
+          for (const entry of entries as Array<{ installPath?: string }>) {
+            if (entry.installPath) {
+              const skillsPath = path.join(entry.installPath, 'skills');
+              this.logger.debug('[scanPluginCacheSkills] Scanning plugin skills', {
+                pluginKey,
+                skillsPath
+              });
+              await this.scanSkillDirectory(skillsPath, 'global');
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // Plugin cache or installed_plugins.json doesn't exist or can't be read - skip
+      this.logger.error('Could not scan plugin cache for skills', { error });
+    }
   }
 
   private async scanSkillDirectory(dirPath: string, source: 'project' | 'global'): Promise<void> {
@@ -90,6 +138,13 @@ export class SkillManagementService {
 
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
 
+      this.logger.debug('[scanSkillDirectory] Found entries', {
+        dirPath,
+        source,
+        entryCount: entries.length,
+        directories: entries.filter((e: fs.Dirent) => e.isDirectory()).map((e: fs.Dirent) => e.name)
+      });
+
       for (const entry of entries) {
         if (!entry.isDirectory()) {
           continue;
@@ -100,6 +155,7 @@ export class SkillManagementService {
       }
     } catch (error) {
       // Directory doesn't exist or can't be accessed - skip
+      this.logger.debug('[scanSkillDirectory] Directory not accessible', { dirPath, source, error });
       return;
     }
   }
@@ -468,5 +524,6 @@ export class SkillManagementService {
 
   dispose(): void {
     this._onDidChangeSkills.dispose();
+    this._onInitialized.dispose();
   }
 }

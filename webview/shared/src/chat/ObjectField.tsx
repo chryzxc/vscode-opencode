@@ -52,7 +52,7 @@ export function ObjectField({
         ) : (
           <ChevronRight className="h-3 w-3 text-oc-text-muted" />
         )}
-        <span className="text-xs font-mono text-oc-text">
+        <span className="text-xs font-medium text-oc-text">
           {path[path.length - 1] || 'root'}
         </span>
         <Badge variant="outline" className="h-4 px-1 text-[9px] border-oc-border uppercase">
@@ -103,7 +103,7 @@ export function ObjectField({
               onChange={(e) => setNewKey(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleAddField()}
               placeholder="new field name..."
-              className="flex-1 h-7 text-xs font-mono border border-oc-border rounded px-2"
+              className="flex-1 h-7 text-xs font-medium border border-oc-border rounded px-2"
             />
             <Button
               type="button"

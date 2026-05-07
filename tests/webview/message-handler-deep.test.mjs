@@ -122,14 +122,10 @@ test('handleStreamEvent ingests structured output, interactive events, subagents
 test('normalizeStructuredOutput validates and sanitizes generated-schema payloads', () => {
   assert.match(
     normalizeStructuredOutputBody,
-    /const validation = validateStructuredOutput\(rec\);[\s\S]*if \(!validation\.valid\)[\s\S]*return undefined;/,
+    /const sanitizedRec = sanitizeStructuredOutput\(rec\);[\s\S]*const validation = validateStructuredOutput\(sanitizedRec\);[\s\S]*if \(!validation\.valid\)[\s\S]*return undefined;/,
     'normalizeStructuredOutput should validate incoming payloads and reject invalid ones',
   );
-  assert.match(
-    normalizeStructuredOutputBody,
-    /const sanitizedRec = sanitizeStructuredOutput\(rec\);/,
-    'normalizeStructuredOutput should sanitize validated payloads',
-  );
+  assert.match(normalizeStructuredOutputBody, /const sanitizedRec = sanitizeStructuredOutput\(rec\);/, 'normalizeStructuredOutput should sanitize incoming payloads before validation');
   assert.match(
     normalizeStructuredOutputBody,
     /responseType[\s\S]*rawResponseType\.toLowerCase\(\) === "interactive"[\s\S]*\? "question"/,

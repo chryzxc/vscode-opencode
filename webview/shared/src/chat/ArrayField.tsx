@@ -38,7 +38,7 @@ export function ArrayField({ value, path, onChange, depth, availableModels }: Ar
     <div className={`${indentClass}`}>
       {/* Header */}
       <div className="flex items-center gap-2 py-1 px-2 -mx-2">
-        <span className="text-xs font-mono text-oc-text">
+        <span className="text-xs font-medium text-oc-text">
           {keyName}
         </span>
         <Badge variant="outline" className="h-4 px-1 text-[9px] border-oc-border uppercase">
@@ -58,7 +58,7 @@ export function ArrayField({ value, path, onChange, depth, availableModels }: Ar
         ) : (
           value.map((item, index) => (
             <div key={index} className="flex items-start gap-2 group">
-              <span className="text-xs font-mono text-oc-text-muted pt-2 w-8">
+              <span className="text-xs font-medium text-oc-text-muted pt-2 w-8">
                 [{index}]
               </span>
               <div className="flex-1">

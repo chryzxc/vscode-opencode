@@ -115,6 +115,7 @@ import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { QuotaService } from "../services/QuotaService";
 import { SessionService } from "../services/SessionService";
 import { SkillManagerService } from "../services/SkillManagerService";
+import { SkillManagementService } from "../services/SkillManagementService";
 import {
   SubagentTracker,
   type SubagentUpdatePayload,
@@ -542,11 +543,14 @@ export class ChatViewProvider
    * @param context - VSCode extension context for global state access
    * @param serverManager - Server manager for status checking
    * @param sessionService - Session service for session management
+   * @param skillManagementService - Service for managing discovered skills
+   * @param modelCapabilitiesService - Optional model capabilities service
    */
   constructor(
     private context: vscode.ExtensionContext,
     private serverManager: OpencodeServerManager,
     private sessionService: SessionService,
+    private skillManagementService?: SkillManagementService,
     modelCapabilitiesService?: ModelCapabilitiesService,
   ) {
     this.logger = createLogger("ChatViewProvider");
@@ -2206,6 +2210,7 @@ export class ChatViewProvider
 
     webviewView.webview.options = {
       enableScripts: true,
+      retainContextWhenHidden: true,
       localResourceRoots: [this.context.extensionUri],
     };
 
@@ -2961,44 +2966,55 @@ export class ChatViewProvider
         }
         case "retryLastMessage": {
           const retrySessionId = this.currentSessionId;
-          if (this.lastSendMessageArgs && retrySessionId && !this.processingSessionIds.has(retrySessionId)) {
-            const retryWithoutStructuredOutput =
-              message.retryWithoutStructuredOutput === true;
-            if (this.currentSessionId) {
-              try {
-                const rawMessages = await this.sessionService.getMessages(
-                  this.currentSessionId,
-                );
-                const messages = await this.processHistoryMessages(
-                  rawMessages,
-                  this.currentSessionId,
-                );
-                this.logHistoryRenderDiagnostics(
-                  "retryLastMessage.reload",
-                  this.currentSessionId,
-                  rawMessages,
-                  messages,
-                );
-                this.view?.webview.postMessage({
-                  type: "chatHistory",
-                  sessionId: this.currentSessionId,
-                  messages: messages,
-                });
-              } catch (err) {
-                this.logger.error("Failed to load messages for retry", { err });
-              }
-            }
-            await this.handleSendMessage(
-              this.lastSendMessageArgs.text,
-              this.lastSendMessageArgs.files,
-              this.lastSendMessageArgs.contexts,
-              this.lastSendMessageArgs.images,
-              this.lastSendMessageArgs.agent,
-              true,
-              undefined,
-              retryWithoutStructuredOutput,
-            );
+          if (!this.lastSendMessageArgs) {
+            this.logger.warn("retryLastMessage failed: no lastSendMessageArgs");
+            break;
           }
+          if (!retrySessionId) {
+            this.logger.warn("retryLastMessage failed: no currentSessionId");
+            break;
+          }
+          // Clean up any stale processing state that might be blocking the retry
+          if (this.processingSessionIds.has(retrySessionId)) {
+            this.logger.info("retryLastMessage: clearing stale processing state", { sessionId: retrySessionId });
+            this.processingSessionIds.delete(retrySessionId);
+            this.sendProcessingSessionsUpdate();
+          }
+          const retryWithoutStructuredOutput =
+            message.retryWithoutStructuredOutput === true;
+          // Reload chat history to show clean state before retry
+          try {
+            const rawMessages = await this.sessionService.getMessages(
+              retrySessionId,
+            );
+            const messages = await this.processHistoryMessages(
+              rawMessages,
+              retrySessionId,
+            );
+            this.logHistoryRenderDiagnostics(
+              "retryLastMessage.reload",
+              retrySessionId,
+              rawMessages,
+              messages,
+            );
+            this.view?.webview.postMessage({
+              type: "chatHistory",
+              sessionId: retrySessionId,
+              messages: messages,
+            });
+          } catch (err) {
+            this.logger.error("Failed to load messages for retry", { err });
+          }
+          await this.handleSendMessage(
+            this.lastSendMessageArgs.text,
+            this.lastSendMessageArgs.files,
+            this.lastSendMessageArgs.contexts,
+            this.lastSendMessageArgs.images,
+            this.lastSendMessageArgs.agent,
+            true,
+            undefined,
+            retryWithoutStructuredOutput,
+          );
           break;
         }
         case "clearAttachments": {
@@ -3191,6 +3207,25 @@ export class ChatViewProvider
       // if we switched sessions after the stream started, these orphaned events
       // belong to the old session and must not leak into the new one.
       if (!eventSessionId && this.activeStreamSessionId && this.currentSessionId && this.activeStreamSessionId !== this.currentSessionId) {
+        return;
+      }
+      // Skip forwarding events for sessions that were stopped by the user.
+      // After abort() is called, in-flight stream events may still arrive from
+      // the server, but we should not forward them to the webview.
+      if (eventSessionId && !this.processingSessionIds.has(eventSessionId)) {
+        this.logger.debug("Skipping stream event for non-processing session", {
+          sessionId: eventSessionId,
+          eventType: event.type,
+        });
+        return;
+      }
+      // For events without an explicit sessionId, check the active stream session.
+      // If activeStreamSessionId was cleared (e.g., after stop), skip these events.
+      if (!eventSessionId && this.activeStreamSessionId && !this.processingSessionIds.has(this.activeStreamSessionId)) {
+        this.logger.debug("Skipping stream event for stopped active stream session", {
+          activeStreamSessionId: this.activeStreamSessionId,
+          eventType: event.type,
+        });
         return;
       }
 
@@ -5630,6 +5665,7 @@ export class ChatViewProvider
 
       // Add context fragments if any
       if (contexts && contexts.length > 0) {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         for (const ctx of contexts) {
           if (ctx.file && ctx.file.startsWith("resource:")) {
             const resourceUri = ctx.file.replace("resource:", "");
@@ -5647,6 +5683,35 @@ export class ChatViewProvider
               type: "text",
               text: `\`\`\`${ctx.languageId}\n// ${ctx.file}:${ctx.lineInfo}\n${ctx.content}\n\`\`\``,
             });
+          } else if (ctx.file && workspaceFolder) {
+            // Handle file paths without content (attached via @)
+            try {
+              let absoluteUri: vscode.Uri;
+              if (path.isAbsolute(ctx.file)) {
+                absoluteUri = vscode.Uri.file(ctx.file);
+              } else {
+                absoluteUri = vscode.Uri.joinPath(workspaceFolder.uri, ctx.file);
+              }
+              const content = await vscode.workspace.fs.readFile(absoluteUri);
+              const textContent = new TextDecoder().decode(content);
+              parts.push({
+                type: "file",
+                mime: ctx.languageId || "text/plain",
+                filename: ctx.file.split(/[\\/]/).pop(),
+                url: `file://${ctx.file}`,
+                source: {
+                  type: "file",
+                  path: ctx.file,
+                  text: {
+                    value: textContent,
+                    start: 0,
+                    end: textContent.length,
+                  },
+                },
+              } as any);
+            } catch (error) {
+              log.warn(`Failed to read file context: ${ctx.file}`, { error });
+            }
           }
         }
       }
@@ -6840,12 +6905,28 @@ export class ChatViewProvider
    * Refreshes the skills list in the webview
    */
   async refreshSkills(): Promise<void> {
-    // TEMPORARILY DISABLED: Don't load skills to avoid 700+ skills bottleneck
-    this.logger.warn("⚠️ [PERF] Skills loading disabled temporarily");
-    this.view?.webview.postMessage({
-      type: "mySkills",
-      skills: [], // Return empty array instead of loading all skills
-    });
+    if (!this.skillManagementService) {
+      this.logger.warn('[refreshSkills] SkillManagementService not available');
+      this.view?.webview.postMessage({ type: "mySkills", skills: [] });
+      return;
+    }
+
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const skills = await this.skillManagementService.getAllSkills(client);
+
+      this.logger.info('[refreshSkills] Sending skills to webview', {
+        skillCount: skills.length,
+      });
+
+      this.view?.webview.postMessage({
+        type: "mySkills",
+        skills,
+      });
+    } catch (error) {
+      this.logger.error('[refreshSkills] Failed to load skills', { error });
+      this.view?.webview.postMessage({ type: "mySkills", skills: [] });
+    }
   }
 
   /**
@@ -6857,9 +6938,19 @@ export class ChatViewProvider
   }): Promise<void> {
     switch (message.type) {
       case "getMySkills": {
-        // TEMPORARILY DISABLED: Don't load skills to avoid 700+ skills bottleneck
-        this.logger.warn("⚠️ [PERF] getMySkills disabled temporarily");
-        this.view?.webview.postMessage({ type: "mySkills", skills: [] });
+        if (!this.skillManagementService) {
+          this.view?.webview.postMessage({ type: "mySkills", skills: [] });
+          break;
+        }
+
+        try {
+          const client = await this.serverManager.ensureRunning();
+          const skills = await this.skillManagementService.getAllSkills(client);
+          this.view?.webview.postMessage({ type: "mySkills", skills });
+        } catch (error) {
+          this.logger.error('[getMySkills] Failed to load skills', { error });
+          this.view?.webview.postMessage({ type: "mySkills", skills: [] });
+        }
         break;
       }
 
@@ -7705,99 +7796,23 @@ export class ChatViewProvider
       }
 
       const cwd = workspaceFolder.uri.fsPath;
-      const runGit = (...args: string[]): Promise<string> =>
-        new Promise((resolve, reject) => {
-          cp.execFile(
-            "git",
-            args,
-            { cwd, maxBuffer: 10 * 1024 * 1024 },
-            (err, stdout) => {
-              if (err && err.code !== 1) {
-                reject(err);
-              } else {
-                resolve(stdout);
-              }
-            },
-          );
-        });
-
       const normalizedTargetFiles = Array.isArray(targetFiles)
         ? targetFiles
             .map((file) => file.trim())
             .filter((file) => file.length > 0)
         : [];
 
-      const diffOutput =
-        normalizedTargetFiles.length > 0
-          ? await runGit("diff", "HEAD", "--", ...normalizedTargetFiles)
-          : await runGit("diff", "HEAD");
-      const stagedDiffOutput =
-        normalizedTargetFiles.length > 0
-          ? await runGit("diff", "--cached", "--", ...normalizedTargetFiles)
-          : await runGit("diff", "--cached");
-
-      // Include untracked files as pseudo-diffs
-      const untrackedFilesOutput =
-        normalizedTargetFiles.length > 0
-          ? await runGit(
-              "ls-files",
-              "--others",
-              "--exclude-standard",
-              "--",
-              ...normalizedTargetFiles,
-            )
-          : await runGit(
-              "ls-files",
-              "--others",
-              "--exclude-standard",
-            );
-      const untrackedFiles = untrackedFilesOutput
-        .split("\n")
-        .filter((f) => f.trim());
-
-      let allDiffs = [diffOutput, stagedDiffOutput]
-        .filter((chunk) => chunk.trim().length > 0)
-        .join("\n");
-      for (const file of untrackedFiles) {
-        try {
-          const fileUri = vscode.Uri.file(path.join(cwd, String(file)));
-          const content = await vscode.workspace.fs.readFile(fileUri);
-          const text = new TextDecoder().decode(content);
-          const lines = text.split("\n");
-          const pseudoDiff = [
-            `--- /dev/null`,
-            `+++ b/${file.replace(/\\/g, "/")}`,
-            `@@ -0,0 +1,${lines.length} @@`,
-            ...lines.map((l) => `+${l}`),
-            "",
-          ].join("\n");
-          allDiffs += (allDiffs ? "\n" : "") + pseudoDiff;
-        } catch (e: any) {
-          log.warn(
-            `Failed to read untracked file ${String(file)}: ${e instanceof Error ? e.message : String(e)}`,
-            { file: String(file) },
-          );
-        }
-      }
-
-      if (allDiffs) {
-        const diffFiles = this.parseUnifiedDiff(allDiffs);
-        if (diffFiles.length > 0) {
-          await vscode.commands.executeCommand("opencode.showDiffReview", {
-            files: diffFiles,
-          });
-          return;
-        }
-      }
-
-      // Fallback to file diff if caller provided a target list.
+      // For specific files, open each in VSCode's default diff viewer
       if (normalizedTargetFiles.length > 0) {
-        await this.handleOpenDiff(normalizedTargetFiles[0]);
-        return;
+        for (const file of normalizedTargetFiles) {
+          const fullPath = path.isAbsolute(file) ? file : path.join(cwd, file);
+          const fileUri = vscode.Uri.file(fullPath);
+          await vscode.commands.executeCommand("git.openChange", fileUri);
+        }
+      } else {
+        // No specific files - show SCM view
+        await vscode.commands.executeCommand("workbench.view.scm");
       }
-
-      // Fallback to SCM view if no diffs found.
-      await vscode.commands.executeCommand("workbench.view.scm");
     } catch (error: any) {
       vscode.window.showErrorMessage(
         `Failed to open changes: ${error.message}`,

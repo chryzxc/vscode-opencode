@@ -330,11 +330,11 @@ export default function PlanShell() {
               <h1 className="truncate text-xs font-semibold">{planTitle}</h1>
             </div>
             {sourceFile ? (
-              <p className="truncate font-mono text-[10px] text-[var(--vscode-descriptionForeground)]" title={sourceFile}>
+              <p className="truncate font-medium text-[10px] text-[var(--vscode-descriptionForeground)]" title={sourceFile}>
                 Source: {sourceFile}
               </p>
             ) : (
-              <p className="truncate font-mono text-[10px] text-[var(--vscode-descriptionForeground)]/50 italic">
+              <p className="truncate font-medium text-[10px] text-[var(--vscode-descriptionForeground)]/50 italic">
                 (no source file)
               </p>
             )}
@@ -479,7 +479,7 @@ export default function PlanShell() {
           <h2 className="text-xs font-semibold">
             Comments
             {comments.length > 0 && (
-              <span className="ml-2 rounded-full bg-oc-bg px-1.5 py-0.5 text-[10px] font-mono">
+              <span className="ml-2 rounded-full bg-oc-bg px-1.5 py-0.5 text-[10px] font-medium">
                 {comments.length}
               </span>
             )}

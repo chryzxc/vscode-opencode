@@ -53,7 +53,7 @@ export function ConfigEditor({ file, activeTab, onTabChange, onContentChange }: 
           <TabsList className="grid w-full grid-cols-3 h-8">
             <TabsTrigger value="gui" className="text-xs">Simple</TabsTrigger>
             <TabsTrigger value="advanced" className="text-xs">Advanced</TabsTrigger>
-            <TabsTrigger value="json" className="text-xs font-mono">JSON / JSONC</TabsTrigger>
+            <TabsTrigger value="json" className="text-xs font-medium">JSON / JSONC</TabsTrigger>
           </TabsList>
         </div>
 
@@ -156,7 +156,7 @@ function GuiEditor({
               {primitiveEntries.map(([key, value]) => (
                 <div key={key} className="rounded-md border border-oc-border bg-oc-bg-soft p-2">
                   <div className="mb-2 flex items-center justify-between gap-2">
-                    <span className="text-xs font-mono text-oc-text">{key}</span>
+                    <span className="text-xs font-medium text-oc-text">{key}</span>
                     <Badge variant="outline" className="h-4 px-1 text-[9px] border-oc-border uppercase">
                       {value === null ? 'null' : typeof value}
                     </Badge>
@@ -173,7 +173,7 @@ function GuiEditor({
                         type="text"
                         value={value === null ? '' : String(value)}
                         onChange={(e) => updatePrimitiveValue(key, e.target.value)}
-                        className="flex-1 h-8 text-xs font-mono rounded border border-oc-border bg-oc-bg px-2"
+                        className="flex-1 h-8 text-xs font-medium rounded border border-oc-border bg-oc-bg px-2"
                       />
                     )}
                     <Button
@@ -283,7 +283,7 @@ function JsonEditor({
       <Textarea
         value={content}
         onChange={(e) => onChange(e.target.value)}
-        className="flex-1 w-full resize-none font-mono text-xs leading-relaxed p-4 bg-oc-bg-soft border-oc-border focus-visible:ring-1 focus-visible:ring-oc-accent"
+        className="flex-1 w-full resize-none font-medium text-xs leading-relaxed p-4 bg-oc-bg-soft border-oc-border focus-visible:ring-1 focus-visible:ring-oc-accent"
         spellCheck={false}
         placeholder='{ "default_model": "provider/model" }'
       />
