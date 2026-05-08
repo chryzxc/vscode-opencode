@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
 @import './colors.css';
 
 @tailwind base;
@@ -133,9 +132,7 @@ body {
   overflow: hidden;
   background: var(--oc-bg);
   color: var(--oc-text);
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Inter",
-    sans-serif;
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
   font-size: var(--vscode-font-size, 14px);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -221,7 +218,7 @@ body {
   border-radius: 4px;
   padding: 1px 6px;
   font-size: 10px;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   color: var(--oc-text-muted);
   background: color-mix(in srgb, var(--oc-accent) 6%, transparent);
 }
@@ -244,7 +241,7 @@ body {
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-family: "SF Mono", "Cascadia Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   border: 1px solid var(--oc-border);
   color: var(--oc-text-muted);
   background: transparent;
@@ -266,7 +263,7 @@ body {
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-family: "SF Mono", "Cascadia Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   border-radius: 3px;
   padding: 1px 6px;
   border: 1px solid var(--oc-border);
@@ -302,7 +299,7 @@ body {
 }
 
 .oc-duration {
-  font-family: "SF Mono", "Cascadia Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
 }
 
@@ -390,7 +387,7 @@ body {
   background: transparent;
   border: none;
   color: var(--oc-text);
-  font-family: inherit;
+  font-family: var(--vscode-font-family, inherit);
   font-size: 13px;
   resize: none;
   outline: none;
@@ -440,7 +437,7 @@ body {
   border: 1px solid var(--oc-border);
   background: color-mix(in srgb, var(--oc-bg) 80%, transparent);
   color: var(--oc-text);
-  font-family: inherit;
+  font-family: var(--vscode-font-family, inherit);
   font-size: 12px;
   border-radius: 6px;
 }
@@ -457,7 +454,7 @@ body {
 
 .oc-group-label {
   letter-spacing: 0.07em;
-  font-family: "SF Mono", "Cascadia Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 10px;
   text-transform: uppercase;
   color: var(--oc-text-muted);
@@ -479,7 +476,7 @@ body {
 
 .oc-current-label {
   color: var(--oc-accent);
-  font-family: "SF Mono", "Cascadia Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
 }
 
 /* ── Queue ───────────────────────────────────────────────────────────────── */
@@ -504,7 +501,7 @@ body {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-family: "SF Mono", "Cascadia Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   color: var(--oc-text-soft);
   font-weight: 500;
 }
@@ -620,7 +617,7 @@ body {
   flex-shrink: 0;
   min-width: 42px;
   text-align: center;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -648,7 +645,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   color: var(--oc-text);
   opacity: 0.9;
@@ -662,7 +659,7 @@ body {
 
 .oc-step-command {
   display: block;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   color: var(--oc-text-soft);
   opacity: 0.92;
@@ -687,7 +684,7 @@ body {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  font-family: "SF Mono", "Cascadia Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 10px;
   font-weight: 600;
 }
@@ -725,7 +722,7 @@ body {
   padding: 3px 6px;
   border-radius: 5px;
   font-size: 11.5px;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   color: var(--oc-text-soft);
   transition: color 0.12s, background 0.12s;
   position: relative;
@@ -765,7 +762,7 @@ body {
   white-space: nowrap;
   opacity: 0.75;
   color: var(--oc-accent);
-  font-family: inherit;
+  font-family: var(--vscode-font-family, inherit);
 }
 
 .oc-thinking-content {
@@ -785,7 +782,7 @@ body {
   color: var(--oc-text-soft);
   opacity: 0.88;
   white-space: pre-wrap;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
 }
 
 /* ── Thinking pulse animation ────────────────────────────────────────────── */
@@ -924,7 +921,7 @@ body {
 
 /* ── Token Statistics Display ─────────────────────────────────────────────── */
 .oc-msg-token-chips {
-  font-family: "SF Mono", "Cascadia Code", "Menlo", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   letter-spacing: 0.01em;
   line-height: 1.4;
 }
@@ -1115,7 +1112,7 @@ body {
   border-radius: 6px;
   background: color-mix(in srgb, var(--oc-bg) 88%, transparent);
   color: var(--oc-text-muted);
-  font-family: inherit;
+  font-family: var(--vscode-font-family, inherit);
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
@@ -1129,7 +1126,7 @@ body {
 /* ── Markdown Body ───────────────────────────────────────────────────────── */
 .markdown-body {
   color: var(--oc-text);
-  font-family: inherit;
+  font-family: var(--vscode-font-family, inherit);
   font-size: 13px;
   line-height: 1.7;
 }
@@ -1181,7 +1178,7 @@ body {
 }
 
 .markdown-body code {
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 0.88em;
   padding: 0.15em 0.4em;
   border-radius: 6px;
@@ -1447,7 +1444,7 @@ body {
 
 /* Monospace for data */
 .font-mono {
-  font-family: inherit;
+  font-family: var(--vscode-font-family, inherit);
 }
 
 /* ─── OpenCode Input Area Redesign ─────────────────────────────────────────── */
@@ -1479,7 +1476,7 @@ body {
   border: 1px solid var(--oc-border);
   background: var(--oc-panel-soft);
   color: var(--oc-text-muted);
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 10px;
   white-space: nowrap;
   max-width: 200px;
@@ -1496,7 +1493,7 @@ body {
   border: 1px solid var(--oc-border);
   background: var(--oc-panel-soft);
   color: var(--oc-text-muted);
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -1584,7 +1581,7 @@ body {
   text-align: left;
   padding: 0.375rem 0.75rem;
   font-size: 12px;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   color: var(--oc-text-soft);
   background: transparent;
   border: none;
@@ -1732,7 +1729,7 @@ body {
 
 .oc-image-preview-title {
   font-size: 11px;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--oc-text-soft);
@@ -1782,7 +1779,7 @@ body {
 
 /* Enhanced Stepper Container - no timeline line */
 .oc-refined-stepper {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
   position: relative;
 }
 
@@ -1872,7 +1869,7 @@ body {
   display: inline-block;
   padding: 3px 8px;
   border-radius: 12px;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.05em;
@@ -1914,7 +1911,7 @@ body {
   display: inline-block;
   padding: 3px 7px;
   border-radius: 8px;
-  font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   font-weight: 400;
   letter-spacing: 0.03em;
@@ -1927,7 +1924,7 @@ body {
 
 /* Enhanced event content - markdown support */
 .oc-refined-event-content {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
   font-size: 12px;
   line-height: 1.5;
   color: var(--oc-text-soft);
@@ -1941,7 +1938,7 @@ body {
 }
 
 .oc-refined-event-content .markdown-body code {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 12px;
   padding: 2px 4px;
   background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
@@ -1982,7 +1979,7 @@ body {
   background: color-mix(in srgb, var(--oc-text) 3%, transparent);
   border: none;
   color: var(--oc-text);
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   cursor: pointer;
   text-decoration: none;
@@ -2070,7 +2067,7 @@ body {
 
 /* Enhanced typography for file operations */
 .oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-summary {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 12px;
   line-height: 1.6;
   color: var(--oc-text);
@@ -2098,7 +2095,7 @@ body {
   border-radius: 4px;
   background: color-mix(in srgb, var(--oc-bg) 40%, transparent);
   border: 1px solid var(--oc-border-soft);
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   font-weight: 500;
 }
@@ -2130,7 +2127,7 @@ body {
   position: absolute;
   left: 2px;
   top: 0;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 8px;
   color: color-mix(in srgb, var(--oc-accent) 25%, transparent);
   opacity: 0.4;
@@ -2250,7 +2247,7 @@ body {
   gap: 3px;
   padding: 2px 6px;
   border-radius: 4px;
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   font-weight: 400;
   letter-spacing: 0.03em;
@@ -2269,7 +2266,7 @@ body {
   border-radius: 3px;
   background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--oc-accent) 12%, transparent);
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   font-weight: 500;
   color: var(--oc-accent);
@@ -2292,7 +2289,7 @@ body {
 }
 
 .oc-bash-command-code code {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   line-height: 1.5;
   color: var(--oc-text-soft);
@@ -2318,7 +2315,7 @@ body {
 }
 
 .oc-search-block-scope {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -2330,7 +2327,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   color: var(--oc-text-muted);
 }
@@ -2347,7 +2344,7 @@ body {
 }
 
 .oc-search-block-code code {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   line-height: 1.5;
   color: var(--oc-text-soft);
@@ -2372,7 +2369,7 @@ body {
 }
 
 .oc-refined-command-label {
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 9px;
   font-weight: 600;
   text-transform: uppercase;
@@ -2388,7 +2385,7 @@ body {
 }
 
 .oc-refined-command-code code {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 12px;
   line-height: 1.6;
   color: var(--oc-text-soft);
@@ -2404,7 +2401,7 @@ body {
 
 .oc-bash-output pre {
   margin: 0;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 11px;
   line-height: 1.5;
   color: var(--oc-text-soft);
@@ -2424,7 +2421,7 @@ body {
   overflow: hidden;
   background: #0d1117;
   border: 1px solid #30363d;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
@@ -2651,7 +2648,7 @@ body {
 }
 
 .terminal-file-path {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   word-break: break-all;
 }
 
@@ -2680,7 +2677,7 @@ body {
 .terminal-updates {
   font-size: 9px;
   color: #8b949e;
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   padding: 2px 6px;
   background: rgba(134, 153, 170, 0.15);
   border-radius: 3px;
@@ -2726,7 +2723,7 @@ body {
 .terminal-tool-value,
 .terminal-query-value {
   color: var(--oc-term-accent);
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
 }
 
 /* Terminal Command */
@@ -2782,7 +2779,7 @@ body {
 }
 
 .terminal-command-code code {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-size: 12px;
   line-height: 1.6;
   color: #c9d1d9;
@@ -2800,14 +2797,14 @@ body {
 .terminal-diff-add {
   font-size: 10px;
   color: #3fb950;
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-weight: 600;
 }
 
 .terminal-diff-del {
   font-size: 10px;
   color: #ff7b72;
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   font-weight: 600;
 }
 
@@ -2815,7 +2812,7 @@ body {
 .terminal-view-diff {
   padding: 4px 8px;
   font-size: 9px;
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   color: var(--oc-term-accent);
   background: transparent;
   border: 1px solid #30363d;
@@ -2859,7 +2856,7 @@ body {
   width: 100%;
   padding: 8px 14px;
   font-size: 10px;
-  font-family: 'SF Mono', Consolas, monospace;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
   color: var(--oc-term-accent);
   background: rgba(48, 54, 61, 0.3);
   border: none;
@@ -3345,7 +3342,7 @@ body {
 
 .oc-warning-text-primary {
   color: #fbbf24;
-  font-family: "'SF Mono', 'Cascadia Code', monospace";
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
 }
 
 .oc-warning-text-secondary {
