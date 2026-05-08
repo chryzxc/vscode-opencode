@@ -56,6 +56,7 @@
 import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as net from "net";
+import * as fs from "fs";
 import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
@@ -162,6 +163,83 @@ export class OpencodeServerManager {
    * @param context - VSCode extension context (used for storage if needed in future)
    */
   constructor(private context: vscode.ExtensionContext) { }
+
+  private formatDetailedError(
+    error: unknown,
+    recentOutput?: string,
+  ): string {
+    const err = error as
+      | (Error & {
+        code?: unknown;
+        errno?: unknown;
+        syscall?: unknown;
+        path?: unknown;
+        spawnargs?: unknown;
+      })
+      | undefined;
+
+    const parts: string[] = [];
+    const message =
+      err && typeof err.message === "string"
+        ? err.message
+        : String(error ?? "Unknown error");
+    parts.push(message);
+
+    if (err && typeof err.code === "string") {
+      parts.push(`code=${err.code}`);
+    }
+    if (err && typeof err.errno !== "undefined") {
+      parts.push(`errno=${String(err.errno)}`);
+    }
+    if (err && typeof err.syscall === "string") {
+      parts.push(`syscall=${err.syscall}`);
+    }
+    if (err && typeof err.path === "string") {
+      parts.push(`path=${err.path}`);
+    }
+    if (err && Array.isArray(err.spawnargs) && err.spawnargs.length > 0) {
+      parts.push(`spawnargs=${err.spawnargs.join(" ")}`);
+    }
+
+    const outputTail = recentOutput?.trim().slice(-800);
+    if (outputTail) {
+      parts.push(`recentOutput=${outputTail}`);
+    }
+
+    return parts.join(" | ");
+  }
+
+  private normalizeWindowsExecutablePath(path: string): string {
+    if (process.platform !== "win32") {
+      return path;
+    }
+
+    const lowerPath = path.toLowerCase();
+    if (
+      lowerPath.endsWith(".exe") ||
+      lowerPath.endsWith(".cmd") ||
+      lowerPath.endsWith(".bat")
+    ) {
+      return path;
+    }
+
+    const cmdPath = `${path}.cmd`;
+    if (fs.existsSync(cmdPath)) {
+      return cmdPath;
+    }
+
+    const exePath = `${path}.exe`;
+    if (fs.existsSync(exePath)) {
+      return exePath;
+    }
+
+    const batPath = `${path}.bat`;
+    if (fs.existsSync(batPath)) {
+      return batPath;
+    }
+
+    return path;
+  }
 
   private getPersistedManagedPort(): number {
     const persistedPort = this.context.globalState.get<number>(
@@ -550,19 +628,36 @@ export class OpencodeServerManager {
         spawnOptions.cwd = workspaceFolder.uri.fsPath;
         log.info("Server CWD set", { cwd: spawnOptions.cwd });
       }
+      if (process.platform === "win32") {
+        // npm global CLIs are commonly .cmd shims on Windows and require a shell.
+        spawnOptions.shell = true;
+      }
 
       // Step 3: Find the full path to opencode binary
-      // On macOS/Linux, use 'which' to resolve the binary path for more reliable spawning
-      // This avoids PATH resolution issues in VS Code's extension host environment
+      // Use platform-native resolution command for better reliability:
+      // - Windows: `where opencode`
+      // - Unix/macOS/Linux: `which opencode`
       let opencodeBinary = "opencode";
       try {
-        const whichResult = cp.execSync("which opencode", { encoding: "utf-8" }).trim();
-        if (whichResult) {
-          opencodeBinary = whichResult;
+        const resolverCommand =
+          process.platform === "win32" ? "where opencode" : "which opencode";
+        const resolverResult = cp
+          .execSync(resolverCommand, {
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "ignore"],
+          })
+          .trim()
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean);
+        if (resolverResult.length > 0) {
+          opencodeBinary = this.normalizeWindowsExecutablePath(
+            resolverResult[0],
+          );
           log.debug("Resolved opencode binary path", { path: opencodeBinary });
         }
       } catch (error) {
-        log.debug("Could not resolve opencode path via 'which', will try direct spawn", { error });
+        log.debug("Could not resolve opencode binary path, will try direct spawn", { error });
         // Fall back to direct spawn with "opencode"
       }
 
@@ -613,7 +708,8 @@ export class OpencodeServerManager {
       // Handle spawn errors (e.g., opencode CLI not found)
       spawnedProcess.on("error", (error) => {
         log.error("Failed to start server", { port: this.port, error });
-        this.setStatus("error", error instanceof Error ? error.message : String(error));
+        const detailedError = this.formatDetailedError(error, recentServerOutput);
+        this.setStatus("error", detailedError);
 
         if (error.message.includes("ENOENT")) {
           vscode.window.showErrorMessage(
@@ -621,7 +717,7 @@ export class OpencodeServerManager {
           );
         }
 
-        settleReject(error instanceof Error ? error : new Error(String(error)));
+        settleReject(new Error(detailedError));
       });
 
       // Handle server process exit (normal or abnormal)
@@ -1041,23 +1137,30 @@ export class OpencodeServerManager {
    * @see onStatusChange for subscribing to status changes
    */
   private setStatus(status: ServerStatus, error?: string): void {
-    // Only fire event if status actually changed
-    // This prevents redundant notifications and UI updates
-    if (this._status !== status) {
-      const oldStatus = this._status;
-      this._status = status;
+    const oldStatus = this._status;
+    const previousError = this._lastError;
 
-      // Store error message when transitioning to error state
-      if (status === "error" && error) {
-        this._lastError = error;
-      } else if (status !== "error") {
-        this._lastError = undefined;
-      }
-
-      log.logStateChange('server_status', oldStatus, status, 'setStatus');
-      log.debug("Server status changed", { oldStatus, newStatus: status, error });
-      this._onStatusChange.fire(status);
+    if (status === "error" && error) {
+      this._lastError = error;
+    } else if (status !== "error") {
+      this._lastError = undefined;
     }
+
+    const statusChanged = oldStatus !== status;
+    const errorChanged = previousError !== this._lastError;
+
+    if (!statusChanged && !(status === "error" && errorChanged)) {
+      return;
+    }
+
+    this._status = status;
+    if (statusChanged) {
+      log.logStateChange('server_status', oldStatus, status, 'setStatus');
+      log.debug("Server status changed", { oldStatus, newStatus: status, error: this._lastError });
+    } else {
+      log.debug("Server error details updated", { status, error: this._lastError });
+    }
+    this._onStatusChange.fire(status);
   }
 
   private async isPortReachable(port: number): Promise<boolean> {

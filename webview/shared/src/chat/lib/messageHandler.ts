@@ -7583,6 +7583,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             type: "SET_SERVER_STATUS",
             payload: asString(data.status, "unknown"),
           });
+          dispatch({
+            type: "SET_SERVER_ERROR",
+            payload: asString(data.serverError) || undefined,
+          });
           break;
         }
         case "compactionStatus": {
