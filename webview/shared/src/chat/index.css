@@ -1,4 +1,4 @@
-@import './colors.css';
+@import "./colors.css";
 
 @tailwind base;
 @tailwind components;
@@ -85,9 +85,9 @@ body.vscode-high-contrast-light {
     var(--vscode-editorWidget-background, var(--vscode-editor-background))
   );
 
-    /* Borders */
-    --oc-border: var(--vscode-widget-border, rgba(255, 255, 255, 0.06));
-    --oc-border-soft: rgba(255, 255, 255, 0.01);
+  /* Borders */
+  --oc-border: var(--vscode-widget-border, rgba(255, 255, 255, 0.06));
+  --oc-border-soft: rgba(255, 255, 255, 0.01);
 
   /* Text */
   --oc-text: var(--vscode-editor-foreground);
@@ -103,11 +103,14 @@ body.vscode-high-contrast-light {
   --oc-accent-soft: rgba(113, 113, 122, 0.1);
   --oc-accent-glow: rgba(113, 113, 122, 0.2);
 
-   /* Status */
-   --oc-green: var(--vscode-terminal-ansiGreen, #a6e3a1);
-   --oc-yellow: var(--vscode-terminal-ansiYellow, #f9e2af);
-   --oc-red: var(--vscode-terminal-ansiRed, var(--vscode-errorForeground, #f38ba8));
-   --oc-orange: var(--vscode-terminal-ansiBrightRed, #fab387);
+  /* Status */
+  --oc-green: var(--vscode-terminal-ansiGreen, #a6e3a1);
+  --oc-yellow: var(--vscode-terminal-ansiYellow, #f9e2af);
+  --oc-red: var(
+    --vscode-terminal-ansiRed,
+    var(--vscode-errorForeground, #f38ba8)
+  );
+  --oc-orange: var(--vscode-terminal-ansiBrightRed, #fab387);
 
   /* Operation Colors - Neutral Theme */
   --oc-op-accent-1: #71717a;
@@ -132,7 +135,14 @@ body {
   overflow: hidden;
   background: var(--oc-bg);
   color: var(--oc-text);
-  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+  font-family: var(
+    --vscode-font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif
+  );
   font-size: var(--vscode-font-size, 14px);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -218,7 +228,15 @@ body {
   border-radius: 4px;
   padding: 1px 6px;
   font-size: 10px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   color: var(--oc-text-muted);
   background: color-mix(in srgb, var(--oc-accent) 6%, transparent);
 }
@@ -241,7 +259,15 @@ body {
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   border: 1px solid var(--oc-border);
   color: var(--oc-text-muted);
   background: transparent;
@@ -263,7 +289,15 @@ body {
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   border-radius: 3px;
   padding: 1px 6px;
   border: 1px solid var(--oc-border);
@@ -299,7 +333,15 @@ body {
 }
 
 .oc-duration {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
 }
 
@@ -454,7 +496,15 @@ body {
 
 .oc-group-label {
   letter-spacing: 0.07em;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 10px;
   text-transform: uppercase;
   color: var(--oc-text-muted);
@@ -476,7 +526,15 @@ body {
 
 .oc-current-label {
   color: var(--oc-accent);
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
 }
 
 /* ── Queue ───────────────────────────────────────────────────────────────── */
@@ -501,7 +559,15 @@ body {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   color: var(--oc-text-soft);
   font-weight: 500;
 }
@@ -538,7 +604,9 @@ body {
   opacity: 0.5;
 }
 
-.oc-timeline-item:last-child .oc-timeline-line { display: none; }
+.oc-timeline-item:last-child .oc-timeline-line {
+  display: none;
+}
 
 /* ── Steps Block (vertical stepper / timeline) ──────────────────────────── */
 .oc-steps-block {
@@ -550,7 +618,7 @@ body {
 .oc-step-row {
   display: flex;
   flex-direction: row;
-  align-items: stretch;    /* CRITICAL: lets dot-col fill full row height */
+  align-items: stretch; /* CRITICAL: lets dot-col fill full row height */
   gap: 8px;
   padding: 1px 4px 1px 2px;
   border-radius: 5px;
@@ -588,7 +656,7 @@ body {
 
 /* The vertical connector line — fills remaining height below the icon */
 .oc-step-line-col {
-  flex: 1;              /* stretch to fill height below icon */
+  flex: 1; /* stretch to fill height below icon */
   width: 1px;
   min-height: 4px;
   background: color-mix(in srgb, var(--oc-border) 80%, transparent);
@@ -617,7 +685,15 @@ body {
   flex-shrink: 0;
   min-width: 42px;
   text-align: center;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -626,11 +702,29 @@ body {
   border-radius: 3px;
   user-select: none;
 }
-.oc-tool-label--bash  { color: var(--oc-yellow);  background: color-mix(in srgb, var(--oc-yellow) 12%, transparent); }
-.oc-tool-label--read  { color: var(--oc-accent);  background: color-mix(in srgb, var(--oc-accent) 11%, transparent); }
-.oc-tool-label--edit  { color: var(--oc-orange);  background: color-mix(in srgb, var(--oc-orange) 12%, transparent); }
-.oc-tool-label--think { color: var(--oc-text-soft); background: color-mix(in srgb, var(--oc-text) 7%, transparent); font-style: italic; text-transform: none; letter-spacing: 0; }
-.oc-tool-label--generic { color: var(--oc-text-soft); background: color-mix(in srgb, var(--oc-text) 7%, transparent); }
+.oc-tool-label--bash {
+  color: var(--oc-yellow);
+  background: color-mix(in srgb, var(--oc-yellow) 12%, transparent);
+}
+.oc-tool-label--read {
+  color: var(--oc-accent);
+  background: color-mix(in srgb, var(--oc-accent) 11%, transparent);
+}
+.oc-tool-label--edit {
+  color: var(--oc-orange);
+  background: color-mix(in srgb, var(--oc-orange) 12%, transparent);
+}
+.oc-tool-label--think {
+  color: var(--oc-text-soft);
+  background: color-mix(in srgb, var(--oc-text) 7%, transparent);
+  font-style: italic;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.oc-tool-label--generic {
+  color: var(--oc-text-soft);
+  background: color-mix(in srgb, var(--oc-text) 7%, transparent);
+}
 
 /* Step content area (col 4) */
 .oc-step-content {
@@ -645,21 +739,42 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   color: var(--oc-text);
   opacity: 0.9;
-  transition: color 0.12s, opacity 0.12s;
+  transition:
+    color 0.12s,
+    opacity 0.12s;
   max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.oc-step-file-link:hover { color: var(--oc-accent); opacity: 1; }
+.oc-step-file-link:hover {
+  color: var(--oc-accent);
+  opacity: 1;
+}
 
 .oc-step-command {
   display: block;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   color: var(--oc-text-soft);
   opacity: 0.92;
@@ -667,7 +782,10 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.oc-step-row--pending .oc-step-command { color: var(--oc-text); opacity: 1; }
+.oc-step-row--pending .oc-step-command {
+  color: var(--oc-text);
+  opacity: 1;
+}
 
 .oc-step-meta {
   font-size: 10.5px;
@@ -684,12 +802,24 @@ body {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 10px;
   font-weight: 600;
 }
-.oc-step-diff-add { color: var(--oc-green); }
-.oc-step-diff-del { color: var(--oc-red); }
+.oc-step-diff-add {
+  color: var(--oc-green);
+}
+.oc-step-diff-del {
+  color: var(--oc-red);
+}
 
 /* View diff button (col 6) */
 .oc-step-view-diff {
@@ -706,7 +836,10 @@ body {
   border-radius: 3px;
   border: 1px solid color-mix(in srgb, var(--oc-accent) 12%, transparent);
 }
-.oc-step-view-diff:hover { opacity: 1; background: color-mix(in srgb, var(--oc-accent) 10%, transparent); }
+.oc-step-view-diff:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--oc-accent) 10%, transparent);
+}
 
 /* ── Thinking Block (Claude Code style) ─────────────────────────────────── */
 .oc-thinking-block {
@@ -722,9 +855,19 @@ body {
   padding: 3px 6px;
   border-radius: 5px;
   font-size: 11.5px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   color: var(--oc-text-soft);
-  transition: color 0.12s, background 0.12s;
+  transition:
+    color 0.12s,
+    background 0.12s;
   position: relative;
   z-index: 10;
   overflow: hidden;
@@ -734,7 +877,9 @@ body {
   color: var(--oc-text);
   background: color-mix(in srgb, var(--oc-text) 5%, transparent);
 }
-.oc-thinking-summary::-webkit-details-marker { display: none; }
+.oc-thinking-summary::-webkit-details-marker {
+  display: none;
+}
 
 .oc-thinking-chevron {
   font-size: 12px;
@@ -744,7 +889,9 @@ body {
   color: var(--oc-text-muted);
   opacity: 0.9;
 }
-.oc-thinking-block[open] .oc-thinking-chevron { transform: rotate(90deg); }
+.oc-thinking-block[open] .oc-thinking-chevron {
+  transform: rotate(90deg);
+}
 
 .oc-thinking-label {
   flex-shrink: 0;
@@ -782,7 +929,14 @@ body {
   color: var(--oc-text-soft);
   opacity: 0.88;
   white-space: pre-wrap;
-  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+  font-family: var(
+    --vscode-font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif
+  );
 }
 
 /* ── Thinking pulse animation ────────────────────────────────────────────── */
@@ -921,7 +1075,15 @@ body {
 
 /* ── Token Statistics Display ─────────────────────────────────────────────── */
 .oc-msg-token-chips {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   letter-spacing: 0.01em;
   line-height: 1.4;
 }
@@ -1037,12 +1199,11 @@ body {
   height: min(320px, 72vw);
   transform: translate(-50%, -58%);
   border-radius: 999px;
-  background:
-    radial-gradient(
-      circle,
-      color-mix(in srgb, var(--oc-accent) 14%, transparent) 0%,
-      transparent 64%
-    );
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--oc-accent) 14%, transparent) 0%,
+    transparent 64%
+  );
   opacity: 0.28;
   pointer-events: none;
 }
@@ -1178,7 +1339,15 @@ body {
 }
 
 .markdown-body code {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 0.88em;
   padding: 0.15em 0.4em;
   border-radius: 6px;
@@ -1456,7 +1625,7 @@ body {
   gap: 0.375rem;
   padding: 0.75rem 0.875rem 1rem;
   border-top: 1px solid var(--oc-border-soft);
-  background: linear-gradient(to bottom, var(--oc-bg-soft)/40, var(--oc-bg));
+  background: linear-gradient(to bottom, var(--oc-bg-soft) / 40, var(--oc-bg));
 }
 
 /* Context/attachment chip rows */
@@ -1476,7 +1645,15 @@ body {
   border: 1px solid var(--oc-border);
   background: var(--oc-panel-soft);
   color: var(--oc-text-muted);
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 10px;
   white-space: nowrap;
   max-width: 200px;
@@ -1493,7 +1670,15 @@ body {
   border: 1px solid var(--oc-border);
   background: var(--oc-panel-soft);
   color: var(--oc-text-muted);
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 10px;
   white-space: nowrap;
 }
@@ -1530,7 +1715,9 @@ body {
   border-radius: 0.75rem;
   border: 1.5px solid var(--oc-border);
   background: var(--oc-panel-soft);
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
   overflow: visible;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }
@@ -1581,7 +1768,15 @@ body {
   text-align: left;
   padding: 0.375rem 0.75rem;
   font-size: 12px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   color: var(--oc-text-soft);
   background: transparent;
   border: none;
@@ -1602,7 +1797,11 @@ body {
   padding: 0.375rem 0.625rem 0.5rem;
   gap: 0.5rem;
   border-top: 1px solid var(--oc-border-soft, var(--oc-border));
-  background: linear-gradient(to bottom, var(--oc-panel-soft)/50, var(--oc-panel-soft)/25);
+  background: linear-gradient(
+    to bottom,
+    var(--oc-panel-soft) / 50,
+    var(--oc-panel-soft) / 25
+  );
 }
 
 .oc-toolbar-left {
@@ -1729,7 +1928,15 @@ body {
 
 .oc-image-preview-title {
   font-size: 11px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--oc-text-soft);
@@ -1779,14 +1986,21 @@ body {
 
 /* Enhanced Stepper Container - no timeline line */
 .oc-refined-stepper {
-  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+  font-family: var(
+    --vscode-font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif
+  );
   position: relative;
 }
 
 /* Enhanced stepper item - subtle, no hover effects */
 .oc-refined-stepper-item {
   position: relative;
-  padding: 3px 8px;
+  padding: 3px 0px;
   margin: 0;
   border-radius: 6px;
   background: transparent;
@@ -1830,7 +2044,7 @@ body {
 
 /* Pending state */
 .oc-refined-indicator.pending::before {
-  content: '';
+  content: "";
   position: absolute;
   width: 5px;
   height: 5px;
@@ -1840,7 +2054,8 @@ body {
 }
 
 @keyframes pending-pulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 0.5;
     transform: scale(0.9);
   }
@@ -1869,7 +2084,15 @@ body {
   display: inline-block;
   padding: 3px 8px;
   border-radius: 12px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.05em;
@@ -1911,7 +2134,15 @@ body {
   display: inline-block;
   padding: 3px 7px;
   border-radius: 8px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   font-weight: 400;
   letter-spacing: 0.03em;
@@ -1924,7 +2155,14 @@ body {
 
 /* Enhanced event content - markdown support */
 .oc-refined-event-content {
-  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+  font-family: var(
+    --vscode-font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif
+  );
   font-size: 12px;
   line-height: 1.5;
   color: var(--oc-text-soft);
@@ -1938,7 +2176,15 @@ body {
 }
 
 .oc-refined-event-content .markdown-body code {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 12px;
   padding: 2px 4px;
   background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
@@ -1979,7 +2225,15 @@ body {
   background: color-mix(in srgb, var(--oc-text) 3%, transparent);
   border: none;
   color: var(--oc-text);
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   cursor: pointer;
   text-decoration: none;
@@ -2066,8 +2320,17 @@ body {
 }
 
 /* Enhanced typography for file operations */
-.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"]) .oc-refined-event-summary {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+.oc-refined-stepper-item:has([data-operation="write"], [data-operation="edit"])
+  .oc-refined-event-summary {
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 12px;
   line-height: 1.6;
   color: var(--oc-text);
@@ -2085,7 +2348,6 @@ body {
   opacity: 1;
 }
 
-
 /* Enhanced diff stats - minimal */
 .oc-refined-diff-stats {
   display: inline-flex;
@@ -2095,7 +2357,15 @@ body {
   border-radius: 4px;
   background: color-mix(in srgb, var(--oc-bg) 40%, transparent);
   border: 1px solid var(--oc-border-soft);
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   font-weight: 500;
 }
@@ -2123,11 +2393,19 @@ body {
 
 /* Technical measurement mark for diff preview */
 .oc-compact-diff-preview::before {
-  content: '┃';
+  content: "┃";
   position: absolute;
   left: 2px;
   top: 0;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 8px;
   color: color-mix(in srgb, var(--oc-accent) 25%, transparent);
   opacity: 0.4;
@@ -2146,7 +2424,7 @@ body {
 
 /* Hover effect for diff lines - technical scan */
 .oc-diff-line::before {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0;
   background: linear-gradient(
@@ -2193,22 +2471,29 @@ body {
 
 /* Technical corner for "more" section */
 .oc-compact-diff-more::before {
-  content: '';
+  content: "";
   position: absolute;
   top: -1px;
   right: 4px;
   width: 8px;
   height: 1px;
-  background: linear-gradient(90deg, transparent 0%, currentColor 50%, transparent 100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    currentColor 50%,
+    transparent 100%
+  );
   opacity: 0.2;
 }
 
 /* Operation-specific diff preview styling */
-.oc-refined-stepper-item:has([data-operation="write"]) .oc-compact-diff-preview {
+.oc-refined-stepper-item:has([data-operation="write"])
+  .oc-compact-diff-preview {
   border-left-color: color-mix(in srgb, #10b981 20%, transparent);
 }
 
-.oc-refined-stepper-item:has([data-operation="write"]) .oc-compact-diff-preview::before {
+.oc-refined-stepper-item:has([data-operation="write"])
+  .oc-compact-diff-preview::before {
   color: color-mix(in srgb, #10b981 30%, transparent);
 }
 
@@ -2216,7 +2501,8 @@ body {
   border-left-color: color-mix(in srgb, var(--oc-op-blue) 20%, transparent);
 }
 
-.oc-refined-stepper-item:has([data-operation="edit"]) .oc-compact-diff-preview::before {
+.oc-refined-stepper-item:has([data-operation="edit"])
+  .oc-compact-diff-preview::before {
   color: color-mix(in srgb, var(--oc-op-blue) 30%, transparent);
 }
 
@@ -2247,7 +2533,15 @@ body {
   gap: 3px;
   padding: 2px 6px;
   border-radius: 4px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   font-weight: 400;
   letter-spacing: 0.03em;
@@ -2266,7 +2560,15 @@ body {
   border-radius: 3px;
   background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--oc-accent) 12%, transparent);
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   font-weight: 500;
   color: var(--oc-accent);
@@ -2289,7 +2591,15 @@ body {
 }
 
 .oc-bash-command-code code {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   line-height: 1.5;
   color: var(--oc-text-soft);
@@ -2315,7 +2625,15 @@ body {
 }
 
 .oc-search-block-scope {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -2327,7 +2645,15 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   color: var(--oc-text-muted);
 }
@@ -2344,7 +2670,15 @@ body {
 }
 
 .oc-search-block-code code {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   line-height: 1.5;
   color: var(--oc-text-soft);
@@ -2369,7 +2703,15 @@ body {
 }
 
 .oc-refined-command-label {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 9px;
   font-weight: 600;
   text-transform: uppercase;
@@ -2385,7 +2727,15 @@ body {
 }
 
 .oc-refined-command-code code {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 12px;
   line-height: 1.6;
   color: var(--oc-text-soft);
@@ -2401,7 +2751,15 @@ body {
 
 .oc-bash-output pre {
   margin: 0;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 11px;
   line-height: 1.5;
   color: var(--oc-text-soft);
@@ -2421,7 +2779,15 @@ body {
   overflow: hidden;
   background: #0d1117;
   border: 1px solid #30363d;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
@@ -2490,7 +2856,9 @@ body {
 }
 
 @keyframes blink {
-  50% { opacity: 0; }
+  50% {
+    opacity: 0;
+  }
 }
 
 /* Terminal Body */
@@ -2544,8 +2912,13 @@ body {
 }
 
 @keyframes pulse-stream {
-  0%, 100% { background: var(--oc-term-bg); }
-  50% { background: var(--oc-neutral-bg-hover); }
+  0%,
+  100% {
+    background: var(--oc-term-bg);
+  }
+  50% {
+    background: var(--oc-neutral-bg-hover);
+  }
 }
 
 /* Terminal Line Header */
@@ -2579,8 +2952,13 @@ body {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .terminal-operation {
@@ -2648,7 +3026,15 @@ body {
 }
 
 .terminal-file-path {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   word-break: break-all;
 }
 
@@ -2677,7 +3063,15 @@ body {
 .terminal-updates {
   font-size: 9px;
   color: #8b949e;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   padding: 2px 6px;
   background: rgba(134, 153, 170, 0.15);
   border-radius: 3px;
@@ -2723,7 +3117,15 @@ body {
 .terminal-tool-value,
 .terminal-query-value {
   color: var(--oc-term-accent);
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
 }
 
 /* Terminal Command */
@@ -2779,7 +3181,15 @@ body {
 }
 
 .terminal-command-code code {
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-size: 12px;
   line-height: 1.6;
   color: #c9d1d9;
@@ -2797,14 +3207,30 @@ body {
 .terminal-diff-add {
   font-size: 10px;
   color: #3fb950;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-weight: 600;
 }
 
 .terminal-diff-del {
   font-size: 10px;
   color: #ff7b72;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   font-weight: 600;
 }
 
@@ -2812,7 +3238,15 @@ body {
 .terminal-view-diff {
   padding: 4px 8px;
   font-size: 9px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   color: var(--oc-term-accent);
   background: transparent;
   border: 1px solid #30363d;
@@ -2856,7 +3290,15 @@ body {
   width: 100%;
   padding: 8px 14px;
   font-size: 10px;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
   color: var(--oc-term-accent);
   background: rgba(48, 54, 61, 0.3);
   border: none;
@@ -2894,7 +3336,9 @@ body {
   border-radius: 4px;
   display: flex;
   align-items: center;
-  transition: color 0.15s ease, background-color 0.15s ease;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
 }
 
 .oc-expandable-toggle:hover {
@@ -2913,7 +3357,9 @@ body {
 
 .oc-expandable-content {
   overflow: hidden;
-  transition: max-height 0.2s ease, opacity 0.2s ease;
+  transition:
+    max-height 0.2s ease,
+    opacity 0.2s ease;
 }
 
 .oc-expandable-content--collapsed {
@@ -2958,8 +3404,13 @@ body {
 }
 
 @keyframes success-bounce {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.2); }
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2);
+  }
 }
 
 /* Error state */
@@ -2969,9 +3420,16 @@ body {
 }
 
 @keyframes error-shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-3px); }
-  75% { transform: translateX(3px); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
 }
 
 /* Running state */
@@ -3002,7 +3460,9 @@ body {
   /* Start hidden, animate to visible */
   mask-position: 100% 0;
   -webkit-mask-position: 100% 0;
-  will-change: mask-image, -webkit-mask-image;
+  will-change:
+    mask-image,
+    -webkit-mask-image;
   animation: typing-reveal steps(40, end) forwards;
 }
 
@@ -3014,7 +3474,9 @@ body {
 }
 
 /* Fallback for browsers without mask-image support */
-@supports not (mask-image: linear-gradient(to right, black 50%, transparent 50%)) {
+@supports not (
+  mask-image: linear-gradient(to right, black 50%, transparent 50%)
+) {
   .oc-typing-text {
     display: inline-block;
     overflow: hidden;
@@ -3142,7 +3604,11 @@ body {
 
 .oc-card-subtle {
   @apply rounded-lg border overflow-hidden transition-all duration-200;
-  background-color: color-mix(in srgb, var(--oc-bg) 75%, var(--vscode-editor-foreground) 1%);
+  background-color: color-mix(
+    in srgb,
+    var(--oc-bg) 75%,
+    var(--vscode-editor-foreground) 1%
+  );
   border-color: var(--oc-border-soft);
 }
 
@@ -3175,7 +3641,11 @@ body {
 .oc-warning {
   @apply rounded-lg border p-2.5 transition-all duration-200;
   border-color: rgba(217, 119, 6, 0.4);
-  background-color: linear-gradient(to bottom right, rgba(217, 119, 6, 0.09), rgba(180, 83, 9, 0.06));
+  background-color: linear-gradient(
+    to bottom right,
+    rgba(217, 119, 6, 0.09),
+    rgba(180, 83, 9, 0.06)
+  );
   color: rgba(251, 191, 36, 1);
   backdrop-filter: blur(4px);
 }
@@ -3342,7 +3812,15 @@ body {
 
 .oc-warning-text-primary {
   color: #fbbf24;
-  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
 }
 
 .oc-warning-text-secondary {

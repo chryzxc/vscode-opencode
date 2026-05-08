@@ -8150,61 +8150,16 @@ export class ChatViewProvider
         ? filePath
         : path.join(workspaceFolder.uri.fsPath, filePath);
       const fileUri = vscode.Uri.file(fullPath);
-      const cwd = workspaceFolder.uri.fsPath;
 
-      const runGit = (...args: string[]): Promise<string> =>
-        new Promise((resolve, reject) => {
-          cp.execFile(
-            "git",
-            args,
-            { cwd, maxBuffer: 10 * 1024 * 1024 },
-            (err, stdout) => {
-              // exit code 1 from git diff means there are changes (not an error)
-              if (err && err.code !== 1) {
-                reject(err);
-              } else {
-                resolve(stdout);
-              }
-            },
-          );
-        });
-
-      let diffOutput = "";
+      // Use VS Code's builtin git diff viewer
+      // Try git.openChange command first (available in VS Code's git extension)
       try {
-        // Try HEAD diff first (tracked modified file)
-        diffOutput = await runGit("diff", "HEAD", "--", fullPath);
-        if (!diffOutput) {
-          // Maybe the file is staged but not committed — try staged diff
-          diffOutput = await runGit("diff", "--cached", "--", fullPath);
-        }
-        if (!diffOutput) {
-          // New untracked file: generate a pseudo-diff showing full content as additions
-          const content = await vscode.workspace.fs.readFile(fileUri);
-          const text = new TextDecoder().decode(content);
-          const lines = text.split("\n");
-          diffOutput = [
-            `--- /dev/null`,
-            `+++ b/${filePath.replace(/\\/g, "/")}`,
-            `@@ -0,0 +1,${lines.length} @@`,
-            ...lines.map((l) => `+${l}`),
-          ].join("\n");
-        }
-      } catch (e) {
-        log.warn(`git diff failed: ${e instanceof Error ? e.message : String(e)}`, {});
+        await vscode.commands.executeCommand("git.openChange", fileUri);
+        return;
+      } catch {
+        // Fallback: open the file normally - VS Code will show git diff decorations
+        await vscode.commands.executeCommand("vscode.open", fileUri);
       }
-
-      if (diffOutput) {
-        const diffFiles = this.parseUnifiedDiff(diffOutput);
-        if (diffFiles.length > 0) {
-          await vscode.commands.executeCommand("opencode.showDiffReview", {
-            files: diffFiles,
-          });
-          return;
-        }
-      }
-
-      // Absolute fallback: open the file normally
-      await vscode.commands.executeCommand("vscode.open", fileUri);
     } catch (error: any) {
       vscode.window.showErrorMessage(`Failed to open diff: ${error.message}`);
     }
