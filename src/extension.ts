@@ -535,11 +535,11 @@ export async function activate(context: vscode.ExtensionContext) {
         );
         // Show user-friendly message about server not being available
         vscode.window.showWarningMessage(
-          "OpenCode server failed to start. Make sure 'opencode' CLI is installed (npm install -g opencode-ai).",
+          "OpenCode server failed to start. Make sure 'opencode' CLI is installed from https://github.com/anomalyco/opencode.",
           "Install Guide"
         ).then((choice) => {
           if (choice === "Install Guide") {
-            vscode.env.openExternal(vscode.Uri.parse("https://github.com/opencode-ai/opencode"));
+            vscode.env.openExternal(vscode.Uri.parse("https://github.com/anomalyco/opencode"));
           }
         });
       }

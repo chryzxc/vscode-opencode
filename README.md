@@ -222,7 +222,7 @@ Key differentiators over a plain terminal OpenCode workflow:
 2. **VS Code** ≥ 1.85.0
 3. **OpenCode installed on your device** (required runtime):
    ```bash
-   npm install -g opencode-ai
+   npm install -g opencode
    ```
 4. Configure at least one AI provider in OpenCode:
    ```bash

@@ -617,7 +617,7 @@ export class OpencodeServerManager {
 
         if (error.message.includes("ENOENT")) {
           vscode.window.showErrorMessage(
-            "OpenCode CLI not found. Please install it first: npm install -g opencode-ai",
+            "OpenCode CLI not found. Please install it first from https://github.com/anomalyco/opencode",
           );
         }
 
