@@ -1,18 +1,38 @@
 {
   "name": "opencode-vscode-chryzxc",
-  "displayName": "OpenCode",
-  "description": "OpenCode integration for VS Code",
+  "displayName": "OpenCode (VS Code Extension)",
+  "description": "OpenCode in VS Code: streaming AI chat, implementation plans, subagent tracking, quota monitoring, and session management.",
   "repository": {
     "type": "git",
     "url": "https://github.com/chryzxc/vscode-opencode.git"
   },
+  "homepage": "https://github.com/chryzxc/vscode-opencode#readme",
+  "bugs": {
+    "url": "https://github.com/chryzxc/vscode-opencode/issues"
+  },
   "version": "0.1.0",
   "icon": "resources/extension-icon.png",
   "publisher": "chryzxc",
+  "galleryBanner": {
+    "color": "#0b1220",
+    "theme": "dark"
+  },
   "type": "module",
   "engines": {
     "vscode": "^1.85.0"
   },
+  "keywords": [
+    "opencode",
+    "ai",
+    "coding assistant",
+    "agent",
+    "chat",
+    "implementation plan",
+    "subagent",
+    "quota",
+    "sse",
+    "code generation"
+  ],
   "categories": [
     "AI",
     "Chat",
@@ -222,6 +242,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "npm run typecheck && eslint src --ext ts",
     "package": "npx @vscode/vsce package",
+    "package:marketplace": "sh -c 'test -n \"$VSCE_BASE_IMAGES_URL\" || { echo \"VSCE_BASE_IMAGES_URL is required\"; exit 1; }; npx @vscode/vsce package --baseImagesUrl \"$VSCE_BASE_IMAGES_URL\" --baseContentUrl \"${VSCE_BASE_CONTENT_URL:-$VSCE_BASE_IMAGES_URL}\"'",
+    "publish:marketplace": "sh -c 'test -n \"$VSCE_BASE_IMAGES_URL\" || { echo \"VSCE_BASE_IMAGES_URL is required\"; exit 1; }; npx @vscode/vsce publish --baseImagesUrl \"$VSCE_BASE_IMAGES_URL\" --baseContentUrl \"${VSCE_BASE_CONTENT_URL:-$VSCE_BASE_IMAGES_URL}\"'",
     "analyze-logs": "npx tsx scripts/analyze-logs.ts logs/opencode.log",
     "analyze-logs:summary": "npx tsx scripts/analyze-logs.ts logs/opencode.log --summary",
     "analyze-logs:flows": "npx tsx scripts/analyze-logs.ts logs/opencode.log --flows",

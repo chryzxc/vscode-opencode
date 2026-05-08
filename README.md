@@ -10,6 +10,38 @@ A VS Code extension that wraps the [OpenCode](https://opencode.ai) AI coding ass
 > [!NOTE]
 > Marketplace publishing, releases, and support for this extension are managed by the project author (`chryzxc`) only.
 
+## Screenshots & GIFs
+
+This repository is public, so relative image links from `./assets/` render correctly on GitHub and are suitable for Marketplace publishing.
+
+### Demo GIF
+
+![OpenCode demo](./assets/demo.gif)
+
+### Conversation View
+
+![Conversation view 1](./assets/conversation-1.png)
+![Conversation view 2](./assets/conversation-2.png)
+![Conversation view 3](./assets/conversation-3.png)
+
+### Extended Panels
+
+![Extended panel 1](./assets/extended-panel-1.png)
+![Extended panel 2](./assets/extended-panel-2.png)
+
+### Quota + Questions
+
+![Quota popover](./assets/quota-popover.png)
+![Interactive questions](./assets/interactive-questions.png)
+
+### Asset Tips
+
+- Use PNG for screenshots and GIF/WebM for demos.
+- Keep screenshot width around `1400px` for crisp Marketplace rendering.
+- Keep GIFs short (8-20s) and optimized to avoid large Marketplace payloads.
+- Prefer dark-theme captures if your extension is primarily dark-themed.
+- Keep screenshot assets versioned in `assets/` so README visuals stay reproducible across releases.
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -127,56 +159,6 @@ Key differentiators over a plain terminal OpenCode workflow:
 - Auto-reconnect with 5-second back-off on connection loss
 - AbortController cancellation on stop/new session
 - Stop Request button to interrupt any in-flight AI response
-
----
-
-## Demo
-
-<img src="./assets/demo.gif" alt="Demo" width="700" />
-
-## Screenshots & GIFs
-
-Use this section for Marketplace visuals. If your repository is private, do **not** rely on `raw.githubusercontent.com` links. Instead, keep assets inside the extension package (recommended: `resources/marketplace/`) and reference them with relative paths.
-
-### Recommended Asset Set
-
-- Chat main view (assistant response + metrics chips)
-- Session history modal
-- Active Task panel (streaming progress)
-- Quota Monitor panel
-- Subagent detail modal
-- Plan view (`implementation_plan.md`)
-- Short GIF: end-to-end flow (prompt -> stream -> plan/task panel update)
-
-### Example Markdown
-
-```md
-## Screenshots
-
-### Chat Panel
-
-![Chat panel](resources/marketplace/chat-panel.png)
-
-### Session Management
-
-![Session modal](resources/marketplace/session-modal.png)
-
-### Quota Monitor
-
-![Quota monitor](resources/marketplace/quota-monitor.png)
-
-## Demo
-
-![OpenCode demo](resources/marketplace/opencode-demo.gif)
-```
-
-### Asset Tips
-
-- Use PNG for screenshots and GIF/WebM for demos.
-- Keep screenshot width around `1400px` for crisp Marketplace rendering.
-- Keep GIFs short (8-20s) and optimized to avoid large Marketplace payloads.
-- Prefer dark-theme captures if your extension is primarily dark-themed.
-- For private repos, prefer relative asset links from `resources/marketplace/` so Marketplace can still render visuals.
 
 ---
 
@@ -713,38 +695,6 @@ The following must never be silently removed or broken:
 - **Stop Request button** — aborts in-flight AI responses
 - **React webview contract** — `<div id="root">`, `chat.js`, and `chat.css` must be wired in `getHtmlContent`
 
-npm run watch
-
-# Run tests
-
-npm test
-
-# Lint
-
-npm run lint
-
-```
-
-## Architecture
-
-```
-
-extension/
-├── src/
-│ ├── extension.ts # Entry point
-│ ├── services/
-│ │ ├── OpencodeServerManager.ts # Server lifecycle
-│ │ └── SessionService.ts # Session management
-│ └── providers/
-│ ├── ChatViewProvider.ts # Chat UI
-│ └── StatusBarProvider.ts # Status indicator
-└── webview/
-└── chat/
-├── app.js # Chat logic
-└── styles.css # Chat styles
-
-```
-
 ## License
 
 MIT
@@ -752,4 +702,3 @@ MIT
 ## Credits
 
 Built on top of [OpenCode](https://opencode.ai) by Anomaly.
-```
