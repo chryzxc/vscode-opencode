@@ -1,0 +1,65 @@
+# Dependencies
+node_modules/**
+**/node_modules/**
+
+# Build artifacts
+**/*.map
+**/*.map.js
+dist/**/dist/
+dist/**/*.map
+
+# Source and test files
+src/
+**/src/**
+**/*.ts
+**/*.tsx
+**/*.test.*
+tests/
+**/tests/**
+*.test.*
+
+# Config files
+.vscode/**
+.claude/**
+.gitignore
+.eslintignore
+.eslintrc*
+prettier.config*
+tsconfig.json
+vitest.config.*
+jest.config.*
+postcss.config.*
+vite.config.*
+
+# Build config
+esbuild.config.cjs
+
+# Scripts and dev files
+scripts/**
+.githooks/**
+
+# Documentation (keep README.md, CHANGELOG.md, LICENSE)
+**/*.md
+!README.md
+!readme.md
+!CHANGELOG.md
+!changelog.md
+
+# Assets - large demo files
+assets/demo.gif
+assets/**/*.gif
+
+# Lock files
+package-lock.json
+**/package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# CI/CD
+.github/**
+.gitlab-ci.yml
+azure-pipelines.yml
+
+# Misc
+.DS_Store
+*.log
