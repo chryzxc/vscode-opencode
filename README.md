@@ -34,14 +34,6 @@ This repository is public, so relative image links from `./assets/` render corre
 ![Quota popover](./assets/quota-popover.png)
 ![Interactive questions](./assets/interactive-questions.png)
 
-### Asset Tips
-
-- Use PNG for screenshots and GIF/WebM for demos.
-- Keep screenshot width around `1400px` for crisp Marketplace rendering.
-- Keep GIFs short (8-20s) and optimized to avoid large Marketplace payloads.
-- Prefer dark-theme captures if your extension is primarily dark-themed.
-- Keep screenshot assets versioned in `assets/` so README visuals stay reproducible across releases.
-
 ## Table of Contents
 
 - [Overview](#overview)
