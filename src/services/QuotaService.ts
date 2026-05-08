@@ -89,9 +89,68 @@ const copilotConfigPath = path.join(
 function readJsonFile<T>(filePath: string): T | null {
   try {
     const raw = fs.readFileSync(filePath, "utf8");
-    return JSON.parse(raw) as T;
+    return safeJsonParse(raw) as T;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Safely parse JSON, handling common issues like BOMs and trailing content
+ */
+function safeJsonParse(raw: string): any {
+  // Remove BOM if present
+  let cleaned = raw.replace(/^﻿/, '');
+
+  // Try parsing as-is first
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    // If that fails, try to extract JSON from the response
+    // Look for object start and end
+    const firstBrace = cleaned.indexOf('{');
+    const firstBracket = cleaned.indexOf('[');
+    const startIndex = firstBrace >= 0 && (firstBracket < 0 || firstBrace < firstBracket)
+      ? firstBrace
+      : firstBracket;
+
+    if (startIndex >= 0) {
+      // Find matching end bracket
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      const startChar = cleaned[startIndex];
+      const endChar = startChar === '{' ? '}' : ']';
+
+      for (let i = startIndex; i < cleaned.length; i++) {
+        const char = cleaned[i];
+
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (char === '\\') {
+          escape = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+
+        if (char === startChar) {
+          depth++;
+        } else if (char === endChar) {
+          depth--;
+          if (depth === 0) {
+            const extracted = cleaned.substring(startIndex, i + 1);
+            return JSON.parse(extracted);
+          }
+        }
+      }
+    }
+    throw e;
   }
 }
 
@@ -397,7 +456,7 @@ export class QuotaService extends EventEmitter {
             client_id: OPENAI_CLIENT_ID,
           }),
         );
-        const refreshed = JSON.parse(refreshResponse.body);
+        const refreshed = safeJsonParse(refreshResponse.body);
         if (refreshed.access_token) {
           token = refreshed.access_token;
 
@@ -455,7 +514,7 @@ export class QuotaService extends EventEmitter {
         throw new Error(`HTTP ${response.statusCode}: ${response.body.substring(0, 200)}`);
       }
 
-      const json = JSON.parse(response.body);
+      const json = safeJsonParse(response.body);
 
       const quotas: QuotaItem[] = [];
 
@@ -586,7 +645,7 @@ export class QuotaService extends EventEmitter {
         "User-Agent": USER_AGENT,
         "Content-Type": "application/json",
       });
-      const json = JSON.parse(response.body);
+      const json = safeJsonParse(response.body);
       const quotas: QuotaItem[] = [];
 
       const limits: any[] = Array.isArray(json?.data?.limits)
@@ -674,7 +733,7 @@ export class QuotaService extends EventEmitter {
             grant_type: "urn:ietf:params:oauth:grant-type:device_code",
           }),
         );
-        const refreshed = JSON.parse(refreshResponse.body);
+        const refreshed = safeJsonParse(refreshResponse.body);
         if (refreshed.access_token) {
           token = refreshed.access_token;
         }
@@ -706,7 +765,7 @@ export class QuotaService extends EventEmitter {
           "Copilot-Language-Server-Version": COPILOT_VERSION,
         },
       );
-      const copilotToken = JSON.parse(copilotTokenResponse.body);
+      const copilotToken = safeJsonParse(copilotTokenResponse.body);
       const apiToken: string = copilotToken.token ?? token;
 
       const userResponse = await httpsGet(
@@ -718,7 +777,7 @@ export class QuotaService extends EventEmitter {
           "Editor-Plugin-Version": COPILOT_EDITOR_PLUGIN_VERSION,
         },
       );
-      const userJson = JSON.parse(userResponse.body);
+      const userJson = safeJsonParse(userResponse.body);
 
       const premiumSnapshot = userJson?.quota_snapshots?.premium_interactions;
 
@@ -748,7 +807,7 @@ export class QuotaService extends EventEmitter {
           "Editor-Version": COPILOT_EDITOR_VERSION,
           "Editor-Plugin-Version": COPILOT_EDITOR_PLUGIN_VERSION,
         });
-        const usageJson = JSON.parse(usageResponse.body);
+        const usageJson = safeJsonParse(usageResponse.body);
         used = Number(usageJson?.premium_requests_used ?? 0);
         remaining = Math.max(0, effectiveLimit - used);
         rawRemainPct =
@@ -784,12 +843,18 @@ export class QuotaService extends EventEmitter {
         ],
       };
     } catch (e) {
+      const errorMessage = String(e);
+      // Include more context for JSON parsing errors
+      const enhancedError = errorMessage.includes('JSON')
+        ? `${errorMessage}. Check if Copilot API response format has changed.`
+        : errorMessage;
+
       return {
         platform: "github-copilot",
         account: config?.username ?? "GitHub Copilot",
         title: "GitHub Copilot Account Quota",
         status: "error",
-        error: String(e),
+        error: enhancedError,
         quotas: [],
       };
     }
@@ -837,7 +902,7 @@ export class QuotaService extends EventEmitter {
         },
         JSON.stringify({}),
       );
-      const json = JSON.parse(response.body);
+      const json = safeJsonParse(response.body);
       const modelsInfo: any[] = json?.models ?? [];
 
       const quotas: QuotaItem[] = [];
