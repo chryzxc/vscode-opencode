@@ -2,6 +2,7 @@
   "name": "opencode-vscode-chryzxc",
   "displayName": "OpenCode (VS Code Extension)",
   "description": "OpenCode in VS Code: streaming AI chat, implementation plans, subagent tracking, quota monitoring, and session management.",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/chryzxc/vscode-opencode.git"
@@ -10,7 +11,7 @@
   "bugs": {
     "url": "https://github.com/chryzxc/vscode-opencode/issues"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "icon": "resources/extension-icon.png",
   "publisher": "chryzxc",
   "galleryBanner": {
