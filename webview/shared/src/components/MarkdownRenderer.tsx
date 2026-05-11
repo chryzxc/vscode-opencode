@@ -11,10 +11,64 @@ interface MarkdownRendererProps {
   isInline?: boolean;
 }
 
+const EXT_COLORS: Record<string, string> = {
+  ts: '#3178c6',
+  tsx: '#3178c6',
+  js: '#f1e05a',
+  jsx: '#f1e05a',
+  json: '#f1e05a',
+  md: '#519aba',
+  py: '#3572a5',
+  css: '#563d7c',
+  html: '#e34c26',
+  env: '#ecd53f',
+  lock: '#6e7681',
+  lockb: '#6e7681',
+};
+
 
 function getFileExtension(filePath: string): string {
-  const match = filePath.match(/\.([a-zA-Z0-9]+)(?::|$)/);
-  return match ? match[1].toLowerCase() : '';
+  const fileName = (filePath.split(/[/\\]/).pop() || '').split(':')[0];
+  const index = fileName.lastIndexOf('.');
+  return index >= 0 && index < fileName.length - 1
+    ? fileName.slice(index + 1).toLowerCase()
+    : '';
+}
+
+function getFileIconKeys(filePath: string): string[] {
+  const fileName = (filePath.split(/[/\\]/).pop() || '').split(':')[0].toLowerCase();
+  if (!fileName) return [];
+
+  const parts = fileName.split('.');
+  const extensionKeys =
+    parts.length > 1
+      ? parts
+          .slice(1)
+          .map((_, index) => parts.slice(index + 1).join('.'))
+          .reverse()
+      : [];
+
+  return Array.from(new Set([fileName, ...extensionKeys].filter(Boolean)));
+}
+
+function hasThemeIcon(element: HTMLElement): boolean {
+  const before = window.getComputedStyle(element, '::before');
+  const content = before.getPropertyValue('content');
+  const backgroundImage = before.getPropertyValue('background-image');
+
+  return (
+    (!!content && content !== 'none' && content !== 'normal' && content !== '""') ||
+    (!!backgroundImage && backgroundImage !== 'none')
+  );
+}
+
+function makeFileSvg(): string {
+  return (
+    '<svg class="file-icon-svg" viewBox="0 0 16 16" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+    '<path d="M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z" fill="#6e7681" opacity="0.18"/>' +
+    '<path d="M9.5 1.75V5.25H13M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z" stroke="#6e7681" stroke-width="1.2" stroke-linejoin="round"/>' +
+    '</svg>'
+  );
 }
 
 /**
@@ -75,7 +129,7 @@ function injectFileIcons(container: HTMLElement): void {
         }
 
         const ext = getFileExtension(filePath);
-        const fileName = (filePath.split(/[/\\]/).pop() || '').toLowerCase();
+        const iconKeys = getFileIconKeys(filePath);
 
         const cleanKey = (s: string) =>
           s.replace(/\./g, '-').replace(/\//g, '-').replace(/\+/g, 'p')
@@ -103,11 +157,10 @@ function injectFileIcons(container: HTMLElement): void {
         const iconEl = document.createElement('span');
         iconEl.className = [
           'file-icon',
-          `file-icon-type-${cleanKey(fileName)}`,
-          `file-icon-type-${cleanKey(ext)}`,
-          'file-icon-type-file',
+          ...iconKeys.map((key) => `file-icon-type-${cleanKey(key)}`),
         ].join(' ');
         iconEl.setAttribute('aria-hidden', 'true');
+        iconEl.dataset.fileIconPendingFallback = 'true';
         // Inline style mirrors FileIcon's exact layout so theme CSS aligns correctly
         iconEl.style.cssText =
           'width:16px;height:16px;display:inline-flex;align-items:center;' +
@@ -115,7 +168,7 @@ function injectFileIcons(container: HTMLElement): void {
 
         const textEl = document.createElement('span');
         textEl.textContent = filePath;
-        textEl.style.cssText = 'vertical-align:middle;';
+        textEl.style.cssText = `vertical-align:middle;color:${EXT_COLORS[ext] || 'inherit'};`;
 
         btn.appendChild(iconEl);
         btn.appendChild(textEl);
@@ -141,6 +194,32 @@ function injectFileIcons(container: HTMLElement): void {
   };
 
   walk(container);
+
+  requestAnimationFrame(() => {
+    const icons = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-file-icon-pending-fallback="true"]'),
+    );
+
+    for (const icon of icons) {
+      if (hasThemeIcon(icon)) {
+        delete icon.dataset.fileIconPendingFallback;
+        continue;
+      }
+      icon.classList.add('file-icon-type-file');
+    }
+
+    requestAnimationFrame(() => {
+      for (const icon of icons) {
+        if (hasThemeIcon(icon)) {
+          delete icon.dataset.fileIconPendingFallback;
+          continue;
+        }
+
+        icon.innerHTML = makeFileSvg();
+        delete icon.dataset.fileIconPendingFallback;
+      }
+    });
+  });
 }
 
 
@@ -225,4 +304,3 @@ export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps
   );
 });
 MarkdownRenderer.displayName = 'MarkdownRenderer';
-
