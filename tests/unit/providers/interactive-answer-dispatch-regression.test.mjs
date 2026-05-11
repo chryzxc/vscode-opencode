@@ -47,7 +47,7 @@ test("interactive answer dispatch does not short-circuit while processing", () =
   );
 });
 
-test("send-now while processing still stops current request and drains queued input", () => {
+test("interactive force-send while processing does not abort the waiting question turn", () => {
   const scheduleDispatchBody = extractFunctionBody(
     providerSource,
     "private async schedulePromptDispatch(",
@@ -59,12 +59,12 @@ test("send-now while processing still stops current request and drains queued in
   );
   assert.match(
     scheduleDispatchBody,
-    /if \(this\.isProcessingRequest\)[\s\S]*if \(payload\.avoidAbortIfProcessing\) \{[\s\S]*return;[\s\S]*await this\.handleStopRequest\(sessionId\);/s,
-    "processing send path should stop active request when avoidAbortIfProcessing is false",
+    /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*!payload\.avoidAbortIfProcessing[\s\S]*this\.processingSessionIds\.has\(sessionId\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true/s,
+    "force-send should only abort active work when the caller did not request abort suppression",
   );
   assert.match(
     scheduleDispatchBody,
-    /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*this\.processingSessionIds\.has\(sessionId\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true/s,
-    "interactive force-send path should silently stop the waiting request before direct send",
+    /if \(this\.isProcessingRequest\)[\s\S]*if \(payload\.avoidAbortIfProcessing\) \{[\s\S]*return;[\s\S]*await this\.handleStopRequest\(sessionId\);/s,
+    "queued/steer processing path should still avoid aborting when avoidAbortIfProcessing is true",
   );
 });

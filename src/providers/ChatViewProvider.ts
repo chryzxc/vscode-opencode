@@ -780,13 +780,14 @@ export class ChatViewProvider
         ? "steer"
         : mode;
 
-    // Interactive submit path: some providers keep the previous turn in a
-    // waiting/processing state until an abort is issued. In that case we must
-    // stop first, but do it silently so the webview does not render an
-    // "Interrupted" banner for expected question/answer handoff.
+    // Interactive answer submits are real user turns. The previous question
+    // turn may still be marked as processing while it waits for input, but
+    // aborting it creates an unnecessary MessageAbortedError card in chat.
+    // Other force-send paths can still stop an active request before sending.
     if (
       mode === "send-now" &&
       payload.forceSendNow &&
+      !payload.avoidAbortIfProcessing &&
       this.processingSessionIds.has(sessionId)
     ) {
       await this.handleStopRequest(sessionId, {
@@ -4258,6 +4259,24 @@ export class ChatViewProvider
     return this.awaitingInteractiveAnswer || this.isInInteractiveResponseTransition();
   }
 
+  private shouldSuppressInteractiveHandoffAbort(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+
+    const looksLikeExpectedAbort =
+      normalized.includes("messageabortederror") ||
+      normalized === "aborted" ||
+      normalized.endsWith(": aborted") ||
+      normalized.includes("aborterror");
+    if (!looksLikeExpectedAbort) {
+      return false;
+    }
+
+    return this.awaitingInteractiveAnswer || this.isInInteractiveResponseTransition();
+  }
+
   private isInInteractiveResponseTransition(): boolean {
     return Date.now() <= this.interactiveResponseTransitionUntil;
   }
@@ -5817,7 +5836,7 @@ export class ChatViewProvider
           parts: [
             {
               type: "text",
-              text: persistedUserText,
+              text: text,
             },
           ],
           images: imageUrls,
@@ -6077,6 +6096,16 @@ export class ChatViewProvider
           response.error,
           "Failed to send message",
         );
+        if (this.shouldSuppressInteractiveHandoffAbort(errorMessage)) {
+          this.logger.info(
+            "Suppressing expected interactive handoff abort error",
+            {
+              sessionId: session.id,
+              errorMessage,
+            },
+          );
+          return;
+        }
         if (this.shouldSuppressInteractiveAwaitTimeout(errorMessage)) {
           this.logger.info(
             "Suppressing timeout error while awaiting interactive response",
@@ -6594,6 +6623,16 @@ export class ChatViewProvider
         error,
         "Failed to send message",
       );
+      if (this.shouldSuppressInteractiveHandoffAbort(errorMessage)) {
+        this.logger.info(
+          "Suppressing thrown interactive handoff abort error",
+          {
+            sessionId: drainSessionId,
+            errorMessage,
+          },
+        );
+        return;
+      }
       if (this.shouldSuppressInteractiveAwaitTimeout(errorMessage)) {
         this.logger.info(
           "Suppressing thrown timeout while awaiting interactive response",
@@ -7377,7 +7416,7 @@ export class ChatViewProvider
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: blob:; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: blob:; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource};">
   <link href="${styleUri}" rel="stylesheet">
   ${themeCssBlock}
   <title>OpenCode Chat</title>

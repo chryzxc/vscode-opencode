@@ -461,8 +461,30 @@ test('interactive popover sendMessage path marks interactive submits to avoid ab
   );
   assert.match(
     schedulePromptDispatchBody,
-    /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*this\.processingSessionIds\.has\(sessionId\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true/s,
-    'interactive force-send path should silently stop waiting request before dispatch to avoid stuck loading and interrupted banner',
+    /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*!payload\.avoidAbortIfProcessing[\s\S]*this\.processingSessionIds\.has\(sessionId\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true/s,
+    'interactive force-send path should suppress abort while non-interactive force-send can still stop active work',
+  );
+});
+
+test('interactive answer echo starts the next assistant loading state', () => {
+  const userMessageAppendedBody = extractFunctionBody(
+    handlerSource,
+    'case "userMessageAppended":',
+  );
+  assert.match(
+    userMessageAppendedBody,
+    /const isInteractiveAnswerSubmission =[\s\S]*isLikelyInteractiveAnswerSubmissionMessage\(message\)/s,
+    'userMessageAppended should identify interactive answer echoes',
+  );
+  assert.match(
+    userMessageAppendedBody,
+    /if \(isInteractiveAnswerSubmission\) \{[\s\S]*type:\s*"SET_INTERACTIVE_EVENTS"[\s\S]*\}/s,
+    'interactive answer echoes should clear stale popover state before loading',
+  );
+  assert.match(
+    userMessageAppendedBody,
+    /if \(isInteractiveAnswerSubmission\) \{[\s\S]*type:\s*"SET_PROCESSING"[\s\S]*payload:\s*true/s,
+    'interactive answer echoes should show the next assistant loading state',
   );
 });
 

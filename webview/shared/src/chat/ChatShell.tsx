@@ -37,6 +37,7 @@ type StreamViewportState = {
 };
 
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
+const WEBVIEW_BOOTSTRAP_CACHE_KEY = "opencode.chat.bootstrap.v1";
 
 function CompactionDivider({ at }: { at?: number }) {
   const label =
@@ -83,6 +84,7 @@ function ChatContent() {
   const previousIsLoadingSessionRef = useRef(state.isLoadingSession);
   const previousReceivedInitStateRef = useRef(state.receivedInitState);
   const previousStreamingActiveRef = useRef(Boolean(state.streaming?.isActive));
+  const didHydrateBootstrapRef = useRef(false);
   // Throttle "unseen updates" increments while the user is scrolled away from the
   // bottom. Stream events can arrive dozens of times per second, and incrementing
   // this counter for every tick causes avoidable React work during manual scrolling.
@@ -109,6 +111,73 @@ function ChatContent() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+  // Hydrate last known session/messages immediately on webview re-open so UI
+  // does not flash a blank/loading screen while extension bootstrap completes.
+  useEffect(() => {
+    if (didHydrateBootstrapRef.current) {
+      return;
+    }
+    didHydrateBootstrapRef.current = true;
+
+    try {
+      const raw = window.sessionStorage.getItem(WEBVIEW_BOOTSTRAP_CACHE_KEY);
+      if (!raw) {
+        return;
+      }
+      const parsed = JSON.parse(raw) as {
+        currentSessionId?: string;
+        messagesBySessionId?: Record<string, Message[]>;
+      };
+
+      const sessionId =
+        typeof parsed?.currentSessionId === "string" &&
+        parsed.currentSessionId.trim().length > 0
+          ? parsed.currentSessionId
+          : null;
+      const messagesBySessionId =
+        parsed?.messagesBySessionId &&
+        typeof parsed.messagesBySessionId === "object"
+          ? parsed.messagesBySessionId
+          : {};
+
+      if (!sessionId) {
+        return;
+      }
+
+      const cachedMessages = Array.isArray(messagesBySessionId[sessionId])
+        ? messagesBySessionId[sessionId]
+        : [];
+
+      dispatch({ type: "SET_SESSION_ID", payload: sessionId });
+      dispatch({
+        type: "CACHE_SESSION_MESSAGES",
+        payload: { sessionId, messages: cachedMessages },
+      });
+      if (cachedMessages.length > 0) {
+        dispatch({ type: "HYDRATE_SESSION_FROM_CACHE", payload: { sessionId } });
+      }
+    } catch {
+      // best-effort hydration only
+    }
+  }, [dispatch]);
+
+  // Persist a lightweight session/message snapshot for fast restore across
+  // sidebar/extension switches that recreate the webview.
+  useEffect(() => {
+    try {
+      const nextSnapshot = {
+        currentSessionId: state.currentSessionId,
+        messagesBySessionId: state.messagesBySessionId,
+      };
+      window.sessionStorage.setItem(
+        WEBVIEW_BOOTSTRAP_CACHE_KEY,
+        JSON.stringify(nextSnapshot),
+      );
+    } catch {
+      // storage can fail in restricted webview scenarios; ignore gracefully
+    }
+  }, [state.currentSessionId, state.messagesBySessionId]);
+
   useEffect(() => {
     streamViewportRef.current = streamViewport;
   }, [streamViewport]);
@@ -291,9 +360,15 @@ function ChatContent() {
   // Uses the new isLoadingSession state which is set during session switches
   // Note: We don't check if loadingSessionId === currentSessionId because during
   // the transition, currentSessionId hasn't been updated yet (timing issue)
-  const isSwitchingSession = state.isLoadingSession;
+  const isSwitchingSession = false;
 
-  const isConnecting = !state.receivedInitState || state.serverStatus === "connecting";
+  const hasCachedCurrentSessionMessages = Boolean(
+    state.currentSessionId &&
+      (state.messagesBySessionId?.[state.currentSessionId]?.length ?? 0) > 0,
+  );
+  const hasAnyRenderableConversation =
+    state.messages.length > 0 || hasCachedCurrentSessionMessages;
+  const isConnecting = false;
 
   if (isConnecting) {
     return (

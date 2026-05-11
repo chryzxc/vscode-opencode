@@ -69,10 +69,20 @@ test('FileIcon component applies correct theme CSS classes', () => {
   assert.match(messageComponentsSource, /export function FileIcon/, 'FileIcon component should be exported');
   assert.match(messageComponentsSource, /className=\{cn\(/, 'FileIcon should use cn for combining classes');
   assert.match(messageComponentsSource, /"file-icon"/, 'FileIcon should always have base file-icon class');
-  assert.match(messageComponentsSource, /cleanKey\(fileName\)/, 'FileIcon should use fileName for matching');
-  assert.match(messageComponentsSource, /cleanKey\(ext\)/, 'FileIcon should use extension for matching');
+  assert.match(messageComponentsSource, /getFileIconKeys/, 'FileIcon should build a candidate list for theme matching');
+  assert.match(messageComponentsSource, /fileName,\s*\.\.\.extensionKeys/, 'FileIcon should match both file names and extension suffixes');
+  assert.match(messageComponentsSource, /iconKeys\.map\(\(key\)\s*=>\s*`file-icon-type-\$\{cleanKey\(key\)\}`\)/, 'FileIcon should apply theme CSS classes for each candidate key');
+  assert.match(messageComponentsSource, /setUseGenericFileIcon\(true\)/, 'FileIcon should fall back to the current theme generic file icon');
   // Verify cleanKey uses dashes for dots (must match library cleanFileIconKey)
   assert.match(messageComponentsSource, /\.replace\(\/\\\.\/g,\s*['"-]-['"-]\)/, 'FileIcon cleanKey should replace dots with dashes (not underscores) to match library CSS class names');
   // Verify there is an SVG fallback for missing theme icons
   assert.match(messageComponentsSource, /file-icon-svg/, 'FileIcon should have an SVG fallback for when theme CSS provides no icon');
+});
+
+test('chat webview CSP allows icon theme font files', () => {
+  assert.match(
+    chatProviderSource,
+    /font-src\s+\$\{webview\.cspSource\}/,
+    'Chat webview CSP must allow VS Code icon theme font files to avoid missing-glyph squares',
+  );
 });
