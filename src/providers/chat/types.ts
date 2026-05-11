@@ -59,6 +59,7 @@ export type SessionSettings = {
   agent?: string;
   model?: { providerID: string; modelID: string; providerName?: string };
   thinkingLevel?: string;
+  thinkingByModel?: Record<string, string>;
 };
 
 /**
@@ -96,6 +97,8 @@ export type ChatModelOption = {
   name: string;
   providerName: string;
   contextLimit?: number;
+  reasoning?: boolean;
+  variants?: string[];
 };
 
 /**

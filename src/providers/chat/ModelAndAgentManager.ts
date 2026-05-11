@@ -116,6 +116,48 @@ export class ModelAndAgentManager {
     return this.availableModels;
   }
 
+  private getModelKey(providerID: string, modelID: string): string {
+    return `${providerID}/${modelID}`.toLowerCase();
+  }
+
+  private getGlobalThinkingByModel(): Record<string, string> {
+    return this.globalState.get<Record<string, string>>("thinkingByModel") ?? {};
+  }
+
+  private getAvailableVariants(providerID: string, modelID: string): string[] {
+    const model = this.availableModels.find(
+      (m) => m.providerID === providerID && m.modelID === modelID,
+    );
+    return Array.isArray(model?.variants) ? model.variants : [];
+  }
+
+  getEffectiveThinkingLevel(sessionId?: string): string | undefined {
+    const { providerID, modelID } = this.selectedModel;
+    const key = this.getModelKey(providerID, modelID);
+    const sessionLevel = sessionId
+      ? this.getSessionSettings(sessionId).thinkingByModel?.[key]
+      : undefined;
+    const globalLevel = this.getGlobalThinkingByModel()[key];
+    const legacyLevel = this.globalState.get<string>("thinkingLevel");
+    return sessionLevel ?? globalLevel ?? legacyLevel;
+  }
+
+  async setThinkingLevel(level: string, sessionId?: string): Promise<void> {
+    const { providerID, modelID } = this.selectedModel;
+    const key = this.getModelKey(providerID, modelID);
+
+    const globalMap = this.getGlobalThinkingByModel();
+    globalMap[key] = level;
+    await this.globalState.update("thinkingByModel", globalMap);
+    await this.globalState.update("thinkingLevel", level);
+
+    if (!sessionId) return;
+    const settings = this.getSessionSettings(sessionId);
+    const nextMap = { ...(settings.thinkingByModel ?? {}) };
+    nextMap[key] = level;
+    await this.persistSessionSettings(sessionId, { thinkingByModel: nextMap, thinkingLevel: level });
+  }
+
   /**
    * Handle get models request
    */
@@ -175,13 +217,31 @@ export class ModelAndAgentManager {
                     contextLimitRaw > 0
                     ? Math.floor(contextLimitRaw)
                     : undefined;
+                const capabilitiesRec = this.asRecord((modelConfig as any).capabilities);
+                const reasoning = Boolean(capabilitiesRec?.reasoning);
+                const rawVariants = this.asRecord((modelConfig as any).variants);
+                const variants = rawVariants
+                  ? Object.entries(rawVariants)
+                      .filter(([, variantConfig]) => {
+                        const rec = this.asRecord(variantConfig);
+                        return rec?.disabled !== true;
+                      })
+                      .map(([name]) => name)
+                  : [];
                 models.push({
                   providerID: provider.id,
                   modelID: modelID,
                   name: (modelConfig as any).name || modelID,
                   providerName: provider.name || provider.id,
                   contextLimit,
+                  reasoning,
+                  variants,
                 });
+                this.modelCapabilitiesService.rememberCapabilities(
+                  provider.id,
+                  modelID,
+                  { reasoning, variants },
+                );
               }
             }
           }
@@ -765,20 +825,26 @@ export class ModelAndAgentManager {
    * Resolve prompt variant
    */
   async resolvePromptVariant(sessionId: string): Promise<string | undefined> {
-    const savedLevel =
-      this.getSessionSettings(sessionId).thinkingLevel ??
-      this.globalState.get<string>("thinkingLevel");
+    const savedLevel = this.getEffectiveThinkingLevel(sessionId);
     if (!savedLevel) return undefined;
 
     const normalizedLevel = savedLevel.toLowerCase().trim();
     if (!normalizedLevel) return undefined;
 
     const { providerID, modelID } = this.selectedModel;
-    const capability = await this.modelCapabilitiesService.getCapabilities(providerID, modelID);
-
-    if (!capability || !capability.reasoning) return undefined;
-
-    if (providerID === 'anthropic' && normalizedLevel === 'high') return 'max';
+    let variants = this.getAvailableVariants(providerID, modelID).map((v) =>
+      v.toLowerCase().trim(),
+    );
+    if (variants.length === 0) {
+      const capability = await this.modelCapabilitiesService.getCapabilities(
+        providerID,
+        modelID,
+      );
+      variants = Array.isArray(capability?.variants)
+        ? capability.variants.map((v) => v.toLowerCase().trim())
+        : [];
+    }
+    if (variants.length === 0 || !variants.includes(normalizedLevel)) return undefined;
     return normalizedLevel;
   }
 }

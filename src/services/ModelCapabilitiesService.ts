@@ -118,6 +118,22 @@ export class ModelCapabilitiesService {
     return cap && Array.isArray(cap.variants) ? cap.variants : [];
   }
 
+  public rememberCapabilities(
+    providerID: string,
+    modelID: string,
+    capability: ModelCapability,
+  ): void {
+    const key = `${providerID}/${modelID}`;
+    this.apiCache.set(key, {
+      data: {
+        reasoning: Boolean(capability.reasoning),
+        variants: Array.isArray(capability.variants) ? [...capability.variants] : [],
+        thinkingConfig: capability.thinkingConfig ?? null,
+      },
+      timestamp: Date.now(),
+    });
+  }
+
   private parseEntryToCapability(entry: unknown): ModelCapability {
     // Validate entry is an object before type assertion
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {

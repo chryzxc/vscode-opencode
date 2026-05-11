@@ -1272,12 +1272,24 @@ export class ChatViewProvider
       });
 
       const sessionThinkingLevel =
-        this.modelAndAgentManager.getSessionSettings(sessionId).thinkingLevel ??
-        this.context.globalState.get<string>("thinkingLevel");
+        this.modelAndAgentManager.getEffectiveThinkingLevel(sessionId);
       if (sessionThinkingLevel) {
         this.view?.webview.postMessage({
           type: "thinkingLevelUpdate",
           level: sessionThinkingLevel,
+        });
+      }
+
+      const selectedOnLoad = this.modelAndAgentManager.getSelectedModel();
+      const immediateOnLoad = this.resolveCapabilityForModel(
+        selectedOnLoad?.providerID ?? "",
+        selectedOnLoad?.modelID ?? "",
+        null,
+      );
+      if (immediateOnLoad) {
+        this.view?.webview.postMessage({
+          type: "modelCapabilityUpdate",
+          capability: immediateOnLoad,
         });
       }
 
@@ -1288,10 +1300,17 @@ export class ChatViewProvider
           this.modelAndAgentManager.getSelectedModel()?.modelID ?? "",
         )
         .then((capability) => {
-          this.view?.webview.postMessage({
-            type: "modelCapabilityUpdate",
-            capability: capability ?? null,
-          });
+          const merged = this.resolveCapabilityForModel(
+            this.modelAndAgentManager.getSelectedModel()?.providerID ?? "",
+            this.modelAndAgentManager.getSelectedModel()?.modelID ?? "",
+            capability,
+          );
+          if (merged) {
+            this.view?.webview.postMessage({
+              type: "modelCapabilityUpdate",
+              capability: merged,
+            });
+          }
         })
         .catch(() => {
           // Minimal failure tracking for session-load capability fetches
@@ -1945,18 +1964,51 @@ export class ChatViewProvider
       modelID?: string;
       agent?: string;
       thinkingLevel?: string;
+      thinkingByModel?: Record<string, string>;
     },
   ): Promise<void> {
     const partial: any = {};
     if (settings.providerID) partial.providerID = settings.providerID;
     if (settings.modelID) partial.modelID = settings.modelID;
     if (settings.agent) partial.agent = settings.agent;
-    if (settings.thinkingLevel) partial.thinkingLevel = settings.thinkingLevel;
+    if ("thinkingLevel" in settings) partial.thinkingLevel = settings.thinkingLevel;
+    if (settings.thinkingByModel) partial.thinkingByModel = settings.thinkingByModel;
     return this.modelAndAgentManager.persistSessionSettings(sessionId, partial);
   }
 
   private async resolvePromptVariant(sessionId: string): Promise<string | undefined> {
     return this.modelAndAgentManager.resolvePromptVariant(sessionId);
+  }
+
+  private resolveCapabilityForModel(
+    providerID: string,
+    modelID: string,
+    capability?: { reasoning?: boolean; variants?: string[] } | null,
+  ): { reasoning: boolean; variants?: string[] } | null {
+    const knownModel = this.modelAndAgentManager
+      .getAvailableModels()
+      .find((m) => m.providerID === providerID && m.modelID === modelID);
+
+    const knownVariants = Array.isArray(knownModel?.variants)
+      ? knownModel.variants
+      : [];
+    const incomingVariants = Array.isArray(capability?.variants)
+      ? capability!.variants!
+      : [];
+    const variants = incomingVariants.length > 0 ? incomingVariants : knownVariants;
+    const reasoning =
+      Boolean(capability?.reasoning) ||
+      Boolean(knownModel?.reasoning) ||
+      variants.length > 0;
+
+    if (!knownModel && !capability) {
+      return null;
+    }
+
+    return {
+      reasoning,
+      variants: variants.length > 0 ? variants : undefined,
+    };
   }
 
   /**
@@ -2318,15 +2370,25 @@ export class ChatViewProvider
             });
 
             // Restore the session-specific thinking level (separate message type)
-            const bootstrapThinkingLevel =
-              (currentSession
-                ? this.getSessionSettings(currentSession.id).thinkingLevel
-                : undefined) ??
-              this.context.globalState.get<string>("thinkingLevel");
+            const bootstrapThinkingLevel = currentSession
+              ? this.modelAndAgentManager.getEffectiveThinkingLevel(currentSession.id)
+              : this.modelAndAgentManager.getEffectiveThinkingLevel();
             if (bootstrapThinkingLevel) {
               this.view?.webview.postMessage({
                 type: "thinkingLevelUpdate",
                 level: bootstrapThinkingLevel,
+              });
+            }
+
+            const immediateOnBootstrap = this.resolveCapabilityForModel(
+              this.selectedModel?.providerID ?? "",
+              this.selectedModel?.modelID ?? "",
+              null,
+            );
+            if (immediateOnBootstrap) {
+              this.view?.webview.postMessage({
+                type: "modelCapabilityUpdate",
+                capability: immediateOnBootstrap,
               });
             }
             // Fire-and-forget: fetch and broadcast current model capabilities on bootstrap (unconditional)
@@ -2336,10 +2398,17 @@ export class ChatViewProvider
                 this.selectedModel?.modelID ?? "",
               )
               .then((capability) => {
-                this.view?.webview.postMessage({
-                  type: "modelCapabilityUpdate",
-                  capability: capability ?? null,
-                });
+                const merged = this.resolveCapabilityForModel(
+                  this.selectedModel?.providerID ?? "",
+                  this.selectedModel?.modelID ?? "",
+                  capability,
+                );
+                if (merged) {
+                  this.view?.webview.postMessage({
+                    type: "modelCapabilityUpdate",
+                    capability: merged,
+                  });
+                }
               })
               .catch(() => {
                 // Minimal failure tracking for bootstrap capability fetches
@@ -2628,10 +2697,11 @@ export class ChatViewProvider
             this.logger.warn("Ignoring invalid model selection payload; providerID and modelID are required.", { incoming });
             break;
           }
+          const knownModels = this.modelAndAgentManager.getAvailableModels();
           let providerName: string | undefined = incoming.providerName;
           if (!providerName) {
-            // Try to resolve from cached models if available
-            const found = this.availableModels?.find(
+            // Try to resolve from discovered models if available.
+            const found = knownModels.find(
               (m) =>
                 m.providerID === incoming.providerID &&
                 m.modelID === incoming.modelID,
@@ -2644,6 +2714,7 @@ export class ChatViewProvider
             modelID: incoming.modelID,
             providerName,
           };
+          await this.modelAndAgentManager.setSelectedModel(this.selectedModel);
 
           // Persist selection
           await this.context.globalState.update(
@@ -2661,6 +2732,30 @@ export class ChatViewProvider
             providerName: this.selectedModel.providerName,
           });
 
+          const selectedModelOption = knownModels.find(
+            (m) =>
+              m.providerID === this.selectedModel.providerID &&
+              m.modelID === this.selectedModel.modelID,
+          );
+          if (selectedModelOption) {
+            // Prefer immediate SDK-derived capability from provider.list() so
+            // the UI remains stable even when network fallback lookups fail.
+            const immediateCapability = this.resolveCapabilityForModel(
+              this.selectedModel.providerID,
+              this.selectedModel.modelID,
+              {
+                reasoning: Boolean(selectedModelOption.reasoning),
+                variants: Array.isArray(selectedModelOption.variants)
+                  ? selectedModelOption.variants
+                  : [],
+              },
+            );
+            this.view?.webview.postMessage({
+              type: "modelCapabilityUpdate",
+              capability: immediateCapability,
+            });
+          }
+
           // Fetch and broadcast model capabilities (fire-and-forget).
           void this.modelCapabilitiesService
             .getCapabilities(
@@ -2669,51 +2764,33 @@ export class ChatViewProvider
             )
             .then(async (capability) => {
               this.capabilityFetchFailureCount = 0;
-              // Broadcast capability update (preserve existing behaviour)
-              this.view?.webview.postMessage({
-                type: "modelCapabilityUpdate",
-                capability: capability ?? null,
-              });
+              // Broadcast capability update only when we have a real payload.
+              // Avoid replacing a valid capability with null on transient misses.
+              const merged = this.resolveCapabilityForModel(
+                this.selectedModel.providerID,
+                this.selectedModel.modelID,
+                capability,
+              );
+              if (merged) {
+                this.view?.webview.postMessage({
+                  type: "modelCapabilityUpdate",
+                  capability: merged,
+                });
+              }
 
               // Check for stale persisted thinking level and clear if it's no
               // longer supported by the newly selected model.
               try {
-                const persistedLevel =
-                  (this.currentSessionId
-                    ? this.getSessionSettings(this.currentSessionId).thinkingLevel
-                    : undefined) ?? this.context.globalState.get<string>("thinkingLevel");
-
-                const newVariants = capability?.variants;
-                const isStale =
-                  persistedLevel &&
-                  (!Array.isArray(newVariants) || newVariants.length === 0 || !newVariants.includes(persistedLevel));
-
-                if (isStale) {
-                  this.logger.warn("Clearing stale thinking level on model switch", {
-                    staleLevel: persistedLevel,
-                    newVariants,
-                    modelID: this.selectedModel?.modelID,
-                  });
-
-                  // Clear from globalState
-                  await this.context.globalState.update("thinkingLevel", undefined);
-
-                  // Clear from session settings if applicable
-                  if (this.currentSessionId) {
-                    await this.persistSessionSettings(this.currentSessionId, {
-                      thinkingLevel: undefined,
-                    });
-                  }
-
-                  // Notify webview to reset its displayed thinking level
-                  this.view?.webview.postMessage({
-                    type: "thinkingLevelUpdate",
-                    level: "",
-                  });
-                }
+                const selectedLevel = this.modelAndAgentManager.getEffectiveThinkingLevel(
+                  this.currentSessionId ?? undefined,
+                );
+                this.view?.webview.postMessage({
+                  type: "thinkingLevelUpdate",
+                  level: selectedLevel ?? "",
+                });
               } catch (err) {
                 // Best-effort only — log and continue
-                this.logger.warn("Error while checking/clearing stale thinking level", { err });
+                this.logger.warn("Error while syncing thinking level on model switch", { err });
               }
             })
             .catch((err) => {
@@ -2721,10 +2798,6 @@ export class ChatViewProvider
                 "Failed to fetch model capabilities on model switch",
                 { err },
               );
-              this.view?.webview.postMessage({
-                type: "modelCapabilityUpdate",
-                capability: null,
-              });
               try {
                 this.capabilityFetchFailureCount = (this.capabilityFetchFailureCount || 0) + 1;
                 if (this.capabilityFetchFailureCount >= 3) {
@@ -2936,12 +3009,10 @@ export class ChatViewProvider
         case "setThinkingLevel": {
           const level = message.level as string | undefined;
           if (level) {
-            await this.context.globalState.update("thinkingLevel", level);
-            if (this.currentSessionId) {
-              await this.persistSessionSettings(this.currentSessionId, {
-                thinkingLevel: level,
-              });
-            }
+            await this.modelAndAgentManager.setThinkingLevel(
+              level,
+              this.currentSessionId ?? undefined,
+            );
             this.logger.info("Thinking level set", { level });
             // NOTE: The webview handler only listens for 'thinkingLevelUpdate' (not 'thinkingLevelSet')
             this.view?.webview.postMessage({
