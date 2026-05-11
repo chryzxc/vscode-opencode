@@ -2,47 +2,112 @@
 /* Centralized color configuration for easy theme customization */
 
 :root {
-  /* Primary Neutral Accent - The main accent color used throughout the UI */
-  --oc-neutral-accent: #71717a;
-  --oc-neutral-accent-soft: rgba(113, 113, 122, 0.1);
-  --oc-neutral-accent-glow: rgba(113, 113, 122, 0.2);
-  --oc-neutral-accent-hover: rgba(113, 113, 122, 0.15);
+  /* Primary Accent - follows VS Code scrollbar slider color */
+  --oc-neutral-accent: var(
+    --vscode-scrollbarSlider-background,
+    var(--vscode-button-background)
+  );
+  --oc-neutral-accent-soft: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 20%,
+    transparent
+  );
+  --oc-neutral-accent-glow: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 34%,
+    transparent
+  );
+  --oc-neutral-accent-hover: var(
+    --vscode-scrollbarSlider-hoverBackground,
+    var(--oc-neutral-accent)
+  );
 
   /* Border Colors */
-  --oc-neutral-border-light: rgba(113, 113, 122, 0.28);
-  --oc-neutral-border-medium: rgba(113, 113, 122, 0.22);
-  --oc-neutral-border-thin: rgba(113, 113, 122, 0.16);
-  --oc-neutral-border-faint: rgba(113, 113, 122, 0.11);
+  --oc-neutral-border-light: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 28%,
+    transparent
+  );
+  --oc-neutral-border-medium: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 22%,
+    transparent
+  );
+  --oc-neutral-border-thin: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 16%,
+    transparent
+  );
+  --oc-neutral-border-faint: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 11%,
+    transparent
+  );
 
   /* Background Colors */
-  --oc-neutral-bg-subtle: rgba(113, 113, 122, 0.07);
-  --oc-neutral-bg-faint: rgba(113, 113, 122, 0.04);
-  --oc-neutral-bg-light: rgba(113, 113, 122, 0.1);
-  --oc-neutral-bg-hover: rgba(113, 113, 122, 0.14);
+  --oc-neutral-bg-subtle: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 7%,
+    transparent
+  );
+  --oc-neutral-bg-faint: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 4%,
+    transparent
+  );
+  --oc-neutral-bg-light: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 10%,
+    transparent
+  );
+  --oc-neutral-bg-hover: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 14%,
+    transparent
+  );
 
   /* Operation Colors - All using neutral theme */
-  --oc-op-1: #71717a;
-  --oc-op-2: #71717a;
-  --oc-op-3: #71717a;
-  --oc-op-4: #71717a;
-  --oc-op-5: #71717a;
+  --oc-op-1: var(--oc-neutral-accent);
+  --oc-op-2: var(--oc-neutral-accent);
+  --oc-op-3: var(--oc-neutral-accent);
+  --oc-op-4: var(--oc-neutral-accent);
+  --oc-op-5: var(--oc-neutral-accent);
 
   /* Terminal Colors - Neutral theme */
-  --oc-term-accent: #71717a;
-  --oc-term-accent-light: #a1a1aa;
-  --oc-term-bg: rgba(113, 113, 122, 0.08);
-  --oc-term-border: rgba(113, 113, 122, 0.15);
+  --oc-term-accent: var(--oc-neutral-accent);
+  --oc-term-accent-light: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 70%,
+    white
+  );
+  --oc-term-bg: color-mix(in srgb, var(--oc-neutral-accent) 8%, transparent);
+  --oc-term-border: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 15%,
+    transparent
+  );
 
   /* Gradient Colors */
-  --oc-neutral-gradient-start: #71717a;
-  --oc-neutral-gradient-end: #a1a1aa;
+  --oc-neutral-gradient-start: var(--oc-neutral-accent);
+  --oc-neutral-gradient-end: color-mix(
+    in srgb,
+    var(--oc-neutral-accent) 70%,
+    white
+  );
 }
 
 /* Dark theme overrides */
 @media (prefers-color-scheme: dark) {
   :root {
-    --oc-neutral-accent: #71717a;
-    --oc-term-accent: #71717a;
-    --oc-term-accent-light: #a1a1aa;
+    --oc-neutral-accent: var(
+      --vscode-scrollbarSlider-background,
+      var(--vscode-button-background)
+    );
+    --oc-term-accent: var(--oc-neutral-accent);
+    --oc-term-accent-light: color-mix(
+      in srgb,
+      var(--oc-neutral-accent) 70%,
+      white
+    );
   }
 }

@@ -150,8 +150,11 @@ const FILE_COLOR_MAP: Record<string, string> = {
 
 // Extract file extension from path
 function getFileExtension(path: string): string {
-  const match = path.match(/\.([a-zA-Z0-9]+)(?::|:|$)/);
-  return match ? match[1].toLowerCase() : "";
+  const fileName = (path.split(/[\\/]/).pop() || "").split(":")[0];
+  const index = fileName.lastIndexOf(".");
+  return index >= 0 && index < fileName.length - 1
+    ? fileName.slice(index + 1).toLowerCase()
+    : "";
 }
 
 // Get color for file extension
@@ -338,13 +341,46 @@ function TerminalBlockWithOutput({
 
 const FALLBACK_ICON_COLOR = "#6e7681";
 
-function cleanFileIconKey(key: string): string {
+function cleanKey(key: string): string {
   return key
     .replace(/\./g, "-")
     .replace(/\//g, "-")
     .replace(/\+/g, "p")
     .replace(/#/g, "h")
     .replace(/,/g, "");
+}
+
+function getFileIconKeys(filePath?: string): string[] {
+  if (!filePath) {
+    return [];
+  }
+
+  const fileName = (filePath.split(/[\\/]/).pop() || "").split(":")[0].toLowerCase();
+  if (!fileName) {
+    return [];
+  }
+
+  const parts = fileName.split(".");
+  const extensionKeys =
+    parts.length > 1
+      ? parts
+          .slice(1)
+          .map((_, index) => parts.slice(index + 1).join("."))
+          .reverse()
+      : [];
+
+  return Array.from(new Set([fileName, ...extensionKeys].filter(Boolean)));
+}
+
+function hasThemeIcon(element: HTMLElement): boolean {
+  const before = window.getComputedStyle(element, "::before");
+  const content = before.getPropertyValue("content");
+  const backgroundImage = before.getPropertyValue("background-image");
+
+  return (
+    (!!content && content !== "none" && content !== "normal" && content !== '""') ||
+    (!!backgroundImage && backgroundImage !== "none")
+  );
 }
 
 export function FileIcon({
@@ -354,34 +390,46 @@ export function FileIcon({
   filePath?: string;
   className?: string;
 }) {
-  if (!filePath) {
-    return (
-      <span
-        className={cn("file-icon", "file-icon-type-file", className)}
-        aria-hidden="true"
-        style={{
-          display: "inline-flex",
-          flexShrink: 0,
-          marginRight: "4px",
-          verticalAlign: "middle",
-          width: "16px",
-          height: "16px",
-          overflow: "hidden",
-        }}
-      />
-    );
-  }
+  const [useGenericFileIcon, setUseGenericFileIcon] = useState(!filePath);
+  const [showSvgFallback, setShowSvgFallback] = useState(false);
+  const iconRef = useRef<HTMLSpanElement | null>(null);
+  const iconKeys = useMemo(() => getFileIconKeys(filePath), [filePath]);
 
-  const ext = getFileExtension(filePath);
-  const fileName = (filePath.split(/[\\/]/).pop() || "").toLowerCase();
+  useEffect(() => {
+    setUseGenericFileIcon(!filePath);
+    setShowSvgFallback(false);
+  }, [filePath, iconKeys.join("|")]);
+
+  useEffect(() => {
+    const icon = iconRef.current;
+    if (!icon) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      if (hasThemeIcon(icon)) {
+        return;
+      }
+
+      if (filePath && !useGenericFileIcon) {
+        setUseGenericFileIcon(true);
+        return;
+      }
+
+      setShowSvgFallback(true);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [filePath, iconKeys.join("|"), useGenericFileIcon]);
 
   return (
     <span
+      ref={iconRef}
       className={cn(
         "file-icon",
-        ext && `file-icon-type-${cleanFileIconKey(ext)}`,
-        fileName && `file-icon-type-${cleanFileIconKey(fileName)}`,
-        "file-icon-type-file",
+        useGenericFileIcon
+          ? "file-icon-type-file"
+          : iconKeys.map((key) => `file-icon-type-${cleanKey(key)}`),
         className,
       )}
       aria-hidden="true"
@@ -394,7 +442,30 @@ export function FileIcon({
         height: "16px",
         overflow: "hidden",
       }}
-    />
+    >
+      {showSvgFallback ? (
+        <svg
+          className="file-icon-svg"
+          viewBox="0 0 16 16"
+          width="16"
+          height="16"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z"
+            fill={FALLBACK_ICON_COLOR}
+            opacity="0.18"
+          />
+          <path
+            d="M9.5 1.75V5.25H13M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z"
+            stroke={FALLBACK_ICON_COLOR}
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : null}
+    </span>
   );
 }
 
@@ -4237,9 +4308,20 @@ export function ThinkingBubble() {
 }
 
 export function EmptyState() {
-  const { serverStatus, serverError, receivedInitState } = useAppState();
+  const {
+    serverStatus,
+    serverError,
+    receivedInitState,
+    currentSessionId,
+    messagesBySessionId,
+  } = useAppState();
 
-  const isConnecting = !receivedInitState || serverStatus === "connecting";
+  const hasCachedCurrentSessionMessages = Boolean(
+    currentSessionId &&
+      (messagesBySessionId?.[currentSessionId]?.length ?? 0) > 0,
+  );
+
+  const isConnecting = false;
 
   if (isConnecting) {
     return (

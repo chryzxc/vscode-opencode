@@ -1988,6 +1988,19 @@ function isLikelyInteractiveAwaitTimeout(message: string): boolean {
   );
 }
 
+function isLikelyInteractiveHandoffAbort(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.includes("messageabortederror") ||
+    normalized === "aborted" ||
+    normalized.endsWith(": aborted") ||
+    normalized.includes("aborterror")
+  );
+}
+
 function isLowSignalTimeoutFragment(content: string): boolean {
   const normalized = content.trim().toLowerCase();
   if (!normalized) {
@@ -8529,10 +8542,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const suppressAsAwaitingInteractive =
             (pendingBlockingInteractive || inInteractiveTransitionWindow) &&
             isLikelyInteractiveAwaitTimeout(errorMsg);
+          const suppressAsInteractiveHandoffAbort =
+            (pendingBlockingInteractive || inInteractiveTransitionWindow) &&
+            isLikelyInteractiveHandoffAbort(errorMsg);
 
           // When the model is waiting for an interactive answer, transport header
           // timeouts are expected and should not surface as hard request failures.
-          if (suppressAsAwaitingInteractive) {
+          if (suppressAsAwaitingInteractive || suppressAsInteractiveHandoffAbort) {
             latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
             dispatch({ type: "SET_PROCESSING", payload: false });
             dispatch({ type: "FINISH_STREAMING" });
@@ -8722,7 +8738,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           terminalErrorReached = false;
           const message = data.message as Message;
           if (message && typeof message === "object") {
-            if (isLikelyInteractiveAnswerSubmissionMessage(message)) {
+            const isInteractiveAnswerSubmission =
+              isLikelyInteractiveAnswerSubmissionMessage(message);
+            if (isInteractiveAnswerSubmission) {
               interactiveResponseTransitionUntil = Date.now() + 15000;
               // Lock: interactive answer submit starts a brand-new assistant turn.
               // Clear stale stream snapshots so previous turn content cannot leak or
@@ -8764,6 +8782,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               type: "SET_MESSAGES",
               payload: updatedMessages,
             });
+            if (isInteractiveAnswerSubmission) {
+              dispatch({ type: "SET_PROCESSING", payload: true });
+            }
           }
           break;
         }

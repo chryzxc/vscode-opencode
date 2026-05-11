@@ -24,8 +24,11 @@
     --vscode-editorWidget-foreground,
     var(--vscode-editor-foreground, #cdd6f4)
   );
-  --primary: #71717a;
-  --primary-foreground: #1e1e2e;
+  --primary: var(
+    --vscode-scrollbarSlider-background,
+    var(--vscode-button-background)
+  );
+  --primary-foreground: var(--vscode-button-foreground);
   --secondary: var(
     --vscode-button-secondaryBackground,
     var(--vscode-input-background, #313244)
@@ -98,10 +101,13 @@ body.vscode-high-contrast-light {
     var(--vscode-descriptionForeground, #a6adc8)
   );
 
-  /* Accent - Light neutral grey */
-  --oc-accent: #71717a;
-  --oc-accent-soft: rgba(113, 113, 122, 0.1);
-  --oc-accent-glow: rgba(113, 113, 122, 0.2);
+  /* Accent - Derived from VS Code scrollbar slider color */
+  --oc-accent: var(
+    --vscode-scrollbarSlider-background,
+    var(--vscode-button-background)
+  );
+  --oc-accent-soft: color-mix(in srgb, var(--oc-accent) 20%, transparent);
+  --oc-accent-glow: color-mix(in srgb, var(--oc-accent) 34%, transparent);
 
   /* Status */
   --oc-green: var(--vscode-terminal-ansiGreen, #a6e3a1);
@@ -113,9 +119,9 @@ body.vscode-high-contrast-light {
   --oc-orange: var(--vscode-terminal-ansiBrightRed, #fab387);
 
   /* Operation Colors - Neutral Theme */
-  --oc-op-accent-1: #71717a;
-  --oc-op-accent-2: #71717a;
-  --oc-op-accent-3: #71717a;
+  --oc-op-accent-1: var(--oc-accent);
+  --oc-op-accent-2: var(--oc-accent);
+  --oc-op-accent-3: var(--oc-accent);
 
   /* AI Response Enhanced Colors */
   --oc-amber-custom: #d97706;
@@ -1472,17 +1478,11 @@ body {
 
 ::-webkit-scrollbar-thumb {
   border-radius: 2px;
-  background: var(
-    --vscode-scrollbarSlider-background,
-    rgba(161, 161, 170, 0.15)
-  );
+  background: var(--oc-accent);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(
-    --vscode-scrollbarSlider-hoverBackground,
-    rgba(161, 161, 170, 0.3)
-  );
+  background: var(--vscode-scrollbarSlider-hoverBackground, var(--oc-accent));
 }
 
 /* ── Modal & Panel Base Classes ──────────────────────────────────────────── */
@@ -1525,37 +1525,37 @@ body {
 
 /* ── Utility Classes ─────────────────────────────────────────────────────── */
 .oc-accent-border-light {
-  border-color: rgba(161, 161, 170, 0.28);
+  border-color: var(--oc-neutral-border-light);
 }
 .oc-accent-border-medium {
-  border-color: rgba(161, 161, 170, 0.22);
+  border-color: var(--oc-neutral-border-medium);
 }
 .oc-accent-border-thin {
-  border-color: rgba(161, 161, 170, 0.16);
+  border-color: var(--oc-neutral-border-thin);
 }
 .oc-accent-border-faint {
-  border-color: rgba(161, 161, 170, 0.11);
+  border-color: var(--oc-neutral-border-faint);
 }
 .oc-accent-bg-subtle {
-  background: rgba(161, 161, 170, 0.07);
+  background: var(--oc-neutral-bg-subtle);
 }
 .oc-accent-bg-faint {
-  background: rgba(161, 161, 170, 0.04);
+  background: var(--oc-neutral-bg-faint);
 }
 .oc-accent-bg-light {
-  background: rgba(161, 161, 170, 0.1);
+  background: var(--oc-neutral-bg-light);
 }
 .oc-accent-bg-avatar {
-  background: rgba(161, 161, 170, 0.1);
+  background: var(--oc-neutral-bg-light);
 }
 .oc-accent-bg-hover {
-  background: rgba(161, 161, 170, 0.14);
+  background: var(--oc-neutral-bg-hover);
 }
 .oc-accent-border-hover {
-  border-color: rgba(161, 161, 170, 0.22);
+  border-color: var(--oc-neutral-border-medium);
 }
 .oc-accent-border-thought {
-  border-color: rgba(161, 161, 170, 0.18);
+  border-color: color-mix(in srgb, var(--oc-neutral-accent) 18%, transparent);
 }
 
 .oc-warning-border {
@@ -2586,7 +2586,7 @@ body {
 .oc-bash-command-code {
   margin: 0;
   padding: 6px 8px;
-  overflow-x: auto;
+  overflow: hidden;
   background: transparent;
 }
 
@@ -2603,7 +2603,9 @@ body {
   font-size: 11px;
   line-height: 1.5;
   color: var(--oc-text-soft);
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Search block styling — terminal-style block for grep/search/glob queries */
