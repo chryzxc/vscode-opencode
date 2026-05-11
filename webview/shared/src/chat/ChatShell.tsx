@@ -47,7 +47,7 @@ function CompactionDivider({ at }: { at?: number }) {
 
   return (
     <div className="-mx-4 py-2">
-      <div className="flex w-full items-center gap-2 text-[10px] font-medium text-oc-text-muted">
+      <div className="flex w-full items-center gap-2 text-[10px] font-medium oc-text-secondary">
         <span className="h-px flex-1 bg-current opacity-50" />
         <span className="shrink-0 text-center opacity-80">{label}</span>
         <span className="h-px flex-1 bg-current opacity-50" />
@@ -458,7 +458,7 @@ function ChatContent() {
 
               {hasCompactedSegment ? (
             <div className="-mx-4 py-2">
-              <div className="flex w-full items-center gap-2 text-[10px] font-medium text-oc-text-muted">
+              <div className="flex w-full items-center gap-2 text-[10px] font-medium oc-text-secondary">
                 <span className="h-px flex-1 bg-current opacity-50" />
                 <button
                   type="button"
@@ -483,7 +483,7 @@ function ChatContent() {
                       });
                     }
                   }}
-                  className="shrink-0 px-1 py-0 text-[10px] font-medium text-oc-text-muted opacity-80 hover:opacity-100 hover:underline transition-colors"
+                  className="shrink-0 px-1 py-0 text-[10px] font-medium oc-text-secondary opacity-80 hover:opacity-100 hover:underline transition-colors"
                   title={
                     isCompressed
                       ? "Show compacted messages"
@@ -638,3 +638,4 @@ export default function ChatShell() {
     </AppProvider>
   );
 }
+

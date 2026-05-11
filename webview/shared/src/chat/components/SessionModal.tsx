@@ -223,7 +223,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
             <History className="h-4 w-4 text-oc-accent" />
             <span className="text-sm font-semibold text-foreground">Untitled</span>
             {visibleSessions.length > 0 && (
-              <span className="rounded-full bg-oc-border px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground leading-none">
+              <span className="rounded-full bg-oc-border px-2 py-0.5 text-[10px] font-medium tabular-nums oc-text-secondary leading-none">
                 {visibleSessions.length}
               </span>
             )}
@@ -234,7 +234,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
             size="icon"
             onClick={onClose}
             aria-label="Close session modal"
-            className="h-6 w-6 text-muted-foreground hover:text-foreground"
+            className="h-6 w-6 oc-text-secondary hover:text-foreground"
           >
             <X className="h-3.5 w-3.5" />
           </Button>
@@ -243,20 +243,20 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
         {/* Search Bar */}
         <div className="shrink-0 px-4 py-3 border-b border-oc-border">
           <div className="flex items-center gap-1.5 rounded-md border border-oc-border bg-oc-panel px-2.5 py-1.5 transition-colors focus-within:border-oc-accent">
-            <Search className="h-3 w-3 shrink-0 text-muted-foreground" />
+            <Search className="h-3 w-3 shrink-0 oc-text-secondary" />
             <input
               ref={searchRef}
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search sessions..."
-              className="flex-1 bg-transparent text-xs text-foreground placeholder-muted-foreground outline-none"
+              className="flex-1 bg-transparent text-xs text-foreground placeholder:text-oc-text-soft outline-none"
             />
             {searchQuery && (
               <button
                 type="button"
                 onClick={() => setSearchQuery("")}
-                className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                className="flex h-4 w-4 items-center justify-center rounded oc-text-secondary hover:text-foreground"
                 aria-label="Clear search"
               >
                 <X className="h-2.5 w-2.5" />
@@ -271,22 +271,22 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
             <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
               {searchQuery ? (
                 <>
-                  <Search className="h-8 w-8 text-muted-foreground" />
-                  <p className="text-xs text-muted-foreground">No sessions match</p>
-                  <p className="text-[10px] text-muted-foreground opacity-60">"{searchQuery}"</p>
+                  <Search className="h-8 w-8 oc-text-secondary" />
+                  <p className="text-xs oc-text-secondary">No sessions match</p>
+                  <p className="text-[10px] oc-text-secondary opacity-60">"{searchQuery}"</p>
                 </>
               ) : (
                 <>
-                  <MessageSquare className="h-8 w-8 text-muted-foreground" />
-                  <p className="text-xs text-muted-foreground">No sessions yet</p>
-                  <p className="text-[10px] text-muted-foreground opacity-60">Start a new chat to begin</p>
+                  <MessageSquare className="h-8 w-8 oc-text-secondary" />
+                  <p className="text-xs oc-text-secondary">No sessions yet</p>
+                  <p className="text-[10px] oc-text-secondary opacity-60">Start a new chat to begin</p>
                 </>
               )}
             </div>
           ) : (
             groupedSessions.map((group) => (
               <div key={group.label} className="mb-3">
-                <div className="mb-1.5 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground opacity-60">
+                <div className="mb-1.5 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.1em] oc-text-secondary opacity-60">
                   {group.label}
                 </div>
                 {group.sessions.map((session) => {
@@ -323,7 +323,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                           <button
                             type="button"
                             title="Cancel"
-                            className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-oc-border transition-colors"
+                            className="flex h-5 w-5 items-center justify-center rounded oc-text-secondary hover:bg-oc-border transition-colors"
                             onClick={handleCancelEdit}
                           >
                             <X className="h-3 w-3" />
@@ -343,7 +343,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                           </button>
                           <button
                             type="button"
-                            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-oc-border transition-colors"
+                            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium oc-text-secondary hover:bg-oc-border transition-colors"
                             onClick={() => setConfirmDeleteId(null)}
                           >
                             Cancel
@@ -373,14 +373,14 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                               ) : null}
                               <span
                                 className={`truncate text-sm font-medium leading-tight ${
-                                  isActive ? "text-foreground" : "text-muted-foreground"
+                                  isActive ? "text-foreground" : "oc-text-secondary"
                                 }`}
                               >
                                 {session.title || "Untitled chat"}
                               </span>
                             </div>
                             {session.createdAt ? (
-                              <div className="mt-0.5 text-[10px] text-muted-foreground tabular-nums">
+                              <div className="mt-0.5 text-[10px] oc-text-secondary tabular-nums">
                                 {relativeSessionTime(session.createdAt)}
                               </div>
                             ) : null}
@@ -390,7 +390,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                               type="button"
                               title="Rename session"
                               aria-label={`Rename session ${session.title ?? session.id}`}
-                              className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-oc-border hover:text-foreground"
+                              className="flex h-7 w-7 items-center justify-center rounded oc-text-secondary transition-colors hover:bg-oc-border hover:text-foreground"
                               onClick={() => handleStartEdit(session.id, session.title || "")}
                             >
                               <Edit className="h-3 w-3" />
@@ -399,7 +399,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                               type="button"
                               title="Delete session"
                               aria-label={`Delete session ${session.title ?? session.id}`}
-                              className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-red-500/15 oc-delete-btn-hover"
+                              className="flex h-7 w-7 items-center justify-center rounded oc-text-secondary transition-colors hover:bg-red-500/15 oc-delete-btn-hover"
                               onClick={() => setConfirmDeleteId(session.id)}
                             >
                               <Trash2 className="h-3 w-3" />
@@ -419,7 +419,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
         <div className="oc-modal-footer bg-oc-panel-soft/50 justify-center">
           <button
             type="button"
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-oc-accent bg-oc-accent-soft py-2 text-xs font-medium text-oc-accent transition-all hover:bg-oc-accent hover:text-white active:scale-[0.98]"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-oc-accent bg-oc-accent-soft py-2 text-xs font-medium oc-tinted-badge-text transition-all hover:bg-oc-accent hover:text-white active:scale-[0.98]"
             onClick={handleCreateSession}
           >
             <Plus className="h-3.5 w-3.5" />
@@ -432,3 +432,4 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
 
   return createPortal(modalContent, document.body);
 }
+

@@ -12,11 +12,11 @@ const badgeVariants = cva(
         secondary:   'border-transparent bg-secondary text-secondary-foreground hover:opacity-90',
         destructive: 'border-transparent bg-destructive text-destructive-foreground hover:opacity-90',
         outline:     'text-foreground',
-        accent:      'border-transparent bg-oc-accent-soft text-oc-accent',
+        accent:      'border-transparent bg-oc-accent-soft oc-tinted-badge-text',
         success:     'border-transparent bg-oc-green/10 text-oc-green',
         error:       'border-transparent bg-oc-red/10 text-oc-red',
         warning:     'border-transparent bg-oc-yellow/10 text-oc-yellow',
-        muted:       'border-transparent bg-oc-panel-soft text-oc-text-muted',
+        muted:       'border-transparent bg-oc-panel-soft oc-text-secondary',
         status:      'border-transparent font-medium bg-oc-panel-soft',
       }
     },
@@ -33,3 +33,5 @@ function Badge({ className, variant, ...props }: BadgeProps) {
 }
 
 export { Badge, badgeVariants };
+
+

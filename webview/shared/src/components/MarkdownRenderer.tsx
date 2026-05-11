@@ -12,18 +12,18 @@ interface MarkdownRendererProps {
 }
 
 const EXT_COLORS: Record<string, string> = {
-  ts: '#3178c6',
-  tsx: '#3178c6',
-  js: '#f1e05a',
-  jsx: '#f1e05a',
-  json: '#f1e05a',
-  md: '#519aba',
-  py: '#3572a5',
-  css: '#563d7c',
-  html: '#e34c26',
-  env: '#ecd53f',
-  lock: '#6e7681',
-  lockb: '#6e7681',
+  ts: 'color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent))',
+  tsx: 'color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent))',
+  js: 'color-mix(in srgb, var(--oc-text) 90%, var(--oc-yellow))',
+  jsx: 'color-mix(in srgb, var(--oc-text) 90%, var(--oc-yellow))',
+  json: 'color-mix(in srgb, var(--oc-text) 90%, var(--oc-yellow))',
+  md: 'color-mix(in srgb, var(--oc-text) 92%, var(--oc-accent))',
+  py: 'color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent))',
+  css: 'color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent))',
+  html: 'color-mix(in srgb, var(--oc-text) 88%, var(--oc-orange))',
+  env: 'color-mix(in srgb, var(--oc-text) 92%, var(--oc-yellow))',
+  lock: 'var(--oc-text-muted)',
+  lockb: 'var(--oc-text-muted)',
 };
 
 
@@ -145,7 +145,7 @@ function injectFileIcons(container: HTMLElement): void {
         btn.title = `Open ${filePath}`;
         btn.style.cssText =
           'display:inline-block;vertical-align:middle;background:none;border:none;' +
-          'padding:0;cursor:pointer;font:inherit;white-space:nowrap;' +
+          'padding:0;cursor:pointer;font:inherit;white-space:nowrap;color:var(--oc-text-soft);' +
           'text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;';
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -168,7 +168,7 @@ function injectFileIcons(container: HTMLElement): void {
 
         const textEl = document.createElement('span');
         textEl.textContent = filePath;
-        textEl.style.cssText = `vertical-align:middle;color:${EXT_COLORS[ext] || 'inherit'};`;
+        textEl.style.cssText = `vertical-align:middle;color:${EXT_COLORS[ext] || 'var(--oc-text-soft)'};`;
 
         btn.appendChild(iconEl);
         btn.appendChild(textEl);

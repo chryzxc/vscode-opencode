@@ -46,7 +46,7 @@ const TabsList = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "inline-flex h-9 items-center justify-center rounded-lg bg-oc-border/30 p-1 text-muted-foreground",
+      "inline-flex h-9 items-center justify-center rounded-lg bg-oc-border/30 p-1 oc-text-secondary",
       className
     )}
     {...props}
@@ -97,3 +97,4 @@ const TabsContent = React.forwardRef<
 TabsContent.displayName = "TabsContent"
 
 export { TabsRoot as Tabs, TabsList, TabsTrigger, TabsContent }
+

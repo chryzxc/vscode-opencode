@@ -167,7 +167,7 @@ export function SubagentDetailModal({
 										className={cn(
 											"h-5 px-2 text-[10px] font-medium tracking-wider",
 											isDone
-												? "border-none bg-transparent text-muted-foreground"
+												? "border-none bg-transparent oc-text-secondary"
 												: isError
 													? "border-destructive bg-transparent text-destructive"
 													: "border-primary bg-transparent text-primary pulse-border",
@@ -177,7 +177,7 @@ export function SubagentDetailModal({
 									</Badge>
 								</div>
 								{detail.childSessionId && (
-									<div className="mt-1 text-xs font-medium text-muted-foreground break-words">
+									<div className="mt-1 text-xs font-medium oc-text-secondary break-words">
 										Session: {detail.childSessionId}
 									</div>
 								)}
@@ -185,7 +185,7 @@ export function SubagentDetailModal({
 						</div>
 						<button
 							type="button"
-							className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft text-muted-foreground transition-colors hover:bg-oc-panel hover:text-foreground"
+							className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
 							onClick={onClose}
 							aria-label="Close"
 						>
@@ -195,7 +195,7 @@ export function SubagentDetailModal({
 					<div className="mt-3 flex flex-wrap items-center gap-2">
 						<button
 							type="button"
-							className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-oc-panel hover:text-foreground sm:w-auto"
+							className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground sm:w-auto"
 							onClick={handleCopy}
 						>
 							<Copy className="h-3.5 w-3.5" />
@@ -203,7 +203,7 @@ export function SubagentDetailModal({
 						</button>
 						<button
 							type="button"
-							className="inline-flex w-full items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-oc-panel hover:text-foreground sm:w-auto"
+							className="inline-flex w-full items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground sm:w-auto"
 							onClick={onJumpToParent}
 						>
 							Jump to Parent
@@ -213,10 +213,10 @@ export function SubagentDetailModal({
 
 				<div className="oc-modal-content min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5">
 					<div className="sticky top-0 z-[1] mb-3 flex items-center justify-between border-b border-oc-border-soft bg-oc-panel/95 pb-2 backdrop-blur-sm">
-						<span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+						<span className="text-[11px] font-medium uppercase tracking-wider text-oc-text-soft">
 							Assistant Conversation
 						</span>
-						<span className="rounded-md border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+						<span className="rounded-md border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium text-oc-text-soft">
 							{renderedConversation.length} messages
 						</span>
 					</div>
@@ -243,7 +243,7 @@ export function SubagentDetailModal({
 												<span className="oc-refined-event-label">
 													{stepLabel}
 												</span>
-												<span className="text-[10px] font-medium text-oc-text-muted/70">
+												<span className="text-[10px] font-medium text-oc-text-soft">
 													{new Date(event.createdAt).toLocaleTimeString([], {
 														hour: "2-digit",
 														minute: "2-digit",
@@ -261,7 +261,7 @@ export function SubagentDetailModal({
 							})}
 						</Stepper>
 					) : (
-						<div className="rounded-lg border border-dashed border-oc-border bg-oc-bg-soft/50 p-6 text-center text-sm italic text-muted-foreground/70">
+						<div className="rounded-lg border border-dashed border-oc-border bg-oc-bg-soft/50 p-6 text-center text-sm italic oc-text-secondary">
 							No assistant conversation available yet for this subagent session.
 						</div>
 					)}
@@ -272,3 +272,4 @@ export function SubagentDetailModal({
 
 	return createPortal(modalContent, document.body);
 }
+

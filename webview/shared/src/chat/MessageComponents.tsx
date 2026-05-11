@@ -1275,12 +1275,12 @@ function TodoInlineSummary({ todoItems }: { todoItems: TodoItem[] }) {
       data-assistant-section="todo-inline-summary"
       className="rounded-md border border-oc-border-soft/70 bg-oc-panel-soft/30 px-2.5 py-2"
     >
-      <div className="text-[11px] font-medium text-oc-text-muted">
+      <div className="text-[11px] font-medium oc-text-secondary">
         {totalCount} {totalCount === 1 ? "task" : "tasks"} - {inProgressCount} in
         progress
       </div>
       {latest && (
-        <div className="mt-0.5 truncate text-[11px] text-oc-text-muted/90">
+        <div className="mt-0.5 truncate text-[11px] oc-text-secondary">
           Latest: "{truncateTodoLabel(latest.text)}" - {formatTodoStatus(latest.status)}
         </div>
       )}
@@ -2273,6 +2273,31 @@ function getDuration(
   return undefined;
 }
 
+function getThinkingVariant(
+  message: Message | undefined,
+  streaming: StreamingState | undefined,
+): string | undefined {
+  if (streaming?.variant && typeof streaming.variant === "string") {
+    return streaming.variant;
+  }
+
+  if (message?.info && "variant" in message.info) {
+    const variant = (message.info as Record<string, unknown>).variant;
+    if (typeof variant === "string" && variant) {
+      return variant;
+    }
+  }
+
+  if (message && "variant" in message) {
+    const variant = (message as Record<string, unknown>).variant;
+    if (typeof variant === "string" && variant) {
+      return variant;
+    }
+  }
+
+  return undefined;
+}
+
 const AssistantMessageInner = memo(function AssistantMessageInner({
   message,
   streaming,
@@ -2643,6 +2668,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     }
     return modelLabel(message ?? ({} as Message));
   }, [message, streaming]);
+  const thinkingVariant = getThinkingVariant(message, streaming);
   const tokens = getTokenInfo(message);
   const inputTok = tokens?.input ?? 0;
   const outputTok = tokens?.output ?? 0;
@@ -2898,8 +2924,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         className="h-4 w-4"
                         style={
                           agentColor
-                            ? { color: agentColor }
-                            : { color: "var(--oc-accent)" }
+                            ? { color: `color-mix(in srgb, var(--oc-text) 88%, ${agentColor})` }
+                            : { color: "var(--oc-text-secondary)" }
                         }
                       />
                     </div>
@@ -2909,7 +2935,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         style={
                           agentColor
                             ? {
-                              color: agentColor,
+                              color: `color-mix(in srgb, var(--oc-text) 88%, ${agentColor})`,
                             }
                             : undefined
                         }
@@ -2923,6 +2949,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </span>
                           <span className="oc-msg-model-label min-w-0 truncate text-oc-xs">
                             {modelName}
+                          </span>
+                        </div>
+                      )}
+                      {thinkingVariant && (
+                        <div className="flex items-center gap-1 opacity-60">
+                          <span className="text-oc-xs font-medium shrink-0">•</span>
+                          <span className="text-oc-xs uppercase tracking-[0.08em]">
+                            think {thinkingVariant}
                           </span>
                         </div>
                       )}
@@ -2949,7 +2983,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       title={`${chip.label}: ${chip.value.toLocaleString()} tokens`}
                     >
                       <div className={cn("h-1.5 w-1.5 rounded-full", chip.dotClassName)} />
-                      <span className="oc-token-chip-label text-[10px] uppercase tracking-[0.11em] text-oc-text-muted">
+                      <span className="oc-token-chip-label text-[10px] uppercase tracking-[0.11em] oc-text-secondary">
                         {chip.label}
                       </span>
                       <span className="oc-token-chip-value font-medium font-semibold text-oc-text tabular-nums">
@@ -2964,8 +2998,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       className="oc-token-chip oc-token-chip-duration inline-flex items-center gap-1.5 rounded-full border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1 transition-all duration-200"
                       title={`Duration: ${duration.toFixed(1)} seconds`}
                     >
-                      <Clock className="h-3 w-3 text-oc-text-muted opacity-80" />
-                      <span className="oc-token-chip-value font-medium font-semibold text-oc-text-muted tabular-nums">
+                      <Clock className="h-3 w-3 oc-text-secondary opacity-80" />
+                      <span className="oc-token-chip-value font-medium font-semibold oc-text-secondary tabular-nums">
                         {duration.toFixed(1)}s
                       </span>
                     </div>
@@ -2974,7 +3008,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               )}
               {plainTextFallback && (
                 <span
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-oc-border-soft text-oc-text-muted"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-oc-border-soft oc-text-secondary"
                   title={plainTextFallbackTooltip}
                 >
                   <AlertCircle className="h-3.5 w-3.5 text-oc-yellow" />
@@ -3182,7 +3216,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                               {event.viewDiffFile && (
                                 <button
                                   type="button"
-                                  className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium text-oc-text-muted hover:text-oc-text-soft"
+                                  className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium oc-text-secondary hover:text-oc-text-soft"
                                   onClick={() =>
                                     vscode.postMessage({
                                       type: "openDiff",
@@ -3212,7 +3246,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </span>
                           <span
                             className={cn(
-                              "flex-1 whitespace-pre-wrap break-words text-[11px] text-oc-text-muted",
+                              "flex-1 whitespace-pre-wrap break-words text-[11px] oc-text-secondary",
                               !viewState.showThinkingDetails && "line-clamp-2",
                             )}
                           >
@@ -3226,7 +3260,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   {displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY && (
                     <button
                       type="button"
-                      className="mt-4 rounded-full border border-oc-border px-2.5 py-0.5 text-left font-medium text-[10px] text-oc-text-muted transition-colors hover:bg-oc-panel hover:text-oc-text-soft"
+                      className="mt-4 rounded-full border border-oc-border px-2.5 py-0.5 text-left font-medium text-[10px] oc-text-secondary transition-colors hover:bg-oc-panel hover:text-oc-text-soft"
                       onClick={() =>
                         setViewState((prev) => ({
                           ...prev,
@@ -3258,13 +3292,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
                       Spawned Subagents
                     </span>
-                    <span className="rounded-md border border-oc-border-soft px-1.5 py-0.5 font-medium text-oc-2xs text-oc-text-muted">
+                    <span className="rounded-md border border-oc-border-soft px-1.5 py-0.5 font-medium text-oc-2xs text-oc-text-soft">
                       {subagents.length}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     {subagentStatusCounts.running > 0 && (
-                      <Badge className="h-5 bg-oc-accent/10 px-1.5 text-[10px] text-oc-accent">
+                      <Badge className="h-5 bg-oc-accent/10 px-1.5 text-[10px] oc-tinted-badge-text">
                         {subagentStatusCounts.running} running
                       </Badge>
                     )}
@@ -3336,17 +3370,17 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                 {modelInfo}
                               </span>
                             </div>
-                            <span className="font-medium text-oc-2xs text-oc-text-muted">
+                            <span className="font-medium text-oc-2xs oc-text-secondary">
                               {formatDuration(subagent.durationMs ?? 0)}
                             </span>
                           </div>
                           <div className="mt-1 flex min-w-0 items-center gap-1.5">
-                            <span className="text-[10px] font-medium text-oc-text-muted">
+                            <span className="text-[10px] font-medium oc-text-secondary">
                               {statusText}
                             </span>
                           </div>
                           {shouldShowActivity ? (
-                            <div className="mt-0.5 min-h-[14px] font-medium text-[10px] text-oc-text-muted">
+                            <div className="mt-0.5 min-h-[14px] font-medium text-[10px] oc-text-secondary">
                               <FadeSwapText
                                 text={activityText}
                                 className="block truncate"
@@ -3418,18 +3452,18 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </span>
                         )}
                         {planStatus === "Draft" && (
-                          <span className="rounded border border-oc-border-soft text-oc-text-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          <span className="rounded border border-oc-border-soft oc-text-secondary px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
                             Draft
                           </span>
                         )}
                       </div>
                       {plan.file ? (
-                        <div className="flex items-center gap-1.5 text-[11px] font-medium text-oc-text-muted">
+                        <div className="flex items-center gap-1.5 text-[11px] font-medium oc-text-secondary">
                           <FileIcon filePath={plan.file} />
                           <span className="truncate" title={plan.file}>{plan.file}</span>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-1.5 text-[11px] font-medium text-oc-text-muted/50 italic">
+                        <div className="flex items-center gap-1.5 text-[11px] font-medium text-oc-text-soft italic">
                           (no file)
                         </div>
                       )}
@@ -3489,7 +3523,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
-                            className="rounded border border-oc-border-soft px-2 py-0.5 text-xs text-oc-text-muted hover:text-oc-text-soft"
+                            className="rounded border border-oc-border-soft px-2 py-0.5 text-xs oc-text-secondary hover:text-oc-text-soft"
                             onClick={() =>
                               vscode.postMessage({
                                 type: "undoMessageChanges",
@@ -3501,7 +3535,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </button>
                           <button
                             type="button"
-                            className="rounded border border-oc-border-soft px-2 py-0.5 text-xs text-oc-text-muted hover:text-oc-text-soft"
+                            className="rounded border border-oc-border-soft px-2 py-0.5 text-xs oc-text-secondary hover:text-oc-text-soft"
                             onClick={() =>
                               vscode.postMessage({
                                 type: "reviewMessageChanges",
@@ -3689,7 +3723,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         {/* Raw Data â€" moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (
           <details className="group mb-3">
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-medium text-oc-text-muted hover:text-oc-text-soft transition-colors">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-oc-xs font-medium oc-text-secondary hover:text-oc-text-soft transition-colors">
               <span className="inline-block text-oc-2xs transition-transform group-open:rotate-90">
                 â€º
               </span>
@@ -4018,7 +4052,7 @@ function FileChangesSection({
           <button
             type="button"
             onClick={handleUndo}
-            className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
+            className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs oc-text-secondary transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
           >
             <Undo2 className="h-3 w-3" />
             Undo
@@ -4026,7 +4060,7 @@ function FileChangesSection({
           <button
             type="button"
             onClick={handleReview}
-            className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs text-oc-text-muted transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
+            className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs oc-text-secondary transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
           >
             <ArrowUpRight className="h-3 w-3" />
             Review
@@ -4068,7 +4102,7 @@ function FileChangesSection({
                           e.stopPropagation();
                           toggleExpanded(fileChange.file);
                         }}
-                        className="shrink-0 text-oc-text-muted/60 hover:text-oc-text-muted transition-colors"
+                        className="shrink-0 text-oc-text-soft hover:text-oc-text transition-colors"
                       >
                         {isExpanded ? (
                           <ChevronDown className="h-3 w-3" />
@@ -4079,10 +4113,10 @@ function FileChangesSection({
                     ) : (
                       <span className="w-3 shrink-0" />
                     )}
-                    <FileText className="h-3 w-3 shrink-0 text-oc-text-muted/50" />
+                    <FileText className="h-3 w-3 shrink-0 text-oc-text-soft" />
                     <span className="text-[11px] font-medium text-oc-text truncate">{filename}</span>
                     {dirname && (
-                      <span className="text-[10px] font-medium text-oc-text-muted/40 truncate hidden sm:inline">
+                      <span className="text-[10px] font-medium text-oc-text-soft truncate hidden sm:inline">
                         {dirname}
                       </span>
                     )}
@@ -4108,7 +4142,7 @@ function FileChangesSection({
                     />
                   </div>
                 ) : isExpanded && !hasPreview ? (
-                  <div className="border-t border-oc-border-soft px-2.5 py-2 text-xs text-oc-text-muted/60 italic">
+                  <div className="border-t border-oc-border-soft px-2.5 py-2 text-xs text-oc-text-soft italic">
                     Diff preview unavailable for this file in the current payload.
                   </div>
                 ) : null}
@@ -4119,7 +4153,7 @@ function FileChangesSection({
       </div>
 
       {fileChanges.length > visibleChanges.length ? (
-        <div className="border-t border-oc-border-soft px-3 py-1.5 text-[11px] text-oc-text-muted/60 text-center">
+        <div className="border-t border-oc-border-soft px-3 py-1.5 text-[11px] text-oc-text-soft text-center">
           Showing {visibleChanges.length} of {fileChanges.length} changed files
         </div>
       ) : null}
@@ -4414,3 +4448,4 @@ export function MessageStatus({
     </div>
   );
 }
+

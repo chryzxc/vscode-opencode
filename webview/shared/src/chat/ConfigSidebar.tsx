@@ -14,7 +14,7 @@ export function ConfigSidebar({ files, activeFileName, onSelectFile, onSaveFile 
   return (
     <div className="w-60 border-r border-oc-border bg-oc-bg overflow-y-auto">
       <div className="p-3 border-b border-oc-border">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-oc-text-muted">
+        <h3 className="text-xs font-semibold uppercase tracking-wider oc-text-secondary">
           Configuration Files
         </h3>
       </div>
@@ -56,7 +56,7 @@ function ConfigFileItem({ file, isActive, onSelect, onSave }: ConfigFileItemProp
       tabIndex={0}
       className={`mx-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${
         isActive
-          ? 'bg-oc-accent/20 text-oc-accent'
+          ? 'bg-oc-accent/20 oc-tinted-badge-text'
           : 'hover:bg-oc-bg-soft text-oc-text'
       }`}
       onMouseEnter={() => setIsHovered(true)}
@@ -89,3 +89,4 @@ function ConfigFileItem({ file, isActive, onSelect, onSave }: ConfigFileItemProp
     </div>
   );
 }
+

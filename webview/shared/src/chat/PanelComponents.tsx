@@ -363,13 +363,13 @@ export function HistorySidebar() {
       <div className="flex shrink-0 items-center justify-between px-3.5 pt-3.5 pb-2">
         <div className="flex items-center gap-2">
           <History className="h-3.5 w-3.5 text-oc-accent" />
-          <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-oc-text-muted">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.12em] oc-text-secondary">
             History
           </span>
         </div>
         <button
           type="button"
-          className="flex h-6 w-6 items-center justify-center rounded-md text-oc-text-muted transition-colors hover:bg-oc-border hover:text-oc-text"
+          className="flex h-6 w-6 items-center justify-center rounded-md oc-text-secondary transition-colors hover:bg-oc-border hover:text-oc-text"
           aria-label="Close history sidebar"
           onClick={() => dispatch({ type: "SET_SIDEBAR_OPEN", payload: false })}
         >
@@ -382,8 +382,8 @@ export function HistorySidebar() {
       <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 pt-1">
         <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
           <History className="h-8 w-8 text-oc-border" />
-          <p className="text-[11px] text-oc-text-muted">Session management moved</p>
-          <p className="text-[10px] text-oc-text-muted opacity-70">
+          <p className="text-[11px] oc-text-secondary">Session management moved</p>
+          <p className="text-[10px] oc-text-secondary opacity-70">
             Use the session modal to switch, create, or manage sessions
           </p>
           <button
@@ -661,7 +661,7 @@ export function ActiveTaskPanel() {
         {isActive && (
           <MiniSection title="Progress Updates">
             {liveProgressSteps.length === 0 ? (
-              <div className="flex items-center gap-1.5 py-0.5 text-xs text-oc-text-muted opacity-70">
+              <div className="flex items-center gap-1.5 py-0.5 text-xs oc-text-secondary opacity-70">
                 <span
                   className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-accent"
                   style={{ animationDelay: "0ms" }}
@@ -696,7 +696,7 @@ export function ActiveTaskPanel() {
                         {step.title}
                       </span>
                       {step.meta ? (
-                        <span className="mt-0.5 block text-oc-text-muted opacity-60 break-words whitespace-pre-wrap">
+                        <span className="mt-0.5 block oc-text-secondary opacity-60 break-words whitespace-pre-wrap">
                           {step.meta}
                         </span>
                       ) : null}
@@ -720,7 +720,7 @@ export function ActiveTaskPanel() {
                       Tokens Used
                     </span>
                     {hasCompactionBaseline && (
-                      <span className="rounded-full bg-oc-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-oc-text-muted">
+                      <span className="rounded-full bg-oc-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest oc-text-secondary">
                         Since compact
                       </span>
                     )}
@@ -755,7 +755,7 @@ export function ActiveTaskPanel() {
                     </span>
                   </span>
                   {usingContextFallback && (
-                    <span className="text-[10px] text-oc-text-muted">~est</span>
+                    <span className="text-[10px] oc-text-secondary">~est</span>
                   )}
                 </div>
               </div>
@@ -785,7 +785,7 @@ export function ActiveTaskPanel() {
                 </div>
                 <div className="flex items-center gap-2">
                   {!isCompacting && compactedAtLabel ? (
-                    <span className="rounded-full bg-oc-border-soft px-1.5 py-0.5 text-[9px] font-medium tracking-wider text-oc-text-muted opacity-80">
+                    <span className="rounded-full bg-oc-border-soft px-1.5 py-0.5 text-[9px] font-medium tracking-wider oc-text-secondary opacity-80">
                       {compactedAtLabel}
                     </span>
                   ) : null}
@@ -947,12 +947,12 @@ export function MobileRightSummary() {
     <div className="block [@media(min-width:1100px)]:hidden border-b border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs text-oc-text">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 font-medium text-xs">
-          <span className="text-oc-text-muted">In</span>
+          <span className="oc-text-secondary">In</span>
           <span className="tabular-nums text-[var(--oc-text-soft)]">
             {sessionStats.input.toLocaleString()}
           </span>
           <span className="opacity-30">/</span>
-          <span className="text-oc-text-muted">Out</span>
+          <span className="oc-text-secondary">Out</span>
           <span className="tabular-nums text-[var(--oc-text-soft)]">
             {sessionStats.output.toLocaleString()}
           </span>
@@ -1124,7 +1124,7 @@ export function ModelDropdown() {
                     onClick={() => setSelectedTab(tab)}
                     className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${selectedTab === tab
                         ? "bg-oc-accent text-white"
-                        : "bg-oc-bg-soft text-oc-text-muted hover:bg-oc-panel-soft hover:text-oc-text"
+                        : "bg-oc-bg-soft oc-text-secondary hover:bg-oc-panel-soft hover:text-oc-text"
                       }`}
                   >
                     {tab}
@@ -1136,7 +1136,7 @@ export function ModelDropdown() {
           <div className="max-h-56 overflow-y-auto px-1.5 pb-1.5">
             {[...grouped.entries()].map(([provider, models]) => (
               <div key={provider} className="mb-1">
-                <div className="px-2.5 py-1 text-xs font-semibold uppercase tracking-widest text-oc-text-muted opacity-60">
+                <div className="px-2.5 py-1 text-xs font-semibold uppercase tracking-widest oc-text-secondary opacity-60">
                   {provider}
                 </div>
                 {models.map((model) => {
@@ -1148,7 +1148,7 @@ export function ModelDropdown() {
                       key={`${model.providerID}-${model.modelID}`}
                       type="button"
                       className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${isCurrent
-                          ? "bg-oc-accent-soft text-oc-accent"
+                          ? "bg-oc-accent-soft oc-tinted-badge-text"
                           : "hover:bg-oc-panel-soft"
                         }`}
                       onClick={() => {
@@ -1183,7 +1183,7 @@ export function ModelDropdown() {
                           </span>
                         )}
                       </div>
-                      <div className="text-xs font-medium text-oc-text-muted truncate mt-0.5">
+                      <div className="text-xs font-medium oc-text-secondary truncate mt-0.5">
                         {model.modelID}
                       </div>
                     </button>
@@ -1192,7 +1192,7 @@ export function ModelDropdown() {
               </div>
             ))}
             {grouped.size === 0 && (
-              <div className="px-2.5 py-4 text-center text-xs text-oc-text-muted font-medium italic">
+              <div className="px-2.5 py-4 text-center text-xs oc-text-secondary font-medium italic">
                 No models found
               </div>
             )}
@@ -1278,12 +1278,12 @@ export function AgentDropdown() {
           </div>
           <div className="max-h-52 overflow-y-auto px-1.5 pb-1.5">
             {availableAgents.length === 0 && (
-              <div className="px-2.5 py-3 text-xs text-oc-text-muted text-center font-medium">
+              <div className="px-2.5 py-3 text-xs oc-text-secondary text-center font-medium">
                 Loading agents…
               </div>
             )}
             {availableAgents.length > 0 && filtered.length === 0 && (
-              <div className="px-2.5 py-3 text-xs text-oc-text-muted text-center font-medium">
+              <div className="px-2.5 py-3 text-xs oc-text-secondary text-center font-medium">
                 No agents found
               </div>
             )}
@@ -1292,7 +1292,7 @@ export function AgentDropdown() {
                 key={agent.id}
                 type="button"
                 className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${selectedAgent === agent.id
-                    ? "bg-oc-accent-soft text-oc-accent"
+                    ? "bg-oc-accent-soft oc-tinted-badge-text"
                     : "hover:bg-oc-panel-soft"
                   }`}
                 onClick={() => {
@@ -1302,7 +1302,7 @@ export function AgentDropdown() {
                 }}
               >
                 <div className="text-xs font-medium">{agent.name}</div>
-                <div className="text-xs font-medium text-oc-text-muted truncate mt-0.5">
+                <div className="text-xs font-medium oc-text-secondary truncate mt-0.5">
                   {agent.description}
                 </div>
               </button>
@@ -1350,19 +1350,19 @@ export function QueueContainer() {
     <div className="mx-3 space-y-1.5 overflow-hidden rounded-lg border border-oc-border-soft bg-oc-panel p-2">
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-[10px] font-semibold uppercase tracking-widest text-oc-text-muted">
+          <span className="font-medium text-[10px] font-semibold uppercase tracking-widest oc-text-secondary">
             Pending
           </span>
           <span className="rounded-full bg-oc-accent-soft px-1.5 py-0.5 font-medium text-[9px] font-bold text-oc-accent">
             {promptQueue.length}
           </span>
-          <span className="text-[10px] text-oc-text-muted">
+          <span className="text-[10px] oc-text-secondary">
             {isProcessing ? "· sending after response" : ""}
           </span>
         </div>
         <button
           type="button"
-          className="rounded px-1.5 py-0.5 font-medium text-[10px] text-oc-text-muted transition-colors hover:bg-oc-accent-soft hover:text-oc-accent"
+          className="rounded px-1.5 py-0.5 font-medium text-[10px] oc-text-secondary transition-colors hover:bg-oc-accent-soft hover:text-oc-accent"
           title="Clear all pending prompts"
           onClick={() => {
             if (!currentSessionId) return;
@@ -1392,7 +1392,7 @@ export function QueueContainer() {
                 {item.text || "(empty)"}
               </div>
               {(item.files?.length || item.contexts?.length) ? (
-                <div className="mt-0.5 flex items-center gap-2 font-medium text-[9px] text-oc-text-muted">
+                <div className="mt-0.5 flex items-center gap-2 font-medium text-[9px] oc-text-secondary">
                   {item.files?.length ? (
                     <span>{item.files.length} file{item.files.length > 1 ? "s" : ""}</span>
                   ) : null}
@@ -1404,7 +1404,7 @@ export function QueueContainer() {
             </div>
             <button
               type="button"
-              className="mt-0.5 shrink-0 rounded-md p-1 text-oc-text-muted opacity-0 transition-all group-hover:opacity-100 hover:bg-oc-accent-soft hover:text-oc-accent disabled:opacity-50"
+              className="mt-0.5 shrink-0 rounded-md p-1 oc-text-secondary opacity-0 transition-all group-hover:opacity-100 hover:bg-oc-accent-soft hover:text-oc-accent disabled:opacity-50"
               title="Remove from queue"
               disabled={!itemSessionId || isSteering}
               onClick={() => removeQueuedItem(item, index)}
@@ -2095,7 +2095,7 @@ export function InputWrapper() {
            <div className="mb-2 rounded-lg border border-oc-border-soft bg-[var(--oc-panel-soft)] px-3 py-2">
              <div className="mb-2 flex items-center justify-between gap-2 border-b border-oc-border-soft pb-1.5">
                <div className="flex items-center gap-2">
-                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--oc-text-muted)]">
+                 <div className="text-[11px] font-semibold uppercase tracking-wider oc-text-secondary">
                    {event.title || "Quick Input"}
                  </div>
                  {displayInteractiveEvents.length > 1 && (
@@ -2108,12 +2108,12 @@ export function InputWrapper() {
                         setIsCustomMode(false);
                         setCustomValue("");
                       }}
-                      className="text-[var(--oc-text-muted)] hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-[var(--oc-text-muted)] transition-colors"
+                      className="oc-text-secondary hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-oc-text-soft transition-colors"
                       title="Previous"
                     >
                       <ArrowLeft className="h-3 w-3" />
                     </button>
-                    <span className="text-[10px] font-medium text-[var(--oc-text-muted)] tabular-nums">
+                    <span className="text-[10px] font-medium oc-text-secondary tabular-nums">
                       {currentInteractiveIndex + 1} /{" "}
                       {displayInteractiveEvents.length}
                     </span>
@@ -2128,13 +2128,13 @@ export function InputWrapper() {
                         setIsCustomMode(false);
                         setCustomValue("");
                       }}
-                      className="text-[var(--oc-text-muted)] hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-[var(--oc-text-muted)] transition-colors"
+                      className="oc-text-secondary hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-oc-text-soft transition-colors"
                       title="Next"
                     >
                       <ArrowRight className="h-3 w-3" />
                     </button>
                     {Object.keys(pendingAnswers).length > 0 && (
-                      <span className="ml-1 rounded-full bg-[var(--oc-accent-soft)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--oc-accent)] tabular-nums">
+                      <span className="ml-1 rounded-full bg-[var(--oc-accent-soft)] px-1.5 py-0.5 text-[9px] font-semibold oc-tinted-badge-text tabular-nums">
                         {Object.keys(pendingAnswers).length} answered
                       </span>
                     )}
@@ -2145,7 +2145,7 @@ export function InputWrapper() {
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  className="rounded p-1 text-[var(--oc-text-muted)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-colors"
+                  className="rounded p-1 oc-text-secondary hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-colors"
                   title="Dismiss This"
                   onClick={() => {
                     dispatch({
@@ -2163,7 +2163,7 @@ export function InputWrapper() {
               {Object.keys(pendingAnswers).length > 0 && (
                 <div className="mb-3 flex flex-wrap gap-1.5 p-2 bg-[var(--oc-panel)] rounded-md border border-dashed border-[var(--oc-border)]">
                   {Object.entries(pendingAnswers).map(([eventId, data], idx) => (
-                    <span key={eventId} className="rounded bg-[var(--oc-panel-soft)] px-1.5 py-0.5 text-[10px] text-[var(--oc-text-muted)] border border-[var(--oc-border-soft)]" title={data.text}>
+                    <span key={eventId} className="rounded bg-[var(--oc-panel-soft)] px-1.5 py-0.5 text-[10px] oc-text-secondary border border-[var(--oc-border-soft)]" title={data.text}>
                       Q{idx + 1}: <span className="font-medium text-[var(--oc-text-soft)] truncate max-w-[120px] inline-block align-bottom">{data.text}</span>
                     </span>
                   ))}
@@ -2185,7 +2185,7 @@ export function InputWrapper() {
                   return (
                     <>
                       {showContext && (
-                        <div className="mb-2 rounded bg-[var(--oc-panel)] border border-[var(--oc-border-soft)] px-2.5 py-2 text-[11px] text-[var(--oc-text-muted)] leading-relaxed">
+                        <div className="mb-2 rounded bg-[var(--oc-panel)] border border-[var(--oc-border-soft)] px-2.5 py-2 text-[11px] oc-text-secondary leading-relaxed">
                           <MarkdownRenderer content={ctx} />
                         </div>
                       )}
@@ -2269,7 +2269,7 @@ export function InputWrapper() {
                       ))}
                       <button
                         type="button"
-                        className="rounded-md border border-dashed border-[var(--oc-border)] bg-transparent px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-muted)] hover:border-[var(--oc-accent)] hover:text-[var(--oc-accent)] transition-all"
+                        className="rounded-md border border-dashed border-[var(--oc-border)] bg-transparent px-2.5 py-1.5 text-[11px] font-medium oc-text-secondary hover:border-[var(--oc-accent)] hover:text-[var(--oc-accent)] transition-all"
                         onClick={() => setIsCustomMode(true)}
                       >
                         Custom Answer...
@@ -2294,7 +2294,7 @@ export function InputWrapper() {
                       </button>
                       <button
                         type="button"
-                        className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-muted)] hover:border-[var(--oc-border-strong)] hover:text-[var(--oc-text-soft)] transition-all"
+                        className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium oc-text-secondary hover:border-[var(--oc-border-strong)] hover:text-[var(--oc-text-soft)] transition-all"
                         onClick={() =>
                           submitInteractiveResponse(
                             event.cancelLabel || "No",
@@ -2581,7 +2581,7 @@ export function InputWrapper() {
           {slashTrigger && (
             <div className="oc-suggestions" ref={suggestionsContainerRef}>
               {!commandsLoaded ? (
-                <div className="px-3 py-2 text-[11px] font-medium text-oc-text-muted">
+                <div className="px-3 py-2 text-[11px] font-medium oc-text-secondary">
                   Loading commands...
                 </div>
               ) : filteredCommands.length > 0 ? (
@@ -2606,14 +2606,14 @@ export function InputWrapper() {
                       ) : null}
                     </div>
                     {command.description ? (
-                      <div className="mt-0.5 truncate text-[10px] text-oc-text-muted">
+                      <div className="mt-0.5 truncate text-[10px] oc-text-secondary">
                         {command.description}
                       </div>
                     ) : null}
                   </button>
                 ))
               ) : (
-                <div className="px-3 py-2 text-[11px] font-medium text-oc-text-muted">
+                <div className="px-3 py-2 text-[11px] font-medium oc-text-secondary">
                   No matching commands.
                 </div>
               )}
@@ -2656,7 +2656,7 @@ export function InputWrapper() {
                       <Bot className="h-3.5 w-3.5 shrink-0 text-[var(--vscode-textLink-foreground)]" />
                     )}
                     {item.type === "file" && (
-                      <span className="shrink-0 text-oc-text-muted text-[10px]">📄</span>
+                      <span className="shrink-0 oc-text-secondary text-[10px]">📄</span>
                     )}
                     {item.type === "resource" && (
                       <Wrench className="h-3.5 w-3.5 shrink-0 text-[var(--vscode-notificationsWarningIcon-foreground)]" />
@@ -2667,17 +2667,17 @@ export function InputWrapper() {
                       {item.type === "resource" && item.name}
                     </span>
                     {item.type === "agent" && item.description && (
-                      <span className="ml-auto text-[9px] text-oc-text-muted truncate max-w-[140px]">
+                      <span className="ml-auto text-[9px] oc-text-secondary truncate max-w-[140px]">
                         {item.description}
                       </span>
                     )}
                     {item.type === "file" && (
-                      <span className="ml-auto text-[9px] text-oc-text-muted truncate max-w-[140px]" title={item.path}>
+                      <span className="ml-auto text-[9px] oc-text-secondary truncate max-w-[140px]" title={item.path}>
                         {item.path}
                       </span>
                     )}
                     {item.type === "resource" && (
-                      <span className="ml-auto text-[9px] text-oc-text-muted truncate max-w-[140px]">
+                      <span className="ml-auto text-[9px] oc-text-secondary truncate max-w-[140px]">
                         {item.clientName}
                       </span>
                     )}
@@ -2748,6 +2748,14 @@ export function ThinkingLevelControl() {
   const { thinkingLevel, thinkingDropdownOpen, modelCapability } = useAppState();
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
+  const variantDescriptions: Record<string, string> = {
+    none: "No extra reasoning",
+    minimal: "Fastest response",
+    low: "Light reasoning",
+    medium: "Balanced reasoning",
+    high: "Deeper reasoning",
+    xhigh: "Maximum reasoning",
+  };
 
   const setLevel = (level: ThinkingLevel) => {
     dispatch({ type: "SET_THINKING_LEVEL", payload: level });
@@ -2775,14 +2783,14 @@ export function ThinkingLevelControl() {
   }, [thinkingDropdownOpen, dispatch]);
 
   const localVariants =
-    (modelCapability && modelCapability.variants && modelCapability.variants.length > 0)
+    modelCapability && Array.isArray(modelCapability.variants)
       ? modelCapability.variants
-      : ["low", "medium", "high"];
+      : [];
 
   const displayLabel = (lvl?: string) => {
     const current = lvl ?? localVariants[1] ?? localVariants[0];
-    if (!current) return "Med";
-    return current.slice(0, 3).toUpperCase();
+    if (!current) return "Medium";
+    return current.charAt(0).toUpperCase() + current.slice(1).toLowerCase();
   };
 
   useEffect(() => {
@@ -2792,7 +2800,14 @@ export function ThinkingLevelControl() {
     }
   }, [(localVariants || []).join(","), thinkingLevel, dispatch]);
 
-  if (!modelCapability || !modelCapability.reasoning) return null;
+  if (
+    !modelCapability ||
+    !modelCapability.reasoning ||
+    !Array.isArray(localVariants) ||
+    localVariants.length === 0
+  ) {
+    return null;
+  }
 
   return (
     <div className="relative" ref={containerRef}>
@@ -2810,9 +2825,7 @@ export function ThinkingLevelControl() {
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="opacity-60">Think</span>
-          <span className="font-medium text-oc-accent">
-            {displayLabel(thinkingLevel)}
-          </span>
+          <span>{displayLabel(thinkingLevel)}</span>
         </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${thinkingDropdownOpen ? "rotate-180" : ""
@@ -2820,14 +2833,14 @@ export function ThinkingLevelControl() {
         />
       </Button>
       {thinkingDropdownOpen && (
-        <div className="oc-popover absolute bottom-full left-0 z-30 mb-1.5 w-44 rounded-xl border border-oc-border bg-oc-panel shadow-xl overflow-hidden">
+        <div className="oc-popover absolute bottom-full left-0 z-30 mb-1.5 w-52 rounded-xl border border-oc-border bg-oc-panel shadow-xl overflow-hidden">
           <div className="px-1.5 py-1.5">
             {(localVariants as ThinkingLevel[]).map((level) => (
               <button
                 key={level}
                 type="button"
                 className={`oc-popover-item w-full rounded-lg px-3 py-2 text-left transition-colors ${thinkingLevel === level
-                    ? "bg-oc-accent-soft text-oc-accent"
+                    ? "bg-oc-accent-soft oc-tinted-badge-text"
                     : "hover:bg-oc-panel-soft"
                   }`}
                 onClick={() => setLevel(level)}
@@ -2836,14 +2849,12 @@ export function ThinkingLevelControl() {
                   <span className="text-xs font-medium capitalize">
                     {level}
                   </span>
-                  {thinkingLevel === level && (
-                    <span className="text-xs font-medium text-oc-accent">
-                      active
-                    </span>
-                  )}
+                  {thinkingLevel === level ? (
+                    <Check className="h-3.5 w-3.5 text-oc-accent" />
+                  ) : null}
                 </div>
-                <div className="text-xs font-medium text-oc-text-muted mt-0.5">
-                  {level.charAt(0).toUpperCase() + level.slice(1)}
+                <div className="mt-0.5 text-[11px] oc-text-secondary">
+                  {variantDescriptions[level.toLowerCase()] ?? "Custom reasoning mode"}
                 </div>
               </button>
             ))}
@@ -3129,7 +3140,7 @@ export function TodoPanel() {
       case "pending":
         return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
       case "in_progress":
-        return "text-oc-accent bg-oc-accent/10 border-oc-accent/30";
+        return "oc-tinted-badge-text bg-oc-accent/10 border-oc-accent/30";
       case "completed":
         return "text-oc-green bg-oc-green/10 border-oc-green/30";
       case "failed":
@@ -3717,10 +3728,10 @@ export function AgentsPanel() {
 
   function modeBadgeClass(mode: string | undefined) {
     if (mode === "subagent")
-      return "bg-[var(--oc-yellow,#f59e0b)]/20 text-[var(--oc-yellow,#f59e0b)]";
-    if (mode === "all") return "bg-[var(--oc-accent)]/20 text-oc-accent";
+      return "bg-[var(--oc-yellow,#f59e0b)]/20 oc-tinted-badge-text";
+    if (mode === "all") return "bg-[var(--oc-accent)]/20 oc-tinted-badge-text";
     // primary (default)
-    return "bg-[var(--oc-green)]/20 text-[var(--oc-green)]";
+    return "bg-[var(--oc-green)]/20 oc-tinted-badge-text";
   }
 
   return (
@@ -4246,7 +4257,7 @@ export function SettingsModal({
 
         <div className="oc-modal-content flex-1 flex flex-col space-y-3 overflow-hidden bg-oc-bg">
           <div className="flex items-center justify-between text-xs gap-3">
-            <div className="flex items-center gap-2 text-oc-text-muted min-w-0">
+            <div className="flex items-center gap-2 oc-text-secondary min-w-0">
               <FileIcon filePath="opencode.json" className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate opacity-80" title={filePath}>
                 {filePath || "opencode.json"}
@@ -4296,7 +4307,7 @@ export function SettingsModal({
                 </div>
               ) : (
                 <div className="h-full overflow-y-auto space-y-3 pr-1">
-                   <div className="oc-panel-section border-oc-border-soft p-2 text-[10px] text-oc-text-muted">
+                   <div className="oc-panel-section border-oc-border-soft p-2 text-[10px] oc-text-secondary">
                     GUI mode: Edit nested objects, arrays, and primitives with full JSON structure support.
                   </div>
                   <JsonFormEditor
@@ -4339,7 +4350,7 @@ export function SettingsModal({
         </div>
 
         <div className="oc-modal-footer items-center justify-between bg-oc-bg-soft">
-          <p className="text-[10px] text-oc-text-muted">
+          <p className="text-[10px] oc-text-secondary">
             {isDirty
               ? "Unsaved changes detected."
               : "No unsaved changes."}{" "}
@@ -4429,7 +4440,7 @@ export function SettingsPanel() {
             onClick={requestRefresh}
             variant="ghost"
             size="icon"
-            className={`h-6 w-6 text-oc-text-muted hover:text-oc-accent transition-all ${isRefreshing ? "animate-spin" : ""}`}
+            className={`h-6 w-6 oc-text-secondary hover:text-oc-accent transition-all ${isRefreshing ? "animate-spin" : ""}`}
             title="Reload config"
           >
             <RefreshCw className="h-3.5 w-3.5" />
@@ -4439,7 +4450,7 @@ export function SettingsPanel() {
 
       <div className="space-y-3">
          <div className="oc-panel-section flex flex-col gap-1.5 border-oc-border-soft p-2 shadow-sm transition-all hover:border-oc-accent/30">
-          <div className="flex items-center justify-between text-[10px] text-oc-text-muted font-medium uppercase tracking-wider">
+          <div className="flex items-center justify-between text-[10px] oc-text-secondary font-medium uppercase tracking-wider">
             <span>Current Model</span>
             <Badge
               variant="outline"
@@ -4455,7 +4466,7 @@ export function SettingsPanel() {
             </span>
           </div>
           <div
-            className="text-[10px] text-oc-text-muted truncate"
+            className="text-[10px] oc-text-secondary truncate"
             title={opencodeConfig?.filePath}
           >
             {opencodeConfig?.filePath || "Resolving config path..."}
@@ -4486,7 +4497,7 @@ export function SettingsPanel() {
          {/* File Selector Dropdown */}
          {opencodeConfig?.files && opencodeConfig.files.length > 1 && (
            <div className="oc-panel-section flex flex-col gap-1.5 border-oc-border-soft p-2 shadow-sm">
-            <div className="text-[10px] text-oc-text-muted font-medium uppercase tracking-wider">
+            <div className="text-[10px] oc-text-secondary font-medium uppercase tracking-wider">
               Config Files ({opencodeConfig.files.length})
             </div>
             <select
@@ -4534,3 +4545,5 @@ export function SettingsPanel() {
 }
 
 export { ConfigSidebar } from './ConfigSidebar';
+
+

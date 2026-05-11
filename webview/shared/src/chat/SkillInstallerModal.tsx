@@ -118,7 +118,7 @@ export function SkillInstallerModal({
             size="icon"
             onClick={onClose}
             aria-label="Close skill installer"
-            className="h-6 w-6 text-muted-foreground hover:text-foreground"
+            className="h-6 w-6 oc-text-secondary hover:text-foreground"
           >
             <X className="h-3.5 w-3.5" />
           </Button>
@@ -143,7 +143,7 @@ export function SkillInstallerModal({
 
           {/* URL input */}
           <div className="oc-panel-section flex flex-col gap-1.5 p-3">
-            <Label htmlFor="skill-url" className="text-xs font-medium text-muted-foreground">
+            <Label htmlFor="skill-url" className="text-xs font-medium oc-text-secondary">
               Skill URL
             </Label>
             <Input
@@ -164,7 +164,7 @@ export function SkillInstallerModal({
 
           {/* Progress message */}
           {status.type === "idle" && status.message && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 text-xs oc-text-secondary">
               <Loader2 className="h-3 w-3 animate-spin" />
               <span>{status.message}</span>
             </div>
@@ -210,3 +210,4 @@ export function SkillInstallerModal({
 
   return createPortal(modalContent, document.body);
 }
+

@@ -101,6 +101,6 @@ test('session settings persistence and prompt variant resolution remain session-
   assert.match(applySessionSettingsBody, /if \(settings\.agent\) \{[\s\S]*this\.selectedAgent = settings\.agent;/, 'applySessionSettings should restore per-session agent selection');
   assert.match(applySessionSettingsBody, /if \(settings\.model\?\.providerID && settings\.model\?\.modelID\) \{[\s\S]*this\.selectedModel = settings\.model;/, 'applySessionSettings should restore per-session model selection');
   assert.match(migrateSessionSettingsBody, /map\[newSessionId\] = \{ \.\.\.oldSettings, \.\.\.map\[newSessionId\] \};/, 'migrateSessionSettings should carry settings forward to the new session id');
-  assert.match(resolvePromptVariantBody, /this\.getSessionSettings\(sessionId\)\.thinkingLevel \?\?[\s\S]*this\.globalState\.get<string>\("thinkingLevel"\)/, 'resolvePromptVariant should prefer per-session thinking level before global fallback');
-  assert.match(resolvePromptVariantBody, /if \(providerID === 'anthropic' && normalizedLevel === 'high'\) return 'max';/, 'resolvePromptVariant should remap Anthropic high reasoning to max');
+  assert.match(resolvePromptVariantBody, /this\.getEffectiveThinkingLevel\(sessionId\)/, 'resolvePromptVariant should derive the level from effective per-model preferences');
+  assert.match(resolvePromptVariantBody, /if \(variants\.length === 0 \|\| !variants\.includes\(normalizedLevel\)\) return undefined;/, 'resolvePromptVariant should only return variants supported by the selected model');
 });

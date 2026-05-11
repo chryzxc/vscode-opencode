@@ -68,7 +68,7 @@ export function PrimitiveField({ value, path, onChange, type, fieldKey, availabl
   if (type === 'null') {
     return (
       <div className="flex items-center gap-2">
-        <Badge variant="outline" className="text-oc-text-muted">
+        <Badge variant="outline" className="oc-text-secondary">
           null
         </Badge>
         <Button
@@ -162,3 +162,4 @@ export function PrimitiveField({ value, path, onChange, type, fieldKey, availabl
     </div>
   );
 }
+

@@ -43,6 +43,7 @@ test('thinking, model, and agent controls post selection events and expose commo
 
   assert.match(modelBody, /vscode\.postMessage\(\{[\s\S]*type:\s*["']selectModel["']/, 'model dropdown should post selectModel when a model is picked');
   assert.match(agentBody, /vscode\.postMessage\(\{\s*type:\s*["']selectAgent["'],\s*agent:\s*agent\.id\s*\}\)/, 'agent dropdown should post selectAgent when an agent is picked');
+  assert.match(thinkingBody, /<span className="opacity-60">Think<\/span>\s*<span>\{displayLabel\(thinkingLevel\)\}<\/span>/, 'thinking chip should follow the same label/value visual structure as model and agent chips');
 });
 
 test('history sidebar shows loading state when switching sessions', () => {

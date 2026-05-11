@@ -15,6 +15,8 @@ export interface Model {
   name: string;
   providerName?: string;
   contextLimit?: number;
+  reasoning?: boolean;
+  variants?: string[];
 }
 
 export interface Agent {
@@ -231,6 +233,7 @@ export interface StreamingState {
   model?: { modelID: string; providerID: string; name?: string };
   modelID?: string;
   providerID?: string;
+  variant?: string;
   inThoughtBlock?: boolean;
   /** Track if currently processing a reasoning part to prevent content leakage */
   inReasoningPart?: boolean;
@@ -243,6 +246,7 @@ export interface MessageInfo {
   model?: { modelID: string; providerID: string };
   modelID?: string;
   providerID?: string;
+  variant?: string;
   summary?: {
     title?: string;
     body?: string;
@@ -518,6 +522,7 @@ export interface Message {
   model?: { modelID: string; providerID: string; name?: string };
   modelID?: string;
   providerID?: string;
+  variant?: string;
   summary?: { title?: string; body?: string };
   tokens?: {
     input?: number;

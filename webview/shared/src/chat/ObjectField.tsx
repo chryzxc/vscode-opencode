@@ -48,9 +48,9 @@ export function ObjectField({
         className="flex items-center gap-2 cursor-pointer py-1 hover:bg-oc-accent-soft/5 rounded px-2 -mx-2"
       >
         {isExpanded ? (
-          <ChevronDown className="h-3 w-3 text-oc-text-muted" />
+          <ChevronDown className="h-3 w-3 oc-text-secondary" />
         ) : (
-          <ChevronRight className="h-3 w-3 text-oc-text-muted" />
+          <ChevronRight className="h-3 w-3 oc-text-secondary" />
         )}
         <span className="text-xs font-medium text-oc-text">
           {path[path.length - 1] || 'root'}
@@ -58,7 +58,7 @@ export function ObjectField({
         <Badge variant="outline" className="h-4 px-1 text-[9px] border-oc-border uppercase">
           object
         </Badge>
-        <span className="text-xs text-oc-text-muted ml-auto">
+        <span className="text-xs oc-text-secondary ml-auto">
           {entries.length} {entries.length === 1 ? 'field' : 'fields'}
         </span>
       </div>
@@ -67,7 +67,7 @@ export function ObjectField({
       {isExpanded && (
         <div className="mt-1 space-y-1">
           {entries.length === 0 ? (
-            <div className="text-xs text-oc-text-muted py-2 px-2 border border-dashed border-oc-border rounded">
+            <div className="text-xs oc-text-secondary py-2 px-2 border border-dashed border-oc-border rounded">
               No fields - click + to add
             </div>
           ) : (
@@ -86,7 +86,7 @@ export function ObjectField({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6 text-oc-text-muted hover:text-oc-red opacity-0 group-hover:opacity-100"
+                  className="h-6 w-6 oc-text-secondary hover:text-oc-red opacity-0 group-hover:opacity-100"
                   onClick={() => handleRemoveField(key)}
                 >
                   <Trash2 className="h-3 w-3" />
@@ -121,3 +121,4 @@ export function ObjectField({
     </div>
   );
 }
+

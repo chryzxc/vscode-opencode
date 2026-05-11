@@ -3017,6 +3017,20 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
         : message.parts
   };
 
+  const normalizedInfoRecord = asRecord(normalized.info) || {};
+  const variant = firstNonEmptyString(
+    asString(normalizedInfoRecord.variant),
+    asString(rec.variant),
+    asString(streaming?.variant),
+  );
+  normalized.info = {
+    ...(normalized.info || {}),
+    ...(variant ? { variant } : {}),
+  };
+  if (variant) {
+    normalized.variant = variant;
+  }
+
   // Preserve a normalized structured output payload so question/options data
   // survives message normalization even when the source uses legacy field names.
   if (normalizedStructuredOutput) {
@@ -5675,8 +5689,10 @@ function buildStreamingMessage(streaming: StreamingState): Message {
       model: streaming.model,
       modelID: streaming.modelID,
       providerID: streaming.providerID,
+      variant: streaming.variant,
       duration: streaming.usage?.duration,
     },
+    variant: streaming.variant,
   };
 }
 
@@ -5833,6 +5849,7 @@ function handleStreamEvent(
             : undefined,
         modelID: eventModelID || state.selectedModel?.modelID,
         providerID: eventProviderID || state.selectedModel?.providerID,
+        variant: state.thinkingLevel,
       },
     });
   }
@@ -6753,6 +6770,7 @@ function handleStreamEvent(
               : undefined,
           modelID: eventModelID || state.selectedModel?.modelID,
           providerID: eventProviderID || state.selectedModel?.providerID,
+          variant: state.thinkingLevel,
         },
       });
       dispatch({ type: 'SET_PROCESSING', payload: true });
@@ -7562,11 +7580,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 typeof rec?.contextLimit === "number"
                   ? rec.contextLimit
                   : undefined;
+              const variantsValid =
+                typeof rec?.variants === "undefined" ||
+                (Array.isArray(rec.variants) &&
+                  rec.variants.every((value) => typeof value === "string"));
               return (
                 !!rec &&
                 typeof rec.modelID === "string" &&
                 typeof rec.providerID === "string" &&
                 typeof rec.name === "string" &&
+                (typeof rec.reasoning === "undefined" ||
+                  typeof rec.reasoning === "boolean") &&
+                variantsValid &&
                 (contextLimit === undefined ||
                   (Number.isFinite(contextLimit) && contextLimit > 0))
               );
@@ -8930,9 +8955,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "thinkingLevelUpdate": {
           const level = asString(data.level) as any;
-          if (level) {
-            dispatch({ type: "SET_THINKING_LEVEL", payload: level });
-          }
+          dispatch({ type: "SET_THINKING_LEVEL", payload: level || "" });
           break;
         }
         case "modelCapabilityUpdate": {

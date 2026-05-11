@@ -42,7 +42,7 @@ export function CompactDiffPreview({
       <div className="oc-compact-diff-preview mt-2">
         <div className="oc-compact-diff-stats flex items-center gap-3 text-xs font-medium px-1.5 py-1 rounded bg-oc-bg/30 border border-oc-border/40">
           {filePath && (
-            <span className="text-oc-text-muted truncate">{filePath}</span>
+            <span className="oc-text-secondary truncate">{filePath}</span>
           )}
           <div className="flex items-center gap-2 ml-auto">
             {typeof excerpt.added === 'number' && excerpt.added > 0 && (
@@ -124,7 +124,7 @@ export function CompactDiffPreview({
                  // Operation type-specific styling
                  isAdded && "bg-emerald-950/20 border-emerald-950/30 text-emerald-300",
                  isRemoved && "bg-red-950/20 border-red-950/30 text-red-300",
-                 isContext && "bg-oc-bg/40 border-oc-border-soft text-oc-text-muted",
+                 isContext && "bg-oc-bg/40 border-oc-border-soft oc-text-secondary",
                )}
             >
               {/* Diff indicator */}
@@ -133,7 +133,7 @@ export function CompactDiffPreview({
                   "flex-shrink-0 font-semibold select-none",
                   isAdded && "text-oc-green",
                   isRemoved && "text-oc-red",
-                  isContext && "text-oc-text-muted opacity-50"
+                  isContext && "oc-text-secondary opacity-50"
                 )}
               >
                 {isAdded ? '+' : isRemoved ? '-' : ' '}
@@ -157,7 +157,7 @@ export function CompactDiffPreview({
       {/* More indicator */}
       {processedLines.hasMore && (
         <div className="oc-compact-diff-more mt-1.5 flex items-center justify-between">
-          <span className="text-[11px] font-medium text-oc-text-muted uppercase tracking-wide">
+          <span className="text-[11px] font-medium oc-text-secondary uppercase tracking-wide">
             {processedLines.remainingCount > 0 && (
               <>
                 {processedLines.totalAdditions > 0 && (
@@ -186,3 +186,4 @@ export function CompactDiffPreview({
     </div>
   );
 }
+

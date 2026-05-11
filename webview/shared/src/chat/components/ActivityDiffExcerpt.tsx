@@ -80,7 +80,7 @@ function DiffLine({
         <span
           className={cn(
             "inline-block w-8 py-0.5 pr-1.5 text-right",
-            isRemoved ? "text-oc-red/70" : "text-oc-text-muted opacity-40",
+            isRemoved ? "text-oc-red/80" : "text-oc-text-soft opacity-80",
           )}
         >
           {oldNum ?? ""}
@@ -88,7 +88,7 @@ function DiffLine({
         <span
           className={cn(
             "inline-block w-8 py-0.5 pr-1.5 text-right",
-            isAdded ? "text-oc-green/70" : "text-oc-text-muted opacity-40",
+            isAdded ? "text-oc-green/80" : "text-oc-text-soft opacity-80",
           )}
         >
           {newNum ?? ""}
@@ -101,7 +101,7 @@ function DiffLine({
           isAdded && "text-oc-green",
           isRemoved && "text-oc-red",
           isHeader && "text-oc-accent",
-          !isAdded && !isRemoved && !isHeader && "text-oc-text-muted opacity-30",
+          !isAdded && !isRemoved && !isHeader && "text-oc-text-soft opacity-75",
         )}
       >
         {isAdded ? "+" : isRemoved ? "-" : isHeader ? "." : " "}
@@ -127,7 +127,7 @@ function DiffLine({
           className={cn(
             "absolute right-1 top-0.5 flex h-4 w-4 items-center justify-center rounded",
             "opacity-0 transition-opacity group-hover:opacity-100",
-            "text-oc-text-muted hover:bg-oc-bg hover:text-oc-text",
+            "oc-text-secondary hover:bg-oc-bg hover:text-oc-text",
           )}
         >
           {copied ? (

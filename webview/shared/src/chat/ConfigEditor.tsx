@@ -131,7 +131,7 @@ function GuiEditor({
 
   return (
     <div className="space-y-4">
-      <div className="text-xs text-oc-text-muted p-3 rounded border border-oc-border bg-oc-bg-soft">
+      <div className="text-xs oc-text-secondary p-3 rounded border border-oc-border bg-oc-bg-soft">
         GUI mode edits top-level primitive keys only. Use Advanced tab for nested objects/arrays, or JSON tab for complex edits.
       </div>
 
@@ -148,7 +148,7 @@ function GuiEditor({
       ) : (
         <>
           {primitiveEntries.length === 0 ? (
-            <div className="rounded-md border border-dashed border-oc-border p-3 text-xs text-oc-text-muted">
+            <div className="rounded-md border border-dashed border-oc-border p-3 text-xs oc-text-secondary">
               No primitive top-level keys found. Use JSON tab for editing.
             </div>
           ) : (
@@ -164,7 +164,7 @@ function GuiEditor({
                   <div className="flex items-center gap-2">
                     {typeof value === 'boolean' ? (
                       <div className="flex flex-1 items-center gap-2">
-                        <span className="text-xs text-oc-text-muted">
+                        <span className="text-xs oc-text-secondary">
                           {value ? 'true' : 'false'}
                         </span>
                       </div>
@@ -180,7 +180,7 @@ function GuiEditor({
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 text-oc-text-muted hover:text-oc-red"
+                      className="h-7 w-7 oc-text-secondary hover:text-oc-red"
                       onClick={() => removeKey(key)}
                       title={`Remove ${key}`}
                     >
@@ -241,7 +241,7 @@ function AdvancedFormEditor({
 
   return (
     <div className="space-y-2">
-      <div className="text-xs text-oc-text-muted p-3 rounded border border-oc-border bg-oc-bg-soft">
+      <div className="text-xs oc-text-secondary p-3 rounded border border-oc-border bg-oc-bg-soft">
         Advanced GUI mode: Edit nested objects, arrays, and primitives. Full JSON structure support.
       </div>
       <JsonFormEditor
@@ -321,3 +321,4 @@ function isConfigPrimitive(value: unknown): value is string | number | boolean |
 function formatConfigContent(obj: unknown): string {
   return JSON.stringify(obj, null, 2) + '\n';
 }
+

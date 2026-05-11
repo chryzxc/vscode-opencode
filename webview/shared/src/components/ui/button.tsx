@@ -18,9 +18,9 @@ const buttonVariants = cva(
         secondary: "bg-secondary text-secondary-foreground hover:opacity-90",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
-        chip: "rounded-full border border-oc-border-soft bg-oc-panel-soft/60 text-oc-text-muted font-medium text-xs font-medium hover:bg-oc-panel-soft hover:border-oc-border hover:text-oc-text-soft transition-all active:scale-95",
+        chip: "rounded-full border border-oc-border-soft bg-oc-panel-soft/60 oc-text-secondary font-medium text-xs font-medium hover:bg-oc-panel-soft hover:border-oc-border hover:text-oc-text-soft transition-all active:scale-95",
         queue:
-          "rounded-full border border-oc-border bg-transparent text-oc-text-muted font-medium text-xs hover:bg-oc-panel-soft hover:text-oc-text-soft",
+          "rounded-full border border-oc-border bg-transparent oc-text-secondary font-medium text-xs hover:bg-oc-panel-soft hover:text-oc-text-soft",
         send: "rounded-full border border-transparent bg-oc-accent text-white font-medium text-xs font-semibold shadow-lg shadow-oc-accent/30 hover:opacity-90 hover:shadow-oc-accent/50 active:scale-95 transition-all",
         stop: "rounded-full border border-oc-border-soft bg-oc-red/10 text-oc-red font-medium text-xs hover:bg-oc-red/20 hover:border-oc-border",
         "ghost-accent": "hover:bg-oc-accent-soft hover:text-oc-accent",
@@ -62,3 +62,4 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 Button.displayName = "Button";
 
 export { Button, buttonVariants };
+

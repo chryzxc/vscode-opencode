@@ -44,7 +44,7 @@ export function ArrayField({ value, path, onChange, depth, availableModels }: Ar
         <Badge variant="outline" className="h-4 px-1 text-[9px] border-oc-border uppercase">
           array
         </Badge>
-        <span className="text-xs text-oc-text-muted ml-auto">
+        <span className="text-xs oc-text-secondary ml-auto">
           {value.length} {value.length === 1 ? 'item' : 'items'}
         </span>
       </div>
@@ -52,13 +52,13 @@ export function ArrayField({ value, path, onChange, depth, availableModels }: Ar
       {/* Items */}
       <div className="mt-1 space-y-1">
         {value.length === 0 ? (
-          <div className="text-xs text-oc-text-muted py-2 px-2 border border-dashed border-oc-border rounded">
+          <div className="text-xs oc-text-secondary py-2 px-2 border border-dashed border-oc-border rounded">
             No items - click + to add
           </div>
         ) : (
           value.map((item, index) => (
             <div key={index} className="flex items-start gap-2 group">
-              <span className="text-xs font-medium text-oc-text-muted pt-2 w-8">
+              <span className="text-xs font-medium oc-text-secondary pt-2 w-8">
                 [{index}]
               </span>
               <div className="flex-1">
@@ -96,7 +96,7 @@ export function ArrayField({ value, path, onChange, depth, availableModels }: Ar
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6 text-oc-text-muted hover:text-oc-red"
+                  className="h-6 w-6 oc-text-secondary hover:text-oc-red"
                   onClick={() => handleRemoveItem(index)}
                 >
                   <Trash2 className="h-3 w-3" />
@@ -121,3 +121,4 @@ export function ArrayField({ value, path, onChange, depth, availableModels }: Ar
     </div>
   );
 }
+

@@ -95,11 +95,13 @@ body.vscode-high-contrast-light {
   /* Text */
   --oc-text: var(--vscode-editor-foreground);
   --oc-text-soft: var(--vscode-editor-foreground);
-  --oc-text-muted: color-mix(
+  --oc-text-secondary: color-mix(
     in srgb,
-    var(--vscode-editor-foreground) 75%,
+    var(--vscode-editor-foreground) 88%,
     var(--vscode-descriptionForeground, #a6adc8)
   );
+  --oc-text-muted: var(--oc-text-secondary);
+  --muted-foreground: var(--oc-text-secondary);
 
   /* Accent - Derived from VS Code scrollbar slider color */
   --oc-accent: var(
@@ -132,6 +134,17 @@ body.vscode-high-contrast-light {
 }
 .bg-oc-agent-custom {
   background: color-mix(in srgb, var(--oc-amber-custom) 10%, transparent);
+}
+
+/* Unified secondary text utility */
+.oc-text-secondary {
+  color: var(--oc-text-secondary) !important;
+  opacity: 1;
+}
+
+/* Readable text color for tinted accent/status badges */
+.oc-tinted-badge-text {
+  color: color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent)) !important;
 }
 
 /* ── Reset ───────────────────────────────────────────────────────────────── */
@@ -1060,7 +1073,7 @@ body {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  color: var(--oc-accent);
+  color: var(--oc-text-secondary);
 }
 
 /* ── Message header labels ───────────────────────────────────────────────── */
@@ -1360,6 +1373,7 @@ body {
   background: var(--oc-bg-soft);
   border: 1px solid var(--oc-border);
   font-weight: 500;
+  color: color-mix(in srgb, var(--oc-text) 92%, var(--oc-accent));
 }
 
 .markdown-body strong {
@@ -1401,6 +1415,7 @@ body {
   border: none;
   font-size: 12px;
   line-height: 1.6;
+  color: var(--oc-text-soft);
 }
 
 .markdown-body blockquote {
@@ -2099,34 +2114,34 @@ body {
   text-transform: uppercase;
   min-width: 65px;
   text-align: center;
-  background: color-mix(in srgb, var(--oc-accent) 6%, transparent);
+  background: color-mix(in srgb, var(--oc-accent) 16%, transparent);
   border: none;
-  color: var(--oc-accent);
+  color: color-mix(in srgb, var(--oc-text) 88%, var(--oc-accent));
   position: relative;
   transition: all 0.2s ease-out;
 }
 
 .oc-refined-event-label:hover {
-  background: color-mix(in srgb, var(--oc-accent) 12%, transparent);
+  background: color-mix(in srgb, var(--oc-accent) 22%, transparent);
 }
 
 /* Event type-specific label colors - neutral */
 .oc-refined-event-label.reasoning {
-  color: var(--oc-op-accent-1);
-  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
+  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
 }
 
 .oc-refined-event-label.reasoning:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
 }
 
 .oc-refined-event-label.activity {
-  color: var(--oc-op-accent-1);
-  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
+  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
 }
 
 .oc-refined-event-label.activity:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
 }
 
 /* Enhanced source/internal badges - minimal */
@@ -2147,9 +2162,9 @@ body {
   font-weight: 400;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  background: color-mix(in srgb, var(--oc-text-muted) 5%, transparent);
+  background: color-mix(in srgb, var(--oc-text) 10%, transparent);
   border: none;
-  color: var(--oc-text-muted);
+  color: color-mix(in srgb, var(--oc-text) 92%, var(--oc-accent));
   transition: all 0.2s ease-out;
 }
 
@@ -2187,9 +2202,9 @@ body {
   );
   font-size: 12px;
   padding: 2px 4px;
-  background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
+  background: color-mix(in srgb, var(--oc-accent) 14%, transparent);
   border-radius: 3px;
-  color: var(--oc-accent);
+  color: color-mix(in srgb, var(--oc-text) 92%, var(--oc-accent));
 }
 
 .oc-refined-event-content .markdown-body pre {
@@ -2247,75 +2262,75 @@ body {
 
 /* Write operation specific styling - creative green */
 .oc-refined-event-label[data-operation="write"] {
-  color: var(--oc-green);
-  background: color-mix(in srgb, var(--oc-green) 8%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-green));
+  background: color-mix(in srgb, var(--oc-green) 16%, transparent);
 }
 
 .oc-refined-event-label[data-operation="write"]:hover {
-  background: color-mix(in srgb, var(--oc-green) 14%, transparent);
+  background: color-mix(in srgb, var(--oc-green) 22%, transparent);
 }
 
 /* Edit operation specific styling */
 .oc-refined-event-label[data-operation="edit"] {
-  color: var(--oc-op-accent-1);
-  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
+  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
 }
 
 .oc-refined-event-label[data-operation="edit"]:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
 }
 
 /* Modify operation specific styling */
 .oc-refined-event-label[data-operation="modify"] {
-  color: var(--oc-op-accent-1);
-  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
+  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
 }
 
 .oc-refined-event-label[data-operation="modify"]:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
 }
 
 /* Update operation specific styling - progressive amber */
 .oc-refined-event-label[data-operation="update"] {
-  color: var(--oc-orange);
-  background: color-mix(in srgb, var(--oc-orange) 8%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-orange));
+  background: color-mix(in srgb, var(--oc-orange) 16%, transparent);
 }
 
 .oc-refined-event-label[data-operation="update"]:hover {
-  background: color-mix(in srgb, var(--oc-orange) 14%, transparent);
+  background: color-mix(in srgb, var(--oc-orange) 22%, transparent);
 }
 
 /* Patch operation specific styling */
 .oc-refined-event-label[data-operation="patch"] {
-  color: var(--oc-op-accent-1);
-  background: color-mix(in srgb, var(--oc-op-accent-1) 8%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
+  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
 }
 
 .oc-refined-event-label[data-operation="patch"]:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 14%, transparent);
+  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
 }
 
 /* Edit operation specific styling */
 .oc-refined-event-label[data-operation="edit"] {
-  color: var(--oc-op-accent-1);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
   border-color: color-mix(in srgb, var(--oc-op-accent-1) 40%, transparent);
 }
 
 /* Modify operation specific styling */
 .oc-refined-event-label[data-operation="modify"] {
-  color: var(--oc-op-accent-1);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
   border-color: color-mix(in srgb, var(--oc-op-accent-1) 40%, transparent);
 }
 
 /* Update operation specific styling - progressive amber */
 .oc-refined-event-label[data-operation="update"] {
-  color: var(--oc-orange);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-orange));
   border-color: color-mix(in srgb, var(--oc-orange) 40%, transparent);
 }
 
 /* Patch operation specific styling */
 .oc-refined-event-label[data-operation="patch"] {
-  color: var(--oc-op-accent-1);
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
   border-color: color-mix(in srgb, var(--oc-op-accent-1) 40%, transparent);
 }
 
@@ -3884,3 +3899,4 @@ body {
 .oc-diff-line-neutral:hover {
   background-color: rgba(255, 255, 255, 0.03);
 }
+

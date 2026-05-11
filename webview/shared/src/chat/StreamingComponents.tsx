@@ -14,7 +14,7 @@ import vscode from './lib/vscode';
 import { AssistantMessage } from './MessageComponents';
 
 function extClass(path?: string): string {
-  if (!path) return 'text-oc-text-muted';
+  if (!path) return 'oc-text-secondary';
   if (path.endsWith('.ts') || path.endsWith('.tsx')) return 'text-oc-accent';
   if (path.endsWith('.js') || path.endsWith('.jsx')) return 'text-oc-yellow';
   if (path.endsWith('.json')) return 'text-oc-green';
@@ -45,7 +45,7 @@ export function ProgressStep({ step }: { step: StreamingStep }) {
       className={[
         'flex items-start gap-2 px-2 py-1 text-xs transition-colors',
         isPending
-          ? 'bg-oc-accent-soft text-oc-accent'
+          ? 'bg-oc-accent-soft oc-tinted-badge-text'
           : isError
             ? 'bg-oc-red/5'
             : 'bg-transparent',
@@ -73,7 +73,7 @@ export function ProgressStep({ step }: { step: StreamingStep }) {
           )}
         </div>
         {step.meta ? (
-          <div className="mt-0.5 text-oc-text-muted">{step.meta}</div>
+          <div className="mt-0.5 oc-text-secondary">{step.meta}</div>
         ) : null}
       </div>
     </div>
@@ -104,9 +104,9 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-oc-panel-soft transition-colors"
       >
         {open ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-oc-text-muted" />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 oc-text-secondary" />
         ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-oc-text-muted" />
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 oc-text-secondary" />
         )}
         <span className="flex-1 font-medium text-oc-text-soft">Steps</span>
         <span className={`font-medium tabular-nums ${accentColor}`}>
@@ -178,3 +178,5 @@ export function StreamingCard({ isContiguous }: { isContiguous?: boolean }) {
 
   return <AssistantMessage streaming={streaming} isContiguous={isContiguous} />;
 }
+
+
