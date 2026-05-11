@@ -2298,6 +2298,12 @@ function getThinkingVariant(
   return undefined;
 }
 
+function formatThinkingVariantLabel(variant: string): string {
+  const trimmed = variant.trim();
+  if (!trimmed) return "";
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+}
+
 const AssistantMessageInner = memo(function AssistantMessageInner({
   message,
   streaming,
@@ -2955,8 +2961,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       {thinkingVariant && (
                         <div className="flex items-center gap-1 opacity-60">
                           <span className="text-oc-xs font-medium shrink-0">•</span>
-                          <span className="text-oc-xs uppercase tracking-[0.08em]">
-                            think {thinkingVariant}
+                          <span className="text-oc-xs">
+                            Think {formatThinkingVariantLabel(thinkingVariant)}
                           </span>
                         </div>
                       )}

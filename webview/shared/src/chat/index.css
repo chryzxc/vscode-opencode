@@ -2030,8 +2030,8 @@ body {
 }
 
 .oc-refined-stepper-item.is-streaming .oc-refined-event-label.activity {
-  background: var(--oc-accent-soft) !important;
-  color: var(--oc-accent) !important;
+  background: color-mix(in srgb, var(--oc-accent) 20%, transparent) !important;
+  color: color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent)) !important;
 }
 
 .oc-refined-stepper-item.is-streaming .oc-refined-event-summary {

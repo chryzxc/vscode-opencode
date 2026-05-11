@@ -266,7 +266,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
         </div>
 
         {/* Session List */}
-        <div className="flex flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 py-2">
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 py-2">
           {filteredSessions.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
               {searchQuery ? (
@@ -285,7 +285,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
             </div>
           ) : (
             groupedSessions.map((group) => (
-              <div key={group.label} className="mb-3">
+              <div key={group.label} className="mb-3 w-full">
                 <div className="mb-1.5 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.1em] oc-text-secondary opacity-60">
                   {group.label}
                 </div>

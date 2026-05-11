@@ -6560,6 +6560,18 @@ export class ChatViewProvider
           }
           : enrichedMessage;
 
+        if (promptVariant) {
+          const infoRecord = this.asRecord((finalMessage as Record<string, unknown>).info) || {};
+          finalMessage = {
+            ...finalMessage,
+            variant: promptVariant,
+            info: {
+              ...infoRecord,
+              variant: promptVariant,
+            },
+          };
+        }
+
         const finalAssistantMessageId = this.extractMessageId(finalMessage);
         if (finalAssistantMessageId) {
           const changeSummary = await this.summarizeSessionDiffForMessage(

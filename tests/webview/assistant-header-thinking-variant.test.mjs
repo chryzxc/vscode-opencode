@@ -21,7 +21,7 @@ test("assistant header renders thinking variant beside agent/model metadata", ()
   );
   assert.match(
     messageComponentsSource,
-    /think \{thinkingVariant\}/,
+    /Think \{formatThinkingVariantLabel\(thinkingVariant\)\}/,
     "assistant header should render thinking variant label",
   );
 });
@@ -43,4 +43,3 @@ test("streaming and normalized messages persist thinking variant metadata", () =
     "normalizeMessage should retain thinking variant from streaming state when final payload omits it",
   );
 });
-
