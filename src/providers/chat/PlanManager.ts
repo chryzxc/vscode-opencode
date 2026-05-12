@@ -12,6 +12,13 @@ import * as fs from "fs/promises";
 import { LoggingCategories } from "../../utils/LoggingSchema";
 
 export class PlanManager {
+  private stripTruncationMarker(value: string): string {
+    return value
+      .replace(/\n?\.\.\.\[truncated\s+\d+\s+chars\]\s*$/i, "")
+      .replace(/\n?\.\.\.<truncated\s+\d+\s+chars>\s*$/i, "")
+      .trimEnd();
+  }
+
   constructor(
     private logger: ReturnType<typeof import("../../utils/Logger").createLogger>,
     private firstNonEmptyString: (...values: unknown[]) => string | undefined,
@@ -35,7 +42,10 @@ export class PlanManager {
   }): string | undefined {
     const existing = this.firstNonEmptyString(plan.content);
     if (existing) {
-      return existing;
+      const cleaned = this.stripTruncationMarker(existing);
+      if (cleaned.trim().length > 0) {
+        return cleaned;
+      }
     }
     const title = this.firstNonEmptyString(plan.title) || "Implementation Plan";
     const summary =
@@ -180,6 +190,11 @@ export class PlanManager {
         this.logger.endFeatureFlow(flow, { status: 'skipped', reason: 'No content' });
         return undefined;
       }
+      const cleanedContent = this.stripTruncationMarker(normalizedContent);
+      if (!cleanedContent.trim()) {
+        this.logger.endFeatureFlow(flow, { status: 'skipped', reason: 'Content only had truncation marker' });
+        return undefined;
+      }
 
       this.logger.featureStep(flow, 'normalizing_paths');
       const normalizedPreferred = this.normalizePlanFileReference(preferredPath);
@@ -200,7 +215,7 @@ export class PlanManager {
       this.logger.featureStep(flow, 'writing_file', { path: normalizedPath });
       await vscode.workspace.fs.writeFile(
         vscode.Uri.file(normalizedPath),
-        new TextEncoder().encode(normalizedContent),
+        new TextEncoder().encode(cleanedContent),
       );
 
       this.logger.info("Auto-persisted plan", { path: normalizedPath });
@@ -659,6 +674,7 @@ export class PlanManager {
       });
       return;
     }
+    planData = this.stripTruncationMarker(planData);
 
     const planTitle = this.resolvePlanTitle({
       plan,

@@ -1400,6 +1400,24 @@ body {
   color: var(--oc-text-secondary);
 }
 
+.oc-plan-approved-badge {
+  border-color: color-mix(
+    in srgb,
+    var(--vscode-widget-border, var(--oc-border)) 78%,
+    var(--vscode-terminal-ansiGreen, var(--oc-green)) 22%
+  );
+  background: color-mix(
+    in srgb,
+    var(--vscode-list-hoverBackground, var(--oc-panel-soft)) 88%,
+    var(--vscode-terminal-ansiGreen, var(--oc-green)) 12%
+  );
+  color: color-mix(
+    in srgb,
+    var(--vscode-editor-foreground, var(--oc-text)) 82%,
+    var(--vscode-terminal-ansiGreen, var(--oc-green)) 18%
+  );
+}
+
 /* ── Plan button ─────────────────────────────────────────────────────────── */
 .oc-plan-btn {
   display: inline-flex;
@@ -1709,7 +1727,12 @@ body {
 
 .markdown-body hr {
   border: none;
-  border-top: 1px solid var(--oc-border);
+  border-top: 1px solid
+    color-mix(
+      in srgb,
+      var(--vscode-widget-border, var(--oc-border)) 62%,
+      transparent
+    );
   margin: 1em 0;
 }
 
@@ -2958,14 +2981,10 @@ body {
   word-break: break-word;
   flex: 1 1 auto;
   min-width: 0;
-  background: color-mix(
-    in srgb,
-    var(--vscode-list-hoverBackground, var(--oc-panel-soft)) 45%,
-    transparent
-  );
-  border: 1px solid var(--vscode-widget-border, var(--oc-border));
-  border-radius: 6px;
-  padding: 2px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
 }
 
 /* Search block styling — terminal-style block for grep/search/glob queries */
@@ -4166,6 +4185,45 @@ body {
   border-color: var(--oc-border);
   background-color: rgba(255, 255, 255, 0.06);
   color: var(--oc-text-soft);
+}
+
+/* Quick input popover answer chips */
+.oc-quick-input-option {
+  border-color: var(--vscode-widget-border, var(--oc-border));
+  background: var(--vscode-editorWidget-background, var(--oc-panel));
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-quick-input-option:hover {
+  border-color: var(--vscode-contrastBorder, var(--vscode-widget-border, var(--oc-border)));
+  background: var(--vscode-list-hoverBackground, var(--oc-panel-soft));
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-quick-input-option-muted {
+  border-color: var(--vscode-widget-border, var(--oc-border));
+  color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
+}
+
+.oc-quick-input-option-muted:hover {
+  border-color: var(--vscode-contrastBorder, var(--vscode-widget-border, var(--oc-border)));
+  background: var(--vscode-list-hoverBackground, var(--oc-panel-soft));
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-quick-input-icon-btn {
+  color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
+}
+
+.oc-quick-input-icon-btn:hover {
+  background: var(--vscode-list-hoverBackground, var(--oc-panel-soft));
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-quick-input-answer-chip {
+  background: var(--vscode-list-hoverBackground, var(--oc-panel-soft));
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
 }
 
 /* Container with subtle divider hover state */

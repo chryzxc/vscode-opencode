@@ -2156,7 +2156,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
   if (isPlanProceedMessageContent(content)) {
     return (
       <div className="oc-message-enter mb-5 px-4 flex justify-end">
-        <div className="flex items-center gap-1.5 rounded-full border border-oc-green/30 bg-oc-green/10 px-3 py-1.5 text-oc-xs text-oc-green">
+        <div className="oc-plan-approved-badge flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-oc-xs">
           <Check className="h-3.5 w-3.5" />
           <span className="font-medium">Plan Approved</span>
         </div>
@@ -3247,7 +3247,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                         />
                                       ) : SEARCH_LABELS.has(event.label) ? (
                                         <SearchBlock
-                                          pattern={event.activityDetail?.query || event.summary}
+                                          pattern={
+                                            [
+                                              event.activityDetail?.query || event.summary,
+                                              event.description,
+                                            ]
+                                              .filter((value): value is string => !!value?.trim())
+                                              .join("\n")
+                                          }
                                           scope={event.label}
                                         />
                                       ) : (
@@ -3261,7 +3268,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                 )}
 
                                 {/* For non-bash events, render description separately */}
-                                {event.label !== "bash" && event.description && (
+                                {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.description && (
                                   <div className="oc-refined-event-content">
                                     <MarkdownRenderer
                                       content={event.description}

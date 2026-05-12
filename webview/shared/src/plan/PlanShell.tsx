@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, Play, Shield, X } from "lucide-react";
+import { MessageSquare, Play, X } from "lucide-react";
 
 import type { PlanComment } from "@/chat/lib/types";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +16,16 @@ interface PlanEnvelope {
   sourceFile?: string;
   comments?: PlanComment[];
   planId?: string;
+}
+
+interface PositionedComment {
+  id: string;
+  preview: string;
+  top: number;
+}
+
+function normalizeCommentText(value: string | undefined): string {
+  return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 declare global {
@@ -49,7 +59,12 @@ export default function PlanShell() {
   const [editText, setEditText] = useState("");
 
   const [commentsPanelOpen, setCommentsPanelOpen] = useState(false);
+  const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
+  const [positionedComments, setPositionedComments] = useState<
+    PositionedComment[]
+  >([]);
 
+  const planSurfaceRef = useRef<HTMLDivElement | null>(null);
   const planContentRef = useRef<HTMLDivElement | null>(null);
   const [pendingAnchor, setPendingAnchor] = useState<
     PlanComment["anchor"] | null
@@ -58,7 +73,6 @@ export default function PlanShell() {
     null,
   );
   const [commentText, setCommentText] = useState("");
-  const [generalCommentText, setGeneralCommentText] = useState("");
 
   // Listen for commentsUpdated messages from the extension
   useEffect(() => {
@@ -105,6 +119,17 @@ export default function PlanShell() {
   }, [pendingAnchor]);
 
   const renderedHtml = renderMarkdown(rawPlan);
+
+  function revealComment(commentId: string) {
+    setActiveCommentId(commentId);
+    setCommentsPanelOpen(true);
+    setTimeout(() => {
+      const commentCard = document.querySelector(
+        `[data-comment-id="${commentId}"]`,
+      );
+      commentCard?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 180);
+  }
 
   // Text selection → floating popover
   useEffect(() => {
@@ -205,7 +230,132 @@ export default function PlanShell() {
   // Inline highlights for comments
   useEffect(() => {
     const container = planContentRef.current;
-    if (!container || !comments.length) return;
+    const surface = planSurfaceRef.current;
+    if (!container || !surface) return;
+    const commentOrder = new Map<string, number>();
+    comments.forEach((comment, idx) => {
+      commentOrder.set(comment.id, idx + 1);
+    });
+
+    function clearAnchorState() {
+      const elements = container.querySelectorAll("[data-plan-comment-anchor]");
+      elements.forEach((el) => {
+        const element = el as HTMLElement;
+        element.classList.remove(
+          "bg-[color-mix(in_srgb,#93c5fd_14%,transparent)]",
+          "ring-1",
+          "ring-[color-mix(in_srgb,#93c5fd_36%,transparent)]",
+          "shadow-[inset_0_0_0_1px_color-mix(in_srgb,#93c5fd_24%,transparent)]",
+          "bg-[color-mix(in_srgb,#7dd3fc_22%,transparent)]",
+          "ring-[color-mix(in_srgb,#7dd3fc_50%,transparent)]",
+          "shadow-[inset_0_0_0_1px_color-mix(in_srgb,#7dd3fc_38%,transparent)]",
+        );
+        delete element.dataset.planCommentAnchor;
+      });
+
+      const marks = container.querySelectorAll("mark[data-comment-id]");
+      marks.forEach((markEl) => {
+        const mark = markEl as HTMLElement;
+        mark.classList.remove(
+          "bg-[color-mix(in_srgb,#93c5fd_20%,transparent)]",
+          "ring-[color-mix(in_srgb,#93c5fd_44%,transparent)]",
+          "bg-[color-mix(in_srgb,#7dd3fc_34%,transparent)]",
+          "ring-[color-mix(in_srgb,#7dd3fc_62%,transparent)]",
+          "shadow-[0_0_0_1px_color-mix(in_srgb,#7dd3fc_44%,transparent)]",
+        );
+        mark.classList.add(
+          "bg-[color-mix(in_srgb,#93c5fd_20%,transparent)]",
+          "ring-[color-mix(in_srgb,#93c5fd_44%,transparent)]",
+        );
+      });
+    }
+
+    function getMarkdownLinePreview(comment: PlanComment): string {
+      const line = rawPlan.split("\n")[comment.anchor.startLine] || "";
+      return line.replace(/^[\s>*-]+/, "").trim();
+    }
+
+    function findCommentAnchorElement(comment: PlanComment): HTMLElement | null {
+      const mark = container.querySelector(
+        `mark[data-comment-id="${comment.id}"]`,
+      ) as HTMLElement | null;
+      if (mark) return mark;
+
+      const candidates = Array.from(
+        container.querySelectorAll("li, p, h1, h2, h3, h4, h5, h6, blockquote"),
+      ) as HTMLElement[];
+
+      const selectedText = normalizeCommentText(comment.anchor.selectedText);
+      const surroundingText = normalizeCommentText(comment.anchor.surroundingText);
+      const linePreview = normalizeCommentText(getMarkdownLinePreview(comment));
+
+      let bestMatch: { el: HTMLElement; score: number } | null = null;
+
+      for (const candidate of candidates) {
+        const candidateText = normalizeCommentText(candidate.textContent || "");
+        if (!candidateText) continue;
+
+        let score = 0;
+        if (selectedText && candidateText.includes(selectedText)) score += 5;
+        if (surroundingText && candidateText.includes(surroundingText)) score += 4;
+        if (linePreview && candidateText.includes(linePreview)) score += 3;
+
+        if (!score && selectedText) {
+          const selectedWords = selectedText.split(" ").filter(Boolean);
+          const overlap = selectedWords.filter((word) => candidateText.includes(word));
+          if (overlap.length >= Math.min(4, selectedWords.length)) {
+            score += 2;
+          }
+        }
+
+        if (!bestMatch || score > bestMatch.score) {
+          bestMatch = score > 0 ? { el: candidate, score } : bestMatch;
+        }
+      }
+
+      return bestMatch?.el ?? null;
+    }
+
+    function applyAnchorState() {
+      clearAnchorState();
+      comments.forEach((comment) => {
+        const selectedMark = container.querySelector(
+          `mark[data-comment-id="${comment.id}"]`,
+        ) as HTMLElement | null;
+
+        if (selectedMark) {
+          if (activeCommentId === comment.id) {
+            selectedMark.classList.remove(
+              "bg-[color-mix(in_srgb,#93c5fd_20%,transparent)]",
+              "ring-[color-mix(in_srgb,#93c5fd_44%,transparent)]",
+            );
+            selectedMark.classList.add(
+              "bg-[color-mix(in_srgb,#7dd3fc_34%,transparent)]",
+              "ring-[color-mix(in_srgb,#7dd3fc_62%,transparent)]",
+              "shadow-[0_0_0_1px_color-mix(in_srgb,#7dd3fc_44%,transparent)]",
+            );
+          }
+          return;
+        }
+
+        const anchorEl = findCommentAnchorElement(comment);
+        if (!anchorEl) return;
+        anchorEl.dataset.planCommentAnchor = comment.id;
+        anchorEl.classList.add(
+          "bg-[color-mix(in_srgb,#93c5fd_14%,transparent)]",
+          "ring-1",
+          "ring-[color-mix(in_srgb,#93c5fd_36%,transparent)]",
+          "shadow-[inset_0_0_0_1px_color-mix(in_srgb,#93c5fd_24%,transparent)]",
+        );
+        if (activeCommentId === comment.id) {
+          anchorEl.classList.add(
+            "bg-[color-mix(in_srgb,#7dd3fc_22%,transparent)]",
+            "ring-[color-mix(in_srgb,#7dd3fc_50%,transparent)]",
+            "shadow-[inset_0_0_0_1px_color-mix(in_srgb,#7dd3fc_38%,transparent)]",
+          );
+        }
+      });
+    }
 
     // Reset: The markdown renders clean via React, but we might want to be explicit
     // if we were mutating the same DOM. Since renderedHtml is a dependency of this
@@ -250,13 +400,12 @@ export default function PlanShell() {
             const mark = document.createElement("mark");
             mark.textContent = match;
             mark.className =
-              "bg-amber-500/30 text-inherit cursor-pointer rounded-sm hover:bg-amber-500/50 transition-colors px-0.5 -mx-0.5";
+              "bg-[color-mix(in_srgb,#93c5fd_20%,transparent)] text-inherit cursor-pointer rounded-sm ring-1 ring-[color-mix(in_srgb,#93c5fd_44%,transparent)] hover:bg-[color-mix(in_srgb,#7dd3fc_28%,transparent)] transition-colors px-0.5 -mx-0.5";
             mark.dataset.commentId = comment.id;
             mark.title = comment.text;
             mark.onclick = (e) => {
               e.stopPropagation();
-              setCommentsPanelOpen(true);
-              // We could also scroll to the comment in the sidebar here if we wanted
+              revealComment(comment.id);
             };
             fragment.appendChild(mark);
 
@@ -277,10 +426,50 @@ export default function PlanShell() {
       }
     };
 
-    // Small delay to ensure renderMarkdown has finished and DOM is stable
-    const timer = setTimeout(() => walk(container), 20);
-    return () => clearTimeout(timer);
-  }, [comments]);
+    function measureAnnotations() {
+      if (!planContentRef.current || !planSurfaceRef.current) return;
+      const nextPositions: PositionedComment[] = [];
+      const seenTops: number[] = [];
+      comments.forEach((comment) => {
+        const anchorEl = findCommentAnchorElement(comment);
+        if (!anchorEl) return;
+        const anchorRect = anchorEl.getBoundingClientRect();
+        const surfaceRect = planSurfaceRef.current.getBoundingClientRect();
+        let top =
+          anchorRect.top - surfaceRect.top + planSurfaceRef.current.scrollTop - 2;
+        while (seenTops.some((value) => Math.abs(value - top) < 28)) {
+          top += 28;
+        }
+        seenTops.push(top);
+        const previewSource = comment.text || comment.anchor.selectedText || "Comment";
+        nextPositions.push({
+          id: comment.id,
+          preview:
+            previewSource.length > 42
+              ? `${previewSource.slice(0, 42).trimEnd()}...`
+              : previewSource,
+          top,
+        });
+      });
+      setPositionedComments(nextPositions);
+    }
+
+    const timer = setTimeout(() => {
+      walk(container);
+      applyAnchorState();
+      measureAnnotations();
+    }, 20);
+
+    window.addEventListener("resize", measureAnnotations);
+    const mainScroller = surface.closest("main");
+    mainScroller?.addEventListener("scroll", measureAnnotations);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", measureAnnotations);
+      mainScroller?.removeEventListener("scroll", measureAnnotations);
+    };
+  }, [comments, renderedHtml, activeCommentId]);
 
   function handleProceed() {
     if (executing) return;
@@ -305,36 +494,22 @@ export default function PlanShell() {
     setCommentsPanelOpen(true);
   }
 
-  function handleAddGeneralComment() {
-    const trimmed = generalCommentText.trim();
-    if (!trimmed) return;
-    const newComment: PlanComment = {
-      id: crypto.randomUUID(),
-      anchor: { startLine: -1, endLine: -1, selectedText: "" },
-      text: trimmed,
-      createdAt: Date.now(),
-    };
-    window.postAddComment?.(newComment);
-    setGeneralCommentText("");
-  }
-
   return (
-    <div className="plan-view-shell flex h-screen flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
+    <div className="plan-view-shell flex h-screen min-h-0 flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
       {/* ─── Header ─────────────────────────────────────────────────────── */}
-      <header className="flex-shrink-0 border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background,var(--vscode-editor-background))] px-4 py-3">
+      <header className="flex-shrink-0 border-b border-[var(--vscode-panel-border)] bg-[linear-gradient(180deg,var(--vscode-sideBar-background,var(--vscode-editor-background))_0%,color-mix(in_srgb,var(--vscode-sideBar-background,var(--vscode-editor-background))_92%,var(--vscode-focusBorder)_8%)_100%)] px-5 py-3.5">
         <div className="flex items-center justify-between gap-3">
           {/* Left: title + description */}
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-1">
-              <Shield className="h-4 w-4 flex-shrink-0 text-[var(--vscode-focusBorder)]" />
-              <h1 className="truncate text-xs font-semibold">{planTitle}</h1>
+            <div className="mb-1 flex items-center">
+              <h1 className="line-clamp-2 text-sm font-semibold leading-tight">{planTitle}</h1>
             </div>
             {sourceFile ? (
-              <p className="truncate font-medium text-[10px] text-[var(--vscode-descriptionForeground)]" title={sourceFile}>
+              <p className="line-clamp-2 break-all font-medium text-[11px] text-[color-mix(in_srgb,var(--vscode-descriptionForeground)_75%,var(--vscode-editor-foreground)_25%)]" title={sourceFile}>
                 Source: {sourceFile}
               </p>
             ) : (
-              <p className="truncate font-medium text-[10px] text-[var(--vscode-descriptionForeground)]/50 italic">
+              <p className="font-medium text-[11px] italic text-[color-mix(in_srgb,var(--vscode-descriptionForeground)_75%,var(--vscode-editor-foreground)_25%)]">
                 (no source file)
               </p>
             )}
@@ -386,14 +561,35 @@ export default function PlanShell() {
       </header>
 
       {/* ─── Main scroll area ────────────────────────────────────────────── */}
-      <main className="flex-1 overflow-y-auto px-6 py-4">
+      <main className="min-h-0 flex-1 overflow-y-auto px-6 pb-12 pt-5">
         {rawPlan.trim() ? (
-          <MarkdownRenderer
-            ref={planContentRef}
-            content={renderedHtml}
-            isPreParsed={true}
-            className="prose prose-invert max-w-none text-xs leading-relaxed text-[var(--vscode-editor-foreground)] select-text cursor-text mb-6 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mb-3 [&_h2]:text-xs [&_h2]:font-semibold [&_h2]:mb-2 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mb-1.5 [&_pre]:bg-white/5 [&_pre]:rounded [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:bg-oc-bg [&_code]:px-1 [&_code]:rounded [&_pre_code]:bg-transparent [&_pre_code]:px-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:mb-0.5 [&_p]:mb-2 [&_strong]:font-semibold [&_em]:italic"
-          />
+          <div
+            ref={planSurfaceRef}
+            className="relative rounded-xl border border-[color-mix(in_srgb,var(--vscode-panel-border)_80%,transparent)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_86%,var(--vscode-focusBorder)_14%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
+          >
+            <MarkdownRenderer
+              ref={planContentRef}
+              content={renderedHtml}
+              isPreParsed={true}
+              className="prose prose-invert max-w-none cursor-text select-text px-5 py-4 pr-20 text-[13px] leading-7 text-[var(--vscode-editor-foreground)] [&_h1]:mb-3 [&_h1]:text-lg [&_h1]:font-bold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:rounded-md [&_h2]:px-1.5 [&_h2]:py-0.5 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:mb-1.5 [&_h3]:mt-4 [&_h3]:rounded-md [&_h3]:px-1.5 [&_h3]:py-0.5 [&_h3]:text-sm [&_h3]:font-semibold [&_li]:rounded-md [&_li]:px-1.5 [&_li]:py-0.5 [&_p]:rounded-md [&_p]:px-1.5 [&_p]:py-0.5 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-[var(--vscode-panel-border)] [&_pre]:bg-[color-mix(in_srgb,var(--vscode-editor-background)_74%,black_26%)] [&_pre]:p-3 [&_code]:rounded [&_code]:bg-[color-mix(in_srgb,var(--vscode-editor-background)_75%,black_25%)] [&_code]:px-1 [&_em]:italic [&_li]:mb-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-3 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5"
+            />
+            {positionedComments.map((comment) => (
+              <button
+                key={comment.id}
+                type="button"
+                onClick={() => revealComment(comment.id)}
+                className={`absolute right-4 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border shadow-sm transition-all ${
+                  activeCommentId === comment.id
+                    ? "border-[color-mix(in_srgb,#7dd3fc_64%,var(--vscode-panel-border)_36%)] bg-[color-mix(in_srgb,#7dd3fc_28%,var(--vscode-editor-background)_72%)] text-[color-mix(in_srgb,#e0f2fe_82%,var(--vscode-editor-foreground)_18%)]"
+                    : "border-[color-mix(in_srgb,#93c5fd_34%,var(--vscode-panel-border)_66%)] bg-[color-mix(in_srgb,#93c5fd_14%,var(--vscode-editor-background)_86%)] text-[color-mix(in_srgb,#bfdbfe_74%,var(--vscode-editor-foreground)_26%)] hover:bg-[color-mix(in_srgb,#93c5fd_20%,var(--vscode-editor-background)_80%)]"
+                }`}
+                style={{ top: `${comment.top}px` }}
+                title={comment.preview}
+              >
+                <MessageSquare className="h-4 w-4" />
+              </button>
+            ))}
+          </div>
         ) : (
           <div className="py-8 text-xs text-[var(--vscode-descriptionForeground)]">
             No plan data available.
@@ -467,7 +663,7 @@ export default function PlanShell() {
           right: 0,
           top: 0,
           bottom: 0,
-          width: 320,
+          width: 360,
           transform: commentsPanelOpen ? "translateX(0)" : "translateX(100%)",
           transition: "transform 0.2s ease",
           zIndex: 40,
@@ -475,11 +671,11 @@ export default function PlanShell() {
         className="flex flex-col border-l border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background,var(--vscode-editor-background))] shadow-xl"
       >
         {/* Panel header */}
-        <div className="flex items-center justify-between border-b border-[var(--vscode-panel-border)] px-3 py-2.5">
-          <h2 className="text-xs font-semibold">
+        <div className="flex items-center justify-between border-b border-[var(--vscode-panel-border)] px-4 py-3">
+          <h2 className="text-sm font-semibold">
             Comments
             {comments.length > 0 && (
-              <span className="ml-2 rounded-full bg-oc-bg px-1.5 py-0.5 text-[10px] font-medium">
+              <span className="ml-2 rounded-full bg-[var(--vscode-badge-background)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--vscode-badge-foreground)]">
                 {comments.length}
               </span>
             )}
@@ -495,7 +691,7 @@ export default function PlanShell() {
         </div>
 
         {/* Panel body */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 space-y-4 overflow-y-auto p-4 pb-8">
           {comments.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-70 mt-12 pb-12">
               <div className="bg-white/5 p-3 rounded-full">
@@ -510,42 +706,21 @@ export default function PlanShell() {
             </div>
           ) : (
             comments.map((comment) => {
-              const isStale = comment.anchor.startLine !== -1 && !rawPlan.includes(
-                comment.anchor.selectedText || "",
-              );
               return (
                 <div
                   key={comment.id}
-                  className={`relative rounded-md border border-[var(--vscode-panel-border)] p-3 shadow-sm text-xs transition-all duration-300 ease-in-out ${
-                    comment.resolved ? "opacity-50 grayscale bg-transparent" : "bg-oc-bg-soft hover:bg-white/[0.05]"
-                  }`}
+                  data-comment-id={comment.id}
+                  onClick={() => setActiveCommentId(comment.id)}
+                  className="relative rounded-lg border border-[color-mix(in_srgb,var(--vscode-panel-border)_80%,var(--vscode-focusBorder)_20%)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_84%,var(--vscode-focusBorder)_16%)] p-3.5 text-xs shadow-sm transition-all duration-200 ease-out"
                 >
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <p className="italic text-[var(--vscode-descriptionForeground)] truncate flex-1">
+                  <div className="mb-2 flex items-start justify-between gap-2">
+                    <p className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-[13px] italic leading-relaxed text-[color-mix(in_srgb,var(--vscode-editor-foreground)_75%,var(--vscode-descriptionForeground)_25%)]">
                       {comment.anchor.startLine === -1
                         ? "(General Feedback)"
                         : `\u201C${comment.anchor.selectedText}\u201D`}
                     </p>
-                    <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                      {isStale && (
-                        <Badge
-                          variant="secondary"
-                          className="text-[10px]"
-                        >
-                          Stale
-                        </Badge>
-                      )}
-                      {comment.resolved && (
-                        <Badge
-                          variant="outline"
-                          className="text-[10px] text-green-500 border-green-500/30"
-                        >
-                          Resolved
-                        </Badge>
-                      )}
-                    </div>
                   </div>
-                  <p className={`mb-2 ${comment.resolved ? "text-[var(--vscode-descriptionForeground)] line-through" : "text-[var(--vscode-editor-foreground)]"}`}>
+                  <p className="mb-3 whitespace-pre-wrap break-words text-[15px] leading-7 text-[var(--vscode-editor-foreground)]">
                     {comment.text}
                   </p>
 
@@ -592,22 +767,11 @@ export default function PlanShell() {
                       </div>
                     </>
                   ) : (
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() =>
-                          window.postUpdateComment?.({
-                            ...comment,
-                            resolved: !comment.resolved,
-                          })
-                        }
-                      >
-                        {comment.resolved ? "Unresolve" : "Resolve"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
+                        className="border-[var(--vscode-panel-border)] bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-list-hoverBackground)]"
                         onClick={() => {
                           setEditingId(comment.id);
                           setEditText(comment.text);
@@ -618,6 +782,7 @@ export default function PlanShell() {
                       <Button
                         size="sm"
                         variant="outline"
+                        className="border-[var(--vscode-panel-border)] bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-list-hoverBackground)]"
                         onClick={() => window.postDeleteComment?.(comment.id)}
                       >
                         Delete
@@ -630,29 +795,6 @@ export default function PlanShell() {
           )}
         </div>
 
-        {/* General Comment Input */}
-        <div className="border-t border-[var(--vscode-panel-border)] p-3 bg-[var(--vscode-editor-background)]">
-          <Textarea
-            value={generalCommentText}
-            onChange={(e) => setGeneralCommentText(e.target.value)}
-            placeholder="Add general feedback..."
-            className="mb-2 text-xs"
-            rows={2}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                handleAddGeneralComment();
-              }
-            }}
-          />
-          <Button
-            size="sm"
-            className="w-full"
-            onClick={handleAddGeneralComment}
-            disabled={!generalCommentText.trim()}
-          >
-            Add General Comment
-          </Button>
-        </div>
       </div>
     </div>
   );

@@ -353,7 +353,6 @@ function ChatContent() {
   const isAiResponding =
     state.isProcessing &&
     (!state.currentSessionId ||
-      state.processingSessionIds.length === 0 ||
       state.processingSessionIds.includes(state.currentSessionId));
 
   // Check if we're switching to a different session (loading conversation)

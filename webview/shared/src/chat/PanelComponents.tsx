@@ -2109,7 +2109,7 @@ export function InputWrapper() {
                         setIsCustomMode(false);
                         setCustomValue("");
                       }}
-                      className="oc-text-secondary hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-oc-text-soft transition-colors"
+                      className="oc-quick-input-icon-btn disabled:opacity-30 transition-colors"
                       title="Previous"
                     >
                       <ArrowLeft className="h-3 w-3" />
@@ -2129,7 +2129,7 @@ export function InputWrapper() {
                         setIsCustomMode(false);
                         setCustomValue("");
                       }}
-                      className="oc-text-secondary hover:text-[var(--oc-accent)] disabled:opacity-30 disabled:hover:text-oc-text-soft transition-colors"
+                      className="oc-quick-input-icon-btn disabled:opacity-30 transition-colors"
                       title="Next"
                     >
                       <ArrowRight className="h-3 w-3" />
@@ -2146,7 +2146,7 @@ export function InputWrapper() {
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  className="rounded p-1 oc-text-secondary hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-colors"
+                  className="oc-quick-input-icon-btn rounded p-1 transition-colors"
                   title="Dismiss This"
                   onClick={() => {
                     dispatch({
@@ -2164,7 +2164,7 @@ export function InputWrapper() {
               {Object.keys(pendingAnswers).length > 0 && (
                 <div className="mb-3 flex flex-wrap gap-1.5 p-2 bg-[var(--oc-panel)] rounded-md border border-dashed border-[var(--oc-border)]">
                   {Object.entries(pendingAnswers).map(([eventId, data], idx) => (
-                    <span key={eventId} className="rounded bg-[var(--oc-panel-soft)] px-1.5 py-0.5 text-[10px] oc-text-secondary border border-[var(--oc-border-soft)]" title={data.text}>
+                    <span key={eventId} className="oc-quick-input-answer-chip rounded px-1.5 py-0.5 text-[10px]" title={data.text}>
                       Q{idx + 1}: <span className="font-medium text-[var(--oc-text-soft)] truncate max-w-[120px] inline-block align-bottom">{data.text}</span>
                     </span>
                   ))}
@@ -2255,7 +2255,7 @@ export function InputWrapper() {
                         <button
                           key={`${event.id}-q-${option.id || option.value || index}`}
                           type="button"
-                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                          className="oc-quick-input-option rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-all"
                           title={option.description || option.label}
                           onClick={() =>
                             submitInteractiveResponse(
@@ -2270,7 +2270,7 @@ export function InputWrapper() {
                       ))}
                       <button
                         type="button"
-                        className="rounded-md border border-dashed border-[var(--oc-border)] bg-transparent px-2.5 py-1.5 text-[11px] font-medium oc-text-secondary hover:border-[var(--oc-accent)] hover:text-[var(--oc-accent)] transition-all"
+                        className="oc-quick-input-option-muted rounded-md border border-dashed bg-transparent px-2.5 py-1.5 text-[11px] font-medium transition-all"
                         onClick={() => setIsCustomMode(true)}
                       >
                         Custom Answer...
@@ -2282,7 +2282,7 @@ export function InputWrapper() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                        className="oc-quick-input-option rounded-md border px-3 py-1.5 text-[11px] font-medium transition-all"
                         onClick={() =>
                           submitInteractiveResponse(
                             event.confirmLabel || "Yes",
@@ -2295,7 +2295,7 @@ export function InputWrapper() {
                       </button>
                       <button
                         type="button"
-                        className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium oc-text-secondary hover:border-[var(--oc-border-strong)] hover:text-[var(--oc-text-soft)] transition-all"
+                        className="oc-quick-input-option-muted rounded-md border px-3 py-1.5 text-[11px] font-medium transition-all"
                         onClick={() =>
                           submitInteractiveResponse(
                             event.cancelLabel || "No",
@@ -2315,7 +2315,7 @@ export function InputWrapper() {
                         <button
                           key={`${event.id}-a-${action.id || action.value || index}`}
                           type="button"
-                          className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                          className="oc-quick-input-option rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-all"
                           title={action.description || action.label}
                           onClick={() =>
                             submitInteractiveResponse(
@@ -2335,7 +2335,7 @@ export function InputWrapper() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        className="rounded-md border border-[var(--oc-border)] bg-[var(--oc-panel)] px-3 py-1.5 text-[11px] font-medium text-[var(--oc-text-soft)] hover:border-[var(--oc-accent)] hover:bg-[var(--oc-accent-soft)] hover:text-[var(--oc-accent)] transition-all"
+                        className="oc-quick-input-option rounded-md border px-3 py-1.5 text-[11px] font-medium transition-all"
                         onClick={() =>
                           submitInteractiveResponse(
                             event.dismissLabel || "OK",

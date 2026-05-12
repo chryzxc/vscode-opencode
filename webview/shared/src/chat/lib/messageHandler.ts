@@ -8483,18 +8483,39 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "streamEvent": {
-          // Ignore streaming events if we're no longer processing (user stopped the request)
-          if (!getState().isProcessing) {
+          const stateBeforeStreamEvent = getState();
+          const payload = asRecord(data.event) ?? data;
+          const eventSessionId =
+            asString(payload.sessionId) ||
+            asString(asRecord(payload.properties)?.sessionId) ||
+            asString(asRecord(payload.properties)?.sessionID);
+          const activeSessionId = stateBeforeStreamEvent.currentSessionId;
+          const hasConfirmedProcessingSession = !!(
+            (eventSessionId &&
+              stateBeforeStreamEvent.processingSessionIds.includes(eventSessionId)) ||
+            (!eventSessionId &&
+              activeSessionId &&
+              stateBeforeStreamEvent.processingSessionIds.includes(activeSessionId))
+          );
+          // Accept stream events when either:
+          // 1) global processing is true, OR
+          // 2) backend confirms the session is processing, OR
+          // 3) we already have a stream snapshot in flight.
+          // This prevents interactive-handoff races from dropping valid events.
+          if (
+            !stateBeforeStreamEvent.isProcessing &&
+            !hasConfirmedProcessingSession &&
+            !stateBeforeStreamEvent.streaming
+          ) {
             break;
           }
-          if (terminalErrorReached && getState().isProcessing) {
+          if (terminalErrorReached && (getState().isProcessing || hasConfirmedProcessingSession)) {
             terminalErrorReached = false;
           }
-          const streamingBefore = getState().streaming;
+          const streamingBefore = stateBeforeStreamEvent.streaming;
           if (streamingBefore) {
             latestStreamingSnapshot = streamingBefore;
           }
-          const payload = asRecord(data.event) ?? data;
           const streamEventType = asString(payload.type) || "unknown";
 
           // Reset terminal error flag on explicit stream start
@@ -8526,8 +8547,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "streamEventEnrich": {
-          // Ignore streaming events if we're no longer processing (user stopped the request)
-          if (!getState().isProcessing) {
+          const stateBeforeEnrich = getState();
+          if (!stateBeforeEnrich.isProcessing && !stateBeforeEnrich.streaming) {
             break;
           }
           const callID = asString(data.callID);
@@ -8808,7 +8829,24 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               payload: updatedMessages,
             });
             if (isInteractiveAnswerSubmission) {
-              dispatch({ type: "SET_PROCESSING", payload: true });
+              const stateAfterAppend = getState();
+              const submittedSessionId = deriveSessionIdFromMessage(
+                message,
+                stateAfterAppend.currentSessionId,
+              );
+              const hasConfirmedProcessingSession = !!(
+                submittedSessionId &&
+                stateAfterAppend.processingSessionIds.includes(submittedSessionId)
+              );
+              // Interactive answers should only force "processing" when the host has
+              // already confirmed an active processing session. Otherwise we can get
+              // stuck showing loading if the submit fails before processing starts.
+              if (
+                hasConfirmedProcessingSession ||
+                !stateAfterAppend.currentSessionId
+              ) {
+                dispatch({ type: "SET_PROCESSING", payload: true });
+              }
             }
           }
           break;
