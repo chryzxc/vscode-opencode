@@ -8,16 +8,16 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default:     'border-transparent bg-primary text-primary-foreground hover:opacity-90',
-        secondary:   'border-transparent bg-secondary text-secondary-foreground hover:opacity-90',
-        destructive: 'border-transparent bg-destructive text-destructive-foreground hover:opacity-90',
-        outline:     'text-foreground',
-        accent:      'border-transparent bg-oc-accent-soft oc-tinted-badge-text',
-        success:     'border-transparent bg-oc-green/10 text-oc-green',
-        error:       'border-transparent bg-oc-red/10 text-oc-red',
-        warning:     'border-transparent bg-oc-yellow/10 text-oc-yellow',
-        muted:       'border-transparent bg-oc-panel-soft oc-text-secondary',
-        status:      'border-transparent font-medium bg-oc-panel-soft',
+        default:     'border-oc-border bg-primary text-primary-foreground hover:opacity-90',
+        secondary:   'border-oc-border bg-secondary text-secondary-foreground hover:opacity-90',
+        destructive: 'border-oc-red/45 bg-destructive text-destructive-foreground hover:opacity-90',
+        outline:     'border-oc-border text-foreground',
+        accent:      'border-oc-accent/35 bg-oc-accent-soft oc-tinted-badge-text',
+        success:     'border-oc-green/45 bg-oc-green/10 text-oc-green',
+        error:       'border-oc-red/45 bg-oc-red/10 text-oc-red',
+        warning:     'border-oc-yellow/45 bg-oc-yellow/10 text-oc-yellow',
+        muted:       'border-oc-border bg-oc-panel-soft oc-text-secondary',
+        status:      'border-oc-border font-medium bg-oc-panel-soft',
       }
     },
     defaultVariants: {

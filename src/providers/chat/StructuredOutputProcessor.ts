@@ -1077,14 +1077,13 @@ export class StructuredOutputProcessor {
         this.planManager.collectPlanFileCandidatesFromStructuredPlan(structuredPlanRecord);
       const structuredPlanFile = structuredPlanFiles[0];
 
-      // DEBUG: Log what we got from the structured output
-      this.logger.debug('Structured Plan Data', {
+      this.logger.debug("Structured plan data", {
         structuredPlanRecord,
         structuredPlanFiles,
         structuredPlanFile,
         hasFile: !!structuredPlanRecord?.file,
-        rawStructuredPlan: structured.plan,  // ← Add raw data
-        allStructuredKeys: Object.keys(structured || {})  // ← Show all keys
+        rawStructuredPlan: structured.plan,
+        allStructuredKeys: Object.keys(structured || {}),
       });
 
       // Resolve the plan filename: prefer what the agent declared in structured
@@ -1118,14 +1117,13 @@ export class StructuredOutputProcessor {
       ]);
       const resolvedPlanFile = mergedPlanFiles[0];
 
-      // DEBUG: Log the plan file extraction
-      this.logger.debug('Plan File Extraction', {
+      this.logger.debug("Plan file extraction", {
         structuredPlanFile: structuredPlanFiles[0],
         mergedPlanFilesCount: mergedPlanFiles.length,
         resolvedPlanFile,
         fallbackPlanFile: resolvedPlanFile,
         hasPlanContent: !!structuredPlanContent,
-        planContentLength: structuredPlanContent?.length || 0
+        planContentLength: structuredPlanContent?.length || 0,
       });
       const resolvedPlanTitle = this.planManager.resolvePlanTitle({
         plan: { title: this.firstNonEmptyString(structuredPlanRecord?.title) },
@@ -1136,10 +1134,14 @@ export class StructuredOutputProcessor {
 
       // Check if the plan file actually exists on disk
       let planFileExists = false;
-      if (resolvedPlanFile) {
+      const planFileExistenceCandidates = resolvedPlanFile
+        ? this.planManager.resolvePlanFileCandidates(resolvedPlanFile)
+        : [];
+      for (const candidate of planFileExistenceCandidates) {
         try {
-          await vscode.workspace.fs.stat(vscode.Uri.file(resolvedPlanFile));
+          await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
           planFileExists = true;
+          break;
         } catch {
           // File doesn't exist, need to persist it
           planFileExists = false;
@@ -1156,12 +1158,14 @@ export class StructuredOutputProcessor {
         }
         // Persist the plan if the file doesn't exist, even if we have a file path
         if (!planFileExists) {
-          this.persistPlan(
-            structuredPlanContent,
-            fallbackPlanFile,
-          ).catch((err) => {
+          try {
+            await this.persistPlan(
+              structuredPlanContent,
+              fallbackPlanFile,
+            );
+          } catch (err) {
             this.logger.error("Failed to auto-persist structured plan", {}, err as Error);
-          });
+          }
         }
 
         return {
@@ -1194,12 +1198,14 @@ export class StructuredOutputProcessor {
       ) {
         // For file-only plans, persist the content if the file doesn't exist yet
         if (!planFileExists && structuredPlanContent) {
-          this.persistPlan(
-            structuredPlanContent,
-            fallbackPlanFile,
-          ).catch((err) => {
+          try {
+            await this.persistPlan(
+              structuredPlanContent,
+              fallbackPlanFile,
+            );
+          } catch (err) {
             this.logger.error("Failed to auto-persist file-only plan", {}, err as Error);
-          });
+          }
         }
 
         // Preserve structured file-only plans so the webview "View Plan" action

@@ -1086,6 +1086,7 @@ export function ModelDropdown() {
         type="button"
         variant="chip"
         size="chip"
+        className="oc-toolbar-chip"
         onClick={() =>
           dispatch({
             type: "SET_MODEL_DROPDOWN_OPEN",
@@ -1247,6 +1248,7 @@ export function AgentDropdown() {
         type="button"
         variant="chip"
         size="chip"
+        className="oc-toolbar-chip"
         onClick={() =>
           dispatch({
             type: "SET_AGENT_DROPDOWN_OPEN",
@@ -2695,7 +2697,7 @@ export function InputWrapper() {
               <AgentDropdown />
               <ThinkingLevelControl />
               <div className="flex items-center gap-1" title={`Context: ${contextUsagePct ?? 0}%`}>
-                <CircularProgress pct={contextUsagePct ?? 0} size={18} strokeWidth={2.5} />
+                <CircularProgress pct={contextUsagePct ?? 0} size={16} strokeWidth={2.25} />
               </div>
             </div>
 
@@ -2705,6 +2707,7 @@ export function InputWrapper() {
                 <Button
                   variant="destructive"
                   size="chip"
+                  className="oc-toolbar-chip"
                   onClick={stopRequest}
                   disabled={isSteering}
                 >
@@ -2716,6 +2719,7 @@ export function InputWrapper() {
                 <Button
                   variant="send"
                   size="chip"
+                  className="oc-toolbar-chip oc-toolbar-send"
                   onClick={sendPrompt}
                   disabled={isSteering}
                 >
@@ -2815,6 +2819,7 @@ export function ThinkingLevelControl() {
         type="button"
         variant="chip"
         size="chip"
+        className="oc-toolbar-chip"
         onClick={() =>
           dispatch({
             type: "SET_THINKING_DROPDOWN_OPEN",

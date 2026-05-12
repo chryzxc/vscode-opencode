@@ -2866,10 +2866,25 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     ? "w-full max-w-none"
     : "w-full";
   const showResponseSection = hasVisibleResponseBody || !!plan;
+  const responseSectionClass = hasResponseContent
+    ? "rounded-md border border-oc-border-soft bg-background p-3.5 shadow-sm"
+    : "p-0 border-0 bg-transparent shadow-none";
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(resolvedContent);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
+    const textToCopy = resolvedContent?.trim() ?? "";
+    if (!textToCopy) return;
+
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+      return;
+    } catch {
+      // VS Code webviews can block navigator clipboard in some contexts;
+      // fallback to extension-host clipboard API.
+      vscode.postMessage({ type: "copyToClipboard", text: textToCopy });
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    }
   };
   const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     dispatch({ type: "SET_PROCESSING", payload: true });
@@ -3474,7 +3489,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           {showResponseSection && (
             <section
               data-assistant-section="response"
-              className="rounded-md border border-oc-border-soft bg-background p-3.5 shadow-sm"
+              className={responseSectionClass}
             >
               {hasResponseContent && (
                 <div className={responseBodyClass}>
@@ -3521,12 +3536,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         )}
                       </div>
                       {plan.file ? (
-                        <div className="plan-card-file flex items-center gap-1.5 text-[11px] font-medium">
+                        <div className="plan-card-file mt-1 flex items-center gap-1.5 text-[11px] font-medium">
                           <FileIcon filePath={plan.file} />
                           <span className="truncate" title={plan.file}>{plan.file}</span>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-1.5 text-[11px] font-medium text-oc-text-soft italic">
+                        <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-oc-text-soft italic">
                           (no file)
                         </div>
                       )}

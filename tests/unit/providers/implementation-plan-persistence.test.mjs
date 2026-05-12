@@ -40,7 +40,7 @@ test('implementation plan checks file existence before skipping persistence', ()
 
   assert.match(
     enrichBody,
-    /vscode\.workspace\.fs\.stat\(\s*vscode\.Uri\.file\(resolvedPlanFile\)\s*\)/,
+    /vscode\.workspace\.fs\.stat\(\s*vscode\.Uri\.file\(candidate\)\s*\)/,
     'should check file existence using vscode.workspace.fs.stat',
   );
 
@@ -142,6 +142,44 @@ test('plan persistence has error handling', () => {
     enrichBody,
     /persistPlan\([\s\S]*?\)\.catch\(\s*\(err\s*\)\s*=>\s*\{[\s\S]*logger\.error/,
     'should catch and log persistence errors',
+  );
+});
+
+test('structured plan persistence is awaited before returning a viewable plan card', () => {
+  const enrichBody = extractFunctionBody(
+    structuredOutputProcessorSource,
+    'async enrichMessageWithPlan(message: any): Promise<any>'
+  );
+
+  assert.match(
+    enrichBody,
+    /try\s*\{[\s\S]*await\s+this\.persistPlan\([\s\S]*structuredPlanContent[\s\S]*\)[\s\S]*\}\s*catch\s*\(err\)\s*\{[\s\S]*logger\.error/,
+    'should await structured plan persistence before returning the plan card',
+  );
+
+  assert.doesNotMatch(
+    enrichBody,
+    /this\.persistPlan\([\s\S]*structuredPlanContent[\s\S]*\)\.catch\(\(err\) => \{[\s\S]*Failed to auto-persist structured plan/,
+    'should not persist structured plans in the background because View Plan can race the write',
+  );
+});
+
+test('plan file existence checks use resolved workspace candidates', () => {
+  const enrichBody = extractFunctionBody(
+    structuredOutputProcessorSource,
+    'async enrichMessageWithPlan(message: any): Promise<any>'
+  );
+
+  assert.match(
+    enrichBody,
+    /const planFileExistenceCandidates = resolvedPlanFile\s*\? this\.planManager\.resolvePlanFileCandidates\(resolvedPlanFile\)\s*:\s*\[\];/,
+    'should resolve workspace-relative plan paths before checking disk existence',
+  );
+
+  assert.match(
+    enrichBody,
+    /for\s*\(const candidate of planFileExistenceCandidates\)\s*\{[\s\S]*vscode\.workspace\.fs\.stat\(vscode\.Uri\.file\(candidate\)\)/,
+    'should stat each resolved candidate rather than only the raw plan.file string',
   );
 });
 

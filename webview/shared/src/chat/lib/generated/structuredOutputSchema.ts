@@ -39,7 +39,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath), 'question' for user interactions with options, or 'progress_update' for execution steps.",
+      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; include full markdown in plan.content unless the file has already been written to disk), 'question' for user interactions with options, or 'progress_update' for execution steps.",
     additionalProperties: false,
     required: ["responseType"],
     properties: {
@@ -63,13 +63,13 @@ export const structuredOutputSchema: StructuredOutputSchema = {
 
       plan: {
         type: "object",
-        description: "Implementation plan payload. For responseType='implementation_plan', include a full markdown filepath in plan.file.",
+        description: "Implementation plan payload. For responseType='implementation_plan', include a full markdown filepath in plan.file and include full markdown in plan.content unless the file has already been written to disk by a tool/file edit.",
         properties: {
           title: { type: "string", description: "Plan title" },
           file: { type: "string", description: "Required for implementation_plan: full markdown file path (absolute or workspace-relative)" },
           content: {
             type: "string",
-            description: "Optional markdown content for the plan body (can be persisted to plan.file)",
+            description: "Full markdown plan body. Include this when the plan file has not already been written so the extension can persist it to plan.file.",
           },
           summary: { type: "string", description: "One-line plan summary" },
         },

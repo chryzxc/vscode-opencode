@@ -2658,6 +2658,14 @@ export class ChatViewProvider
           this.handleOpenDiff(message.file);
           break;
         }
+        case "copyToClipboard": {
+          const text = this.firstNonEmptyString(message.text);
+          if (!text) {
+            break;
+          }
+          await vscode.env.clipboard.writeText(text);
+          break;
+        }
         case "openFile": {
           await this.handleOpenFile(message.file);
           break;
