@@ -654,6 +654,8 @@ export class QuotaService extends EventEmitter {
           ? json.limits
           : [];
 
+      const isZai = platformName.toLowerCase().includes("z.ai");
+
       for (const limit of limits) {
         const type =
           typeof limit?.type === "string" ? limit.type : "TOKENS_LIMIT";
@@ -668,8 +670,12 @@ export class QuotaService extends EventEmitter {
         );
         const isTokenLimit = type === "TOKENS_LIMIT";
 
-        // Token limits are 5-hour limits, other limits are monthly limits
-        const label = isTokenLimit ? "5 hrs token limit" : "Monthly limit";
+        // Z.ai exposes a 5-hour token bucket plus a separate monthly web search limit.
+        const label = isTokenLimit
+          ? "5 hrs token limit"
+          : isZai
+            ? "Monthly web search limit"
+            : "Monthly limit";
 
         quotas.push({
           label,
@@ -687,7 +693,6 @@ export class QuotaService extends EventEmitter {
         quotas.push({ label: "No quota data", remainPercent: 0 });
       }
 
-      const isZai = platformName.toLowerCase().includes("z.ai");
       const account = auth.key ? maskAccount(auth.key) : platformName;
       const accountLabel = isZai ? "(Z.ai)" : "(Coding Plan)";
 

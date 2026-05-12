@@ -117,7 +117,8 @@ test('QuotaService implements Zhipu/ZAI quota fetching', () => {
 
   // Verify token limit special handling
   assert.match(zhipuBody, /const\s+isTokenLimit\s*=\s*type\s*===\s*"TOKENS_LIMIT"/, 'fetchZhipu should check if token limit');
-  assert.match(zhipuBody, /const\s+label\s*=\s*isTokenLimit\s*\?\s*"5\s+hrs\s+token\s+limit"\s*:\s*"Monthly\s+limit"/, 'fetchZhipu should use appropriate label');
+  assert.match(zhipuBody, /const\s+isZai\s*=\s*platformName\.toLowerCase\(\)\.includes\("z\.ai"\)/, 'fetchZhipu should detect Z.ai platform');
+  assert.match(zhipuBody, /const\s+label\s*=\s*isTokenLimit[\s\S]*"5\s+hrs\s+token\s+limit"[\s\S]*"Monthly\s+web\s+search\s+limit"[\s\S]*"Monthly\s+limit"/, 'fetchZhipu should use provider-aware labels');
 
   // Verify account masking
   assert.match(zhipuBody, /const\s+account\s*=\s*auth\.key\s*\?\s*maskAccount\(auth\.key\)\s*:\s*platformName/, 'fetchZhipu should mask account key');
