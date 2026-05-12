@@ -1077,6 +1077,29 @@ body {
 }
 
 /* ── Message header labels ───────────────────────────────────────────────── */
+.oc-msg-header {
+  align-items: flex-start;
+  row-gap: 0.45rem;
+  column-gap: 0.75rem;
+}
+
+.oc-msg-header-main {
+  flex: 1 1 16rem;
+  max-width: 100%;
+}
+
+.oc-msg-header-left,
+.oc-msg-header-text {
+  max-width: 100%;
+}
+
+.oc-msg-header-actions {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  align-content: flex-start;
+  max-width: 100%;
+}
+
 .oc-msg-agent-label {
   font-size: 12px;
   font-weight: 600;
@@ -1087,7 +1110,7 @@ body {
   font-size: 11px;
   color: var(--oc-text-soft);
   opacity: 0.9;
-  max-width: min(42vw, 300px);
+  max-width: min(36vw, 300px);
   display: inline-block;
   vertical-align: bottom;
 }
@@ -1824,6 +1847,7 @@ body {
   align-items: center;
   gap: 0.375rem;
   flex-wrap: wrap;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -1831,6 +1855,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  margin-left: auto;
   flex-shrink: 0;
 }
 
@@ -3525,11 +3550,12 @@ body {
 
 .oc-metrics-rail {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 0.4rem;
   min-width: 0;
+  max-width: 100%;
 }
 
 .oc-metrics-rail-primary,
@@ -3582,9 +3608,8 @@ body {
 
 @media (max-width: 900px) {
   .oc-metrics-rail {
-    width: 100%;
     flex-wrap: wrap;
-    justify-content: flex-start;
+    justify-content: flex-end;
     row-gap: 0.35rem;
   }
 
@@ -3601,6 +3626,20 @@ body {
 }
 
 @media (max-width: 560px) {
+  .oc-msg-header-main,
+  .oc-msg-header-actions {
+    flex-basis: 100%;
+  }
+
+  .oc-msg-header-actions,
+  .oc-metrics-rail {
+    justify-content: flex-start;
+  }
+
+  .oc-msg-model-label {
+    max-width: calc(100vw - 7rem);
+  }
+
   .oc-token-chip-label {
     font-size: 9px;
     letter-spacing: 0.1em;

@@ -57,8 +57,9 @@ test('keeps message ordering by using direct divider indexes', () => {
 });
 
 test('uses a threshold to trigger auto compaction', () => {
-  assert.match(compactionManager, /const threshold = Math\.floor\(contextLimit \* 0\.8\);/, 'auto-compaction threshold is missing');
-  assert.match(compactionManager, /if \(totalTokens < threshold\) \{/, 'auto-compaction guard is missing');
+  assert.match(compactionManager, /const thresholdRatioRaw = config\.get<number>\("autoCompactThreshold", 0\.9\);/, 'auto-compaction threshold config is missing');
+  assert.match(compactionManager, /const threshold = Math\.floor\(contextLimit \* thresholdRatio\);/, 'auto-compaction threshold calculation is missing');
+  assert.match(compactionManager, /if \(inputTokens < threshold\) \{/, 'auto-compaction guard should use SDK input tokens');
 });
 
 test('retains recent history after compaction and persists metadata', () => {

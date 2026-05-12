@@ -113,6 +113,39 @@ test('AssistantMessage renders error banner and retry button when message has er
   assert.match(messageSource, /type:\s*["']retryLastMessage["']/, 'Retry button should post retryLastMessage event');
 });
 
+test('AssistantMessage suppresses duplicate response text when it matches displayed error', () => {
+  assert.match(
+    messageSource,
+    /function\s+messageDisplaysSameErrorText\(/,
+    'AssistantMessage should define duplicate error text detection',
+  );
+  assert.match(
+    messageSource,
+    /const\s+visibleResolvedContent\s*=\s*resolvedContentMatchesError\s*\?\s*""\s*:\s*resolvedContent/,
+    'AssistantMessage should hide normal response body when it duplicates the displayed error',
+  );
+  assert.match(
+    messageSource,
+    /<MarkdownRenderer[\s\S]*content=\{visibleResolvedContent\}/,
+    'AssistantMessage should render the de-duplicated response body',
+  );
+  assert.match(
+    messageSource,
+    /const\s+hasVisibleResponseBody\s*=\s*visibleResolvedContent\.trim\(\)\.length\s*>\s*0/,
+    'AssistantMessage should track whether any response body remains visible',
+  );
+  assert.match(
+    messageSource,
+    /const\s+showResponseSection\s*=\s*hasVisibleResponseBody\s*\|\|\s*!!plan/,
+    'AssistantMessage should not render an empty response card after duplicate text is suppressed',
+  );
+  assert.match(
+    messageSource,
+    /const\s+showLegacyErrorBanner\s*=[\s\S]*!messageMatchesDisplayErrorText\(message,\s*message\.error\)/,
+    'AssistantMessage should not render both legacy and structured error banners for the same error text',
+  );
+});
+
 test('Assistant responses include dedicated enter transition classes', () => {
   assert.match(messageSource, /const\s+responseEnterClass\s*=\s*streaming\s*\?\s*["']oc-assistant-streaming-enter["']\s*:\s*["']oc-assistant-response-enter["']/, 'AssistantMessage should choose distinct enter classes for streaming and completed responses');
   assert.match(messageSource, /className=\{`oc-message-enter \$\{responseEnterClass\}/, 'AssistantMessage container should include response enter class');
@@ -133,8 +166,28 @@ test('assistant header is responsive on small screens for agent/model/metrics ra
   );
   assert.match(
     messageSource,
+    /oc-msg-header-actions flex min-w-0 flex-wrap items-center gap-1\.5/,
+    'assistant header actions should wrap as a compact control group',
+  );
+  assert.doesNotMatch(
+    messageSource,
+    /oc-msg-header-actions[^"]*\bw-full\b/,
+    'assistant header actions should not force metrics/copy controls onto a full-width row',
+  );
+  assert.match(
+    messageSource,
     /oc-metrics-rail[\s\S]*oc-token-chip[\s\S]*oc-token-chip-secondary/s,
     'assistant header should expose metrics rail with token chips',
+  );
+  assert.match(
+    chatCssSource,
+    /\.oc-msg-header-actions\s*\{[\s\S]*flex:\s*0 1 auto;[\s\S]*justify-content:\s*flex-end;/,
+    'assistant header actions should stay beside metadata when there is room',
+  );
+  assert.match(
+    chatCssSource,
+    /@media\s*\(max-width:\s*900px\)\s*\{[\s\S]*\.oc-metrics-rail\s*\{\s*flex-wrap:\s*wrap;\s*justify-content:\s*flex-end;\s*row-gap:\s*0\.35rem;\s*\}/,
+    'medium-width metrics rail should wrap in place instead of forcing a full-width row',
   );
   assert.match(
     chatCssSource,

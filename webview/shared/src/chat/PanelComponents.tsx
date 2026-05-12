@@ -2694,7 +2694,7 @@ export function InputWrapper() {
               <ModelDropdown />
               <AgentDropdown />
               <ThinkingLevelControl />
-              <div className="flex items-center gap-1 ml-auto" title={`Context: ${contextUsagePct ?? 0}%`}>
+              <div className="flex items-center gap-1" title={`Context: ${contextUsagePct ?? 0}%`}>
                 <CircularProgress pct={contextUsagePct ?? 0} size={18} strokeWidth={2.5} />
               </div>
             </div>

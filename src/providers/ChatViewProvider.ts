@@ -735,6 +735,17 @@ export class ChatViewProvider
 
     // Wire postMessage callbacks
     this.compactionManager.setPostMessage(postMessage);
+    this.compactionManager.setGetSelectedModelContextLimit(() => {
+      const selected = this.modelAndAgentManager.getSelectedModel();
+      const matched = this.modelAndAgentManager
+        .getAvailableModels()
+        .find(
+          (model) =>
+            model.providerID === selected.providerID &&
+            model.modelID === selected.modelID,
+        );
+      return matched?.contextLimit;
+    });
     this.modelAndAgentManager.setPostMessage(postMessage);
     this.queueManager.setPostMessage(postMessage);
     this.sessionHandler.setPostMessage(postMessage);

@@ -503,6 +503,49 @@ function normalizeComparableText(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+function messageDisplaysSameErrorText(
+  message: Message | undefined,
+  value: string,
+): boolean {
+  const normalized = normalizeComparableText(value);
+  if (!normalized) {
+    return false;
+  }
+
+  const errorCandidates = [
+    message?.displayError?.message,
+    message?.displayError?.originalError,
+    message?.error,
+  ];
+
+  return errorCandidates.some(
+    (candidate) =>
+      typeof candidate === "string" &&
+      normalizeComparableText(candidate) === normalized,
+  );
+}
+
+function messageMatchesDisplayErrorText(
+  message: Message | undefined,
+  value: string,
+): boolean {
+  const normalized = normalizeComparableText(value);
+  if (!normalized) {
+    return false;
+  }
+
+  const errorCandidates = [
+    message?.displayError?.message,
+    message?.displayError?.originalError,
+  ];
+
+  return errorCandidates.some(
+    (candidate) =>
+      typeof candidate === "string" &&
+      normalizeComparableText(candidate) === normalized,
+  );
+}
+
 function collectReasoningFingerprints(message?: Message): Set<string> {
   const fingerprints = new Set<string>();
   const add = (value: unknown) => {
@@ -2782,13 +2825,27 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     () => displayEvents.some((event) => event.kind === "reasoning"),
     [displayEvents],
   );
-  const hasPrimaryResponseBody = resolvedContent.trim().length > 0 || !!plan;
-  const hasResponseContent = hasPrimaryResponseBody || hasRawResponseDebug;
+  const resolvedContentMatchesError = messageDisplaysSameErrorText(
+    message,
+    resolvedContent,
+  );
+  const visibleResolvedContent = resolvedContentMatchesError
+    ? ""
+    : resolvedContent;
+  const hasVisibleResponseBody = visibleResolvedContent.trim().length > 0;
+  const hasPrimaryResponseBody = hasVisibleResponseBody || !!plan;
+  const hasResponseContent = hasVisibleResponseBody;
   const isAborted = message?.aborted === true;
   const structuredRetryError =
     !!message?.error &&
     (message.retryWithoutStructuredOutput === true ||
       isStructuredOutputFailureMessage(message.error));
+  const showLegacyErrorBanner =
+    !!message?.error &&
+    !messageMatchesDisplayErrorText(message, message.error) &&
+    !structuredRetryError &&
+    !isAborted;
+  const showDisplayErrorBanner = !!message?.displayError;
   const plainTextFallback = message?.plainTextFallback === true;
   const plainTextFallbackTooltip = plainTextFallback
     ? [
@@ -2808,7 +2865,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
-  const showResponseSection = hasResponseContent || !!plan;
+  const showResponseSection = hasVisibleResponseBody || !!plan;
   const handleCopy = async () => {
     await navigator.clipboard.writeText(resolvedContent);
     setCopied(true);
@@ -2911,8 +2968,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         ref={messageBodyRef}
       >
         {!isContiguous && (
-          <div className="mb-2.5 flex flex-wrap items-start justify-between gap-2">
-            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <div className="oc-msg-header mb-2.5 flex flex-wrap items-start justify-between gap-2">
+            <div className="oc-msg-header-main flex min-w-0 flex-1 items-center gap-1.5">
               {showStreamingLoading ? (
                 <ThinkingStatusTicker className="oc-thinking-status" />
               ) : (
@@ -2935,7 +2992,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         }
                       />
                     </div>
-                    <div className="flex min-w-0 items-center gap-1.5 flex-wrap">
+                    <div className="oc-msg-header-text flex min-w-0 items-center gap-1.5 flex-wrap">
                       <span
                         className="oc-msg-agent-name font-semibold text-oc-sm truncate min-w-0"
                         style={
@@ -2971,7 +3028,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 </>
               )}
             </div>
-            <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5 sm:w-auto sm:shrink-0 sm:flex-nowrap">
+            <div className="oc-msg-header-actions flex min-w-0 flex-wrap items-center gap-1.5">
               {hasMetrics && !showStreamingLoading && (
                 <div className="oc-metrics-rail flex flex-wrap items-center gap-1.5" role="list" aria-label="Response metrics">
                   {tokenMetricChips.map((chip) => (
@@ -3422,7 +3479,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               {hasResponseContent && (
                 <div className={responseBodyClass}>
                   <MarkdownRenderer
-                    content={resolvedContent}
+                    content={visibleResolvedContent}
                     className={markdownBodyClass}
                   />
                 </div>
@@ -3614,7 +3671,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           </div>
         )}
 
-        {message?.error && !structuredRetryError && !isAborted && (
+        {showLegacyErrorBanner && (
           <div className="mt-2">
             {(() => {
               const retryWithoutStructuredOutput =
@@ -3643,7 +3700,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         )}
 
         {/* Add new error banner */}
-        {message?.displayError && (
+        {showDisplayErrorBanner && (
           <div className="mt-2">
             <InfoBanner error={message.displayError} />
           </div>

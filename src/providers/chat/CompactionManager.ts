@@ -26,12 +26,38 @@ export class CompactionManager {
   ) {
     // postMessage callback will be set by shell
     this.postMessage = () => { };
+    this.getSelectedModelContextLimit = () => undefined;
   }
 
   private postMessage: (msg: any) => void;
+  private getSelectedModelContextLimit: () => number | undefined;
 
   setPostMessage(fn: (msg: any) => void): void {
     this.postMessage = fn;
+  }
+
+  setGetSelectedModelContextLimit(fn: () => number | undefined): void {
+    this.getSelectedModelContextLimit = fn;
+  }
+
+  private normalizeTokenCount(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? Math.floor(value)
+      : undefined;
+  }
+
+  private extractSdkContextInputTokens(responseData: unknown): number | undefined {
+    const rec = this.asRecord(responseData);
+    if (!rec) {
+      return undefined;
+    }
+
+    const info = this.asRecord(rec.info);
+    const infoTokens = this.asRecord(info?.tokens);
+    const directTokens = this.asRecord(rec.tokens);
+
+    return this.normalizeTokenCount(infoTokens?.input) ??
+      this.normalizeTokenCount(directTokens?.input);
   }
 
   /**
@@ -327,14 +353,6 @@ export class CompactionManager {
   }
 
   /**
-   * Get selected model context limit
-   */
-  getSelectedModelContextLimit(): number | undefined {
-    // This will be provided by the shell via callback
-    return undefined;
-  }
-
-  /**
    * Maybe auto compact session
    */
   async maybeAutoCompact(
@@ -342,7 +360,8 @@ export class CompactionManager {
     responseData: any,
     sessionService: any,
   ): Promise<void> {
-    if (!responseData?.usage) {
+    const config = vscode.workspace.getConfiguration("opencode");
+    if (config.get<boolean>("autoCompact", true) === false) {
       return;
     }
 
@@ -351,12 +370,21 @@ export class CompactionManager {
       return;
     }
 
-    const totalTokens = (responseData.usage.inputTokens || 0) +
-      (responseData.usage.totalTokens || 0) +
-      (responseData.usage.prompt_tokens || 0);
+    const inputTokens = this.extractSdkContextInputTokens(responseData);
+    if (inputTokens === undefined) {
+      return;
+    }
 
-    const threshold = Math.floor(contextLimit * 0.8);
-    if (totalTokens < threshold) {
+    const thresholdRatioRaw = config.get<number>("autoCompactThreshold", 0.9);
+    const thresholdRatio =
+      typeof thresholdRatioRaw === "number" &&
+        Number.isFinite(thresholdRatioRaw) &&
+        thresholdRatioRaw >= 0.5 &&
+        thresholdRatioRaw <= 0.99
+        ? thresholdRatioRaw
+        : 0.9;
+    const threshold = Math.floor(contextLimit * thresholdRatio);
+    if (inputTokens < threshold) {
       return;
     }
 
@@ -366,14 +394,14 @@ export class CompactionManager {
 
     this.logger.info("Auto-compaction threshold reached", {
       sessionId,
-      totalTokens,
+      inputTokens,
       threshold,
       contextLimit,
     });
 
     await this.handleCompactSession(
       sessionId,
-      { auto: true, threshold: totalTokens },
+      { auto: true, threshold: inputTokens },
       sessionService,
     );
   }

@@ -36,11 +36,15 @@ class TestWorkspaceState implements vscode.Memento {
   }
 }
 
-function createManager() {
+function createManager(options?: {
+  contextLimit?: number;
+  compactSession?: (sessionId: string) => Promise<{ data?: unknown }>;
+}) {
   const workspaceState = new TestWorkspaceState();
   const logger = createTestLogger();
   const serverManager = {
-    compactSession: async (_sessionId: string) => ({ data: {} }),
+    compactSession:
+      options?.compactSession ?? (async (_sessionId: string) => ({ data: {} })),
   } as unknown as OpencodeServerManager;
   const manager = new CompactionManager(
     workspaceState,
@@ -50,6 +54,7 @@ function createManager() {
     firstNonEmptyString,
     async (messages: unknown[]) => messages,
   );
+  manager.setGetSelectedModelContextLimit(() => options?.contextLimit);
 
   return { manager, workspaceState };
 }
@@ -237,6 +242,68 @@ describe("CompactionManager", () => {
       await manager.clearPersistedCompactionViewState(sessionId);
       assert.equal(workspaceState.get(key), undefined);
       assert.equal(await manager.loadPersistedCompactionViewState(sessionId), null);
+    });
+  });
+
+  describe("maybeAutoCompact", () => {
+    it("triggers from the SDK assistant message input token count", async () => {
+      const calls: string[] = [];
+      const { manager } = createManager({
+        contextLimit: 1000,
+        compactSession: async (sessionId: string) => {
+          calls.push(sessionId);
+          return {
+            data: {
+              baselineStats: { input: 910 },
+            },
+          };
+        },
+      });
+
+      await manager.maybeAutoCompact(
+        "sdk-session",
+        {
+          info: {
+            tokens: {
+              input: 910,
+              output: 25,
+              reasoning: 5,
+              cache: { read: 0, write: 0 },
+            },
+          },
+        },
+        { getMessages: async () => [] },
+      );
+
+      assert.deepEqual(calls, ["sdk-session"]);
+    });
+
+    it("does not infer context usage by summing non-input token fields", async () => {
+      const calls: string[] = [];
+      const { manager } = createManager({
+        contextLimit: 1000,
+        compactSession: async (sessionId: string) => {
+          calls.push(sessionId);
+          return { data: {} };
+        },
+      });
+
+      await manager.maybeAutoCompact(
+        "sdk-session",
+        {
+          info: {
+            tokens: {
+              input: 500,
+              output: 450,
+              reasoning: 100,
+              cache: { read: 0, write: 0 },
+            },
+          },
+        },
+        { getMessages: async () => [] },
+      );
+
+      assert.deepEqual(calls, []);
     });
   });
 
