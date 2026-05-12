@@ -88,7 +88,7 @@ What it adds beyond a terminal-only setup:
 
 - **Implementation Plan workflow** — AI generates a structured `implementation_plan.md` before touching any code; plans are parsed and rendered interactively
 - **Subagent orchestration UI** — background tasks are tracked, rendered inline as cards, and inspectable in a detail modal
-- **Per-session quota & budget monitoring** — tracks token consumption and daily budget across OpenAI, GitHub Copilot, Google Gemini, Zhipu, and other providers
+- **Per-session quota & budget monitoring** — surfaces provider-reported usage, limits, and daily budget signals across OpenAI, GitHub Copilot, Google Gemini, Zhipu, Z.ai, and other providers
 - **Extended right panel** — live MCP server status, LSP server status, installed skills, and agent roster always visible on wide screens
 
 ---
