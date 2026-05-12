@@ -1,5 +1,11 @@
 # OpenCode VS Code Extension
 
+### Demo: Main Conversation Flow
+![Main conversation flow demo](./assets/demo.gif)
+
+### Demo: Interactive Plan Viewer
+![Interactive plan viewer demo](./assets/demo-1.gif)
+
 Bring [OpenCode](https://opencode.ai) into VS Code with a dedicated chat panel, implementation planning, live streaming, subagent tracking, quota visibility, and persistent sessions.
 
 Requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be installed locally.
@@ -35,9 +41,13 @@ If you already use OpenCode in the terminal, this extension gives you a more int
 
 ## Screenshots & GIFs
 
-### Demo GIF
+### Demo
 
-![OpenCode demo](./assets/demo.gif)
+#### Main Conversation Flow
+![Main conversation flow demo](./assets/demo.gif)
+
+#### Interactive Plan Viewer
+![Interactive plan viewer demo](./assets/demo-1.gif)
 
 ### Conversation View
 
@@ -47,13 +57,13 @@ If you already use OpenCode in the terminal, this extension gives you a more int
 
 ### Extended Panels
 
-![Extended panel 1](./assets/extended-panel-1.png)
-![Extended panel 2](./assets/extended-panel-2.png)
+![Extended panel](./assets/extended-panel.png)
+![Interactive planner](./assets/interactive-planner.png)
 
 ### Quota + Questions
 
-![Quota popover](./assets/quota-popover.png)
-![Interactive questions](./assets/interactive-questions.png)
+![Quota view](./assets/quota.png)
+![Interactive question](./assets/interactive-question.png)
 
 ## Table of Contents
 
