@@ -62,6 +62,12 @@ const COPILOT_PLAN_LIMITS: Record<string, number> = {
   enterprise: 1000,
 };
 
+const COPILOT_NON_SUBSCRIBED_SKUS = new Set([
+  "free_limited_copilot",
+  "free",
+  "none",
+]);
+
 // â”€â”€ File paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const authPath = path.join(
@@ -283,6 +289,31 @@ function normalizePlatformId(platformName: string): string {
 
 function percentBar(pct: number): number {
   return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
+function isCopilotSubscriptionActive(userJson: any): boolean {
+  const accessTypeSku =
+    typeof userJson?.access_type_sku === "string"
+      ? userJson.access_type_sku.toLowerCase()
+      : "";
+
+  if (COPILOT_NON_SUBSCRIBED_SKUS.has(accessTypeSku)) {
+    return false;
+  }
+
+  const premiumSnapshot = userJson?.quota_snapshots?.premium_interactions;
+  if (premiumSnapshot && typeof premiumSnapshot === "object") {
+    return true;
+  }
+
+  const plan = typeof userJson?.copilot_plan === "string"
+    ? userJson.copilot_plan.toLowerCase()
+    : "";
+  if (plan.includes("free")) {
+    return false;
+  }
+
+  return accessTypeSku.length > 0;
 }
 
 // â”€â”€ QuotaService â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -783,6 +814,27 @@ export class QuotaService extends EventEmitter {
         },
       );
       const userJson = safeJsonParse(userResponse.body);
+      const planType =
+        typeof userJson?.copilot_plan === "string"
+          ? userJson.copilot_plan
+          : "individual";
+      if (!isCopilotSubscriptionActive(userJson)) {
+        return {
+          platform: "github-copilot",
+          account: "GitHub Copilot",
+          accountLabel: `(${planType})`,
+          title: "GitHub Copilot Account Quota",
+          status: "ok",
+          quotas: [
+            {
+              label: "Subscription",
+              remainPercent: 100,
+              percentLabel: "Free / no paid subscription",
+              note: "Premium quota tracking appears after enabling a paid Copilot plan.",
+            },
+          ],
+        };
+      }
 
       const premiumSnapshot = userJson?.quota_snapshots?.premium_interactions;
 
@@ -812,6 +864,24 @@ export class QuotaService extends EventEmitter {
           "Editor-Version": COPILOT_EDITOR_VERSION,
           "Editor-Plugin-Version": COPILOT_EDITOR_PLUGIN_VERSION,
         });
+        if (usageResponse.statusCode !== 200) {
+          // Endpoint may be unavailable for some subscribed account types.
+          return {
+            platform: "github-copilot",
+            account: "GitHub Copilot",
+            accountLabel: `(${planType})`,
+            title: "GitHub Copilot Account Quota",
+            status: "ok",
+            quotas: [
+              {
+                label: "Premium",
+                remainPercent: 0,
+                percentLabel: "Unavailable",
+                note: "Quota details are unavailable for this Copilot account.",
+              },
+            ],
+          };
+        }
         const usageJson = safeJsonParse(usageResponse.body);
         used = Number(usageJson?.premium_requests_used ?? 0);
         remaining = Math.max(0, effectiveLimit - used);
@@ -824,11 +894,6 @@ export class QuotaService extends EventEmitter {
         typeof userJson?.quota_reset_date === "string"
           ? userJson.quota_reset_date
           : undefined;
-      const planType =
-        typeof userJson?.copilot_plan === "string"
-          ? userJson.copilot_plan
-          : "individual";
-
       return {
         platform: "github-copilot",
         account: "GitHub Copilot",

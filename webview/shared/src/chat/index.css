@@ -147,6 +147,10 @@ body.vscode-high-contrast-light {
   color: color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent)) !important;
 }
 
+.oc-readable-accent {
+  color: var(--vscode-textLink-foreground, var(--vscode-editor-foreground, var(--oc-text))) !important;
+}
+
 /* Readable accent-tinted action buttons across light/dark themes */
 .oc-accent-soft-action {
   border: 1px solid color-mix(in srgb, var(--oc-accent) 36%, var(--oc-border));
@@ -865,29 +869,41 @@ body {
   padding: 1px 5px;
   border-radius: 3px;
   user-select: none;
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
 }
 .oc-tool-label--bash {
-  color: var(--oc-yellow);
-  background: color-mix(in srgb, var(--oc-yellow) 12%, transparent);
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-yellow) 12%, transparent)
+  );
 }
 .oc-tool-label--read {
-  color: var(--oc-accent);
-  background: color-mix(in srgb, var(--oc-accent) 11%, transparent);
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-accent) 11%, transparent)
+  );
 }
 .oc-tool-label--edit {
-  color: var(--oc-orange);
-  background: color-mix(in srgb, var(--oc-orange) 12%, transparent);
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-orange) 12%, transparent)
+  );
 }
 .oc-tool-label--think {
-  color: var(--oc-text-soft);
-  background: color-mix(in srgb, var(--oc-text) 7%, transparent);
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-text) 7%, transparent)
+  );
   font-style: italic;
   text-transform: none;
   letter-spacing: 0;
 }
 .oc-tool-label--generic {
-  color: var(--oc-text-soft);
-  background: color-mix(in srgb, var(--oc-text) 7%, transparent);
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-text) 7%, transparent)
+  );
 }
 
 /* Step content area (col 4) */
@@ -895,7 +911,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  overflow: hidden;
+  overflow: visible;
   min-width: 0;
 }
 
@@ -2288,8 +2304,8 @@ body {
 }
 
 .oc-refined-stepper-item.is-streaming .oc-refined-event-label.activity {
-  background: color-mix(in srgb, var(--oc-accent) 20%, transparent) !important;
-  color: color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent)) !important;
+  background: var(--vscode-list-hoverBackground, var(--oc-accent-soft)) !important;
+  color: var(--vscode-editor-foreground, var(--oc-text)) !important;
 }
 
 .oc-refined-stepper-item.is-streaming .oc-refined-event-summary {
@@ -2372,34 +2388,34 @@ body {
   text-transform: uppercase;
   min-width: 65px;
   text-align: center;
-  background: color-mix(in srgb, var(--oc-accent) 16%, transparent);
-  border: none;
-  color: color-mix(in srgb, var(--oc-text) 88%, var(--oc-accent));
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-accent) 16%, transparent));
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  color: var(--vscode-editor-foreground, var(--oc-text));
   position: relative;
   transition: all 0.2s ease-out;
 }
 
 .oc-refined-event-label:hover {
-  background: color-mix(in srgb, var(--oc-accent) 22%, transparent);
+  background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-accent) 22%, transparent)));
 }
 
 /* Event type-specific label colors - neutral */
 .oc-refined-event-label.reasoning {
-  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
-  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent));
 }
 
 .oc-refined-event-label.reasoning:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
+  background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent)));
 }
 
 .oc-refined-event-label.activity {
-  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
-  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent));
 }
 
 .oc-refined-event-label.activity:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
+  background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent)));
 }
 
 /* Enhanced source/internal badges - minimal */
@@ -2420,9 +2436,9 @@ body {
   font-weight: 400;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  background: color-mix(in srgb, var(--oc-text) 10%, transparent);
-  border: none;
-  color: color-mix(in srgb, var(--oc-text) 92%, var(--oc-accent));
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-text) 10%, transparent));
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  color: var(--vscode-editor-foreground, var(--oc-text));
   transition: all 0.2s ease-out;
 }
 
@@ -2469,7 +2485,7 @@ body {
   margin: 6px 0;
   padding: 10px;
   background: color-mix(in srgb, var(--oc-bg) 60%, transparent);
-  border: 1px solid var(--oc-border-soft);
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
   border-radius: 6px;
   overflow-x: auto;
 }
@@ -2520,52 +2536,87 @@ body {
 
 /* Write operation specific styling - creative green */
 .oc-refined-event-label[data-operation="write"] {
-  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-green));
-  background: color-mix(in srgb, var(--oc-green) 16%, transparent);
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-green) 16%, transparent)
+  );
+  border-color: var(--vscode-widget-border, var(--oc-border));
 }
 
 .oc-refined-event-label[data-operation="write"]:hover {
-  background: color-mix(in srgb, var(--oc-green) 22%, transparent);
+  background: var(
+    --vscode-list-activeSelectionBackground,
+    var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-green) 22%, transparent))
+  );
 }
 
 /* Edit operation specific styling */
 .oc-refined-event-label[data-operation="edit"] {
-  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
-  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent)
+  );
+  border-color: var(--vscode-widget-border, var(--oc-border));
 }
 
 .oc-refined-event-label[data-operation="edit"]:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
+  background: var(
+    --vscode-list-activeSelectionBackground,
+    var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent))
+  );
 }
 
 /* Modify operation specific styling */
 .oc-refined-event-label[data-operation="modify"] {
-  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
-  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent)
+  );
+  border-color: var(--vscode-widget-border, var(--oc-border));
 }
 
 .oc-refined-event-label[data-operation="modify"]:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
+  background: var(
+    --vscode-list-activeSelectionBackground,
+    var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent))
+  );
 }
 
 /* Update operation specific styling - progressive amber */
 .oc-refined-event-label[data-operation="update"] {
-  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-orange));
-  background: color-mix(in srgb, var(--oc-orange) 16%, transparent);
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-orange) 16%, transparent)
+  );
+  border-color: var(--vscode-widget-border, var(--oc-border));
 }
 
 .oc-refined-event-label[data-operation="update"]:hover {
-  background: color-mix(in srgb, var(--oc-orange) 22%, transparent);
+  background: var(
+    --vscode-list-activeSelectionBackground,
+    var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-orange) 22%, transparent))
+  );
 }
 
 /* Patch operation specific styling */
 .oc-refined-event-label[data-operation="patch"] {
-  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-op-accent-1));
-  background: color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent);
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-op-accent-1) 16%, transparent)
+  );
+  border-color: var(--vscode-widget-border, var(--oc-border));
 }
 
 .oc-refined-event-label[data-operation="patch"]:hover {
-  background: color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent);
+  background: var(
+    --vscode-list-activeSelectionBackground,
+    var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-op-accent-1) 22%, transparent))
+  );
 }
 
 /* Edit operation specific styling */
@@ -2629,7 +2680,7 @@ body {
   padding: 2px 6px;
   border-radius: 4px;
   background: color-mix(in srgb, var(--oc-bg) 40%, transparent);
-  border: 1px solid var(--oc-border-soft);
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
   font-family: var(
     --vscode-editor-font-family,
     ui-monospace,
@@ -2796,7 +2847,7 @@ body {
   padding: 8px;
   border-radius: 6px;
   background: color-mix(in srgb, var(--oc-bg) 30%, transparent);
-  border: 1px solid var(--oc-border-soft);
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
 }
 
 /* Enhanced tool/cmd badges in details - minimal */
@@ -2819,9 +2870,9 @@ body {
   font-weight: 400;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  background: color-mix(in srgb, var(--oc-accent) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--oc-accent) 8%, transparent);
-  color: var(--oc-accent);
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--oc-accent) 10%, transparent));
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  color: var(--vscode-editor-foreground, var(--oc-text));
 }
 
 /* Update count - minimal */
@@ -2829,10 +2880,13 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 1px 4px;
+  padding: 2px 6px;
   border-radius: 3px;
-  background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--oc-accent) 12%, transparent);
+  background: var(
+    --vscode-list-hoverBackground,
+    color-mix(in srgb, var(--oc-accent) 10%, transparent)
+  );
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
   font-family: var(
     --vscode-editor-font-family,
     ui-monospace,
@@ -2843,24 +2897,47 @@ body {
     monospace
   );
   font-size: 11px;
-  font-weight: 500;
-  color: var(--oc-accent);
+  font-weight: 600;
+  color: var(--vscode-editor-foreground, var(--oc-text));
 }
 
 /* Bash command block styling */
 .oc-bash-command-block {
-  margin: 4px 0;
-  border-radius: 4px;
+  margin: 6px 0 3px;
+  border-radius: 8px;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: var(
+    --vscode-editorWidget-background,
+    var(--vscode-sideBar-background, transparent)
+  );
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
 }
 
 .oc-bash-command-code {
   margin: 0;
-  padding: 6px 8px;
-  overflow: hidden;
-  background: transparent;
+  padding: 7px 9px;
+  overflow: visible;
+  background: var(--vscode-list-hoverBackground, transparent);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.oc-bash-inline-prompt {
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--vscode-terminal-ansiGreen, var(--oc-green));
 }
 
 .oc-bash-command-code code {
@@ -2875,28 +2952,42 @@ body {
   );
   font-size: 11px;
   line-height: 1.5;
-  color: var(--oc-text-soft);
+  color: var(--vscode-editor-foreground, var(--oc-text));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+  flex: 1 1 auto;
+  min-width: 0;
+  background: color-mix(
+    in srgb,
+    var(--vscode-list-hoverBackground, var(--oc-panel-soft)) 45%,
+    transparent
+  );
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  border-radius: 6px;
+  padding: 2px 8px;
 }
 
 /* Search block styling — terminal-style block for grep/search/glob queries */
 .oc-search-block {
-  margin: 4px 0;
-  border-radius: 4px;
+  margin: 6px 0 2px;
+  border-radius: 8px;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: var(
+    --vscode-editorWidget-background,
+    var(--vscode-sideBar-background, transparent)
+  );
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
 }
 
 .oc-search-block-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 6px;
-  padding: 4px 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  background: rgba(255, 255, 255, 0.02);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-widget-border, var(--oc-border));
+  background: var(--vscode-list-hoverBackground, transparent);
 }
 
 .oc-search-block-scope {
@@ -2913,7 +3004,7 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--oc-neutral-accent);
+  color: var(--vscode-editor-foreground, var(--oc-text));
 }
 
 .oc-search-block-filter {
@@ -2930,17 +3021,17 @@ body {
     monospace
   );
   font-size: 11px;
-  color: var(--oc-text-muted);
+  color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
 }
 
 .oc-search-block-filter-label {
-  opacity: 0.5;
+  opacity: 0.8;
 }
 
 .oc-search-block-code {
   margin: 0;
-  padding: 6px 8px;
-  overflow-x: auto;
+  padding: 8px;
+  overflow-x: hidden;
   background: transparent;
 }
 
@@ -2956,8 +3047,10 @@ body {
   );
   font-size: 11px;
   line-height: 1.5;
-  color: var(--oc-text-soft);
-  white-space: pre;
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Command code block styling */
@@ -2966,7 +3059,7 @@ body {
   border-radius: 6px;
   overflow: hidden;
   background: color-mix(in srgb, var(--oc-bg) 60%, transparent);
-  border: 1px solid var(--oc-border-soft);
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
 }
 
 .oc-refined-command-header {
@@ -2974,7 +3067,7 @@ body {
   align-items: center;
   padding: 6px 10px;
   background: color-mix(in srgb, var(--oc-accent) 8%, transparent);
-  border-bottom: 1px solid var(--oc-border-soft);
+  border-bottom: 1px solid var(--vscode-widget-border, var(--oc-border));
 }
 
 .oc-refined-command-label {
@@ -3837,6 +3930,35 @@ body {
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--oc-accent) 36%, var(--oc-border));
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
+}
+
+.oc-subagents-header-icon {
+  color: var(--vscode-editor-foreground, var(--oc-text)) !important;
+  opacity: 0.95;
+  background: var(--vscode-list-hoverBackground, var(--oc-accent-soft));
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.oc-subagents-panel {
+  border-color: var(--vscode-contrastBorder, var(--vscode-widget-border, var(--oc-border)));
+}
+
+.oc-subagents-panel-header {
+  border-color: var(--vscode-widget-border, var(--oc-border));
+}
+
+.oc-subagents-count {
+  border-color: var(--vscode-widget-border, var(--oc-border));
+}
+
+.oc-subagent-row {
+  border-color: var(--vscode-widget-border, var(--oc-border));
+}
+
+.oc-subagent-row:hover {
+  border-color: var(--vscode-contrastBorder, var(--vscode-widget-border, var(--oc-border)));
 }
 
 @media (max-width: 900px) {

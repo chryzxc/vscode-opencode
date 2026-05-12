@@ -99,6 +99,26 @@ export function QuotaPopover() {
     return null;
   };
 
+  const toFriendlyError = (error?: string) => {
+    const message = (error ?? '').toLowerCase();
+    if (!message) return 'Unable to load quota right now.';
+    if (message.includes('401') || message.includes('authenticate') || message.includes('token')) {
+      return 'Authentication required. Reconnect this provider and refresh.';
+    }
+    if (
+      message.includes('enotfound') ||
+      message.includes('timeout') ||
+      message.includes('network') ||
+      message.includes('econn')
+    ) {
+      return 'Network issue while fetching quota. Please try refresh.';
+    }
+    if (message.includes('404') || message.includes('not found')) {
+      return 'This quota endpoint is unavailable for the current account type.';
+    }
+    return error ?? 'Unable to load quota right now.';
+  };
+
   return (
     <div className="quota-popover-overlay">
       <div ref={popoverRef} className="quota-popover">
@@ -171,7 +191,11 @@ export function QuotaPopover() {
                     <Badge variant="warning" className="text-[#d29922] text-xs uppercase">
                       warning
                     </Badge>
-                  ) : null}
+                  ) : (
+                    <Badge variant="secondary" className="text-xs uppercase">
+                      active
+                    </Badge>
+                  )}
                 </div>
                 <div className="grid grid-cols-[auto_1fr] gap-x-2 text-xs">
                   <span className="text-xs font-medium text-[var(--oc-text-soft)] opacity-85">
@@ -187,9 +211,11 @@ export function QuotaPopover() {
               <div className="space-y-2.5 py-2.5">
                 {platform.error ? (
                   <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40 px-2.5 py-2 text-oc-red">
-                    {platform.error.length > 130
-                      ? `${platform.error.slice(0, 127)}...`
-                      : platform.error}
+                    {toFriendlyError(platform.error)}
+                  </div>
+                ) : platform.quotas.length === 0 ? (
+                  <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40 px-2.5 py-2 text-xs text-[var(--oc-text-soft)] opacity-80">
+                    No quota details available for this provider yet.
                   </div>
                 ) : (
                   platform.quotas.map((quota) => {

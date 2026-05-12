@@ -2179,7 +2179,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
               if (match) {
                 return (
                   <>
-                    <span className="text-oc-accent font-medium">{match[1]}</span>
+                    <span className="oc-readable-accent font-medium">{match[1]}</span>
                     {match[2]}
                   </>
                 );
@@ -3392,19 +3392,19 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           )}
 
           {subagents.length > 0 && (
-            <div className="mt-3 mb-3 overflow-hidden rounded-md border border-oc-border-soft bg-oc-panel-soft">
+            <div className="oc-subagents-panel mt-3 mb-3 overflow-hidden rounded-md border bg-oc-panel-soft">
               <button
                 type="button"
-                className="w-full border-b border-oc-border-soft px-2.5 py-2 text-left hover:bg-oc-panel"
+                className="oc-subagents-panel-header w-full border-b px-2.5 py-2 text-left hover:bg-oc-panel"
                 onClick={() => setShowSubagents((value) => !value)}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-2">
-                    <Sparkles className="h-3.5 w-3.5 text-oc-accent" />
+                    <Sparkles className="h-3.5 w-3.5 oc-subagents-header-icon" />
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
                       Spawned Subagents
                     </span>
-                    <span className="rounded-md border border-oc-border-soft px-1.5 py-0.5 font-medium text-oc-2xs text-oc-text-soft">
+                    <span className="oc-subagents-count rounded-md border px-1.5 py-0.5 font-medium text-oc-2xs text-oc-text-soft">
                       {subagents.length}
                     </span>
                   </div>
@@ -3458,7 +3458,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           key={subagent.id}
                           type="button"
                           className={cn(
-                            "w-full rounded-md border border-oc-border-soft bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
+                            "oc-subagent-row w-full rounded-md border bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
                             "hover:bg-oc-panel",
                           )}
                           style={cardStyle}
@@ -3506,7 +3506,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     {subagents.length > 10 ? (
                       <button
                         type="button"
-                        className="text-oc-2xs font-medium text-oc-accent hover:underline"
+                        className="text-oc-2xs font-medium oc-readable-accent hover:underline"
                         onClick={() => setShowAllSubagents((value) => !value)}
                       >
                         {showAllSubagents
@@ -3685,7 +3685,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                 )} */}
 
-              {hasRawResponseDebug && (
+              {/* Temporarily hidden per UI request: Raw Response (Debug) block */}
+              {false && hasRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
                   className={
@@ -4150,7 +4151,7 @@ function FileChangesSection({
     <div className="rounded-lg border border-oc-border-soft bg-oc-bg overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2 text-sm text-oc-text">
-          <FileCode className="h-3.5 w-3.5 shrink-0 text-oc-accent/80" />
+          <FileCode className="h-3.5 w-3.5 shrink-0 oc-readable-accent" />
           <span className="font-medium text-oc-text-soft">
             {filesChanged} {filesChanged === 1 ? "file" : "files"} changed
           </span>
@@ -4547,7 +4548,7 @@ export function MessageStatus({
     <div className="mb-2 px-4 text-xs text-oc-text-soft opacity-70">
       <span className="inline-flex items-center gap-1.5 font-medium">
         {active ? (
-          <Loader2 className="h-3 w-3 animate-spin text-oc-accent" />
+          <Loader2 className="h-3 w-3 animate-spin oc-readable-accent" />
         ) : failed ? (
           <X className="h-3 w-3 text-oc-red" />
         ) : (
