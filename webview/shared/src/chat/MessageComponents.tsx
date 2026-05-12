@@ -2593,8 +2593,18 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   // Merge subagents from message data and from the store lookup by parent message ID.
   // Prefer store-scoped entries so subagent cards cannot bleed into unrelated messages.
   const subagents = useMemo(() => {
+    const activeSessionId = state.currentSessionId;
+    const isInActiveSession = (subagent: SubagentSummary): boolean => {
+      if (!activeSessionId) {
+        return true;
+      }
+      return subagent.parentSessionId === activeSessionId;
+    };
     const scopedStore = messageId ? (subagentsByParentMessageId[messageId] ?? []) : [];
     const fromStore = scopedStore.filter((subagent: SubagentSummary) => {
+      if (!isInActiveSession(subagent)) {
+        return false;
+      }
       if (!messageId) {
         return true;
       }
@@ -2602,6 +2612,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     });
     const messageSubagents = Array.isArray(message?.subagents) ? message.subagents : [];
     const fromMessage = messageSubagents.filter((subagent: SubagentSummary) => {
+      if (!isInActiveSession(subagent)) {
+        return false;
+      }
       if (!messageId) {
         return true;
       }
@@ -2612,8 +2625,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     // out-of-sync, keep rendering the scoped bucket/message-attached subagents
     // instead of dropping the section until hydration catches up.
     if (fromStore.length === 0 && fromMessage.length === 0) {
-      if (scopedStore.length > 0) return scopedStore;
-      if (messageSubagents.length > 0) return messageSubagents;
+      const activeScopedStore = scopedStore.filter(isInActiveSession);
+      const activeMessageSubagents = messageSubagents.filter(isInActiveSession);
+      if (activeScopedStore.length > 0) return activeScopedStore;
+      if (activeMessageSubagents.length > 0) return activeMessageSubagents;
     }
 
     if (fromStore.length === 0) return fromMessage;
@@ -2624,7 +2639,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     const storeIds = new Set(fromStore.map((s: SubagentSummary) => s.id));
     const extra = fromMessage.filter((s) => !storeIds.has(s.id));
     return [...fromStore, ...extra];
-  }, [message, messageId, subagentsByParentMessageId]);
+  }, [message, messageId, subagentsByParentMessageId, state.currentSessionId]);
   const previousSubagentCount = useRef(subagents.length);
 
   useEffect(() => {
@@ -3214,22 +3229,37 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
                               <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
                                 {event.filePath ? (
-                                  <button
-                                    type="button"
-                                    className="oc-refined-file-link"
-                                    title={event.filePath}
-                                    onClick={() =>
-                                      vscode.postMessage({
-                                        type: "openFile",
-                                        file: event.filePath!,
-                                      })
-                                    }
-                                  >
-                                    <FileIcon filePath={event.filePath} />
-                                    <span className="break-words whitespace-pre-wrap">
-                                      {fileName || event.summary}
-                                    </span>
-                                  </button>
+                                  SEARCH_LABELS.has(event.label) ? (
+                                    <SearchBlock
+                                      pattern={
+                                        [
+                                          event.activityDetail?.query || event.summary,
+                                          event.description,
+                                        ]
+                                          .filter((value): value is string => !!value?.trim())
+                                          .join("\n")
+                                      }
+                                      scope={event.label}
+                                      path={event.filePath}
+                                    />
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="oc-refined-file-link"
+                                      title={event.filePath}
+                                      onClick={() =>
+                                        vscode.postMessage({
+                                          type: "openFile",
+                                          file: event.filePath!,
+                                        })
+                                      }
+                                    >
+                                      <FileIcon filePath={event.filePath} />
+                                      <span className="break-words whitespace-pre-wrap">
+                                        {fileName || event.summary}
+                                      </span>
+                                    </button>
+                                  )
                                 ) : (
                                   event.summary && (
                                     <div
@@ -3545,7 +3575,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 <div
                   className={
                     hasResponseContent
-                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
+                      ? "oc-response-plan-separator mt-3 pt-3 border-t"
                       : undefined
                   }
                 >

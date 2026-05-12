@@ -1418,6 +1418,14 @@ body {
   );
 }
 
+.oc-response-plan-separator {
+  border-top-color: color-mix(
+    in srgb,
+    var(--vscode-widget-border, var(--oc-border)) 55%,
+    transparent
+  );
+}
+
 /* ── Plan button ─────────────────────────────────────────────────────────── */
 .oc-plan-btn {
   display: inline-flex;
@@ -3978,6 +3986,10 @@ body {
 
 .oc-subagent-row:hover {
   border-color: var(--vscode-contrastBorder, var(--vscode-widget-border, var(--oc-border)));
+}
+
+.oc-subagent-modal-title {
+  color: var(--vscode-editor-foreground, var(--oc-text));
 }
 
 @media (max-width: 900px) {

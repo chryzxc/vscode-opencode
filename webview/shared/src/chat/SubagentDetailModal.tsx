@@ -153,15 +153,15 @@ export function SubagentDetailModal({
 			>
 				<div className="oc-modal-header shrink-0 bg-oc-panel-soft/70 p-3 sm:p-4">
 					<div className="flex items-start justify-between gap-3">
-						<div className="flex min-w-0 items-start gap-3">
-							<div className={cn("mt-0.5 flex shrink-0 items-center justify-center", colorClass)}>
-								<Sparkles className="h-5 w-5" />
-							</div>
-							<div className="min-w-0">
-								<div className="flex flex-wrap items-center gap-2">
-									<span className={cn("text-sm font-semibold sm:text-base", colorClass)}>
-										{title}
-									</span>
+							<div className="flex min-w-0 items-start gap-3">
+								<div className="mt-0.5 flex shrink-0 items-center justify-center oc-subagent-modal-title">
+									<Sparkles className="h-5 w-5" />
+								</div>
+								<div className="min-w-0">
+									<div className="flex flex-wrap items-center gap-2">
+										<span className="oc-subagent-modal-title text-sm font-semibold sm:text-base">
+											{title}
+										</span>
 									<Badge
 										variant="outline"
 										className={cn(

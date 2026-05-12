@@ -8497,15 +8497,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               activeSessionId &&
               stateBeforeStreamEvent.processingSessionIds.includes(activeSessionId))
           );
+          const inInteractiveTransitionWindow =
+            Date.now() <= interactiveResponseTransitionUntil;
           // Accept stream events when either:
           // 1) global processing is true, OR
           // 2) backend confirms the session is processing, OR
-          // 3) we already have a stream snapshot in flight.
+          // 3) we already have a stream snapshot in flight, OR
+          // 4) we are within interactive submit handoff transition window.
           // This prevents interactive-handoff races from dropping valid events.
           if (
             !stateBeforeStreamEvent.isProcessing &&
             !hasConfirmedProcessingSession &&
-            !stateBeforeStreamEvent.streaming
+            !stateBeforeStreamEvent.streaming &&
+            !inInteractiveTransitionWindow
           ) {
             break;
           }
@@ -8548,7 +8552,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "streamEventEnrich": {
           const stateBeforeEnrich = getState();
-          if (!stateBeforeEnrich.isProcessing && !stateBeforeEnrich.streaming) {
+          const inInteractiveTransitionWindow =
+            Date.now() <= interactiveResponseTransitionUntil;
+          if (
+            !stateBeforeEnrich.isProcessing &&
+            !stateBeforeEnrich.streaming &&
+            !inInteractiveTransitionWindow
+          ) {
             break;
           }
           const callID = asString(data.callID);
@@ -8829,24 +8839,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               payload: updatedMessages,
             });
             if (isInteractiveAnswerSubmission) {
-              const stateAfterAppend = getState();
-              const submittedSessionId = deriveSessionIdFromMessage(
-                message,
-                stateAfterAppend.currentSessionId,
-              );
-              const hasConfirmedProcessingSession = !!(
-                submittedSessionId &&
-                stateAfterAppend.processingSessionIds.includes(submittedSessionId)
-              );
-              // Interactive answers should only force "processing" when the host has
-              // already confirmed an active processing session. Otherwise we can get
-              // stuck showing loading if the submit fails before processing starts.
-              if (
-                hasConfirmedProcessingSession ||
-                !stateAfterAppend.currentSessionId
-              ) {
-                dispatch({ type: "SET_PROCESSING", payload: true });
-              }
+              dispatch({ type: "SET_PROCESSING", payload: true });
             }
           }
           break;
