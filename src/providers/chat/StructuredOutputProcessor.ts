@@ -421,6 +421,18 @@ export class StructuredOutputProcessor {
     return hasQuestion;
   }
 
+  private buildFallbackPlanMarkdown(options: {
+    title?: string;
+    summary?: string;
+    messageText?: string;
+  }): string {
+    const title = this.firstNonEmptyString(options.title) || "Implementation Plan";
+    const summary =
+      this.firstNonEmptyString(options.summary, options.messageText) ||
+      "I created an implementation plan with clear execution steps.";
+    return `# ${title}\n\n${summary}\n`;
+  }
+
   /**
    * Extract message ID from message
    */
@@ -1151,7 +1163,7 @@ export class StructuredOutputProcessor {
       if (
         structuredPlanContent &&
         typeof structuredPlanContent === "string" &&
-        structuredPlanContent.length >= 200
+        structuredPlanContent.trim().length > 0
       ) {
         if (this.isClarificationQuestionnaire(structuredPlanContent)) {
           return message;
@@ -1196,11 +1208,21 @@ export class StructuredOutputProcessor {
         structuredResponseType === "implementation_plan" &&
         structuredPlanFile
       ) {
-        // For file-only plans, persist the content if the file doesn't exist yet
-        if (!planFileExists && structuredPlanContent) {
+        // For file-only plans, always materialize a markdown file when missing.
+        if (!planFileExists) {
+          const fallbackMarkdown = this.buildFallbackPlanMarkdown({
+            title: resolvedPlanTitle,
+            summary: this.firstNonEmptyString(structuredPlanRecord?.summary),
+            messageText: this.firstNonEmptyString(
+              structured?.message,
+              message?.content,
+            ),
+          });
+          const contentToPersist =
+            this.firstNonEmptyString(structuredPlanContent) || fallbackMarkdown;
           try {
             await this.persistPlan(
-              structuredPlanContent,
+              contentToPersist,
               fallbackPlanFile,
             );
           } catch (err) {

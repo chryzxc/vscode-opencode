@@ -350,6 +350,18 @@ function cleanKey(key: string): string {
     .replace(/,/g, "");
 }
 
+function looksLikeInternalPlanningText(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("i need to produce a plan") ||
+    normalized.includes("i should call the tool") ||
+    normalized.includes("i might be able to use structuredoutput") ||
+    normalized.includes("i'm not actually writing a file") ||
+    normalized.includes("as per the instruction")
+  );
+}
+
 function getFileIconKeys(filePath?: string): string[] {
   if (!filePath) {
     return [];
@@ -2430,6 +2442,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     message?.responseType,
     typeof structured?.responseType === "string" ? structured.responseType : undefined,
   )?.toLowerCase();
+  const hideReasoningTimeline = responseType === "implementation_plan";
   let plan = responseType === "implementation_plan" ? message?.plan : undefined;
   if (!plan && responseType === "implementation_plan") {
     const structuredPlanRec = asRecord(structured?.plan);
@@ -2500,9 +2513,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const visibleDisplayEvents = hasCompletedCondensedActivity
     ? displayEvents.slice(-MAX_VISIBLE_COMPLETED_ACTIVITY)
     : displayEvents;
-  const userFacingDisplayEvents = visibleDisplayEvents.filter(
-    (event) => !event.internal,
-  );
+  const userFacingDisplayEvents = visibleDisplayEvents.filter((event) => {
+    if (event.internal) return false;
+    if (hideReasoningTimeline && event.kind === "reasoning") return false;
+    return true;
+  });
   const internalDisplayEvents = visibleDisplayEvents.filter(
     (event) => event.internal,
   );
@@ -2821,6 +2836,21 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   // Render raw debug whenever payload exists. Do not gate behind stream-debug
   // flags, otherwise streamed + hydrated sessions can silently hide rawResponse.
   const hasRawResponseDebug = rawResponseText.trim().length > 0;
+  const planLeadMessage = useMemo(() => {
+    if (!plan) return "";
+    const candidate = (
+      firstNonEmptyString(
+        message?.message,
+        typeof structured?.message === "string" ? structured.message : undefined,
+        plan.intro,
+        plan.summary,
+      ) ?? ""
+    ).trim();
+    if (candidate && !looksLikeInternalPlanningText(candidate)) {
+      return candidate;
+    }
+    return "I created an implementation plan. Here are the key steps and the plan file.";
+  }, [message?.message, structured?.message, plan]);
   const hasThinkingEvents = useMemo(
     () => displayEvents.some((event) => event.kind === "reasoning"),
     [displayEvents],
@@ -2832,7 +2862,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const visibleResolvedContent = resolvedContentMatchesError
     ? ""
     : resolvedContent;
-  const hasVisibleResponseBody = visibleResolvedContent.trim().length > 0;
+  const effectiveResponseContent =
+    visibleResolvedContent.trim().length > 0
+      ? visibleResolvedContent
+      : planLeadMessage;
+  const hasVisibleResponseBody = effectiveResponseContent.trim().length > 0;
   const hasPrimaryResponseBody = hasVisibleResponseBody || !!plan;
   const hasResponseContent = hasVisibleResponseBody;
   const isAborted = message?.aborted === true;
@@ -3494,7 +3528,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               {hasResponseContent && (
                 <div className={responseBodyClass}>
                   <MarkdownRenderer
-                    content={visibleResolvedContent}
+                    content={effectiveResponseContent}
                     className={markdownBodyClass}
                   />
                 </div>
@@ -3651,7 +3685,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                 )} */}
 
-              {/* Temporarily disabled: Raw Response Debug Component
               {hasRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
@@ -3671,7 +3704,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </pre>
                 </div>
               )}
-              */}
 
             </section>
           )}
@@ -4526,4 +4558,3 @@ export function MessageStatus({
     </div>
   );
 }
-

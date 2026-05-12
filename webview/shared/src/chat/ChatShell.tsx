@@ -581,7 +581,7 @@ function ChatContent() {
               <button
                 type="button"
                 onClick={jumpToLatest}
-                className="rounded-md border border-oc-border bg-oc-panel px-2.5 py-1.5 text-[11px] font-medium text-oc-accent shadow-sm hover:bg-oc-panel-soft"
+                className="oc-accent-soft-action rounded-md px-2.5 py-1.5 text-[11px] font-semibold shadow-sm transition-colors"
               >
                 Jump to latest ({streamViewport.unseenUpdateCount})
               </button>

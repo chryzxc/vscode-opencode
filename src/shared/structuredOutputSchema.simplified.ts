@@ -33,7 +33,7 @@ export const simplifiedStructuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object, 'question' for user interactions with options, or 'progress_update' for execution steps.",
+      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file must be a markdown filepath and should be written to disk; include plan.content when the file is not yet written), 'question' for user interactions with options, or 'progress_update' for execution steps.",
     additionalProperties: false,
     required: ["responseType"],
     properties: {
@@ -41,7 +41,7 @@ export const simplifiedStructuredOutputSchema: StructuredOutputSchema = {
         type: "string",
         enum: ["message", "implementation_plan", "question", "progress_update"],
         description:
-          "Response type: 'message' for normal text, 'implementation_plan' for plans, 'question' for user choices, 'progress_update' for steps",
+          "Response type: 'message' for normal text, 'implementation_plan' for plans (create/write plan.file), 'question' for user choices, 'progress_update' for steps",
       },
 
       message: {
@@ -57,13 +57,13 @@ export const simplifiedStructuredOutputSchema: StructuredOutputSchema = {
 
       plan: {
         type: "object",
-        description: "Implementation plan with title and content",
+        description: "Implementation plan payload. plan.file should be created/written on disk; include plan.content when file is not yet written.",
         properties: {
           title: { type: "string", description: "Plan title" },
-          file: { type: "string", description: "Plan file path if written to disk" },
+          file: { type: "string", description: "Plan markdown file path to create/write" },
           content: {
             type: "string",
-            description: "Plan markdown content if not written to file",
+            description: "Full markdown plan content to persist when file is not yet written",
           },
           summary: { type: "string", description: "One-line plan summary" },
         },

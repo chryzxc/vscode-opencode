@@ -27,6 +27,23 @@ export class PlanManager {
     return str === "/plan:proceed" || str.startsWith("/plan:proceed ");
   }
 
+  private buildFallbackPlanContent(plan: {
+    title?: string;
+    summary?: string;
+    content?: string;
+    file?: string;
+  }): string | undefined {
+    const existing = this.firstNonEmptyString(plan.content);
+    if (existing) {
+      return existing;
+    }
+    const title = this.firstNonEmptyString(plan.title) || "Implementation Plan";
+    const summary =
+      this.firstNonEmptyString(plan.summary) ||
+      "I created an implementation plan with clear execution steps.";
+    return `# ${title}\n\n${summary}\n`;
+  }
+
   /**
    * Normalize plan proceed user message
    */
@@ -166,11 +183,9 @@ export class PlanManager {
 
       this.logger.featureStep(flow, 'normalizing_paths');
       const normalizedPreferred = this.normalizePlanFileReference(preferredPath);
-      const resolvedPreferred = normalizedPreferred
-        ? this.resolvePlanFileCandidates(normalizedPreferred)[0] ||
-        path.normalize(normalizedPreferred)
+      const resolvedPath = normalizedPreferred
+        ? this.resolveWritablePlanPath(normalizedPreferred)
         : undefined;
-      const resolvedPath = resolvedPreferred;
       if (!resolvedPath) {
         this.logger.endFeatureFlow(flow, { status: 'failed', reason: 'No valid path' });
         return undefined;
@@ -196,6 +211,26 @@ export class PlanManager {
       this.logger.endFeatureFlow(flow, { status: 'failed' });
       return undefined;
     }
+  }
+
+  private resolveWritablePlanPath(planFile: string): string | undefined {
+    const candidates = this.resolvePlanFileCandidates(planFile);
+    const absoluteCandidate = candidates.find((candidate) =>
+      path.isAbsolute(candidate),
+    );
+    if (absoluteCandidate) {
+      return path.normalize(absoluteCandidate);
+    }
+
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (workspaceFolder && workspaceFolder.uri.scheme === "file") {
+      return path.normalize(path.join(workspaceFolder.uri.fsPath, planFile));
+    }
+
+    if (path.isAbsolute(planFile)) {
+      return path.normalize(planFile);
+    }
+    return undefined;
   }
 
   /**
@@ -578,19 +613,43 @@ export class PlanManager {
     }
 
     if (!planData && prioritizedCandidates.length > 0) {
-      void vscode.window.showErrorMessage(
-        `Could not read plan file: ${normalizedPlanFile ?? prioritizedCandidates[0]}`,
-      );
-      return;
+      const inlinePlanContent = this.buildFallbackPlanContent(plan);
+      if (inlinePlanContent) {
+        const preferredMissingPath = normalizedPlanFile ?? prioritizedCandidates[0];
+        const persistedPath = await this.persistPlan(
+          inlinePlanContent.trim(),
+          preferredMissingPath,
+        );
+        if (persistedPath) {
+          planData = inlinePlanContent.trim();
+          resolvedFile = persistedPath;
+        }
+      }
+      if (!planData) {
+        void vscode.window.showErrorMessage(
+          `Could not read plan file: ${normalizedPlanFile ?? prioritizedCandidates[0]}`,
+        );
+        return;
+      }
     }
 
     if (
       !planData &&
       prioritizedCandidates.length === 0 &&
-      plan.content &&
-      typeof plan.content === "string"
+      this.buildFallbackPlanContent(plan)
     ) {
-      planData = plan.content;
+      const fallbackContent = this.buildFallbackPlanContent(plan)!;
+      const defaultPath =
+        normalizedPlanFile ||
+        "docs/implementation-plan.md";
+      const persistedPath = await this.persistPlan(
+        fallbackContent.trim(),
+        defaultPath,
+      );
+      if (persistedPath) {
+        resolvedFile = persistedPath;
+      }
+      planData = fallbackContent.trim();
     }
 
     if (!planData) {

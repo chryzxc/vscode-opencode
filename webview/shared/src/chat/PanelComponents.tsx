@@ -16,8 +16,8 @@ import {
   Lock,
   MessageSquare,
   MoreHorizontal,
-  Play,
   Plus,
+  Play,
   RefreshCw,
   Search,
   Send,
@@ -128,11 +128,12 @@ function CircularProgress({
           cy={size / 2}
           r={radius}
           fill="transparent"
-          stroke={strokeColor}
+          stroke="currentColor"
           strokeWidth={strokeWidth}
           strokeDasharray={circumference}
           strokeDashoffset={offset}
           strokeLinecap="round"
+          style={{ color: strokeColor }}
           className="transition-all duration-700 ease-in-out"
         />
       </svg>
@@ -388,7 +389,7 @@ export function HistorySidebar() {
           </p>
           <button
             type="button"
-            className="mt-2 rounded-md border border-oc-accent bg-oc-accent-soft px-3 py-1.5 text-[11px] font-medium text-oc-accent transition-all hover:bg-oc-accent hover:text-white"
+            className="oc-accent-soft-action mt-2 rounded-md px-3 py-1.5 text-[11px] font-semibold transition-all"
             onClick={() => {
               vscode.postMessage({ type: "openSessionModal" });
             }}
@@ -1097,7 +1098,6 @@ export function ModelDropdown() {
         aria-label="Choose model"
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="opacity-60">Model</span>
           <span>{label}</span>
         </div>
         <ChevronDown
@@ -1240,7 +1240,7 @@ export function AgentDropdown() {
   );
 
   const selectedAgentItem = availableAgents.find((a) => a.id === selectedAgent);
-  const label = selectedAgentItem?.name ?? selectedAgent ?? "Agent";
+  const label = selectedAgentItem?.name ?? selectedAgent ?? "Default permissions";
 
   return (
     <div className="relative" ref={containerRef}>
@@ -1258,7 +1258,6 @@ export function AgentDropdown() {
         aria-label="Choose agent"
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="opacity-60">Agent</span>
           <span>{label}</span>
         </div>
         <ChevronDown
@@ -1349,22 +1348,22 @@ export function QueueContainer() {
   };
 
   return (
-    <div className="mx-3 space-y-1.5 overflow-hidden rounded-lg border border-oc-border-soft bg-oc-panel p-2">
-      <div className="flex items-center justify-between px-1">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-[10px] font-semibold uppercase tracking-widest oc-text-secondary">
+    <div className="oc-queue-popover">
+      <div className="oc-queue-header">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="oc-queue-title font-medium text-[10px] font-semibold uppercase tracking-widest">
             Pending
           </span>
-          <span className="rounded-full bg-oc-accent-soft px-1.5 py-0.5 font-medium text-[9px] font-bold text-oc-accent">
+          <span className="oc-queue-count">
             {promptQueue.length}
           </span>
-          <span className="text-[10px] oc-text-secondary">
+          <span className="oc-queue-status text-[10px] truncate">
             {isProcessing ? "· sending after response" : ""}
           </span>
         </div>
         <button
           type="button"
-          className="rounded px-1.5 py-0.5 font-medium text-[10px] oc-text-secondary transition-colors hover:bg-oc-accent-soft hover:text-oc-accent"
+          className="oc-queue-clear"
           title="Clear all pending prompts"
           onClick={() => {
             if (!currentSessionId) return;
@@ -1377,24 +1376,25 @@ export function QueueContainer() {
           Clear all
         </button>
       </div>
+
       {promptQueue.map((item, index) => {
         const itemSessionId = item.sessionId;
         return (
           <div
             key={item.id || `${item.text}-${index}`}
-            className="oc-panel-section group flex items-start gap-2 p-0 px-2.5 py-1.5"
+            className="oc-queue-item group"
           >
-            <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-oc-accent-soft">
-              <span className="font-medium text-[8px] font-bold text-oc-accent">
+            <div className="oc-queue-index">
+              <span className="font-medium text-[9px] font-bold">
                 {index + 1}
               </span>
             </div>
             <div className="min-w-0 flex-1">
-              <div className="line-clamp-2 font-medium text-[11px] text-[var(--oc-text-soft)]">
+              <div className="oc-queue-item-text line-clamp-2 font-medium text-[12px] leading-5">
                 {item.text || "(empty)"}
               </div>
               {(item.files?.length || item.contexts?.length) ? (
-                <div className="mt-0.5 flex items-center gap-2 font-medium text-[9px] oc-text-secondary">
+                <div className="oc-queue-item-meta mt-1 flex items-center gap-2 font-medium text-[10px]">
                   {item.files?.length ? (
                     <span>{item.files.length} file{item.files.length > 1 ? "s" : ""}</span>
                   ) : null}
@@ -1406,12 +1406,12 @@ export function QueueContainer() {
             </div>
             <button
               type="button"
-              className="mt-0.5 shrink-0 rounded-md p-1 oc-text-secondary opacity-0 transition-all group-hover:opacity-100 hover:bg-oc-accent-soft hover:text-oc-accent disabled:opacity-50"
+              className="oc-queue-remove"
               title="Remove from queue"
               disabled={!itemSessionId || isSteering}
               onClick={() => removeQueuedItem(item, index)}
             >
-              <X className="h-3 w-3" />
+              <X className="h-3.5 w-3.5" />
             </button>
           </div>
         );
@@ -2088,11 +2088,10 @@ export function InputWrapper() {
 
   return (
     <>
-      <QueueContainer />
       <div
         className="oc-input-area"
-         style={promptQueue.length > 0 ? { borderTop: "none" } : undefined}
-       >
+      >
+        <QueueContainer />
          {event && (
            <div className="mb-2 rounded-lg border border-oc-border-soft bg-[var(--oc-panel-soft)] px-3 py-2">
              <div className="mb-2 flex items-center justify-between gap-2 border-b border-oc-border-soft pb-1.5">
@@ -2139,7 +2138,7 @@ export function InputWrapper() {
                       <span className="ml-1 rounded-full bg-[var(--oc-accent-soft)] px-1.5 py-0.5 text-[9px] font-semibold oc-tinted-badge-text tabular-nums">
                         {Object.keys(pendingAnswers).length} answered
                       </span>
-                    )}
+         )}
                   </div>
                 )}
               </div>
@@ -2458,8 +2457,8 @@ export function InputWrapper() {
             value={inputValue}
             placeholder={
               isProcessing
-                ? "Ask for follow-up changes"
-                : "Ask anything (Enter to send, Shift+Enter for newline), @ to mention, / for commands"
+                ? "Ask anything..."
+                : "Ask anything..."
             }
             className="oc-textarea"
             onChange={(e) => {
@@ -2691,13 +2690,13 @@ export function InputWrapper() {
 
           {/* Bottom toolbar */}
           <div className="oc-toolbar">
-            {/* Left: chip selectors */}
-            <div className="oc-toolbar-left">
-              <ModelDropdown />
+            {/* Unified controls cluster */}
+            <div className="oc-toolbar-center">
               <AgentDropdown />
+              <ModelDropdown />
               <ThinkingLevelControl />
-              <div className="flex items-center gap-1" title={`Context: ${contextUsagePct ?? 0}%`}>
-                <CircularProgress pct={contextUsagePct ?? 0} size={16} strokeWidth={2.25} />
+              <div className="oc-toolbar-context-ring" title={`Context: ${contextUsagePct ?? 0}%`}>
+                <CircularProgress pct={contextUsagePct ?? 0} size={14} strokeWidth={2.1} />
               </div>
             </div>
 
@@ -2705,32 +2704,34 @@ export function InputWrapper() {
             <div className="oc-toolbar-right">
               {isAiResponding && inputValue.trim().length === 0 ? (
                 <Button
-                  variant="destructive"
-                  size="chip"
-                  className="oc-toolbar-chip"
+                  variant="send"
+                  size="icon"
+                  className="oc-toolbar-action-icon"
                   onClick={stopRequest}
                   disabled={isSteering}
+                  aria-label="Stop"
+                  title="Stop"
                 >
-                  <Square className="h-3 w-3" />
-                  Stop
+                  <Square className="h-4 w-4" />
                 </Button>
               ) : null}
               {!isAiResponding || inputValue.trim().length > 0 ? (
                 <Button
                   variant="send"
-                  size="chip"
-                  className="oc-toolbar-chip oc-toolbar-send"
+                  size="icon"
+                  className="oc-toolbar-action-icon"
                   onClick={sendPrompt}
                   disabled={isSteering}
+                  aria-label={isAiResponding ? "Send steering message" : "Send"}
+                  title={isAiResponding ? "Send steering message" : "Send"}
                 >
                   {!isAiResponding ? (
-                    <Send className="h-3.5 w-3.5" />
+                    <Send className="h-4 w-4" />
                   ) : inputValue.trim().length > 0 ? (
-                    <AlertCircle className="h-3.5 w-3.5" />
+                    <AlertCircle className="h-4 w-4" />
                   ) : (
-                    <Send className="h-3.5 w-3.5" />
+                    <Send className="h-4 w-4" />
                   )}
-                  Send
                 </Button>
               ) : null}
             </div>
@@ -2829,7 +2830,6 @@ export function ThinkingLevelControl() {
         aria-label="Set thinking level"
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="opacity-60">Think</span>
           <span>{displayLabel(thinkingLevel)}</span>
         </div>
         <ChevronDown
@@ -4550,5 +4550,3 @@ export function SettingsPanel() {
 }
 
 export { ConfigSidebar } from './ConfigSidebar';
-
-

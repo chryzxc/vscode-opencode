@@ -147,6 +147,19 @@ body.vscode-high-contrast-light {
   color: color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent)) !important;
 }
 
+/* Readable accent-tinted action buttons across light/dark themes */
+.oc-accent-soft-action {
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 36%, var(--oc-border));
+  background: color-mix(in srgb, var(--oc-accent) 14%, var(--oc-panel) 86%);
+  color: color-mix(in srgb, var(--oc-text) 92%, var(--oc-accent));
+}
+
+.oc-accent-soft-action:hover {
+  background: color-mix(in srgb, var(--oc-accent) 22%, var(--oc-panel) 78%);
+  border-color: color-mix(in srgb, var(--oc-accent) 52%, var(--oc-border));
+  color: color-mix(in srgb, var(--oc-text) 96%, var(--oc-accent));
+}
+
 /* ── Reset ───────────────────────────────────────────────────────────────── */
 body {
   margin: 0;
@@ -565,6 +578,138 @@ body {
 .oc-queue-btn {
   border-color: var(--oc-border);
   transition: background 0.1s ease;
+}
+
+.oc-queue-popover {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0 0 0.35rem;
+  box-shadow: none;
+}
+
+.oc-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0.2rem 0.2rem;
+}
+
+.oc-queue-title {
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-queue-status {
+  color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
+}
+
+.oc-queue-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.3rem;
+  border-radius: 9999px;
+  background: color-mix(
+    in srgb,
+    var(--vscode-button-background, var(--oc-accent)) 22%,
+    transparent
+  );
+  color: var(--vscode-button-foreground, var(--oc-accent));
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.oc-queue-clear {
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
+  font-size: 11px;
+  border-radius: 0.45rem;
+  padding: 0.2rem 0.35rem;
+  cursor: pointer;
+}
+
+.oc-queue-clear:hover {
+  background: var(--vscode-list-hoverBackground, var(--oc-accent-soft));
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-queue-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.8rem;
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  background: transparent;
+}
+
+.oc-queue-item-text {
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-queue-item-meta {
+  color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
+}
+
+.oc-queue-index {
+  margin-top: 0.05rem;
+  display: inline-flex;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: color-mix(
+    in srgb,
+    var(--vscode-button-background, var(--oc-accent)) 34%,
+    var(--vscode-editorWidget-background, transparent) 66%
+  );
+  border: 1px solid color-mix(
+    in srgb,
+    var(--vscode-button-background, var(--oc-accent)) 38%,
+    transparent
+  );
+}
+
+.oc-queue-index span {
+  color: var(--vscode-editor-foreground, var(--oc-text)) !important;
+  opacity: 0.95;
+}
+
+.oc-queue-remove {
+  margin-top: 0.05rem;
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
+  border-radius: 0.5rem;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.92;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+  cursor: pointer;
+}
+
+.oc-queue-item:hover .oc-queue-remove {
+  opacity: 1;
+}
+
+.oc-queue-remove:hover {
+  background: var(--vscode-list-hoverBackground, var(--oc-accent-soft));
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-queue-remove:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* ── Progress Steps ──────────────────────────────────────────────────────── */
@@ -1709,9 +1854,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
-  padding: 0.625rem 0.75rem 0.75rem;
-  border-top: 1px solid var(--oc-border-soft);
-  background: linear-gradient(to bottom, var(--oc-bg-soft) / 40, var(--oc-bg));
+  padding: 0.75rem 0.75rem 0.75rem;
+  border-top: 1px solid color-mix(in srgb, var(--oc-border) 75%, transparent);
+  background: var(--oc-chat-bg);
 }
 
 /* Context/attachment chip rows */
@@ -1799,16 +1944,22 @@ body {
   display: flex;
   flex-direction: column;
   border-radius: 0.75rem;
-  border: 1.5px solid var(--oc-border);
-  background: var(--oc-panel-soft);
+  border: 1px solid color-mix(in srgb, var(--oc-border) 92%, transparent);
+  background: color-mix(in srgb, var(--oc-panel-soft) 88%, var(--oc-chat-bg) 12%);
   transition:
     border-color 0.2s,
     box-shadow 0.2s;
   overflow: visible;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
+    0 6px 18px color-mix(in srgb, black 22%, transparent);
 }
 .oc-input-box:focus-within {
-  border-color: var(--oc-accent);
+  border-color: color-mix(in srgb, var(--oc-accent) 28%, var(--oc-border) 72%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--oc-accent) 18%, transparent),
+    0 8px 22px color-mix(in srgb, black 25%, transparent);
 }
 
 /* Textarea inside the box */
@@ -1829,7 +1980,7 @@ body {
 }
 .oc-textarea::placeholder {
   color: var(--oc-text-muted);
-  opacity: 0.6;
+  opacity: 0.72;
 }
 
 /* File suggestions dropdown (appears above textarea) */
@@ -1879,38 +2030,45 @@ body {
 .oc-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0.25rem 0.5rem 0.375rem;
+  justify-content: flex-start;
+  padding: 0.3rem 0.55rem 0.42rem;
   gap: 0.375rem;
-  border-top: 1px solid var(--oc-border-soft, var(--oc-border));
-  background: linear-gradient(
-    to bottom,
-    var(--oc-panel-soft) / 50,
-    var(--oc-panel-soft) / 25
-  );
+  border-top: 1px solid color-mix(in srgb, var(--oc-border) 70%, transparent);
+  background: color-mix(in srgb, var(--oc-panel-soft) 92%, transparent);
 }
 
 .oc-toolbar-left {
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  flex-wrap: wrap;
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: fit-content;
+}
+
+.oc-toolbar-center {
+  display: flex;
+  align-items: center;
+  gap: 0.14rem;
+  flex: 0 0 auto;
+  min-width: fit-content;
+  justify-content: flex-start;
+  margin-left: 0.05rem;
 }
 
 .oc-toolbar-right {
   display: flex;
   align-items: center;
-  gap: 0.375rem;
+  gap: 0.45rem;
   margin-left: auto;
   flex-shrink: 0;
 }
 
 .oc-toolbar-chip {
-  min-height: 30px;
-  padding: 0.25rem 0.6rem !important;
+  min-height: 34px;
+  padding: 0.32rem 0.8rem !important;
   font-size: 11px;
+  border-radius: 9999px;
+  color: color-mix(in srgb, var(--oc-text-secondary) 90%, transparent);
 }
 
 .oc-toolbar-chip svg {
@@ -1918,8 +2076,20 @@ body {
   height: 12px;
 }
 
-.oc-toolbar-send {
-  min-width: 86px;
+.oc-toolbar-action-icon {
+  height: 42px;
+  width: 42px;
+  min-width: 42px;
+  border-radius: 9999px;
+  padding: 0 !important;
+}
+
+.oc-toolbar-context-ring {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 0.12rem;
+  opacity: 0.9;
 }
 
 /* Shared popover panel */

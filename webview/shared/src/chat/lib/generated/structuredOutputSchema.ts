@@ -39,7 +39,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; include full markdown in plan.content unless the file has already been written to disk), 'question' for user interactions with options, or 'progress_update' for execution steps.",
+      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it), 'question' for user interactions with options, or 'progress_update' for execution steps.",
     additionalProperties: false,
     required: ["responseType"],
     properties: {
@@ -47,7 +47,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "string",
         enum: ["message", "implementation_plan", "question", "progress_update"],
         description:
-          "Response type: 'message' for normal text, 'implementation_plan' for plans (must include plan.file), 'question' for user choices, 'progress_update' for steps",
+          "Response type: 'message' for normal text, 'implementation_plan' for plans (must include plan.file and ensure the file is created/writable), 'question' for user choices, 'progress_update' for steps",
       },
 
       message: {
@@ -63,10 +63,10 @@ export const structuredOutputSchema: StructuredOutputSchema = {
 
       plan: {
         type: "object",
-        description: "Implementation plan payload. For responseType='implementation_plan', include a full markdown filepath in plan.file and include full markdown in plan.content unless the file has already been written to disk by a tool/file edit.",
+        description: "Implementation plan payload. For responseType='implementation_plan', include a full markdown filepath in plan.file. The assistant should write that file to disk; if not yet written, include full markdown in plan.content so the extension can create it.",
         properties: {
           title: { type: "string", description: "Plan title" },
-          file: { type: "string", description: "Required for implementation_plan: full markdown file path (absolute or workspace-relative)" },
+          file: { type: "string", description: "Required for implementation_plan: full markdown file path (absolute or workspace-relative). This is the file that should be created/written." },
           content: {
             type: "string",
             description: "Full markdown plan body. Include this when the plan file has not already been written so the extension can persist it to plan.file.",
