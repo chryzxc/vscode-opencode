@@ -138,12 +138,6 @@
           "when": "editorHasSelection",
           "group": "opencode"
         }
-      ],
-      "commandPalette": [
-        {
-          "command": "opencode.restartServer",
-          "when": "opencode.enabled"
-        }
       ]
     },
     "configuration": {

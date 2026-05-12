@@ -1188,10 +1188,46 @@ body {
 
 /* ── Plan Card ───────────────────────────────────────────────────────────── */
 .plan-card {
-  border: 1px solid color-mix(in srgb, var(--oc-accent) 10%, transparent) !important;
-  background: color-mix(in srgb, var(--oc-accent) 4%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 22%, var(--oc-border)) !important;
+  background: color-mix(in srgb, var(--oc-panel) 86%, var(--oc-accent) 14%) !important;
   border-radius: 10px !important;
   padding: 12px 16px;
+}
+
+.plan-card-title {
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-accent));
+}
+
+.plan-card-file {
+  color: var(--oc-text-secondary);
+}
+
+.plan-status-badge {
+  border: 1px solid color-mix(in srgb, var(--oc-text) 30%, var(--oc-border));
+}
+
+.plan-status-badge-blue {
+  background: color-mix(in srgb, var(--oc-blue, #60a5fa) 20%, transparent);
+  border-color: color-mix(in srgb, var(--oc-blue, #60a5fa) 45%, var(--oc-border));
+  color: var(--oc-blue, #60a5fa);
+}
+
+.plan-status-badge-green {
+  background: color-mix(in srgb, var(--oc-green) 20%, transparent);
+  border-color: color-mix(in srgb, var(--oc-green) 45%, var(--oc-border));
+  color: var(--oc-green);
+}
+
+.plan-status-badge-yellow {
+  background: color-mix(in srgb, var(--oc-yellow) 20%, transparent);
+  border-color: color-mix(in srgb, var(--oc-yellow) 45%, var(--oc-border));
+  color: var(--oc-yellow);
+}
+
+.plan-status-badge-neutral {
+  background: color-mix(in srgb, var(--oc-text) 8%, transparent);
+  border-color: color-mix(in srgb, var(--oc-text) 28%, var(--oc-border));
+  color: var(--oc-text-secondary);
 }
 
 /* ── Plan button ─────────────────────────────────────────────────────────── */
@@ -1199,19 +1235,22 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border: 1px solid color-mix(in srgb, var(--oc-accent) 12%, transparent);
-  background: var(--oc-accent-soft);
-  color: var(--oc-accent);
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 36%, var(--oc-border));
+  background: color-mix(in srgb, var(--oc-accent) 14%, var(--oc-panel) 86%);
+  color: color-mix(in srgb, var(--oc-text) 90%, var(--oc-accent));
   border-radius: 6px;
-  padding: 3px 10px;
+  padding: 5px 10px;
   font-size: 11px;
-  font-weight: 500;
-  transition: background 0.1s ease;
+  font-weight: 600;
+  transition:
+    background 0.1s ease,
+    border-color 0.1s ease;
   cursor: pointer;
 }
 
 .oc-plan-btn:hover {
-  background: color-mix(in srgb, var(--oc-accent) 15%, transparent);
+  background: color-mix(in srgb, var(--oc-accent) 20%, var(--oc-panel) 80%);
+  border-color: color-mix(in srgb, var(--oc-accent) 48%, var(--oc-border));
 }
 
 /* ── Thinking Level ──────────────────────────────────────────────────────── */

@@ -3494,34 +3494,34 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   }
                 >
                   <div className="plan-card flex items-center justify-between gap-2">
-                    <div className="flex flex-col gap-0.5 min-w-0">
+                    <div className="plan-card-content flex flex-col gap-0.5 min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <div className="text-oc-xs font-semibold text-oc-text-soft tracking-normal font-medium">
+                        <div className="plan-card-title text-oc-xs font-semibold tracking-normal">
                           {plan.title || "Implementation Plan"}
                         </div>
                         {isRevisedPlan && (
-                          <span className="rounded bg-oc-blue/20 text-oc-blue px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          <span className="plan-status-badge plan-status-badge-blue rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
                             Revised
                           </span>
                         )}
                         {planStatus === "Executing" && (
-                          <span className="rounded bg-oc-green/20 text-oc-green px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          <span className="plan-status-badge plan-status-badge-green rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
                             Approved
                           </span>
                         )}
                         {planStatus === "Revision Requested" && (
-                          <span className="rounded bg-oc-yellow/20 text-oc-yellow px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          <span className="plan-status-badge plan-status-badge-yellow rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
                             Revision Requested
                           </span>
                         )}
                         {planStatus === "Draft" && (
-                          <span className="rounded border border-oc-border-soft oc-text-secondary px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                          <span className="plan-status-badge plan-status-badge-neutral rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
                             Draft
                           </span>
                         )}
                       </div>
                       {plan.file ? (
-                        <div className="flex items-center gap-1.5 text-[11px] font-medium oc-text-secondary">
+                        <div className="plan-card-file flex items-center gap-1.5 text-[11px] font-medium">
                           <FileIcon filePath={plan.file} />
                           <span className="truncate" title={plan.file}>{plan.file}</span>
                         </div>

@@ -3017,6 +3017,12 @@ export class ChatViewProvider
           await this.quotaService.refreshQuota();
           break;
         }
+        case "restartServer": {
+          await this.serverManager.restartServer();
+          await this.handleGetLspStatus().catch(() => { });
+          await this.handleGetMcpStatus().catch(() => { });
+          break;
+        }
         case "setThinkingLevel": {
           const level = message.level as string | undefined;
           if (level) {

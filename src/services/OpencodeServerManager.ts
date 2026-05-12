@@ -164,6 +164,26 @@ export class OpencodeServerManager {
    */
   constructor(private context: vscode.ExtensionContext) { }
 
+  private stopCurrentServer(): void {
+    this.startupPromise = null;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    if (this.serverProcess) {
+      log.info("Stopping OpenCode server");
+      this.terminateProcessTree(this.serverProcess);
+      this.serverProcess = null;
+    }
+
+    this.client = null;
+    this.port = 0;
+    void this.persistManagedPort(0);
+    this.setStatus("idle");
+  }
+
   private formatDetailedError(
     error: unknown,
     recentOutput?: string,
@@ -1225,5 +1245,11 @@ export class OpencodeServerManager {
       log.error("Failed to compact session", { sessionId, error });
       throw error;
     }
+  }
+
+  async restartServer(): Promise<OpencodeClient> {
+    this.isDisposed = false;
+    this.stopCurrentServer();
+    return this.ensureRunning();
   }
 }

@@ -25,7 +25,6 @@
  */
 
 import * as vscode from "vscode";
-import * as cp from "child_process";
 import { OpencodeServerManager } from "./services/OpencodeServerManager";
 import { SessionService } from "./services/SessionService";
 import { ChatViewProvider } from "./providers/ChatViewProvider";
@@ -501,14 +500,19 @@ export async function activate(context: vscode.ExtensionContext) {
     // ============================================================================
     context.subscriptions.push(
       vscode.commands.registerCommand("opencode.restartServer", async () => {
-        // Kill existing server processes
-        cp.exec('taskkill //F //IM opencode.exe', (error: any) => {
-          if (error && !error.message.includes('not found')) {
-            log.error('Failed to kill server', {}, error);
-          }
-          // Server will auto-restart on next command
-          vscode.window.showInformationMessage('OpenCode server will restart on next message');
-        });
+        try {
+          await serverManager.restartServer();
+          vscode.window.showInformationMessage("OpenCode server restarted");
+        } catch (error) {
+          log.error(
+            "Failed to restart OpenCode server",
+            { error },
+            error instanceof Error ? error : undefined,
+          );
+          vscode.window.showErrorMessage(
+            `OpenCode server restart failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       }),
     );
 
