@@ -792,8 +792,8 @@ export class ChatViewProvider
         : mode;
 
     // Interactive answer submits are real user turns. The previous question
-    // turn may still be marked as processing while it waits for input, but
-    // aborting it creates an unnecessary MessageAbortedError card in chat.
+    // turn should already be finalized when the blocking question event is
+    // streamed, so answer submits can bypass queue/steer without aborting it.
     // Other force-send paths can still stop an active request before sending.
     if (
       mode === "send-now" &&
@@ -2532,10 +2532,8 @@ export class ChatViewProvider
               images: message.images,
               agent: message.agent,
               // Interactive popover submits should behave like a normal direct
-              // user send, even if session processing flags are stale from the
-              // preceding question turn. This prevents automatic abort banners
-              // ("Response stopped by user") when the model is simply waiting
-              // for user input.
+              // user send, even if stale processing flags briefly linger from
+              // the preceding question turn.
               forceSendNow: isInteractiveSubmit,
               avoidAbortIfProcessing: isInteractiveSubmit,
             });
@@ -3374,7 +3372,8 @@ export class ChatViewProvider
       const enrichedEvent = this.enrichStreamEvent(event);
       this.logStreamEventDiagnostics(event, enrichedEvent);
 
-      if (this.hasBlockingInteractiveInStreamPayload(enrichedEvent)) {
+      const hasBlockingInteractive = this.hasBlockingInteractiveInStreamPayload(enrichedEvent);
+      if (hasBlockingInteractive) {
         this.awaitingInteractiveAnswer = true;
       }
 
@@ -3487,10 +3486,18 @@ export class ChatViewProvider
         type: "streamEvent",
         event: { ...enrichedEvent, sessionId: resolvedSessionId },
       });
+      if (hasBlockingInteractive && resolvedSessionId) {
+        this.processingSessionIds.delete(resolvedSessionId);
+        if (this.activeStreamSessionId === resolvedSessionId) {
+          this.activeStreamSessionId = undefined;
+        }
+        this.sendProcessingSessionsUpdate();
+      }
       if (this.shouldVerboseStreamDebug()) {
         this.logger.debug("streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
           kind: (enrichedEvent as any)?.structured?.kind || "unknown",
+          finalizedForInteractive: hasBlockingInteractive,
         });
       }
 
@@ -4434,17 +4441,108 @@ export class ChatViewProvider
         type === "question" ||
         type === "confirm" ||
         type === "quick_actions" ||
-        type === "quick-actions" ||
-        type === "interactive"
+        type === "quick-actions"
       );
     };
+    const hasChoiceList = (value: unknown, minimum = 1): boolean =>
+      Array.isArray(value) && value.length >= minimum;
+    const getToolQuestionText = (questionLike: Record<string, unknown>): string | undefined =>
+      this.firstNonEmptyString(
+        questionLike.question,
+        questionLike.prompt,
+        questionLike.message,
+        questionLike.text,
+        questionLike.title,
+      );
+    const hasStructuredQuestionText = (
+      questionLike: Record<string, unknown>,
+    ): boolean =>
+      !!this.firstNonEmptyString(questionLike.question, questionLike.text);
+    const isRenderableStructuredInteractiveEvent = (value: unknown): boolean => {
+      const questionLike = this.asRecord(value);
+      if (!questionLike) {
+        return false;
+      }
+      const type = this.firstNonEmptyString(questionLike.type)?.toLowerCase();
+      if (type === "confirm") {
+        return !!this.firstNonEmptyString(questionLike.question);
+      }
+      if (type === "quick_actions" || type === "quick-actions") {
+        return hasChoiceList(questionLike.actions);
+      }
+      if (type === "question") {
+        return (
+          !!this.firstNonEmptyString(questionLike.question) &&
+          hasChoiceList(questionLike.options, 2)
+        );
+      }
+      return false;
+    };
+    const isRenderableStructuredQuestion = (value: unknown): boolean => {
+      const questionLike = this.asRecord(value);
+      if (!questionLike || !hasStructuredQuestionText(questionLike)) {
+        return false;
+      }
+      const type =
+        this.firstNonEmptyString(questionLike.type)?.toLowerCase() || "question";
+      if (type === "confirm") {
+        return true;
+      }
+      if (type === "quick_actions" || type === "quick-actions") {
+        return hasChoiceList(questionLike.actions);
+      }
+      if (type === "message") {
+        return false;
+      }
+      return hasChoiceList(questionLike.options, 2);
+    };
+    const normalizeToolChoices = (...values: unknown[]): unknown[] => {
+      for (const value of values) {
+        if (Array.isArray(value)) {
+          return value;
+        }
+      }
+      return [];
+    };
+    const isRenderableToolQuestion = (value: unknown): boolean => {
+      const questionLike = this.asRecord(value);
+      if (!questionLike) {
+        return false;
+      }
+      const type = this.firstNonEmptyString(questionLike.type)?.toLowerCase();
+      if (type === "message") {
+        return false;
+      }
+      if (type === "quick_actions" || type === "quick-actions") {
+        return normalizeToolChoices(
+          questionLike.actions,
+          questionLike.options,
+        ).length > 0;
+      }
 
-    const structured = this.asRecord(eventRec.structuredOutput);
-    if (structured) {
-      if (isBlockingType(structured.responseType)) {
+      const questionText = getToolQuestionText(questionLike);
+      if (!questionText) {
+        return false;
+      }
+      if (type === "confirm") {
         return true;
       }
 
+      const options = normalizeToolChoices(
+        questionLike.options,
+        questionLike.choices,
+        questionLike.answers,
+        questionLike.actions,
+      );
+      const allowsCustomInput =
+        questionLike.allowCustomInput === true ||
+        questionLike.allow_custom_input === true ||
+        options.length === 0;
+
+      return options.length >= 2 || allowsCustomInput;
+    };
+    const structured = this.asRecord(eventRec.structuredOutput);
+    if (structured) {
       const interactiveEvents = Array.isArray(structured.interactiveEvents)
         ? structured.interactiveEvents
         : [];
@@ -4452,7 +4550,10 @@ export class ChatViewProvider
         const hasBlockingInteractive = interactiveEvents.some((item) => {
           const rec = this.asRecord(item);
           if (!rec) return false;
-          return isBlockingType(rec.type) || isBlockingType(rec.kind);
+          return (
+            isBlockingType(rec.type) &&
+            isRenderableStructuredInteractiveEvent(rec)
+          );
         });
         if (hasBlockingInteractive) {
           return true;
@@ -4460,7 +4561,7 @@ export class ChatViewProvider
       }
 
       const question = this.asRecord(structured.question);
-      if (question && (!question.type || isBlockingType(question.type))) {
+      if (question && isRenderableStructuredQuestion(question)) {
         return true;
       }
     }
@@ -4474,13 +4575,10 @@ export class ChatViewProvider
     }
 
     const toolName = this.firstNonEmptyString(part.tool)?.toLowerCase() || "";
-    if (
+    const isQuestionTool =
       toolName === "question" ||
       toolName.includes("request_user_input") ||
-      toolName.includes("request-user-input")
-    ) {
-      return true;
-    }
+      toolName.includes("request-user-input");
 
     const state = this.asRecord(part.state);
     const input =
@@ -4492,40 +4590,25 @@ export class ChatViewProvider
       return false;
     }
 
-    if (
-      Array.isArray(input.questions) ||
-      Array.isArray(input.items) ||
-      Array.isArray(input.prompts) ||
-      Array.isArray(input.events)
-    ) {
-      return true;
+    if (isQuestionTool) {
+      const inputCollections = [
+        input.questions,
+        input.items,
+        input.prompts,
+        input.events,
+      ];
+      if (
+        inputCollections.some(
+          (collection) =>
+            Array.isArray(collection) &&
+            collection.some((item) => isRenderableToolQuestion(item)),
+        )
+      ) {
+        return true;
+      }
     }
 
-    const questionLike = this.asRecord(input.question) || input;
-    const hasQuestionText = !!this.firstNonEmptyString(
-      questionLike.question,
-      questionLike.prompt,
-      questionLike.message,
-      questionLike.content,
-      questionLike.text,
-      questionLike.title,
-    );
-    const hasChoices =
-      Array.isArray(questionLike.options) ||
-      Array.isArray(questionLike.choices) ||
-      Array.isArray(questionLike.answers) ||
-      Array.isArray(questionLike.actions);
-    const hasConfirmControls = !!this.firstNonEmptyString(
-      questionLike.confirmLabel,
-      questionLike.confirm_text,
-      questionLike.cancelLabel,
-      questionLike.cancel_text,
-    );
-    const allowsCustomInput =
-      questionLike.allowCustomInput === true ||
-      questionLike.allow_custom_input === true;
-
-    return hasQuestionText && (hasChoices || hasConfirmControls || allowsCustomInput);
+    return isQuestionTool && isRenderableToolQuestion(this.asRecord(input.question) || input);
   }
 
   private collectErrorMessageCandidates(

@@ -98,6 +98,47 @@ test('provider suppresses timeout errors while awaiting interactive answers', ()
   );
 });
 
+test('provider finalizes question stream turns before waiting for popover answers', () => {
+  assert.match(
+    providerSource,
+    /const hasBlockingInteractive = this\.hasBlockingInteractiveInStreamPayload\(enrichedEvent\);[\s\S]*if \(hasBlockingInteractive\) \{[\s\S]*this\.awaitingInteractiveAnswer = true;/,
+    'provider should classify blocking question stream payloads explicitly',
+  );
+  assert.match(
+    providerSource,
+    /this\.view\?\.webview\.postMessage\(\{[\s\S]*type:\s*"streamEvent"[\s\S]*if \(hasBlockingInteractive && resolvedSessionId\) \{[\s\S]*this\.processingSessionIds\.delete\(resolvedSessionId\)[\s\S]*this\.sendProcessingSessionsUpdate\(\);/s,
+    'provider should forward the question event, then mark that assistant turn as no longer processing',
+  );
+});
+
+test('provider does not finalize empty question placeholders as completed turns', () => {
+  const blockingDetectorBody = extractFunctionBody(
+    providerSource,
+    'private hasBlockingInteractiveInStreamPayload(',
+  );
+
+  assert.match(
+    blockingDetectorBody,
+    /const isRenderableStructuredInteractiveEvent = \(value: unknown\): boolean => \{[\s\S]*hasChoiceList\(questionLike\.options,\s*2\)/s,
+    'structured interactive question detection should match the webview renderer and require two options',
+  );
+  assert.match(
+    blockingDetectorBody,
+    /const isRenderableToolQuestion = \(value: unknown\): boolean => \{[\s\S]*options\.length === 0[\s\S]*return options\.length >= 2 \|\| allowsCustomInput;/s,
+    'tool-question detection should match the webview renderer and allow open-ended custom input prompts',
+  );
+  assert.doesNotMatch(
+    blockingDetectorBody,
+    /toolName === "question"[\s\S]{0,240}return true;/,
+    'question tool name alone should not finalize the assistant turn before the prompt payload arrives',
+  );
+  assert.match(
+    blockingDetectorBody,
+    /collection\.some\(\(item\) => isRenderableToolQuestion\(item\)\)/,
+    'question input collections should finalize only when at least one item is renderable',
+  );
+});
+
 test('frontend normalizes and stores interactive events', () => {
   assert.match(handlerSource, /toInteractiveEvents\(/, 'message handler should map structured output to interactive events');
   assert.match(handlerSource, /SET_INTERACTIVE_EVENTS/, 'message handler should update interactive event state');
