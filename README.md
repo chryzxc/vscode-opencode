@@ -1,18 +1,39 @@
 # OpenCode VS Code Extension
 
-A VS Code extension that wraps the [OpenCode](https://opencode.ai) AI coding assistant in a rich, IDE-native experience — with implementation planning, real-time streaming, subagent orchestration, quota monitoring, and a full-featured React chat panel.
+Bring [OpenCode](https://opencode.ai) into VS Code with a dedicated chat panel, implementation planning, live streaming, subagent tracking, quota visibility, and persistent sessions.
+
+Requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be installed locally.
 
 ---
 
 > [!IMPORTANT]
 > **Disclaimer:** This extension is an independent personal project and is **not affiliated with, endorsed by, or maintained by OpenCode or its creators**.
 
-> [!NOTE]
-> Marketplace publishing, releases, and support for this extension are managed by the project author (`chryzxc`) only.
+## Why Install This
+
+If you already use OpenCode in the terminal, this extension gives you a more integrated VS Code workflow:
+
+- Chat with OpenCode in a dedicated sidebar instead of juggling terminal sessions
+- Generate and review `implementation_plan.md` files before code changes
+- Track subagents, quotas, MCP status, LSP status, and session stats in one UI
+- Keep persistent session history inside VS Code
+- Use file references, image attachments, slash-command skills, and quick session controls without leaving the editor
+
+## Quick Start
+
+1. Install the [OpenCode CLI](https://github.com/anomalyco/opencode):
+   ```bash
+   curl -fsSL https://opencode.ai/install | bash
+   ```
+2. Connect at least one provider in OpenCode:
+   ```bash
+   opencode
+   /connect
+   ```
+3. Install this extension in VS Code.
+4. Open the chat with `OpenCode: Focus Chat`.
 
 ## Screenshots & GIFs
-
-This repository is public, so relative image links from `./assets/` render correctly on GitHub and are suitable for Marketplace publishing.
 
 ### Demo GIF
 
@@ -36,6 +57,8 @@ This repository is public, so relative image links from `./assets/` render corre
 
 ## Table of Contents
 
+- [Why Install This](#why-install-this)
+- [Quick Start](#quick-start)
 - [Overview](#overview)
 - [Features](#features)
 - [Screenshots & GIFs](#screenshots--gifs)
@@ -57,12 +80,11 @@ This repository is public, so relative image links from `./assets/` render corre
 
 ## Overview
 
-This extension provides a VS Code-native UI on top of the OpenCode runtime. It communicates with the local OpenCode server over HTTP using the `@opencode-ai/sdk`, streams events in real time via SSE, and renders everything in a React-based webview with Tailwind CSS styling.
+This extension adds a VS Code-native interface on top of the local OpenCode runtime. It talks to the OpenCode server through `@opencode-ai/sdk`, streams activity over SSE, and renders the chat experience in a React webview.
 
-> [!IMPORTANT]
-> This repository is a personal integration project. It is not an official OpenCode client.
+It is built for people who want OpenCode’s agent workflow without leaving the editor.
 
-Key differentiators over a plain terminal OpenCode workflow:
+What it adds beyond a terminal-only setup:
 
 - **Implementation Plan workflow** — AI generates a structured `implementation_plan.md` before touching any code; plans are parsed and rendered interactively
 - **Subagent orchestration UI** — background tasks are tracked, rendered inline as cards, and inspectable in a detail modal
@@ -81,11 +103,7 @@ Key differentiators over a plain terminal OpenCode workflow:
 - Copy message content to clipboard
 - Image attachments and inline image preview modal
 - Contiguous message grouping for visual clarity
-- **Unified error display** with specific error messages from the API:
-  - **API Errors** (Red): Raw errors from API responses (e.g., "Token refresh failed: 401")
-  - **Timeout Errors** (Orange): Request timeout messages with retry option
-  - **Structured Output Errors** (Blue): Model compatibility issues
-  - All errors include appropriate icons and actionable retry buttons
+- Unified error cards for API failures, timeouts, and structured-output compatibility issues
 
 ### Implementation Planning
 
@@ -93,7 +111,7 @@ Key differentiators over a plain terminal OpenCode workflow:
 - "View Implementation Plan" button appears on every AI response that generated a plan
 - Dedicated plan viewer (`PlanViewProvider`) with interactive checklist tracking
 - Plan can be commented on, revised, and then executed
-- **Interactive plan editing workflow** inspired by Antigravity-style planning loops (review -> revise -> proceed)
+- Interactive review loop for revising a plan before execution
 
 ### Agents & Skills
 
@@ -107,7 +125,6 @@ Key differentiators over a plain terminal OpenCode workflow:
 - Active task panel with live status dots and step progress
 - Expandable subagent detail modal with full timeline, thinking events, and tool calls
 - Subagent cards rendered inline inside assistant messages
-- Dedicated subagent UI for monitoring parallel task execution and detailed per-subagent inspection
 
 ### Interactive Q&A Flow
 
@@ -128,7 +145,6 @@ Key differentiators over a plain terminal OpenCode workflow:
 - `QuotaMonitor` panel in the right sidebar with usage bars and projected monthly consumption
 - `RequestBudgeter` calculates a daily request allowance to last the full billing month
 - Configurable warning thresholds and optional hard enforcement
-- Live quota status monitor for rapid provider/account health checks while working
 
 ### Plugin Ecosystem Support
 
@@ -151,6 +167,13 @@ Key differentiators over a plain terminal OpenCode workflow:
 - Auto-reconnect with 5-second back-off on connection loss
 - AbortController cancellation on stop/new session
 - Stop Request button to interrupt any in-flight AI response
+
+### Built for Daily Use
+
+- Keyboard shortcuts for focus, new session, file reference insertion, and sending selections
+- Persistent sessions across restarts
+- Fast access from the Activity Bar and Command Palette
+- Designed around OpenCode’s local CLI workflow rather than a separate hosted chat product
 
 ---
 
@@ -220,10 +243,11 @@ Key differentiators over a plain terminal OpenCode workflow:
 
 1. **Node.js** ≥ 18
 2. **VS Code** ≥ 1.85.0
-3. **OpenCode installed on your device** (required runtime):
+3. **OpenCode CLI installed on your device** (required runtime). Repository: [anomalyco/opencode](https://github.com/anomalyco/opencode)
    ```bash
-   npm install -g opencode
+   curl -fsSL https://opencode.ai/install | bash
    ```
+   You can also install it with a package manager such as `brew install anomalyco/tap/opencode` or `npm i -g opencode-ai@latest`.
 4. Configure at least one AI provider in OpenCode:
    ```bash
    opencode
@@ -234,11 +258,13 @@ Key differentiators over a plain terminal OpenCode workflow:
 
 ## Installation
 
+This extension depends on the local OpenCode CLI runtime.
+
 ### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/vscode-opencode.git
+git clone https://github.com/chryzxc/vscode-opencode.git
 cd vscode-opencode
 
 # Install root dependencies
@@ -269,7 +295,7 @@ npm run watch                  # extension TypeScript (esbuild)
 npm run webview:watch          # React webview (in a second terminal)
 ```
 
-After making changes:
+During development:
 
 - **Extension code** (`src/`): esbuild recompiles automatically; reload the Extension Host with **Ctrl+R** / **Cmd+R** inside the host window, or run the "Developer: Reload Window" command.
 - **Webview code** (`webview/shared/src/`): Vite/esbuild rebuilds automatically; reload the webview by running `opencode.focus` again or reloading the window.
@@ -347,11 +373,16 @@ Access via **File → Preferences → Settings → OpenCode** or add to `setting
 
 ### Server
 
-| Setting                    | Type      | Default | Description                                                  |
-| -------------------------- | --------- | ------- | ------------------------------------------------------------ |
-| `opencode.serverPort`      | `number`  | `0`     | Port for the OpenCode server. `0` = auto-assign a free port. |
-| `opencode.autoStart`       | `boolean` | `true`  | Start the server automatically when the extension activates. |
-| `opencode.persistSessions` | `boolean` | `true`  | Persist chat sessions across VS Code restarts.               |
+| Setting                            | Type      | Default | Description                                                            |
+| ---------------------------------- | --------- | ------- | ---------------------------------------------------------------------- |
+| `opencode.serverPort`              | `number`  | `0`     | Port for the OpenCode server. `0` auto-assigns a free port.            |
+| `opencode.autoStart`               | `boolean` | `true`  | Start the server automatically when the extension activates.           |
+| `opencode.persistSessions`         | `boolean` | `true`  | Persist chat sessions across VS Code restarts.                         |
+| `opencode.autoCompact`             | `boolean` | `true`  | Compact a session automatically when context usage nears the threshold. |
+| `opencode.autoCompactThreshold`    | `number`  | `0.9`   | Fraction of model context usage that triggers auto-compaction.         |
+| `opencode.autoGenerateSessionTitle` | `boolean` | `true` | Generate a session title from the first user message.                  |
+| `opencode.requestTimeout`          | `number`  | `120000`| Request timeout in milliseconds.                                       |
+| `opencode.complexQueryMultiplier`  | `number`  | `1.5`   | Timeout multiplier for prompts with heavier context.                   |
 
 ### Logging
 
@@ -370,6 +401,9 @@ Access via **File → Preferences → Settings → OpenCode** or add to `setting
   "opencode.serverPort": 0,
   "opencode.autoStart": true,
   "opencode.persistSessions": true,
+  "opencode.autoCompact": true,
+  "opencode.autoCompactThreshold": 0.9,
+  "opencode.requestTimeout": 120000,
   "opencode.logging.level": "debug",
   "opencode.logging.enableFile": true
 }
@@ -437,6 +471,8 @@ vscode-opencode/
 ---
 
 ## Core Services
+
+These are the main extension-host services worth knowing when you need to trace behavior or make changes.
 
 ### `OpencodeServerManager`
 
@@ -630,7 +666,7 @@ See [LOGGING.md](LOGGING.md) for complete documentation including:
 
 ## Testing
 
-Tests use Node's built-in test runner (`.mjs` files, no additional framework required):
+Most regression coverage uses Node's built-in test runner:
 
 ```bash
 # Run all tests
@@ -640,7 +676,7 @@ npm test
 node --test tests/plan-parser.test.mjs
 ```
 
-The test suite covers:
+The suite covers:
 
 - Unit tests for services (plan parsing, structured output validation, quota logic, subagent tracking)
 - Integration tests for message streaming and session CRUD
@@ -648,7 +684,7 @@ The test suite covers:
 
 ## Regression Guardrails
 
-Use the built-in guard scripts to catch regressions before push:
+Use the built-in guard scripts before pushing:
 
 ```bash
 # one-time setup: activate repo-managed git hooks
@@ -672,11 +708,11 @@ What this enforces:
 
 ## Contributing
 
-1. Fork the repo and create a feature branch
-2. Follow the rules in [AGENTS.md](AGENTS.md) — core features are protected
-3. Run `npm run structured-output:check` before committing if you changed the output contract
-4. Run `npm test` and ensure all tests pass
-5. Open a pull request with a clear description of the change
+1. Fork the repo and create a feature branch.
+2. Follow the rules in [AGENTS.md](AGENTS.md), especially around protected UX contracts.
+3. Run `npm run structured-output:check` if you changed the structured-output contract.
+4. Run `npm test` and any relevant verification commands before opening a PR.
+5. Open a pull request with a clear summary of the change.
 
 ### Core Feature Protection
 
