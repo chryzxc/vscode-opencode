@@ -1,12 +1,14 @@
 # OpenCode VS Code Extension
 
 ### Demo: Main Conversation Flow
+
 ![Main conversation flow demo](./assets/demo.gif)
 
 ### Demo: Interactive Plan Viewer
+
 ![Interactive plan viewer demo](./assets/demo-1.gif)
 
-Bring [OpenCode](https://opencode.ai) into VS Code with a dedicated chat panel, implementation planning, live streaming, subagent tracking, quota visibility, and persistent sessions.
+Use [OpenCode](https://opencode.ai) inside VS Code with AI chat, interactive implementation plans and questions, coding agents, subagent tracking, session history, and quota monitoring.
 
 Requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be installed locally.
 
@@ -39,15 +41,7 @@ If you already use OpenCode in the terminal, this extension gives you a more int
 3. Install this extension in VS Code.
 4. Open the chat with `OpenCode: Focus Chat`.
 
-## Screenshots & GIFs
-
-### Demo
-
-#### Main Conversation Flow
-![Main conversation flow demo](./assets/demo.gif)
-
-#### Interactive Plan Viewer
-![Interactive plan viewer demo](./assets/demo-1.gif)
+## Screenshots
 
 ### Conversation View
 
@@ -383,16 +377,16 @@ Access via **File → Preferences → Settings → OpenCode** or add to `setting
 
 ### Server
 
-| Setting                            | Type      | Default | Description                                                            |
-| ---------------------------------- | --------- | ------- | ---------------------------------------------------------------------- |
-| `opencode.serverPort`              | `number`  | `0`     | Port for the OpenCode server. `0` auto-assigns a free port.            |
-| `opencode.autoStart`               | `boolean` | `true`  | Start the server automatically when the extension activates.           |
-| `opencode.persistSessions`         | `boolean` | `true`  | Persist chat sessions across VS Code restarts.                         |
-| `opencode.autoCompact`             | `boolean` | `true`  | Compact a session automatically when context usage nears the threshold. |
-| `opencode.autoCompactThreshold`    | `number`  | `0.9`   | Fraction of model context usage that triggers auto-compaction.         |
-| `opencode.autoGenerateSessionTitle` | `boolean` | `true` | Generate a session title from the first user message.                  |
-| `opencode.requestTimeout`          | `number`  | `120000`| Request timeout in milliseconds.                                       |
-| `opencode.complexQueryMultiplier`  | `number`  | `1.5`   | Timeout multiplier for prompts with heavier context.                   |
+| Setting                             | Type      | Default  | Description                                                             |
+| ----------------------------------- | --------- | -------- | ----------------------------------------------------------------------- |
+| `opencode.serverPort`               | `number`  | `0`      | Port for the OpenCode server. `0` auto-assigns a free port.             |
+| `opencode.autoStart`                | `boolean` | `true`   | Start the server automatically when the extension activates.            |
+| `opencode.persistSessions`          | `boolean` | `true`   | Persist chat sessions across VS Code restarts.                          |
+| `opencode.autoCompact`              | `boolean` | `true`   | Compact a session automatically when context usage nears the threshold. |
+| `opencode.autoCompactThreshold`     | `number`  | `0.9`    | Fraction of model context usage that triggers auto-compaction.          |
+| `opencode.autoGenerateSessionTitle` | `boolean` | `true`   | Generate a session title from the first user message.                   |
+| `opencode.requestTimeout`           | `number`  | `120000` | Request timeout in milliseconds.                                        |
+| `opencode.complexQueryMultiplier`   | `number`  | `1.5`    | Timeout multiplier for prompts with heavier context.                    |
 
 ### Logging
 
