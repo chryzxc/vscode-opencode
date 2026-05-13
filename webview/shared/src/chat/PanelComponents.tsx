@@ -89,22 +89,27 @@ function CircularProgress({
   size?: number;
   strokeWidth?: number;
 }) {
+  const normalizedPct = Math.max(0, Math.min(100, pct));
+  const visiblePct = normalizedPct === 0 ? 2 : normalizedPct;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (pct / 100) * circumference;
+  const offset = circumference - (visiblePct / 100) * circumference;
+  const trackColor = "color-mix(in srgb, var(--oc-text) 30%, transparent)";
 
   // Determine color based on pressure
   const strokeColor =
-    pct > 90
+    normalizedPct > 90
       ? "var(--oc-red)"
-      : pct > 75
+      : normalizedPct > 75
         ? "var(--oc-yellow)"
-        : "var(--oc-accent)";
+        : "var(--vscode-charts-blue, color-mix(in srgb, var(--oc-text) 72%, var(--oc-accent)))";
 
   return (
     <div
       className="relative flex items-center justify-center"
       style={{ width: size, height: size }}
+      title={`Context usage: ${Math.round(normalizedPct)}%`}
+      aria-label={`Context usage: ${Math.round(normalizedPct)}%`}
     >
       <svg
         width={size}
@@ -118,9 +123,8 @@ function CircularProgress({
           cy={size / 2}
           r={radius}
           fill="transparent"
-          stroke="currentColor"
+          stroke={trackColor}
           strokeWidth={strokeWidth}
-          className="text-oc-border-soft opacity-20"
         />
         {/* Progress fill */}
         <circle
@@ -133,7 +137,10 @@ function CircularProgress({
           strokeDasharray={circumference}
           strokeDashoffset={offset}
           strokeLinecap="round"
-          style={{ color: strokeColor }}
+          style={{
+            color: strokeColor,
+            opacity: normalizedPct === 0 ? 0.55 : 1,
+          }}
           className="transition-all duration-700 ease-in-out"
         />
       </svg>
@@ -297,7 +304,7 @@ export function StickyHeader() {
       {/* Left side: Context indicator + Session title */}
       <div className={`oc-header-left flex items-center min-w-0 ${hasContextUsage ? "gap-2" : "gap-0"}`}>
         {hasContextUsage ? (
-          <CircularProgress pct={contextUsagePct} size={24} strokeWidth={3} />
+          <CircularProgress pct={contextUsagePct} size={18} strokeWidth={2.5} />
         ) : null}
         <span className="oc-title text-sm font-medium truncate">{sessionTitle}</span>
       </div>
@@ -2695,9 +2702,6 @@ export function InputWrapper() {
               <AgentDropdown />
               <ModelDropdown />
               <ThinkingLevelControl />
-              <div className="oc-toolbar-context-ring" title={`Context: ${contextUsagePct ?? 0}%`}>
-                <CircularProgress pct={contextUsagePct ?? 0} size={14} strokeWidth={2.1} />
-              </div>
             </div>
 
             {/* Right: action buttons */}
