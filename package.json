@@ -1,7 +1,7 @@
 {
   "name": "opencode-vscode-chryzxc",
   "displayName": "OpenCode for VS Code",
-  "description": "Use OpenCode inside VS Code with AI chat, implementation plans, coding agents, subagent tracking, session history, and quota monitoring.",
+  "description": "OpenCode VS Code extension with AI chat, interactive implementation plans and questions, coding agents, subagent tracking, session history, and quota monitoring.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -28,6 +28,8 @@
     "vscode",
     "vs code",
     "visual studio code",
+    "vscode extension",
+    "opencode vscode",
     "ai",
     "ai coding",
     "coding assistant",

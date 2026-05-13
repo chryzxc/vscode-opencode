@@ -8,7 +8,7 @@
 
 ![Interactive plan viewer demo](./assets/demo-1.gif)
 
-Use [OpenCode](https://opencode.ai) inside VS Code with AI chat, interactive implementation plans and questions, coding agents, subagent tracking, session history, and quota monitoring.
+The [OpenCode](https://opencode.ai) VS Code extension brings OpenCode into Visual Studio Code with AI chat, interactive implementation plans and questions, coding agents, subagent tracking, session history, and quota monitoring.
 
 Requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be installed locally.
 
