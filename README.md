@@ -33,13 +33,8 @@ If you already use OpenCode in the terminal, this extension gives you a more int
    ```bash
    curl -fsSL https://opencode.ai/install | bash
    ```
-2. Connect at least one provider in OpenCode:
-   ```bash
-   opencode
-   /connect
-   ```
-3. Install this extension in VS Code.
-4. Open the chat with `OpenCode: Focus Chat`.
+2. Install this extension in VS Code.
+3. Open the chat from the Activity Bar using the OpenCode icon.
 
 ## Screenshots
 
@@ -65,13 +60,12 @@ If you already use OpenCode in the terminal, this extension gives you a more int
 - [Quick Start](#quick-start)
 - [Overview](#overview)
 - [Features](#features)
-- [Screenshots & GIFs](#screenshots--gifs)
+- [Screenshots](#screenshots)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Development](#development)
 - [Usage](#usage)
-- [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
 - [Core Services](#core-services)
@@ -176,7 +170,7 @@ What it adds beyond a terminal-only setup:
 
 - Keyboard shortcuts for focus, new session, file reference insertion, and sending selections
 - Persistent sessions across restarts
-- Fast access from the Activity Bar and Command Palette
+- Fast access from the Activity Bar
 - Designed around OpenCode’s local CLI workflow rather than a separate hosted chat product
 
 ---
@@ -252,11 +246,6 @@ What it adds beyond a terminal-only setup:
    curl -fsSL https://opencode.ai/install | bash
    ```
    You can also install it with a package manager such as `brew install anomalyco/tap/opencode` or `npm i -g opencode-ai@latest`.
-4. Configure at least one AI provider in OpenCode:
-   ```bash
-   opencode
-   /connect
-   ```
 
 ---
 
@@ -326,7 +315,7 @@ npm run structured-output:check  # verify the generated file is up to date (CI)
 | Send selected code    | `Ctrl+L` / `Cmd+L`                 |
 | Insert file reference | `Ctrl+Alt+K` / `Cmd+Alt+K`         |
 
-You can also open the panel from the Activity Bar (the OpenCode icon) or via the Command Palette (`Ctrl+Shift+P` → `OpenCode: Focus Chat`).
+Open the panel from the Activity Bar (the OpenCode icon).
 
 ### Sending a Message
 
@@ -355,19 +344,6 @@ Type your prompt in the text area and press **Enter** (or **Shift+Enter** for a 
 ### Stopping a Response
 
 Click the **Stop** button (square icon) in the chat header at any time to abort the current AI request.
-
----
-
-## Keyboard Shortcuts
-
-| Command               | Windows / Linux  | macOS           |
-| --------------------- | ---------------- | --------------- |
-| Focus chat            | `Ctrl+Esc`       | `Cmd+Esc`       |
-| New session           | `Ctrl+Shift+Esc` | `Cmd+Shift+Esc` |
-| Send selection        | `Ctrl+L`         | `Cmd+L`         |
-| Insert file reference | `Ctrl+Alt+K`     | `Cmd+Alt+K`     |
-
-All shortcuts can be rebound via **File → Preferences → Keyboard Shortcuts**.
 
 ---
 
@@ -734,3 +710,4 @@ MIT
 ## Credits
 
 Built on top of [OpenCode](https://opencode.ai) by Anomaly.
+
