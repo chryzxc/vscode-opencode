@@ -1181,9 +1181,14 @@ export class ChatViewProvider
       return;
     }
 
-    // Add to processing state to show loading indicator in UI
-    this.processingSessionIds.add(sessionId);
-    this.sendProcessingSessionsUpdate();
+    // Session loading used to borrow processingSessionIds as a loading marker.
+    // If the target session is already running an AI turn, preserve that marker
+    // so switching away/back does not make the webview think the response ended.
+    const addedLoadProcessingMarker = !this.processingSessionIds.has(sessionId);
+    if (addedLoadProcessingMarker) {
+      this.processingSessionIds.add(sessionId);
+      this.sendProcessingSessionsUpdate();
+    }
 
     try {
       // CRITICAL: Switch the active session in SessionService
@@ -1279,6 +1284,7 @@ export class ChatViewProvider
         selectedAgent: this.modelAndAgentManager.getSelectedAgent(),
         serverVersion: this.serverManager.getVersion(),
         currentSessionId: this.currentSessionId,
+        processingSessionIds: Array.from(this.processingSessionIds),
         todoItems: this.loadPersistedTodos(this.currentSessionId).items,
       });
 
@@ -1345,9 +1351,12 @@ export class ChatViewProvider
       vscode.window.showErrorMessage(`Failed to load session: ${error}`);
       log.endFeatureFlow(flow, { status: 'failed', error: String(error) });
     } finally {
-      // Remove from processing state regardless of success or error
-      this.processingSessionIds.delete(sessionId);
-      this.sendProcessingSessionsUpdate();
+      // Remove only the temporary loading marker. A pre-existing marker means
+      // the AI response is still active and must survive the session switch.
+      if (addedLoadProcessingMarker) {
+        this.processingSessionIds.delete(sessionId);
+        this.sendProcessingSessionsUpdate();
+      }
       // always finalize flow (was previously guarded by !flow.result)
       log.endFeatureFlow(flow, { status: 'completed', sessionId });
     }
@@ -2334,6 +2343,7 @@ export class ChatViewProvider
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
               currentSessionId: this.currentSessionId,
+              processingSessionIds: Array.from(this.processingSessionIds),
               todoItems: this.loadPersistedTodos(this.currentSessionId).items,
             });
             this.hasInitializedWebview = true;
@@ -2378,6 +2388,7 @@ export class ChatViewProvider
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
               currentSessionId: this.currentSessionId,
+              processingSessionIds: Array.from(this.processingSessionIds),
             });
 
             // Restore the session-specific thinking level (separate message type)
@@ -2454,6 +2465,7 @@ export class ChatViewProvider
               );
               this.view?.webview.postMessage({
                 type: "chatHistory",
+                sessionId: currentSession.id,
                 messages: messages,
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
@@ -7555,6 +7567,7 @@ export class ChatViewProvider
       selectedModel: this.selectedModel,
       selectedAgent: this.selectedAgent,
       currentSessionId: this.currentSessionId,
+      processingSessionIds: Array.from(this.processingSessionIds),
       todoItems: this.loadPersistedTodos(this.currentSessionId).items,
     });
   }

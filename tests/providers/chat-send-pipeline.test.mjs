@@ -58,6 +58,18 @@ test('handleStopRequest aborts the SDK session and cleans up processing state', 
   assert.match(body, /this\.handleExecuteQueue\(resolvedSessionId\);/, 'handleStopRequest should drain queued prompts after aborting');
 });
 
+test('handleLoadSession preserves existing AI processing markers while switching sessions', () => {
+  const body = extractFunctionBody(source, '  private async handleLoadSession(');
+  assert.match(body, /const addedLoadProcessingMarker = !this\.processingSessionIds\.has\(sessionId\);/, 'handleLoadSession should detect whether the session was already processing');
+  assert.match(body, /if \(addedLoadProcessingMarker\) \{[\s\S]*this\.processingSessionIds\.add\(sessionId\);[\s\S]*this\.sendProcessingSessionsUpdate\(\);[\s\S]*\}/, 'handleLoadSession should only add a temporary loading marker when needed');
+  assert.match(body, /if \(addedLoadProcessingMarker\) \{[\s\S]*this\.processingSessionIds\.delete\(sessionId\);[\s\S]*this\.sendProcessingSessionsUpdate\(\);[\s\S]*\}/, 'handleLoadSession should not clear a pre-existing AI processing marker');
+});
+
+test('init payloads hydrate processing sessions for reloaded webviews', () => {
+  assert.match(source, /type: "initState",[\s\S]*processingSessionIds: Array\.from\(this\.processingSessionIds\),[\s\S]*todoItems:/, 'initState should include processingSessionIds during bootstrap/session load');
+  assert.match(source, /type: "chatHistory",\s*sessionId: currentSession\.id,\s*messages: messages,/m, 'ready bootstrap should scope chatHistory to the current session');
+});
+
 test('send flow keeps structured-output and direct-send branches intact', () => {
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
   assert.match(body, /if \(response\.data && capturePromptDebug\)/, 'handleSendMessage should preserve the response-data branch');

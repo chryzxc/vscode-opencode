@@ -1442,11 +1442,167 @@ function normalizedUserMessageText(message?: Message): string {
 }
 
 function isPlanProceedMessageContent(value: string): boolean {
-  return /\bproceed on this plan\./i.test(value);
+  return (
+    /\bproceed on this plan\.?/i.test(value) ||
+    /\bplan approved\b/i.test(value)
+  );
 }
 
 function isPlanRevisionMessageContent(value: string): boolean {
   return /\brevise this implementation plan\b/i.test(value);
+}
+
+function normalizePlanFilePathForComparison(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed
+    .replace(/\\/g, "/")
+    .replace(/^[A-Za-z]:\//, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+/g, "/")
+    .toLowerCase();
+}
+
+function areLikelySamePlanFilePath(a: unknown, b: unknown): boolean {
+  const left = normalizePlanFilePathForComparison(a);
+  const right = normalizePlanFilePathForComparison(b);
+  if (!left || !right) {
+    return false;
+  }
+  if (left === right) {
+    return true;
+  }
+  return left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
+}
+
+function planFileFromMessageForComparison(message?: Message): string {
+  const direct = message?.plan?.file;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct;
+  }
+  const structured = (message as unknown as Record<string, unknown> | undefined)
+    ?.structuredOutput as Record<string, unknown> | undefined;
+  const structuredPlan = structured?.plan as Record<string, unknown> | undefined;
+  const structuredFile = structuredPlan?.file;
+  return typeof structuredFile === "string" ? structuredFile : "";
+}
+
+function planRenderRichness(plan?: Message["plan"]): number {
+  if (!plan) {
+    return 0;
+  }
+  let score = 0;
+  if (typeof plan.file === "string" && plan.file.trim()) {
+    score += plan.file.includes("/") || plan.file.includes("\\") ? 20 : 10;
+    score += Math.min(plan.file.length, 120);
+  }
+  if (typeof plan.title === "string" && plan.title.trim()) {
+    score += Math.min(plan.title.length, 80);
+  }
+  if (typeof plan.summary === "string" && plan.summary.trim()) {
+    score += 20;
+  }
+  if (typeof plan.content === "string" && plan.content.trim()) {
+    score += 30;
+  }
+  return score;
+}
+
+function normalizeFileChangePathForComparison(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed
+    .replace(/\\/g, "/")
+    .replace(/^[A-Za-z]:\//, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+/g, "/")
+    .toLowerCase();
+}
+
+function areLikelySameFileChangePath(a: string, b: string): boolean {
+  if (!a || !b) {
+    return false;
+  }
+  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+}
+
+function fileChangePathsFromMessage(message?: Message): Set<string> {
+  const files = new Set<string>();
+  if (!message) {
+    return files;
+  }
+
+  if (Array.isArray(message.edits)) {
+    for (const edit of message.edits) {
+      const normalized = normalizeFileChangePathForComparison(edit?.file);
+      if (normalized) {
+        files.add(normalized);
+      }
+    }
+  }
+
+  const summaryFiles = Array.isArray(message.changeSummary?.files)
+    ? message.changeSummary.files
+    : [];
+  for (const file of summaryFiles) {
+    const normalized = normalizeFileChangePathForComparison(file?.file);
+    if (normalized) {
+      files.add(normalized);
+    }
+  }
+
+  return files;
+}
+
+function isFileChangeSubset(small: Set<string>, large: Set<string>): boolean {
+  if (small.size === 0 || large.size === 0 || small.size > large.size) {
+    return false;
+  }
+  for (const file of small) {
+    let matched = false;
+    for (const candidate of large) {
+      if (areLikelySameFileChangePath(file, candidate)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function fileChangeRenderRichness(message?: Message): number {
+  if (!message) {
+    return 0;
+  }
+  const files = fileChangePathsFromMessage(message);
+  const summaryFiles = message.changeSummary?.files ?? [];
+  const statsScore =
+    typeof message.changeSummary?.added === "number" ||
+    typeof message.changeSummary?.deleted === "number"
+      ? 20
+      : 0;
+  const perFileStats = summaryFiles.filter(
+    (file) =>
+      typeof file?.added === "number" ||
+      typeof file?.deleted === "number" ||
+      Array.isArray(file?.diffExcerpt?.lines),
+  ).length;
+  return files.size * 10 + summaryFiles.length * 4 + perFileStats * 3 + statsScore;
 }
 
 /**
@@ -2600,6 +2756,80 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     message?.messageId ||
     info?.messageId ||
     streaming?.messageId;
+  const shouldShowFileChanges = useMemo(() => {
+    const hasOwnFileChanges =
+      (Array.isArray(message?.edits) && message.edits.length > 0 && !!messageId) ||
+      (changeSummary &&
+        Array.isArray(changeSummary.files) &&
+        changeSummary.files.length > 0 &&
+        changeSummary.messageId === messageId);
+    if (!hasOwnFileChanges || !message) {
+      return false;
+    }
+
+    const ownFiles = fileChangePathsFromMessage(message);
+    if (ownFiles.size === 0) {
+      return true;
+    }
+
+    const ownIndex = state.messages.findIndex(
+      (candidate) =>
+        candidate === message ||
+        (!!messageId && (candidate.info?.id === messageId || candidate.id === messageId)),
+    );
+    const ownRichness = fileChangeRenderRichness(message);
+
+    return !state.messages.some((candidate, index) => {
+      if (candidate === message) {
+        return false;
+      }
+      const candidateFiles = fileChangePathsFromMessage(candidate);
+      if (candidateFiles.size === 0) {
+        return false;
+      }
+      if (!isFileChangeSubset(ownFiles, candidateFiles)) {
+        return false;
+      }
+      const candidateRichness = fileChangeRenderRichness(candidate);
+      if (candidateRichness > ownRichness) {
+        return true;
+      }
+      return candidateRichness === ownRichness && ownIndex >= 0 && index > ownIndex;
+    });
+  }, [changeSummary, message, messageId, state.messages]);
+  const shouldShowPlanCard = useMemo(() => {
+    if (!plan?.file) {
+      return !!plan;
+    }
+
+    const ownIndex = state.messages.findIndex(
+      (candidate) =>
+        candidate === message ||
+        (!!messageId && (candidate.info?.id === messageId || candidate.id === messageId)),
+    );
+    const ownRichness = planRenderRichness(plan);
+
+    return !state.messages.some((candidate, index) => {
+      if (candidate === message) {
+        return false;
+      }
+      const candidatePlanFile = planFileFromMessageForComparison(candidate);
+      if (!areLikelySamePlanFilePath(candidatePlanFile, plan.file)) {
+        return false;
+      }
+
+      const candidatePlan =
+        candidate.plan ||
+        ((candidate as unknown as Record<string, unknown>).structuredOutput as
+          | { plan?: Message["plan"] }
+          | undefined)?.plan;
+      const candidateRichness = planRenderRichness(candidatePlan);
+      if (candidateRichness > ownRichness) {
+        return true;
+      }
+      return candidateRichness === ownRichness && ownIndex >= 0 && index < ownIndex;
+    });
+  }, [message, messageId, plan, state.messages]);
 
   const latestAssistantMessageId = useMemo(() => {
     for (let index = state.messages.length - 1; index >= 0; index--) {
@@ -2663,13 +2893,29 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
     if (plan) {
       status = "Draft"; // Default
+      const targetPlanFile = typeof plan.file === "string" ? plan.file : "";
       const msgIndex = state.messages.findIndex(
         (m) => m === message || (messageId && (m.info?.id === messageId || m.id === messageId))
       );
 
       if (msgIndex !== -1) {
+        const matchingPlanIndexes = state.messages
+          .map((candidate, index) =>
+            areLikelySamePlanFilePath(
+              planFileFromMessageForComparison(candidate),
+              targetPlanFile,
+            )
+              ? index
+              : -1,
+          )
+          .filter((index) => index >= 0);
+        const firstMatchingPlanIndex =
+          matchingPlanIndexes.length > 0 ? Math.min(...matchingPlanIndexes) : msgIndex;
+        const lastMatchingPlanIndex =
+          matchingPlanIndexes.length > 0 ? Math.max(...matchingPlanIndexes) : msgIndex;
+
         // Did user ask for a revision before this plan was generated?
-        for (let i = msgIndex - 1; i >= 0; i--) {
+        for (let i = firstMatchingPlanIndex - 1; i >= 0; i--) {
           const m = state.messages[i];
           if (m.role === "user") {
             const text = normalizedUserMessageText(m);
@@ -2681,10 +2927,17 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         }
 
         // Did user approve or request revision on this plan?
-        for (let i = msgIndex + 1; i < state.messages.length; i++) {
+        for (let i = firstMatchingPlanIndex + 1; i < state.messages.length; i++) {
           const m = state.messages[i];
-          if (m.role === "assistant" && m.plan) {
-            break; // Stop checking if a new plan was spawned
+          const candidatePlanFile = planFileFromMessageForComparison(m);
+          if (m.role === "assistant" && candidatePlanFile) {
+            const samePlanFile = areLikelySamePlanFilePath(
+              candidatePlanFile,
+              targetPlanFile,
+            );
+            if (!samePlanFile && i > lastMatchingPlanIndex) {
+              break; // Stop checking only when a different plan was spawned
+            }
           }
           if (m.role === "user") {
             const text = normalizedUserMessageText(m);
@@ -3683,7 +3936,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 </div>
               )}
 
-              {plan && (
+              {shouldShowPlanCard && plan && (
                 <div
                   className={
                     hasResponseContent
@@ -3959,11 +4212,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
         {/* File Changes - aggregated diffs at the bottom */}
         {/* Only show for the specific message that has file changes, not for every message */}
-        {((Array.isArray(message?.edits) && message.edits.length > 0 && messageId) ||
-          (changeSummary &&
-            Array.isArray(changeSummary.files) &&
-            changeSummary.files.length > 0 &&
-            changeSummary.messageId === messageId)) && (
+        {shouldShowFileChanges && (
             <div className="mt-4">
               <FileChangesSection
                 streamingSteps={[]}

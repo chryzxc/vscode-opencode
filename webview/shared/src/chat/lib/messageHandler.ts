@@ -4103,6 +4103,33 @@ function getMessageId(message: Message): string | null {
   );
 }
 
+function replaceMatchingAssistantTurn(
+  messages: Message[],
+  incoming: Message,
+  candidateIds: Array<string | null | undefined>,
+): Message[] {
+  const ids = new Set(candidateIds.map((id) => asString(id)).filter(Boolean));
+  if (ids.size === 0) {
+    return [...messages, incoming];
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!isAssistantHistoryMessage(message)) {
+      continue;
+    }
+    const id = getMessageId(message);
+    if (!id || !ids.has(id)) {
+      continue;
+    }
+    const next = [...messages];
+    next[index] = incoming;
+    return next;
+  }
+
+  return [...messages, incoming];
+}
+
 function mergeSubagentSummaries(
   existing: SubagentSummary[] | undefined,
   incoming: SubagentSummary[],
@@ -7585,6 +7612,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const stateBeforeInit = getState();
           const sessionId =
             asString(state.sessionId) || asString(state.currentSessionId) || null;
+          const processingSessionIds = asArray(
+            state.processingSessionIds,
+            (item): item is string => typeof item === "string",
+          );
           const cachedInitMessages =
             sessionId
               ? stateBeforeInit.messagesBySessionId?.[sessionId] ?? []
@@ -7617,8 +7648,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           }
 
+          dispatch({
+            type: "SET_PROCESSING_SESSIONS",
+            payload: processingSessionIds,
+          });
           if (sessionId) {
             dispatch({ type: "SET_SESSION_ID", payload: sessionId });
+            if (processingSessionIds.includes(sessionId)) {
+              dispatch({ type: "SET_PROCESSING", payload: true });
+            }
           }
           dispatch({
             type: "SET_SERVER_STATUS",
@@ -8089,15 +8127,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               preferredParentMessageId,
             );
 
-            dispatch({
-              type: "SET_MESSAGES",
-              payload: [...currentMessages, sanitized],
-            });
             finalMessageId =
               asString(asRecord(sanitized.info)?.id) ||
               asString(sanitized.id) ||
               responseMessageId ||
               null;
+            dispatch({
+              type: "SET_MESSAGES",
+              payload: replaceMatchingAssistantTurn(currentMessages, sanitized, [
+                finalMessageId,
+                responseMessageId,
+                streamingMessageId,
+                snapshotMessageId,
+              ]),
+            });
             remapSubagentsToFinalMessageId(
               dispatch,
               getState,

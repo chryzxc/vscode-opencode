@@ -520,87 +520,116 @@ export function messageRichnessScoreForCanonical(message: Message): number {
 }
 
 export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
-  const preserveRawResponse = (
-    preferred: Message,
-    alternate: Message,
-  ): Message => {
+  const preserveRawResponse = (preferred: Message, alternate: Message): Message => {
     const preferredRecord = preferred as unknown as Record<string, unknown>;
-    if (Object.prototype.hasOwnProperty.call(preferredRecord, 'rawResponse')) {
+    if (Object.prototype.hasOwnProperty.call(preferredRecord, "rawResponse")) {
       return preferred;
     }
-
     const alternateRecord = alternate as unknown as Record<string, unknown>;
-    if (!Object.prototype.hasOwnProperty.call(alternateRecord, 'rawResponse')) {
+    if (!Object.prototype.hasOwnProperty.call(alternateRecord, "rawResponse")) {
       return preferred;
     }
+    return { ...preferred, rawResponse: alternate.rawResponse };
+  };
 
-    return {
-      ...preferred,
-      rawResponse: alternate.rawResponse,
+  const messageMetaCache = new WeakMap<
+    Message,
+    {
+      role: string;
+      id: string;
+      createdAt?: number;
+      normalizedText: string;
+      score: number;
+    }
+  >();
+
+  const getMessageMeta = (message: Message) => {
+    const cached = messageMetaCache.get(message);
+    if (cached) return cached;
+    const meta = {
+      role: getMessageRoleForCanonical(message),
+      id: getMessageIdForCanonical(message),
+      createdAt: getMessageCreatedAtForCanonical(message),
+      normalizedText: normalizeComparableTextLocal(
+        extractMessageTextForCanonical(message),
+      ),
+      score: messageRichnessScoreForCanonical(message),
     };
+    messageMetaCache.set(message, meta);
+    return meta;
+  };
+
+  const choosePreferred = (existing: Message, incoming: Message): Message => {
+    const preferred =
+      getMessageMeta(incoming).score >= getMessageMeta(existing).score
+        ? incoming
+        : existing;
+    const alternate = preferred === incoming ? existing : incoming;
+    return preserveRawResponse(preferred, alternate);
+  };
+
+  const idToIndex = new Map<string, number>();
+  const textToIndexes = new Map<string, number[]>();
+
+  const indexMessage = (idx: number, message: Message): void => {
+    const meta = getMessageMeta(message);
+    if (meta.id) idToIndex.set(meta.id, idx);
+    if (
+      meta.normalizedText &&
+      (meta.role === "user" || meta.role === "assistant" || meta.role === "system")
+    ) {
+      const key = `${meta.role}|${meta.normalizedText}`;
+      const list = textToIndexes.get(key) ?? [];
+      list.push(idx);
+      textToIndexes.set(key, list);
+    }
   };
 
   const deduped: Message[] = [];
   for (const message of messages) {
-    const id = getMessageIdForCanonical(message);
-    if (id) {
-      const existingById = deduped.findIndex(
-        (entry) => getMessageIdForCanonical(entry) === id,
-      );
-      if (existingById >= 0) {
-        const existing = deduped[existingById];
-        const messageScore = messageRichnessScoreForCanonical(message);
-        const existingScore = messageRichnessScoreForCanonical(existing);
-        const preferred = messageScore >= existingScore ? message : existing;
-        const alternate = preferred === message ? existing : message;
-        deduped[existingById] = preserveRawResponse(preferred, alternate);
+    const meta = getMessageMeta(message);
+
+    if (meta.id) {
+      const idx = idToIndex.get(meta.id);
+      if (typeof idx === "number") {
+        deduped[idx] = choosePreferred(deduped[idx], message);
+        indexMessage(idx, deduped[idx]);
         continue;
       }
     }
 
-    const role = getMessageRoleForCanonical(message);
-    const normalizedText = normalizeComparableTextLocal(
-      extractMessageTextForCanonical(message),
-    );
-    // Deduplicate by text for user, assistant, AND system messages to prevent duplicates
-    // (e.g., <auto-slash-command> appearing multiple times)
-    if (normalizedText && (role === "user" || role === "assistant" || role === "system")) {
-      const existingByText = deduped.findIndex((entry) => {
-        if (getMessageRoleForCanonical(entry) !== role) {
-          return false;
+    if (
+      meta.normalizedText &&
+      (meta.role === "user" || meta.role === "assistant" || meta.role === "system")
+    ) {
+      const key = `${meta.role}|${meta.normalizedText}`;
+      const candidates = textToIndexes.get(key) ?? [];
+      let matched = -1;
+      for (const idx of candidates) {
+        const existing = deduped[idx];
+        if (!existing) continue;
+        const existingMeta = getMessageMeta(existing);
+        if (
+          typeof existingMeta.createdAt !== "number" ||
+          typeof meta.createdAt !== "number"
+        ) {
+          continue;
         }
-        const entryText = normalizeComparableTextLocal(
-          extractMessageTextForCanonical(entry),
-        );
-        if (entryText !== normalizedText) {
-          return false;
+        if (Math.abs(existingMeta.createdAt - meta.createdAt) <= 4_000) {
+          matched = idx;
+          break;
         }
-        const createdA = getMessageCreatedAtForCanonical(entry);
-        const createdB = getMessageCreatedAtForCanonical(message);
-        // If either message lacks a timestamp we cannot verify the time
-        // window, so we must NOT deduplicate — otherwise optimistic messages
-        // (which carry no timestamp) are incorrectly collapsed with earlier
-        // messages that happen to share the same text.
-        if (typeof createdA !== "number" || typeof createdB !== "number") {
-          return false;
-        }
-        if (Math.abs(createdA - createdB) > 4_000) {
-          return false;
-        }
-        return true;
-      });
-      if (existingByText >= 0) {
-        const existing = deduped[existingByText];
-        const messageScore = messageRichnessScoreForCanonical(message);
-        const existingScore = messageRichnessScoreForCanonical(existing);
-        const preferred = messageScore >= existingScore ? message : existing;
-        const alternate = preferred === message ? existing : message;
-        deduped[existingByText] = preserveRawResponse(preferred, alternate);
+      }
+      if (matched >= 0) {
+        deduped[matched] = choosePreferred(deduped[matched], message);
+        indexMessage(matched, deduped[matched]);
         continue;
       }
     }
 
+    const idx = deduped.length;
     deduped.push(message);
+    indexMessage(idx, message);
   }
   return deduped;
 }
