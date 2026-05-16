@@ -39,7 +39,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it), 'question' for a final assistant turn that asks for user input with options and then waits for the next user message, or 'progress_update' for execution steps.",
+      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it), 'question' for any final assistant turn whose intent is to ask the user a question or present choices, or 'progress_update' for execution steps. If the intent is a question, responseType MUST be 'question' and the question payload MUST be in the top-level question object.",
     additionalProperties: false,
     required: ["responseType"],
     properties: {
@@ -47,7 +47,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         type: "string",
         enum: ["message", "implementation_plan", "question", "progress_update"],
         description:
-          "Response type: 'message' for normal text, 'implementation_plan' for plans (must include plan.file and ensure the file is created/writable), 'question' for a final user-input prompt that completes this assistant turn and waits for the user's next message, 'progress_update' for steps",
+          "Response type: 'message' for normal text, 'implementation_plan' for plans (must include plan.file and ensure the file is created/writable), 'question' for a final user-input prompt that completes this assistant turn and is shown as a popover; use this whenever the assistant is asking the user to choose or clarify, 'progress_update' for steps",
       },
 
       message: {
@@ -78,7 +78,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
 
       question: {
         type: "object",
-        description: "Interactive question requiring user input. A question payload is terminal for this assistant turn: render it, stop processing, and wait for the user's next message.",
+        description: "Question/choice payload. This is terminal for the assistant turn like an implementation_plan response: render it as the final assistant message and show the question popover; do not keep the turn open waiting for input.",
         properties: {
           question: { type: "string", description: "Question text to display" },
           type: {
@@ -88,7 +88,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
           options: {
             type: "array",
-            description: "Available choices for the user",
+            description: "Available choices for the user. For responseType='question' and type='question', provide at least two choices unless custom free-form input is explicitly enabled by the host.",
             items: {
               type: "object",
               properties: {

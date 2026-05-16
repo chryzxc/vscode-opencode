@@ -56,6 +56,64 @@ function countValidChoiceOptions(value: unknown): number {
   }).length;
 }
 
+function parseMaybeArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function hasQuestionIntent(
+  value: Record<string, unknown>,
+  sanitized: Record<string, unknown>,
+): boolean {
+  const questionValue = sanitized.question ?? value.question;
+  const questionRecord = asRecord(questionValue);
+  if (typeof questionValue === "string" && questionValue.trim().length > 0) {
+    const optionCount = countValidChoiceOptions(value.options ?? value.choices ?? value.actions);
+    return optionCount >= 2 || value.allowCustomInput === true;
+  }
+
+  if (questionRecord) {
+    const type = asString(questionRecord.type).trim().toLowerCase() || "question";
+    if (type === "message") {
+      return false;
+    }
+    if (type === "confirm") {
+      return isNonEmptyString(questionRecord.question);
+    }
+    if (type === "quick_actions" || type === "quick-actions") {
+      return parseMaybeArray(questionRecord.actions).length > 0;
+    }
+    const optionCount = countValidChoiceOptions(
+      questionRecord.options ?? questionRecord.choices,
+    );
+    return (
+      isNonEmptyString(questionRecord.question) &&
+      (optionCount >= 2 || questionRecord.allowCustomInput === true)
+    );
+  }
+
+  return parseMaybeArray(sanitized.interactiveEvents ?? value.interactiveEvents).some(
+    (entry) => {
+      const event = asRecord(entry);
+      if (!event) {
+        return false;
+      }
+      const type = asString(event.type).trim().toLowerCase();
+      return type === "question" || type === "confirm" || type === "quick_actions";
+    },
+  );
+}
+
 function isQualifiedMarkdownPath(value: string): boolean {
   const candidate = value.trim();
   if (!candidate || !/\.md$/i.test(candidate)) {
@@ -640,9 +698,13 @@ export function sanitizeStructuredOutput(
 
   // Handle malformed question structure where responseType is "question"
   // but question is a string instead of an object
-  const responseType = isNonEmptyString(sanitized.responseType)
+  let responseType = isNonEmptyString(sanitized.responseType)
     ? String(sanitized.responseType).toLowerCase()
     : "";
+  if (responseType !== "implementation_plan" && hasQuestionIntent(value, sanitized)) {
+    responseType = "question";
+    sanitized.responseType = "question";
+  }
 
   if (responseType === "question") {
     // If question is a string, convert it to a proper question object

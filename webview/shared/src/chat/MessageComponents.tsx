@@ -692,8 +692,10 @@ function questionPromptFromMessage(message?: Message): string | undefined {
   const structured =
     asRecord(messageRec?.structuredOutput) ||
     asRecord(messageRec?.structured_output) ||
+    asRecord(messageRec?.structured) ||
     asRecord(infoRec?.structuredOutput) ||
-    asRecord(infoRec?.structured_output);
+    asRecord(infoRec?.structured_output) ||
+    asRecord(infoRec?.structured);
   const question = asRecord(structured?.question);
 
   // displayPrompt is the primary source-of-truth for question chat bubble text.
@@ -891,7 +893,13 @@ function getMessageContent(
   }
   const messageRec = asRecord(message);
   const infoRec = asRecord(messageRec?.info);
-  const structured = asRecord(messageRec?.structuredOutput) || asRecord(infoRec?.structuredOutput);
+  const structured =
+    asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured_output) ||
+    asRecord(messageRec?.structured) ||
+    asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured_output) ||
+    asRecord(infoRec?.structured);
   const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
   const partsBody = messageBodyFromParts(message.parts);
   const hasParts = Array.isArray(message.parts) && message.parts.length > 0;

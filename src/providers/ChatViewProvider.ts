@@ -269,8 +269,6 @@ export class ChatViewProvider
    *  response is still streaming from the server. */
   private activeStreamSessionId: string | undefined;
   private currentTodoItems: unknown[] = [];
-  private awaitingInteractiveAnswer = false;
-  private interactiveResponseTransitionUntil = 0;
 
   /** Debouncing for todo persistence to reduce state write frequency during streaming */
   private todoPersistenceTimer: NodeJS.Timeout | null = null;
@@ -1848,17 +1846,8 @@ export class ChatViewProvider
       return;
     }
 
-    if (this.awaitingInteractiveAnswer) {
-      // Match webview's 15s window to prevent popover reappearing during transition
-      this.interactiveResponseTransitionUntil = Date.now() + 15000;
-    }
-
-    // Interactive answers must be sent directly as a real turn.
-    // Do not route through queue/steer scheduling here: when a request is
-    // waiting for interactive input, stale processing flags can cause the answer
-    // to be queued or short-circuited, which presents as "AI loading forever".
-    // Also avoid explicit abort here; an interactive-wait turn is expected to
-    // pause for user input and should not show an "interrupted" banner.
+    // Interactive answers are just normal user turns now. Question responses
+    // are final assistant messages; there is no interactive-wait handoff.
     this.currentSessionId = sessionId;
     await this.handleSendMessage(
       text,
@@ -2528,14 +2517,6 @@ export class ChatViewProvider
 
           try {
             const isInteractiveSubmit = message?.interactiveSubmit === true;
-            if (isInteractiveSubmit) {
-              // When answering interactive prompts, some providers finalize the
-              // previous waiting turn as aborted during handoff to the new turn.
-              // Arm this unconditionally for interactive submits so expected
-              // handoff aborts never surface as an "Interrupted" banner, even
-              // if awaitingInteractiveAnswer was already cleared by timing.
-              this.interactiveResponseTransitionUntil = Date.now() + 15000;
-            }
             await this.schedulePromptDispatch("send-now", {
               sessionId: message.sessionId,
               text: message.text,
@@ -3383,24 +3364,6 @@ export class ChatViewProvider
       // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
       this.logStreamEventDiagnostics(event, enrichedEvent);
-
-      const hasBlockingInteractive = this.hasBlockingInteractiveInStreamPayload(enrichedEvent);
-      if (hasBlockingInteractive) {
-        this.awaitingInteractiveAnswer = true;
-      }
-
-      // Clear flag when we receive actual content (not another question)
-      // This indicates the model is processing and we're no longer just "awaiting"
-      if (this.awaitingInteractiveAnswer) {
-        const isAnotherQuestion = this.hasBlockingInteractiveInStreamPayload(enrichedEvent);
-        const isActualContent = enrichedEvent.type &&
-                               enrichedEvent.type !== 'interactive_event' &&
-                               !isAnotherQuestion;
-
-        if (isActualContent) {
-          this.awaitingInteractiveAnswer = false;
-        }
-      }
 
       // Log stream event for debugging response types (with error handling)
       try {
@@ -4365,35 +4328,6 @@ export class ChatViewProvider
       normalized.includes("response timeout") ||
       normalized.includes("body timeout")
     );
-  }
-
-  private shouldSuppressInteractiveAwaitTimeout(message: string): boolean {
-    if (!this.isLikelyInteractiveAwaitTimeoutError(message)) {
-      return false;
-    }
-    return this.awaitingInteractiveAnswer || this.isInInteractiveResponseTransition();
-  }
-
-  private shouldSuppressInteractiveHandoffAbort(message: string): boolean {
-    const normalized = message.trim().toLowerCase();
-    if (!normalized) {
-      return false;
-    }
-
-    const looksLikeExpectedAbort =
-      normalized.includes("messageabortederror") ||
-      normalized === "aborted" ||
-      normalized.endsWith(": aborted") ||
-      normalized.includes("aborterror");
-    if (!looksLikeExpectedAbort) {
-      return false;
-    }
-
-    return this.awaitingInteractiveAnswer || this.isInInteractiveResponseTransition();
-  }
-
-  private isInInteractiveResponseTransition(): boolean {
-    return Date.now() <= this.interactiveResponseTransitionUntil;
   }
 
   private isGenericErrorMessage(message: string): boolean {
@@ -5379,11 +5313,6 @@ export class ChatViewProvider
     // field, so checking only at the !bodyText branch is insufficient.
     const messageInfoError = message?.info?.error ?? message?.error;
     if (messageInfoError?.name === "MessageAbortedError") {
-      if (this.isInInteractiveResponseTransition()) {
-        // Interactive answer submit intentionally aborts the previous waiting turn.
-        // Preserve rendered content and avoid a misleading "response stopped" banner.
-        return { ...message, aborted: false };
-      }
       return { ...message, aborted: true };
     }
     const allowSyntheticFallbackError =
@@ -5958,8 +5887,7 @@ export class ChatViewProvider
       this.currentSessionId = session.id;
       this.activeStreamSessionId = session.id;
       this.subagentTracker.setActiveSession(session.id);
-      // Note: awaitingInteractiveAnswer flag is NOT cleared here
-      // It will be cleared naturally when stream events arrive
+      // New user turns are independent from any previous question popover.
 
       const messagesStartTime = Date.now();
       this.logger.info("⏳ [TIMING] Loading existing messages...");
@@ -6287,26 +6215,6 @@ export class ChatViewProvider
           response.error,
           "Failed to send message",
         );
-        if (this.shouldSuppressInteractiveHandoffAbort(errorMessage)) {
-          this.logger.info(
-            "Suppressing expected interactive handoff abort error",
-            {
-              sessionId: session.id,
-              errorMessage,
-            },
-          );
-          return;
-        }
-        if (this.shouldSuppressInteractiveAwaitTimeout(errorMessage)) {
-          this.logger.info(
-            "Suppressing timeout error while awaiting interactive response",
-            {
-              sessionId: session.id,
-              errorMessage,
-            },
-          );
-          return;
-        }
         if (this.isLikelyInteractiveTransportFailure(errorMessage)) {
           const recovered = await this.tryRecoverTimedOutResponse(
             session.id,
@@ -6322,37 +6230,6 @@ export class ChatViewProvider
               },
             );
             return;
-          }
-          if (
-            !isRetry &&
-            (this.awaitingInteractiveAnswer ||
-              this.isInInteractiveResponseTransition())
-          ) {
-            this.logger.warn(
-              "Interactive response transport failed; retrying once with existing payload",
-              {
-                sessionId: session.id,
-                errorMessage,
-              },
-            );
-            // Provide user feedback about the retry
-            this.view?.webview.postMessage({
-              type: "info",
-              message: "Retrying interactive response...",
-              sessionId: session.id,
-            });
-            return this.handleSendMessage(
-              text,
-              files,
-              contexts,
-              images,
-              agent,
-              true,
-              recoveredContext,
-              retryWithoutStructuredOutput,
-              structuredFallbackReason,
-              userFacingText,
-            );
           }
         }
 
@@ -6826,26 +6703,6 @@ export class ChatViewProvider
         error,
         "Failed to send message",
       );
-      if (this.shouldSuppressInteractiveHandoffAbort(errorMessage)) {
-        this.logger.info(
-          "Suppressing thrown interactive handoff abort error",
-          {
-            sessionId: drainSessionId,
-            errorMessage,
-          },
-        );
-        return;
-      }
-      if (this.shouldSuppressInteractiveAwaitTimeout(errorMessage)) {
-        this.logger.info(
-          "Suppressing thrown timeout while awaiting interactive response",
-          {
-            sessionId: drainSessionId,
-            errorMessage,
-          },
-        );
-        return;
-      }
       if (
         drainSessionId &&
         this.isLikelyInteractiveTransportFailure(errorMessage)
@@ -6864,37 +6721,6 @@ export class ChatViewProvider
             },
           );
           return;
-        }
-        if (
-          !isRetry &&
-          (this.awaitingInteractiveAnswer ||
-            this.isInInteractiveResponseTransition())
-        ) {
-          this.logger.warn(
-            "Thrown interactive transport failure; retrying once with existing payload",
-            {
-              sessionId: drainSessionId,
-              errorMessage,
-            },
-          );
-          // Provide user feedback about the retry
-          this.view?.webview.postMessage({
-            type: "info",
-            message: "Retrying interactive response...",
-            sessionId: drainSessionId,
-          });
-          return this.handleSendMessage(
-            text,
-            files,
-            contexts,
-            images,
-            agent,
-            true,
-            recoveredContext,
-            retryWithoutStructuredOutput,
-            structuredFallbackReason,
-            userFacingText,
-          );
         }
       }
       vscode.window.showErrorMessage(`Failed to send message: ${errorMessage}`);

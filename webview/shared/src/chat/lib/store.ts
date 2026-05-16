@@ -295,21 +295,135 @@ function asStringLocal(...values: unknown[]): string {
   return "";
 }
 
-function hasBlockingInteractiveEventsLocal(
-  events: InteractiveEvent[] | undefined,
-): boolean {
-  if (!Array.isArray(events) || events.length === 0) {
-    return false;
+function getStructuredRecordLocal(message: Message): Record<string, unknown> | null {
+  const rec = asRecordLocal(message);
+  const info = asRecordLocal(message.info);
+  return (
+    asRecordLocal(rec?.structuredOutput) ||
+    asRecordLocal(rec?.structured_output) ||
+    asRecordLocal(rec?.structured) ||
+    asRecordLocal(info?.structuredOutput) ||
+    asRecordLocal(info?.structured_output) ||
+    asRecordLocal(info?.structured)
+  );
+}
+
+function normalizeChoiceOptionsLocal(value: unknown): Array<{ id?: string; label: string; value?: string; description?: string }> {
+  if (!Array.isArray(value)) {
+    return [];
   }
-  return events.some((event) => {
-    const type = (event?.type || "").toLowerCase();
-    return (
-      type === "question" ||
-      type === "confirm" ||
-      type === "quick_actions" ||
-      type === "quick-actions"
-    );
-  });
+  return value
+    .map((entry, index) => {
+      if (typeof entry === "string") {
+        const label = entry.trim();
+        return label ? { id: `choice-${index}`, label, value: label } : null;
+      }
+      const rec = asRecordLocal(entry);
+      if (!rec) {
+        return null;
+      }
+      const label = asStringLocal(rec.label, rec.value, rec.title, rec.text);
+      if (!label) {
+        return null;
+      }
+      return {
+        id: asStringLocal(rec.id) || `choice-${index}`,
+        label,
+        value: asStringLocal(rec.value) || undefined,
+        description: asStringLocal(rec.description) || undefined,
+      };
+    })
+    .filter((entry): entry is { id?: string; label: string; value?: string; description?: string } => !!entry);
+}
+
+function interactiveEventFromQuestionRecordLocal(
+  question: Record<string, unknown> | null,
+  fallbackId: string,
+): InteractiveEvent | null {
+  if (!question) {
+    return null;
+  }
+  const prompt = asStringLocal(
+    question.question,
+    question.message,
+    question.content,
+    question.title,
+  );
+  if (!prompt) {
+    return null;
+  }
+  const type = asStringLocal(question.type).toLowerCase() || "question";
+  if (type === "confirm") {
+    return {
+      type: "confirm",
+      id: asStringLocal(question.id) || fallbackId,
+      title: asStringLocal(question.title) || undefined,
+      question: prompt,
+    };
+  }
+  if (type === "quick_actions" || type === "quick-actions") {
+    const actions = normalizeChoiceOptionsLocal(question.actions);
+    return actions.length > 0
+      ? {
+        type: "quick_actions",
+        id: asStringLocal(question.id) || fallbackId,
+        title: prompt,
+        actions,
+      }
+      : null;
+  }
+  const options = normalizeChoiceOptionsLocal(question.options ?? question.choices);
+  const allowCustomInput = question.allowCustomInput === true;
+  if (options.length < 2 && !allowCustomInput) {
+    return null;
+  }
+  return {
+    type: "question",
+    id: asStringLocal(question.id) || fallbackId,
+    title: asStringLocal(question.title) || undefined,
+    question: prompt,
+    options,
+    multiSelect: question.multiSelect === true,
+    allowCustomInput,
+  };
+}
+
+function interactiveEventsFromLatestQuestionMessageLocal(
+  message: Message | undefined,
+): InteractiveEvent[] {
+  if (!message) {
+    return [];
+  }
+  const role = getMessageRoleForCanonical(message);
+  if (role !== "assistant") {
+    return [];
+  }
+  if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
+    return message.interactiveEvents;
+  }
+  const structured = getStructuredRecordLocal(message);
+  const responseType = asStringLocal(message.responseType, structured?.responseType).toLowerCase();
+  if (responseType !== "question") {
+    return [];
+  }
+  const structuredEvents = Array.isArray(structured?.interactiveEvents)
+    ? structured.interactiveEvents
+      .map((entry, index) =>
+        interactiveEventFromQuestionRecordLocal(
+          asRecordLocal(entry),
+          `question-${Date.now()}-${index}`,
+        ),
+      )
+      .filter((entry): entry is InteractiveEvent => !!entry)
+    : [];
+  if (structuredEvents.length > 0) {
+    return structuredEvents;
+  }
+  const event = interactiveEventFromQuestionRecordLocal(
+    asRecordLocal(structured?.question),
+    `question-${Date.now()}`,
+  );
+  return event ? [event] : [];
 }
 
 export function normalizeComparableTextLocal(value: string): string {
@@ -449,8 +563,7 @@ export function hasAssistantPayloadForCanonical(message: Message): boolean {
   }
   if (
     asRecordLocal(rec.plan) ||
-    asRecordLocal(rec.structuredOutput) ||
-    asRecordLocal((rec.info as Record<string, unknown> | undefined)?.structuredOutput)
+    getStructuredRecordLocal(message)
   ) {
     return true;
   }
@@ -507,7 +620,7 @@ export function messageRichnessScoreForCanonical(message: Message): number {
   if (asRecordLocal(rec.plan)) {
     score += 40;
   }
-  if (asRecordLocal(rec.structuredOutput)) {
+  if (getStructuredRecordLocal(message)) {
     score += 30;
   }
   if (asStringLocal(rec.error)) {
@@ -756,7 +869,7 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   let latestRawResponse = (base as unknown as Record<string, unknown>).rawResponse;
   let latestStructuredOutput = asRecordLocal(
     (base as unknown as Record<string, unknown>).structuredOutput,
-  );
+  ) ?? getStructuredRecordLocal(base);
   let canonicalId = getMessageIdForCanonical(base);
 
   mergedSteps.forEach((entry, entryIndex) => {
@@ -810,9 +923,7 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
     if (errorText) {
       latestError = errorText;
     }
-    const structured = asRecordLocal(
-      (message as unknown as Record<string, unknown>).structuredOutput,
-    );
+    const structured = getStructuredRecordLocal(message);
     if (structured) {
       latestStructuredOutput = structured;
     }
@@ -1422,9 +1533,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
               state.compactionDividerBeforeMessageId,
             compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
           };
+      const lastMessage = canonicalMessages[canonicalMessages.length - 1];
+      const latestQuestionEvents =
+        interactiveEventsFromLatestQuestionMessageLocal(lastMessage);
+      const nextInteractiveEvents =
+        canonicalMessages.length > 0 ? latestQuestionEvents : [];
       return {
         ...state,
         messages: canonicalMessages,
+        interactiveEvents: nextInteractiveEvents,
         messagesBySessionId:
           state.currentSessionId
             ? {
@@ -1486,17 +1603,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "CLEAR_MESSAGES":
       return { ...state, messages: [] };
     case "SET_PROCESSING":
-      // If a blocking interactive prompt is already visible and streaming is no
-      // longer active, ignore stale attempts to flip processing back on.
-      // This prevents the UI from jumping back to loading while waiting for
-      // the user's interactive answer.
-      if (
-        action.payload &&
-        hasBlockingInteractiveEventsLocal(state.interactiveEvents) &&
-        (!state.streaming || state.streaming.isActive === false)
-      ) {
-        return { ...state, isProcessing: false, isSteering: false };
-      }
+      // Question popovers are final assistant messages now, not an
+      // interactive-await state. Let new user turns enter processing even when
+      // a previous question popover is still visible.
       // When processing starts, create an empty streaming state so the StreamingCard is visible immediately
       // instead of showing the "Thinking..." bubble
       if (action.payload && (!state.streaming || !state.streaming.isActive)) {

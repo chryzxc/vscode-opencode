@@ -1726,12 +1726,13 @@ function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): Structure
   if (fromRawDebug) {
     return fromRawDebug;
   }
-  const infoStructuredLegacy = normalizeStructuredOutput((asRecord(rec.info) as UnknownRecord | null)?.structured);
   const localCandidates: unknown[] = [
     rec.structuredOutput,
     (rec as UnknownRecord).structured_output,
+    (rec as UnknownRecord).structured,
     infoRec?.structuredOutput,
     (infoRec as UnknownRecord | null)?.structured_output,
+    (infoRec as UnknownRecord | null)?.structured,
   ];
 
   for (const candidate of localCandidates) {
@@ -1739,9 +1740,6 @@ function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): Structure
     if (normalized) {
       return normalized;
     }
-  }
-  if (infoStructuredLegacy) {
-    return infoStructuredLegacy;
   }
   return undefined;
 }
@@ -1870,7 +1868,8 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
       }
       if (event.type === 'question') {
         const options = Array.isArray(event.options) ? event.options : [];
-        if (!event.question || options.length < 2) {
+        const allowCustomInput = event.allowCustomInput === true;
+        if (!event.question || (options.length < 2 && !allowCustomInput)) {
           return undefined;
         }
         return {
@@ -1880,7 +1879,7 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
           question: event.question,
           options,
           multiSelect: event.multiSelect,
-          allowCustomInput: event.allowCustomInput,
+          allowCustomInput,
           contextMessage,
         } as InteractiveEvent;
       }
@@ -1945,7 +1944,7 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
           dismissLabel: asOptionalString(questionObj.dismissLabel),
           contextMessage,
         } as InteractiveEvent);
-      } else if (options.length >= 2) {
+      } else if (options.length >= 2 || questionObj.allowCustomInput === true) {
         mapped.push({
           type: 'question',
           id,
@@ -5242,15 +5241,33 @@ function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
     asString(rec.responseType) ||
     asString(infoRec?.responseType) ||
     asString(asRecord(rec.structuredOutput)?.responseType) ||
-    asString(asRecord(rec.structured_output)?.responseType);
+    asString(asRecord(rec.structured_output)?.responseType) ||
+    asString(asRecord(rec.structured)?.responseType) ||
+    asString(asRecord(infoRec?.structuredOutput)?.responseType) ||
+    asString(asRecord((infoRec as UnknownRecord | null)?.structured_output)?.responseType) ||
+    asString(asRecord((infoRec as UnknownRecord | null)?.structured)?.responseType);
   const hasQuestionLikePayload =
     topLevelResponseType.toLowerCase() === "question" ||
     typeof rec.question !== "undefined" ||
-    typeof infoRec?.question !== "undefined";
+    typeof infoRec?.question !== "undefined" ||
+    typeof asRecord(rec.structuredOutput)?.question !== "undefined" ||
+    typeof asRecord(rec.structured_output)?.question !== "undefined" ||
+    typeof asRecord(rec.structured)?.question !== "undefined" ||
+    typeof asRecord(infoRec?.structuredOutput)?.question !== "undefined" ||
+    typeof asRecord((infoRec as UnknownRecord | null)?.structured_output)?.question !== "undefined" ||
+    typeof asRecord((infoRec as UnknownRecord | null)?.structured)?.question !== "undefined";
   if (hasQuestionLikePayload) {
     const fallbackStructured = normalizeStructuredOutput({
       responseType: topLevelResponseType || "question",
-      question: rec.question ?? infoRec?.question,
+      question:
+        rec.question ??
+        infoRec?.question ??
+        asRecord(rec.structuredOutput)?.question ??
+        asRecord(rec.structured_output)?.question ??
+        asRecord(rec.structured)?.question ??
+        asRecord(infoRec?.structuredOutput)?.question ??
+        asRecord((infoRec as UnknownRecord | null)?.structured_output)?.question ??
+        asRecord((infoRec as UnknownRecord | null)?.structured)?.question,
       options:
         (rec as UnknownRecord).options ??
         (infoRec as UnknownRecord | null)?.options,
@@ -7539,7 +7556,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   let latestStreamingSnapshot: StreamingState | null = null;
   let terminalErrorReached = false;
   let activeSubagentParentMessageIds = new Set<string>();
-  let interactiveResponseTransitionUntil = 0;
 
   const isLikelyInteractiveAnswerSubmissionMessage = (message: Message): boolean => {
     const role = asString(message.role) || asString(asRecord(message.info)?.role);
@@ -8159,18 +8175,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
             }
             const interactiveEvents = interactiveEventsFromMessage(sanitized);
-            const inInteractiveTransitionWindow =
-              Date.now() <= interactiveResponseTransitionUntil;
-            const latestMessage =
-              currentMessages.length > 0
-                ? currentMessages[currentMessages.length - 1]
-                : undefined;
-            const suppressInteractiveReshow =
-              inInteractiveTransitionWindow &&
-              !!latestMessage &&
-              isLikelyInteractiveAnswerSubmissionMessage(latestMessage) &&
-              hasBlockingInteractiveEvents(interactiveEvents);
-            if (!suppressInteractiveReshow && interactiveEvents.length > 0) {
+            if (interactiveEvents.length > 0) {
               dispatch({
                 type: "SET_INTERACTIVE_EVENTS",
                 payload: interactiveEvents,
@@ -8358,19 +8363,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           }
           let latestInteractive: InteractiveEvent[] = [];
-          for (let index = canonicalMessages.length - 1; index >= 0; index -= 1) {
-            const msg = canonicalMessages[index];
-            const role = msg.role ?? msg.info?.role;
-            const items = interactiveEventsFromMessage(msg);
-            if (items.length > 0) {
-              latestInteractive = items;
-              break;
-            }
-            if (role === "user") {
-              break;
-            }
-          }
-          if (latestInteractive.length === 0 && canonicalMessages.length > 0) {
+          if (canonicalMessages.length > 0) {
             const lastMessage = canonicalMessages[canonicalMessages.length - 1];
             const lastRec = asRecord(lastMessage);
             const lastInfo = asRecord(lastRec?.info);
@@ -8647,19 +8640,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               activeSessionId &&
               stateBeforeStreamEvent.processingSessionIds.includes(activeSessionId))
           );
-          const inInteractiveTransitionWindow =
-            Date.now() <= interactiveResponseTransitionUntil;
           // Accept stream events when either:
           // 1) global processing is true, OR
           // 2) backend confirms the session is processing, OR
-          // 3) we already have a stream snapshot in flight, OR
-          // 4) we are within interactive submit handoff transition window.
-          // This prevents interactive-handoff races from dropping valid events.
+          // 3) we already have a stream snapshot in flight.
           if (
             !stateBeforeStreamEvent.isProcessing &&
             !hasConfirmedProcessingSession &&
-            !stateBeforeStreamEvent.streaming &&
-            !inInteractiveTransitionWindow
+            !stateBeforeStreamEvent.streaming
           ) {
             break;
           }
@@ -8702,12 +8690,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "streamEventEnrich": {
           const stateBeforeEnrich = getState();
-          const inInteractiveTransitionWindow =
-            Date.now() <= interactiveResponseTransitionUntil;
           if (
             !stateBeforeEnrich.isProcessing &&
-            !stateBeforeEnrich.streaming &&
-            !inInteractiveTransitionWindow
+            !stateBeforeEnrich.streaming
           ) {
             break;
           }
@@ -8740,26 +8725,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const errorMsg = asString(data.message, "Unknown error");
           const stateBeforeError = getState();
           const currentStreaming = stateBeforeError.streaming;
-          const pendingBlockingInteractive = hasBlockingInteractiveEvents(
-            stateBeforeError.interactiveEvents,
-          );
-          const inInteractiveTransitionWindow =
-            Date.now() <= interactiveResponseTransitionUntil;
-          const suppressAsAwaitingInteractive =
-            (pendingBlockingInteractive || inInteractiveTransitionWindow) &&
-            isLikelyInteractiveAwaitTimeout(errorMsg);
-          const suppressAsInteractiveHandoffAbort =
-            (pendingBlockingInteractive || inInteractiveTransitionWindow) &&
-            isLikelyInteractiveHandoffAbort(errorMsg);
-
-          // When the model is waiting for an interactive answer, transport header
-          // timeouts are expected and should not surface as hard request failures.
-          if (suppressAsAwaitingInteractive || suppressAsInteractiveHandoffAbort) {
-            latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
-            dispatch({ type: "SET_PROCESSING", payload: false });
-            dispatch({ type: "FINISH_STREAMING" });
-            break;
-          }
 
           // When the AI is actively streaming meaningful content and a transport
           // timeout fires (e.g. undici headers timeout), the response is still
@@ -8947,8 +8912,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const isInteractiveAnswerSubmission =
               isLikelyInteractiveAnswerSubmissionMessage(message);
             if (isInteractiveAnswerSubmission) {
-              interactiveResponseTransitionUntil = Date.now() + 15000;
-              // Lock: interactive answer submit starts a brand-new assistant turn.
+              // Interactive answer submit starts a brand-new assistant turn.
               // Clear stale stream snapshots so previous turn content cannot leak or
               // duplicate into the next messageResponse normalization pass.
               latestStreamingSnapshot = null;
