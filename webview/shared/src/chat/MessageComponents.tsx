@@ -447,12 +447,14 @@ export function FileIcon({
       aria-hidden="true"
       style={{
         display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
         flexShrink: 0,
-        marginRight: "4px",
+        marginRight: "0",
         verticalAlign: "middle",
         width: "16px",
         height: "16px",
-        overflow: "hidden",
+        overflow: "visible",
       }}
     >
       {showSvgFallback ? (
@@ -1351,10 +1353,92 @@ function sanitizeUserContent(raw: string): string {
     .trim();
 }
 
+function escapeForRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripHydratedAttachmentEcho(raw: string, message?: Message): string {
+  if (!message || !Array.isArray(message.parts) || message.parts.length === 0) {
+    return raw;
+  }
+
+  const attachedPaths = message.parts
+    .map((part) => part.filename ?? part.source?.path)
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+
+  if (attachedPaths.length === 0) {
+    return raw;
+  }
+
+  let cleaned = raw;
+  for (const path of attachedPaths) {
+    const escapedPath = escapeForRegex(path.trim()).replace(/[\\/]/g, "[\\\\/]");
+    const fencedEchoPattern = new RegExp(
+      String.raw`(?:\r?\n)?` +
+        "```" +
+        String.raw`[a-zA-Z0-9_-]*\r?\n\s*\/\/\s*${escapedPath}(?::\d+)?[\s\S]*?` +
+        "```",
+      "g",
+    );
+    cleaned = cleaned.replace(fencedEchoPattern, "");
+
+    const inlineEchoPattern = new RegExp(
+      String.raw`(?:\r?\n)?\s*\/\/\s*${escapedPath}(?::\d+)?[^\n]*`,
+      "g",
+    );
+    cleaned = cleaned.replace(inlineEchoPattern, "");
+  }
+
+  return cleaned.trim();
+}
+
+function stripGenericHydratedAttachmentFence(raw: string): string {
+  if (!raw || !raw.includes("```")) {
+    return raw;
+  }
+
+  // Hydrated artifact shape:
+  // ```<lang>
+  // // path/to/file.ext:line
+  // <snippet...>
+  // ```
+  const fencedPathSnippetPattern =
+    /(?:\r?\n)?```[a-zA-Z0-9_-]*\r?\n\s*\/\/\s*[^\n]*[\\/][^\n]*:\d+[^\n]*\r?\n[\s\S]*?```/g;
+
+  // Same artifact can also appear without a newline before the fence.
+  const inlineFencePattern =
+    /```[a-zA-Z0-9_-]*\r?\n\s*\/\/\s*[^\n]*[\\/][^\n]*:\d+[^\n]*\r?\n[\s\S]*?```/g;
+
+  return raw
+    .replace(fencedPathSnippetPattern, "")
+    .replace(inlineFencePattern, "")
+    .trim();
+}
+
+function inferAttachmentPathsFromHydratedUserText(raw: string): string[] {
+  if (!raw) {
+    return [];
+  }
+
+  const matches = Array.from(
+    raw.matchAll(/\/\/\s*([^\r\n]*[\\/][^\r\n]*?)(?::\d+)?\s*(?:\r?\n|$)/g),
+  );
+  const paths = matches
+    .map((match) => (match[1] || "").trim())
+    .filter((value) => value.length > 0);
+  return Array.from(new Set(paths));
+}
+
 function normalizedUserMessageText(message?: Message): string {
   const raw =
     message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
-  return sanitizeUserContent(typeof raw === "string" ? raw : "");
+  const withoutAttachmentEcho = stripHydratedAttachmentEcho(
+    typeof raw === "string" ? raw : "",
+    message,
+  );
+  const withoutGenericFenceEcho =
+    stripGenericHydratedAttachmentFence(withoutAttachmentEcho);
+  return sanitizeUserContent(withoutGenericFenceEcho);
 }
 
 function isPlanProceedMessageContent(value: string): boolean {
@@ -2128,10 +2212,16 @@ export const SystemMessage = memo(function SystemMessage({
 export const UserMessage = memo(function UserMessage({ message }: { message?: Message }) {
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const userMessageRef = useRef<HTMLDivElement>(null);
+  const rawUserText =
+    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
   const content = normalizedUserMessageText(message);
-  const fileChips = (message?.parts ?? [])
+  const explicitFileChips = (message?.parts ?? [])
     .map((part) => part.filename ?? part.source?.path)
     .filter((value): value is string => !!value);
+  const inferredFileChips = inferAttachmentPathsFromHydratedUserText(
+    typeof rawUserText === "string" ? rawUserText : "",
+  );
+  const fileChips = Array.from(new Set([...explicitFileChips, ...inferredFileChips]));
   const hasImages = Array.isArray(message?.images) && message.images.length > 0;
 
   useEffect(() => {
@@ -2156,9 +2246,25 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
   if (isPlanProceedMessageContent(content)) {
     return (
       <div className="oc-message-enter mb-5 px-4 flex justify-end">
-        <div className="oc-plan-approved-badge flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-oc-xs">
-          <Check className="h-3.5 w-3.5" />
-          <span className="font-medium">Plan Approved</span>
+        <div className="flex w-fit max-w-[78%] flex-col items-end gap-2">
+          <div className="oc-plan-approved-badge flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-oc-xs">
+            <Check className="h-3.5 w-3.5" />
+            <span className="font-medium">Plan Approved</span>
+          </div>
+          {fileChips.length > 0 && (
+            <div className="flex flex-wrap justify-end gap-1">
+              {fileChips.map((file) => (
+                <span
+                  key={file}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft"
+                  title={file}
+                >
+                  <FileIcon filePath={file} className="h-3.5 w-3.5 shrink-0 opacity-85" />
+                  <span className="truncate">{file}</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -2187,27 +2293,33 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
               return content;
             })()}
           </div>
-          {fileChips.length > 0 && (
+          {(fileChips.length > 0 || hasImages) && (
             <div className="mt-2 flex flex-wrap gap-1">
               {fileChips.map((file) => (
                 <span
                   key={file}
-                  className="rounded-md border oc-accent-border-faint px-2 py-0.5 text-oc-2xs font-medium text-oc-text-soft opacity-70"
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft"
+                  title={file}
                 >
-                  {file}
+                  <FileIcon filePath={file} className="h-3.5 w-3.5 shrink-0 opacity-85" />
+                  <span className="truncate">{file}</span>
                 </span>
               ))}
-            </div>
-          )}
-          {message.images && message.images.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {message.images.map((src: string) => (
-                <img
+              {(message.images ?? []).map((src: string, index: number) => (
+                <button
                   key={src}
-                  src={src}
-                  alt="attachment"
-                  className="max-h-20 rounded-lg border border-oc-border-soft cursor-zoom-in"
-                />
+                  type="button"
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft transition-colors hover:bg-oc-bg-soft"
+                  onClick={() => setPreviewImageSrc(src)}
+                  title="Preview image attachment"
+                >
+                  <img
+                    src={src}
+                    alt={`attachment image ${index + 1}`}
+                    className="h-3.5 w-3.5 rounded-sm border border-oc-border-soft object-cover shrink-0"
+                  />
+                  <span className="truncate">image-{index + 1}</span>
+                </button>
               ))}
             </div>
           )}

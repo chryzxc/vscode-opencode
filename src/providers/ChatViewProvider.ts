@@ -7195,21 +7195,6 @@ export class ChatViewProvider
         ? [planFilePath, commentsFilePath]
         : [planFilePath];
 
-    // Post addPlanAttachment message to chat webview for the visual chip
-    const planGoal =
-      rawPlan.match(/^#\s+(.+)/m)?.[1]?.trim() ?? "Implementation Plan";
-    const planBase64 = Buffer.from(rawPlan, "utf-8").toString("base64");
-    const dataUrl = `data:text/markdown;base64,${planBase64}`;
-    this.view?.webview.postMessage({
-      type: "addPlanAttachment",
-      payload: {
-        id: `plan-${Date.now()}`,
-        filename: `\uD83D\uDCCB Implementation Plan: ${planGoal}`,
-        mimeType: "text/markdown",
-        dataUrl,
-      },
-    });
-
     PlanViewProvider.closeCurrentPanel();
 
     // Fire and forget so the plan tab closes immediately and execution starts in chat.

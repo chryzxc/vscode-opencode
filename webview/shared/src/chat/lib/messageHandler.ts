@@ -5509,6 +5509,111 @@ function dedupeInteractiveUserHydrationMessages(messages: Message[]): Message[] 
   return deduped;
 }
 
+function messageHasAttachmentPayload(message: Message): boolean {
+  if (Array.isArray(message.images) && message.images.length > 0) {
+    return true;
+  }
+  if (!Array.isArray(message.parts)) {
+    return false;
+  }
+  return message.parts.some((part) => {
+    const filename = asString(part?.filename);
+    const sourcePath = asString(asRecord(part?.source)?.path);
+    return !!filename || !!sourcePath;
+  });
+}
+
+function hydratedUserComparableText(message: Message): string | undefined {
+  const role = asString(message.role) || asString(asRecord(message.info)?.role);
+  if (role !== "user") {
+    return undefined;
+  }
+  const visibleText =
+    asOptionalString(message.content) ||
+    asOptionalString(message.text) ||
+    contentFromParts(Array.isArray(message.parts) ? message.parts : []);
+  if (!visibleText) {
+    return undefined;
+  }
+  const stripped = visibleText
+    .replace(
+      /```[a-zA-Z0-9_-]*\r?\n\s*\/\/\s*[^\n]*[\\/][^\n]*:\d+[^\n]*\r?\n[\s\S]*?```/g,
+      "",
+    )
+    .trim();
+  const normalized = normalizeComparableText(stripped);
+  return normalized || undefined;
+}
+
+function hydratedUserRichnessForAttachmentDedup(message: Message): number {
+  let score = 0;
+  const visibleText =
+    asOptionalString(message.content) ||
+    asOptionalString(message.text) ||
+    contentFromParts(Array.isArray(message.parts) ? message.parts : []);
+  if (visibleText) {
+    score += Math.min(40, Math.floor(visibleText.length / 20));
+  }
+  if (messageHasAttachmentPayload(message)) {
+    score += 100;
+  }
+  if (Array.isArray(message.images)) {
+    score += message.images.length * 20;
+  }
+  if (Array.isArray(message.parts)) {
+    score += message.parts.length;
+  }
+  return score;
+}
+
+function dedupeHydratedUserAttachmentEchoMessages(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length <= 1) {
+    return messages;
+  }
+
+  const deduped: Message[] = [];
+  for (const message of messages) {
+    const role = asString(message.role) || asString(asRecord(message.info)?.role);
+    if (role !== "user") {
+      deduped.push(message);
+      continue;
+    }
+
+    const currentText = hydratedUserComparableText(message);
+    const previous = deduped.length > 0 ? deduped[deduped.length - 1] : undefined;
+    const previousRole = previous
+      ? asString(previous.role) || asString(asRecord(previous.info)?.role)
+      : "";
+
+    if (!previous || previousRole !== "user" || !currentText) {
+      deduped.push(message);
+      continue;
+    }
+
+    const previousText = hydratedUserComparableText(previous);
+    if (!previousText || previousText !== currentText) {
+      deduped.push(message);
+      continue;
+    }
+
+    const currentHasAttachment = messageHasAttachmentPayload(message);
+    const previousHasAttachment = messageHasAttachmentPayload(previous);
+    if (!currentHasAttachment && !previousHasAttachment) {
+      deduped.push(message);
+      continue;
+    }
+
+    if (
+      hydratedUserRichnessForAttachmentDedup(message) >
+      hydratedUserRichnessForAttachmentDedup(previous)
+    ) {
+      deduped[deduped.length - 1] = message;
+    }
+  }
+
+  return deduped;
+}
+
 export function dedupeSystemMessages(messages: Message[]): Message[] {
   if (!Array.isArray(messages) || messages.length <= 1) {
     return messages;
@@ -8068,8 +8173,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const hydratedMessages = hydrateLegacyInteractiveUserMessages(messages);
             const dedupedHydratedMessages =
               dedupeInteractiveUserHydrationMessages(hydratedMessages);
+            const dedupedHydratedAttachmentEchoMessages =
+              dedupeHydratedUserAttachmentEchoMessages(dedupedHydratedMessages);
             const dedupedPlanProceedMessages =
-              dedupePlanProceedMessages(dedupedHydratedMessages);
+              dedupePlanProceedMessages(dedupedHydratedAttachmentEchoMessages);
             const dedupedSystemMessages =
               dedupeSystemMessages(dedupedPlanProceedMessages);
             activeSubagentParentMessageIds = new Set<string>();
