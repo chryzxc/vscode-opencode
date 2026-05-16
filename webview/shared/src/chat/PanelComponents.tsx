@@ -6,6 +6,7 @@ import {
   ArrowRight,
   BarChart3,
   Bot,
+  Brain,
   Check,
   ChevronDown,
   ChevronRight,
@@ -1089,7 +1090,7 @@ export function ModelDropdown() {
     : "Model";
 
   return (
-    <div className="relative" ref={containerRef}>
+    <div className="relative oc-toolbar-control" ref={containerRef}>
       <Button
         type="button"
         variant="chip"
@@ -1105,7 +1106,7 @@ export function ModelDropdown() {
         aria-label="Choose model"
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span>{label}</span>
+          <span className="truncate">{label}</span>
         </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${modelDropdownOpen ? "rotate-180" : ""
@@ -1250,7 +1251,7 @@ export function AgentDropdown() {
   const label = selectedAgentItem?.name ?? selectedAgent ?? "Default permissions";
 
   return (
-    <div className="relative" ref={containerRef}>
+    <div className="relative oc-toolbar-control" ref={containerRef}>
       <Button
         type="button"
         variant="chip"
@@ -1265,7 +1266,7 @@ export function AgentDropdown() {
         aria-label="Choose agent"
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span>{label}</span>
+          <span className="truncate">{label}</span>
         </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${agentDropdownOpen ? "rotate-180" : ""
@@ -1299,17 +1300,25 @@ export function AgentDropdown() {
               <button
                 key={agent.id}
                 type="button"
-                className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${selectedAgent === agent.id
-                    ? "bg-oc-accent-soft oc-tinted-badge-text"
+                className={`oc-popover-item oc-agent-option w-full rounded-lg px-2.5 py-2 text-left transition-colors ${selectedAgent === agent.id
+                    ? "oc-agent-option-selected"
                     : "hover:bg-oc-panel-soft"
                   }`}
+                style={
+                  {
+                    "--agent-color": agent.color ?? "var(--oc-accent)",
+                  } as Record<string, string>
+                }
                 onClick={() => {
                   dispatch({ type: "SET_SELECTED_AGENT", payload: agent.id });
                   dispatch({ type: "SET_AGENT_DROPDOWN_OPEN", payload: false });
                   vscode.postMessage({ type: "selectAgent", agent: agent.id });
                 }}
               >
-                <div className="text-xs font-medium">{agent.name}</div>
+                <div className="oc-agent-option-top">
+                  <span className="oc-agent-option-dot" />
+                  <div className="text-xs font-medium truncate">{agent.name}</div>
+                </div>
                 <div className="text-xs font-medium oc-text-secondary truncate mt-0.5">
                   {agent.description}
                 </div>
@@ -1883,6 +1892,7 @@ export function InputWrapper() {
         ...messages,
         {
           role: "user",
+          created: Date.now(),
           content: text,
           parts: messageParts,
           images: currentAttachments.map((a) => a.dataUrl),
@@ -2365,40 +2375,35 @@ export function InputWrapper() {
         {(selectedFiles.length > 0 || selectedContexts.length > 0) && (
           <div className="oc-context-chips flex flex-wrap gap-1.5 mb-2">
             {selectedFiles.map((file) => (
-              <Badge
-                key={file}
-                variant="secondary"
-                className="flex items-center gap-1 font-medium text-[10px] hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
-              >
-                <FileIcon filePath={file} />
-                {file}
-              </Badge>
+              <div key={file} className="oc-chip">
+                <FileIcon filePath={file} className="h-3.5 w-3.5" />
+                <span className="truncate">{file}</span>
+              </div>
             ))}
             {selectedContexts.map((context) => {
               const isResource = context.file.startsWith("resource:");
               const displayFile = isResource ? context.file.replace("resource:", "") : context.file;
               return (
-                <Badge
+                <div
                   key={`${context.file}:${context.lineInfo}`}
-                  variant="secondary"
-                  className="flex items-center gap-1 font-medium text-[10px] pr-1.5 hover:bg-oc-panel-soft cursor-default text-[var(--oc-text-soft)]"
+                  className="oc-chip-removable"
                 >
                   {isResource ? (
-                    <Wrench className="h-3 w-3 shrink-0" />
+                    <Wrench className="h-3.5 w-3.5 shrink-0" />
                   ) : (
-                    <FileIcon filePath={context.file} />
+                    <FileIcon filePath={context.file} className="h-3.5 w-3.5" />
                   )}
-                  <span>
+                  <span className="truncate max-w-[220px]">
                     {displayFile} {context.lineInfo}
                   </span>
                   {context.languageId && !isResource && (
-                    <span className="opacity-60 text-[9px] font-semibold">
+                    <span className="opacity-60 text-[9px] font-semibold shrink-0">
                       {context.languageId}
                     </span>
                   )}
                   <button
                     type="button"
-                    className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-oc-bg transition-colors"
+                    className="oc-chip-remove"
                     onClick={(e) => {
                       e.preventDefault();
                       dispatch({
@@ -2414,7 +2419,7 @@ export function InputWrapper() {
                   >
                     <X className="h-3 w-3" />
                   </button>
-                </Badge>
+                </div>
               );
             })}
           </div>
@@ -2819,7 +2824,7 @@ export function ThinkingLevelControl() {
   }
 
   return (
-    <div className="relative" ref={containerRef}>
+    <div className="relative oc-toolbar-control" ref={containerRef}>
       <Button
         type="button"
         variant="chip"
@@ -2834,7 +2839,8 @@ export function ThinkingLevelControl() {
         aria-label="Set thinking level"
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span>{displayLabel(thinkingLevel)}</span>
+          <Brain className="oc-thinking-chip-icon h-3.5 w-3.5 shrink-0" />
+          <span className="truncate oc-thinking-chip-label">{displayLabel(thinkingLevel)}</span>
         </div>
         <ChevronDown
           className={`h-3 w-3 shrink-0 transition-transform ${thinkingDropdownOpen ? "rotate-180" : ""
