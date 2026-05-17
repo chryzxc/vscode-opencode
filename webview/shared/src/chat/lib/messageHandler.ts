@@ -8194,21 +8194,32 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               });
             }
           }
-          // Only clear streaming state if this messageResponse matches the current streaming message ID
-          // This prevents clearing streaming state when processing messageResponse events for
-          // system messages or other non-streaming messages that arrive during streaming
           const isMatchingStreamingMessage =
             streamingMessageId && finalMessageId && streamingMessageId === finalMessageId;
+          const shouldClearStreamingAfterResponse =
+            isMatchingStreamingMessage ||
+            !currentStreaming ||
+            !streamingMessageId ||
+            hasOwnResponsePayload ||
+            interactiveEventsInResponse.length > 0;
 
-          if (isMatchingStreamingMessage || !currentStreaming) {
+          if (shouldClearStreamingAfterResponse) {
             latestStreamingSnapshot = null;
             activeSubagentParentMessageIds = new Set<string>();
           }
           dispatch({ type: "SET_PROCESSING", payload: false });
-          dispatch({ type: "SET_STREAMING", payload: null });
+          if (shouldClearStreamingAfterResponse) {
+            dispatch({ type: "SET_STREAMING", payload: null });
+          }
           break;
         }
         case "chatHistory": {
+          let canonicalMessages: Message[] = [];
+          let chatHistorySessionId = "";
+          let hydrationPresentationPolicy: SubagentPresentationPolicy = {
+            mode: "hydration",
+            sessionProcessing: false,
+          };
           try {
             terminalErrorReached = false;
             const rawMessages = asArray(data.messages, isMessage);
@@ -8229,7 +8240,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               dedupeSystemMessages(dedupedPlanProceedMessages);
             activeSubagentParentMessageIds = new Set<string>();
 
-            const chatHistorySessionId = asString(data.sessionId);
+            chatHistorySessionId = asString(data.sessionId);
             const currentState = getState();
             const isSessionProcessing = !!(chatHistorySessionId &&
               currentState.processingSessionIds.includes(chatHistorySessionId));
@@ -8260,7 +8271,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               });
             }
 
-            const hydrationPresentationPolicy: SubagentPresentationPolicy = {
+            hydrationPresentationPolicy = {
               mode: "hydration",
               sessionProcessing: isSessionProcessing,
             };
@@ -8292,6 +8303,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 ),
               };
             });
+            canonicalMessages = stabilizedHydratedMessages;
             dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages });
           } catch (error) {
             // Ensure loading state is cleared even if an error occurs
@@ -8301,7 +8313,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
           // Use the just-normalized hydration snapshot directly. Reading getState()
           // immediately after dispatch can observe stale messages in the same tick.
-          const canonicalMessages = stabilizedHydratedMessages;
           if (chatHistorySessionId) {
             dispatch({
               type: "CACHE_SESSION_MESSAGES",
