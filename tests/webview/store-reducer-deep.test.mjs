@@ -86,7 +86,7 @@ test('initialState defines the core webview state fields', () => {
 
 const actionContracts = [
   { type: 'SET_RECEIVED_INIT_STATE', patterns: [/receivedInitState:\s*action\.payload/] },
-  { type: 'SET_SESSION_ID', span: 2600, patterns: [/currentSessionId:\s*action\.payload/, /sessionStats:\s*statsForNew/, /promptQueue:\s*queueForNew/] },
+  { type: 'SET_SESSION_ID', span: 2800, patterns: [/currentSessionId:\s*action\.payload/, /sessionStats:\s*statsForNew/, /promptQueue:\s*queueForNew/, /contextUsagePct:\s*undefined/] },
   { type: 'SET_SERVER_STATUS', patterns: [/serverStatus:\s*action\.payload/] },
   { type: 'SET_SELECTED_MODEL', patterns: [/selectedModel:\s*action\.payload/] },
   { type: 'SET_MODELS_LIST', patterns: [/availableModels:\s*action\.payload/] },

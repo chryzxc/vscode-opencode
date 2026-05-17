@@ -1220,26 +1220,27 @@ export class OpencodeServerManager {
    * @returns Promise resolving to the compaction response data
    * @throws {Error} If client is not available or compaction fails
    */
-  async compactSession(sessionId: string): Promise<{ data?: unknown }> {
+  async compactSession(
+    sessionId: string,
+    model: { providerID: string; modelID: string },
+  ): Promise<{ data?: unknown }> {
     if (!this.client) {
       throw new Error("Cannot compact session: client not available");
     }
+    if (!model?.providerID || !model?.modelID) {
+      throw new Error("Cannot compact session: selected model is required");
+    }
 
     try {
-      const clientRec = this.client as unknown as Record<string, unknown>;
-      const sessionRec =
-        clientRec.session && typeof clientRec.session === "object"
-          ? (clientRec.session as Record<string, unknown>)
-          : null;
-
-      if (!sessionRec || typeof sessionRec.compact !== "function") {
-        throw new Error("compact method not available on client");
-      }
-
-      const result = await (sessionRec.compact as (sessionId: string) => Promise<{ data?: unknown }>)(
-        sessionId,
-      );
-
+      const workspaceDirectory = this.getWorkspaceDirectory();
+      const result = await this.client.session.summarize({
+        path: { id: sessionId },
+        body: {
+          providerID: model.providerID,
+          modelID: model.modelID,
+        },
+        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
+      });
       return result;
     } catch (error) {
       log.error("Failed to compact session", { sessionId, error });

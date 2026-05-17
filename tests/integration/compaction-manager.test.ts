@@ -38,13 +38,17 @@ class TestWorkspaceState implements vscode.Memento {
 
 function createManager(options?: {
   contextLimit?: number;
-  compactSession?: (sessionId: string) => Promise<{ data?: unknown }>;
+  selectedModel?: { providerID: string; modelID: string };
+  compactSession?: (
+    sessionId: string,
+    model: { providerID: string; modelID: string },
+  ) => Promise<{ data?: unknown }>;
 }) {
   const workspaceState = new TestWorkspaceState();
   const logger = createTestLogger();
   const serverManager = {
     compactSession:
-      options?.compactSession ?? (async (_sessionId: string) => ({ data: {} })),
+      options?.compactSession ?? (async () => ({ data: true })),
   } as unknown as OpencodeServerManager;
   const manager = new CompactionManager(
     workspaceState,
@@ -55,6 +59,9 @@ function createManager(options?: {
     async (messages: unknown[]) => messages,
   );
   manager.setGetSelectedModelContextLimit(() => options?.contextLimit);
+  manager.setGetSelectedModel(
+    () => options?.selectedModel ?? { providerID: "openai", modelID: "gpt-test" },
+  );
 
   return { manager, workspaceState };
 }
@@ -253,9 +260,7 @@ describe("CompactionManager", () => {
         compactSession: async (sessionId: string) => {
           calls.push(sessionId);
           return {
-            data: {
-              baselineStats: { input: 910 },
-            },
+            data: true,
           };
         },
       });
@@ -284,7 +289,7 @@ describe("CompactionManager", () => {
         contextLimit: 1000,
         compactSession: async (sessionId: string) => {
           calls.push(sessionId);
-          return { data: {} };
+          return { data: true };
         },
       });
 

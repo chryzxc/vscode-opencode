@@ -136,6 +136,7 @@ import {
   type AssistantHistoryMarker,
   type ChatModelOption,
   type ChatSlashCommand,
+  type CompactionBaselineStats,
   type PlanProceedComment,
   type PromptDispatchMode,
   type QueuedPrompt,
@@ -743,6 +744,12 @@ export class ChatViewProvider
             model.modelID === selected.modelID,
         );
       return matched?.contextLimit;
+    });
+    this.compactionManager.setGetSelectedModel(() => {
+      const selected = this.modelAndAgentManager.getSelectedModel();
+      return selected?.providerID && selected?.modelID
+        ? { providerID: selected.providerID, modelID: selected.modelID }
+        : undefined;
     });
     this.modelAndAgentManager.setPostMessage(postMessage);
     this.queueManager.setPostMessage(postMessage);
@@ -1708,9 +1715,15 @@ export class ChatViewProvider
     sessionId: string,
     baselineStats?: { [key: string]: number },
   ): Promise<void> {
-    const options: { auto?: boolean; threshold?: number } = {};
+    const options: {
+      auto?: boolean;
+      threshold?: number;
+      baselineStats?: CompactionBaselineStats;
+    } = {};
     if (baselineStats) {
       options.threshold = Object.values(baselineStats).reduce((sum, val) => sum + val, 0);
+      options.baselineStats =
+        this.compactionManager.normalizeCompactionBaselineStats(baselineStats);
     }
     return this.compactionManager.handleCompactSession(
       sessionId,

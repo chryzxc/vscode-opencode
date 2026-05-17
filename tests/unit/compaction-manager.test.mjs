@@ -224,8 +224,8 @@ test('CompactionManager auto-compacts above threshold and guards the compaction 
 
   assert.match(
     autoBody,
-    /if \(!responseData\?\.usage\) \{[\s\S]*return;/,
-    'maybeAutoCompact should skip auto-compaction when usage data is absent',
+    /const inputTokens = this\.extractSdkContextInputTokens\(responseData\);[\s\S]*if \(inputTokens === undefined\) \{[\s\S]*return;/,
+    'maybeAutoCompact should use SDK assistant input token snapshots',
   );
   assert.match(
     autoBody,
@@ -234,13 +234,13 @@ test('CompactionManager auto-compacts above threshold and guards the compaction 
   );
   assert.match(
     autoBody,
-    /const totalTokens = \(responseData\.usage\.inputTokens \|\| 0\) \+[\s\S]*\(responseData\.usage\.totalTokens \|\| 0\) \+[\s\S]*\(responseData\.usage\.prompt_tokens \|\| 0\);/,
-    'maybeAutoCompact should sum supported token usage fields when computing total token usage',
+    /const thresholdRatioRaw = config\.get<number>\("autoCompactThreshold", 0\.9\);[\s\S]*const thresholdRatio =[\s\S]*: 0\.9;/,
+    'maybeAutoCompact should use the configured SDK-token threshold ratio',
   );
   assert.match(
     autoBody,
-    /const threshold = Math\.floor\(contextLimit \* 0\.8\);[\s\S]*if \(totalTokens < threshold\) \{[\s\S]*return;/,
-    'maybeAutoCompact should auto-compact only after reaching 80 percent of the model context limit',
+    /const threshold = Math\.floor\(contextLimit \* thresholdRatio\);[\s\S]*if \(inputTokens < threshold\) \{[\s\S]*return;/,
+    'maybeAutoCompact should auto-compact only after SDK input tokens reach the context threshold',
   );
   assert.match(
     autoBody,
@@ -249,7 +249,7 @@ test('CompactionManager auto-compacts above threshold and guards the compaction 
   );
   assert.match(
     autoBody,
-    /await this\.handleCompactSession\([\s\S]*\{ auto: true, threshold: totalTokens \},[\s\S]*sessionService,[\s\S]*\);/,
+    /await this\.handleCompactSession\([\s\S]*\{ auto: true, threshold: inputTokens \},[\s\S]*sessionService,[\s\S]*\);/,
     'maybeAutoCompact should delegate qualifying auto compactions to handleCompactSession with auto metadata',
   );
   assert.match(
@@ -264,18 +264,23 @@ test('CompactionManager auto-compacts above threshold and guards the compaction 
   );
   assert.match(
     handleCompactBody,
-    /this\.postCompactionStatus\(\{[\s\S]*sessionId,[\s\S]*status: "running",[\s\S]*\}\);[\s\S]*const response = await this\.serverManager\.compactSession\(sessionId\);/,
-    'handleCompactSession should emit a running status before invoking the server-side compaction request',
+    /this\.postCompactionStatus\(\{[\s\S]*sessionId,[\s\S]*status: "running",[\s\S]*\}\);[\s\S]*const selectedModel = this\.getSelectedModel\(\);[\s\S]*const response = await this\.serverManager\.compactSession\(sessionId,/,
+    'handleCompactSession should emit running status before invoking SDK-backed compaction with the selected model',
   );
   assert.match(
     handleCompactBody,
-    /const baselineStats = this\.normalizeCompactionBaselineStats\([\s\S]*response\.data as Record<string, unknown>\)\?\.baselineStats,[\s\S]*\);/,
-    'handleCompactSession should normalize baseline stats from the compaction response payload',
+    /if \(response\?\.data !== true\) \{[\s\S]*throw new Error\("OpenCode did not confirm session compaction"\);/,
+    'handleCompactSession should require the OpenCode SDK summarize confirmation',
   );
   assert.match(
     handleCompactBody,
-    /await this\.persistAndPublishCompactionViewState\(sessionId, state\);[\s\S]*this\.postCompactionStatus\(\{[\s\S]*status: "done",[\s\S]*compacted: true,[\s\S]*baselineStats,[\s\S]*\}\);/,
-    'handleCompactSession should persist the new compaction view state and emit a done status when compaction succeeds',
+    /await this\.persistAndPublishCompactionViewState\(sessionId, state\);[\s\S]*const refreshedRawMessages = await sessionService\.getMessages\(sessionId\);[\s\S]*type: "chatHistory",[\s\S]*messages: refreshedMessages,/,
+    'handleCompactSession should reload SDK-owned messages and publish fresh chat history after compaction',
+  );
+  assert.match(
+    handleCompactBody,
+    /this\.postCompactionStatus\(\{[\s\S]*status: "done",[\s\S]*compacted: true,[\s\S]*baselineStats,[\s\S]*\}\);/,
+    'handleCompactSession should emit a done status when compaction succeeds',
   );
   assert.match(
     handleCompactBody,

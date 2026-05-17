@@ -233,6 +233,101 @@ function asSessionStats(value: unknown): AppState["sessionStats"] | undefined {
   };
 }
 
+function normalizeTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function getMessageInputTokens(message: Message): number | undefined {
+  return (
+    normalizeTokenCount(message.tokens?.input) ??
+    normalizeTokenCount(message.info?.tokens?.input)
+  );
+}
+
+function getMessageModelIdentity(message: Message): {
+  providerID?: string;
+  modelID?: string;
+} {
+  const info = asRecord(message.info);
+  return {
+    providerID:
+      firstNonEmptyString(message.providerID, info?.providerID) ??
+      undefined,
+    modelID:
+      firstNonEmptyString(message.modelID, info?.modelID) ??
+      undefined,
+  };
+}
+
+function findLatestContextInputTokens(messages: Message[]): {
+  inputTokens: number;
+  providerID?: string;
+  modelID?: string;
+} | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const inputTokens = getMessageInputTokens(messages[index]);
+    if (inputTokens === undefined) {
+      continue;
+    }
+    return {
+      inputTokens,
+      ...getMessageModelIdentity(messages[index]),
+    };
+  }
+  return undefined;
+}
+
+function calculateContextUsagePct(
+  inputTokens: number | undefined,
+  state: AppState,
+  modelIdentity?: { providerID?: string; modelID?: string },
+): number | undefined {
+  if (inputTokens === undefined) {
+    return undefined;
+  }
+
+  const selectedModel = state.selectedModel;
+  const providerID = modelIdentity?.providerID || selectedModel?.providerID;
+  const modelID = modelIdentity?.modelID || selectedModel?.modelID;
+  const matched =
+    providerID && modelID
+      ? state.availableModels.find(
+          (model) =>
+            model.providerID === providerID && model.modelID === modelID,
+        )
+      : selectedModel
+        ? state.availableModels.find(
+            (model) =>
+              model.providerID === selectedModel.providerID &&
+              model.modelID === selectedModel.modelID,
+          )
+        : undefined;
+  const contextLimit = matched?.contextLimit;
+  if (
+    typeof contextLimit !== "number" ||
+    !Number.isFinite(contextLimit) ||
+    contextLimit <= 0
+  ) {
+    return undefined;
+  }
+
+  return Math.min(100, Math.round((inputTokens / contextLimit) * 100));
+}
+
+function dispatchContextUsageFromMessages(
+  dispatch: Dispatch<AppAction>,
+  state: AppState,
+  messages: Message[],
+): void {
+  const latest = findLatestContextInputTokens(messages);
+  dispatch({
+    type: "SET_CONTEXT_USAGE_PCT",
+    payload: calculateContextUsagePct(latest?.inputTokens, state, latest),
+  });
+}
+
 function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
@@ -7757,6 +7852,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             },
           );
           dispatch({ type: "SET_MODELS_LIST", payload: models });
+          dispatchContextUsageFromMessages(dispatch, getState(), getState().messages);
           break;
         }
         case "agentsList": {
@@ -7974,23 +8070,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             },
           });
 
-          if (tokensInput > 0) {
-            const { selectedModel, availableModels } = getState();
-            const matched = selectedModel
-              ? availableModels.find(
-                  (m) =>
-                    m.providerID === selectedModel.providerID &&
-                    m.modelID === selectedModel.modelID,
-                )
-              : undefined;
-            const contextLimit = matched?.contextLimit;
-            if (contextLimit && contextLimit > 0) {
-              dispatch({
-                type: "SET_CONTEXT_USAGE_PCT",
-                payload: Math.min(100, Math.round((tokensInput / contextLimit) * 100)),
-              });
-            }
-          }
+          dispatch({
+            type: "SET_CONTEXT_USAGE_PCT",
+            payload: calculateContextUsagePct(
+              getMessageInputTokens(msg),
+              getState(),
+              getMessageModelIdentity(msg),
+            ),
+          });
 
           const responseMessageId =
             asString(msg.id) || asString(asRecord(msg.info)?.id);
@@ -8348,6 +8435,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               msg.duration || msg.timing?.duration || msg.info?.duration || 0;
           });
           dispatch({ type: "RESET_SESSION_STATS", payload: stats });
+          dispatchContextUsageFromMessages(dispatch, getState(), canonicalMessages);
           dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
           const extractedHydratedSubagents =
             extractSubagentsFromMessages(canonicalMessages);

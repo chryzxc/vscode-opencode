@@ -717,8 +717,8 @@ export function ActiveTaskPanel() {
           </MiniSection>
         )}
 
-        {/* TEMPORARY: Hidden during modularization; keep Context section implementation intact for later re-enable. */}
-        {false && (
+        {/* Context usage and SDK-backed session compaction controls. */}
+        {(
           <MiniSection title="Context">
             {/* Token usage bar */}
             <div className="mb-3">
@@ -2735,11 +2735,11 @@ export function InputWrapper() {
                   title={isAiResponding ? "Send steering message" : "Send"}
                 >
                   {!isAiResponding ? (
-                    <Send className="h-4 w-4" />
+                    <Send className="h-3.5 w-3.5" />
                   ) : inputValue.trim().length > 0 ? (
-                    <AlertCircle className="h-4 w-4" />
+                    <AlertCircle className="h-3.5 w-3.5" />
                   ) : (
-                    <Send className="h-4 w-4" />
+                    <Send className="h-3.5 w-3.5" />
                   )}
                 </Button>
               ) : null}

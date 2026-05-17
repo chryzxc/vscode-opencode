@@ -10,6 +10,12 @@ import * as vscode from "vscode";
 import type { OpencodeServerManager } from "../../services/OpencodeServerManager";
 import type { CompactionBaselineStats, PersistedCompactionViewState } from "./types";
 
+type CompactSessionOptions = {
+  auto?: boolean;
+  threshold?: number;
+  baselineStats?: CompactionBaselineStats;
+};
+
 export class CompactionManager {
   private static readonly COMPACTION_VIEW_STATE_PREFIX =
     "opencode.session.compaction-view.";
@@ -27,10 +33,12 @@ export class CompactionManager {
     // postMessage callback will be set by shell
     this.postMessage = () => { };
     this.getSelectedModelContextLimit = () => undefined;
+    this.getSelectedModel = () => undefined;
   }
 
   private postMessage: (msg: any) => void;
   private getSelectedModelContextLimit: () => number | undefined;
+  private getSelectedModel: () => { providerID: string; modelID: string } | undefined;
 
   setPostMessage(fn: (msg: any) => void): void {
     this.postMessage = fn;
@@ -38,6 +46,10 @@ export class CompactionManager {
 
   setGetSelectedModelContextLimit(fn: () => number | undefined): void {
     this.getSelectedModelContextLimit = fn;
+  }
+
+  setGetSelectedModel(fn: () => { providerID: string; modelID: string } | undefined): void {
+    this.getSelectedModel = fn;
   }
 
   private normalizeTokenCount(value: unknown): number | undefined {
@@ -411,7 +423,7 @@ export class CompactionManager {
    */
   async handleCompactSession(
     sessionId: string,
-    options: { auto?: boolean; threshold?: number },
+    options: CompactSessionOptions,
     sessionService: any,
   ): Promise<void> {
     if (this.compactingSessions.has(sessionId)) {
@@ -432,15 +444,21 @@ export class CompactionManager {
         status: "running",
       });
 
-      const response = await this.serverManager.compactSession(sessionId);
-
-      if (!response?.data) {
-        throw new Error("No data in compaction response");
+      const selectedModel = this.getSelectedModel();
+      if (!selectedModel?.providerID || !selectedModel?.modelID) {
+        throw new Error("Cannot compact session: selected model is required");
       }
 
-      const baselineStats = this.normalizeCompactionBaselineStats(
-        (response.data as Record<string, unknown>)?.baselineStats,
-      );
+      const response = await this.serverManager.compactSession(sessionId, {
+        providerID: selectedModel.providerID,
+        modelID: selectedModel.modelID,
+      });
+
+      if (response?.data !== true) {
+        throw new Error("OpenCode did not confirm session compaction");
+      }
+
+      const baselineStats = options.baselineStats;
 
       const state: PersistedCompactionViewState = {
         lastCompactedAt: Date.now(),
@@ -454,6 +472,16 @@ export class CompactionManager {
       };
 
       await this.persistAndPublishCompactionViewState(sessionId, state);
+      const refreshedRawMessages = await sessionService.getMessages(sessionId);
+      const refreshedMessages = Array.isArray(refreshedRawMessages)
+        ? await this.processHistoryMessages(refreshedRawMessages, sessionId)
+        : [];
+
+      this.postMessage({
+        type: "chatHistory",
+        sessionId,
+        messages: refreshedMessages,
+      });
 
       this.postCompactionStatus({
         sessionId,

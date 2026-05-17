@@ -538,13 +538,13 @@ test.describe('OpencodeServerManager - Compaction', () => {
     );
   });
 
-  test('compactSession calls SDK compact method', () => {
+  test('compactSession calls SDK summarize method', () => {
     const source = serverManagerSource;
 
     assert.match(
       source,
-      /compactSession[\s\S]*session\.compact|clientRec\.session/s,
-      'must call SDK compact session endpoint'
+      /compactSession[\s\S]*client\.session\.summarize[\s\S]*providerID:[\s\S]*model\.providerID[\s\S]*modelID:[\s\S]*model\.modelID/s,
+      'must call SDK summarize endpoint with the selected model'
     );
   });
 

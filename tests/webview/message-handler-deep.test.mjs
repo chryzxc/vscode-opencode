@@ -48,6 +48,29 @@ test('message handler source exposes the expected factory, helpers, and normaliz
   assert.match(source, /function joinRichStringSegments\(/, 'joinRichStringSegments helper should exist');
 });
 
+test('chat history hydration restores context usage from latest assistant tokens', () => {
+  assert.match(
+    source,
+    /function findLatestContextInputTokens\(messages: Message\[\]\)/,
+    'message handler should derive context usage from hydrated message tokens',
+  );
+  assert.match(
+    source,
+    /function calculateContextUsagePct\([\s\S]*contextLimit[\s\S]*inputTokens \/ contextLimit/,
+    'context usage should divide latest input tokens by the matched model context limit',
+  );
+  assert.match(
+    createMessageHandlerBody,
+    /case "chatHistory":[\s\S]*RESET_SESSION_STATS[\s\S]*dispatchContextUsageFromMessages\(dispatch, getState\(\), canonicalMessages\)/,
+    'chatHistory should restore the sticky-header context percentage after resetting session stats',
+  );
+  assert.match(
+    createMessageHandlerBody,
+    /case "modelsList":[\s\S]*SET_MODELS_LIST[\s\S]*dispatchContextUsageFromMessages\(dispatch, getState\(\), getState\(\)\.messages\)/,
+    'modelsList should recalculate context usage when model context limits arrive after history',
+  );
+});
+
 test('handleStreamEvent routes lifecycle and streaming dispatch patterns', () => {
   assert.match(handleStreamEventBody, /case 'message\.part\.updated':/, 'part update case should exist');
   assert.match(handleStreamEventBody, /case 'message\.updated':/, 'message.updated case should exist');
@@ -270,8 +293,8 @@ test('createMessageHandler routes stream events and persists assistant messages 
   );
   assert.match(
     createMessageHandlerBody,
-    /interactiveResponseTransitionUntil = 0/,
-    'createMessageHandler should track the interactive response transition window',
+    /interactiveEventsInResponse\.length > 0/,
+    'createMessageHandler should preserve streaming state based on interactive response payloads',
   );
   assert.match(
     createMessageHandlerBody,

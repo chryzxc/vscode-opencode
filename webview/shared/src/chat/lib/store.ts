@@ -1485,6 +1485,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         compactionDividerBeforeMessageId: undefined,
         compactionDividerAfterMessageId: undefined,
         compactedMessagesCollapsed: false,
+        contextUsagePct: undefined,
       };
     }
     case "SET_SERVER_STATUS":
