@@ -2715,13 +2715,13 @@ export function InputWrapper() {
                 <Button
                   variant="send"
                   size="icon"
-                  className="oc-toolbar-action-icon"
+                  className="oc-toolbar-action-icon oc-toolbar-action-icon-stop"
                   onClick={stopRequest}
                   disabled={isSteering}
                   aria-label="Stop"
                   title="Stop"
                 >
-                  <Square className="h-4 w-4" />
+                  <Square className="h-3.5 w-3.5" />
                 </Button>
               ) : null}
               {!isAiResponding || inputValue.trim().length > 0 ? (

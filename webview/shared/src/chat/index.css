@@ -2138,6 +2138,12 @@ body {
   padding: 0 !important;
 }
 
+.oc-toolbar-action-icon-stop {
+  height: 38px;
+  width: 38px;
+  min-width: 38px;
+}
+
 @media (max-width: 720px) {
   .oc-toolbar {
     flex-wrap: nowrap;
@@ -2194,6 +2200,12 @@ body {
     height: 38px;
     width: 38px;
     min-width: 38px;
+  }
+
+  .oc-toolbar-action-icon-stop {
+    height: 34px;
+    width: 34px;
+    min-width: 34px;
   }
 
   /* Keep chip popovers inside the viewport on narrow screens */
