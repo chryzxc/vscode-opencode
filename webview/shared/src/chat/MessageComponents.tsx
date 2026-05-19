@@ -1362,7 +1362,7 @@ function TodoInlineSummary({ todoItems }: { todoItems: TodoItem[] }) {
   return (
     <section
       data-assistant-section="todo-inline-summary"
-      className="rounded-md border border-oc-border-soft/70 bg-oc-panel-soft/30 px-2.5 py-2"
+      className="rounded-md border border-transparent bg-oc-panel-soft/22 px-2.5 py-2"
     >
       <div className="text-[11px] font-medium oc-text-secondary">
         {totalCount} {totalCount === 1 ? "task" : "tasks"} - {inProgressCount} in
@@ -3613,7 +3613,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       {thinkingVariant && (
                         <div className="flex items-center gap-1 opacity-60">
                           <span className="text-oc-xs font-medium shrink-0">•</span>
-                          <span className="text-oc-xs">
+                          <span className="oc-msg-thinking-label">
                             Think {formatThinkingVariantLabel(thinkingVariant)}
                           </span>
                         </div>

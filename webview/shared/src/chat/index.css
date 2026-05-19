@@ -1276,6 +1276,14 @@ body {
   vertical-align: bottom;
 }
 
+.oc-msg-thinking-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--oc-text-soft);
+  opacity: 0.82;
+  letter-spacing: 0.005em;
+}
+
 /* ── Token Statistics Display ─────────────────────────────────────────────── */
 .oc-msg-token-chips {
   font-family: var(
