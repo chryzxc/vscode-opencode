@@ -2530,6 +2530,7 @@ export const SystemMessage = memo(function SystemMessage({
 
 export const UserMessage = memo(function UserMessage({ message }: { message?: Message }) {
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const userMessageRef = useRef<HTMLDivElement>(null);
   const rawUserText =
     message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
@@ -2559,6 +2560,22 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
     root.addEventListener("click", onClick);
     return () => root.removeEventListener("click", onClick);
   }, []);
+
+  const handleCopy = async () => {
+    const textToCopy = content?.trim() || rawUserText?.trim() || "";
+    if (!textToCopy) return;
+
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+      return;
+    } catch {
+      vscode.postMessage({ type: "copyToClipboard", text: textToCopy });
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    }
+  };
 
   if (!message) return null;
 
@@ -2642,6 +2659,20 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
               ))}
             </div>
           )}
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
+              onClick={handleCopy}
+              title="Copy message"
+            >
+              {copied ? (
+                <Check className="h-3.5 w-3.5 text-oc-green" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </div>
         </div>
       </div>
       <ImagePreviewModal
@@ -3672,18 +3703,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   <AlertCircle className="h-3.5 w-3.5 text-oc-yellow" />
                 </span>
               )}
-              <button
-                type="button"
-                className="oc-msg-copy-btn h-6 w-6"
-                onClick={handleCopy}
-                title="Copy message"
-              >
-                {copied ? (
-                  <Check className="h-3 w-3 text-oc-green" />
-                ) : (
-                  <Copy className="h-3 w-3" />
-                )}
-              </button>
             </div>
           </div>
         )}
@@ -4286,6 +4305,21 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
             </div>
           </div>
         )}
+
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
+            onClick={handleCopy}
+            title="Copy message"
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-oc-green" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </div>
 
         {showLegacyErrorBanner && (
           <div className="mt-2">

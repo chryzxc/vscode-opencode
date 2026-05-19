@@ -1355,6 +1355,52 @@ body {
   opacity: 1;
 }
 
+@keyframes oc-copy-check-pop {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.65;
+  }
+  60% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.oc-bubble-copy-btn {
+  color: var(--oc-text-muted);
+  border-radius: 6px;
+  border: 1px solid var(--oc-border-soft);
+  background: color-mix(in srgb, var(--oc-panel-soft) 72%, transparent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background 0.14s ease,
+    color 0.14s ease,
+    border-color 0.14s ease,
+    transform 0.14s ease;
+}
+
+.oc-bubble-copy-btn:hover {
+  background: color-mix(in srgb, var(--oc-accent) 12%, var(--oc-panel-soft));
+  border-color: color-mix(in srgb, var(--oc-accent) 28%, var(--oc-border));
+  color: var(--oc-text);
+}
+
+.oc-bubble-copy-btn:active {
+  transform: scale(0.96);
+}
+
+.oc-bubble-copy-btn.is-copied {
+  border-color: color-mix(in srgb, var(--oc-green) 30%, var(--oc-border));
+  background: color-mix(in srgb, var(--oc-green) 10%, var(--oc-panel-soft));
+  animation: oc-copy-check-pop 180ms ease-out;
+}
+
 /* ── Plan Card ───────────────────────────────────────────────────────────── */
 .plan-card {
   border: 1px solid color-mix(in srgb, var(--oc-accent) 22%, var(--oc-border)) !important;
