@@ -24,6 +24,39 @@ interface PositionedComment {
   top: number;
 }
 
+function normalizeTitleForCompare(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .replace(/\s+/g, " ");
+}
+
+function stripRedundantLeadingTitle(raw: string, title: string): string {
+  if (!raw.trim()) return raw;
+
+  const lines = raw.split("\n");
+  let firstContentLineIndex = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].trim().length > 0) {
+      firstContentLineIndex = i;
+      break;
+    }
+  }
+  if (firstContentLineIndex === -1) return raw;
+
+  const firstLine = lines[firstContentLineIndex];
+  const headingMatch = firstLine.match(/^\s{0,3}#{1,6}\s+(.+?)\s*$/);
+  if (!headingMatch?.[1]) return raw;
+
+  const headingText = normalizeTitleForCompare(headingMatch[1]);
+  const targetTitle = normalizeTitleForCompare(title);
+  if (!headingText || !targetTitle || headingText !== targetTitle) return raw;
+
+  lines.splice(firstContentLineIndex, 1);
+  return lines.join("\n");
+}
+
 function normalizeCommentText(value: string | undefined): string {
   return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
 }
@@ -45,6 +78,7 @@ export default function PlanShell() {
   const envelope = window.__PLAN_DATA__;
   const rawPlan = envelope?.raw ?? "";
   const planTitle = envelope?.title?.trim() || "Implementation Plan";
+  const displayedPlan = stripRedundantLeadingTitle(rawPlan, planTitle);
   const sourceFile = envelope?.sourceFile?.trim();
   const planId = envelope?.planId?.trim() || planTitle;
 
@@ -118,7 +152,7 @@ export default function PlanShell() {
     window.__pendingPlanAnchor = pendingAnchor ?? null;
   }, [pendingAnchor]);
 
-  const renderedHtml = renderMarkdown(rawPlan);
+  const renderedHtml = renderMarkdown(displayedPlan);
 
   function revealComment(commentId: string) {
     setActiveCommentId(commentId);
@@ -562,7 +596,7 @@ export default function PlanShell() {
 
       {/* ─── Main scroll area ────────────────────────────────────────────── */}
       <main className="min-h-0 flex-1 overflow-y-auto px-6 pb-12 pt-5">
-        {rawPlan.trim() ? (
+        {displayedPlan.trim() ? (
           <div
             ref={planSurfaceRef}
             className="relative rounded-xl border border-[color-mix(in_srgb,var(--vscode-panel-border)_80%,transparent)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_86%,var(--vscode-focusBorder)_14%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
