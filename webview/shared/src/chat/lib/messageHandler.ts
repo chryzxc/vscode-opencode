@@ -332,6 +332,27 @@ function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+function isFinishSignal(value: unknown): boolean {
+  if (value === true) {
+    return true;
+  }
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "true" ||
+    normalized === "done" ||
+    normalized === "stop" ||
+    normalized === "complete" ||
+    normalized === "completed" ||
+    normalized === "success" ||
+    normalized === "finished" ||
+    normalized === "tool-calls" ||
+    normalized === "error"
+  );
+}
+
 function asArray<T>(value: unknown, guard: (item: unknown) => item is T): T[] {
   if (!Array.isArray(value)) {
     return [];
@@ -1869,13 +1890,20 @@ function parseNumberedQuestionsFromText(text: string): StructuredInteractiveEven
 // Normalize incoming todo-like records into a canonical Todo shape used by the
 // reducer ingestion path. Returns null for malformed entries so callers can
 // skip without throwing.
-function normalizeTodoRecord(raw: unknown): { id: string; text: string; status: TodoItem['status']; sessionId?: string } | null {
+function normalizeTodoRecord(raw: unknown): TodoItem | null {
   const rec = asRecord(raw);
   if (!rec) return null;
   const id = asString(rec.id).trim();
-  const text = asString(rec.text).trim();
+  const text = firstNonEmptyString(rec.text, rec.content, rec.description) ?? "";
   const statusRaw = asString(rec.status).trim().toLowerCase();
-  const sessionId = asOptionalString(rec.sessionId);
+  const sessionId = firstNonEmptyString(rec.sessionId, rec.sessionID) ?? "";
+  const priorityRaw = asString(rec.priority).trim().toLowerCase();
+  const priority =
+    priorityRaw === "high" || priorityRaw === "medium" || priorityRaw === "low"
+      ? priorityRaw
+      : undefined;
+  const source =
+    asString(rec.source).trim().toLowerCase() === "sdk" ? "sdk" : undefined;
 
   if (!id || !text) return null;
 
@@ -1888,7 +1916,37 @@ function normalizeTodoRecord(raw: unknown): { id: string; text: string; status: 
   ]);
   if (!allowedStatuses.has(statusRaw)) return null;
 
-  return { id, text, status: statusRaw as TodoItem['status'], sessionId };
+  return {
+    id,
+    text,
+    status: statusRaw as TodoItem['status'],
+    sessionId,
+    description: asOptionalString(rec.description),
+    ...(priority ? { priority } : {}),
+    ...(source ? { source } : {}),
+  };
+}
+
+function normalizeTodoList(rawItems: unknown[], expectedSessionId?: string): TodoItem[] {
+  return rawItems
+    .map((item) => {
+      const normalized = normalizeTodoRecord(item);
+      if (!normalized) {
+        return null;
+      }
+      if (
+        expectedSessionId &&
+        normalized.sessionId &&
+        normalized.sessionId !== expectedSessionId
+      ) {
+        return null;
+      }
+      return {
+        ...normalized,
+        sessionId: normalized.sessionId || expectedSessionId || "",
+      };
+    })
+    .filter((item): item is TodoItem => !!item);
 }
 
 // Given a normalized todo record, decide whether to ADD_TODO_ITEM or
@@ -1899,23 +1957,21 @@ function normalizeTodoRecord(raw: unknown): { id: string; text: string; status: 
 function ingestNormalizedTodo(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
-  item: { id: string; text: string; status: TodoItem['status']; sessionId?: string },
+  item: TodoItem,
 ): void {
   const existingIds = new Set((getState().todoItems || []).map((t) => t.id));
   if (existingIds.has(item.id)) {
-    const patch: Partial<TodoItem> = { text: item.text, status: item.status };
+    const patch: Partial<TodoItem> = {
+      text: item.text,
+      status: item.status,
+      description: item.description,
+      priority: item.priority,
+      source: item.source,
+    };
     if (item.sessionId) patch.sessionId = item.sessionId;
     dispatch({ type: 'UPDATE_TODO_ITEM', payload: { id: item.id, patch } });
   } else {
-    dispatch({
-      type: 'ADD_TODO_ITEM',
-      payload: {
-        id: item.id,
-        text: item.text,
-        status: item.status,
-        sessionId: item.sessionId ?? '',
-      },
-    });
+    dispatch({ type: 'ADD_TODO_ITEM', payload: item });
   }
 }
 
@@ -2315,9 +2371,8 @@ function synthesizeQuestionContextMessage(events: InteractiveEvent[]): string {
     return ev.title ? `**${ev.title}**\n\n${ev.question}` : ev.question;
   }
 
-  const intro = 'I have a few questions before proceeding:';
   const lines = questionEvents.map((ev, i) => `${i + 1}. ${ev.question}`);
-  return `${intro}\n\n${lines.join('\n')}`;
+  return lines.join('\n');
 }
 
 function shouldOverrideStreamingContentWithInteractivePrompt(
@@ -2523,12 +2578,15 @@ function upsertStreamingStep(
     return;
   }
 
-  // Ignore streaming steps if we're no longer processing (user stopped the request)
-  if (!getState().isProcessing) {
+  // Ignore streaming steps only when there is neither an active request nor an
+  // active stream snapshot. The first tool/progress event can bootstrap
+  // streaming before isProcessing has caught up.
+  const state = getState();
+  if (!state.isProcessing && !state.streaming?.isActive) {
     return;
   }
 
-  const streaming = getState().streaming;
+  const streaming = state.streaming;
   if (!streaming) {
     dispatch({
       type: "ADD_STREAMING_STEP",
@@ -6033,7 +6091,7 @@ function handleStreamEvent(
   const isAssistantUpdateStart =
     eventType === 'message.updated' &&
     asString(infoRecord?.role) === 'assistant' &&
-    !asBoolean(infoRecord?.finish, false);
+    !isFinishSignal(infoRecord?.finish);
   const canBootstrapFromPart =
     isPartUpdateEvent && shouldBootstrapStreamingFromPart(eventPart);
 
@@ -6096,6 +6154,7 @@ function handleStreamEvent(
         variant: state.thinkingLevel,
       },
     });
+    dispatch({ type: "SET_PROCESSING", payload: true });
   }
 
   switch (normalizedEventType) {
@@ -6637,7 +6696,7 @@ function handleStreamEvent(
         hasInfo: !!asRecord(payload.info),
       });
       const info = asRecord(payload.info) ?? asRecord(payload.properties)?.info;
-      const finish = info ? asBoolean((info as UnknownRecord).finish, false) : false;
+      const finish = info ? isFinishSignal((info as UnknownRecord).finish) : false;
 
       if (finish && structuredOutput) {
         if (structuredOutput.reasoning) {
@@ -6922,19 +6981,16 @@ function handleStreamEvent(
           }
         }
 
-        // Handle todo_update structured responses by normalizing each todo item
-        // and routing them through the same reducer actions used by the explicit
-        // "todoUpdate" postMessage path. This keeps reducer semantics identical
-        // regardless of whether the host forwarded a postMessage or the stream
-        // carried the structured payload directly.
+        // Legacy structured todo updates are intentionally disabled. The
+        // authoritative source is the SDK-native todoSnapshot path.
         try {
           const todoSource =
             asRecord(payload.structuredOutput) ?? structuredRecord ?? asRecord(properties?.structuredOutput);
           const rawTodoItems = Array.isArray(todoSource?.todoItems) ? todoSource!.todoItems : undefined;
           if (
             structuredOutput &&
-            (structuredOutput.responseType === 'todo_update' ||
-              asString(payload.responseType) === 'todo_update') &&
+            (structuredOutput.responseType === '__legacy_disabled_todo_update' ||
+              asString(payload.responseType) === '__legacy_disabled_todo_update') &&
             Array.isArray(rawTodoItems)
           ) {
             for (const raw of rawTodoItems) {
@@ -6946,7 +7002,7 @@ function handleStreamEvent(
         } catch (e) {
           // Defensive: never allow malformed structured payloads to throw inside
           // the message handler — just skip and continue processing other parts.
-          webviewLogger.warn('Failed to normalize todo_update structured payload', { error: String(e) });
+          webviewLogger.warn('Failed to inspect legacy todo structured payload', { error: String(e) });
         }
       }
 
@@ -7227,6 +7283,8 @@ function handleStreamEvent(
       }
       break;
     }
+    case 'message.completed':
+    case 'session.completed':
     case 'finish':
     case 'done': {
       dispatch({
@@ -7801,26 +7859,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             window.__workspace_root__ = workspaceRoot;
           }
 
-          // Rehydrate persisted todos from initState payload (sent by provider on
-          // extension open or session switch).
+          // Clear/init todos from initState. The authoritative list arrives via
+          // SDK-backed todoSnapshot messages; initState may carry an empty list
+          // to prevent stale tasks while hydration is in flight.
           const rawTodoItems = Array.isArray(state.todoItems) ? state.todoItems : [];
-          if (rawTodoItems.length > 0) {
-            const VALID_TODO_STATUS = new Set(['pending', 'in_progress', 'completed', 'cancelled', 'failed']);
-            const validTodos = rawTodoItems.filter(
-              (item): item is TodoItem => {
-                const rec = asRecord(item);
-                return (
-                  !!rec &&
-                  typeof rec.id === 'string' && rec.id.length > 0 &&
-                  typeof rec.text === 'string' && rec.text.length > 0 &&
-                  typeof rec.status === 'string' && VALID_TODO_STATUS.has(rec.status) &&
-                  typeof rec.sessionId === 'string'
-                );
-              },
-            );
-            if (validTodos.length > 0) {
-              dispatch({ type: 'SET_TODO_ITEMS', payload: validTodos });
-            }
+          if (Array.isArray(state.todoItems)) {
+            dispatch({
+              type: 'SET_TODO_ITEMS',
+              payload: normalizeTodoList(rawTodoItems, asString(state.currentSessionId)),
+            });
           }
 
           break;
@@ -9153,6 +9200,23 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             };
           });
           dispatch({ type: "SET_LSP_SERVERS", payload: lspServers });
+          break;
+        }
+        case "todoSnapshot": {
+          try {
+            const sessionId = asString(data.sessionId);
+            const currentSessionId = getState().currentSessionId;
+            if (sessionId && currentSessionId && sessionId !== currentSessionId) {
+              break;
+            }
+            const rawItems = Array.isArray(data.items) ? data.items : [];
+            dispatch({
+              type: "SET_TODO_ITEMS",
+              payload: normalizeTodoList(rawItems, sessionId || currentSessionId || undefined),
+            });
+          } catch (e) {
+            webviewLogger.warn("Failed to process todoSnapshot postMessage", { error: String(e) });
+          }
           break;
         }
         case "todoUpdate": {

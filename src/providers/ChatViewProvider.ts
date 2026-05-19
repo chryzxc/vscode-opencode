@@ -271,10 +271,6 @@ export class ChatViewProvider
   private activeStreamSessionId: string | undefined;
   private currentTodoItems: unknown[] = [];
 
-  /** Debouncing for todo persistence to reduce state write frequency during streaming */
-  private todoPersistenceTimer: NodeJS.Timeout | null = null;
-  private pendingTodoPersistence = false;
-
   private getTodoStorageKey(sessionId: string): string {
     return `opencode.session.todos.${sessionId}`;
   }
@@ -287,123 +283,154 @@ export class ChatViewProvider
     return { items: raw?.items ?? [], lastUpdatedAt: raw?.lastUpdatedAt };
   }
 
+  private normalizeTodoStatus(value: unknown): "pending" | "in_progress" | "completed" | "cancelled" | "failed" {
+    const normalized =
+      typeof value === "string" ? value.trim().toLowerCase() : "";
+    if (
+      normalized === "in_progress" ||
+      normalized === "completed" ||
+      normalized === "cancelled" ||
+      normalized === "failed"
+    ) {
+      return normalized;
+    }
+    return "pending";
+  }
+
+  private normalizeTodoPriority(value: unknown): "high" | "medium" | "low" | undefined {
+    const normalized =
+      typeof value === "string" ? value.trim().toLowerCase() : "";
+    if (normalized === "high" || normalized === "medium" || normalized === "low") {
+      return normalized;
+    }
+    return undefined;
+  }
+
+  private stableTodoId(sessionId: string, content: string, index: number): string {
+    let hash = 0;
+    const basis = `${sessionId}:${index}:${content}`;
+    for (let i = 0; i < basis.length; i += 1) {
+      hash = ((hash << 5) - hash + basis.charCodeAt(i)) | 0;
+    }
+    return `sdk-todo:${sessionId}:${index}:${Math.abs(hash)}`;
+  }
+
+  private normalizeSdkTodoItems(sessionId: string, rawTodos: unknown[]): unknown[] {
+    return rawTodos
+      .map((rawTodo, index) => {
+        const todo = this.asRecord(rawTodo);
+        if (!todo) {
+          return undefined;
+        }
+
+        const text =
+          this.firstNonEmptyString(todo.content, todo.text, todo.description) ?? "";
+        if (!text) {
+          return undefined;
+        }
+
+        const id =
+          this.firstNonEmptyString(todo.id) ??
+          this.stableTodoId(sessionId, text, index);
+        const priority = this.normalizeTodoPriority(todo.priority);
+
+        return {
+          id,
+          text,
+          description: text,
+          status: this.normalizeTodoStatus(todo.status),
+          sessionId,
+          ...(priority ? { priority } : {}),
+          source: "sdk",
+        };
+      })
+      .filter((todo): todo is NonNullable<typeof todo> => !!todo);
+  }
+
+  private async persistNormalizedTodoItems(
+    targetSessionId: string,
+    items: unknown[],
+  ): Promise<void> {
+    await this.context.workspaceState.update(this.getTodoStorageKey(targetSessionId), {
+      items,
+      lastUpdatedAt: Date.now(),
+    });
+    this.currentTodoItems = items;
+  }
+
+  private postTodoSnapshot(
+    sessionId: string,
+    items: unknown[],
+    source: "sdk-event" | "sdk-hydration" | "sdk-cache",
+  ): void {
+    this.view?.webview.postMessage({
+      type: "todoSnapshot",
+      sessionId,
+      items,
+      source,
+    });
+  }
+
+  private async refreshSdkTodosForSession(
+    sessionId: string | undefined,
+    source: "sdk-hydration" | "sdk-cache" = "sdk-hydration",
+  ): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const response = await client.session.todo({
+        path: { id: sessionId },
+      });
+      const items = this.normalizeSdkTodoItems(
+        sessionId,
+        Array.isArray(response.data) ? response.data : [],
+      );
+      await this.persistNormalizedTodoItems(sessionId, items);
+      this.postTodoSnapshot(sessionId, items, source);
+    } catch (error) {
+      const cached = this.loadPersistedTodos(sessionId).items;
+      if (cached.length > 0) {
+        this.postTodoSnapshot(sessionId, cached, "sdk-cache");
+      }
+      this.logger.warn("Failed to refresh SDK todo snapshot", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async handleSdkTodoUpdatedEvent(
+    event: unknown,
+    fallbackSessionId?: string,
+  ): Promise<boolean> {
+    const ev = this.asRecord(event);
+    if (ev?.type !== "todo.updated") {
+      return false;
+    }
+
+    const props = this.asRecord(ev.properties) ?? {};
+    const sessionId =
+      this.firstNonEmptyString(props.sessionID, props.sessionId, fallbackSessionId);
+    const rawTodos = Array.isArray(props.todos) ? props.todos : [];
+    if (!sessionId) {
+      this.logger.warn("Received todo.updated without session id");
+      return true;
+    }
+
+    const items = this.normalizeSdkTodoItems(sessionId, rawTodos);
+    await this.persistNormalizedTodoItems(sessionId, items);
+    this.postTodoSnapshot(sessionId, items, "sdk-event");
+    return true;
+  }
+
   private clearSessionTodos(sessionId?: string): void {
     this.currentTodoItems = [];
     if (sessionId) {
       this.context.workspaceState.update(this.getTodoStorageKey(sessionId), undefined);
     }
-  }
-
-  /**
-   * Schedules a debounced todo persistence operation.
-   * Multiple rapid calls during streaming will only trigger one write after 1 second.
-   *
-   * **Performance Note:** This reduces state write frequency during streaming by debouncing.
-   * The persistence happens in the background without blocking the event loop.
-   */
-  private scheduleTodoPersistence(
-    targetSessionId: string,
-    todoItems: unknown[]
-  ): void {
-    // Clear any pending persistence timer
-    if (this.todoPersistenceTimer) {
-      clearTimeout(this.todoPersistenceTimer);
-    }
-
-    // Mark that we have pending persistence
-    this.pendingTodoPersistence = true;
-
-    // Schedule persistence after 1 second of inactivity (debouncing)
-    this.todoPersistenceTimer = setTimeout(() => {
-      this.persistTodoItems(targetSessionId, todoItems).catch((error) => {
-        this.logger.warn("Failed to persist todo snapshot", { error });
-      });
-      this.pendingTodoPersistence = false;
-      this.todoPersistenceTimer = null;
-    }, 1000);
-  }
-
-  /**
-   * Persists todo items to workspace state.
-   * This method is async and debounced - called in the background.
-   *
-   * **Performance Note:** Previously called on every todo_update event during streaming.
-   * Now debounced to reduce write frequency by 80-90%.
-   */
-  private async persistTodoItems(
-    targetSessionId: string,
-    incomingTodos: unknown[]
-  ): Promise<void> {
-    const key = this.getTodoStorageKey(targetSessionId);
-    const existing =
-      (this.context.workspaceState.get<{
-        items: unknown[];
-        lastUpdatedAt: number;
-      }>(key) as { items: unknown[]; lastUpdatedAt: number } | undefined) ??
-      { items: [], lastUpdatedAt: 0 };
-
-    // Merge/upsert incoming items into existing snapshot using id + lifecycle rank
-    const incoming = Array.isArray(incomingTodos) ? incomingTodos : [];
-
-    const LIFECYCLE_RANK: Record<string, number> = {
-      pending: 0,
-      in_progress: 1,
-      completed: 2,
-      failed: 2,
-      cancelled: 2,
-    };
-
-    interface StoredTodoItem { id: string; text: string; status: string;[key: string]: unknown }
-
-    const byId = new Map<string, StoredTodoItem>();
-    for (const item of existing.items) {
-      const rec = item as Record<string, unknown>;
-      const id = typeof rec?.id === "string" ? rec.id : undefined;
-      if (!id) continue;
-      byId.set(id, item as StoredTodoItem);
-    }
-
-    for (const inc of incoming) {
-      if (!inc || typeof inc !== "object") continue;
-      const incRec = inc as Record<string, unknown>;
-      const id = typeof incRec.id === "string" ? incRec.id : undefined;
-      const text = typeof incRec.text === "string" ? incRec.text : undefined;
-      const status = typeof incRec.status === "string" ? incRec.status : undefined;
-      if (!id || !text || !status) continue;
-
-      const existingItem = byId.get(id);
-      if (!existingItem) {
-        byId.set(id, { id, text, status });
-        continue;
-      }
-
-      const existingRank = LIFECYCLE_RANK[existingItem.status] ?? 0;
-      const incomingRank = LIFECYCLE_RANK[status] ?? 0;
-
-      if (incomingRank > existingRank) {
-        byId.set(id, { ...existingItem, text: text || existingItem.text, status });
-      } else if (incomingRank === existingRank) {
-        // If same rank and same status, idempotent; if different status at same rank, prefer existing
-        if (status === existingItem.status) {
-          // keep existing (no-op)
-        } else {
-          // prefer existing to avoid blind flips
-          byId.set(id, existingItem);
-        }
-      } else {
-        // incoming rank lower -> ignore
-        byId.set(id, existingItem);
-      }
-    }
-
-    const updatedItems = Array.from(byId.values());
-    await this.context.workspaceState.update(key, {
-      items: updatedItems,
-      lastUpdatedAt: Date.now(),
-    });
-
-    // Update in-memory cache for active session
-    this.currentTodoItems = updatedItems;
   }
 
   private async updateSessionTitle(sessionId: string, title: string): Promise<void> {
@@ -514,6 +541,7 @@ export class ChatViewProvider
   // This prevents slow server calls with 700+ skills
   private readonly COMMAND_CATALOG_TTL_MS = 30 * 60 * 1000;
   private readonly compactingSessions = new Set<string>();
+  private readonly sessionsWithFileChangeEvidence = new Set<string>();
 
   /** ===== NEW: Module instances ===== */
   private diagnosticsLogger!: DiagnosticsLogger;
@@ -1290,8 +1318,9 @@ export class ChatViewProvider
         serverVersion: this.serverManager.getVersion(),
         currentSessionId: this.currentSessionId,
         processingSessionIds: Array.from(this.processingSessionIds),
-        todoItems: this.loadPersistedTodos(this.currentSessionId).items,
+        todoItems: [],
       });
+      void this.refreshSdkTodosForSession(this.currentSessionId);
 
       const sessionThinkingLevel =
         this.modelAndAgentManager.getEffectiveThinkingLevel(sessionId);
@@ -2307,11 +2336,12 @@ export class ChatViewProvider
     this.sessionsListRequestVersion = 0;
     this.lastSessionsPayloadFingerprint = undefined;
 
-    webviewView.webview.options = {
+    const webviewOptions = {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [this.context.extensionUri],
     };
+    webviewView.webview.options = webviewOptions;
 
     // Handle messages from webview
     webviewView.webview.onDidReceiveMessage(async (message) => {
@@ -2346,7 +2376,7 @@ export class ChatViewProvider
               serverVersion: this.serverManager.getVersion(),
               currentSessionId: this.currentSessionId,
               processingSessionIds: Array.from(this.processingSessionIds),
-              todoItems: this.loadPersistedTodos(this.currentSessionId).items,
+              todoItems: [],
             });
             this.hasInitializedWebview = true;
           }
@@ -2392,6 +2422,7 @@ export class ChatViewProvider
               currentSessionId: this.currentSessionId,
               processingSessionIds: Array.from(this.processingSessionIds),
             });
+            void this.refreshSdkTodosForSession(this.currentSessionId);
 
             // Restore the session-specific thinking level (separate message type)
             const bootstrapThinkingLevel = currentSession
@@ -3334,6 +3365,9 @@ export class ChatViewProvider
       if (!eventSessionId && this.activeStreamSessionId && this.currentSessionId && this.activeStreamSessionId !== this.currentSessionId) {
         return;
       }
+      if (await this.handleSdkTodoUpdatedEvent(event, eventSessionId)) {
+        return;
+      }
       // Skip forwarding events for sessions that were stopped by the user.
       // After abort() is called, in-flight stream events may still arrive from
       // the server, but we should not forward them to the webview.
@@ -3376,6 +3410,9 @@ export class ChatViewProvider
 
       // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
+      const hasBlockingInteractive = this.hasBlockingInteractiveInStreamPayload(
+        enrichedEvent || event,
+      );
       this.logStreamEventDiagnostics(event, enrichedEvent);
 
       // Log stream event for debugging response types (with error handling)
@@ -3409,60 +3446,6 @@ export class ChatViewProvider
       } catch (error) {
         // Silently ignore logging errors to prevent stream interruption
         this.logger.warn("Failed to log stream event", { err: error });
-      }
-
-      // Forward todo_update stream events as todoUpdate postMessage to webview
-      if (enrichedEvent?.structuredOutput?.responseType === "todo_update") {
-        const structured = enrichedEvent.structuredOutput as Record<string, unknown>;
-        const todoItems = Array.isArray(structured.todoItems)
-          ? structured.todoItems
-          : [];
-
-        // **Performance Optimization:** Batch all todo updates into a single postMessage
-        // Previously sent individual postMessage for each item (could be 10+ messages)
-        // Now sends single batch message with all updates
-        const updates: Array<{ id: string; text: string; status: string; sessionId?: string }> = [];
-
-        for (const rawItem of todoItems) {
-          if (typeof rawItem !== "object" || rawItem === null) {
-            continue;
-          }
-
-          const item = rawItem as Record<string, unknown>;
-          const id = typeof item.id === "string" ? item.id : "";
-          const text = typeof item.text === "string" ? item.text : "";
-          const status = typeof item.status === "string" ? item.status : "";
-          const sessionId =
-            typeof item.sessionId === "string" ? item.sessionId : undefined;
-
-          if (!id || !text || !status) {
-            continue;
-          }
-
-          updates.push({
-            id,
-            text,
-            status,
-            ...(sessionId ? { sessionId } : {}),
-          });
-        }
-
-        // Send batched updates as single postMessage (reduces IPC overhead)
-        if (updates.length > 0) {
-          this.view?.webview.postMessage({
-            type: "todoUpdate",
-            action: "batch",
-            items: updates,
-          });
-        }
-
-        // **Performance Optimization:** Debounce todo persistence
-        // Previously persisted on every todo_update event during streaming
-        // Now debounced with 1-second delay (reduces state writes by 80-90%)
-        const targetPersistSessionId = eventSessionId || this.currentSessionId;
-        if (targetPersistSessionId && updates.length > 0) {
-          this.scheduleTodoPersistence(targetPersistSessionId, todoItems);
-        }
       }
 
       // Only stamp sessionId when we can be confident the event belongs to the
@@ -3512,6 +3495,9 @@ export class ChatViewProvider
               toolName.includes("edit") ||
               isStepFinish)
           ) {
+            if (resolvedSessionId) {
+              this.sessionsWithFileChangeEvidence.add(resolvedSessionId);
+            }
             const callID =
               part.callId ||
               part.callID ||
@@ -5899,6 +5885,7 @@ export class ChatViewProvider
       this.sendProcessingSessionsUpdate();
       this.currentSessionId = session.id;
       this.activeStreamSessionId = session.id;
+      this.sessionsWithFileChangeEvidence.delete(session.id);
       this.subagentTracker.setActiveSession(session.id);
       // New user turns are independent from any previous question popover.
 
@@ -6583,7 +6570,11 @@ export class ChatViewProvider
         }
 
         const finalAssistantMessageId = this.extractMessageId(finalMessage);
-        if (finalAssistantMessageId) {
+        const shouldAttachChangeSummary =
+          !!finalAssistantMessageId &&
+          (this.sessionsWithFileChangeEvidence.has(session.id) ||
+            this.messageHasFileChangeEvidence(finalMessage));
+        if (finalAssistantMessageId && shouldAttachChangeSummary) {
           const changeSummary = await this.summarizeSessionDiffForMessage(
             client,
             session.id,
@@ -6766,6 +6757,7 @@ export class ChatViewProvider
       }
       if (drainSessionId) {
         this.processingSessionIds.delete(drainSessionId);
+        this.sessionsWithFileChangeEvidence.delete(drainSessionId);
         if (this.activeStreamSessionId === drainSessionId) {
           this.activeStreamSessionId = undefined;
         }
@@ -7407,8 +7399,9 @@ export class ChatViewProvider
       selectedAgent: this.selectedAgent,
       currentSessionId: this.currentSessionId,
       processingSessionIds: Array.from(this.processingSessionIds),
-      todoItems: this.loadPersistedTodos(this.currentSessionId).items,
+      todoItems: [],
     });
+    void this.refreshSdkTodosForSession(this.currentSessionId);
   }
 
   /**
@@ -8016,6 +8009,71 @@ export class ChatViewProvider
     }
   }
 
+  private messageHasFileChangeEvidence(message: unknown): boolean {
+    const rec = this.asRecord(message);
+    if (!rec) {
+      return false;
+    }
+
+    if (Array.isArray(rec.edits) && rec.edits.length > 0) {
+      return true;
+    }
+
+    const hasDiffStats = (value: unknown): boolean => {
+      const diffStats = this.asRecord(value);
+      if (!diffStats) {
+        return false;
+      }
+      return (
+        typeof diffStats.added === "number" ||
+        typeof diffStats.deleted === "number" ||
+        typeof diffStats.additions === "number" ||
+        typeof diffStats.deletions === "number"
+      );
+    };
+
+    const hasFileActivity = (value: unknown): boolean => {
+      const item = this.asRecord(value);
+      if (!item) {
+        return false;
+      }
+      const activityDetail = this.asRecord(item.activityDetail);
+      const toolName = this.firstNonEmptyString(
+        item.tool,
+        item.name,
+        activityDetail?.tool,
+      )?.toLowerCase();
+      const partType = this.firstNonEmptyString(item.type, item.partType)
+        ?.toLowerCase();
+      return Boolean(
+        this.firstNonEmptyString(
+          item.file,
+          item.filePath,
+          item.path,
+          activityDetail?.file,
+        ) ||
+          hasDiffStats(item.diffStats) ||
+          hasDiffStats(activityDetail?.diffStats) ||
+          this.asRecord(activityDetail?.diffExcerpt) ||
+          partType === "patch" ||
+          toolName?.includes("write") ||
+          toolName?.includes("edit") ||
+          toolName?.includes("replace"),
+      );
+    };
+
+    const arraysToScan = [
+      rec.steps,
+      rec.progressEvents,
+      rec.parts,
+      rec.toolCalls,
+      rec.tool_calls,
+    ];
+    return arraysToScan.some(
+      (items) => Array.isArray(items) && items.some(hasFileActivity),
+    );
+  }
+
   private async handleUndoMessageChanges(
     messageId?: string,
     requestedSessionId?: string,
@@ -8334,12 +8392,6 @@ export class ChatViewProvider
     this.lastSessionsPayloadFingerprint = undefined;
     this.queueBySessionId.clear();
     this.view = undefined;
-
-    // Clear any pending todo persistence timer
-    if (this.todoPersistenceTimer) {
-      clearTimeout(this.todoPersistenceTimer);
-      this.todoPersistenceTimer = null;
-    }
   }
 
   // --- File Icon Theme Sync Methods ---

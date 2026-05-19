@@ -726,6 +726,8 @@ export interface TodoItem {
   sessionId: string;
   // optional human-friendly description used by the UI
   description?: string;
+  priority?: 'high' | 'medium' | 'low';
+  source?: 'sdk';
 }
 
 export interface PlanComment {

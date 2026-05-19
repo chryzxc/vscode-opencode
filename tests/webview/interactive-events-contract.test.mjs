@@ -365,7 +365,8 @@ test('input wrapper renders top popup choices and posts sendMessage', () => {
   );
 
   assert.match(inputBody, /activeInteractiveEvent/, 'input wrapper should compute active interactive event');
-  assert.match(inputBody, /Quick Input/, 'input wrapper should render a top prompt popup');
+  assert.match(inputBody, /event\.title \? \(/, 'input wrapper should render a title only when the event provides one');
+  assert.doesNotMatch(inputBody, /Quick Input/, 'input wrapper should not render fallback quick input label text');
   assert.match(inputBody, /event\.type === "question"/, 'popup should support question-type interactive events');
   assert.match(inputBody, /event\.type === "message"/, 'popup should support message-type interactive events');
   assert.match(inputBody, /event\.options\.map\(/, 'question popup should render clickable option buttons');
@@ -911,6 +912,11 @@ test('normalizeMessage synthesis logic for question messages', () => {
     handlerSource,
     /synthesizeQuestionContextMessage/s,
     'should synthesize content from question context'
+  );
+  assert.doesNotMatch(
+    handlerSource,
+    /I have a few questions before proceeding/,
+    'multi-question synthesis should not add generic intro text'
   );
 
   // 2. Second attempt: from question tool parts

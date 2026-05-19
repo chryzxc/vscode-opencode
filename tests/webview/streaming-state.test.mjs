@@ -62,8 +62,14 @@ test('SET_PROCESSING reducer creates streaming state when processing starts', ()
   // Check for streaming state creation when processing becomes true
   assert.match(
     processingLogic,
-    /if\s*\(\s*action\.payload\s*&&\s*\(!state\.streaming\s*\|\|\s*!state\.streaming\.isActive\)\s*\)/,
-    'Should create a fresh stream when processing starts and no active stream exists'
+    /if\s*\(\s*action\.payload\s*&&\s*!state\.streaming\s*\)/,
+    'Should create a fresh stream when processing starts and no stream snapshot exists'
+  );
+
+  assert.match(
+    processingLogic,
+    /if\s*\(\s*action\.payload\s*&&\s*state\.streaming\s*&&\s*!state\.streaming\.isActive\s*\)/,
+    'Should reactivate an existing inactive stream snapshot instead of recreating it'
   );
 
   assert.match(

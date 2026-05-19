@@ -32,6 +32,24 @@ test('progressItemsFromSteps extracts diffStats from steps', () => {
   );
 });
 
+test('Activity filter keeps step lifecycle rows that carry user-facing details', () => {
+  assert.match(
+    messageComponentsSource,
+    /const\s+hasUserFacingActivity\s*=/,
+    'Activity filtering should compute a user-facing detail guard',
+  );
+  assert.match(
+    messageComponentsSource,
+    /Boolean\(filePath\)[\s\S]*Boolean\(diffStats && \(diffStats\.added > 0 \|\| diffStats\.deleted > 0\)\)[\s\S]*Boolean\(activityDetail\)/,
+    'User-facing guard should include file path, diff stats, and activity detail',
+  );
+  assert.match(
+    messageComponentsSource,
+    /!hasUserFacingActivity[\s\S]*normalizedPartType === "step-start"[\s\S]*normalizedPartType === "step-finish"/,
+    'Only empty step-start/step-finish bookkeeping rows should be filtered',
+  );
+});
+
 test('AssistantMessage renders diff stats when present', () => {
   assert.match(
     messageComponentsSource,

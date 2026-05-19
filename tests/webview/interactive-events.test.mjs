@@ -51,8 +51,18 @@ test('InputWrapper renders Stepper navigation controls', () => {
   // Verify "Next" button logic
   assert.match(
     body,
-    /disabled=\{[\s\n]*currentInteractiveIndex\s*===\s*displayInteractiveEvents(?:\.length)?\s*-\s*1[\s\n]*\}/,
-    'Next button should be disabled at the last question',
+    /const currentInteractiveAnswered = Boolean\(/,
+    'InputWrapper should track whether the current interactive question is answered',
+  );
+  assert.match(
+    body,
+    /disabled=\{[\s\n]*currentInteractiveIndex\s*===\s*displayInteractiveEvents(?:\.length)?\s*-\s*1\s*\|\|\s*!currentInteractiveAnswered[\s\n]*\}/,
+    'Next button should be disabled at the last question or until the current question is answered',
+  );
+  assert.match(
+    body,
+    /if \(!currentInteractiveAnswered\) \{[\s\S]*return;/,
+    'Next button handler should not advance without an answer',
   );
 
   // Verify navigation icons

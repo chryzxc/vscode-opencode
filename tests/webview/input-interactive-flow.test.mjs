@@ -38,7 +38,9 @@ test('renders quick action popup buttons', () => {
 
 test('posts interactive answers through sendMessage with interactiveSubmit', () => {
   assert.match(panelComponents, /vscode\.postMessage\(\{[\s\S]*type: "sendMessage"[\s\S]*interactiveSubmit: true[\s\S]*\}\)/, 'interactive sendMessage transport is missing');
-  assert.match(panelComponents, /Question \$\{index \+ 1\}: \$\{question\}[\s\S]*Answer: \$\{answer\}/, 'interactive answer composition is missing');
+  assert.match(panelComponents, /const hasMultipleInteractivePrompts = batch\.length > 1;/, 'single vs multiple interactive prompt guard is missing');
+  assert.match(panelComponents, /if \(!hasMultipleInteractivePrompts\) \{[\s\S]*return answer;/, 'single interactive answer should render without question/answer labels');
+  assert.match(panelComponents, /Question \$\{index \+ 1\}: \$\{question\}[\s\S]*Answer: \$\{answer\}/, 'multi-question interactive answer composition is missing');
 });
 
 test('includes slash command trigger and suggestion list', () => {

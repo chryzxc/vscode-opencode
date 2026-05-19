@@ -122,26 +122,31 @@ test('messageHandler uses canonical normalization and ingestion for todo updates
   );
 });
 
-test('provider forwards todo stream events and keeps todo persistence helpers', () => {
+test('provider forwards SDK todo stream events and hydrates session todos from SDK', () => {
   assert.match(
     chatProviderSource,
-    /if\s*\(enrichedEvent\?\.structuredOutput\?\.responseType\s*===\s*["']todo_update["']\)\s*\{[\s\S]*postMessage\(\{[\s\S]*type:\s*["']todoUpdate["']/,
-    'ChatViewProvider should forward todo_update stream events as todoUpdate messages',
+    /handleSdkTodoUpdatedEvent\([\s\S]*todo\.updated/,
+    'ChatViewProvider should forward SDK todo.updated events as todoSnapshot messages',
   );
   assert.match(
     chatProviderSource,
-    /private\s+loadPersistedTodos\(sessionId\?:\s*string\):\s*\{\s*items:\s*unknown\[\];\s*lastUpdatedAt\?:\s*number\s*\}/,
-    'ChatViewProvider should expose loadPersistedTodos helper',
+    /type:\s*["']todoSnapshot["']/,
+    'ChatViewProvider should emit todoSnapshot messages',
   );
   assert.match(
     chatProviderSource,
-    /private\s+clearSessionTodos\(sessionId\?:\s*string\):\s*void\s*\{/,
-    'ChatViewProvider should expose clearSessionTodos helper',
+    /client\.session\.todo\(\{[\s\S]*path:\s*\{\s*id:\s*sessionId\s*\}/,
+    'ChatViewProvider should hydrate todos through client.session.todo',
   );
   assert.match(
     chatProviderSource,
-    /postMessage\(\{[\s\S]*type:\s*["']initState["'][\s\S]*todoItems\s*:/,
-    'initState payload should include todoItems for session rehydration',
+    /normalizeSdkTodoItems\([\s\S]*todo\.content[\s\S]*todo\.priority[\s\S]*source:\s*["']sdk["']/,
+    'ChatViewProvider should normalize SDK todo content, priority, and source',
+  );
+  assert.match(
+    messageHandlerSource,
+    /case\s+["']todoSnapshot["']:\s*\{[\s\S]*SET_TODO_ITEMS/,
+    'messageHandler should replace todo state from todoSnapshot',
   );
 });
 

@@ -1131,23 +1131,47 @@ function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
   const type = (step.type ?? "").toLowerCase();
   const partType = ("partType" in step ? step.partType : undefined) || "";
   const normalizedPartType = partType.toString().toLowerCase();
+  const filePath =
+    ("filePath" in step ? step.filePath : undefined) ||
+    ("content" in step ? step.content : undefined);
+  const diffStats =
+    "diffStats" in step
+      ? (step.diffStats as { added: number; deleted: number } | undefined)
+      : undefined;
+  const activityDetail =
+    "activityDetail" in step
+      ? (step.activityDetail as ActivityDetail | undefined)
+      : undefined;
+  const hasUserFacingActivity =
+    Boolean(filePath) ||
+    Boolean(diffStats && (diffStats.added > 0 || diffStats.deleted > 0)) ||
+    Boolean(activityDetail);
+  const normalizedTitle = (step.title ?? "").trim().toLowerCase();
 
   // Filter out reasoning/thinking and internal bookkeeping steps
   if (type === "reasoning" || type === "thinking") {
     return false;
   }
-  // Filter out step-start and step-finish events (internal bookkeeping)
+  // Filter out empty step-start and step-finish bookkeeping, but keep rows that
+  // carry file/diff/activity detail because they are the only visible evidence
+  // for some background edits.
   if (
-    normalizedPartType === "step-start" ||
-    normalizedPartType === "step-finish" ||
-    type === "step-start" ||
-    type === "step-finish"
+    !hasUserFacingActivity &&
+    (normalizedPartType === "step-start" ||
+      normalizedPartType === "step-finish" ||
+      type === "step-start" ||
+      type === "step-finish")
   ) {
     return false;
   }
   // Filter out tool wrapper events that just show "tool completed successfully"
   // These are internal system events, not actual user-facing progress
   if (type === "tool" && step.title?.toLowerCase().includes("structuredoutput")) {
+    return false;
+  }
+
+  // Filter placeholder rows that only say "step" and carry no user-facing data.
+  if (!hasUserFacingActivity && normalizedTitle === "step" && type !== "tool") {
     return false;
   }
 
@@ -1611,6 +1635,88 @@ function fileChangeRenderRichness(message?: Message): number {
       Array.isArray(file?.diffExcerpt?.lines),
   ).length;
   return files.size * 10 + summaryFiles.length * 4 + perFileStats * 3 + statsScore;
+}
+
+function messageHasOwnFileChangeEvidence(message?: Message): boolean {
+  if (!message) {
+    return false;
+  }
+
+  if (Array.isArray(message.edits) && message.edits.length > 0) {
+    return true;
+  }
+
+  const hasDiffStats = (value: unknown): boolean => {
+    const rec = asRecord(value);
+    return Boolean(
+      rec &&
+        (typeof rec.added === "number" ||
+          typeof rec.deleted === "number" ||
+          typeof rec.additions === "number" ||
+          typeof rec.deletions === "number"),
+    );
+  };
+
+  const hasActivityEvidence = (value: unknown): boolean => {
+    const rec = asRecord(value);
+    if (!rec) {
+      return false;
+    }
+    const activityDetail = asRecord(rec.activityDetail);
+    const tool = firstNonEmptyString(
+      rec.tool,
+      rec.name,
+      activityDetail?.tool,
+    )?.toLowerCase();
+    return Boolean(
+      firstNonEmptyString(rec.file, rec.filePath, rec.path, activityDetail?.file) ||
+        hasDiffStats(rec.diffStats) ||
+        hasDiffStats(activityDetail?.diffStats) ||
+        asRecord(activityDetail?.diffExcerpt) ||
+        firstNonEmptyString(rec.type, rec.partType)?.toLowerCase() === "patch" ||
+        tool?.includes("write") ||
+        tool?.includes("edit") ||
+        tool?.includes("replace"),
+    );
+  };
+
+  return [message.steps, message.progressEvents, message.parts].some(
+    (items) => Array.isArray(items) && items.some(hasActivityEvidence),
+  );
+}
+
+function messageOwnsChangeSummary(
+  message: Message | undefined,
+  messageId: string | undefined,
+  changeSummary: Message["changeSummary"],
+): boolean {
+  if (
+    !message ||
+    !changeSummary ||
+    !Array.isArray(changeSummary.files) ||
+    changeSummary.files.length === 0
+  ) {
+    return false;
+  }
+
+  const summaryMessageId =
+    typeof changeSummary.messageId === "string"
+      ? changeSummary.messageId.trim()
+      : "";
+  if (!summaryMessageId) {
+    return false;
+  }
+
+  const info = message.info;
+  const ownerIds = [
+    messageId,
+    message.id,
+    message.messageId,
+    info?.id,
+    info?.messageId,
+  ].filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+
+  return ownerIds.some((id) => id.trim() === summaryMessageId);
 }
 
 /**
@@ -2234,12 +2340,24 @@ function buildDisplayEvents(
       const diffStats = event.diffStats || fallbackDiffStats || detailDiffStats;
 
       const metaText = stripTrailingEllipsis(event.meta);
-      const summary = filePath
+      const baseSummary = filePath
         ? fileName || filePath
         : activityDetail?.summary ||
         parsed.summary ||
         metaText ||
         (parsed.label === "event" ? cleanedRawTitle : "");
+      const normalizedBaseSummary = (baseSummary || "").trim().toLowerCase();
+      const fallbackSummaryFromActivity =
+        stripTrailingEllipsis(
+          activityDetail?.command ||
+          activityDetail?.query ||
+          activityDetail?.output ||
+          event.meta,
+        ) || "";
+      let summary =
+        normalizedBaseSummary === "step" && fallbackSummaryFromActivity
+          ? fallbackSummaryFromActivity
+          : baseSummary;
       const description =
         filePath || parsed.summary || activityDetail?.summary
           ? metaText || activityDetail?.command || activityDetail?.query
@@ -2259,11 +2377,48 @@ function buildDisplayEvents(
           (activityDetail?.kind || "").toLowerCase() ||
           (partType || "").toLowerCase(),
         ) || parsed.label;
+      const normalizedLabelForSummary = metadataFirstLabel.trim().toLowerCase();
+      const normalizedSummaryForDisplay = (summary || "").trim().toLowerCase();
+      if (
+        normalizedLabelForSummary === "tool_call" &&
+        (normalizedSummaryForDisplay === "step" ||
+          normalizedSummaryForDisplay === "starting step" ||
+          normalizedSummaryForDisplay === "finishing step")
+      ) {
+        const normalizedDescription = (description || "").trim().toLowerCase();
+        const hasMeaningfulDescription =
+          normalizedDescription.length > 0 &&
+          normalizedDescription !== "step" &&
+          normalizedDescription !== "starting step" &&
+          normalizedDescription !== "finishing step";
+        if (hasMeaningfulDescription) {
+          summary = description;
+        } else {
+          // Drop low-signal TOOL_CALL placeholders when they have no useful detail.
+          continue;
+        }
+      }
 
       const cleanedLabel = cleanEventLabel(metadataFirstLabel);
+      const normalizedSummary = (summary || cleanedRawTitle || "")
+        .trim()
+        .toLowerCase();
+      const normalizedLabel = cleanedLabel.trim().toLowerCase();
 
       // Skip filtered events (like starting/finishing)
       if (!cleanedLabel) {
+        continue;
+      }
+
+      // Suppress low-signal placeholder timeline rows like
+      // label=step + summary=step when no concrete activity exists.
+      if (
+        normalizedLabel === "step" &&
+        normalizedSummary === "step" &&
+        !filePath &&
+        !diffStats &&
+        !activityDetail
+      ) {
         continue;
       }
 
@@ -2764,14 +2919,17 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     message?.messageId ||
     info?.messageId ||
     streaming?.messageId;
+  const hasOwnedChangeSummary = messageOwnsChangeSummary(
+    message,
+    messageId,
+    changeSummary,
+  );
   const shouldShowFileChanges = useMemo(() => {
-    const hasOwnFileChanges =
-      (Array.isArray(message?.edits) && message.edits.length > 0 && !!messageId) ||
-      (changeSummary &&
-        Array.isArray(changeSummary.files) &&
-        changeSummary.files.length > 0 &&
-        changeSummary.messageId === messageId);
-    if (!hasOwnFileChanges || !message) {
+    if (
+      !hasOwnedChangeSummary ||
+      !message ||
+      !messageHasOwnFileChangeEvidence(message)
+    ) {
       return false;
     }
 
@@ -2804,7 +2962,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       }
       return candidateRichness === ownRichness && ownIndex >= 0 && index > ownIndex;
     });
-  }, [changeSummary, message, messageId, state.messages]);
+  }, [hasOwnedChangeSummary, message, messageId, state.messages]);
   const shouldShowPlanCard = useMemo(() => {
     if (!plan?.file) {
       return !!plan;
@@ -3756,7 +3914,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     })}
                   </Stepper>
 
-                  {showThinkingPlaceholder && !hasThinkingEvents && (
+                  {showThinkingPlaceholder && !hasThinkingEvents && timelineDisplayEvents.length === 0 && (
                     <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
                       <StepperItem
                         isLast={true}

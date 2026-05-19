@@ -43,8 +43,36 @@ test("assistant message renders completion change summary card with actions", ()
   );
   assert.match(
     messageComponentsSource,
-    /changeSummary\.files\.slice\(0,\s*12\)\.map/,
+    /visibleChanges\.map\(\(fileChange\)\s*=>/,
     "card should render changed file rows",
+  );
+});
+
+test("file change summary card is scoped to the owning assistant message", () => {
+  assert.match(
+    messageComponentsSource,
+    /function\s+messageOwnsChangeSummary\(/,
+    "AssistantMessage should use a dedicated ownership check for change summaries",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const\s+summaryMessageId\s*=[\s\S]*?changeSummary\.messageId/,
+    "ownership check should read the summary message id",
+  );
+  assert.match(
+    messageComponentsSource,
+    /ownerIds\.some\(\(id\)\s*=>\s*id\.trim\(\)\s*===\s*summaryMessageId\)/,
+    "summary should render only when its message id matches the rendered message",
+  );
+  assert.match(
+    messageComponentsSource,
+    /messageHasOwnFileChangeEvidence\(message\)/,
+    "summary should also require file-change evidence on the rendered message",
+  );
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /Array\.isArray\(message\?\.edits\)[\s\S]{0,120}hasOwnFileChanges/,
+    "generic edit lists should not make every assistant response render the scoped undo/review panel",
   );
 });
 

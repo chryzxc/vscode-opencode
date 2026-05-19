@@ -40,6 +40,24 @@ test("provider computes message change summary from sdk session.diff", () => {
   );
 });
 
+test("provider attaches change summaries only to turns with file-change evidence", () => {
+  assert.match(
+    providerSource,
+    /sessionsWithFileChangeEvidence/,
+    "provider should track whether the current turn produced file changes",
+  );
+  assert.match(
+    providerSource,
+    /this\.sessionsWithFileChangeEvidence\.has\(session\.id\)[\s\S]*this\.messageHasFileChangeEvidence\(finalMessage\)/,
+    "provider should require turn-local evidence before attaching a diff summary",
+  );
+  assert.match(
+    providerSource,
+    /this\.sessionsWithFileChangeEvidence\.delete\(drainSessionId\)/,
+    "file-change evidence should be cleared when the turn finishes",
+  );
+});
+
 test("provider wires undo message changes through sdk session.revert", () => {
   assert.match(
     providerSource,

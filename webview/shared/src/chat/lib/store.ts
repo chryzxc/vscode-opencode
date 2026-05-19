@@ -1607,9 +1607,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       // Question popovers are final assistant messages now, not an
       // interactive-await state. Let new user turns enter processing even when
       // a previous question popover is still visible.
-      // When processing starts, create an empty streaming state so the StreamingCard is visible immediately
-      // instead of showing the "Thinking..." bubble
-      if (action.payload && (!state.streaming || !state.streaming.isActive)) {
+      if (action.payload && state.streaming && !state.streaming.isActive) {
+        // Some providers briefly emit a terminal marker mid-turn and then
+        // continue with more updates. Reopen the existing snapshot instead of
+        // replacing it with a blank streaming card, or the rendered assistant
+        // response will appear to reset on every follow-up event.
+        return {
+          ...state,
+          isProcessing: true,
+          streaming: {
+            ...state.streaming,
+            isActive: true,
+          },
+        };
+      }
+      // When processing starts without any existing stream snapshot, create an
+      // empty streaming state so the StreamingCard is visible immediately
+      // instead of showing the "Thinking..." bubble.
+      if (action.payload && !state.streaming) {
         try {
           // Initialize streaming state WITHOUT model/provider assumptions.
           // The actual model used will be set from stream events or the final messageResponse.

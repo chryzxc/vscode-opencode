@@ -65,7 +65,11 @@ export const structuredOutputSchema: StructuredOutputSchema = {
             type: "string",
             description: "Full markdown plan body. Include this when the plan file has not already been written so the extension can persist it to plan.file.",
           },
-          summary: { type: "string", description: "One-line plan summary" },
+          summary: {
+            type: "string",
+            description:
+              "One-line user-facing plan summary in a personal assistant voice. Phrase it as completed first-person action, such as 'I have created a 5-day plan to implement ...', instead of a detached noun phrase.",
+          },
         },
         required: ["title", "file"],
       },

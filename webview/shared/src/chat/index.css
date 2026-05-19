@@ -2131,17 +2131,17 @@ body {
 }
 
 .oc-toolbar-action-icon {
-  height: 34px;
-  width: 34px;
-  min-width: 34px;
+  height: 30px;
+  width: 30px;
+  min-width: 30px;
   border-radius: 9999px;
   padding: 0 !important;
 }
 
 .oc-toolbar-action-icon-stop {
-  height: 34px;
-  width: 34px;
-  min-width: 34px;
+  height: 30px;
+  width: 30px;
+  min-width: 30px;
 }
 
 @media (max-width: 720px) {
@@ -2197,15 +2197,15 @@ body {
   }
 
   .oc-toolbar-action-icon {
-    height: 38px;
-    width: 38px;
-    min-width: 38px;
+    height: 32px;
+    width: 32px;
+    min-width: 32px;
   }
 
   .oc-toolbar-action-icon-stop {
-    height: 34px;
-    width: 34px;
-    min-width: 34px;
+    height: 32px;
+    width: 32px;
+    min-width: 32px;
   }
 
   /* Keep chip popovers inside the viewport on narrow screens */

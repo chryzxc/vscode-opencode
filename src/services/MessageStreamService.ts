@@ -844,6 +844,27 @@ export class MessageStreamService {
     const properties = this.asRecord(event.properties) ?? {};
     const part = this.asRecord(properties.part);
     const info = this.asRecord(properties.info);
+    const todos = Array.isArray(properties.todos)
+      ? properties.todos
+        .map((todo) => {
+          const todoRecord = this.asRecord(todo) ?? {};
+          return {
+            id: typeof todoRecord.id === "string" ? todoRecord.id : undefined,
+            content:
+              typeof todoRecord.content === "string"
+                ? todoRecord.content
+                : undefined,
+            status:
+              typeof todoRecord.status === "string"
+                ? todoRecord.status
+                : undefined,
+            priority:
+              typeof todoRecord.priority === "string"
+                ? todoRecord.priority
+                : undefined,
+          };
+        })
+      : undefined;
 
     return JSON.stringify({
       type: event.type,
@@ -865,6 +886,7 @@ export class MessageStreamService {
         typeof (event as Record<string, unknown>).directory === "string"
           ? (event as Record<string, unknown>).directory
           : undefined,
+      todos,
     });
   }
 

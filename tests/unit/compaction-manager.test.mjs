@@ -268,9 +268,14 @@ test('CompactionManager auto-compacts above threshold and guards the compaction 
     'handleCompactSession should emit running status before invoking SDK-backed compaction with the selected model',
   );
   assert.match(
+    source,
+    /private didSdkConfirmCompaction\([\s\S]*data === true \|\| data === undefined[\s\S]*rec\.compacted === true \|\| rec\.success === true \|\| rec\.ok === true[\s\S]*\["ok", "success", "done", "completed", "compacted"\]/,
+    'CompactionManager should accept valid SDK confirmation payload variants',
+  );
+  assert.match(
     handleCompactBody,
-    /if \(response\?\.data !== true\) \{[\s\S]*throw new Error\("OpenCode did not confirm session compaction"\);/,
-    'handleCompactSession should require the OpenCode SDK summarize confirmation',
+    /if \(!this\.didSdkConfirmCompaction\(response\)\) \{[\s\S]*throw new Error\("OpenCode did not confirm session compaction"\);/,
+    'handleCompactSession should only fail when SDK compaction is not confirmed',
   );
   assert.match(
     handleCompactBody,

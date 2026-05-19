@@ -31,6 +31,19 @@ test('todo event stream handling supports add and update operations', () => {
   assert.match(messageHandlerSource, /function\s+ingestNormalizedTodo\([\s\S]*existingIds\.has\(item\.id\)[\s\S]*type:\s*['"]UPDATE_TODO_ITEM['"]/, 'ingestion helper should route existing todo ids through UPDATE_TODO_ITEM');
 });
 
+test('todoSnapshot replaces todo state from SDK-native todo events', () => {
+  const handlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
+  );
+
+  assert.match(handlerBody, /case\s+["']todoSnapshot["']:\s*\{/, 'message handler must process todoSnapshot events');
+  assert.match(handlerBody, /normalizeTodoList\(rawItems,\s*sessionId\s*\|\|\s*currentSessionId\s*\|\|\s*undefined\)/, 'todoSnapshot should normalize SDK todo snapshots with the active session id');
+  assert.match(handlerBody, /type:\s*["']SET_TODO_ITEMS["']/, 'todoSnapshot should replace the visible todo list');
+  assert.match(messageHandlerSource, /firstNonEmptyString\(rec\.text,\s*rec\.content,\s*rec\.description\)/, 'todo normalization should accept SDK content field');
+  assert.match(messageHandlerSource, /priorityRaw\s*===\s*["']high["'][\s\S]*priorityRaw\s*===\s*["']medium["'][\s\S]*priorityRaw\s*===\s*["']low["']/, 'todo normalization should preserve SDK priority');
+});
+
 test('todo state reducer exposes item list set, append, and patch transitions', () => {
   // Verify reducer supports todo panel state transitions used by message handling.
   const reducerBody = extractFunctionBody(storeSource, 'export function appReducer(state: AppState, action: AppAction): AppState');
@@ -56,9 +69,7 @@ test('todo panel renders status icons and empty-state fallback', () => {
   assert.match(todoBody, /No tasks yet/, 'todo panel should render an empty-state message when no tasks exist');
 });
 
-// RED: will pass after Task 1 implementation (provider + reducer + schema + initState)
-test('provider should forward todo_update stream events as todoUpdate postMessage to webview', () => {
-  // Verify extension host forwards structured todo_update stream events into the webview
+test('provider should forward SDK todo.updated stream events as todoSnapshot postMessage to webview', () => {
   const chatProviderSource = readAllSources(
     [
     joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
@@ -77,11 +88,20 @@ test('provider should forward todo_update stream events as todoUpdate postMessag
     'ChatViewProvider.ts',
   );
 
-  // Expect the provider to post a todoUpdate message when the stream contains responseType=todo_update
   assert.match(
     chatProviderSource,
-    /postMessage\(\{[\s\S]*type:\s*["']todoUpdate["']/,
-    'extension host should forward todo_update stream events as todoUpdate postMessage to webview',
+    /handleSdkTodoUpdatedEvent\([\s\S]*todo\.updated/,
+    'extension host should forward SDK todo.updated events as todoSnapshot postMessage to webview',
+  );
+  assert.match(
+    chatProviderSource,
+    /type:\s*["']todoSnapshot["']/,
+    'extension host should emit todoSnapshot postMessages',
+  );
+  assert.match(
+    chatProviderSource,
+    /client\.session\.todo\(\{[\s\S]*path:\s*\{\s*id:\s*sessionId\s*\}/,
+    'extension host should hydrate session todos from client.session.todo',
   );
 });
 

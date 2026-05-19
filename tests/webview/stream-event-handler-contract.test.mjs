@@ -88,6 +88,17 @@ test('normalizeProgressStatus returns "pending" as default', () => {
 // 2. normalizePartType – canonical alias table
 // ---------------------------------------------------------------------------
 
+test('isFinishSignal accepts boolean and string completion aliases', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function isFinishSignal');
+    assert.ok(body, 'isFinishSignal must exist');
+    assert.match(body, /value\s*===\s*true/, 'must accept boolean true');
+    assert.match(
+        body,
+        /normalized\s*===\s*["']done["'][\s\S]*?normalized\s*===\s*["']stop["'][\s\S]*?normalized\s*===\s*["']completed["'][\s\S]*?normalized\s*===\s*["']tool-calls["'][\s\S]*?normalized\s*===\s*["']error["']/,
+        'must accept common string finish reasons from stream info',
+    );
+});
+
 test('normalizePartType maps thinking/thought to "reasoning"', () => {
     const body = extractFunctionBody(messageHandlerSource, 'function normalizePartType');
     assert.ok(body, 'normalizePartType must exist');
@@ -214,6 +225,21 @@ test('upsertStreamingStep preserves done/error status when incoming is pending (
 // 5. handleStreamEvent – bootstrap guard
 // ---------------------------------------------------------------------------
 
+test('upsertStreamingStep accepts active streaming before isProcessing catches up', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function upsertStreamingStep');
+    assert.ok(body, 'upsertStreamingStep must exist');
+    assert.match(
+        body,
+        /const\s+state\s*=\s*getState\(\)/,
+        'must capture state before the processing guard',
+    );
+    assert.match(
+        body,
+        /!state\.isProcessing\s*&&\s*!state\.streaming\?\.isActive/,
+        'must not drop first progress event when streaming is already active',
+    );
+});
+
 test('handleStreamEvent has a bootstrap guard that returns early on stray events', () => {
     const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
     assert.ok(body, 'handleStreamEvent must exist');
@@ -241,6 +267,20 @@ test('handleStreamEvent bootstrap block dispatches SET_STREAMING with isActive: 
         body,
         /SET_STREAMING[\s\S]{1,300}isActive\s*:\s*true/,
         'bootstrap block must dispatch SET_STREAMING with isActive: true',
+    );
+});
+
+test('handleStreamEvent bootstrap block marks processing before consuming first progress part', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
+    assert.ok(body, 'handleStreamEvent must exist');
+    const bootstrapBlock = body.slice(
+        body.indexOf('if ('),
+        body.indexOf('switch (normalizedEventType)'),
+    );
+    assert.match(
+        bootstrapBlock,
+        /SET_STREAMING[\s\S]*SET_PROCESSING[\s\S]*payload\s*:\s*true/,
+        'bootstrap must set processing before the switch handles first tool/progress event',
     );
 });
 
@@ -372,6 +412,33 @@ test("handleStreamEvent message.updated dispatches SET_PROCESSING true when fini
 // ---------------------------------------------------------------------------
 // 9. handleStreamEvent – message.part.updated: structuredOutput.progressUpdates
 // ---------------------------------------------------------------------------
+
+test('handleStreamEvent message.updated uses string-aware finish detection', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
+    assert.ok(body, 'handleStreamEvent must exist');
+    assert.match(
+        body,
+        /const\s+finish\s*=\s*info\s*\?\s*isFinishSignal\(/,
+        'message.updated must use isFinishSignal instead of boolean-only finish parsing',
+    );
+});
+
+test('handleStreamEvent treats message.completed and session.completed as terminal events', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
+    assert.ok(body, 'handleStreamEvent must exist');
+    const completionCase = body.slice(body.indexOf("case 'message.completed'"), body.indexOf("default:", body.indexOf("case 'message.completed'")));
+    assert.ok(completionCase.length > 0, 'completion terminal case must exist');
+    assert.match(
+        completionCase,
+        /case\s+['"]message\.completed['"]\s*:[\s\S]*case\s+['"]session\.completed['"]\s*:/,
+        'must include both completion event types',
+    );
+    assert.match(
+        completionCase,
+        /FINISH_STREAMING[\s\S]*SET_PROCESSING[\s\S]*payload\s*:\s*false/,
+        'completion event types must finalize streaming and clear processing',
+    );
+});
 
 test('handleStreamEvent routes structuredOutput.progressUpdates to upsertStreamingStep', () => {
     const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
@@ -762,6 +829,17 @@ test('SET_PROCESSING eager StreamingState initializes isActive: true', () => {
     );
 });
 
+test('SET_PROCESSING reactivates an inactive streaming snapshot instead of replacing it', () => {
+    const processingIdx = storeSource.indexOf('case "SET_PROCESSING"');
+    assert.ok(processingIdx >= 0, 'SET_PROCESSING case must exist in store');
+    const processingBody = storeSource.slice(processingIdx, processingIdx + 2200);
+    assert.match(
+        processingBody,
+        /action\.payload\s*&&\s*state\.streaming\s*&&\s*!state\.streaming\.isActive[\s\S]*streaming\s*:\s*\{[\s\S]*\.\.\.state\.streaming[\s\S]*isActive\s*:\s*true/s,
+        'SET_PROCESSING(true) should reactivate an existing inactive snapshot instead of blanking it',
+    );
+});
+
 test('SET_PROCESSING skips eager init when model is invalid (just sets isProcessing)', () => {
     const processingIdx = storeSource.indexOf('case "SET_PROCESSING"');
     assert.ok(processingIdx >= 0, 'SET_PROCESSING case must exist in store');
@@ -786,9 +864,14 @@ test('createMessageHandler routes sessionsList to SET_SESSIONS_LIST', () => {
 });
 
 test('createMessageHandler routes streamEvent to handleStreamEvent', () => {
+    const streamEventCase = messageHandlerSource.slice(
+        messageHandlerSource.indexOf('case "streamEvent"'),
+        messageHandlerSource.indexOf('case "streamEventEnrich"'),
+    );
+    assert.ok(streamEventCase.length > 0, 'streamEvent case must exist');
     assert.match(
-        messageHandlerSource,
-        /case\s+["']streamEvent["'][\s\S]{1,1100}handleStreamEvent/,
+        streamEventCase,
+        /handleStreamEvent/,
         'createMessageHandler must call handleStreamEvent for streamEvent messages',
     );
 });

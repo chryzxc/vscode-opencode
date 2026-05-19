@@ -8,9 +8,7 @@ const panelSource = readSource(
   'PanelComponents.tsx',
 );
 
-test('ActiveTaskPanel reads streaming from store state and does not render todoItems', () => {
-  // Confirm live data wiring — the panel must destructure streaming from useAppState()
-  // and must NOT render todoItems (todos belong exclusively to TodoPanel).
+test('ActiveTaskPanel reads streaming and SDK todoItems from store state', () => {
   const body = extractFunctionBody(panelSource, 'export function ActiveTaskPanel()');
 
   assert.match(
@@ -18,20 +16,47 @@ test('ActiveTaskPanel reads streaming from store state and does not render todoI
     /streaming[^)]*useAppState\(\)|useAppState\(\)[^;]*streaming/s,
     'ActiveTaskPanel must read streaming from useAppState()',
   );
-  assert.doesNotMatch(
+  assert.match(
     body,
-    /sessionTodos/,
-    'ActiveTaskPanel must NOT define sessionTodos — todos belong exclusively to TodoPanel',
+    /todoItems[^)]*useAppState\(\)|useAppState\(\)[^;]*todoItems/s,
+    'ActiveTaskPanel must read SDK todoItems from useAppState()',
   );
-  assert.doesNotMatch(
+  assert.match(
     body,
-    /Current Tasks/,
-    'ActiveTaskPanel must NOT render a Current Tasks section — todos belong exclusively to TodoPanel',
+    /Todo Checklist/,
+    'ActiveTaskPanel must render the SDK todo checklist section',
+  );
+  assert.match(
+    body,
+    /completedTodoCount/,
+    'ActiveTaskPanel must summarize completed checklist items',
+  );
+});
+
+test('ActiveTaskPanel renders checklist status icons for SDK todo states', () => {
+  assert.match(
+    panelSource,
+    /function TodoChecklistIcon/,
+    'PanelComponents should define a todo checklist icon renderer',
+  );
+  assert.match(
+    panelSource,
+    /case "completed"[\s\S]*<Check/,
+    'Completed todos should use a visible check icon',
+  );
+  assert.match(
+    panelSource,
+    /case "in_progress"[\s\S]*<RefreshCw/,
+    'In-progress todos should use a visible progress icon',
+  );
+  assert.match(
+    panelSource,
+    /line-through/,
+    'Completed todo text should be visually marked done',
   );
 });
 
 test('ActiveTaskPanel derives liveProgressSteps from streaming.progressEvents and streaming.steps', () => {
-  // Confirm the progress step derivation logic is present.
   const body = extractFunctionBody(panelSource, 'export function ActiveTaskPanel()');
 
   assert.match(
@@ -52,7 +77,6 @@ test('ActiveTaskPanel derives liveProgressSteps from streaming.progressEvents an
 });
 
 test('ActiveTaskPanel renders Progress Updates section conditionally on isActive', () => {
-  // Confirms the section only appears while streaming is active.
   const body = extractFunctionBody(panelSource, 'export function ActiveTaskPanel()');
 
   assert.match(

@@ -62,10 +62,6 @@ import type {
 
 import { FileIcon } from "./MessageComponents";
 
-function totalTokens(i: number, o: number, r: number, w: number): number {
-  return (i || 0) + (o || 0) + (r || 0) + (w || 0);
-}
-
 function messageTokenStats(message: Message): {
   input: number;
   output: number;
@@ -460,11 +456,85 @@ function useMiniSectionState(def: boolean) {
   return useState(def);
 }
 
+const TODO_STATUS_RANK: Record<TodoItem["status"], number> = {
+  in_progress: 0,
+  pending: 1,
+  failed: 2,
+  cancelled: 3,
+  completed: 4,
+};
+
+function todoStatusLabel(status: TodoItem["status"]) {
+  switch (status) {
+    case "in_progress":
+      return "In progress";
+    case "completed":
+      return "Done";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    case "pending":
+    default:
+      return "Pending";
+  }
+}
+
+function todoPriorityTone(priority?: TodoItem["priority"]) {
+  switch (priority) {
+    case "high":
+      return "text-oc-red border-oc-red/30 bg-oc-red/10";
+    case "medium":
+      return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
+    case "low":
+      return "text-[var(--oc-text-soft)] border-oc-border bg-oc-border/20";
+    default:
+      return "text-[var(--oc-text-soft)] border-oc-border bg-oc-border/20";
+  }
+}
+
+function TodoChecklistIcon({ status }: { status: TodoItem["status"] }) {
+  switch (status) {
+    case "completed":
+      return (
+        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-oc-green/15 text-oc-green">
+          <Check className="h-3 w-3" />
+        </span>
+      );
+    case "in_progress":
+      return (
+        <span className="flex h-4 w-4 items-center justify-center rounded-full border border-oc-accent/45 text-oc-accent">
+          <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+        </span>
+      );
+    case "failed":
+      return (
+        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-oc-red/10 text-oc-red">
+          <AlertCircle className="h-3 w-3" />
+        </span>
+      );
+    case "cancelled":
+      return (
+        <span className="flex h-4 w-4 items-center justify-center rounded-full border border-oc-border text-[var(--oc-text-soft)]">
+          <X className="h-3 w-3" />
+        </span>
+      );
+    case "pending":
+    default:
+      return (
+        <span className="flex h-4 w-4 items-center justify-center rounded-full border border-oc-border-soft text-[var(--oc-text-soft)]">
+          <MoreHorizontal className="h-3 w-3" />
+        </span>
+      );
+  }
+}
+
 // ─── ActiveTaskPanel ──────────────────────────────────────────────────────────
 export function ActiveTaskPanel() {
   const {
     sessionStats,
     streaming,
+    todoItems,
     messages,
     currentSessionId,
     sessionsList,
@@ -567,16 +637,15 @@ export function ActiveTaskPanel() {
     [sessionStats, effectiveCompactionBaselineStats],
   );
 
-  const total = totalTokens(
-    contextStats.input,
-    contextStats.output,
-    contextStats.read,
-    contextStats.write,
-  );
   const maxContext = selectedModelContextLimit ?? 128_000;
   const usingContextFallback = selectedModelContextLimit === undefined;
+  const contextUsedTokens = contextStats.input;
   const pct =
-    total > 0 ? Math.min(100, Math.round((total / maxContext) * 100)) : 0;
+    typeof contextUsagePct === "number" && Number.isFinite(contextUsagePct)
+      ? Math.max(0, Math.min(100, Math.round(contextUsagePct)))
+      : contextUsedTokens > 0
+        ? Math.min(100, Math.round((contextUsedTokens / maxContext) * 100))
+        : 0;
   const hasCompactionBaseline =
     !!compactionBaselineStats ||
     (typeof safeCompactionDividerIndex === "number" &&
@@ -643,6 +712,18 @@ export function ActiveTaskPanel() {
   }, [streaming?.isActive, streaming?.reasoningEvents]);
 
   const progressStepCount = liveProgressSteps.length;
+  const sortedTodoItems = useMemo(
+    () =>
+      [...(todoItems || [])].sort(
+        (left, right) =>
+          (TODO_STATUS_RANK[left.status] ?? 9) -
+          (TODO_STATUS_RANK[right.status] ?? 9),
+      ),
+    [todoItems],
+  );
+  const completedTodoCount = sortedTodoItems.filter(
+    (todo) => todo.status === "completed",
+  ).length;
 
   // Auto-scroll the progress list to the bottom when new steps arrive.
   useEffect(() => {
@@ -666,6 +747,55 @@ export function ActiveTaskPanel() {
       </div>
 
       <div className="p-2">
+        {sortedTodoItems.length > 0 ? (
+          <MiniSection title="Todo Checklist">
+            <div className="mb-2 flex items-center justify-between text-[11px] oc-text-secondary">
+              <span className="font-medium">
+                {completedTodoCount} / {sortedTodoItems.length} done
+              </span>
+              <span className="uppercase tracking-wider">OpenCode SDK</span>
+            </div>
+            <div className="space-y-1.5">
+              {sortedTodoItems.map((todo) => {
+                const isDone = todo.status === "completed";
+                return (
+                  <div
+                    key={todo.id}
+                    className="flex items-start gap-2 rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 text-xs"
+                  >
+                    <span className="mt-0.5 shrink-0">
+                      <TodoChecklistIcon status={todo.status} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div
+                        className={`break-words leading-relaxed ${isDone
+                            ? "text-[var(--oc-text-soft)] line-through opacity-70"
+                            : "text-[var(--oc-text-soft)]"
+                          }`}
+                      >
+                        {todo.description ?? todo.text ?? "Untitled task"}
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span className="rounded border border-oc-border bg-oc-border/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--oc-text-soft)]">
+                          {todoStatusLabel(todo.status)}
+                        </span>
+                        {todo.priority ? (
+                          <span
+                            className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${todoPriorityTone(
+                              todo.priority,
+                            )}`}
+                          >
+                            {todo.priority}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </MiniSection>
+        ) : null}
         {/* ── Progress Updates: shown only while streaming is active ── */}
         {isActive && (
           <MiniSection title="Progress Updates">
@@ -747,7 +877,7 @@ export function ActiveTaskPanel() {
                 </div>
                 <div className="flex items-center gap-1.5 opacity-70">
                   <span className="font-medium tabular-nums text-[11px] text-[var(--oc-text-soft)]">
-                    {total.toLocaleString()} /{" "}
+                    {contextUsedTokens.toLocaleString()} /{" "}
                     <span
                       title={
                         usingContextFallback
@@ -1663,6 +1793,20 @@ export function InputWrapper() {
   const activeInteractiveEvent =
     displayInteractiveEvents[currentInteractiveIndex];
   const event = activeInteractiveEvent;
+  const currentInteractiveAnswered = Boolean(
+    event?.id && pendingAnswers[event.id]?.text.trim(),
+  );
+  const eventBodyText =
+    event?.type === "quick_actions"
+      ? event.title || "Select an action"
+      : event?.type === "message"
+        ? event.message || ""
+        : event?.question || "";
+  const eventContextMessage = event?.contextMessage?.trim() || "";
+  const showContextMessage =
+    !!eventContextMessage &&
+    eventContextMessage.toLowerCase() !== eventBodyText.toLowerCase().trim();
+  const showPromptInHeader = !event?.title && !!eventBodyText;
 
   const capitalizeFirst = (str: string) => {
     if (!str) return str;
@@ -2010,14 +2154,19 @@ export function InputWrapper() {
       };
     });
 
-    // Include question context with answers so the model can ground follow-up turns,
-    // and render a UX-friendly user bubble that mirrors what was answered.
+    const hasMultipleInteractivePrompts = batch.length > 1;
+
+    // Single popover answers read best as plain user replies. Numbered question
+    // context is only needed when a batched prompt carries multiple questions.
     const composedPrompt = batch
       .map((resp, index) => {
         const answer = (resp.text || "").trim();
         const question = (resp.questionText || "").trim();
         if (!answer) {
           return "";
+        }
+        if (!hasMultipleInteractivePrompts) {
+          return answer;
         }
         if (!question) {
           return `Answer ${index + 1}: ${answer}`;
@@ -2027,8 +2176,7 @@ export function InputWrapper() {
       .filter((line) => line.length > 0)
       .join("\n\n");
 
-    // Keep user bubble text aligned with the exact prompt sent upstream so
-    // "Question N" and "Answer" labels remain visible after submit/hydration.
+    // Keep user bubble text aligned with the exact prompt sent upstream.
     const displayText = composedPrompt;
 
     // IMPORTANT: do not append optimistic assistant or user messages here.
@@ -2111,13 +2259,17 @@ export function InputWrapper() {
         <QueueContainer />
          {event && (
            <div className="mb-2 rounded-lg border border-oc-border-soft bg-[var(--oc-panel-soft)] px-3 py-2">
-             <div className="mb-2 flex items-center justify-between gap-2 border-b border-oc-border-soft pb-1.5">
-               <div className="flex items-center gap-2">
-                 <div className="text-[11px] font-semibold uppercase tracking-wider oc-text-secondary">
-                   {event.title || "Quick Input"}
-                 </div>
-                 {displayInteractiveEvents.length > 1 && (
-                   <div className="flex items-center gap-1.5 ml-2 border-l border-oc-border-soft pl-3">
+             <div className="mb-2 border-b border-oc-border-soft pb-1.5">
+               <div className="flex items-start justify-between gap-2">
+                 <div className="flex min-w-0 flex-1 flex-col gap-1">
+                   <div className="flex items-center gap-2">
+                     {event.title ? (
+                       <div className="text-[11px] font-semibold uppercase tracking-wider oc-text-secondary">
+                         {event.title}
+                       </div>
+                     ) : null}
+                     {displayInteractiveEvents.length > 1 && (
+                       <div className={`flex items-center gap-1.5 ${event.title ? "ml-2 border-l border-oc-border-soft pl-3" : ""}`}>
                     <button
                       type="button"
                       disabled={currentInteractiveIndex === 0}
@@ -2139,9 +2291,13 @@ export function InputWrapper() {
                       type="button"
                       disabled={
                         currentInteractiveIndex ===
-                        displayInteractiveEvents.length - 1
+                        displayInteractiveEvents.length - 1 ||
+                        !currentInteractiveAnswered
                       }
                       onClick={() => {
+                        if (!currentInteractiveAnswered) {
+                          return;
+                        }
                         setCurrentInteractiveIndex((i) => i + 1);
                         setIsCustomMode(false);
                         setCustomValue("");
@@ -2156,24 +2312,30 @@ export function InputWrapper() {
                         {Object.keys(pendingAnswers).length} answered
                       </span>
          )}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  className="oc-quick-input-icon-btn rounded p-1 transition-colors"
-                  title="Dismiss This"
-                  onClick={() => {
-                    dispatch({
-                      type: "DISMISS_INTERACTIVE_EVENT",
-                      payload: event.id,
-                    });
-                  }}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
+                  {showPromptInHeader ? (
+                    <div className="text-[12px] leading-relaxed text-[var(--oc-text-soft)]">
+                      <MarkdownRenderer content={eventBodyText} />
+                    </div>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="oc-quick-input-icon-btn rounded p-1 transition-colors"
+                    title="Dismiss This"
+                    onClick={() => {
+                      dispatch({
+                        type: "DISMISS_INTERACTIVE_EVENT",
+                        payload: event.id,
+                      });
+                    }}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2187,31 +2349,18 @@ export function InputWrapper() {
                   ))}
                 </div>
               )}
-              <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
-                {(() => {
-                  const bodyText =
-                    event.type === "quick_actions"
-                      ? event.title || "Select an action"
-                      : event.type === "message"
-                        ? event.message
-                        : event.question;
-                  const ctx = event.contextMessage?.trim();
-                  // Only show contextMessage if it differs substantially from the body text
-                  const showContext =
-                    ctx &&
-                    ctx.toLowerCase() !== bodyText?.toLowerCase()?.trim();
-                  return (
-                    <>
-                      {showContext && (
-                        <div className="mb-2 rounded bg-[var(--oc-panel)] border border-[var(--oc-border-soft)] px-2.5 py-2 text-[11px] oc-text-secondary leading-relaxed">
-                          <MarkdownRenderer content={ctx} />
-                        </div>
-                      )}
-                      <MarkdownRenderer content={bodyText} />
-                    </>
-                  );
-                })()}
-              </div>
+              {(showContextMessage || !showPromptInHeader) && (
+                <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
+                  {showContextMessage ? (
+                    <div className="mb-2 rounded bg-[var(--oc-panel)] border border-[var(--oc-border-soft)] px-2.5 py-2 text-[11px] oc-text-secondary leading-relaxed">
+                      <MarkdownRenderer content={eventContextMessage} />
+                    </div>
+                  ) : null}
+                  {!showPromptInHeader ? (
+                    <MarkdownRenderer content={eventBodyText} />
+                  ) : null}
+                </div>
+              )}
 
               {isCustomMode ? (
                 <div className="flex flex-col gap-2 animate-in fade-in slide-in-from-top-1 duration-200">
@@ -2721,7 +2870,7 @@ export function InputWrapper() {
                   aria-label="Stop"
                   title="Stop"
                 >
-                  <Square className="h-3.5 w-3.5" />
+                  <Square className="h-3 w-3" />
                 </Button>
               ) : null}
               {!isAiResponding || inputValue.trim().length > 0 ? (
@@ -2735,11 +2884,11 @@ export function InputWrapper() {
                   title={isAiResponding ? "Send steering message" : "Send"}
                 >
                   {!isAiResponding ? (
-                    <Send className="h-3.5 w-3.5" />
+                    <Send className="h-3 w-3" />
                   ) : inputValue.trim().length > 0 ? (
-                    <AlertCircle className="h-3.5 w-3.5" />
+                    <AlertCircle className="h-3 w-3" />
                   ) : (
-                    <Send className="h-3.5 w-3.5" />
+                    <Send className="h-3 w-3" />
                   )}
                 </Button>
               ) : null}
@@ -3117,6 +3266,19 @@ export function TodoPanel() {
   const { todoItems } = useAppState();
   const [open, setOpen] = useState(true);
 
+  const sortedTodoItems = useMemo(() => {
+    const rank: Record<TodoItem["status"], number> = {
+      in_progress: 0,
+      pending: 1,
+      failed: 2,
+      cancelled: 3,
+      completed: 4,
+    };
+    return [...(todoItems || [])].sort(
+      (left, right) => (rank[left.status] ?? 9) - (rank[right.status] ?? 9),
+    );
+  }, [todoItems]);
+
   const statusIcon = (status?: string) => {
     switch (status) {
       case "pending":
@@ -3167,6 +3329,19 @@ export function TodoPanel() {
     }
   };
 
+  const priorityTone = (priority?: TodoItem["priority"]) => {
+    switch (priority) {
+      case "high":
+        return "text-oc-red border-oc-red/30 bg-oc-red/10";
+      case "medium":
+        return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
+      case "low":
+        return "text-[var(--oc-text-soft)] border-oc-border bg-oc-border/20";
+      default:
+        return "";
+    }
+  };
+
   return (
     <div className="oc-todo-panel border-t border-oc-border p-3 text-xs">
       <div className="mb-2 flex items-center justify-between">
@@ -3189,13 +3364,13 @@ export function TodoPanel() {
 
       {open ? (
         <div>
-          {!todoItems || todoItems.length === 0 ? (
+          {sortedTodoItems.length === 0 ? (
             <div className="py-3 text-center text-[var(--oc-text-soft)] opacity-60 text-xs">
               No tasks yet
             </div>
           ) : (
             <div className="space-y-1.5">
-              {todoItems.map((t) => (
+              {sortedTodoItems.map((t) => (
                 <div
                   key={t.id}
                   className="oc-panel-section flex items-start gap-2 bg-oc-panel-soft p-2"
@@ -3225,6 +3400,15 @@ export function TodoPanel() {
                     >
                       {statusLabel(t.status)}
                     </div>
+                    {t.priority ? (
+                      <div
+                        className={`ml-1 inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${priorityTone(
+                          t.priority,
+                        )}`}
+                      >
+                        {t.priority}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ))}

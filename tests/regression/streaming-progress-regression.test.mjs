@@ -484,16 +484,11 @@ test('subagent map synchronization rebinds orphaned parent message ids from stre
   );
 });
 
-test('message timeline keeps placeholder starting/finishing steps for full progress visibility', () => {
-  const filterBody = extractFunctionBody(
+test('tool_call placeholder starting/finishing steps are hidden unless description is meaningful', () => {
+  assert.match(
     messageComponentsSource,
-    'function isActionProgressStep(step: MessageStep | StreamingStep): boolean',
-  );
-
-  assert.doesNotMatch(
-    filterBody,
-    /title === "starting step" \|\| title === "finishing step"/,
-    'timeline progress filter should not hide placeholder starting/finishing rows',
+    /normalizedLabelForSummary === "tool_call"[\s\S]*hasMeaningfulDescription[\s\S]*continue;/s,
+    'timeline rendering should suppress low-signal tool_call placeholder steps when no useful description exists',
   );
 });
 

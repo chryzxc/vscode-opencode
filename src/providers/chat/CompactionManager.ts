@@ -72,6 +72,33 @@ export class CompactionManager {
       this.normalizeTokenCount(directTokens?.input);
   }
 
+  private didSdkConfirmCompaction(response: { data?: unknown } | undefined): boolean {
+    const data = response?.data;
+
+    if (data === true || data === undefined) {
+      return true;
+    }
+    if (data === false || data === null) {
+      return false;
+    }
+
+    const rec = this.asRecord(data);
+    if (!rec) {
+      return false;
+    }
+
+    if (rec.compacted === true || rec.success === true || rec.ok === true) {
+      return true;
+    }
+
+    const status = this.firstNonEmptyString(rec.status)?.toLowerCase();
+    if (status && ["ok", "success", "done", "completed", "compacted"].includes(status)) {
+      return true;
+    }
+
+    return false;
+  }
+
   /**
    * Get storage key for compaction view state
    */
@@ -454,7 +481,7 @@ export class CompactionManager {
         modelID: selectedModel.modelID,
       });
 
-      if (response?.data !== true) {
+      if (!this.didSdkConfirmCompaction(response)) {
         throw new Error("OpenCode did not confirm session compaction");
       }
 
