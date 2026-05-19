@@ -39,19 +39,65 @@ type StreamViewportState = {
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
 const WEBVIEW_BOOTSTRAP_CACHE_KEY = "opencode.chat.bootstrap.v1";
 
+function formatCompactionTime(at?: number): string | undefined {
+  if (typeof at !== "number") {
+    return undefined;
+  }
+  return new Date(at).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function CompactionDivider({ at }: { at?: number }) {
-  const label =
-    typeof at === "number"
-      ? `Compacted at ${new Date(at).toLocaleTimeString()}`
-      : "Compacted";
+  const compactedAt = formatCompactionTime(at);
+  return (
+    <div className="oc-compaction-divider-wrap -mx-4 py-2">
+      <div className="oc-compaction-divider">
+        <span className="oc-compaction-divider-line" />
+        <div className="oc-compaction-divider-pill">
+          <span className="oc-compaction-divider-dot" />
+          <span className="oc-compaction-divider-label">
+            {compactedAt ? `Compacted at ${compactedAt}` : "Compacted"}
+          </span>
+        </div>
+        <span className="oc-compaction-divider-line" />
+      </div>
+    </div>
+  );
+}
+
+function CompactedMessagesToggle({
+  collapsed,
+  hiddenMessageCount,
+  at,
+  onToggle,
+}: {
+  collapsed: boolean;
+  hiddenMessageCount: number;
+  at?: number;
+  onToggle: () => void;
+}) {
+  const compactedAt = formatCompactionTime(at);
+  const summary = collapsed
+    ? `${hiddenMessageCount} compacted message${hiddenMessageCount === 1 ? "" : "s"} hidden`
+    : "Compacted history expanded";
+  const actionLabel = collapsed ? "Show history" : "Collapse history";
 
   return (
-    <div className="-mx-4 py-2">
-      <div className="flex w-full items-center gap-2 text-[10px] font-medium oc-text-secondary">
-        <span className="h-px flex-1 bg-current opacity-50" />
-        <span className="shrink-0 text-center opacity-80">{label}</span>
-        <span className="h-px flex-1 bg-current opacity-50" />
-      </div>
+    <div className="oc-compaction-toggle-wrap -mx-4 py-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="oc-compaction-toggle"
+        title={collapsed ? "Show compacted messages" : "Hide compacted messages"}
+      >
+        <span className="oc-compaction-toggle-summary">{summary}</span>
+        <span className="oc-compaction-toggle-meta">
+          {compactedAt ? `Compacted ${compactedAt}` : "Session archive"}
+        </span>
+        <span className="oc-compaction-toggle-action">{actionLabel}</span>
+      </button>
     </div>
   );
 }
@@ -456,12 +502,11 @@ function ChatContent() {
               ) : null}
 
               {hasCompactedSegment ? (
-            <div className="-mx-4 py-2">
-              <div className="flex w-full items-center gap-2 text-[10px] font-medium oc-text-secondary">
-                <span className="h-px flex-1 bg-current opacity-50" />
-                <button
-                  type="button"
-                  onClick={() => {
+                <CompactedMessagesToggle
+                  collapsed={isCompressed}
+                  hiddenMessageCount={hiddenMessageCount}
+                  at={state.lastCompactedAt}
+                  onToggle={() => {
                     const nextCollapsed = !state.compactedMessagesCollapsed;
                     dispatch({
                       type: "SET_COMPACTED_MESSAGES_COLLAPSED",
@@ -482,21 +527,8 @@ function ChatContent() {
                       });
                     }
                   }}
-                  className="shrink-0 px-1 py-0 text-[10px] font-medium oc-text-secondary opacity-80 hover:opacity-100 hover:underline transition-colors"
-                  title={
-                    isCompressed
-                      ? "Show compacted messages"
-                      : "Hide compacted messages"
-                  }
-                >
-                  {isCompressed
-                    ? `Compacted messages (${hiddenMessageCount} hidden)`
-                    : "Compacted messages (expanded)"}
-                </button>
-                <span className="h-px flex-1 bg-current opacity-50" />
-              </div>
-            </div>
-          ) : null}
+                />
+              ) : null}
 
           {visibleMessages.map((msg: Message, visibleIdx: number) => {
             const idx = visibleStartIndex + visibleIdx;

@@ -7946,6 +7946,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               status: normalizedStatus,
               at: asOptionalNumber(data.at),
               error: asString(data.error) || undefined,
+              notice: asString(data.notice) || undefined,
               compactionDividerIndex: asOptionalNumber(data.compactionDividerIndex),
               compactionDividerBeforeMessageId: asOptionalString(
                 data.compactionDividerBeforeMessageId,

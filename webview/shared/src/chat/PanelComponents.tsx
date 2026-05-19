@@ -546,6 +546,7 @@ export function ActiveTaskPanel() {
     isCompacting,
     lastCompactedAt,
     compactionError,
+    compactionNotice,
     compactionBaselineStats,
     compactionDividerIndex,
     serverVersion,
@@ -963,6 +964,11 @@ export function ActiveTaskPanel() {
               {!isCompacting && compactionError ? (
                 <div className="mt-1.5 text-[10px] text-oc-red">
                   {compactionError}
+                </div>
+              ) : null}
+              {!isCompacting && !compactionError && compactionNotice ? (
+                <div className="mt-1.5 text-[10px] oc-text-secondary">
+                  {compactionNotice}
                 </div>
               ) : null}
             </div>

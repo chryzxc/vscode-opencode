@@ -130,7 +130,7 @@ test('CompactionManager posts and republishes persisted compaction view state to
   );
   const postStatusBody = extractFunctionBody(
     source,
-    'postCompactionStatus(payload: {\n    sessionId: string;\n    status: string;\n    error?: string;\n    compacted?: boolean;\n    baselineStats?: CompactionBaselineStats;\n    compactionDividerBeforeMessageId?: string;\n    compactionDividerAfterMessageId?: string;\n  }): void {',
+    'postCompactionStatus(payload: {\n    sessionId: string;\n    status: string;\n    error?: string;\n    compacted?: boolean;\n    notice?: string;\n    baselineStats?: CompactionBaselineStats;\n    compactionDividerIndex?: number;\n    compactionDividerBeforeMessageId?: string;\n    compactionDividerAfterMessageId?: string;\n  }): void {',
   );
 
   assert.match(
@@ -284,8 +284,8 @@ test('CompactionManager auto-compacts above threshold and guards the compaction 
   );
   assert.match(
     handleCompactBody,
-    /this\.postCompactionStatus\(\{[\s\S]*status: "done",[\s\S]*compacted: true,[\s\S]*baselineStats,[\s\S]*\}\);/,
-    'handleCompactSession should emit a done status when compaction succeeds',
+    /this\.postCompactionStatus\(\{[\s\S]*status: "done",[\s\S]*compacted: !noVisibleChange,[\s\S]*notice: noVisibleChange[\s\S]*baselineStats,[\s\S]*\}\);/,
+    'handleCompactSession should emit done status with explicit no-op notice semantics',
   );
   assert.match(
     handleCompactBody,

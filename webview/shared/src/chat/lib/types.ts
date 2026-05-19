@@ -660,6 +660,7 @@ export interface AppState {
   isCompacting: boolean;
   lastCompactedAt?: number;
   compactionError?: string;
+  compactionNotice?: string;
   compactionBaselineStats?: SessionStats;
   compactionDividerIndex?: number;
   compactionDividerBeforeMessageId?: string;

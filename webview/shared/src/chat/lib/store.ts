@@ -81,6 +81,7 @@ export const initialState: AppState = {
   isCompacting: false,
   lastCompactedAt: undefined,
   compactionError: undefined,
+  compactionNotice: undefined,
   compactionBaselineStats: undefined,
   compactionDividerIndex: undefined,
   compactionDividerBeforeMessageId: undefined,
@@ -202,6 +203,7 @@ export type AppAction =
       status: "running" | "done" | "error";
       at?: number;
       error?: string;
+      notice?: string;
       baselineStats?: SessionStats;
       compactionDividerIndex?: number;
       compactionDividerBeforeMessageId?: string;
@@ -1428,7 +1430,9 @@ function resolveCompactionDividerIndex(
       return firstPostCompactionIndex;
     }
     if (messages.length > 0) {
-      return messages.length;
+      // If timestamps are missing/drifted after compaction, prefer keeping
+      // rewritten history visible (including summary) over hiding everything.
+      return 0;
     }
   }
 
@@ -1479,6 +1483,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         streaming: null,
         isCompacting: false,
         compactionError: undefined,
+        compactionNotice: undefined,
         lastCompactedAt: undefined,
         compactionBaselineStats: undefined,
         compactionDividerIndex: undefined,
@@ -2017,6 +2022,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             action.payload.status === "error"
               ? action.payload.error ?? "Session compaction failed."
               : undefined,
+          compactionNotice: undefined,
         };
       }
       {
@@ -2043,6 +2049,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           isCompacting: false,
           lastCompactedAt: nextLastCompactedAt,
           compactionError: undefined,
+          compactionNotice: action.payload.notice,
+          // Reset header context ring immediately after compaction completes.
+          // The subsequent chatHistory hydration will recalculate this from the
+          // rewritten message list, but forcing 0 here prevents stale carry-over.
+          contextUsagePct: 0,
           // Use the explicit baseline supplied by the backend.  Do NOT fall
           // back to state.sessionStats: after compaction the server replaces
           // old messages with a summary, so subtracting pre-compact stats
@@ -2089,6 +2100,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         lastCompactedAt: nextLastCompactedAt,
+        compactionNotice: state.compactionNotice,
         compactionBaselineStats:
           action.payload.baselineStats ?? state.compactionBaselineStats,
         compactionDividerIndex: resolvedDividerIndex,

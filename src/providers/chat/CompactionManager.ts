@@ -99,6 +99,23 @@ export class CompactionManager {
     return false;
   }
 
+  private compactMessageSignature(messages: any[]): string {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return "empty";
+    }
+
+    return messages
+      .map((message) => {
+        const rec = this.asRecord(message) || {};
+        const info = this.asRecord(rec.info) || {};
+        const id = this.firstNonEmptyString(rec.id, rec.messageId, info.id) || "";
+        const role = this.firstNonEmptyString(rec.role, info.role, rec.sender) || "";
+        const body = this.firstNonEmptyString(rec.content, rec.text) || "";
+        return `${id}|${role}|${body.slice(0, 180)}`;
+      })
+      .join("\n");
+  }
+
   /**
    * Get storage key for compaction view state
    */
@@ -316,7 +333,9 @@ export class CompactionManager {
     status: string;
     error?: string;
     compacted?: boolean;
+    notice?: string;
     baselineStats?: CompactionBaselineStats;
+    compactionDividerIndex?: number;
     compactionDividerBeforeMessageId?: string;
     compactionDividerAfterMessageId?: string;
   }): void {
@@ -461,6 +480,12 @@ export class CompactionManager {
     this.compactingSessions.add(sessionId);
 
     try {
+      const preRawMessages = await sessionService.getMessages(sessionId);
+      const preMessages = Array.isArray(preRawMessages)
+        ? await this.processHistoryMessages(preRawMessages, sessionId)
+        : [];
+      const preSignature = this.compactMessageSignature(preMessages);
+
       const dividerState = await this.resolveSessionCompactionDividerState(
         sessionId,
         sessionService,
@@ -490,12 +515,12 @@ export class CompactionManager {
       const state: PersistedCompactionViewState = {
         lastCompactedAt: Date.now(),
         baselineStats,
-        collapsed: false,
-        compactionDividerIndex: dividerState.compactionDividerIndex,
-        compactionDividerBeforeMessageId:
-          dividerState.compactionDividerBeforeMessageId,
-        compactionDividerAfterMessageId:
-          dividerState.compactionDividerAfterMessageId,
+        collapsed: true,
+        // After compaction, server history is rewritten (typically with a summary
+        // message). Use a zero divider so rewritten messages remain visible.
+        compactionDividerIndex: 0,
+        compactionDividerBeforeMessageId: undefined,
+        compactionDividerAfterMessageId: undefined,
       };
 
       await this.persistAndPublishCompactionViewState(sessionId, state);
@@ -503,6 +528,8 @@ export class CompactionManager {
       const refreshedMessages = Array.isArray(refreshedRawMessages)
         ? await this.processHistoryMessages(refreshedRawMessages, sessionId)
         : [];
+      const postSignature = this.compactMessageSignature(refreshedMessages);
+      const noVisibleChange = preSignature === postSignature;
 
       this.postMessage({
         type: "chatHistory",
@@ -513,12 +540,14 @@ export class CompactionManager {
       this.postCompactionStatus({
         sessionId,
         status: "done",
-        compacted: true,
+        compacted: !noVisibleChange,
+        notice: noVisibleChange
+          ? "Nothing to compact yet. This session is already concise."
+          : undefined,
         baselineStats,
-        compactionDividerBeforeMessageId:
-          dividerState.compactionDividerBeforeMessageId,
-        compactionDividerAfterMessageId:
-          dividerState.compactionDividerAfterMessageId,
+        compactionDividerIndex: 0,
+        compactionDividerBeforeMessageId: undefined,
+        compactionDividerAfterMessageId: undefined,
       });
 
       this.logger.info("Session compacted successfully", {

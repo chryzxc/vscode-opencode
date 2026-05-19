@@ -2106,6 +2106,7 @@ const THINKING_LOADING_TEXTS = [
   "Convincing the compiler to cooperate…",
   "Reversing the polarity…",
 ];
+const THINKING_LOADING_TEXT_SWITCH_INTERVAL_MS = 4200;
 
 function ThinkingStatusTicker({ className }: { className?: string }) {
   const [messageIndex, setMessageIndex] = useState(() =>
@@ -2124,7 +2125,7 @@ function ThinkingStatusTicker({ className }: { className?: string }) {
         }
         return next;
       });
-    }, 2400); // Increased interval for typewriter to complete
+    }, THINKING_LOADING_TEXT_SWITCH_INTERVAL_MS);
 
     return () => window.clearInterval(timer);
   }, []);
