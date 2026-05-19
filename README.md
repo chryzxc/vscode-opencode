@@ -8,7 +8,7 @@
 
 ![Interactive plan viewer demo](./assets/demo-1.gif)
 
-The [OpenCode](https://opencode.ai) VS Code extension brings OpenCode into Visual Studio Code with AI chat, interactive implementation plans and questions, coding agents, subagent tracking, session history, and quota monitoring.
+The [OpenCode](https://opencode.ai) VS Code extension brings OpenCode into Visual Studio Code with AI chat, image and file attachments, selected-code context, an interactive plan builder, inline questions, plan annotations, agent-generated tasks, context compaction, coding agents, subagent tracking, session history, and quota monitoring.
 
 Requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be installed locally.
 
@@ -22,7 +22,11 @@ Requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be install
 If you already use OpenCode in the terminal, this extension gives you a more integrated VS Code workflow:
 
 - Chat with OpenCode in a dedicated sidebar instead of juggling terminal sessions
-- Generate and review `implementation_plan.md` files before code changes
+- Attach images, files, and highlighted code selections directly into the chat box
+- Generate, annotate, and review `implementation_plan.md` files before code changes
+- Answer interactive planning questions inline so agents can clarify scope before acting
+- Track the agent-generated task list created from your prompt
+- Keep long-running sessions usable with automatic context compaction
 - Track subagents, quotas, MCP status, LSP status, and session stats in one UI
 - Keep persistent session history inside VS Code
 - Use file references, image attachments, slash-command skills, and quick session controls without leaving the editor
@@ -40,19 +44,47 @@ If you already use OpenCode in the terminal, this extension gives you a more int
 
 ### Conversation View
 
+Full chat flow with streaming responses, structured outputs, and session continuity.
+
 ![Conversation view 1](./assets/conversation-1.png)
 ![Conversation view 2](./assets/conversation-2.png)
 ![Conversation view 3](./assets/conversation-3.png)
+![Conversation view](./assets/conversation.png)
 
-### Extended Panels
+### Plan Builder + Annotations
+
+Plan workflow from generation to review, including adding comments in the plan as annotations before execution.
+
+![Interactive planner](./assets/interactive-planner.png)
+![Plan builder](./assets/plan-builder.png)
+![Plan builder 1](./assets/plan-builder-1.png)
+![Interactive plan viewer](./assets/interactive-plan-viewer.png)
+![Interactive plan viewer with annotations](./assets/interactive-plan-viewer-with-annotations.png)
+![Plan annotations](./assets/plan-annotations.png)
+![Adding comments in plan as annotations](./assets/add-comments-in-plan.png)
+
+### Attachments + Code Context
+
+Attaching file references and highlighted code lines directly in the chat box for faster, grounded prompts.
+
+![File line reference](./assets/file-line-reference.png)
+
+### Tasks, Subagents + Side Panels
+
+Agent-generated todo tasks, subagent activity, and side-panel visibility for active execution state.
 
 ![Extended panel](./assets/extended-panel.png)
-![Interactive planner](./assets/interactive-planner.png)
+![Subagents](./assets/subagents.png)
+![Todo panel](./assets/todo.png)
 
-### Quota + Questions
+### Quota + Interactive Questions
+
+Interactive question flow with selectable answers, custom responses, and live quota visibility.
 
 ![Quota view](./assets/quota.png)
 ![Interactive question](./assets/interactive-question.png)
+![Interactive question 2](./assets/interactive-question-2.png)
+![Custom answer](./assets/custom-answer.png)
 
 ## Table of Contents
 
@@ -84,7 +116,10 @@ It is built for people who want OpenCode’s agent workflow without leaving the 
 
 What it adds beyond a terminal-only setup:
 
-- **Implementation Plan workflow** — AI generates a structured `implementation_plan.md` before touching any code; plans are parsed and rendered interactively
+- **Interactive plan builder** — AI generates a structured `implementation_plan.md` before touching any code; plans are parsed, rendered, annotated, revised, and prepared for execution
+- **Inline questions** — agent questions, confirmations, and quick actions render directly in the chat timeline so review loops stay inside VS Code
+- **Agent-generated task tracking** — prompts can produce the agent's own todo/task list, surfaced in the right panel as work progresses
+- **Context compaction** — long sessions can be compacted automatically near the configured context threshold while keeping the workflow moving
 - **Subagent orchestration UI** — background tasks are tracked, rendered inline as cards, and inspectable in a detail modal
 - **Per-session quota & budget monitoring** — surfaces provider-reported usage, limits, and daily budget signals across OpenAI, GitHub Copilot, Google Gemini, Zhipu, Z.ai, and other providers
 - **Extended right panel** — live MCP server status, LSP server status, installed skills, and agent roster always visible on wide screens
@@ -99,16 +134,18 @@ What it adds beyond a terminal-only setup:
 - Markdown rendering with syntax highlighting via `highlight.js`
 - Thinking/reasoning bubble display with collapsible sections
 - Copy message content to clipboard
-- Image attachments and inline image preview modal
+- Image attachments with inline image preview modal
+- File references and highlighted code selections can be attached directly in the chat box for quick context
 - Contiguous message grouping for visual clarity
 - Unified error cards for API failures, timeouts, and structured-output compatibility issues
 
-### Implementation Planning
+### Plan Builder
 
 - Switch to **Plan** agent to generate an `implementation_plan.md` before any code changes
 - "View Implementation Plan" button appears on every AI response that generated a plan
 - Dedicated plan viewer (`PlanViewProvider`) with interactive checklist tracking
-- Plan can be commented on, revised, and then executed
+- Plan annotations and comments let you mark concerns, request changes, and keep review context attached to the plan
+- Plan can be revised, checked off, and then executed
 - Interactive review loop for revising a plan before execution
 
 ### Agents & Skills
@@ -128,13 +165,21 @@ What it adds beyond a terminal-only setup:
 
 - Supports interactive question/answer exchanges inside the chat timeline
 - Handles multiple interaction types (question, quick actions, confirm) with inline response controls
+- Lets the Plan agent gather missing requirements before generating or revising a plan
 - Preserves interactive context across session hydration/reload
+
+### Agent Task Tracking
+
+- The agent can create its own todo/task list from your prompt
+- Agent tasks stay visible alongside active work, quotas, MCP/LSP status, skills, and agents
+- Helpful for seeing what the agent believes still needs to be worked on without leaving the chat
 
 ### Session Management
 
 - Persistent chat history across VS Code restarts (stored in `globalState`)
 - Session list sidebar with rename, delete, and fork support
-- Session compaction support (large histories are summarized server-side)
+- Automatic session compaction support for large histories as context usage approaches the configured threshold
+- Compacted histories keep the active workflow readable without forcing a new session
 - VCS diff review panel (`DiffReviewProvider`) — inspects changes made in a session
 
 ### Quota & Budget Monitoring
@@ -153,7 +198,7 @@ What it adds beyond a terminal-only setup:
 
 - **Active Task Panel** — current subagent progress
 - **Quota Monitor** — provider quota and budget
-- **Todo Panel** — session-scoped todo items surfaced from AI
+- **Todo Panel** — agent-generated todo/task items created from the current prompt
 - **MCP Servers** — live status of all Model Context Protocol servers with per-server tool lists
 - **LSP Servers** — Language Server Protocol status
 - **Skills** — slash-command catalog from `client.command.list()`
@@ -323,6 +368,7 @@ Type your prompt in the text area and press **Enter** (or **Shift+Enter** for a 
 
 - **Attach images** — paste or drag images directly into the input
 - **Reference files** — press `Ctrl+Alt+K` to pick a file; it's inserted as `@path/to/file`
+- **Attach highlighted code** — select lines in the editor and use `Ctrl+L` / `Cmd+L` to send them into the chat box as context
 - **Use slash commands** — type `/` to see available skills from the server (e.g. `/build`, `/plan`)
 - **Select an agent** — use the agent dropdown to switch between Build, Plan, and any custom agents
 
@@ -330,10 +376,12 @@ Type your prompt in the text area and press **Enter** (or **Shift+Enter** for a 
 
 1. Select the **Plan** agent from the agent dropdown
 2. Describe the feature or change you want
-3. OpenCode generates an `implementation_plan.md`
-4. Click **View Implementation Plan** on the response to open the plan viewer
-5. Review sections, add comments, check off steps
-6. Click **Proceed** (or switch to the Build agent) to execute
+3. Answer any inline questions the agent asks to clarify scope
+4. OpenCode generates an `implementation_plan.md`
+5. Click **View Implementation Plan** on the response to open the plan viewer
+6. Review sections, add annotations or comments, and check off steps
+7. Request revisions until the plan matches what you want
+8. Click **Proceed** (or switch to the Build agent) to execute
 
 ### Managing Sessions
 
@@ -525,7 +573,7 @@ The webview is a standalone React application bundled by Vite/esbuild into `webv
 | `subagentsByParentMessageId` | `Record<…>`              | Subagent summaries per message      |
 | `quotaData`                  | `QuotaData \| null`      | Provider quota details              |
 | `budgetInfo`                 | `BudgetInfo \| null`     | Daily budget calculations           |
-| `todoItems`                  | `TodoItem[]`             | Session-scoped todos from AI        |
+| `todoItems`                  | `TodoItem[]`             | Agent-generated todo/task items     |
 | `sessionStats`               | `SessionStats`           | Token counts and duration           |
 
 ### Message Protocol
