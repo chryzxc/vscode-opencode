@@ -376,9 +376,9 @@ function getFileIconKeys(filePath?: string): string[] {
   const extensionKeys =
     parts.length > 1
       ? parts
-          .slice(1)
-          .map((_, index) => parts.slice(index + 1).join("."))
-          .reverse()
+        .slice(1)
+        .map((_, index) => parts.slice(index + 1).join("."))
+        .reverse()
       : [];
 
   return Array.from(new Set([fileName, ...extensionKeys].filter(Boolean)));
@@ -1407,9 +1407,9 @@ function stripHydratedAttachmentEcho(raw: string, message?: Message): string {
     const escapedPath = escapeForRegex(path.trim()).replace(/[\\/]/g, "[\\\\/]");
     const fencedEchoPattern = new RegExp(
       String.raw`(?:\r?\n)?` +
-        "```" +
-        String.raw`[a-zA-Z0-9_-]*\r?\n\s*\/\/\s*${escapedPath}(?::\d+)?[\s\S]*?` +
-        "```",
+      "```" +
+      String.raw`[a-zA-Z0-9_-]*\r?\n\s*\/\/\s*${escapedPath}(?::\d+)?[\s\S]*?` +
+      "```",
       "g",
     );
     cleaned = cleaned.replace(fencedEchoPattern, "");
@@ -1625,7 +1625,7 @@ function fileChangeRenderRichness(message?: Message): number {
   const summaryFiles = message.changeSummary?.files ?? [];
   const statsScore =
     typeof message.changeSummary?.added === "number" ||
-    typeof message.changeSummary?.deleted === "number"
+      typeof message.changeSummary?.deleted === "number"
       ? 20
       : 0;
   const perFileStats = summaryFiles.filter(
@@ -1650,10 +1650,10 @@ function messageHasOwnFileChangeEvidence(message?: Message): boolean {
     const rec = asRecord(value);
     return Boolean(
       rec &&
-        (typeof rec.added === "number" ||
-          typeof rec.deleted === "number" ||
-          typeof rec.additions === "number" ||
-          typeof rec.deletions === "number"),
+      (typeof rec.added === "number" ||
+        typeof rec.deleted === "number" ||
+        typeof rec.additions === "number" ||
+        typeof rec.deletions === "number"),
     );
   };
 
@@ -1670,13 +1670,13 @@ function messageHasOwnFileChangeEvidence(message?: Message): boolean {
     )?.toLowerCase();
     return Boolean(
       firstNonEmptyString(rec.file, rec.filePath, rec.path, activityDetail?.file) ||
-        hasDiffStats(rec.diffStats) ||
-        hasDiffStats(activityDetail?.diffStats) ||
-        asRecord(activityDetail?.diffExcerpt) ||
-        firstNonEmptyString(rec.type, rec.partType)?.toLowerCase() === "patch" ||
-        tool?.includes("write") ||
-        tool?.includes("edit") ||
-        tool?.includes("replace"),
+      hasDiffStats(rec.diffStats) ||
+      hasDiffStats(activityDetail?.diffStats) ||
+      asRecord(activityDetail?.diffExcerpt) ||
+      firstNonEmptyString(rec.type, rec.partType)?.toLowerCase() === "patch" ||
+      tool?.includes("write") ||
+      tool?.includes("edit") ||
+      tool?.includes("replace"),
     );
   };
 
@@ -2101,7 +2101,6 @@ const THINKING_LOADING_TEXTS = [
   "Herding the bits…",
   "Updating the flux capacitor…",
   "Waiting for the magic smoke to clear…",
-  "Generating witty loading messages…",
   "Untangling the spaghetti code…",
   "Asking StackOverflow…",
   "Convincing the compiler to cooperate…",
@@ -4379,16 +4378,16 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         {/* File Changes - aggregated diffs at the bottom */}
         {/* Only show for the specific message that has file changes, not for every message */}
         {shouldShowFileChanges && (
-            <div className="mt-4">
-              <FileChangesSection
-                streamingSteps={[]}
-                timelineEvents={[]}
-                messageEdits={message?.edits || []}
-                changeSummary={changeSummary}
-                messageId={messageId}
-              />
-            </div>
-          )}
+          <div className="mt-4">
+            <FileChangesSection
+              streamingSteps={[]}
+              timelineEvents={[]}
+              messageEdits={message?.edits || []}
+              changeSummary={changeSummary}
+              messageId={messageId}
+            />
+          </div>
+        )}
 
         {isStreamingActive && !showResponseSection && hasStreamingActivity && (
           <div className="mt-2 mb-2 px-1">
@@ -5027,7 +5026,7 @@ export function EmptyState() {
 
   const hasCachedCurrentSessionMessages = Boolean(
     currentSessionId &&
-      (messagesBySessionId?.[currentSessionId]?.length ?? 0) > 0,
+    (messagesBySessionId?.[currentSessionId]?.length ?? 0) > 0,
   );
 
   const isConnecting = false;
