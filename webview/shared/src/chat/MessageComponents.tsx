@@ -1584,6 +1584,34 @@ function stripGenericHydratedAttachmentFence(raw: string): string {
     .trim();
 }
 
+function inferAttachmentPathsFromHydratedUserText(raw: string): string[] {
+  if (!raw) {
+    return [];
+  }
+
+  // Hydrated snippets commonly include comment headers like:
+  // // path/to/file.ext:123
+  // Extract the path while dropping trailing line/column metadata.
+  const pathHeaderPattern = /^\s*\/\/\s*(.+?)(?::\d+(?::\d+)?)?\s*$/gm;
+  const paths = new Set<string>();
+  let match: RegExpExecArray | null;
+
+  while ((match = pathHeaderPattern.exec(raw)) !== null) {
+    const value = (match[1] || "").trim();
+    if (!value) {
+      continue;
+    }
+
+    if (!value.includes("/") && !value.includes("\\")) {
+      continue;
+    }
+
+    paths.add(value);
+  }
+
+  return Array.from(paths);
+}
+
 function isExplicitFileAttachmentPart(part: MessagePart): boolean {
   const partType = (part.type || "").trim().toLowerCase();
   if (partType === "file") {
