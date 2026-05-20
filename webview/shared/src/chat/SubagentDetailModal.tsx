@@ -67,13 +67,10 @@ function resolveDisplayStatus(detail: SubagentDetail): "pending" | "running" | "
 		return "done";
 	}
 
-	// Guard against stale "done" status snapshots that have no terminal signal yet.
+	// Strict rule: never show DONE without an explicit terminal stop marker.
+	// Upstream summaries can transiently report done before final stop arrives.
 	if (status === "done") {
-		const hasOtherTerminalEvidence =
-			typeof detail.endedAt === "number" ||
-			(typeof detail.durationMs === "number" && detail.durationMs > 0) ||
-			/\b(done|completed|finished|success)\b/i.test(detail.latestActivity || "");
-		return hasOtherTerminalEvidence ? "done" : "running";
+		return "running";
 	}
 
 	return status === "running" ? "running" : "pending";

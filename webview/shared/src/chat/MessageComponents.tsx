@@ -286,11 +286,39 @@ function resolveSubagentStatus(
   subagent: SubagentSummary,
   detail?: SubagentDetail,
 ): SubagentSummary["status"] {
+  const hasTerminalStopMarker = !!(
+    detail &&
+    (
+      (Array.isArray(detail.timelineEvents) &&
+        detail.timelineEvents.some((event) => {
+          const type = (event.type || "").toLowerCase();
+          const label = (event.label || "").toLowerCase();
+          return type === "stop" || type === "stopped" || label === "stop" || label === "stopped";
+        })) ||
+      (Array.isArray(detail.progressEvents) &&
+        detail.progressEvents.some((event) => {
+          const title = (event.title || "").trim().toLowerCase();
+          return title === "stop" || title === "stopped";
+        })) ||
+      (Array.isArray(detail.conversationEvents) &&
+        detail.conversationEvents.some((event) => {
+          const kind = (event.kind || "").toLowerCase();
+          return kind === "stop" || kind === "stopped";
+        }))
+    )
+  );
+
   const detailStatus = detail?.status;
-  if (detailStatus === "done" || detailStatus === "error" || detailStatus === "orphaned") {
+  if (detailStatus === "error" || detailStatus === "orphaned") {
     return detailStatus;
   }
-  return subagent.status;
+  if (detailStatus === "done") {
+    return hasTerminalStopMarker ? "done" : "running";
+  }
+  if (subagent.status === "done") {
+    return hasTerminalStopMarker ? "done" : "running";
+  }
+  return detailStatus || subagent.status;
 }
 
 function getSubagentCardStyle(id: string): CSSProperties {
@@ -2186,8 +2214,9 @@ function subagentModelLabel(
   }
 
   // No model info available - check status to determine appropriate message
-  const isError = subagent.status === 'error' || subagent.status === 'orphaned';
-  const isTerminal = subagent.status === 'done';
+  const resolvedStatus = resolveSubagentStatus(subagent, detail);
+  const isError = resolvedStatus === 'error' || resolvedStatus === 'orphaned';
+  const isTerminal = resolvedStatus === 'done';
 
   if (isError || isTerminal) {
     // For errored/orphaned/completed subagents without model info, show "Unknown"
@@ -2307,12 +2336,37 @@ function SubagentsInlineCard({
                 | SubagentDetail
                 | undefined;
               const resolvedStatus = resolveSubagentStatus(subagent, detail);
+              const hasTerminalStopMarker = !!(
+                detail &&
+                (
+                  (Array.isArray(detail.timelineEvents) &&
+                    detail.timelineEvents.some((event) => {
+                      const type = (event.type || "").toLowerCase();
+                      const label = (event.label || "").toLowerCase();
+                      return type === "stop" || type === "stopped" || label === "stop" || label === "stopped";
+                    })) ||
+                  (Array.isArray(detail.progressEvents) &&
+                    detail.progressEvents.some((event) => {
+                      const title = (event.title || "").trim().toLowerCase();
+                      return title === "stop" || title === "stopped";
+                    })) ||
+                  (Array.isArray(detail.conversationEvents) &&
+                    detail.conversationEvents.some((event) => {
+                      const kind = (event.kind || "").toLowerCase();
+                      return kind === "stop" || kind === "stopped";
+                    }))
+                )
+              );
               const modelInfo = subagentModelLabel(subagent, detail);
               const cardStyle = getSubagentCardStyle(subagent.id);
               const accentTextStyle = getSubagentAccentTextStyle(subagent.id);
               const statusText = subagentStatusLabel(resolvedStatus) || "Pending";
               const activityText =
                 subagent.latestActivity || statusText || "Initializing...";
+              const loadingHint =
+                resolvedStatus === "running" && !hasTerminalStopMarker
+                  ? "Waiting for next progress..."
+                  : "";
               const backgroundTaskId = isBackgroundTaskId(subagent.backgroundTaskId)
                 ? subagent.backgroundTaskId
                 : isBackgroundTaskId(subagent.id)
@@ -2371,7 +2425,7 @@ function SubagentsInlineCard({
                   {shouldShowActivity ? (
                     <div className="mt-0.5 min-h-[14px] font-medium text-[10px] oc-text-secondary">
                       <FadeSwapText
-                        text={activityText}
+                        text={loadingHint || activityText}
                         className="block truncate"
                         durationMs={220}
                       />
