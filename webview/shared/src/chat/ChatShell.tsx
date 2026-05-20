@@ -446,6 +446,7 @@ function ChatContent() {
     !state.isLoadingSession && // Direct state check to avoid timing issues
     isAiResponding && // Must still be processing (not stopped)
     !state.isCompacting &&
+    !state.streaming?.isActive &&
     !hasAssistantText;
 
   const compactionDividerIndex =

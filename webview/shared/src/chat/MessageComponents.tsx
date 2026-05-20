@@ -2979,20 +2979,20 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
               ))}
             </div>
           )}
-          <div className="mt-2 flex justify-end">
-            <button
-              type="button"
-              className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
-              onClick={handleCopy}
-              title="Copy message"
-            >
-              {copied ? (
-                <Check className="h-3.5 w-3.5 text-oc-green" />
-              ) : (
-                <Copy className="h-3.5 w-3.5" />
-              )}
-            </button>
-          </div>
+        </div>
+        <div className="mt-1.5 flex justify-end">
+          <button
+            type="button"
+            className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
+            onClick={handleCopy}
+            title="Copy message"
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-oc-green" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </button>
         </div>
       </div>
       <ImagePreviewModal
@@ -4512,7 +4512,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           </div>
         )}
 
-        <div className="mt-2 flex justify-end">
+        <div className="mt-2 flex justify-start">
           <button
             type="button"
             className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
