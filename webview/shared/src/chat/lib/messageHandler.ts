@@ -556,6 +556,24 @@ function normalizePartType(value: unknown): string {
   return raw;
 }
 
+function isTerminalProgressPart(part: UnknownRecord, partType: string): boolean {
+  // Terminal progress parts are activity snapshots, not proof that the model is
+  // still generating. Late edit/tool completions can arrive after the final text.
+  if (partType === "step-finish") {
+    return true;
+  }
+  const stateObj = asRecord(part.state);
+  const status = asString(part.status).toLowerCase();
+  const stateStatus = asString(stateObj?.status).toLowerCase();
+  return (
+    status === "done" ||
+    status === "error" ||
+    stateStatus === "done" ||
+    stateStatus === "error" ||
+    Boolean(stateObj && "result" in stateObj)
+  );
+}
+
 type StructuredProgressUpdate = {
   title: string;
   status?: 'pending' | 'done' | 'error';
@@ -2519,6 +2537,11 @@ function shouldBootstrapStreamingFromPart(part: UnknownRecord | null): boolean {
   }
 
   const partType = normalizePartType(part.type);
+  // Do not let a late completed edit/tool event create a fresh "AI is typing"
+  // stream after the final assistant message has already landed.
+  if (isTerminalProgressPart(part, partType)) {
+    return false;
+  }
   // Include text parts to bootstrap streaming for regular content chunks
   if (
     partType === "reasoning" ||
@@ -6214,6 +6237,10 @@ function handleStreamEvent(
       // Track if we're processing a reasoning part sequence
       const currentStreamingState = getState().streaming;
       const isInReasoningPart = currentStreamingState?.inReasoningPart || false;
+      // Preserve whether this event started from a finished snapshot. The reducer
+      // may reopen inactive streams on SET_PROCESSING(true), so terminal activity
+      // needs a final guard before the generic keep-processing dispatch below.
+      const wasStreamInactiveAtPartStart = currentStreamingState?.isActive === false;
 
       // Detect start of reasoning part sequence
       const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking';
@@ -6709,6 +6736,13 @@ function handleStreamEvent(
 
       if (hasBlockingInteractive) {
         dispatch({ type: "FINISH_STREAMING" });
+        dispatch({ type: "SET_PROCESSING", payload: false });
+        break;
+      }
+
+      // A completed edit/tool can be the last activity timeline item. Keep the
+      // timeline update, but do not revive the loading indicator afterward.
+      if (wasStreamInactiveAtPartStart && isTerminalProgressPart(part, partType)) {
         dispatch({ type: "SET_PROCESSING", payload: false });
         break;
       }
