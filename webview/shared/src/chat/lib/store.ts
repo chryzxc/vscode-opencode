@@ -108,6 +108,7 @@ export const initialState: AppState = {
   opencodeConfig: undefined,
   opencodeConfigSaveStatus: undefined,
   configFiles: undefined,
+  streamingBySessionId: {},
 };
 
 type StreamingContentPayload = {
@@ -295,6 +296,26 @@ function asStringLocal(...values: unknown[]): string {
     }
   }
   return "";
+}
+
+function cacheStreamingForSession(
+  current: Record<string, StreamingState> | undefined,
+  sessionId: string | null,
+  streaming: StreamingState | null,
+): Record<string, StreamingState> {
+  if (!sessionId) {
+    return current ?? {};
+  }
+  const next = { ...(current ?? {}) };
+  if (streaming) {
+    // Preserve the last visible timeline for active sessions so switching away
+    // and back does not replace it with a blank eager streaming card.
+    next[sessionId] = streaming;
+  } else {
+    // A null stream means the turn finalized or was explicitly cleared.
+    delete next[sessionId];
+  }
+  return next;
 }
 
 function getStructuredRecordLocal(message: Message): Record<string, unknown> | null {
@@ -1304,7 +1325,7 @@ export function mergeStreamingReasoning(
   if (isDuplicateReasoningChunk(incomingNorm, currentNorm)) {
     const candidateFingerprint = reasoningFingerprint(incomingNorm);
     const existingFingerprint = reasoningFingerprint(currentNorm);
-    
+
     // If fingerprints are identical, keep existing to prevent UI jitter
     if (candidateFingerprint === existingFingerprint) {
       return { reasoning: current };
@@ -1468,6 +1489,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
       // Check if the new session is currently processing to preserve loading state
       const isNewSessionProcessing = newId && state.processingSessionIds.includes(newId);
+      const streamingBySessionId = cacheStreamingForSession(
+        state.streamingBySessionId,
+        state.currentSessionId,
+        state.streaming,
+      );
+      const restoredStreamingForNew =
+        newId && isNewSessionProcessing
+          ? streamingBySessionId[newId] ?? null
+          : null;
 
       return {
         ...state,
@@ -1480,7 +1510,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         // the previous session do not bleed into the newly active one.
         isProcessing: isNewSessionProcessing,
         isSteering: false,
-        streaming: null,
+        // Restore only when the backend confirms the target session is still
+        // processing; otherwise keep the old session's progress hidden.
+        streaming: restoredStreamingForNew,
+        streamingBySessionId,
         isCompacting: false,
         compactionError: undefined,
         compactionNotice: undefined,
@@ -1617,13 +1650,19 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         // continue with more updates. Reopen the existing snapshot instead of
         // replacing it with a blank streaming card, or the rendered assistant
         // response will appear to reset on every follow-up event.
+        const streaming = {
+          ...state.streaming,
+          isActive: true,
+        };
         return {
           ...state,
           isProcessing: true,
-          streaming: {
-            ...state.streaming,
-            isActive: true,
-          },
+          streaming,
+          streamingBySessionId: cacheStreamingForSession(
+            state.streamingBySessionId,
+            state.currentSessionId,
+            streaming,
+          ),
         };
       }
       // When processing starts without any existing stream snapshot, create an
@@ -1651,6 +1690,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             ...state,
             isProcessing: true,
             streaming: streamingState,
+            streamingBySessionId: cacheStreamingForSession(
+              state.streamingBySessionId,
+              state.currentSessionId,
+              streamingState,
+            ),
           };
         } catch (error) {
           // If creating streaming state fails, just set processing without it
@@ -1725,18 +1769,25 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       return { ...state, sessionStats: merged, sessionsStatsById };
     }
-    case "SET_STREAMING":
-      return action.payload
+    case "SET_STREAMING": {
+      const streaming = action.payload
         ? {
-          ...state,
-          streaming: {
-            ...action.payload,
-            hasRenderableContent: action.payload.hasRenderableContent ?? false,
-            reasoningEvents: action.payload.reasoningEvents ?? [],
-            progressEvents: action.payload.progressEvents ?? [],
-          },
+          ...action.payload,
+          hasRenderableContent: action.payload.hasRenderableContent ?? false,
+          reasoningEvents: action.payload.reasoningEvents ?? [],
+          progressEvents: action.payload.progressEvents ?? [],
         }
-        : { ...state, streaming: null };
+        : null;
+      return {
+        ...state,
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
+      };
+    }
     case "UPDATE_STREAMING_CONTENT": {
       if (!state.streaming) {
         return state;
@@ -1764,14 +1815,20 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       ) {
         return state;
       }
+      const streaming = {
+        ...state.streaming,
+        content,
+        contentStartSeq,
+        hasRenderableContent,
+      };
       return {
         ...state,
-        streaming: {
-          ...state.streaming,
-          content,
-          contentStartSeq,
-          hasRenderableContent,
-        },
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
       };
     }
     case "UPDATE_STREAMING_REASONING": {
@@ -1823,15 +1880,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       ) {
         return state;
       }
+      const streaming = {
+        ...state.streaming,
+        reasoning,
+        reasoningEvents,
+        inThoughtBlock,
+        inReasoningPart,
+      };
       return {
         ...state,
-        streaming: {
-          ...state.streaming,
-          reasoning,
-          reasoningEvents,
-          inThoughtBlock,
-          inReasoningPart,
-        },
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
       };
     }
     case "ADD_STREAMING_STEP": {
@@ -1839,21 +1902,27 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         return state;
       }
       const stampedStep = { ...action.payload, streamSeq: Date.now() };
+      const streaming = {
+        ...state.streaming,
+        steps: appendWithCap(
+          state.streaming.steps,
+          stampedStep,
+          MAX_STREAMING_STEPS,
+        ),
+        progressEvents: appendWithCap(
+          state.streaming.progressEvents,
+          { ...stampedStep },
+          MAX_STREAMING_PROGRESS_EVENTS,
+        ),
+      };
       return {
         ...state,
-        streaming: {
-          ...state.streaming,
-          steps: appendWithCap(
-            state.streaming.steps,
-            stampedStep,
-            MAX_STREAMING_STEPS,
-          ),
-          progressEvents: appendWithCap(
-            state.streaming.progressEvents,
-            { ...stampedStep },
-            MAX_STREAMING_PROGRESS_EVENTS,
-          ),
-        },
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
       };
     }
     case "UPDATE_STREAMING_STEP": {
@@ -1874,17 +1943,23 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       const steps = [...state.streaming.steps];
       steps[idx] = { ...steps[idx], ...action.payload.patch };
+      const streaming = {
+        ...state.streaming,
+        steps,
+        progressEvents: appendWithCap(
+          state.streaming.progressEvents,
+          { ...steps[idx] },
+          MAX_STREAMING_PROGRESS_EVENTS,
+        ),
+      };
       return {
         ...state,
-        streaming: {
-          ...state.streaming,
-          steps,
-          progressEvents: appendWithCap(
-            state.streaming.progressEvents,
-            { ...steps[idx] },
-            MAX_STREAMING_PROGRESS_EVENTS,
-          ),
-        },
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
       };
     }
     case "ADD_STREAMING_EDIT": {
@@ -1894,29 +1969,41 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (state.streaming.edits.includes(action.payload)) {
         return state;
       }
+      const streaming = {
+        ...state.streaming,
+        edits: appendWithCap(
+          state.streaming.edits,
+          action.payload,
+          MAX_STREAMING_EDITS,
+        ),
+      };
       return {
         ...state,
-        streaming: {
-          ...state.streaming,
-          edits: appendWithCap(
-            state.streaming.edits,
-            action.payload,
-            MAX_STREAMING_EDITS,
-          ),
-        },
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
       };
     }
     case "FINISH_STREAMING": {
       if (!state.streaming) {
         return state;
       }
+      const streaming = {
+        ...state.streaming,
+        isActive: false,
+        usage: action.payload?.usage ?? state.streaming.usage,
+      };
       return {
         ...state,
-        streaming: {
-          ...state.streaming,
-          isActive: false,
-          usage: action.payload?.usage ?? state.streaming.usage,
-        },
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
       };
     }
     case "SET_INPUT_VALUE":

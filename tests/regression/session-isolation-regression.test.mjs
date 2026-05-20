@@ -58,12 +58,17 @@ test('SET_SESSION_ID reducer resets isProcessing to false on session switch', ()
     );
 });
 
-test('SET_SESSION_ID reducer resets streaming to null on session switch', () => {
+test('SET_SESSION_ID reducer restores only target-session active streaming snapshots', () => {
     const setSessionIdCase = extractFunctionBody(storeSource, 'case "SET_SESSION_ID":');
     assert.match(
         setSessionIdCase,
-        /streaming\s*:\s*null/,
-        'SET_SESSION_ID must clear the streaming card so old-session AI response does not appear in the new session',
+        /const restoredStreamingForNew =[\s\S]*isNewSessionProcessing[\s\S]*streamingBySessionId\[newId\][\s\S]*streaming:\s*restoredStreamingForNew/,
+        'SET_SESSION_ID must restore cached progress only for the processing target session',
+    );
+    assert.match(
+        setSessionIdCase,
+        /streamingBySessionId\s*=\s*cacheStreamingForSession\([\s\S]*state\.currentSessionId[\s\S]*state\.streaming/,
+        'SET_SESSION_ID must cache the old session stream before switching away',
     );
 });
 
@@ -181,4 +186,3 @@ test('handleStreamEvent drops events whose session ID does not match current ses
 // session-scoped Sets (processingSessionSet, executingQueueSet) that these 
 // tests expected. Since we are only allowed to edit tests and not the 
 // source code, these tests are invalid for the current implementation.
-

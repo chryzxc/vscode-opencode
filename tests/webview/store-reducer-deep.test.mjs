@@ -73,6 +73,7 @@ test('store source exports initialState and appReducer switch', () => {
 test('initialState defines the core webview state fields', () => {
   assert.match(initialStateBody, /messages:\s*\[\]/, 'initialState should include messages');
   assert.match(initialStateBody, /streaming:\s*null/, 'initialState should include streaming');
+  assert.match(initialStateBody, /streamingBySessionId:\s*\{\}/, 'initialState should include per-session streaming cache');
   assert.match(initialStateBody, /isProcessing:\s*false/, 'initialState should include isProcessing');
   assert.match(initialStateBody, /currentSessionId:\s*null/, 'initialState should include currentSessionId');
   assert.match(initialStateBody, /sessionsList:\s*\[\]/, 'initialState should include sessionsList');
@@ -86,7 +87,7 @@ test('initialState defines the core webview state fields', () => {
 
 const actionContracts = [
   { type: 'SET_RECEIVED_INIT_STATE', patterns: [/receivedInitState:\s*action\.payload/] },
-  { type: 'SET_SESSION_ID', span: 2800, patterns: [/currentSessionId:\s*action\.payload/, /sessionStats:\s*statsForNew/, /promptQueue:\s*queueForNew/, /contextUsagePct:\s*undefined/] },
+  { type: 'SET_SESSION_ID', span: 3600, patterns: [/currentSessionId:\s*action\.payload/, /sessionStats:\s*statsForNew/, /promptQueue:\s*queueForNew/, /streaming:\s*restoredStreamingForNew/, /contextUsagePct:\s*undefined/] },
   { type: 'SET_SERVER_STATUS', patterns: [/serverStatus:\s*action\.payload/] },
   { type: 'SET_SELECTED_MODEL', patterns: [/selectedModel:\s*action\.payload/] },
   { type: 'SET_MODELS_LIST', patterns: [/availableModels:\s*action\.payload/] },
@@ -100,7 +101,7 @@ const actionContracts = [
   { type: 'SET_PROCESSING_SESSIONS', patterns: [/processingSessionIds:\s*action\.payload/] },
   { type: 'START_SESSION_LOADING', patterns: [/isLoadingSession:\s*true/, /loadingSessionId:\s*action\.payload\.sessionId/, /loadingSessionTitle:\s*action\.payload\.title/] },
   { type: 'END_SESSION_LOADING', patterns: [/isLoadingSession:\s*false/, /loadingSessionId:\s*null/, /loadingSessionTitle:\s*null/] },
-  { type: 'SET_STREAMING', patterns: [/streaming:\s*\{[\s\S]*\.\.\.action\.payload/, /hasRenderableContent:\s*action\.payload\.hasRenderableContent \?\? false/, /reasoningEvents:\s*action\.payload\.reasoningEvents \?\? \[\]/] },
+  { type: 'SET_STREAMING', patterns: [/const streaming = action\.payload[\s\S]*\.\.\.action\.payload/, /hasRenderableContent:\s*action\.payload\.hasRenderableContent \?\? false/, /reasoningEvents:\s*action\.payload\.reasoningEvents \?\? \[\]/, /streamingBySessionId:\s*cacheStreamingForSession/] },
   { type: 'UPDATE_STREAMING_CONTENT', patterns: [/const content = action\.payload\.append/, /contentStartSeq/, /hasRenderableContent/, /content,/] },
   { type: 'UPDATE_STREAMING_REASONING', span: 2600, patterns: [/mergeStreamingReasoning\(/, /reasoningEvents = appendWithCap\(/, /inThoughtBlock/, /inReasoningPart/] },
   { type: 'ADD_STREAMING_STEP', patterns: [/const stampedStep = \{ \.\.\.action\.payload, streamSeq: Date\.now\(\) \}/, /steps: appendWithCap\(/, /progressEvents: appendWithCap\(/] },
@@ -193,7 +194,7 @@ test('compaction helpers resolve anchors and divider positions from message ids 
 
 test('FINISH_STREAMING preserves the final snapshot instead of clearing streaming immediately', () => {
   const finishBlock = getCaseBlock('FINISH_STREAMING', 600);
-  assert.match(finishBlock, /streaming:\s*\{[\s\S]*\.\.\.state\.streaming/, 'FINISH_STREAMING should preserve the existing snapshot');
+  assert.match(finishBlock, /const streaming = \{[\s\S]*\.\.\.state\.streaming/, 'FINISH_STREAMING should preserve the existing snapshot');
   assert.match(finishBlock, /isActive:\s*false/, 'FINISH_STREAMING should only mark streaming inactive');
   assert.doesNotMatch(finishBlock, /streaming:\s*null/, 'FINISH_STREAMING should not clear streaming to null inside the reducer');
 });

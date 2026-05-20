@@ -8500,7 +8500,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             // completes but before the final assistant message has persisted.
             // Keep the locally rendered snapshot as authoritative for that turn
             // so the assistant response cannot blink out of the timeline.
-            if (!shouldPreserveActiveStreaming) {
+            // During a session switch, SET_SESSION_ID is responsible for caching
+            // the old stream and restoring the target stream. Clearing here first
+            // would erase the old session's visible activity timeline.
+            if (!shouldPreserveActiveStreaming && !isSwitchingSession) {
               dispatch({ type: "SET_STREAMING", payload: null });
               dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
             }
@@ -9165,7 +9168,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const currentState = getState();
             const currentMessages = currentState.messages || [];
             const updatedMessages = [...currentMessages];
-            
+
             // BUG FIX: If there is an inactive streaming message, flush it to messages
             // before appending the new user message. Otherwise, the queued user message appears
             // ABOVE the finished AI response (which would still be sitting in state.streaming).
@@ -9175,7 +9178,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               updatedMessages.push(flushedMessage);
               dispatch({ type: "SET_STREAMING", payload: null });
             }
-            
+
             const messageText = asString(message.content).trim();
             const lastMsg = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1] : null;
             const isDuplicateOptimistic = lastMsg &&

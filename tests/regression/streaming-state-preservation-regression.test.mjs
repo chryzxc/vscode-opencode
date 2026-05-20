@@ -155,8 +155,8 @@ test("chatHistory handler should not clear rendered messages during active-sessi
   );
   assert.match(
     messageHandlerSource,
-    /if \(!shouldPreserveActiveStreaming\) \{[\s\S]*SET_STREAMING[\s\S]*SET_PROCESSING/s,
-    "chatHistory should only reset stream/loading state when hydration is safe to apply",
+    /if \(!shouldPreserveActiveStreaming && !isSwitchingSession\) \{[\s\S]*SET_STREAMING[\s\S]*SET_PROCESSING/s,
+    "chatHistory should only reset stream/loading state on same-session hydration when safe to apply",
   );
   assert.match(
     messageHandlerSource,
