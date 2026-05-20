@@ -3572,6 +3572,17 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     }
   }
 
+  // Some providers emit internal reminder payloads with role="user" during
+  // streaming/hydration. Canonicalize them to role="system" so downstream UI
+  // consistently renders them as system messages.
+  if (isInternalSystemReminderMessage(normalized)) {
+    normalized.role = "system";
+    normalized.info = {
+      ...(normalized.info || {}),
+      role: "system",
+    };
+  }
+
   return normalized;
 }
 
@@ -6383,7 +6394,7 @@ function handleStreamEvent(
   if (eventRole && eventRole !== 'assistant') {
     // Don't filter out user messages - they may contain system message patterns
     // that will be checked in the message.part.updated case
-    if (eventRole !== 'user') {
+    if (eventRole !== 'user' && eventRole !== 'system') {
       return;
     }
   }
@@ -6399,6 +6410,78 @@ function handleStreamEvent(
     asString(infoRecord?.id) ||
     current?.messageId ||
     null;
+
+  const extractSystemPatternText = (): string => {
+    const candidates = [
+      asRichString(payload.text),
+      asRichString(payload.content),
+      asRichString(payload.delta),
+      asRichString(properties?.text),
+      asRichString(properties?.content),
+      asRichString(properties?.delta),
+      asRichString(partRecord?.text),
+      asRichString(partRecord?.content),
+      asRichString(partRecord?.delta),
+      asRichString(asRecord(payload.message)?.text),
+      asRichString(asRecord(payload.message)?.content),
+    ];
+    for (const candidate of candidates) {
+      const text = candidate.trim();
+      if (text && hasSystemMessagePatternInText(text)) {
+        return text;
+      }
+    }
+    return "";
+  };
+
+  const upsertRealtimeSystemMessage = (rawText: string): void => {
+    const text = rawText.trim();
+    if (!text || !hasSystemMessagePatternInText(text)) {
+      return;
+    }
+
+    const stateNow = getState();
+    const existingMessages = stateNow.messages || [];
+    const fallbackId = `sys-stream-${messageId || Date.now()}`;
+    const matchedIndex = existingMessages.findIndex((msg) => {
+      const msgRole = (
+        asString(msg.role) ||
+        asString(asRecord(msg.info)?.role)
+      ).toLowerCase();
+      if (msgRole !== "system") {
+        return false;
+      }
+      const existingId =
+        asString(asRecord(msg.info)?.id) || asString((msg as UnknownRecord).id);
+      if (existingId && existingId === fallbackId) {
+        return true;
+      }
+      return asString(msg.content) === text;
+    });
+
+    const nextMessages = [...existingMessages];
+    const previous = matchedIndex >= 0 ? nextMessages[matchedIndex] : undefined;
+    const previousContent = asString(previous?.content);
+    const mergedContent =
+      previousContent && !previousContent.includes(text)
+        ? `${previousContent}\n${text}`.trim()
+        : previousContent || text;
+    const systemMessage: Message = {
+      role: "system",
+      content: mergedContent,
+      parts: [{ type: "text", text: mergedContent }],
+      time: { created: Date.now() },
+      info: { role: "system", id: fallbackId },
+    };
+    if (matchedIndex >= 0) {
+      nextMessages[matchedIndex] = systemMessage;
+    } else {
+      nextMessages.push(systemMessage);
+    }
+    dispatch({ type: "SET_MESSAGES", payload: nextMessages });
+  };
+  const systemPatternText = extractSystemPatternText();
+  const hasSystemPatternEvent = !!systemPatternText;
   const isExplicitStart = eventType === 'start' || eventType === 'streamStart';
   const isAssistantUpdateStart =
     eventType === 'message.updated' &&
@@ -6412,7 +6495,7 @@ function handleStreamEvent(
   // streaming UI on extension open while still allowing any event type to bootstrap the
   // streaming card once the user has sent a message (state.isProcessing = true).
   // Echo stripping inside the per-event switch cases handles residual false positives.
-  if (!current && !state.isProcessing && !isExplicitStart && !isAssistantUpdateStart && !canBootstrapFromPart) {
+  if (!current && !state.isProcessing && !isExplicitStart && !isAssistantUpdateStart && !canBootstrapFromPart && !hasSystemPatternEvent) {
     return;
   }
 
@@ -6421,7 +6504,8 @@ function handleStreamEvent(
     (isExplicitStart ||
       isAssistantUpdateStart ||
       canBootstrapFromPart ||
-      state.isProcessing)
+      state.isProcessing) &&
+    !hasSystemPatternEvent
   ) {
     // Extract model/agent metadata from the event payload or fall back to app state
     const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
@@ -6467,6 +6551,15 @@ function handleStreamEvent(
       },
     });
     dispatch({ type: "SET_PROCESSING", payload: true });
+  }
+
+  // Pattern-based system reminders must not depend on role field correctness.
+  // If a stream payload looks like an internal/system notice, render it as
+  // system immediately even when upstream labels it as "user".
+  if (hasSystemPatternEvent) {
+    upsertRealtimeSystemMessage(systemPatternText);
+    dispatch({ type: "SET_PROCESSING", payload: true });
+    return;
   }
 
   switch (normalizedEventType) {
@@ -6524,30 +6617,7 @@ function handleStreamEvent(
       // events with role="user" but should be rendered as system messages
       const partText = asRichString(part.text) || asRichString(part.content) || '';
       if (partText && hasSystemMessagePatternInText(partText)) {
-        // Check if a system message with the same content already exists to prevent duplicates
-        const alreadyExists = state.messages.some(
-          (msg) => msg.role === 'system' && msg.content === partText
-        );
-
-        if (!alreadyExists) {
-          // System messages should be added immediately to state.messages
-          // even during streaming, because streaming content is isolated.
-          // Streaming content is in state.streaming, not state.messages,
-          // and SET_MESSAGES with [...state.messages, systemMessage] preserves existing messages.
-          // System messages are safe to dispatch immediately regardless of streaming state.
-          const systemMessage: Message = {
-            role: 'system',
-            content: partText,
-            parts: [{ type: 'text', text: partText }],
-            time: { created: Date.now() },
-            info: { role: 'system', id: `sys-${Date.now()}` }
-          };
-          // Dispatch immediately - system messages modify state.messages, not state.streaming
-          dispatch({
-            type: 'SET_MESSAGES',
-            payload: [...state.messages, systemMessage]
-          });
-        }
+        upsertRealtimeSystemMessage(partText);
         break; // Don't process this as regular content
       }
 
@@ -7009,6 +7079,16 @@ function handleStreamEvent(
       break;
     }
     case 'message.updated': {
+      const updatedText =
+        asRichString(payload.text) ||
+        asRichString(payload.content) ||
+        asRichString(properties?.text) ||
+        asRichString(properties?.content);
+      if (updatedText && hasSystemMessagePatternInText(updatedText)) {
+        upsertRealtimeSystemMessage(updatedText);
+        dispatch({ type: "SET_PROCESSING", payload: true });
+        break;
+      }
       if (eventRole === "user") {
         dispatch({ type: "SET_PROCESSING", payload: true });
         break;

@@ -9,9 +9,8 @@
  * which replaced the messages array and lost the streaming content (which was
  * in state.streaming, not state.messages).
  *
- * Fix: System messages are now only added via SET_MESSAGES when NOT actively
- * streaming (current is null/falsy). During streaming, system messages are
- * captured and added during messageResponse finalization.
+ * Fix: System messages are upserted in realtime during streaming via a safe
+ * SET_MESSAGES path that does not mutate state.streaming.
  */
 
 import test from "node:test";
@@ -27,7 +26,7 @@ const messageHandlerSource = readSource(
   "messageHandler.ts",
 );
 
-test("system message handler checks for active streaming before dispatching SET_MESSAGES", () => {
+test("system message handler explains realtime system-message safety during streaming", () => {
   // Find the system message pattern check
   assert.match(
     messageHandlerSource,
@@ -35,35 +34,36 @@ test("system message handler checks for active streaming before dispatching SET_
     "messageHandler should check for system message patterns",
   );
 
-  // Verify it handles system messages even during streaming (safe since streaming is separate)
+  // Verify it handles system messages during streaming using an explicit safety rationale.
   assert.match(
     messageHandlerSource,
-    /System\s*messages\s*should\s*be\s*added\s*immediately/i,
-    "system message handler should explain why SET_MESSAGES is safe during streaming",
+    /state\.streaming|streaming\s+is\s+separate|upsertRealtimeSystemMessage/i,
+    "system message handler should document/use a realtime-safe update path during streaming",
   );
 });
 
 test("system message handler preserves streaming state during message part updates", () => {
-  // Check that system messages are only added when not streaming
+  // Check that system messages are normalized as system-role entries.
   assert.match(
     messageHandlerSource,
     /systemMessage.*role:\s*['"]system["']/s,
     "system message should have system role",
   );
 
-  // Verify that system messages are dispatched via SET_MESSAGES
+  // Verify that system messages are dispatched via SET_MESSAGES using current state,
+  // not stale closure snapshots.
   assert.match(
     messageHandlerSource,
-    /dispatch\s*\([\s\S]*?SET_MESSAGES[\s\S]*?payload:\s*\[\s*\.\.\.\s*state\.messages,\s*systemMessage\s*\]/s,
-    "SET_MESSAGES for system messages should append to existing messages",
+    /getState\(\)\.messages|existingMessages|nextMessages[\s\S]*dispatch\(\{\s*type:\s*["']SET_MESSAGES["']/s,
+    "SET_MESSAGES for system messages should use the latest store snapshot",
   );
 });
 
-test("system messages are not immediately added to messages array during streaming", () => {
+test("system messages are upserted immediately during streaming", () => {
   // Verify the logic flow:
   // 1. Check for system message pattern
-  // 2. Check if streaming is active (!current)
-  // 3. Only then dispatch SET_MESSAGES
+  // 2. Route to realtime upsert helper
+  // 3. Dispatch SET_MESSAGES with merged messages
 
   // Find the section that handles system messages
   const systemMessageSection = messageHandlerSource.match(
@@ -75,10 +75,10 @@ test("system messages are not immediately added to messages array during streami
     "Should find the system message handling section",
   );
 
-  // Verify it checks current before dispatching
+  // Verify it routes to realtime system-message upsert helper.
   assert.match(
     systemMessageSection[0],
-    /!current/,
-    "system message handling should check for active streaming",
+    /upsertRealtimeSystemMessage/,
+    "system message handling should upsert system messages during streaming",
   );
 });
