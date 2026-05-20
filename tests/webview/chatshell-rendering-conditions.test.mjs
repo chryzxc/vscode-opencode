@@ -56,11 +56,16 @@ test('permission responses render PermissionCard and assistants use AssistantMes
   assert.match(chatContentBody, /<AssistantMessage message=\{msg\} isContiguous=\{isContiguous\} \/>/, 'assistant messages should render AssistantMessage');
 });
 
-test('thinking bubble appears while AI is responding or reasoning only is streaming', () => {
+test('thinking bubble appears while AI is responding before assistant text arrives', () => {
   assert.match(
     chatContentBody,
-    /const showAiResponseLoading =[\s\S]*\(isAiResponding && !state\.streaming && !state\.isCompacting\)[\s\S]*\(hasOnlyReasoning && !state\.isCompacting\)/,
-    'thinking bubble should be gated by responding or reasoning-only states',
+    /const hasAssistantText =[\s\S]*state\.streaming\?\.content[\s\S]*state\.streaming\.content\.trim\(\)\.length > 0/s,
+    'ChatShell should identify whether streamed assistant text has arrived',
+  );
+  assert.match(
+    chatContentBody,
+    /const showAiResponseLoading =[\s\S]*isAiResponding[\s\S]*!state\.isCompacting[\s\S]*!hasAssistantText/s,
+    'thinking bubble should remain visible for activity-only streams until assistant text arrives',
   );
   assert.match(
     chatContentBody,

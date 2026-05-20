@@ -432,24 +432,21 @@ function ChatContent() {
     );
   }
 
-  // Show AI response loading indicator (thinking bubble) when:
-  // 1. AI is responding but no streaming yet, OR
-  // 2. Streaming but only have reasoning (no actual content yet)
-  const hasOnlyReasoning =
-    state.streaming &&
-    state.streaming.reasoning &&
-    state.streaming.reasoning.trim().length > 0 &&
-    (!state.streaming.content || state.streaming.content.trim().length === 0);
+  // Show AI response loading indicator until assistant text arrives. Activity
+  // streams can render tool/progress rows before text starts, so the response
+  // loading affordance should key off text presence instead of stream presence.
+  const hasAssistantText =
+    !!state.streaming?.content &&
+    state.streaming.content.trim().length > 0;
 
   // Show AI response loading indicator (thinking bubble) when:
   // 1. NOT switching sessions (session loading takes precedence), AND
-  // 2. AI is responding but no streaming yet, OR
-  // 3. Streaming but only have reasoning (no actual content yet)
+  // 2. AI is responding but no assistant text has arrived yet.
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
     isAiResponding && // Must still be processing (not stopped)
     !state.isCompacting &&
-    (!state.streaming || hasOnlyReasoning);
+    !hasAssistantText;
 
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"

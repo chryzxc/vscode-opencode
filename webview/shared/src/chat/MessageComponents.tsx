@@ -3971,7 +3971,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   <div className="flex min-w-0 items-center gap-2">
                     <Sparkles className="h-3.5 w-3.5 oc-subagents-header-icon" />
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
-                      Spawned Subagents
+                      Subagents
                     </span>
                     <span className="oc-subagents-count rounded-md border px-1.5 py-0.5 font-medium text-oc-2xs text-oc-text-soft">
                       {subagents.length}

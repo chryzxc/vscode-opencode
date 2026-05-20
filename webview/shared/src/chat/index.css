@@ -1724,6 +1724,7 @@ body {
 .markdown-body table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
   margin: 0.75em 0;
   font-size: 0.9em;
 }
@@ -1733,12 +1734,28 @@ body {
   border: 1px solid var(--oc-border-soft);
   padding: 0.35em 0.7em;
   text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-body th {
   font-weight: 600;
   background: color-mix(in srgb, var(--oc-accent) 6%, transparent);
   color: var(--oc-text);
+}
+
+.markdown-body .md-file-path {
+  max-width: 100%;
+}
+
+.markdown-body .md-file-path .file-icon {
+  flex-shrink: 0;
+}
+
+.markdown-body .md-file-path > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-body hr {
@@ -3211,6 +3228,10 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
 }
 
 /* Command code block styling */
