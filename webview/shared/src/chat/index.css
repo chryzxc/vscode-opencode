@@ -4558,7 +4558,7 @@ body {
 }
 
 .oc-quota-item {
-  @apply rounded-lg border border-oc-border p-2;
+  @apply rounded-lg border border-oc-border-soft p-2;
   background-color: rgba(0, 0, 0, 0.16);
 }
 

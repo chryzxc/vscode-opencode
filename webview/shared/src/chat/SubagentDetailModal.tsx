@@ -31,6 +31,11 @@ function cleanLabel(value: string): string {
 	return trimmed;
 }
 
+function isBackgroundTaskId(value: string | undefined): boolean {
+	if (!value) return false;
+	return /^bg_[a-z0-9]+$/i.test(value.trim());
+}
+
 type SubagentDetailModalProps = {
 	isOpen: boolean;
 	title: string;
@@ -74,6 +79,11 @@ export function SubagentDetailModal({
 	const status = detail.status || "running";
 	const isDone = status === "done";
 	const isError = status === "error";
+	const backgroundTaskId = isBackgroundTaskId(detail.backgroundTaskId)
+		? detail.backgroundTaskId
+		: isBackgroundTaskId(detail.id)
+			? detail.id
+			: undefined;
 
 	// Filter and deduplicate conversation events for stepper display
 	const renderedConversation = useMemo(() => {
@@ -179,6 +189,11 @@ export function SubagentDetailModal({
 								{detail.childSessionId && (
 									<div className="mt-1 text-xs font-medium oc-text-secondary break-words">
 										Session: {detail.childSessionId}
+									</div>
+								)}
+								{backgroundTaskId && (
+									<div className="mt-1 text-xs font-medium oc-text-secondary break-words">
+										BG ID: {backgroundTaskId}
 									</div>
 								)}
 							</div>

@@ -1111,7 +1111,12 @@ type StructuredInteractiveEvent = {
 
 type StructuredSubagent = {
   id: string;
+  backgroundTaskId?: string;
   name?: string;
+  agentId?: string;
+  agent?: string;
+  agentRole?: string;
+  agentType?: string;
   status?: string;
   progress?: number;
   description?: string;
@@ -1552,7 +1557,58 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   }
 
   const subagentsRaw =
-    sanitizedRec.subagents ?? (rec.spawnedSubagents as unknown);
+    sanitizedRec.subagents ??
+    (rec.spawnedSubagents as unknown) ??
+    (rec.backgroundTasks as unknown) ??
+    (rec.background_tasks as unknown);
+  const resolveSubagentId = (subagent: UnknownRecord): string | undefined => {
+    const backgroundId =
+      asString(subagent.backgroundTaskId) ||
+      asString(subagent.background_task_id);
+    if (backgroundId && /^bg_[a-z0-9]+$/i.test(backgroundId)) {
+      return backgroundId;
+    }
+    const directId = asString(subagent.id);
+    if (directId) {
+      return directId;
+    }
+    if (backgroundId) {
+      return backgroundId;
+    }
+    const candidateAgentId =
+      asString(subagent.agentId) ||
+      asString(subagent.agent) ||
+      asString(subagent.name);
+    if (candidateAgentId && /^bg_[a-z0-9]+$/i.test(candidateAgentId)) {
+      return candidateAgentId;
+    }
+    return undefined;
+  };
+  const resolveSubagentRole = (subagent: UnknownRecord): string | undefined => {
+    const candidateFromAgentFields =
+      asString(subagent.agent) || asString(subagent.agentId) || asString(subagent.name);
+    const raw =
+      asString(subagent.agentRole) ||
+      asString(subagent.agent_role) ||
+      asString(subagent.agentType) ||
+      asString(subagent.agent_type) ||
+      asString(subagent.role) ||
+      asString(subagent.type) ||
+      candidateFromAgentFields;
+    const normalized = raw.trim().toLowerCase();
+    if (!normalized) return undefined;
+    const knownRoles = new Set([
+      "explorer",
+      "explore",
+      "librarian",
+      "library",
+      "worker",
+      "default",
+      "researcher",
+      "planner",
+    ]);
+    return knownRoles.has(normalized) ? normalized : undefined;
+  };
   const normalizeSubagentStatus = (value: string): SubagentSummary['status'] => {
     const lowered = value.toLowerCase();
     if (lowered === 'running' || lowered === 'done' || lowered === 'error' || lowered === 'orphaned') {
@@ -1671,19 +1727,37 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
         if (!subagent) {
           return null;
         }
-        const id = asString(subagent.id);
+        const id = resolveSubagentId(subagent);
         if (!id) {
           return null;
         }
         return {
           id,
-          name: asString(subagent.name) || asString(subagent.agentId) || undefined,
-          status: asString(subagent.status) ? normalizeSubagentStatus(asString(subagent.status)) : undefined,
+          backgroundTaskId:
+            asString(subagent.backgroundTaskId) ||
+            asString(subagent.background_task_id) ||
+            undefined,
+          name:
+            asString(subagent.name) ||
+            asString(subagent.agentId) ||
+            asString(subagent.agent) ||
+            undefined,
+          agentId:
+            asString(subagent.agentId) ||
+            asString(subagent.agent) ||
+            asString(subagent.name) ||
+            undefined,
+          agentRole: resolveSubagentRole(subagent),
+          status: asString(subagent.status)
+            ? normalizeSubagentStatus(asString(subagent.status))
+            : undefined,
           progress: typeof subagent.progress === 'number' ? subagent.progress : undefined,
           description: asString(subagent.description) || undefined,
           latestActivity:
             sanitizeSubagentLabel(
-              asString(subagent.latestActivity) || asString(subagent.description),
+              asString(subagent.latestActivity) ||
+              asString(subagent.task) ||
+              asString(subagent.description),
             ) || undefined,
           childSessionId: asString(subagent.childSessionId) || undefined,
           parentSessionId: asString(subagent.parentSessionId) || undefined,
@@ -1710,13 +1784,23 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
             if (!subagent) {
               return null;
             }
-            const id = asString(subagent.id);
+            const id = resolveSubagentId(subagent);
             if (!id) {
               return null;
             }
             return {
               id,
+              backgroundTaskId:
+                asString(subagent.backgroundTaskId) ||
+                asString(subagent.background_task_id) ||
+                undefined,
               name: asString(subagent.name) || asString(subagent.agentId) || undefined,
+              agentId:
+                asString(subagent.agentId) ||
+                asString(subagent.agent) ||
+                asString(subagent.name) ||
+                undefined,
+              agentRole: resolveSubagentRole(subagent),
               status: asString(subagent.status) || undefined,
               progress: typeof subagent.progress === 'number' ? subagent.progress : undefined,
               description: asString(subagent.description) || undefined,
@@ -1939,6 +2023,9 @@ function normalizeTodoRecord(raw: unknown): TodoItem | null {
     text,
     status: statusRaw as TodoItem['status'],
     sessionId,
+    parentMessageId:
+      firstNonEmptyString(rec.parentMessageId, rec.parent_message_id, rec.messageId) ||
+      undefined,
     description: asOptionalString(rec.description),
     ...(priority ? { priority } : {}),
     ...(source ? { source } : {}),
@@ -1962,6 +2049,7 @@ function normalizeTodoList(rawItems: unknown[], expectedSessionId?: string): Tod
       return {
         ...normalized,
         sessionId: normalized.sessionId || expectedSessionId || "",
+        parentMessageId: normalized.parentMessageId,
       };
     })
     .filter((item): item is TodoItem => !!item);
@@ -1982,6 +2070,7 @@ function ingestNormalizedTodo(
     const patch: Partial<TodoItem> = {
       text: item.text,
       status: item.status,
+      parentMessageId: item.parentMessageId,
       description: item.description,
       priority: item.priority,
       source: item.source,
@@ -3665,7 +3754,12 @@ function normalizeSubagentSummary(value: unknown): SubagentSummary | null {
     parentSessionId,
     parentMessageId,
     childSessionId: asString(rec.childSessionId) || undefined,
-    agentId: asString(rec.agentId) || undefined,
+    backgroundTaskId:
+      asString(rec.backgroundTaskId) ||
+      asString(rec.background_task_id) ||
+      undefined,
+    agentId: asString(rec.agentId) || asString(rec.agent) || undefined,
+    agentRole: asString(rec.agentRole) || undefined,
     providerID: asString(rec.providerID) || undefined,
     modelID: asString(rec.modelID) || undefined,
     startedAt: asOptionalNumber(rec.startedAt),
@@ -4309,6 +4403,11 @@ function mergeSubagentSummaries(
   existing: SubagentSummary[] | undefined,
   incoming: SubagentSummary[],
 ): SubagentSummary[] {
+  const statusRank = (status: SubagentSummary["status"] | undefined): number => {
+    if (status === "done" || status === "error" || status === "orphaned") return 2;
+    if (status === "running") return 1;
+    return 0;
+  };
   const byId = new Map<string, SubagentSummary>();
   const source = Array.isArray(existing) ? existing : [];
   source.forEach((entry) => {
@@ -4321,7 +4420,15 @@ function mergeSubagentSummaries(
       return;
     }
     const prev = byId.get(entry.id);
-    byId.set(entry.id, prev ? { ...prev, ...entry, id: entry.id } : entry);
+    if (!prev) {
+      byId.set(entry.id, entry);
+      return;
+    }
+    const merged = { ...prev, ...entry, id: entry.id };
+    if (statusRank(prev.status) > statusRank(entry.status)) {
+      merged.status = prev.status;
+    }
+    byId.set(entry.id, merged);
   });
   return Array.from(byId.values());
 }
@@ -4577,6 +4684,132 @@ function mergeSubagentDetailPayload(
     );
   }
   return merged;
+}
+
+function applyStructuredSubagentPayload(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  structuredOutput: StructuredOutput,
+  messageId: string,
+): void {
+  if (structuredOutput.responseType === 'subagents') {
+    if (!structuredOutput.subagents || structuredOutput.subagents.length === 0) {
+      webviewLogger.warn('Structured subagents responseType received without subagents array');
+    }
+  }
+
+  if (structuredOutput.subagents && structuredOutput.subagents.length > 0) {
+    const parentSessionId = getState().currentSessionId || '';
+    const summaries: SubagentSummary[] = [];
+    const details: Record<string, SubagentDetail> = {};
+
+    structuredOutput.subagents.forEach((subagent) => {
+      const statusValue = (subagent.status || 'pending').toLowerCase();
+      const status: SubagentSummary['status'] =
+        statusValue === 'running' || statusValue === 'done' || statusValue === 'error' || statusValue === 'orphaned'
+          ? statusValue
+          : 'pending';
+      const summary: SubagentSummary = {
+        id: subagent.id,
+        backgroundTaskId: subagent.backgroundTaskId || undefined,
+        parentSessionId: subagent.parentSessionId || parentSessionId,
+        parentMessageId: subagent.parentMessageId || messageId,
+        childSessionId: subagent.childSessionId,
+        agentId: subagent.agentId || subagent.agent || subagent.name || subagent.id,
+        agentRole: subagent.agentRole || undefined,
+        status,
+        latestActivity:
+          subagent.latestActivity || subagent.description || subagent.name || 'Subagent update',
+        references: []
+      };
+      summaries.push(summary);
+      details[subagent.id] = {
+        ...summary,
+        thinkingEvents: subagent.thinkingEvents || [],
+        conversationEvents: [],
+        progressEvents: subagent.progressEvents || [],
+        timelineEvents: subagent.timelineEvents || []
+      };
+    });
+
+    if (summaries.length > 0) {
+      const mergedSummaries = mergeSubagentSummaryPayload(
+        getState().subagentsByParentMessageId,
+        { [messageId]: summaries },
+      );
+      dispatch({
+        type: 'UPSERT_SUBAGENT_SUMMARIES',
+        payload: mergedSummaries,
+      });
+    }
+    if (Object.keys(details).length > 0) {
+      const mergedDetails = mergeSubagentDetailPayload(
+        getState().subagentDetailsById,
+        details,
+      );
+      dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: mergedDetails });
+    }
+  }
+
+  if (structuredOutput.subagentsDelta && structuredOutput.subagentsDelta.items.length > 0) {
+    const targetMessageId =
+      structuredOutput.subagentsDelta.parentMessageId || messageId || '';
+    if (!targetMessageId) {
+      return;
+    }
+    const summaries: SubagentSummary[] = [];
+    const details: Record<string, SubagentDetail> = {};
+
+    structuredOutput.subagentsDelta.items.forEach((subagent) => {
+      const statusValue = (subagent.status || 'pending').toLowerCase();
+      const status: SubagentSummary['status'] =
+        statusValue === 'running' ||
+          statusValue === 'done' ||
+          statusValue === 'error' ||
+          statusValue === 'orphaned'
+          ? statusValue
+          : 'pending';
+      const summary: SubagentSummary = {
+        id: subagent.id,
+        backgroundTaskId: subagent.backgroundTaskId || undefined,
+        parentSessionId: subagent.parentSessionId || getState().currentSessionId || '',
+        parentMessageId: subagent.parentMessageId || targetMessageId,
+        childSessionId: subagent.childSessionId,
+        agentId: subagent.agentId || subagent.agent || subagent.name || subagent.id,
+        agentRole: subagent.agentRole || undefined,
+        status,
+        latestActivity:
+          subagent.latestActivity || subagent.description || subagent.name || 'Subagent update',
+        references: []
+      };
+      summaries.push(summary);
+      details[subagent.id] = {
+        ...summary,
+        thinkingEvents: subagent.thinkingEvents || [],
+        conversationEvents: [],
+        progressEvents: subagent.progressEvents || [],
+        timelineEvents: subagent.timelineEvents || []
+      };
+    });
+
+    if (summaries.length > 0) {
+      const mergedSummaries = mergeSubagentSummaryPayload(
+        getState().subagentsByParentMessageId,
+        { [targetMessageId]: summaries },
+      );
+      dispatch({
+        type: 'UPSERT_SUBAGENT_SUMMARIES',
+        payload: mergedSummaries,
+      });
+    }
+    if (Object.keys(details).length > 0) {
+      const mergedDetails = mergeSubagentDetailPayload(
+        getState().subagentDetailsById,
+        details,
+      );
+      dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: mergedDetails });
+    }
+  }
 }
 
 function findLatestAssistantMessageIdForSession(
@@ -6763,6 +6996,10 @@ function handleStreamEvent(
       const info = asRecord(payload.info) ?? asRecord(payload.properties)?.info;
       const finish = info ? isFinishSignal((info as UnknownRecord).finish) : false;
 
+      if (structuredOutput && messageId) {
+        applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId);
+      }
+
       if (finish && structuredOutput) {
         if (structuredOutput.reasoning) {
           structuredOutput.reasoning.forEach((chunk) => {
@@ -6932,120 +7169,6 @@ function handleStreamEvent(
           break;
         }
 
-        if (structuredOutput && structuredOutput.responseType === 'subagents' && messageId) {
-          if (!structuredOutput.subagents || structuredOutput.subagents.length === 0) {
-            webviewLogger.warn('Structured subagents responseType received without subagents array');
-          }
-        }
-
-        if (structuredOutput.subagents && structuredOutput.subagents.length > 0 && messageId) {
-          const parentSessionId = state.currentSessionId || '';
-          const summaries: SubagentSummary[] = [];
-          const details: Record<string, SubagentDetail> = {};
-
-          structuredOutput.subagents.forEach((subagent) => {
-            const statusValue = (subagent.status || 'pending').toLowerCase();
-            const status: SubagentSummary['status'] =
-              statusValue === 'running' || statusValue === 'done' || statusValue === 'error' || statusValue === 'orphaned'
-                ? statusValue
-                : 'pending';
-            const summary: SubagentSummary = {
-              id: subagent.id,
-              parentSessionId: subagent.parentSessionId || parentSessionId,
-              parentMessageId: subagent.parentMessageId || messageId,
-              childSessionId: subagent.childSessionId,
-              agentId: subagent.name || subagent.id,
-              status,
-              latestActivity:
-                subagent.latestActivity || subagent.description || subagent.name || 'Subagent update',
-              references: []
-            };
-            summaries.push(summary);
-            details[subagent.id] = {
-              ...summary,
-              thinkingEvents: subagent.thinkingEvents || [],
-              conversationEvents: [],
-              progressEvents: subagent.progressEvents || [],
-              timelineEvents: subagent.timelineEvents || []
-            };
-          });
-
-          if (summaries.length > 0) {
-            const mergedSummaries = mergeSubagentSummaryPayload(
-              getState().subagentsByParentMessageId,
-              { [messageId]: summaries },
-            );
-            dispatch({
-              type: 'UPSERT_SUBAGENT_SUMMARIES',
-              payload: mergedSummaries,
-            });
-          }
-          if (Object.keys(details).length > 0) {
-            const mergedDetails = mergeSubagentDetailPayload(
-              getState().subagentDetailsById,
-              details,
-            );
-            dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: mergedDetails });
-          }
-        }
-
-        if (structuredOutput.subagentsDelta && structuredOutput.subagentsDelta.items.length > 0) {
-          const targetMessageId =
-            structuredOutput.subagentsDelta.parentMessageId || messageId || '';
-          if (targetMessageId) {
-            const summaries: SubagentSummary[] = [];
-            const details: Record<string, SubagentDetail> = {};
-
-            structuredOutput.subagentsDelta.items.forEach((subagent) => {
-              const statusValue = (subagent.status || 'pending').toLowerCase();
-              const status: SubagentSummary['status'] =
-                statusValue === 'running' ||
-                  statusValue === 'done' ||
-                  statusValue === 'error' ||
-                  statusValue === 'orphaned'
-                  ? statusValue
-                  : 'pending';
-              const summary: SubagentSummary = {
-                id: subagent.id,
-                parentSessionId: subagent.parentSessionId || state.currentSessionId || '',
-                parentMessageId: subagent.parentMessageId || targetMessageId,
-                childSessionId: subagent.childSessionId,
-                agentId: subagent.name || subagent.id,
-                status,
-                latestActivity:
-                  subagent.latestActivity || subagent.description || subagent.name || 'Subagent update',
-                references: []
-              };
-              summaries.push(summary);
-              details[subagent.id] = {
-                ...summary,
-                thinkingEvents: subagent.thinkingEvents || [],
-                conversationEvents: [],
-                progressEvents: subagent.progressEvents || [],
-                timelineEvents: subagent.timelineEvents || []
-              };
-            });
-
-            if (summaries.length > 0) {
-              const mergedSummaries = mergeSubagentSummaryPayload(
-                getState().subagentsByParentMessageId,
-                { [targetMessageId]: summaries },
-              );
-              dispatch({
-                type: 'UPSERT_SUBAGENT_SUMMARIES',
-                payload: mergedSummaries,
-              });
-            }
-            if (Object.keys(details).length > 0) {
-              const mergedDetails = mergeSubagentDetailPayload(
-                getState().subagentDetailsById,
-                details,
-              );
-              dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: mergedDetails });
-            }
-          }
-        }
-
         // Legacy structured todo updates are intentionally disabled. The
         // authoritative source is the SDK-native todoSnapshot path.
         try {
@@ -7061,6 +7184,9 @@ function handleStreamEvent(
             for (const raw of rawTodoItems) {
               const normalized = normalizeTodoRecord(raw);
               if (!normalized) continue; // skip malformed items silently
+              if (!normalized.parentMessageId && messageId) {
+                normalized.parentMessageId = messageId;
+              }
               ingestNormalizedTodo(dispatch, getState, normalized);
             }
           }
@@ -9336,12 +9462,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   text: normalized.text,
                   status: normalized.status,
                   sessionId: normalized.sessionId ?? "",
+                  parentMessageId: normalized.parentMessageId,
+                  description: normalized.description,
+                  priority: normalized.priority,
+                  source: normalized.source,
                 },
               });
             } else if (action === "update") {
               const patch: Partial<TodoItem> = {
                 text: normalized.text,
                 status: normalized.status,
+                parentMessageId: normalized.parentMessageId,
+                description: normalized.description,
+                priority: normalized.priority,
+                source: normalized.source,
               };
               if (normalized.sessionId) patch.sessionId = normalized.sessionId;
               dispatch({ type: "UPDATE_TODO_ITEM", payload: { id: normalized.id, patch } });

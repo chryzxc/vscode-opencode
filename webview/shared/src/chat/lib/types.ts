@@ -450,10 +450,12 @@ export interface SubagentProgressEvent {
 
 export interface SubagentSummary {
   id: string;
+  backgroundTaskId?: string;
   parentSessionId: string;
   parentMessageId: string;
   childSessionId?: string;
   agentId?: string;
+  agentRole?: string;
   providerID?: string;
   modelID?: string;
   startedAt?: number;
@@ -727,6 +729,7 @@ export interface TodoItem {
   text: string;
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'failed';
   sessionId: string;
+  parentMessageId?: string;
   // optional human-friendly description used by the UI
   description?: string;
   priority?: 'high' | 'medium' | 'low';

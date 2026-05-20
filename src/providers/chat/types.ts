@@ -220,7 +220,10 @@ export type StructuredAssistantOutput = {
   interactiveEvents?: StructuredInteractiveEvent[];
   subagents?: Array<{
     id: string;
+    backgroundTaskId?: string;
     name: string;
+    agentRole?: string;
+    agentType?: string;
     status?: string;
     progress?: number;
     description?: string;
@@ -260,7 +263,10 @@ export type StructuredAssistantOutput = {
     parentMessageId?: string;
     items: Array<{
       id: string;
+      backgroundTaskId?: string;
       name?: string;
+      agentRole?: string;
+      agentType?: string;
       status?: string;
       progress?: number;
       description?: string;

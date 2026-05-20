@@ -90,7 +90,7 @@ const copilotConfigPath = path.join(
   "copilot-quota-token.json",
 );
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Helpers
 
 function readJsonFile<T>(filePath: string): T | null {
   try {
@@ -106,7 +106,7 @@ function readJsonFile<T>(filePath: string): T | null {
  */
 function safeJsonParse(raw: string): any {
   // Remove BOM if present
-  let cleaned = raw.replace(/^﻿/, '');
+  const cleaned = raw.replace(/^\uFEFF/, '');
 
   // Try parsing as-is first
   try {

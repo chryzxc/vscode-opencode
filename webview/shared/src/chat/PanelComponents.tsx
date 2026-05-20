@@ -483,9 +483,9 @@ function todoStatusLabel(status: TodoItem["status"]) {
 function todoPriorityTone(priority?: TodoItem["priority"]) {
   switch (priority) {
     case "high":
-      return "text-oc-red border-oc-red/30 bg-oc-red/10";
+      return "text-oc-red border-oc-border-soft bg-oc-red/10";
     case "medium":
-      return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
+      return "oc-quota-warning border-oc-border-soft bg-oc-quota-warning-bg";
     case "low":
       return "text-[var(--oc-text-soft)] border-oc-border-soft bg-oc-panel-soft";
     default:
@@ -762,7 +762,7 @@ export function ActiveTaskPanel() {
                 return (
                   <div
                     key={todo.id}
-                    className="flex items-start gap-2 rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 text-xs"
+                    className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-bg-soft px-2 py-1.5 text-xs"
                   >
                     <span className="mt-0.5 shrink-0">
                       <TodoChecklistIcon status={todo.status} />
@@ -3321,28 +3321,28 @@ export function TodoPanel() {
   const statusTone = (status?: TodoItem["status"]) => {
     switch (status) {
       case "pending":
-        return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
+        return "oc-quota-warning border-oc-border-soft bg-oc-quota-warning-bg";
       case "in_progress":
-        return "oc-tinted-badge-text bg-oc-accent/10 border-oc-accent/30";
+        return "oc-tinted-badge-text bg-oc-accent/10 border-oc-border-soft";
       case "completed":
-        return "text-oc-green bg-oc-green/10 border-oc-green/30";
+        return "text-oc-green bg-oc-green/10 border-oc-border-soft";
       case "failed":
-        return "text-oc-red bg-oc-red/10 border-oc-red/30";
+        return "text-oc-red bg-oc-red/10 border-oc-border-soft";
       case "cancelled":
-        return "text-[var(--oc-text-soft)] bg-oc-border/30 border-oc-border";
+        return "text-[var(--oc-text-soft)] bg-oc-panel-soft border-oc-border-soft";
       default:
-        return "text-[var(--oc-text-soft)] bg-oc-border/20 border-oc-border";
+        return "text-[var(--oc-text-soft)] bg-oc-panel-soft border-oc-border-soft";
     }
   };
 
   const priorityTone = (priority?: TodoItem["priority"]) => {
     switch (priority) {
       case "high":
-        return "text-oc-red border-oc-red/30 bg-oc-red/10";
+        return "text-oc-red border-oc-border-soft bg-oc-red/10";
       case "medium":
-        return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
+        return "oc-quota-warning border-oc-border-soft bg-oc-quota-warning-bg";
       case "low":
-        return "text-[var(--oc-text-soft)] border-oc-border bg-oc-border/20";
+        return "text-[var(--oc-text-soft)] border-oc-border-soft bg-oc-panel-soft";
       default:
         return "";
     }

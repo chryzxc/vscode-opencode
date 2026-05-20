@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import type { Dirent } from 'fs';
 import * as os from 'os';
 import { createLogger } from '../utils/Logger';
 import { LoggingCategories } from '../utils/LoggingSchema';
@@ -142,7 +143,7 @@ export class SkillManagementService {
         dirPath,
         source,
         entryCount: entries.length,
-        directories: entries.filter((e: fs.Dirent) => e.isDirectory()).map((e: fs.Dirent) => e.name)
+        directories: entries.filter((e: Dirent) => e.isDirectory()).map((e: Dirent) => e.name)
       });
 
       for (const entry of entries) {

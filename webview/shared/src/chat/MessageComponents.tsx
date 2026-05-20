@@ -260,6 +260,39 @@ function getSubagentHue(id: string): number {
   return SUBAGENT_HUES[getStableHash(id) % SUBAGENT_HUES.length];
 }
 
+function isBackgroundTaskId(value: string | undefined): boolean {
+  if (!value) return false;
+  return /^bg_[a-z0-9]+$/i.test(value.trim());
+}
+
+function deriveSubagentRole(subagent: SubagentSummary): string | undefined {
+  const directRole = (subagent.agentRole || "").trim().toLowerCase();
+  if (directRole) return directRole;
+  const candidate = (subagent.agentId || "").trim().toLowerCase();
+  const knownRoles = new Set([
+    "explorer",
+    "explore",
+    "librarian",
+    "library",
+    "worker",
+    "default",
+    "researcher",
+    "planner",
+  ]);
+  return knownRoles.has(candidate) ? candidate : undefined;
+}
+
+function resolveSubagentStatus(
+  subagent: SubagentSummary,
+  detail?: SubagentDetail,
+): SubagentSummary["status"] {
+  const detailStatus = detail?.status;
+  if (detailStatus === "done" || detailStatus === "error" || detailStatus === "orphaned") {
+    return detailStatus;
+  }
+  return subagent.status;
+}
+
 function getSubagentCardStyle(id: string): CSSProperties {
   const hue = getSubagentHue(id);
   return {
@@ -1350,11 +1383,11 @@ function getLatestTodoTransition(items: TodoItem[]): TodoItem | undefined {
 function todoStatusTone(status: TodoItem["status"]): string {
   switch (status) {
     case "completed":
-      return "text-oc-green border-oc-green/20 bg-oc-green/8";
+      return "text-oc-green border-oc-border-soft bg-oc-green/8";
     case "in_progress":
-      return "oc-tinted-badge-text border-oc-accent/22 bg-oc-accent/10";
+      return "oc-tinted-badge-text border-oc-border-soft bg-oc-accent/10";
     case "failed":
-      return "text-oc-red border-oc-red/24 bg-oc-red/10";
+      return "text-oc-red border-oc-border-soft bg-oc-red/10";
     case "cancelled":
       return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
     case "pending":
@@ -1366,9 +1399,9 @@ function todoStatusTone(status: TodoItem["status"]): string {
 function todoPriorityTone(priority?: TodoItem["priority"]): string {
   switch (priority) {
     case "high":
-      return "text-oc-red border-oc-red/24 bg-oc-red/10";
+      return "text-oc-red border-oc-border-soft bg-oc-red/10";
     case "medium":
-      return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
+      return "oc-quota-warning border-oc-border-soft bg-oc-quota-warning-bg";
     case "low":
       return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
     default:
@@ -1422,7 +1455,7 @@ function TodoInlineSummary({
   return (
     <section
       data-assistant-section="todo-inline-summary"
-      className="mt-1 mb-1 overflow-hidden rounded-md border border-oc-border-soft bg-oc-panel-soft"
+      className="mt-1 mb-1 overflow-hidden rounded-md border border-oc-border bg-oc-panel-soft"
     >
       <button
         type="button"
@@ -1448,7 +1481,10 @@ function TodoInlineSummary({
         />
       </button>
       {showTodoChecklist && (
-        <div className="space-y-1.5 p-2.5">
+        <div
+          className="max-h-[320px] space-y-1.5 overflow-y-auto p-2.5"
+          style={{ scrollPaddingBottom: "0.5rem" }}
+        >
           <div className="text-[10px] uppercase tracking-wider oc-text-secondary">
             {inProgressCount} in progress
             {latest ? ` · Latest: "${truncateTodoLabel(latest.text)}"` : ""}
@@ -1458,7 +1494,7 @@ function TodoInlineSummary({
             return (
               <div
                 key={todo.id}
-                className="flex items-start gap-2 rounded-md border border-oc-border-soft bg-oc-bg-soft px-2 py-1.5 text-xs"
+                className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-bg-soft px-2 py-1.5 text-xs"
               >
                 <span className="mt-0.5 shrink-0">
                   {todo.status === "completed" ? (
@@ -2187,7 +2223,6 @@ function SubagentsInlineCard({
   showAllSubagents,
   setShowAllSubagents,
   openSubagentModal,
-  subagentStatusCounts,
 }: {
   subagents: SubagentSummary[];
   subagentDetailsById: AppState["subagentDetailsById"];
@@ -2196,7 +2231,6 @@ function SubagentsInlineCard({
   showAllSubagents: boolean;
   setShowAllSubagents: (next: boolean) => void;
   openSubagentModal: (subagentId: string) => void;
-  subagentStatusCounts: { running: number; done: number; error: number };
 }) {
   if (subagents.length === 0) {
     return null;
@@ -2204,6 +2238,17 @@ function SubagentsInlineCard({
 
   const visibleSubagents = (showAllSubagents ? subagents : subagents.slice(0, 10))
     .filter((subagent: SubagentSummary) => subagent.status !== "orphaned");
+  const resolvedStatusCounts = visibleSubagents.reduce(
+    (acc, subagent) => {
+      const detail = subagentDetailsById[subagent.id] as SubagentDetail | undefined;
+      const status = resolveSubagentStatus(subagent, detail);
+      if (status === "running") acc.running += 1;
+      else if (status === "done") acc.done += 1;
+      else if (status === "error") acc.error += 1;
+      return acc;
+    },
+    { running: 0, done: 0, error: 0 },
+  );
 
   return (
     <div
@@ -2226,21 +2271,27 @@ function SubagentsInlineCard({
             </span>
           </div>
           <div className="flex items-center gap-1.5">
-            {subagentStatusCounts.running > 0 && (
+            {resolvedStatusCounts.running > 0 && (
               <Badge className="h-5 bg-oc-accent/10 px-1.5 text-[10px] oc-tinted-badge-text">
-                {subagentStatusCounts.running} running
+                {resolvedStatusCounts.running} running
               </Badge>
             )}
-            {subagentStatusCounts.done > 0 && (
+            {resolvedStatusCounts.done > 0 && (
               <Badge className="h-5 bg-oc-green/10 px-1.5 text-[10px] text-oc-green">
-                {subagentStatusCounts.done} done
+                {resolvedStatusCounts.done} done
               </Badge>
             )}
-            {subagentStatusCounts.error > 0 && (
+            {resolvedStatusCounts.error > 0 && (
               <Badge className="h-5 bg-oc-red/10 px-1.5 text-[10px] text-oc-red">
-                {subagentStatusCounts.error} error
+                {resolvedStatusCounts.error} error
               </Badge>
             )}
+            <ChevronDown
+              className={cn(
+                "h-3.5 w-3.5 text-oc-text-soft transition-transform",
+                showSubagents ? "rotate-0" : "-rotate-90",
+              )}
+            />
           </div>
         </div>
       </button>
@@ -2255,12 +2306,19 @@ function SubagentsInlineCard({
               const detail = subagentDetailsById[subagent.id] as
                 | SubagentDetail
                 | undefined;
+              const resolvedStatus = resolveSubagentStatus(subagent, detail);
               const modelInfo = subagentModelLabel(subagent, detail);
               const cardStyle = getSubagentCardStyle(subagent.id);
               const accentTextStyle = getSubagentAccentTextStyle(subagent.id);
-              const statusText = subagentStatusLabel(subagent.status) || "Pending";
+              const statusText = subagentStatusLabel(resolvedStatus) || "Pending";
               const activityText =
                 subagent.latestActivity || statusText || "Initializing...";
+              const backgroundTaskId = isBackgroundTaskId(subagent.backgroundTaskId)
+                ? subagent.backgroundTaskId
+                : isBackgroundTaskId(subagent.id)
+                  ? subagent.id
+                  : undefined;
+              const agentRole = deriveSubagentRole(subagent);
               const shouldShowActivity =
                 activityText.trim().toLowerCase() !==
                 statusText.trim().toLowerCase();
@@ -2279,9 +2337,9 @@ function SubagentsInlineCard({
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
                       <div className="oc-agent-icon shrink-0" style={accentTextStyle}>
-                        {subagent.status === "running" ? (
+                        {resolvedStatus === "running" ? (
                           <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : subagent.status === "error" ? (
+                        ) : resolvedStatus === "error" ? (
                           <X className="h-3 w-3 text-oc-red" />
                         ) : (
                           <Check className="h-3 w-3" />
@@ -2299,6 +2357,16 @@ function SubagentsInlineCard({
                     <span className="text-[10px] font-medium oc-text-secondary">
                       {statusText}
                     </span>
+                    {agentRole ? (
+                      <span className="rounded border border-oc-border-soft px-1 py-0 text-[9px] font-medium uppercase tracking-wide oc-text-secondary">
+                        {agentRole}
+                      </span>
+                    ) : null}
+                    {backgroundTaskId ? (
+                      <span className="rounded border border-oc-border-soft px-1 py-0 text-[9px] font-medium uppercase tracking-wide oc-text-secondary">
+                        {backgroundTaskId}
+                      </span>
+                    ) : null}
                   </div>
                   {shouldShowActivity ? (
                     <div className="mt-0.5 min-h-[14px] font-medium text-[10px] oc-text-secondary">
@@ -3402,9 +3470,25 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       ),
     [userFacingDisplayEvents],
   );
-  const shouldShowTodoInlineSummary =
-    todoItems.length > 0 &&
-    (!latestAssistantMessageId || latestAssistantMessageId === messageId);
+  const scopedTodoItems = useMemo(() => {
+    if (!Array.isArray(todoItems) || todoItems.length === 0) {
+      return [];
+    }
+    if (!messageId) {
+      return [];
+    }
+    const strict = todoItems.filter((item) => item.parentMessageId === messageId);
+    if (strict.length > 0) {
+      return strict;
+    }
+    // Live-stream safety: if todos have not been stamped with parentMessageId yet,
+    // keep showing them on the current streaming assistant message.
+    if (isStreamingActive && latestAssistantMessageId === messageId) {
+      return todoItems.filter((item) => !item.parentMessageId);
+    }
+    return [];
+  }, [todoItems, messageId, isStreamingActive, latestAssistantMessageId]);
+  const shouldShowTodoInlineSummary = scopedTodoItems.length > 0;
   const { planStatus, isRevisedPlan } = useMemo(() => {
     let status: "Draft" | "Executing" | "Revision Requested" | undefined;
     let revised = false;
@@ -3578,21 +3662,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     });
   }, [selectedSubagentId, subagents, subagentDetailsById]);
 
-  const subagentStatusCounts = useMemo(
-    () =>
-      subagents.reduce(
-        (acc, subagent) => {
-          const key = subagent.status;
-          if (key === "running") acc.running += 1;
-          else if (key === "done") acc.done += 1;
-          else if (key === "error") acc.error += 1;
-          else acc.pending += 1;
-          return acc;
-        },
-        { pending: 0, running: 0, done: 0, error: 0 },
-      ),
-    [subagents],
-  );
   const hasStreamingActivity = !!(
     streaming &&
     ((streaming.content && String(streaming.content).trim().length > 0) ||
@@ -4026,14 +4095,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         )}
 
         <div className="space-y-3">
-          {shouldShowTodoInlineSummary && (
-            <TodoInlineSummary
-              todoItems={todoItems}
-              showTodoChecklist={showTodoChecklist}
-              setShowTodoChecklist={setShowTodoChecklist}
-            />
-          )}
-
           {(displayEvents.length > 0 || showThinkingPlaceholder) && (
             <section data-assistant-section="activity">
               {timelineDisplayEvents.length > 0 && (
@@ -4310,8 +4371,15 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
             showAllSubagents={showAllSubagents}
             setShowAllSubagents={setShowAllSubagents}
             openSubagentModal={openSubagentModal}
-            subagentStatusCounts={subagentStatusCounts}
           />
+
+          {shouldShowTodoInlineSummary && (
+            <TodoInlineSummary
+              todoItems={scopedTodoItems}
+              showTodoChecklist={showTodoChecklist}
+              setShowTodoChecklist={setShowTodoChecklist}
+            />
+          )}
 
           {showResponseSection && (
             <section
@@ -4512,20 +4580,22 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           </div>
         )}
 
-        <div className="mt-2 flex justify-start">
-          <button
-            type="button"
-            className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
-            onClick={handleCopy}
-            title="Copy message"
-          >
-            {copied ? (
-              <Check className="h-3.5 w-3.5 text-oc-green" />
-            ) : (
-              <Copy className="h-3.5 w-3.5" />
-            )}
-          </button>
-        </div>
+        {!isStreamingActive && showResponseSection && (
+          <div className="mt-2 flex justify-start">
+            <button
+              type="button"
+              className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
+              onClick={handleCopy}
+              title="Copy message"
+            >
+              {copied ? (
+                <Check className="h-3.5 w-3.5 text-oc-green" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </div>
+        )}
 
         {showLegacyErrorBanner && (
           <div className="mt-2">

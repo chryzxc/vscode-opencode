@@ -193,8 +193,8 @@ export function QuotaPopover() {
                     </Badge>
                   ) : (
                     <Badge
-                      variant="accent"
-                      className="text-[10px] uppercase tracking-wide"
+                      variant="status"
+                      className="text-[10px] uppercase tracking-wide oc-text-secondary"
                     >
                       active
                     </Badge>
@@ -227,7 +227,7 @@ export function QuotaPopover() {
                     return (
                       <div
                         key={quota.label}
-                        className="rounded-lg border border-oc-border bg-[rgba(0,0,0,0.16)] p-2"
+                        className="rounded-lg border border-oc-border-soft bg-[rgba(0,0,0,0.16)] p-2"
                       >
                         <div className="mb-2 flex items-center justify-between gap-2">
                           <div className="flex items-center gap-1.5">
