@@ -66,6 +66,29 @@ describe("SubagentTracker", () => {
       assert.equal(summaries[0].agentId, "explore");
     });
 
+    it("creates a subagent from an agent part in the active session", () => {
+      const payload = tracker.consumeStreamEvent(
+        makeEvent("message.part.updated", {
+          part: {
+            type: "agent",
+            sessionID: "parent-session-1",
+            messageID: "msg-1",
+            id: "bg_123",
+            name: "sisyphus-worker",
+            description: "Investigate failing tests",
+          },
+        }),
+      );
+
+      assert.ok(payload, "should return a payload");
+      const summaries = payload.summariesByParentMessageId["msg-1"];
+      assert.equal(summaries.length, 1);
+      assert.equal(summaries[0].id, "subtask:parent-session-1:msg-1:bg_123");
+      assert.equal(summaries[0].status, "pending");
+      assert.equal(summaries[0].latestActivity, "Investigate failing tests");
+      assert.equal(summaries[0].agentId, "sisyphus-worker");
+    });
+
     it("ignores events for sessions other than the active one", () => {
       const payload = tracker.consumeStreamEvent(
         makeEvent("message.part.updated", {

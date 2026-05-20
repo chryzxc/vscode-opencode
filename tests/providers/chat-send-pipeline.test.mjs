@@ -13,7 +13,7 @@ test('schedulePromptDispatch exists with prompt mode parameter', () => {
 test('schedulePromptDispatch trims input text and computes effective mode', () => {
   const body = extractFunctionBody(source, '  private async schedulePromptDispatch(');
   assert.match(body, /const text = typeof payload\.text === "string" \? payload\.text\.trim\(\) : "";/, 'schedulePromptDispatch should trim incoming text');
-  assert.match(body, /const effectiveMode =\s*[\s\S]*mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*this\.processingSessionIds\.has\(sessionId\)[\s\S]*\? "steer"[\s\S]*: mode;/, 'schedulePromptDispatch should switch send-now into steer when processing and forceSendNow is false');
+  assert.match(body, /const effectiveMode =\s*[\s\S]*mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*this\.getEffectiveProcessingSessionIds\(\)\.includes\(sessionId\)[\s\S]*\? "steer"[\s\S]*: mode;/, 'schedulePromptDispatch should switch send-now into steer when processing and forceSendNow is false');
 });
 
 test('handleSendMessage is async and marks the session as processing', () => {
@@ -21,6 +21,13 @@ test('handleSendMessage is async and marks the session as processing', () => {
   assert.match(body, /const client = await this\.serverManager\.ensureRunning\(\)/, 'handleSendMessage should wait for ensureRunning before session work');
   assert.match(body, /this\.processingSessionIds\.add\(drainSessionId\);/, 'handleSendMessage should mark the session as processing');
   assert.match(body, /this\.sendProcessingSessionsUpdate\(\);/, 'handleSendMessage should notify the webview about processing sessions');
+});
+
+test('processing session payloads include active subagent parents', () => {
+  const body = extractFunctionBody(source, '  private getEffectiveProcessingSessionIds(): string[]');
+  assert.match(body, /const ids = new Set\(this\.processingSessionIds\);/, 'effective processing sessions should start with direct prompt sessions');
+  assert.match(body, /this\.subagentTracker\.getActiveProcessingSessionIds\(\)/, 'effective processing sessions should include active subagent parent sessions');
+  assert.match(source, /payload: this\.getEffectiveProcessingSessionIds\(\),/, 'processing updates should publish effective sessions');
 });
 
 test('handleSendMessage appends the user message before the prompt call', () => {
@@ -66,7 +73,7 @@ test('handleLoadSession preserves existing AI processing markers while switching
 });
 
 test('init payloads hydrate processing sessions for reloaded webviews', () => {
-  assert.match(source, /type: "initState",[\s\S]*processingSessionIds: Array\.from\(this\.processingSessionIds\),[\s\S]*todoItems:/, 'initState should include processingSessionIds during bootstrap/session load');
+  assert.match(source, /type: "initState",[\s\S]*processingSessionIds: this\.getEffectiveProcessingSessionIds\(\),[\s\S]*todoItems:/, 'initState should include processingSessionIds during bootstrap/session load');
   assert.match(source, /type: "chatHistory",\s*sessionId: currentSession\.id,\s*messages: messages,/m, 'ready bootstrap should scope chatHistory to the current session');
 });
 

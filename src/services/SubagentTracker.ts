@@ -983,7 +983,10 @@ export class SubagentTracker {
       return;
     }
 
-    if (partType === "subtask" && sessionId === this.activeSessionId) {
+    if (
+      (partType === "subtask" || partType === "agent") &&
+      sessionId === this.activeSessionId
+    ) {
       const detailId = this.makeSubtaskSubagentId(sessionId, messageId, partId);
       const existing = this.detailsById.get(detailId);
       const detail: SubagentDetail = existing || {
@@ -991,7 +994,8 @@ export class SubagentTracker {
         parentSessionId: sessionId,
         parentMessageId: messageId,
         status: "pending",
-        latestActivity: "Subagent requested",
+        latestActivity:
+          partType === "agent" ? "Background agent requested" : "Subagent requested",
         references: [],
         thinkingEvents: [],
         conversationEvents: [],
@@ -999,12 +1003,20 @@ export class SubagentTracker {
         timelineEvents: [],
       };
 
-      detail.agentId = asString(part.agent) || detail.agentId;
+      detail.agentId =
+        asString(part.agent) ||
+        asString(part.name) ||
+        asString(part.agentId) ||
+        asString(part.id) ||
+        detail.agentId;
       detail.latestActivity =
         asString(part.description) ||
+        asString(part.name) ||
+        asString(part.title) ||
+        asString(part.meta) ||
         asString(part.prompt) ||
         detail.latestActivity ||
-        "Subagent requested";
+        (partType === "agent" ? "Background agent requested" : "Subagent requested");
       detail.startedAt = detail.startedAt ?? createdAt;
       detail.status = detail.childSessionId ? "running" : "pending";
 
@@ -1013,8 +1025,8 @@ export class SubagentTracker {
         partID: partId,
       });
       this.pushTimeline(detail, {
-        key: this.makeTimelineKey("subtask", messageId, partId, createdAt),
-        type: "subtask",
+        key: this.makeTimelineKey(partType, messageId, partId, createdAt),
+        type: partType,
         label: detail.latestActivity,
         createdAt,
         messageID: messageId,

@@ -514,7 +514,7 @@ export class ChatViewProvider
 
   private processingSessionIds: Set<string> = new Set();
   private get isProcessingRequest(): boolean {
-    return this.processingSessionIds.size > 0;
+    return this.getEffectiveProcessingSessionIds().length > 0;
   }
   private isBootstrappingWebview: boolean = false;
   private hasInitializedWebview: boolean = false;
@@ -820,7 +820,7 @@ export class ChatViewProvider
     const effectiveMode =
       mode === "send-now" &&
       !payload.forceSendNow &&
-      this.processingSessionIds.has(sessionId)
+      this.getEffectiveProcessingSessionIds().includes(sessionId)
         ? "steer"
         : mode;
 
@@ -832,7 +832,7 @@ export class ChatViewProvider
       mode === "send-now" &&
       payload.forceSendNow &&
       !payload.avoidAbortIfProcessing &&
-      this.processingSessionIds.has(sessionId)
+      this.getEffectiveProcessingSessionIds().includes(sessionId)
     ) {
       await this.handleStopRequest(sessionId, {
         suppressWebviewNotification: true,
@@ -1317,7 +1317,7 @@ export class ChatViewProvider
         selectedAgent: this.modelAndAgentManager.getSelectedAgent(),
         serverVersion: this.serverManager.getVersion(),
         currentSessionId: this.currentSessionId,
-        processingSessionIds: Array.from(this.processingSessionIds),
+        processingSessionIds: this.getEffectiveProcessingSessionIds(),
         todoItems: [],
       });
       void this.refreshSdkTodosForSession(this.currentSessionId);
@@ -2107,10 +2107,18 @@ export class ChatViewProvider
   /**
    * Session methods - delegate to SessionHandler
    */
+  private getEffectiveProcessingSessionIds(): string[] {
+    const ids = new Set(this.processingSessionIds);
+    for (const sessionId of this.subagentTracker.getActiveProcessingSessionIds()) {
+      ids.add(sessionId);
+    }
+    return Array.from(ids);
+  }
+
   private sendProcessingSessionsUpdate(): void {
     this.view?.webview.postMessage({
       type: "SET_PROCESSING_SESSIONS",
-      payload: Array.from(this.processingSessionIds),
+      payload: this.getEffectiveProcessingSessionIds(),
     });
   }
 
@@ -2375,7 +2383,7 @@ export class ChatViewProvider
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
               currentSessionId: this.currentSessionId,
-              processingSessionIds: Array.from(this.processingSessionIds),
+              processingSessionIds: this.getEffectiveProcessingSessionIds(),
               todoItems: [],
             });
             this.hasInitializedWebview = true;
@@ -2420,7 +2428,7 @@ export class ChatViewProvider
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
               currentSessionId: this.currentSessionId,
-              processingSessionIds: Array.from(this.processingSessionIds),
+              processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
             void this.refreshSdkTodosForSession(this.currentSessionId);
 
@@ -3320,6 +3328,7 @@ export class ChatViewProvider
           type: "subagentUpdate",
           ...subagentUpdate,
         });
+        this.sendProcessingSessionsUpdate();
         void this.subagentPersistence.persistSubagentUpdateSnapshot(
           subagentUpdate,
           this.currentSessionId,
@@ -6710,6 +6719,21 @@ export class ChatViewProvider
         drainSessionId &&
         this.isLikelyInteractiveTransportFailure(errorMessage)
       ) {
+        if (
+          this.subagentTracker
+            .getActiveProcessingSessionIds()
+            .includes(drainSessionId)
+        ) {
+          this.logger.info(
+            "Suppressing timeout while background subagents are still active",
+            {
+              sessionId: drainSessionId,
+              errorMessage,
+            },
+          );
+          this.sendProcessingSessionsUpdate();
+          return;
+        }
         const recovered = await this.tryRecoverTimedOutResponse(
           drainSessionId,
           baselineAssistantMarker,
@@ -7397,7 +7421,7 @@ export class ChatViewProvider
       selectedModel: this.selectedModel,
       selectedAgent: this.selectedAgent,
       currentSessionId: this.currentSessionId,
-      processingSessionIds: Array.from(this.processingSessionIds),
+      processingSessionIds: this.getEffectiveProcessingSessionIds(),
       todoItems: [],
     });
     void this.refreshSdkTodosForSession(this.currentSessionId);
