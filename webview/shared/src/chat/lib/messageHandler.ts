@@ -5998,6 +5998,37 @@ function buildStreamingMessage(streaming: StreamingState): Message {
   };
 }
 
+function hasVisibleStreamingSnapshot(streaming: StreamingState | null | undefined): streaming is StreamingState {
+  if (!streaming) {
+    return false;
+  }
+  return (
+    asString(streaming.content).trim().length > 0 ||
+    asString(streaming.reasoning).trim().length > 0 ||
+    (Array.isArray(streaming.reasoningEvents) && streaming.reasoningEvents.length > 0) ||
+    (Array.isArray(streaming.progressEvents) && streaming.progressEvents.length > 0) ||
+    (Array.isArray(streaming.steps) && streaming.steps.length > 0) ||
+    (Array.isArray(streaming.edits) && streaming.edits.length > 0) ||
+    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0)
+  );
+}
+
+function mergeStreamingSnapshotIntoHistory(
+  messages: Message[],
+  streaming: StreamingState,
+): Message[] {
+  const streamingMessage = buildStreamingMessage(streaming);
+  const streamingMessageId =
+    streaming.messageId ||
+    asString(asRecord(streamingMessage.info)?.id) ||
+    asString(streamingMessage.id) ||
+    null;
+
+  return replaceMatchingAssistantTurn(messages, streamingMessage, [
+    streamingMessageId,
+  ]);
+}
+
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -8331,6 +8362,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           }
           const isMatchingStreamingMessage =
             streamingMessageId && finalMessageId && streamingMessageId === finalMessageId;
+          // Only clear streaming state if this messageResponse matches the
+          // current stream, or if the final payload is authoritative enough to
+          // replace the local snapshot without losing visible assistant output.
           const shouldClearStreamingAfterResponse =
             isMatchingStreamingMessage ||
             !currentStreaming ||
@@ -8379,6 +8413,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const currentState = getState();
             const isSessionProcessing = !!(chatHistorySessionId &&
               currentState.processingSessionIds.includes(chatHistorySessionId));
+            const currentStreamingSnapshot = currentState.streaming;
+            const isSameActiveSessionHydration = !!(
+              chatHistorySessionId &&
+              currentState.currentSessionId === chatHistorySessionId
+            );
+            const shouldPreserveActiveStreaming =
+              isSameActiveSessionHydration &&
+              currentStreamingSnapshot?.isActive === true &&
+              hasVisibleStreamingSnapshot(currentStreamingSnapshot);
+            const shouldMergeFinishedStreamingSnapshot =
+              isSameActiveSessionHydration &&
+              currentStreamingSnapshot?.isActive === false &&
+              hasVisibleStreamingSnapshot(currentStreamingSnapshot);
             const cachedMessagesForSwitch =
               chatHistorySessionId
                 ? currentState.messagesBySessionId?.[chatHistorySessionId] ?? []
@@ -8408,18 +8455,22 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
             hydrationPresentationPolicy = {
               mode: "hydration",
-              sessionProcessing: isSessionProcessing,
+              sessionProcessing: isSessionProcessing || shouldPreserveActiveStreaming,
             };
 
-            latestStreamingSnapshot = null;
+            if (!shouldPreserveActiveStreaming) {
+              latestStreamingSnapshot = null;
+            }
 
-            // Clear any stale streaming state when history is loaded (extension open
-            // or session switch) so the UI starts clean. Preserve processing state
-            // if the session is currently being processed on the backend.
-            dispatch({ type: "SET_STREAMING", payload: null });
-            dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
-            dispatch({ type: "CLEAR_MESSAGES" });
-            const stabilizedHydratedMessages = dedupedSystemMessages.map((message) => {
+            // Same-session history refreshes can arrive just after streaming
+            // completes but before the final assistant message has persisted.
+            // Keep the locally rendered snapshot as authoritative for that turn
+            // so the assistant response cannot blink out of the timeline.
+            if (!shouldPreserveActiveStreaming) {
+              dispatch({ type: "SET_STREAMING", payload: null });
+              dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
+            }
+            let stabilizedHydratedMessages = dedupedSystemMessages.map((message) => {
               if (!Array.isArray(message.subagents) || message.subagents.length === 0) {
                 return message;
               }
@@ -8438,6 +8489,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 ),
               };
             });
+            if (shouldMergeFinishedStreamingSnapshot && currentStreamingSnapshot) {
+              stabilizedHydratedMessages = mergeStreamingSnapshotIntoHistory(
+                stabilizedHydratedMessages,
+                currentStreamingSnapshot,
+              );
+            }
             canonicalMessages = stabilizedHydratedMessages;
             dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages });
           } catch (error) {
