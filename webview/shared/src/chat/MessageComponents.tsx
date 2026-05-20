@@ -1447,18 +1447,23 @@ function stripGenericHydratedAttachmentFence(raw: string): string {
     .trim();
 }
 
-function inferAttachmentPathsFromHydratedUserText(raw: string): string[] {
-  if (!raw) {
-    return [];
+function isExplicitFileAttachmentPart(part: MessagePart): boolean {
+  const partType = (part.type || "").trim().toLowerCase();
+  if (partType === "file") {
+    return true;
   }
 
-  const matches = Array.from(
-    raw.matchAll(/\/\/\s*([^\r\n]*[\\/][^\r\n]*?)(?::\d+)?\s*(?:\r?\n|$)/g),
-  );
-  const paths = matches
-    .map((match) => (match[1] || "").trim())
-    .filter((value) => value.length > 0);
-  return Array.from(new Set(paths));
+  // Fallback for legacy payloads that omit part.type but still carry a file path.
+  const hasPathLikeSource =
+    typeof part.source?.path === "string" && part.source.path.trim().length > 0;
+  const hasFilename =
+    typeof part.filename === "string" && part.filename.trim().length > 0;
+  const hasTextPayload =
+    typeof part.text === "string" ||
+    typeof part.content === "string" ||
+    typeof part.message === "string";
+
+  return (hasPathLikeSource || hasFilename) && !hasTextPayload;
 }
 
 function normalizedUserMessageText(message?: Message): string {
@@ -2531,16 +2536,12 @@ export const SystemMessage = memo(function SystemMessage({
 export const UserMessage = memo(function UserMessage({ message }: { message?: Message }) {
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const userMessageRef = useRef<HTMLDivElement>(null);
-  const rawUserText =
-    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
   const content = normalizedUserMessageText(message);
   const explicitFileChips = (message?.parts ?? [])
+    .filter(isExplicitFileAttachmentPart)
     .map((part) => part.filename ?? part.source?.path)
     .filter((value): value is string => !!value);
-  const inferredFileChips = inferAttachmentPathsFromHydratedUserText(
-    typeof rawUserText === "string" ? rawUserText : "",
-  );
-  const fileChips = Array.from(new Set([...explicitFileChips, ...inferredFileChips]));
+  const fileChips = Array.from(new Set(explicitFileChips));
   const hasImages = Array.isArray(message?.images) && message.images.length > 0;
 
   useEffect(() => {
