@@ -4577,15 +4577,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           )}
         </div>
 
-        {isAborted && (
-          <div className="mt-2 flex items-center justify-center">
-            <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium tracking-wide text-amber-400">
-              <div className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
-              <span>Interrupted</span>
-            </div>
-          </div>
-        )}
-
         {!isStreamingActive && showResponseSection && (
           <div className="mt-2 flex justify-start">
             <button
@@ -4600,6 +4591,15 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 <Copy className="h-3.5 w-3.5" />
               )}
             </button>
+          </div>
+        )}
+
+        {isAborted && (
+          <div className="mt-2 flex items-center justify-center">
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium tracking-wide text-amber-400">
+              <div className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+              <span>Interrupted</span>
+            </div>
           </div>
         )}
 

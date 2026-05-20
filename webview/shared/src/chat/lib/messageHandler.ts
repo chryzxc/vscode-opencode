@@ -353,6 +353,31 @@ function isFinishSignal(value: unknown): boolean {
   );
 }
 
+function resolveMessageUpdatedFinishSignal(
+  payload: UnknownRecord,
+  properties: UnknownRecord | null,
+): boolean {
+  // Preferred completion flag used by most providers.
+  const info = asRecord(payload.info) ?? asRecord(properties?.info);
+  if (info && isFinishSignal((info as UnknownRecord).finish)) {
+    return true;
+  }
+
+  // Fallbacks for providers that emit terminal status only on message/part/state
+  // records. Without this, UI can remain in loading even after the final content
+  // has already arrived.
+  const statusCandidates = [
+    payload.status,
+    payload.state,
+    properties?.status,
+    asRecord(properties?.state)?.status,
+    asRecord(properties?.message)?.status,
+    asRecord(properties?.part)?.status,
+    asRecord(payload.message)?.status,
+  ];
+  return statusCandidates.some((candidate) => isFinishSignal(candidate));
+}
+
 function asArray<T>(value: unknown, guard: (item: unknown) => item is T): T[] {
   if (!Array.isArray(value)) {
     return [];
@@ -6993,8 +7018,7 @@ function handleStreamEvent(
         finish: asBoolean(asRecord(payload.info)?.finish, false),
         hasInfo: !!asRecord(payload.info),
       });
-      const info = asRecord(payload.info) ?? asRecord(payload.properties)?.info;
-      const finish = info ? isFinishSignal((info as UnknownRecord).finish) : false;
+      const finish = resolveMessageUpdatedFinishSignal(payload, properties);
 
       if (structuredOutput && messageId) {
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId);

@@ -1,9 +1,9 @@
 /**
- * Regression test: finish detection in message.updated uses asBoolean
+ * Regression test: finish detection in message.updated supports fallback terminal status signals
  *
  * The finish detection in the message.updated handler uses
- * `asBoolean((info as UnknownRecord).finish, false)` to determine
- * if the AI response is complete. This is the simple, stable approach.
+ * info.finish is the primary signal, but some providers only emit terminal
+ * status fields on message/properties records. We must detect those too.
  *
  * Historical note: Previous attempts to add hasTerminalFinishSignal,
  * hasCompletedTimestamp, and debounced timers for tool-calls finish
@@ -53,16 +53,24 @@ function getStartSection() {
 }
 
 // ---------------------------------------------------------------------------
-// 1. message.updated finish detection uses asBoolean on info.finish
+// 1. message.updated finish detection uses dedicated resolver
 // ---------------------------------------------------------------------------
 
-test('message.updated uses asBoolean for finish detection', () => {
+test('message.updated uses dedicated finish resolver for robust completion detection', () => {
   const section = getMsgUpdatedSection();
 
   assert.match(
     section,
-    /const\s+finish\s*=\s*info\s*\?\s*asBoolean\(\s*\(info\s+as\s+UnknownRecord\)\.finish\s*,\s*false\s*\)\s*:\s*false/,
-    'finish should use asBoolean on info.finish with false default',
+    /const\s+finish\s*=\s*resolveMessageUpdatedFinishSignal\(payload,\s*properties\)/,
+    'finish should resolve from info.finish plus fallback status fields',
+  );
+});
+
+test('message.updated finish resolver inspects terminal status candidates', () => {
+  assert.match(
+    messageHandlerSource,
+    /function\s+resolveMessageUpdatedFinishSignal\([\s\S]*statusCandidates[\s\S]*payload\.status[\s\S]*properties\?\.status[\s\S]*properties\?\.part\)\?\.status/s,
+    'resolver should inspect payload/properties status fields for terminal completion',
   );
 });
 
