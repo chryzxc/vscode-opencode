@@ -3477,9 +3477,15 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     if (!messageId) {
       return [];
     }
+    const hasAnyScopedTodo = todoItems.some((item) => !!item.parentMessageId);
     const strict = todoItems.filter((item) => item.parentMessageId === messageId);
     if (strict.length > 0) {
       return strict;
+    }
+    // Backward-compat fallback: older snapshots/todo feeds can omit parentMessageId.
+    // In that case, keep historical behavior and render on the latest assistant turn.
+    if (!hasAnyScopedTodo && latestAssistantMessageId === messageId) {
+      return todoItems;
     }
     // Live-stream safety: if todos have not been stamped with parentMessageId yet,
     // keep showing them on the current streaming assistant message.
