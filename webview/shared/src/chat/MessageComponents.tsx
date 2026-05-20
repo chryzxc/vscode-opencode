@@ -4563,11 +4563,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           </div>
         )}
 
-        {isStreamingActive && !showResponseSection && hasStreamingActivity && (
+        {isStreamingActive &&
+          !showResponseSection &&
+          hasStreamingActivity &&
+          !showStreamingLoading && (
           <div className="mt-2 mb-2 px-1">
             <ThinkingStatusTicker className="oc-thinking-status" />
           </div>
-        )}
+          )}
         {/* Raw Data â€" moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (
           <details className="group mb-3">
