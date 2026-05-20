@@ -473,6 +473,33 @@ function ChatContent() {
     }
   };
 
+  const getStableMessageKey = (msg: Message, absoluteIndex: number, role: string): string => {
+    const infoId =
+      typeof msg.info?.id === "string" && msg.info.id.trim().length > 0
+        ? msg.info.id
+        : null;
+    if (infoId) {
+      return infoId;
+    }
+
+    const topLevelId =
+      typeof msg.id === "string" && msg.id.trim().length > 0 ? msg.id : null;
+    if (topLevelId) {
+      return topLevelId;
+    }
+
+    const createdAt =
+      typeof msg.created === "number" && Number.isFinite(msg.created)
+        ? msg.created
+        : typeof msg.info?.created === "number" && Number.isFinite(msg.info.created)
+          ? msg.info.created
+          : null;
+
+    return createdAt !== null
+      ? `${role}:${createdAt}:${absoluteIndex}`
+      : `${role}:idx:${absoluteIndex}`;
+  };
+
   return (
     <div className="oc-shell relative flex h-screen overflow-hidden bg-oc-bg text-oc-text">
       {/* === LEFT: History sidebar overlay (hamburger-toggled, absolute positioned) === */}
@@ -533,11 +560,7 @@ function ChatContent() {
           {visibleMessages.map((msg: Message, visibleIdx: number) => {
             const idx = visibleStartIndex + visibleIdx;
             const role = msg.role ?? msg.info?.role ?? "user";
-            const key =
-              msg.info?.id ??
-              `${idx}-${role}-${(msg.content ?? msg.text ?? "").slice(0, 32)}-${
-                msg.parts?.length ?? 0
-              }-${msg.steps?.length ?? 0}`;
+            const key = getStableMessageKey(msg, idx, role);
 
             const prevIdx = idx - 1;
             const prevMsg =
