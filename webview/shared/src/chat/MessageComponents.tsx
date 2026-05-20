@@ -1347,13 +1347,73 @@ function getLatestTodoTransition(items: TodoItem[]): TodoItem | undefined {
   return items[items.length - 1];
 }
 
-function TodoInlineSummary({ todoItems }: { todoItems: TodoItem[] }) {
+function todoStatusTone(status: TodoItem["status"]): string {
+  switch (status) {
+    case "completed":
+      return "text-oc-green border-oc-green/20 bg-oc-green/8";
+    case "in_progress":
+      return "oc-tinted-badge-text border-oc-accent/22 bg-oc-accent/10";
+    case "failed":
+      return "text-oc-red border-oc-red/24 bg-oc-red/10";
+    case "cancelled":
+      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+    case "pending":
+    default:
+      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+  }
+}
+
+function todoPriorityTone(priority?: TodoItem["priority"]): string {
+  switch (priority) {
+    case "high":
+      return "text-oc-red border-oc-red/24 bg-oc-red/10";
+    case "medium":
+      return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
+    case "low":
+      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+    default:
+      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+  }
+}
+
+function TodoInlineSummary({
+  todoItems,
+  showTodoChecklist,
+  setShowTodoChecklist,
+}: {
+  todoItems: TodoItem[];
+  showTodoChecklist: boolean;
+  setShowTodoChecklist: (next: boolean) => void;
+}) {
   if (todoItems.length === 0) {
     return null;
   }
 
+  const sorted = [...todoItems].sort((a, b) => {
+    const rank = (item: TodoItem): number => {
+      switch (item.status) {
+        case "in_progress":
+          return 0;
+        case "pending":
+          return 1;
+        case "failed":
+          return 2;
+        case "cancelled":
+          return 3;
+        case "completed":
+          return 4;
+        default:
+          return 5;
+      }
+    };
+    return rank(a) - rank(b);
+  });
   const inProgressCount = todoItems.reduce(
     (count, item) => (item.status === "in_progress" ? count + 1 : count),
+    0,
+  );
+  const completedCount = todoItems.reduce(
+    (count, item) => (item.status === "completed" ? count + 1 : count),
     0,
   );
   const totalCount = todoItems.length;
@@ -1362,15 +1422,92 @@ function TodoInlineSummary({ todoItems }: { todoItems: TodoItem[] }) {
   return (
     <section
       data-assistant-section="todo-inline-summary"
-      className="rounded-md border border-transparent bg-oc-panel-soft/22 px-2.5 py-2"
+      className="mt-1 mb-1 overflow-hidden rounded-md border border-oc-border-soft bg-oc-panel-soft"
     >
-      <div className="text-[11px] font-medium oc-text-secondary">
-        {totalCount} {totalCount === 1 ? "task" : "tasks"} - {inProgressCount} in
-        progress
-      </div>
-      {latest && (
-        <div className="mt-0.5 truncate text-[11px] oc-text-secondary">
-          Latest: "{truncateTodoLabel(latest.text)}" - {formatTodoStatus(latest.status)}
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 border-b border-oc-border-soft px-2.5 py-2 text-left hover:bg-oc-panel"
+        onClick={() => setShowTodoChecklist(!showTodoChecklist)}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
+            Todo Checklist
+          </span>
+          <span className="rounded-md border border-oc-border-soft px-1.5 py-0.5 text-[10px] font-medium oc-text-secondary">
+            {totalCount}
+          </span>
+          <span className="text-[10px] oc-text-secondary">
+            {completedCount}/{totalCount} done
+          </span>
+        </div>
+        <ChevronDown
+          className={cn(
+            "h-3.5 w-3.5 text-oc-text-soft transition-transform",
+            showTodoChecklist ? "rotate-0" : "-rotate-90",
+          )}
+        />
+      </button>
+      {showTodoChecklist && (
+        <div className="space-y-1.5 p-2.5">
+          <div className="text-[10px] uppercase tracking-wider oc-text-secondary">
+            {inProgressCount} in progress
+            {latest ? ` · Latest: "${truncateTodoLabel(latest.text)}"` : ""}
+          </div>
+          {sorted.map((todo) => {
+            const isDone = todo.status === "completed";
+            return (
+              <div
+                key={todo.id}
+                className="flex items-start gap-2 rounded-md border border-oc-border-soft bg-oc-bg-soft px-2 py-1.5 text-xs"
+              >
+                <span className="mt-0.5 shrink-0">
+                  {todo.status === "completed" ? (
+                    <Check className="h-3.5 w-3.5 text-oc-green" />
+                  ) : todo.status === "in_progress" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-oc-accent" />
+                  ) : todo.status === "failed" ? (
+                    <AlertCircle className="h-3.5 w-3.5 text-oc-red" />
+                  ) : todo.status === "cancelled" ? (
+                    <X className="h-3.5 w-3.5 oc-text-secondary" />
+                  ) : (
+                    <Clock className="h-3.5 w-3.5 oc-text-secondary" />
+                  )}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div
+                    className={cn(
+                      "break-words leading-relaxed",
+                      isDone
+                        ? "line-through opacity-70 oc-text-secondary"
+                        : "text-oc-text-soft",
+                    )}
+                  >
+                    {todo.description ?? todo.text ?? "Untitled task"}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                        todoStatusTone(todo.status),
+                      )}
+                    >
+                      {formatTodoStatus(todo.status)}
+                    </span>
+                    {todo.priority ? (
+                      <span
+                        className={cn(
+                          "rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                          todoPriorityTone(todo.priority),
+                        )}
+                      >
+                        {todo.priority}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </section>
@@ -1447,18 +1584,23 @@ function stripGenericHydratedAttachmentFence(raw: string): string {
     .trim();
 }
 
-function inferAttachmentPathsFromHydratedUserText(raw: string): string[] {
-  if (!raw) {
-    return [];
+function isExplicitFileAttachmentPart(part: MessagePart): boolean {
+  const partType = (part.type || "").trim().toLowerCase();
+  if (partType === "file") {
+    return true;
   }
 
-  const matches = Array.from(
-    raw.matchAll(/\/\/\s*([^\r\n]*[\\/][^\r\n]*?)(?::\d+)?\s*(?:\r?\n|$)/g),
-  );
-  const paths = matches
-    .map((match) => (match[1] || "").trim())
-    .filter((value) => value.length > 0);
-  return Array.from(new Set(paths));
+  // Fallback for legacy payloads that omit part.type but still carry a file path.
+  const hasPathLikeSource =
+    typeof part.source?.path === "string" && part.source.path.trim().length > 0;
+  const hasFilename =
+    typeof part.filename === "string" && part.filename.trim().length > 0;
+  const hasTextPayload =
+    typeof part.text === "string" ||
+    typeof part.content === "string" ||
+    typeof part.message === "string";
+
+  return (hasPathLikeSource || hasFilename) && !hasTextPayload;
 }
 
 function normalizedUserMessageText(message?: Message): string {
@@ -2009,6 +2151,155 @@ function subagentModelLabel(
   return "Loading...";
 }
 
+function SubagentsInlineCard({
+  subagents,
+  subagentDetailsById,
+  showSubagents,
+  setShowSubagents,
+  showAllSubagents,
+  setShowAllSubagents,
+  openSubagentModal,
+  subagentStatusCounts,
+}: {
+  subagents: SubagentSummary[];
+  subagentDetailsById: AppState["subagentDetailsById"];
+  showSubagents: boolean;
+  setShowSubagents: (next: boolean) => void;
+  showAllSubagents: boolean;
+  setShowAllSubagents: (next: boolean) => void;
+  openSubagentModal: (subagentId: string) => void;
+  subagentStatusCounts: { running: number; done: number; error: number };
+}) {
+  if (subagents.length === 0) {
+    return null;
+  }
+
+  const visibleSubagents = (showAllSubagents ? subagents : subagents.slice(0, 10))
+    .filter((subagent: SubagentSummary) => subagent.status !== "orphaned");
+
+  return (
+    <div
+      data-assistant-section="subagents-inline-card"
+      className="oc-subagents-panel mt-3 mb-3 overflow-hidden rounded-md border bg-oc-panel-soft"
+    >
+      <button
+        type="button"
+        className="oc-subagents-panel-header w-full border-b px-2.5 py-2 text-left hover:bg-oc-panel"
+        onClick={() => setShowSubagents(!showSubagents)}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <Sparkles className="h-3.5 w-3.5 oc-subagents-header-icon" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
+              Subagents
+            </span>
+            <span className="oc-subagents-count rounded-md border px-1.5 py-0.5 font-medium text-oc-2xs text-oc-text-soft">
+              {subagents.length}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {subagentStatusCounts.running > 0 && (
+              <Badge className="h-5 bg-oc-accent/10 px-1.5 text-[10px] oc-tinted-badge-text">
+                {subagentStatusCounts.running} running
+              </Badge>
+            )}
+            {subagentStatusCounts.done > 0 && (
+              <Badge className="h-5 bg-oc-green/10 px-1.5 text-[10px] text-oc-green">
+                {subagentStatusCounts.done} done
+              </Badge>
+            )}
+            {subagentStatusCounts.error > 0 && (
+              <Badge className="h-5 bg-oc-red/10 px-1.5 text-[10px] text-oc-red">
+                {subagentStatusCounts.error} error
+              </Badge>
+            )}
+          </div>
+        </div>
+      </button>
+
+      {showSubagents && (
+        <div className="space-y-2 p-2.5">
+          <div
+            className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1 pb-2"
+            style={{ scrollPaddingBottom: "0.5rem" }}
+          >
+            {visibleSubagents.map((subagent: SubagentSummary) => {
+              const detail = subagentDetailsById[subagent.id] as
+                | SubagentDetail
+                | undefined;
+              const modelInfo = subagentModelLabel(subagent, detail);
+              const cardStyle = getSubagentCardStyle(subagent.id);
+              const accentTextStyle = getSubagentAccentTextStyle(subagent.id);
+              const statusText = subagentStatusLabel(subagent.status) || "Pending";
+              const activityText =
+                subagent.latestActivity || statusText || "Initializing...";
+              const shouldShowActivity =
+                activityText.trim().toLowerCase() !==
+                statusText.trim().toLowerCase();
+
+              return (
+                <button
+                  key={subagent.id}
+                  type="button"
+                  className={cn(
+                    "oc-subagent-row w-full rounded-md border bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
+                    "hover:bg-oc-panel",
+                  )}
+                  style={cardStyle}
+                  onClick={() => openSubagentModal(subagent.id)}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <div className="oc-agent-icon shrink-0" style={accentTextStyle}>
+                        {subagent.status === "running" ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : subagent.status === "error" ? (
+                          <X className="h-3 w-3 text-oc-red" />
+                        ) : (
+                          <Check className="h-3 w-3" />
+                        )}
+                      </div>
+                      <span className="truncate text-oc-xs font-semibold text-oc-text-soft">
+                        {modelInfo}
+                      </span>
+                    </div>
+                    <span className="font-medium text-oc-2xs oc-text-secondary">
+                      {formatDuration(subagent.durationMs ?? 0)}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex min-w-0 items-center gap-1.5">
+                    <span className="text-[10px] font-medium oc-text-secondary">
+                      {statusText}
+                    </span>
+                  </div>
+                  {shouldShowActivity ? (
+                    <div className="mt-0.5 min-h-[14px] font-medium text-[10px] oc-text-secondary">
+                      <FadeSwapText
+                        text={activityText}
+                        className="block truncate"
+                        durationMs={220}
+                      />
+                    </div>
+                  ) : null}
+                </button>
+              );
+            })}
+            {subagents.length > 10 ? (
+              <button
+                type="button"
+                className="text-oc-2xs font-medium oc-readable-accent hover:underline"
+                onClick={() => setShowAllSubagents(!showAllSubagents)}
+              >
+                {showAllSubagents ? "Show less" : `Show all (${subagents.length})`}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TypewriterText({
   text,
   className,
@@ -2536,6 +2827,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
     message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
   const content = normalizedUserMessageText(message);
   const explicitFileChips = (message?.parts ?? [])
+    .filter(isExplicitFileAttachmentPart)
     .map((part) => part.filename ?? part.source?.path)
     .filter((value): value is string => !!value);
   const inferredFileChips = inferAttachmentPathsFromHydratedUserText(
@@ -2842,6 +3134,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const state = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
+  const [showTodoChecklist, setShowTodoChecklist] = useState(true);
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
     null,
   );
@@ -3211,9 +3504,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       setShowSubagents(true);
     }
   }, [streaming, subagents.length]);
-  const visibleSubagents = (showAllSubagents ? subagents : subagents.slice(0, 10))
-    .filter((subagent: SubagentSummary) => subagent.status !== 'orphaned');
-
   useEffect(() => {
     if (subagents.length === 0) {
       setSelectedSubagentId(null);
@@ -3708,7 +3998,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         )}
 
         <div className="space-y-3">
-          {shouldShowTodoInlineSummary && <TodoInlineSummary todoItems={todoItems} />}
+          {shouldShowTodoInlineSummary && (
+            <TodoInlineSummary
+              todoItems={todoItems}
+              showTodoChecklist={showTodoChecklist}
+              setShowTodoChecklist={setShowTodoChecklist}
+            />
+          )}
 
           {(displayEvents.length > 0 || showThinkingPlaceholder) && (
             <section data-assistant-section="activity">
@@ -3978,134 +4274,16 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
             </section>
           )}
 
-          {subagents.length > 0 && (
-            <div className="oc-subagents-panel mt-3 mb-3 overflow-hidden rounded-md border bg-oc-panel-soft">
-              <button
-                type="button"
-                className="oc-subagents-panel-header w-full border-b px-2.5 py-2 text-left hover:bg-oc-panel"
-                onClick={() => setShowSubagents((value) => !value)}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <Sparkles className="h-3.5 w-3.5 oc-subagents-header-icon" />
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
-                      Spawned Subagents
-                    </span>
-                    <span className="oc-subagents-count rounded-md border px-1.5 py-0.5 font-medium text-oc-2xs text-oc-text-soft">
-                      {subagents.length}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {subagentStatusCounts.running > 0 && (
-                      <Badge className="h-5 bg-oc-accent/10 px-1.5 text-[10px] oc-tinted-badge-text">
-                        {subagentStatusCounts.running} running
-                      </Badge>
-                    )}
-                    {subagentStatusCounts.done > 0 && (
-                      <Badge className="h-5 bg-oc-green/10 px-1.5 text-[10px] text-oc-green">
-                        {subagentStatusCounts.done} done
-                      </Badge>
-                    )}
-                    {subagentStatusCounts.error > 0 && (
-                      <Badge className="h-5 bg-oc-red/10 px-1.5 text-[10px] text-oc-red">
-                        {subagentStatusCounts.error} error
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-              </button>
-
-              {showSubagents && (
-                <div className="space-y-2 p-2.5">
-                  <div
-                    className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1 pb-2"
-                    style={{ scrollPaddingBottom: "0.5rem" }}
-                  >
-                    {visibleSubagents.map((subagent: SubagentSummary) => {
-                      const detail = subagentDetailsById[subagent.id] as
-                        | SubagentDetail
-                        | undefined;
-                      const modelInfo = subagentModelLabel(subagent, detail);
-                      const cardStyle = getSubagentCardStyle(subagent.id);
-                      const accentTextStyle = getSubagentAccentTextStyle(
-                        subagent.id,
-                      );
-                      const statusText =
-                        subagentStatusLabel(subagent.status) || "Pending";
-                      const activityText =
-                        subagent.latestActivity ||
-                        statusText ||
-                        "Initializing...";
-                      const shouldShowActivity =
-                        activityText.trim().toLowerCase() !==
-                        statusText.trim().toLowerCase();
-
-                      return (
-                        <button
-                          key={subagent.id}
-                          type="button"
-                          className={cn(
-                            "oc-subagent-row w-full rounded-md border bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
-                            "hover:bg-oc-panel",
-                          )}
-                          style={cardStyle}
-                          onClick={() => openSubagentModal(subagent.id)}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <div
-                                className="oc-agent-icon shrink-0"
-                                style={accentTextStyle}
-                              >
-                                {subagent.status === "running" ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : subagent.status === "error" ? (
-                                  <X className="h-3 w-3 text-oc-red" />
-                                ) : (
-                                  <Check className="h-3 w-3" />
-                                )}
-                              </div>
-                              <span className="truncate text-oc-xs font-semibold text-oc-text-soft">
-                                {modelInfo}
-                              </span>
-                            </div>
-                            <span className="font-medium text-oc-2xs oc-text-secondary">
-                              {formatDuration(subagent.durationMs ?? 0)}
-                            </span>
-                          </div>
-                          <div className="mt-1 flex min-w-0 items-center gap-1.5">
-                            <span className="text-[10px] font-medium oc-text-secondary">
-                              {statusText}
-                            </span>
-                          </div>
-                          {shouldShowActivity ? (
-                            <div className="mt-0.5 min-h-[14px] font-medium text-[10px] oc-text-secondary">
-                              <FadeSwapText
-                                text={activityText}
-                                className="block truncate"
-                                durationMs={220}
-                              />
-                            </div>
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                    {subagents.length > 10 ? (
-                      <button
-                        type="button"
-                        className="text-oc-2xs font-medium oc-readable-accent hover:underline"
-                        onClick={() => setShowAllSubagents((value) => !value)}
-                      >
-                        {showAllSubagents
-                          ? "Show less"
-                          : `Show all (${subagents.length})`}
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+          <SubagentsInlineCard
+            subagents={subagents}
+            subagentDetailsById={subagentDetailsById}
+            showSubagents={showSubagents}
+            setShowSubagents={setShowSubagents}
+            showAllSubagents={showAllSubagents}
+            setShowAllSubagents={setShowAllSubagents}
+            openSubagentModal={openSubagentModal}
+            subagentStatusCounts={subagentStatusCounts}
+          />
 
           {showResponseSection && (
             <section
@@ -4424,11 +4602,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           </div>
         )}
 
-        {isStreamingActive && !showResponseSection && hasStreamingActivity && (
+        {isStreamingActive &&
+          !showResponseSection &&
+          hasStreamingActivity &&
+          !showStreamingLoading && (
           <div className="mt-2 mb-2 px-1">
             <ThinkingStatusTicker className="oc-thinking-status" />
           </div>
-        )}
+          )}
         {/* Raw Data â€" moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (
           <details className="group mb-3">

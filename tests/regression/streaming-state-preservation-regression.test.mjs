@@ -67,14 +67,14 @@ test("messageResponse handler only clears streaming state for matching message I
   // Check that latestStreamingSnapshot is only cleared conditionally
   assert.match(
     messageHandlerSource,
-    /if\s*\(\s*isMatchingStreamingMessage/,
+    /if\s*\(\s*shouldClearStreamingAfterResponse\s*\)\s*\{[\s\S]*latestStreamingSnapshot = null/s,
     "messageResponse should only clear latestStreamingSnapshot conditionally",
   );
 
   // Ensure streaming teardown actions are also scoped to the same guard.
   assert.match(
     messageHandlerSource,
-    /if\s*\(\s*isMatchingStreamingMessage\s*\|\|\s*!currentStreaming\s*\)\s*\{[\s\S]*SET_STREAMING[\s\S]*SET_PROCESSING/s,
+    /if\s*\(\s*shouldClearStreamingAfterResponse\s*\)\s*\{[\s\S]*SET_STREAMING/s,
     "messageResponse should only clear streaming/processing inside the guarded block",
   );
 
@@ -138,36 +138,36 @@ test("messageResponse handler captures streaming state before dispatching SET_ME
 });
 
 test("chatHistory handler should not clear rendered messages during active-session processing updates", () => {
-  // TODO: Functionality was removed or refactored in source code
-  // The isActiveSessionHydrationDuringProcessing variable no longer exists
-  // Skipping assertions until functionality is restored
-  /*
   assert.match(
     messageHandlerSource,
-    /const isActiveSessionHydrationDuringProcessing =[\s\S]*currentState\.messages\.length > 0[\s\S]*currentState\.streaming/s,
-    "chatHistory should detect active in-flight hydration updates for the current session",
+    /function hasVisibleStreamingSnapshot\(/,
+    "message handler should define a visibility guard for populated streaming state",
   );
   assert.match(
     messageHandlerSource,
-    /const shouldPreserveRenderedTimeline =[\s\S]*isActiveSessionHydrationDuringProcessing[\s\S]*hasPendingInteractiveInActiveSession[\s\S]*isAmbiguousSessionHydrationWithRenderedTimeline/s,
-    "chatHistory should compute a preserve guard that covers active processing, interactive pauses, and ambiguous same-session hydration",
+    /const shouldPreserveActiveStreaming =[\s\S]*isSameActiveSessionHydration[\s\S]*currentStreamingSnapshot\?\.isActive === true[\s\S]*hasVisibleStreamingSnapshot\(currentStreamingSnapshot\)/s,
+    "chatHistory should preserve active same-session streaming snapshots during hydration",
   );
   assert.match(
     messageHandlerSource,
-    /if \(!shouldPreserveRenderedTimeline\) \{[\s\S]*SET_STREAMING[\s\S]*SET_PROCESSING/s,
-    "chatHistory should only reset stream/loading state when hydration is safe to apply",
+    /const shouldMergeFinishedStreamingSnapshot =[\s\S]*isSameActiveSessionHydration[\s\S]*currentStreamingSnapshot\?\.isActive === false[\s\S]*hasVisibleStreamingSnapshot\(currentStreamingSnapshot\)/s,
+    "chatHistory should detect finished local streaming snapshots that are not yet in persisted history",
   );
   assert.match(
     messageHandlerSource,
-    /if \(!shouldPreserveRenderedTimeline\) \{[\s\S]*SET_MESSAGES[\s\S]*\} else \{[\s\S]*stabilizedHydratedMessages = currentState\.messages;/s,
-    "chatHistory should preserve currently rendered messages instead of replacing with stale snapshots mid-stream",
+    /if \(!shouldPreserveActiveStreaming && !isSwitchingSession\) \{[\s\S]*SET_STREAMING[\s\S]*SET_PROCESSING/s,
+    "chatHistory should only reset stream/loading state on same-session hydration when safe to apply",
+  );
+  assert.match(
+    messageHandlerSource,
+    /shouldMergeFinishedStreamingSnapshot[\s\S]*mergeStreamingSnapshotIntoHistory\([\s\S]*stabilizedHydratedMessages[\s\S]*currentStreamingSnapshot/s,
+    "chatHistory should merge a finished local stream into stale hydrated history before rendering",
   );
   assert.doesNotMatch(
     messageHandlerSource,
     /case\s+"chatHistory"[\s\S]*dispatch\(\{\s*type:\s*"CLEAR_MESSAGES"\s*\}\)/s,
     "chatHistory should not hard-clear message list and cause render flicker",
   );
-  */
 });
 
 test("duplicate stream start events should not reset populated assistant streaming state", () => {

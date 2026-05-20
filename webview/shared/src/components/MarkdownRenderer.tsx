@@ -135,17 +135,15 @@ function injectFileIcons(container: HTMLElement): void {
           s.replace(/\./g, '-').replace(/\//g, '-').replace(/\+/g, 'p')
             .replace(/#/g, 'h').replace(/,/g, '');
 
-        // Clickable button.
-        // NOTE: display:inline-block + vertical-align:middle correctly places the
-        // button on the text midline without shifting surrounding text upward.
-        // display:inline-flex was the root cause of the previous alignment bug.
+        // Clickable button. Keep it wrap-friendly for narrow layouts.
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'md-file-path';
         btn.title = `Open ${filePath}`;
         btn.style.cssText =
-          'display:inline-block;vertical-align:middle;background:none;border:none;' +
-          'padding:0;cursor:pointer;font:inherit;white-space:nowrap;color:var(--oc-text-soft);' +
+          'display:inline-flex;align-items:center;vertical-align:middle;max-width:100%;' +
+          'background:none;border:none;padding:0;cursor:pointer;font:inherit;white-space:normal;' +
+          'word-break:break-word;overflow-wrap:anywhere;color:var(--oc-text-soft);' +
           'text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;';
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -168,7 +166,9 @@ function injectFileIcons(container: HTMLElement): void {
 
         const textEl = document.createElement('span');
         textEl.textContent = filePath;
-        textEl.style.cssText = `vertical-align:middle;color:${EXT_COLORS[ext] || 'var(--oc-text-soft)'};`;
+        textEl.style.cssText =
+          `min-width:0;vertical-align:middle;word-break:break-word;overflow-wrap:anywhere;` +
+          `color:${EXT_COLORS[ext] || 'var(--oc-text-soft)'};`;
 
         btn.appendChild(iconEl);
         btn.appendChild(textEl);

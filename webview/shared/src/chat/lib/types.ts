@@ -640,6 +640,8 @@ export interface AppState {
   /** ID of the session being loaded (null if not loading) */
   loadingSessionId: string | null;
   streaming: StreamingState | null;
+  /** Last known streaming snapshot by session, used when returning to active sessions. */
+  streamingBySessionId?: Record<string, StreamingState>;
   inputValue: string;
   fileSuggestions: FileResult[];
   showFileSuggestions: boolean;

@@ -884,7 +884,7 @@ export class StructuredOutputProcessor {
         return "❓ Question for you";
       }
       case "subagents":
-        return "🤖 Spawned subagents...";
+        return "🤖 Subagents...";
       case "error":
         return "⚠️ An error occurred";
       case "message":

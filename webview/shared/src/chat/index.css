@@ -1770,6 +1770,7 @@ body {
 .markdown-body table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
   margin: 0.75em 0;
   font-size: 0.9em;
 }
@@ -1779,12 +1780,28 @@ body {
   border: 1px solid var(--oc-border-soft);
   padding: 0.35em 0.7em;
   text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-body th {
   font-weight: 600;
   background: color-mix(in srgb, var(--oc-accent) 6%, transparent);
   color: var(--oc-text);
+}
+
+.markdown-body .md-file-path {
+  max-width: 100%;
+}
+
+.markdown-body .md-file-path .file-icon {
+  flex-shrink: 0;
+}
+
+.markdown-body .md-file-path > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-body hr {
@@ -2118,10 +2135,14 @@ body {
   cursor: pointer;
   transition: background 0.1s;
 }
-.oc-suggestion-item:hover,
-.oc-suggestion-item.active {
+.oc-suggestion-item:hover {
   background: var(--oc-accent-soft);
   color: var(--oc-accent);
+}
+.oc-suggestion-item.active {
+  background: var(--oc-accent-soft);
+  color: var(--oc-text);
+  font-weight: 500;
 }
 
 /* Bottom toolbar */
@@ -2339,6 +2360,8 @@ body {
 .oc-agent-option-selected {
   background: color-mix(in srgb, var(--oc-accent) 9%, var(--oc-panel-soft));
   border-color: color-mix(in srgb, var(--oc-accent) 24%, var(--oc-border));
+  color: var(--oc-text);
+  font-weight: 500;
 }
 
 .oc-agent-option-top {
@@ -3193,7 +3216,7 @@ body {
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--vscode-widget-border, var(--oc-border));
-  background: var(--vscode-list-hoverBackground, transparent);
+  background: transparent;
 }
 
 .oc-search-block-scope {
@@ -3236,9 +3259,9 @@ body {
 
 .oc-search-block-code {
   margin: 0;
-  padding: 8px;
+  padding: 7px 9px;
   overflow-x: hidden;
-  background: transparent;
+  background: var(--vscode-list-hoverBackground, transparent);
 }
 
 .oc-search-block-code code {
@@ -3257,6 +3280,10 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
 }
 
 /* Command code block styling */

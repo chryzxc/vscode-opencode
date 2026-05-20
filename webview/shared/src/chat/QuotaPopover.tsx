@@ -192,7 +192,10 @@ export function QuotaPopover() {
                       warning
                     </Badge>
                   ) : (
-                    <Badge variant="secondary" className="text-xs uppercase">
+                    <Badge
+                      variant="accent"
+                      className="text-[10px] uppercase tracking-wide"
+                    >
                       active
                     </Badge>
                   )}

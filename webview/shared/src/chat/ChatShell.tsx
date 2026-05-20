@@ -432,24 +432,21 @@ function ChatContent() {
     );
   }
 
-  // Show AI response loading indicator (thinking bubble) when:
-  // 1. AI is responding but no streaming yet, OR
-  // 2. Streaming but only have reasoning (no actual content yet)
-  const hasOnlyReasoning =
-    state.streaming &&
-    state.streaming.reasoning &&
-    state.streaming.reasoning.trim().length > 0 &&
-    (!state.streaming.content || state.streaming.content.trim().length === 0);
+  // Show AI response loading indicator until assistant text arrives. Activity
+  // streams can render tool/progress rows before text starts, so the response
+  // loading affordance should key off text presence instead of stream presence.
+  const hasAssistantText =
+    !!state.streaming?.content &&
+    state.streaming.content.trim().length > 0;
 
   // Show AI response loading indicator (thinking bubble) when:
   // 1. NOT switching sessions (session loading takes precedence), AND
-  // 2. AI is responding but no streaming yet, OR
-  // 3. Streaming but only have reasoning (no actual content yet)
+  // 2. AI is responding but no assistant text has arrived yet.
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
     isAiResponding && // Must still be processing (not stopped)
     !state.isCompacting &&
-    (!state.streaming || hasOnlyReasoning);
+    !hasAssistantText;
 
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
@@ -471,6 +468,33 @@ function ChatContent() {
     if (root) {
       root.scrollTop = root.scrollHeight;
     }
+  };
+
+  const getStableMessageKey = (msg: Message, absoluteIndex: number, role: string): string => {
+    const infoId =
+      typeof msg.info?.id === "string" && msg.info.id.trim().length > 0
+        ? msg.info.id
+        : null;
+    if (infoId) {
+      return infoId;
+    }
+
+    const topLevelId =
+      typeof msg.id === "string" && msg.id.trim().length > 0 ? msg.id : null;
+    if (topLevelId) {
+      return topLevelId;
+    }
+
+    const createdAt =
+      typeof msg.created === "number" && Number.isFinite(msg.created)
+        ? msg.created
+        : typeof msg.info?.created === "number" && Number.isFinite(msg.info.created)
+          ? msg.info.created
+          : null;
+
+    return createdAt !== null
+      ? `${role}:${createdAt}:${absoluteIndex}`
+      : `${role}:idx:${absoluteIndex}`;
   };
 
   return (
@@ -533,11 +557,7 @@ function ChatContent() {
           {visibleMessages.map((msg: Message, visibleIdx: number) => {
             const idx = visibleStartIndex + visibleIdx;
             const role = msg.role ?? msg.info?.role ?? "user";
-            const key =
-              msg.info?.id ??
-              `${idx}-${role}-${(msg.content ?? msg.text ?? "").slice(0, 32)}-${
-                msg.parts?.length ?? 0
-              }-${msg.steps?.length ?? 0}`;
+            const key = getStableMessageKey(msg, idx, role);
 
             const prevIdx = idx - 1;
             const prevMsg =

@@ -196,6 +196,29 @@ test('message.updated finish toggles streaming lifecycle correctly', () => {
   );
 });
 
+test('late terminal edit/tool activity does not reactivate a finished stream', () => {
+  const streamBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent(',
+  );
+
+  assert.match(
+    messageHandlerSource,
+    /function isTerminalProgressPart\(part: UnknownRecord, partType: string\): boolean \{[\s\S]*partType === "step-finish"[\s\S]*stateStatus === "done"[\s\S]*"result" in stateObj/s,
+    'message handler should identify completed edit/tool progress parts',
+  );
+  assert.match(
+    streamBody,
+    /const wasStreamInactiveAtPartStart = currentStreamingState\?\.isActive === false;[\s\S]*if \(wasStreamInactiveAtPartStart && isTerminalProgressPart\(part, partType\)\) \{[\s\S]*type: "SET_PROCESSING", payload: false[\s\S]*break;[\s\S]*\}[\s\S]*type:\s*'SET_PROCESSING', payload: true/s,
+    'late terminal edit/tool parts should keep processing false instead of reopening the inactive stream',
+  );
+  assert.match(
+    messageHandlerSource,
+    /function shouldBootstrapStreamingFromPart\(part: UnknownRecord \| null\): boolean \{[\s\S]*const partType = normalizePartType\(part\.type\);[\s\S]*if \(isTerminalProgressPart\(part, partType\)\) \{\s*return false;\s*\}/,
+    'idle terminal edit/tool parts should not bootstrap a new stream after finalization',
+  );
+});
+
 test('streamEventEnrich applies async diff stats to active streaming step', () => {
   const createHandlerBody = extractFunctionBody(
     messageHandlerSource,

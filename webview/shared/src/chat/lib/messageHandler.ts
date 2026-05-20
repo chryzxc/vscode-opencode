@@ -556,6 +556,24 @@ function normalizePartType(value: unknown): string {
   return raw;
 }
 
+function isTerminalProgressPart(part: UnknownRecord, partType: string): boolean {
+  // Terminal progress parts are activity snapshots, not proof that the model is
+  // still generating. Late edit/tool completions can arrive after the final text.
+  if (partType === "step-finish") {
+    return true;
+  }
+  const stateObj = asRecord(part.state);
+  const status = asString(part.status).toLowerCase();
+  const stateStatus = asString(stateObj?.status).toLowerCase();
+  return (
+    status === "done" ||
+    status === "error" ||
+    stateStatus === "done" ||
+    stateStatus === "error" ||
+    Boolean(stateObj && "result" in stateObj)
+  );
+}
+
 type StructuredProgressUpdate = {
   title: string;
   status?: 'pending' | 'done' | 'error';
@@ -2519,6 +2537,11 @@ function shouldBootstrapStreamingFromPart(part: UnknownRecord | null): boolean {
   }
 
   const partType = normalizePartType(part.type);
+  // Do not let a late completed edit/tool event create a fresh "AI is typing"
+  // stream after the final assistant message has already landed.
+  if (isTerminalProgressPart(part, partType)) {
+    return false;
+  }
   // Include text parts to bootstrap streaming for regular content chunks
   if (
     partType === "reasoning" ||
@@ -5998,6 +6021,37 @@ function buildStreamingMessage(streaming: StreamingState): Message {
   };
 }
 
+function hasVisibleStreamingSnapshot(streaming: StreamingState | null | undefined): streaming is StreamingState {
+  if (!streaming) {
+    return false;
+  }
+  return (
+    asString(streaming.content).trim().length > 0 ||
+    asString(streaming.reasoning).trim().length > 0 ||
+    (Array.isArray(streaming.reasoningEvents) && streaming.reasoningEvents.length > 0) ||
+    (Array.isArray(streaming.progressEvents) && streaming.progressEvents.length > 0) ||
+    (Array.isArray(streaming.steps) && streaming.steps.length > 0) ||
+    (Array.isArray(streaming.edits) && streaming.edits.length > 0) ||
+    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0)
+  );
+}
+
+function mergeStreamingSnapshotIntoHistory(
+  messages: Message[],
+  streaming: StreamingState,
+): Message[] {
+  const streamingMessage = buildStreamingMessage(streaming);
+  const streamingMessageId =
+    streaming.messageId ||
+    asString(asRecord(streamingMessage.info)?.id) ||
+    asString(streamingMessage.id) ||
+    null;
+
+  return replaceMatchingAssistantTurn(messages, streamingMessage, [
+    streamingMessageId,
+  ]);
+}
+
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -6183,6 +6237,10 @@ function handleStreamEvent(
       // Track if we're processing a reasoning part sequence
       const currentStreamingState = getState().streaming;
       const isInReasoningPart = currentStreamingState?.inReasoningPart || false;
+      // Preserve whether this event started from a finished snapshot. The reducer
+      // may reopen inactive streams on SET_PROCESSING(true), so terminal activity
+      // needs a final guard before the generic keep-processing dispatch below.
+      const wasStreamInactiveAtPartStart = currentStreamingState?.isActive === false;
 
       // Detect start of reasoning part sequence
       const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking';
@@ -6678,6 +6736,13 @@ function handleStreamEvent(
 
       if (hasBlockingInteractive) {
         dispatch({ type: "FINISH_STREAMING" });
+        dispatch({ type: "SET_PROCESSING", payload: false });
+        break;
+      }
+
+      // A completed edit/tool can be the last activity timeline item. Keep the
+      // timeline update, but do not revive the loading indicator afterward.
+      if (wasStreamInactiveAtPartStart && isTerminalProgressPart(part, partType)) {
         dispatch({ type: "SET_PROCESSING", payload: false });
         break;
       }
@@ -8331,6 +8396,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           }
           const isMatchingStreamingMessage =
             streamingMessageId && finalMessageId && streamingMessageId === finalMessageId;
+          // Only clear streaming state if this messageResponse matches the
+          // current stream, or if the final payload is authoritative enough to
+          // replace the local snapshot without losing visible assistant output.
           const shouldClearStreamingAfterResponse =
             isMatchingStreamingMessage ||
             !currentStreaming ||
@@ -8379,6 +8447,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const currentState = getState();
             const isSessionProcessing = !!(chatHistorySessionId &&
               currentState.processingSessionIds.includes(chatHistorySessionId));
+            const currentStreamingSnapshot = currentState.streaming;
+            const isSameActiveSessionHydration = !!(
+              chatHistorySessionId &&
+              currentState.currentSessionId === chatHistorySessionId
+            );
+            const shouldPreserveActiveStreaming =
+              isSameActiveSessionHydration &&
+              currentStreamingSnapshot?.isActive === true &&
+              hasVisibleStreamingSnapshot(currentStreamingSnapshot);
+            const shouldMergeFinishedStreamingSnapshot =
+              isSameActiveSessionHydration &&
+              currentStreamingSnapshot?.isActive === false &&
+              hasVisibleStreamingSnapshot(currentStreamingSnapshot);
             const cachedMessagesForSwitch =
               chatHistorySessionId
                 ? currentState.messagesBySessionId?.[chatHistorySessionId] ?? []
@@ -8408,18 +8489,25 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
             hydrationPresentationPolicy = {
               mode: "hydration",
-              sessionProcessing: isSessionProcessing,
+              sessionProcessing: isSessionProcessing || shouldPreserveActiveStreaming,
             };
 
-            latestStreamingSnapshot = null;
+            if (!shouldPreserveActiveStreaming) {
+              latestStreamingSnapshot = null;
+            }
 
-            // Clear any stale streaming state when history is loaded (extension open
-            // or session switch) so the UI starts clean. Preserve processing state
-            // if the session is currently being processed on the backend.
-            dispatch({ type: "SET_STREAMING", payload: null });
-            dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
-            dispatch({ type: "CLEAR_MESSAGES" });
-            const stabilizedHydratedMessages = dedupedSystemMessages.map((message) => {
+            // Same-session history refreshes can arrive just after streaming
+            // completes but before the final assistant message has persisted.
+            // Keep the locally rendered snapshot as authoritative for that turn
+            // so the assistant response cannot blink out of the timeline.
+            // During a session switch, SET_SESSION_ID is responsible for caching
+            // the old stream and restoring the target stream. Clearing here first
+            // would erase the old session's visible activity timeline.
+            if (!shouldPreserveActiveStreaming && !isSwitchingSession) {
+              dispatch({ type: "SET_STREAMING", payload: null });
+              dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
+            }
+            let stabilizedHydratedMessages = dedupedSystemMessages.map((message) => {
               if (!Array.isArray(message.subagents) || message.subagents.length === 0) {
                 return message;
               }
@@ -8438,6 +8526,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 ),
               };
             });
+            if (shouldMergeFinishedStreamingSnapshot && currentStreamingSnapshot) {
+              stabilizedHydratedMessages = mergeStreamingSnapshotIntoHistory(
+                stabilizedHydratedMessages,
+                currentStreamingSnapshot,
+              );
+            }
             canonicalMessages = stabilizedHydratedMessages;
             dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages });
           } catch (error) {
@@ -9074,7 +9168,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const currentState = getState();
             const currentMessages = currentState.messages || [];
             const updatedMessages = [...currentMessages];
-            
+
             // BUG FIX: If there is an inactive streaming message, flush it to messages
             // before appending the new user message. Otherwise, the queued user message appears
             // ABOVE the finished AI response (which would still be sitting in state.streaming).
@@ -9084,7 +9178,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               updatedMessages.push(flushedMessage);
               dispatch({ type: "SET_STREAMING", payload: null });
             }
-            
+
             const messageText = asString(message.content).trim();
             const lastMsg = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1] : null;
             const isDuplicateOptimistic = lastMsg &&

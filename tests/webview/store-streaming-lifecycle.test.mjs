@@ -39,7 +39,7 @@ test('global processing state action exists', () => {
 test('SET_STREAMING initializes streaming arrays and renderability defaults', () => {
   assert.match(
     storeSource,
-    /case "SET_STREAMING":\s*return action\.payload\s*\?\s*\{[\s\S]*hasRenderableContent: action\.payload\.hasRenderableContent \?\? false,[\s\S]*reasoningEvents: action\.payload\.reasoningEvents \?\? \[\],[\s\S]*progressEvents: action\.payload\.progressEvents \?\? \[\]/,
+    /case "SET_STREAMING":\s*\{[\s\S]*const streaming = action\.payload[\s\S]*hasRenderableContent: action\.payload\.hasRenderableContent \?\? false,[\s\S]*reasoningEvents: action\.payload\.reasoningEvents \?\? \[\],[\s\S]*progressEvents: action\.payload\.progressEvents \?\? \[\]/,
     'SET_STREAMING should normalize renderability and event arrays when bootstrapping state',
   );
 });
@@ -47,7 +47,7 @@ test('SET_STREAMING initializes streaming arrays and renderability defaults', ()
 test('SET_STREAMING stores the payload as the active streaming state', () => {
   assert.match(
     storeSource,
-    /case "SET_STREAMING":\s*return action\.payload\s*\?\s*\{[\s\S]*\.\.\.action\.payload/,
+    /case "SET_STREAMING":\s*\{[\s\S]*const streaming = action\.payload[\s\S]*\.\.\.action\.payload[\s\S]*streamingBySessionId:\s*cacheStreamingForSession/,
     'SET_STREAMING should preserve the server-provided streaming payload',
   );
 });
