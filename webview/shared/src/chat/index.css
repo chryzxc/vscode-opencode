@@ -3164,7 +3164,7 @@ body {
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--vscode-widget-border, var(--oc-border));
-  background: var(--vscode-list-hoverBackground, transparent);
+  background: transparent;
 }
 
 .oc-search-block-scope {
@@ -3207,9 +3207,9 @@ body {
 
 .oc-search-block-code {
   margin: 0;
-  padding: 8px;
+  padding: 7px 9px;
   overflow-x: hidden;
-  background: transparent;
+  background: var(--vscode-list-hoverBackground, transparent);
 }
 
 .oc-search-block-code code {
