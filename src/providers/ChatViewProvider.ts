@@ -4129,6 +4129,11 @@ export class ChatViewProvider
     agent?: string,
   ) {
     const workspaceDirectory = this.getWorkspaceDirectory();
+    const selectedProvider = this.firstNonEmptyString(
+      this.selectedModel.providerID,
+    );
+    const selectedModel = this.firstNonEmptyString(this.selectedModel.modelID);
+
     return client.session.command({
       path: { id: sessionID },
       query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
@@ -4136,7 +4141,8 @@ export class ChatViewProvider
         command: slashInvocation.command,
         arguments: slashInvocation.arguments,
         agent: agent || this.selectedAgent,
-        model: this.selectedModel.modelID,
+        ...(selectedProvider ? { provider: selectedProvider } : {}),
+        ...(selectedModel ? { model: selectedModel } : {}),
       },
     });
   }
