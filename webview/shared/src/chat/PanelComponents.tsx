@@ -487,9 +487,9 @@ function todoPriorityTone(priority?: TodoItem["priority"]) {
     case "medium":
       return "oc-quota-warning oc-quota-warning-bg oc-quota-warning-border";
     case "low":
-      return "text-[var(--oc-text-soft)] border-oc-border bg-oc-border/20";
+      return "text-[var(--oc-text-soft)] border-oc-border-soft bg-oc-panel-soft";
     default:
-      return "text-[var(--oc-text-soft)] border-oc-border bg-oc-border/20";
+      return "text-[var(--oc-text-soft)] border-oc-border-soft bg-oc-panel-soft";
   }
 }
 
@@ -777,7 +777,7 @@ export function ActiveTaskPanel() {
                         {todo.description ?? todo.text ?? "Untitled task"}
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                        <span className="rounded border border-oc-border bg-oc-border/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--oc-text-soft)]">
+                        <span className="rounded border border-oc-border-soft bg-oc-panel-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--oc-text-soft)]">
                           {todoStatusLabel(todo.status)}
                         </span>
                         {todo.priority ? (

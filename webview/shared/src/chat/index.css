@@ -2089,10 +2089,14 @@ body {
   cursor: pointer;
   transition: background 0.1s;
 }
-.oc-suggestion-item:hover,
-.oc-suggestion-item.active {
+.oc-suggestion-item:hover {
   background: var(--oc-accent-soft);
   color: var(--oc-accent);
+}
+.oc-suggestion-item.active {
+  background: var(--oc-accent-soft);
+  color: var(--oc-text);
+  font-weight: 500;
 }
 
 /* Bottom toolbar */
@@ -2310,6 +2314,8 @@ body {
 .oc-agent-option-selected {
   background: color-mix(in srgb, var(--oc-accent) 9%, var(--oc-panel-soft));
   border-color: color-mix(in srgb, var(--oc-accent) 24%, var(--oc-border));
+  color: var(--oc-text);
+  font-weight: 500;
 }
 
 .oc-agent-option-top {
