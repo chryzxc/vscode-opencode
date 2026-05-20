@@ -36,6 +36,49 @@ function isBackgroundTaskId(value: string | undefined): boolean {
 	return /^bg_[a-z0-9]+$/i.test(value.trim());
 }
 
+function isStopLike(value: string | undefined): boolean {
+	if (!value) return false;
+	const normalized = value.trim().toLowerCase();
+	return normalized === "stop" || normalized === "stopped";
+}
+
+function resolveDisplayStatus(detail: SubagentDetail): "pending" | "running" | "done" | "error" | "orphaned" {
+	const status = (detail.status || "running").toLowerCase();
+	if (status === "error" || status === "orphaned" || status === "pending") {
+		return status;
+	}
+
+	const timeline = Array.isArray(detail.timelineEvents) ? detail.timelineEvents : [];
+	const progress = Array.isArray(detail.progressEvents) ? detail.progressEvents : [];
+	const conversation = Array.isArray(detail.conversationEvents) ? detail.conversationEvents : [];
+
+	const latestTimeline = [...timeline].sort((a, b) => b.createdAt - a.createdAt)[0];
+	const latestProgress = [...progress].sort((a, b) => b.createdAt - a.createdAt)[0];
+	const latestConversation = [...conversation].sort((a, b) => b.createdAt - a.createdAt)[0];
+
+	// Terminal stop marker should count as completion in the modal.
+	const hasTerminalStop =
+		isStopLike(latestTimeline?.type) ||
+		isStopLike(latestTimeline?.label) ||
+		isStopLike(latestProgress?.title) ||
+		isStopLike(latestConversation?.kind);
+
+	if (hasTerminalStop) {
+		return "done";
+	}
+
+	// Guard against stale "done" status snapshots that have no terminal signal yet.
+	if (status === "done") {
+		const hasOtherTerminalEvidence =
+			typeof detail.endedAt === "number" ||
+			(typeof detail.durationMs === "number" && detail.durationMs > 0) ||
+			/\b(done|completed|finished|success)\b/i.test(detail.latestActivity || "");
+		return hasOtherTerminalEvidence ? "done" : "running";
+	}
+
+	return status === "running" ? "running" : "pending";
+}
+
 type SubagentDetailModalProps = {
 	isOpen: boolean;
 	title: string;
@@ -76,7 +119,7 @@ export function SubagentDetailModal({
 		setTimeout(() => setCopied(false), 2000);
 	};
 
-	const status = detail.status || "running";
+	const status = resolveDisplayStatus(detail);
 	const isDone = status === "done";
 	const isError = status === "error";
 	const backgroundTaskId = isBackgroundTaskId(detail.backgroundTaskId)
@@ -85,14 +128,25 @@ export function SubagentDetailModal({
 			? detail.id
 			: undefined;
 
+	const hasTerminalStopMarker = useMemo(() => {
+		const timeline = Array.isArray(detail.timelineEvents) ? detail.timelineEvents : [];
+		const progress = Array.isArray(detail.progressEvents) ? detail.progressEvents : [];
+		const conversation = Array.isArray(detail.conversationEvents) ? detail.conversationEvents : [];
+		return (
+			timeline.some((event) => isStopLike(event.type) || isStopLike(event.label)) ||
+			progress.some((event) => isStopLike(event.title)) ||
+			conversation.some((event) => isStopLike(event.kind))
+		);
+	}, [detail.timelineEvents, detail.progressEvents, detail.conversationEvents]);
+
 	// Filter and deduplicate conversation events for stepper display
 	const renderedConversation = useMemo(() => {
 		const source = Array.isArray(detail.conversationEvents)
 			? detail.conversationEvents
 			: [];
 
-		// Sort by creation time
-		const sorted = [...source].sort((a, b) => a.createdAt - b.createdAt);
+		// Show latest activity first so current progress stays at the top.
+		const sorted = [...source].sort((a, b) => b.createdAt - a.createdAt);
 
 		// Filter out non-assistant events, stop events, and empty text
 		const filtered = sorted.filter((event) => {
@@ -128,10 +182,13 @@ export function SubagentDetailModal({
 		return deduped;
 	}, [detail.conversationEvents]);
 
-	// Determine step status based on event kind and position
-	const getStepStatus = (index: number, total: number, kind?: string): 'pending' | 'done' | 'error' | 'running' => {
-		// Last step is "running" if subagent is still active
-		if (index === total - 1 && !isDone && !isError) return 'running';
+	const shouldShowLoadingTimelineStep =
+		!isError && !hasTerminalStopMarker && status !== "done";
+
+	// Determine step status based on event position in newest-first ordering.
+	const getStepStatus = (index: number): 'pending' | 'done' | 'error' | 'running' => {
+		// First visible item is the freshest event in newest-first mode.
+		if (index === 0 && shouldShowLoadingTimelineStep) return 'running';
 		return 'done';
 	};
 
@@ -236,14 +293,33 @@ export function SubagentDetailModal({
 						</span>
 					</div>
 
-					{renderedConversation.length > 0 ? (
+					{renderedConversation.length > 0 || shouldShowLoadingTimelineStep ? (
 						<Stepper
 							className="oc-refined-stepper max-h-[600px] overflow-y-auto pl-2"
-							autoScrollToBottom={!isDone && !isError}
+							autoScrollToBottom={false}
 						>
+							{shouldShowLoadingTimelineStep && (
+								<StepperItem
+									isLast={renderedConversation.length === 0}
+									indicator={<StepIndicator status="running" />}
+									className="oc-refined-stepper-item group"
+								>
+									<div className="flex min-w-0 flex-col items-start gap-2 w-full">
+										<div className="flex items-center gap-2 flex-wrap">
+											<span className="oc-refined-event-label">Step</span>
+											<span className="text-[10px] font-medium text-oc-text-soft">
+												Now
+											</span>
+										</div>
+										<div className="oc-refined-event-content text-[12px] text-oc-text-soft italic">
+											Waiting for next progress...
+										</div>
+									</div>
+								</StepperItem>
+							)}
 							{renderedConversation.map((event, index) => {
 								const isLast = index === renderedConversation.length - 1;
-								const stepStatus = getStepStatus(index, renderedConversation.length, event.kind);
+								const stepStatus = getStepStatus(index);
 								const stepLabel = getStepLabel(event.kind);
 
 								return (

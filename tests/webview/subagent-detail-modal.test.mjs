@@ -87,3 +87,27 @@ test('defines getStepStatus helper', () => {
     'SubagentDetailModal.tsx must define getStepStatus helper as a const function',
   );
 });
+
+test('resolves display status with terminal stop marker support', () => {
+  assert.match(
+    source,
+    /function resolveDisplayStatus\([\s\S]*hasTerminalStop[\s\S]*return "done"/,
+    'SubagentDetailModal.tsx should promote terminal stop markers to done status',
+  );
+});
+
+test('sorts rendered conversation newest-first', () => {
+  assert.match(
+    source,
+    /sort\(\(a,\s*b\)\s*=>\s*b\.createdAt\s*-\s*a\.createdAt\)/,
+    'SubagentDetailModal.tsx should sort conversation by createdAt descending',
+  );
+});
+
+test('shows loading timeline step while active without terminal stop', () => {
+  assert.match(
+    source,
+    /shouldShowLoadingTimelineStep[\s\S]*Waiting for next progress\.\.\./,
+    'SubagentDetailModal.tsx should render loading timeline row when stop marker has not arrived',
+  );
+});

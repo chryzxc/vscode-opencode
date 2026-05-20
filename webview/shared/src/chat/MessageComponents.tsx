@@ -3668,6 +3668,49 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     });
   }, [selectedSubagentId, subagents, subagentDetailsById]);
 
+  useEffect(() => {
+    if (!selectedSubagentId) {
+      return;
+    }
+    const selected = subagents.find((entry) => entry.id === selectedSubagentId);
+    if (!selected) {
+      return;
+    }
+    const detail =
+      (subagentDetailsById[selected.id] as SubagentDetail | undefined) ||
+      (selected as SubagentDetail);
+    const childSessionId = detail.childSessionId || selected.childSessionId;
+    const parentSessionId = detail.parentSessionId || selected.parentSessionId;
+    const parentMessageId = detail.parentMessageId || selected.parentMessageId;
+    if (!childSessionId || !parentSessionId || !parentMessageId) {
+      return;
+    }
+
+    const status = (detail.status || selected.status || "running").toLowerCase();
+    const isTerminal =
+      status === "done" || status === "error" || status === "orphaned";
+    if (isTerminal) {
+      return;
+    }
+
+    // Keep modal conversation/timeline fresh while an active subagent is running.
+    const intervalId = window.setInterval(() => {
+      vscode.postMessage({
+        type: "getSubagentConversation",
+        subagentId: selected.id,
+        childSessionId,
+        parentSessionId,
+        parentMessageId,
+        status: selected.status,
+        latestActivity: selected.latestActivity,
+      });
+    }, 1500);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [selectedSubagentId, subagents, subagentDetailsById]);
+
   const hasStreamingActivity = !!(
     streaming &&
     ((streaming.content && String(streaming.content).trim().length > 0) ||
