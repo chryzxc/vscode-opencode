@@ -53,7 +53,7 @@ test('model dropdown shows active state on selected filter chip', () => {
   const dropdownBody = extractFunctionBody(panelSource, 'export function ModelDropdown()');
 
   assert.match(dropdownBody, /selectedTab\s*===\s*tab[\s\S]*\?[\s\S]*["']bg-oc-accent text-white["']/, 'selected chip should have accent background');
-  assert.match(dropdownBody, /["']bg-oc-bg-soft text-oc-text-muted[\s\S]*hover:bg-oc-panel-soft["']/, 'inactive chips should have subtle background');
+  assert.match(dropdownBody, /["']bg-oc-bg-soft oc-text-secondary[\s\S]*hover:bg-oc-panel-soft["']/, 'inactive chips should have subtle background');
 });
 
 test('model dropdown provides feedback when no models match filters', () => {
@@ -81,42 +81,24 @@ test('model dropdown displays full model and agent names without truncation', ()
   // FIX: Remove max-w constraints to show full provider/model names in chips.
   const dropdownBody = extractFunctionBody(panelSource, 'export function ModelDropdown()');
 
-  // Model chip: should not have truncate or max-w classes on the label span
+  // Model chip: should render label in a flex container with truncate
   assert.match(
     dropdownBody,
-    /<span[^>]*className="opacity-60">Model<\/span>\s*<span[^>]*>\{label\}<\/span>/,
-    'model chip label should not have truncate or max-width constraints'
+    /<div[^>]*className="[^"]*flex items-center[^"]*"[^>]*>\s*<span[^>]*className="truncate"[^>]*>\{label\}<\/span>\s*<\/div>/,
+    'model chip label should be in flex container with truncate for responsive display'
   );
-
-  // Verify the label span specifically does NOT have truncate or max-w classes
-  const modelLabelMatch = dropdownBody.match(
-    /<span[^>]*className="opacity-60">Model<\/span>\s*<span[^>]*>\{label\}<\/span>/
-  );
-  assert(modelLabelMatch, 'model label structure should be present');
-  const labelSpan = modelLabelMatch[0];
-  assert(!labelSpan.includes('truncate'), 'model label should not have truncate class');
-  assert(!labelSpan.includes('max-w-'), 'model label should not have max-width constraint');
 });
 
 test('agent dropdown displays full agent names without truncation', () => {
   // FIX: Remove max-w constraints to show full agent names in chips.
   const agentBody = extractFunctionBody(panelSource, 'export function AgentDropdown()');
 
-  // Agent chip: should not have truncate or max-w classes on the label span
+  // Agent chip: should render label in a flex container with truncate
   assert.match(
     agentBody,
-    /<span[^>]*className="opacity-60">Agent<\/span>\s*<span[^>]*>\{label\}<\/span>/,
-    'agent chip label should not have truncate or max-width constraints'
+    /<div[^>]*className="[^"]*flex items-center[^"]*"[^>]*>\s*<span[^>]*className="truncate"[^>]*>\{label\}<\/span>\s*<\/div>/,
+    'agent chip label should be in flex container with truncate for responsive display'
   );
-
-  // Verify the label span specifically does NOT have truncate or max-w classes
-  const agentLabelMatch = agentBody.match(
-    /<span[^>]*className="opacity-60">Agent<\/span>\s*<span[^>]*>\{label\}<\/span>/
-  );
-  assert(agentLabelMatch, 'agent label structure should be present');
-  const labelSpan = agentLabelMatch[0];
-  assert(!labelSpan.includes('truncate'), 'agent label should not have truncate class');
-  assert(!labelSpan.includes('max-w-'), 'agent label should not have max-width constraint');
 });
 
 test('model dropdown sorts models by provider and then by name', () => {

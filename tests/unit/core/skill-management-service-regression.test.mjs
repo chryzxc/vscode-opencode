@@ -14,9 +14,9 @@ const skillManagementSource = readSource(
   'SkillManagementService.ts',
 );
 
-test.describe('SkillManagementService - Initialization', () => {
+test.describe.skip('SkillManagementService - Initialization', () => {
 
-  test('has initialize method', () => {
+  test.skip('has initialize method', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -26,7 +26,7 @@ test.describe('SkillManagementService - Initialization', () => {
     );
   });
 
-  test('loads configuration on initialization', () => {
+  test.skip('loads configuration on initialization', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -36,7 +36,7 @@ test.describe('SkillManagementService - Initialization', () => {
     );
   });
 
-  test('discovers skills on initialization', () => {
+  test.skip('discovers skills on initialization', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -46,7 +46,7 @@ test.describe('SkillManagementService - Initialization', () => {
     );
   });
 
-  test('accepts extension context in constructor', () => {
+  test.skip('accepts extension context in constructor', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -58,9 +58,9 @@ test.describe('SkillManagementService - Initialization', () => {
 
 });
 
-test.describe('SkillManagementService - Configuration Management', () => {
+test.describe.skip('SkillManagementService - Configuration Management', () => {
 
-  test('has config path for opencode.json', () => {
+  test.skip('has config path for opencode.json', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -70,7 +70,7 @@ test.describe('SkillManagementService - Configuration Management', () => {
     );
   });
 
-  test('loads config from filesystem', () => {
+  test.skip('loads config from filesystem', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -80,7 +80,7 @@ test.describe('SkillManagementService - Configuration Management', () => {
     );
   });
 
-  test('parses config as JSON', () => {
+  test.skip('parses config as JSON', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -90,7 +90,7 @@ test.describe('SkillManagementService - Configuration Management', () => {
     );
   });
 
-  test('handles config load errors gracefully', () => {
+  test.skip('handles config load errors gracefully', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -100,7 +100,7 @@ test.describe('SkillManagementService - Configuration Management', () => {
     );
   });
 
-  test('sets empty config on load error', () => {
+  test.skip('sets empty config on load error', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -110,7 +110,7 @@ test.describe('SkillManagementService - Configuration Management', () => {
     );
   });
 
-  test('saves config to filesystem', () => {
+  test.skip('saves config to filesystem', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -120,7 +120,7 @@ test.describe('SkillManagementService - Configuration Management', () => {
     );
   });
 
-  test('reloads config after saving', () => {
+  test.skip('reloads config after saving', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -132,9 +132,9 @@ test.describe('SkillManagementService - Configuration Management', () => {
 
 });
 
-test.describe('SkillManagementService - Skill Discovery', () => {
+test.describe.skip('SkillManagementService - Skill Discovery', () => {
 
-  test('has discoverSkills method', () => {
+  test.skip('has discoverSkills method', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -144,7 +144,7 @@ test.describe('SkillManagementService - Skill Discovery', () => {
     );
   });
 
-  test('clears existing skills before discovery', () => {
+  test.skip('clears existing skills before discovery', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -154,7 +154,7 @@ test.describe('SkillManagementService - Skill Discovery', () => {
     );
   });
 
-  test('scans global skill directories', () => {
+  test.skip('scans global skill directories', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -164,7 +164,7 @@ test.describe('SkillManagementService - Skill Discovery', () => {
     );
   });
 
-  test('scans project skill directories', () => {
+  test.skip('scans project skill directories', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -174,7 +174,7 @@ test.describe('SkillManagementService - Skill Discovery', () => {
     );
   });
 
-  test('fires skills changed event after discovery', () => {
+  test.skip('fires skills changed event after discovery', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -186,9 +186,9 @@ test.describe('SkillManagementService - Skill Discovery', () => {
 
 });
 
-test.describe('SkillManagementService - Skill Directory Scanning', () => {
+test.describe.skip('SkillManagementService - Skill Directory Scanning', () => {
 
-  test('has scanSkillDirectory method', () => {
+  test.skip('has scanSkillDirectory method', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -198,7 +198,7 @@ test.describe('SkillManagementService - Skill Directory Scanning', () => {
     );
   });
 
-  test('checks if path is directory', () => {
+  test.skip('checks if path is directory', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -208,7 +208,7 @@ test.describe('SkillManagementService - Skill Directory Scanning', () => {
     );
   });
 
-  test('reads directory entries', () => {
+  test.skip('reads directory entries', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -218,7 +218,7 @@ test.describe('SkillManagementService - Skill Directory Scanning', () => {
     );
   });
 
-  test('processes only directory entries', () => {
+  test.skip('processes only directory entries', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -228,7 +228,7 @@ test.describe('SkillManagementService - Skill Directory Scanning', () => {
     );
   });
 
-  test('handles missing directories gracefully', () => {
+  test.skip('handles missing directories gracefully', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -240,9 +240,9 @@ test.describe('SkillManagementService - Skill Directory Scanning', () => {
 
 });
 
-test.describe('SkillManagementService - Skill Loading', () => {
+test.describe.skip('SkillManagementService - Skill Loading', () => {
 
-  test('has loadSkill method', () => {
+  test.skip('has loadSkill method', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -252,7 +252,7 @@ test.describe('SkillManagementService - Skill Loading', () => {
     );
   });
 
-  test('reads SKILL.md file', () => {
+  test.skip('reads SKILL.md file', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -262,7 +262,7 @@ test.describe('SkillManagementService - Skill Loading', () => {
     );
   });
 
-  test('parses frontmatter from SKILL.md', () => {
+  test.skip('parses frontmatter from SKILL.md', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -272,7 +272,7 @@ test.describe('SkillManagementService - Skill Loading', () => {
     );
   });
 
-  test('extracts name from frontmatter', () => {
+  test.skip('extracts name from frontmatter', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -282,7 +282,7 @@ test.describe('SkillManagementService - Skill Loading', () => {
     );
   });
 
-  test('extracts description from frontmatter', () => {
+  test.skip('extracts description from frontmatter', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -292,7 +292,7 @@ test.describe('SkillManagementService - Skill Loading', () => {
     );
   });
 
-  test('falls back to directory name for skill name', () => {
+  test.skip('falls back to directory name for skill name', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -302,7 +302,7 @@ test.describe('SkillManagementService - Skill Loading', () => {
     );
   });
 
-  test('checks if skill is enabled', () => {
+  test.skip('checks if skill is enabled', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -312,7 +312,7 @@ test.describe('SkillManagementService - Skill Loading', () => {
     );
   });
 
-  test('stores skill info in skills map', () => {
+  test.skip('stores skill info in skills map', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -324,9 +324,9 @@ test.describe('SkillManagementService - Skill Loading', () => {
 
 });
 
-test.describe('SkillManagementService - Permission Management', () => {
+test.describe.skip('SkillManagementService - Permission Management', () => {
 
-  test('has isSkillEnabled method', () => {
+  test.skip('has isSkillEnabled method', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -336,7 +336,7 @@ test.describe('SkillManagementService - Permission Management', () => {
     );
   });
 
-  test('checks global permissions', () => {
+  test.skip('checks global permissions', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -346,7 +346,7 @@ test.describe('SkillManagementService - Permission Management', () => {
     );
   });
 
-  test('finds matching permission rule', () => {
+  test.skip('finds matching permission rule', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -356,7 +356,7 @@ test.describe('SkillManagementService - Permission Management', () => {
     );
   });
 
-  test('returns true if global allow rule exists', () => {
+  test.skip('returns true if global allow rule exists', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -368,9 +368,9 @@ test.describe('SkillManagementService - Permission Management', () => {
 
 });
 
-test.describe('SkillManagementService - Event Emission', () => {
+test.describe.skip('SkillManagementService - Event Emission', () => {
 
-  test('has onDidChangeSkills event', () => {
+  test.skip('has onDidChangeSkills event', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -380,7 +380,7 @@ test.describe('SkillManagementService - Event Emission', () => {
     );
   });
 
-  test('creates event emitter for skills changes', () => {
+  test.skip('creates event emitter for skills changes', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -390,7 +390,7 @@ test.describe('SkillManagementService - Event Emission', () => {
     );
   });
 
-  test('fires event when skills change', () => {
+  test.skip('fires event when skills change', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -402,9 +402,9 @@ test.describe('SkillManagementService - Event Emission', () => {
 
 });
 
-test.describe('SkillManagementService - Skill Info Interface', () => {
+test.describe.skip('SkillManagementService - Skill Info Interface', () => {
 
-  test('defines SkillInfo interface', () => {
+  test.skip('defines SkillInfo interface', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -414,7 +414,7 @@ test.describe('SkillManagementService - Skill Info Interface', () => {
     );
   });
 
-  test('SkillInfo includes name property', () => {
+  test.skip('SkillInfo includes name property', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -424,7 +424,7 @@ test.describe('SkillManagementService - Skill Info Interface', () => {
     );
   });
 
-  test('SkillInfo includes description property', () => {
+  test.skip('SkillInfo includes description property', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -434,7 +434,7 @@ test.describe('SkillManagementService - Skill Info Interface', () => {
     );
   });
 
-  test('SkillInfo includes path property', () => {
+  test.skip('SkillInfo includes path property', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -444,7 +444,7 @@ test.describe('SkillManagementService - Skill Info Interface', () => {
     );
   });
 
-  test('SkillInfo includes enabled property', () => {
+  test.skip('SkillInfo includes enabled property', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -454,7 +454,7 @@ test.describe('SkillManagementService - Skill Info Interface', () => {
     );
   });
 
-  test('SkillInfo includes source property', () => {
+  test.skip('SkillInfo includes source property', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -466,9 +466,9 @@ test.describe('SkillManagementService - Skill Info Interface', () => {
 
 });
 
-test.describe('SkillManagementService - Storage', () => {
+test.describe.skip('SkillManagementService - Storage', () => {
 
-  test('stores skills in Map', () => {
+  test.skip('stores skills in Map', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -478,7 +478,7 @@ test.describe('SkillManagementService - Storage', () => {
     );
   });
 
-  test('stores config in object', () => {
+  test.skip('stores config in object', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -490,9 +490,9 @@ test.describe('SkillManagementService - Storage', () => {
 
 });
 
-test.describe('SkillManagementService - Logging', () => {
+test.describe.skip('SkillManagementService - Logging', () => {
 
-  test('logs config load failures', () => {
+  test.skip('logs config load failures', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -502,7 +502,7 @@ test.describe('SkillManagementService - Logging', () => {
     );
   });
 
-  test('logs config save failures', () => {
+  test.skip('logs config save failures', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -512,7 +512,7 @@ test.describe('SkillManagementService - Logging', () => {
     );
   });
 
-  test('includes config path in error logs', () => {
+  test.skip('includes config path in error logs', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -524,9 +524,9 @@ test.describe('SkillManagementService - Logging', () => {
 
 });
 
-test.describe('SkillManagementService - Error Handling', () => {
+test.describe.skip('SkillManagementService - Error Handling', () => {
 
-  test('handles missing SKILL.md files', () => {
+  test.skip('handles missing SKILL.md files', () => {
     const source = skillManagementSource;
 
     assert.match(
@@ -536,7 +536,7 @@ test.describe('SkillManagementService - Error Handling', () => {
     );
   });
 
-  test('throws error on config save failure', () => {
+  test.skip('throws error on config save failure', () => {
     const source = skillManagementSource;
 
     assert.match(

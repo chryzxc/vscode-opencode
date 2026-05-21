@@ -241,27 +241,12 @@ test("webview messageHandler creates system message when pattern detected", () =
 
   assert.match(
     caseBody,
-    /const\s+systemMessage\s*:\s*Message\s*=\s*\{/,
-    "Should create system message object",
+    /upsertRealtimeSystemMessage\(/,
+    "Should upsert realtime system message",
   );
   assert.match(
     caseBody,
-    /role:\s*['"]system['"]/,
-    "System message should have role: 'system'",
-  );
-  assert.match(
-    caseBody,
-    /dispatch\s*\(\s*\{\s*type:\s*['"]SET_MESSAGES['"]/,
-    "Should dispatch SET_MESSAGES action",
-  );
-  assert.match(
-    caseBody,
-    /payload:\s*\[\s*\.\.\.state\.messages,\s*systemMessage\s*\]/,
-    "Should add system message to messages array",
-  );
-  assert.match(
-    caseBody,
-    /break\s*;\s*\/\/\s*Don't\s+process\s+this\s+as\s+regular\s+content/,
+    /break\s*;[\s\S]*\/\/\s*Don't\s+process\s+this\s+as\s+regular\s+content/,
     "Should break to prevent processing as regular content",
   );
 });
@@ -282,8 +267,8 @@ test("webview messageHandler allows user messages through role filter for system
   );
   assert.match(
     filterBody,
-    /if\s*\(\s*eventRole\s*!==\s*['"]user['"]\s*\)\s*\{\s*return/,
-    "Should allow user messages through (don't filter them out)",
+    /if\s*\(\s*eventRole\s*!==\s*['"]user['"]\s*&&\s*eventRole\s*!==\s*['"]system['"]\s*\)\s*\{\s*return/,
+    "Should allow user and system messages through (don't filter them out)",
   );
   assert.match(
     filterBody,

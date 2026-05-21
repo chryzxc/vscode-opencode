@@ -79,13 +79,13 @@ test('message.updated dispatches FINISH_STREAMING when finish is true', () => {
 
   assert.match(
     section,
-    /if\s*\(finish\)\s*\{\s*dispatch\(\s*\{\s*type:\s*['"]FINISH_STREAMING['"]\s*\}\s*\);\s*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*false\s*\}\s*\);/,
+    /if\s*\(finish\)\s*\{[\s\S]*dispatch\(\s*\{\s*type:\s*['"]FINISH_STREAMING['"]\s*\}\s*\)[\s\S]*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*false\s*\}\s*\)/,
     'finish=true should dispatch FINISH_STREAMING + SET_PROCESSING false',
   );
 
   assert.match(
     section,
-    /\}\s*else\s*\{\s*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*true\s*\}\s*\);/,
+    /\}\s*else\s*\{[\s\S]*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*true\s*\}\s*\)/,
     'finish=false should dispatch SET_PROCESSING true',
   );
 });
@@ -194,7 +194,7 @@ test('no module-level debounce timer variable', () => {
 test('FINISH_STREAMING preserves streaming content and sets isActive to false', () => {
   assert.match(
     storeSource,
-    /case\s+["']FINISH_STREAMING["']:\s*\{\s*if\s*\(!state\.streaming\)\s*\{\s*return\s+state;\s*\}\s*return\s*\{\s*\.\.\.state,\s*streaming:\s*\{\s*\.\.\.state\.streaming,\s*isActive:\s*false,/s,
+    /case\s+["']FINISH_STREAMING["']:\s*\{[\s\S]*if\s*\(!state\.streaming\)\s*\{[\s\S]*return\s+state;[\s\S]*\}[\s\S]*const\s+streaming\s*=\s*\{[\s\S]*\.\.\.state\.streaming,[\s\S]*isActive:\s*false,/s,
     'FINISH_STREAMING should preserve content and only set isActive=false',
   );
 });
@@ -206,7 +206,7 @@ test('FINISH_STREAMING preserves streaming content and sets isActive to false', 
 test('SET_STREAMING replaces the entire streaming state object', () => {
   assert.match(
     storeSource,
-    /case\s+["']SET_STREAMING["']:\s*return\s+action\.payload\s*\?\s*\{\s*\.\.\.state,\s*streaming:\s*\{\s*\.\.\.action\.payload/s,
+    /case\s+["']SET_STREAMING["']:\s*\{[\s\S]*const\s+streaming\s*=\s*action\.payload\s*\?[\s\S]*\.\.\.action\.payload,/s,
     'SET_STREAMING replaces streaming state with the payload',
   );
 });

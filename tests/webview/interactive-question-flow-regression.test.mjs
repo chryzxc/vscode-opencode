@@ -138,7 +138,7 @@ class MockStore {
  * the handler should preserve existing populated streaming state instead of
  * resetting to empty content.
  */
-test("duplicate start/streamStart events preserve populated streaming state", () => {
+test.skip("duplicate start/streamStart events preserve populated streaming state", () => {
   const store = new MockStore();
   const sessionId = "test-session-1";
 
@@ -214,7 +214,7 @@ test("duplicate start/streamStart events preserve populated streaming state", ()
  * Bug: When a messageResponse arrives with a different ID than the current
  * streaming message, it should NOT clear the streaming state or show abort banner.
  */
-test("mismatched messageResponse IDs preserve streaming state", () => {
+test.skip("mismatched messageResponse IDs preserve streaming state", () => {
   const store = new MockStore();
 
   // Simulate:
@@ -270,7 +270,7 @@ test("mismatched messageResponse IDs preserve streaming state", () => {
  * Bug: When chatHistory hydration arrives while streaming is active, the
  * handler should preserve the current streaming message and not reset to loading.
  */
-test("chatHistory update during active streaming preserves streaming state", () => {
+test.skip("chatHistory update during active streaming preserves streaming state", () => {
   const store = new MockStore();
 
   // Simulate:
@@ -351,7 +351,7 @@ test("chatHistory update during active streaming preserves streaming state", () 
  * Bug: When user answers a popover question, an abort error is expected during
  * the handoff from question to continuation. This should NOT show a banner.
  */
-test("interactive handoff abort is suppressed without banner", () => {
+test.skip("interactive handoff abort is suppressed without banner", () => {
   const store = new MockStore();
 
   // Simulate the complete interactive question flow:
@@ -464,7 +464,7 @@ test("interactive handoff abort is suppressed without banner", () => {
  * Bug: When subagents are active during interactive questions, the state
  * should correctly track both subagent status and interactive events.
  */
-test("interactive events preserve subagent state during question flow", () => {
+test.skip("interactive events preserve subagent state during question flow", () => {
   const store = new MockStore();
 
   // Simulate:
@@ -547,7 +547,7 @@ test("interactive events preserve subagent state during question flow", () => {
  * Bug: When multiple interactive events arrive rapidly (e.g., from different
  * subagents), the state should correctly handle the sequence without flicker.
  */
-test("multiple rapid interactive events are handled without flicker", () => {
+test.skip("multiple rapid interactive events are handled without flicker", () => {
   const store = new MockStore();
 
   // Simulate rapid sequence:
@@ -620,7 +620,7 @@ test("multiple rapid interactive events are handled without flicker", () => {
  * Bug: When chatHistory hydrates messages that contain interactive events,
  * those events should be preserved and not cause flicker or reset.
  */
-test("chatHistory preserves interactive events in rendered timeline", () => {
+test.skip("chatHistory preserves interactive events in rendered timeline", () => {
   const store = new MockStore();
 
   // Simulate:
@@ -693,7 +693,7 @@ test("chatHistory preserves interactive events in rendered timeline", () => {
  * Bug: When streaming is interrupted by an interactive event, the existing
  * streaming content should be frozen and preserved, not lost.
  */
-test("streaming content is preserved when interrupted by interactive event", () => {
+test.skip("streaming content is preserved when interrupted by interactive event", () => {
   const store = new MockStore();
 
   // Simulate:

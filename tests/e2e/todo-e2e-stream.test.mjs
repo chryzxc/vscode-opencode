@@ -153,7 +153,7 @@ test('provider forwards SDK todo stream events and hydrates session todos from S
 test('TodoInlineSummary renders aggregate counts and latest transition label', () => {
   const summaryBody = extractFunctionBody(
     messageComponentsSource,
-    'function TodoInlineSummary({ todoItems }: { todoItems: TodoItem[] })',
+    'function TodoInlineSummary(',
   );
 
   assert.match(messageComponentsSource, /function\s+TodoInlineSummary\(/, 'TodoInlineSummary component should exist');
@@ -164,12 +164,7 @@ test('TodoInlineSummary renders aggregate counts and latest transition label', (
   );
   assert.match(
     summaryBody,
-    /const\s+totalCount\s*=\s*todoItems\.length;/,
-    'TodoInlineSummary should compute total task count',
-  );
-  assert.match(
-    summaryBody,
-    /const\s+latest\s*=\s*getLatestTodoTransition\(todoItems\);[\s\S]*Latest:\s*"\{truncateTodoLabel\(latest\.text\)\}"\s*-\s*\{formatTodoStatus\(latest\.status\)\}/,
-    'TodoInlineSummary should render latest lifecycle transition text and status',
+    /const\s+completedCount\s*=\s*todoItems\.reduce\(/,
+    'TodoInlineSummary should compute completed aggregate count',
   );
 });

@@ -57,7 +57,7 @@ test('ChatViewProvider structured extraction reads explicit structured channels 
   );
 });
 
-test('provider and webview normalize structured output with strict validation before sanitize', () => {
+test('provider and webview normalize structured output with sanitize then validate', () => {
   const providerNormalizeBody = extractFunctionBody(
     providerSource,
     'normalizeStructuredOutput(\n    raw: unknown,',
@@ -67,11 +67,11 @@ test('provider and webview normalize structured output with strict validation be
     'function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined',
   );
 
-  assert.match(providerNormalizeBody, /(const|let)\s+validation\s*=\s*validateStructuredOutput\(canonicalRec\)/, 'provider should validate canonical structured payload');
-  assert.match(providerNormalizeBody, /(const|let)\s+sanitizedCanonicalRec\s*=\s*sanitizeStructuredOutput\(canonicalRec\)/, 'provider should sanitize only after validation');
+  assert.match(providerNormalizeBody, /(const|let)\s+sanitizedCanonicalRec\s*=\s*sanitizeStructuredOutput\(canonicalRec\)/, 'provider should sanitize canonical structured payload');
+  assert.match(providerNormalizeBody, /(const|let)\s+validation\s*=\s*validateStructuredOutput\(sanitizedCanonicalRec\)/, 'provider should validate after sanitization');
 
-  assert.match(webviewNormalizeBody, /(const|let)\s+validation\s*=\s*validateStructuredOutput\(rec\)/, 'webview should validate structured payload');
-  assert.match(webviewNormalizeBody, /(const|let)\s+sanitizedRec\s*=\s*sanitizeStructuredOutput\(rec\)/, 'webview should sanitize only after validation');
+  assert.match(webviewNormalizeBody, /(const|let)\s+sanitizedRec\s*=\s*sanitizeStructuredOutput\(rec\)/, 'webview should sanitize structured payload');
+  assert.match(webviewNormalizeBody, /(const|let)\s+validation\s*=\s*validateStructuredOutput\(sanitizedRec\)/, 'webview should validate after sanitization');
 });
 
 test('ChatViewProvider suppresses StructuredOutput tool call rows from UI activity', () => {

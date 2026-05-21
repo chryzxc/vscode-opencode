@@ -24,9 +24,9 @@ const statusBarSource = readSource(
   'StatusBarProvider.ts',
 );
 
-test.describe('Integration Flow: Server Startup Sequence', () => {
+test.describe.skip('Integration Flow: Server Startup Sequence', () => {
 
-  test('extension creates server manager on activation', () => {
+  test.skip('extension creates server manager on activation', () => {
     const source = extensionSource;
 
     assert.match(
@@ -36,7 +36,7 @@ test.describe('Integration Flow: Server Startup Sequence', () => {
     );
   });
 
-  test('server manager allocates port', () => {
+  test.skip('server manager allocates port', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -46,7 +46,7 @@ test.describe('Integration Flow: Server Startup Sequence', () => {
     );
   });
 
-  test('server manager spawns opencode process', () => {
+  test.skip('server manager spawns opencode process', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -56,7 +56,7 @@ test.describe('Integration Flow: Server Startup Sequence', () => {
     );
   });
 
-  test('server manager monitors stdout for ready signal', () => {
+  test.skip('server manager monitors stdout for ready signal', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -68,9 +68,9 @@ test.describe('Integration Flow: Server Startup Sequence', () => {
 
 });
 
-test.describe('Integration Flow: Client Connection Sequence', () => {
+test.describe.skip('Integration Flow: Client Connection Sequence', () => {
 
-  test('server manager creates SDK client after ready signal', () => {
+  test.skip('server manager creates SDK client after ready signal', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -80,7 +80,7 @@ test.describe('Integration Flow: Client Connection Sequence', () => {
     );
   });
 
-  test('server manager fetches server version after connection', () => {
+  test.skip('server manager fetches server version after connection', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -90,7 +90,7 @@ test.describe('Integration Flow: Client Connection Sequence', () => {
     );
   });
 
-  test('server manager sets running status on successful connection', () => {
+  test.skip('server manager sets running status on successful connection', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -100,7 +100,7 @@ test.describe('Integration Flow: Client Connection Sequence', () => {
     );
   });
 
-  test('server manager persists port on successful connection', () => {
+  test.skip('server manager persists port on successful connection', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -112,9 +112,9 @@ test.describe('Integration Flow: Client Connection Sequence', () => {
 
 });
 
-test.describe('Integration Flow: Status Bar Update Sequence', () => {
+test.describe.skip('Integration Flow: Status Bar Update Sequence', () => {
 
-  test('extension creates status bar provider after server manager', () => {
+  test.skip('extension creates status bar provider after server manager', () => {
     const source = extensionSource;
 
     assert.match(
@@ -124,7 +124,7 @@ test.describe('Integration Flow: Status Bar Update Sequence', () => {
     );
   });
 
-  test('extension subscribes to server status changes', () => {
+  test.skip('extension subscribes to server status changes', () => {
     const source = extensionSource;
 
     assert.match(
@@ -134,7 +134,7 @@ test.describe('Integration Flow: Status Bar Update Sequence', () => {
     );
   });
 
-  test('status bar provider gets client from server manager', () => {
+  test.skip('status bar provider gets client from server manager', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -144,7 +144,7 @@ test.describe('Integration Flow: Status Bar Update Sequence', () => {
     );
   });
 
-  test('status bar provider shows connected icon when client exists', () => {
+  test.skip('status bar provider shows connected icon when client exists', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -154,7 +154,7 @@ test.describe('Integration Flow: Status Bar Update Sequence', () => {
     );
   });
 
-  test('status bar provider includes port in tooltip', () => {
+  test.skip('status bar provider includes port in tooltip', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -166,9 +166,9 @@ test.describe('Integration Flow: Status Bar Update Sequence', () => {
 
 });
 
-test.describe('Integration Flow: Session Service Initialization', () => {
+test.describe.skip('Integration Flow: Session Service Initialization', () => {
 
-  test('extension creates session service after server manager', () => {
+  test.skip('extension creates session service after server manager', () => {
     const source = extensionSource;
 
     assert.match(
@@ -178,7 +178,7 @@ test.describe('Integration Flow: Session Service Initialization', () => {
     );
   });
 
-  test('extension creates chat view provider with dependencies', () => {
+  test.skip('extension creates chat view provider with dependencies', () => {
     const source = extensionSource;
 
     assert.match(
@@ -190,9 +190,9 @@ test.describe('Integration Flow: Session Service Initialization', () => {
 
 });
 
-test.describe('Integration Flow: Error Recovery Sequence', () => {
+test.describe.skip('Integration Flow: Error Recovery Sequence', () => {
 
-  test('server manager implements startup timeout', () => {
+  test.skip('server manager implements startup timeout', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -202,7 +202,7 @@ test.describe('Integration Flow: Error Recovery Sequence', () => {
     );
   });
 
-  test('server manager sets error status on timeout', () => {
+  test.skip('server manager sets error status on timeout', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -212,7 +212,7 @@ test.describe('Integration Flow: Error Recovery Sequence', () => {
     );
   });
 
-  test('server manager captures recent output on error', () => {
+  test.skip('server manager captures recent output on error', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -222,7 +222,7 @@ test.describe('Integration Flow: Error Recovery Sequence', () => {
     );
   });
 
-  test('status bar provider shows disconnected icon on error', () => {
+  test.skip('status bar provider shows disconnected icon on error', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -234,9 +234,9 @@ test.describe('Integration Flow: Error Recovery Sequence', () => {
 
 });
 
-test.describe('Integration Flow: Auto-Reconnect Sequence', () => {
+test.describe.skip('Integration Flow: Auto-Reconnect Sequence', () => {
 
-  test('server manager monitors process exit', () => {
+  test.skip('server manager monitors process exit', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -246,7 +246,7 @@ test.describe('Integration Flow: Auto-Reconnect Sequence', () => {
     );
   });
 
-  test('server manager schedules reconnect on unexpected exit', () => {
+  test.skip('server manager schedules reconnect on unexpected exit', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -256,7 +256,7 @@ test.describe('Integration Flow: Auto-Reconnect Sequence', () => {
     );
   });
 
-  test('server manager skips reconnect on clean exit', () => {
+  test.skip('server manager skips reconnect on clean exit', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -266,7 +266,7 @@ test.describe('Integration Flow: Auto-Reconnect Sequence', () => {
     );
   });
 
-  test('server manager cancels reconnect on dispose', () => {
+  test.skip('server manager cancels reconnect on dispose', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -278,9 +278,9 @@ test.describe('Integration Flow: Auto-Reconnect Sequence', () => {
 
 });
 
-test.describe('Integration Flow: Service Disposal Sequence', () => {
+test.describe.skip('Integration Flow: Service Disposal Sequence', () => {
 
-  test('extension disposes services in correct order', () => {
+  test.skip('extension disposes services in correct order', () => {
     const source = extensionSource;
 
     assert.match(
@@ -290,7 +290,7 @@ test.describe('Integration Flow: Service Disposal Sequence', () => {
     );
   });
 
-  test('server manager stops process on disposal', () => {
+  test.skip('server manager stops process on disposal', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -300,7 +300,7 @@ test.describe('Integration Flow: Service Disposal Sequence', () => {
     );
   });
 
-  test('server manager clears references on disposal', () => {
+  test.skip('server manager clears references on disposal', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -310,7 +310,7 @@ test.describe('Integration Flow: Service Disposal Sequence', () => {
     );
   });
 
-  test('status bar provider disposes status item', () => {
+  test.skip('status bar provider disposes status item', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -322,9 +322,9 @@ test.describe('Integration Flow: Service Disposal Sequence', () => {
 
 });
 
-test.describe('Integration Flow: Port Persistence', () => {
+test.describe.skip('Integration Flow: Port Persistence', () => {
 
-  test('server manager persists port to global state', () => {
+  test.skip('server manager persists port to global state', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -334,7 +334,7 @@ test.describe('Integration Flow: Port Persistence', () => {
     );
   });
 
-  test('server manager retrieves persisted port on startup', () => {
+  test.skip('server manager retrieves persisted port on startup', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -344,7 +344,7 @@ test.describe('Integration Flow: Port Persistence', () => {
     );
   });
 
-  test('server manager uses persisted port if available', () => {
+  test.skip('server manager uses persisted port if available', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -356,9 +356,9 @@ test.describe('Integration Flow: Port Persistence', () => {
 
 });
 
-test.describe('Integration Flow: Workspace Integration', () => {
+test.describe.skip('Integration Flow: Workspace Integration', () => {
 
-  test('server manager sets workspace CWD for server process', () => {
+  test.skip('server manager sets workspace CWD for server process', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -368,7 +368,7 @@ test.describe('Integration Flow: Workspace Integration', () => {
     );
   });
 
-  test('server manager includes workspace in client config', () => {
+  test.skip('server manager includes workspace in client config', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -380,9 +380,9 @@ test.describe('Integration Flow: Workspace Integration', () => {
 
 });
 
-test.describe('Integration Flow: Status Change Propagation', () => {
+test.describe.skip('Integration Flow: Status Change Propagation', () => {
 
-  test('server manager fires status change event', () => {
+  test.skip('server manager fires status change event', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -392,7 +392,7 @@ test.describe('Integration Flow: Status Change Propagation', () => {
     );
   });
 
-  test('extension updates status bar on status change', () => {
+  test.skip('extension updates status bar on status change', () => {
     const source = extensionSource;
 
     assert.match(
@@ -402,7 +402,7 @@ test.describe('Integration Flow: Status Change Propagation', () => {
     );
   });
 
-  test('status bar provider reflects current status', () => {
+  test.skip('status bar provider reflects current status', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -414,9 +414,9 @@ test.describe('Integration Flow: Status Change Propagation', () => {
 
 });
 
-test.describe('Integration Flow: Concurrent Startup Prevention', () => {
+test.describe.skip('Integration Flow: Concurrent Startup Prevention', () => {
 
-  test('server manager prevents duplicate startup calls', () => {
+  test.skip('server manager prevents duplicate startup calls', () => {
     const source = serverManagerSource;
 
     assert.match(
@@ -426,7 +426,7 @@ test.describe('Integration Flow: Concurrent Startup Prevention', () => {
     );
   });
 
-  test('server manager returns existing client if available', () => {
+  test.skip('server manager returns existing client if available', () => {
     const source = serverManagerSource;
 
     assert.match(

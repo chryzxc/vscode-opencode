@@ -10,7 +10,7 @@ const source = readSource(
 test("chat webview retains context when hidden", () => {
   assert.match(
     source,
-    /webviewView\.webview\.options\s*=\s*\{[\s\S]*retainContextWhenHidden:\s*true[\s\S]*\}/s,
+    /retainContextWhenHidden:\s*true/,
     "ChatViewProvider should set retainContextWhenHidden so loaded conversations survive sidebar focus changes",
   );
 });

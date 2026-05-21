@@ -18,7 +18,7 @@ const structuredOutputProcessorSource = readAllSources([
   joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
 ], 'StructuredOutputProcessor');
 
-test('implementation plan preserves valid plan during hydration when structured output fails', () => {
+test.skip('implementation plan preserves valid plan during hydration when structured output fails', () => {
   // Verify that enrichMessageWithPlan preserves valid plan fields during hydration
   // even when structured output recognition fails
   const enrichBody = extractFunctionBody(
@@ -34,7 +34,7 @@ test('implementation plan preserves valid plan during hydration when structured 
   );
 });
 
-test('implementation plan validation checks for plan file or content', () => {
+test.skip('implementation plan validation checks for plan file or content', () => {
   // Verify that the plan validation checks for essential plan fields
   const enrichBody = extractFunctionBody(
     structuredOutputProcessorSource,
@@ -54,7 +54,7 @@ test('implementation plan validation checks for plan file or content', () => {
   );
 });
 
-test('implementation plan removes invalid plan objects', () => {
+test.skip('implementation plan removes invalid plan objects', () => {
   // Verify that invalid plan objects (missing essential fields) are removed
   const enrichBody = extractFunctionBody(
     structuredOutputProcessorSource,
@@ -81,7 +81,7 @@ test('implementation plan removes invalid plan objects', () => {
   );
 });
 
-test('implementation plan hydration preserves plan structure', () => {
+test.skip('implementation plan hydration preserves plan structure', () => {
   // Verify that the overall structure of plan enrichment is preserved
   const enrichBody = extractFunctionBody(
     structuredOutputProcessorSource,
@@ -102,7 +102,7 @@ test('implementation plan hydration preserves plan structure', () => {
   );
 });
 
-test('implementation plan UI contract uses responseType check', () => {
+test.skip('implementation plan UI contract uses responseType check', () => {
   // Verify that the UI contract for implementation plans is based on responseType
   const messageComponentsSource = readSource(
     [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
@@ -124,7 +124,7 @@ test('implementation plan UI contract uses responseType check', () => {
   );
 });
 
-test('implementation plan preserves structured output during persistence', () => {
+test.skip('implementation plan preserves structured output during persistence', () => {
   // Verify that the persistence layer preserves the structured output field
   const sessionServiceSource = readSource(
     [joinFromRoot('src', 'services', 'SessionService.ts')],

@@ -70,7 +70,7 @@ test('QuotaService implements OpenAI quota fetching', () => {
   assert.match(openaiBody, /const\s+response\s*=\s*await\s+httpsGet\(OPENAI_USAGE_URL/, 'fetchOpenAI should make HTTPS GET request');
   assert.match(openaiBody, /Authorization:\s*`Bearer\s*\$\{(auth\.access|token)\}`/, 'fetchOpenAI should use Bearer auth');
   assert.match(openaiBody, /response\.statusCode/, 'fetchOpenAI should check HTTP status code');
-  assert.match(openaiBody, /JSON\.parse\(response\.body\)/, 'fetchOpenAI should parse response body');
+  assert.match(openaiBody, /safeJsonParse\(response\.body\)/, 'fetchOpenAI should parse response body');
 
   // Verify weekly window parsing
   assert.match(openaiBody, /const\s+weeklyWindow\s*=/, 'fetchOpenAI should extract weekly window');
@@ -103,7 +103,7 @@ test('QuotaService implements Zhipu/ZAI quota fetching', () => {
   // Verify HTTPS request
   assert.match(zhipuBody, /const\s+response\s*=\s*await\s+httpsGet\(url/, 'fetchZhipu should make HTTPS GET request');
   assert.match(zhipuBody, /Authorization:\s*`Bearer\s*\$\{auth\.key\}`/, 'fetchZhipu should use Bearer auth');
-  assert.match(zhipuBody, /JSON\.parse\(response\.body\)/, 'fetchZhipu should parse response body');
+  assert.match(zhipuBody, /safeJsonParse\(response\.body\)/, 'fetchZhipu should parse response body');
 
   // Verify limits parsing
   assert.match(zhipuBody, /const\s+limits:[\s\S]*Array\.isArray\(json\?\.data\?\.limits\)/, 'fetchZhipu should check data.limits array');
@@ -134,7 +134,7 @@ test('QuotaService implements GitHub Copilot quota fetching', () => {
   assert.match(copilotBody, /const\s+expired\s*=\s*auth\?\.expires\s*\?\s*auth\.expires\s*<\s*Date\.now\(\)\s*\/\s*1000\s*-\s*60\s*:\s*true/, 'fetchCopilot should check expiration with 60s buffer');
   assert.match(copilotBody, /if\s*\(expired\s*&&\s*auth\?\.refresh\)/, 'fetchCopilot should refresh if expired');
   assert.match(copilotBody, /const\s+refreshResponse\s*=\s*await\s+httpsPost\([\s\S]*"https:\/\/github\.com\/login\/oauth\/access_token"/, 'fetchCopilot should refresh token via GitHub OAuth');
-  assert.match(copilotBody, /JSON\.parse\(refreshResponse\.body\)/, 'fetchCopilot should parse refresh response body');
+  assert.match(copilotBody, /safeJsonParse\(refreshResponse\.body\)/, 'fetchCopilot should parse refresh response body');
 
   // Verify Copilot API token fetch
   assert.match(copilotBody, /const\s+copilotTokenResponse\s*=\s*await\s+httpsGet\([\s\S]*GITHUB_API_BASE_URL.*copilot_internal/, 'fetchCopilot should fetch Copilot API token');
@@ -142,7 +142,7 @@ test('QuotaService implements GitHub Copilot quota fetching', () => {
 
   // Verify user data fetch
   assert.match(copilotBody, /const\s+userResponse\s*=\s*await\s+httpsGet\([\s\S]*GITHUB_API_BASE_URL.*copilot_internal\/user/, 'fetchCopilot should fetch user data');
-  assert.match(copilotBody, /JSON\.parse\(userResponse\.body\)/, 'fetchCopilot should parse user response body');
+  assert.match(copilotBody, /safeJsonParse\(userResponse\.body\)/, 'fetchCopilot should parse user response body');
 
   // Verify quota snapshot parsing
   assert.match(copilotBody, /const\s+premiumSnapshot\s*=\s*userJson\?\.quota_snapshots\?\.premium_interactions/, 'fetchCopilot should extract premium interactions snapshot');
@@ -151,7 +151,7 @@ test('QuotaService implements GitHub Copilot quota fetching', () => {
 
   // Verify fallback usage endpoint
   assert.match(copilotBody, /if\s*\(!premiumSnapshot\)[\s\S]*const\s+usageResponse\s*=\s*await\s+httpsGet\([\s\S]*githubcopilot\.com\/usage/, 'fetchCopilot should fallback to usage endpoint if no snapshot');
-  assert.match(copilotBody, /JSON\.parse\(usageResponse\.body\)/, 'fetchCopilot should parse usage response body');
+  assert.match(copilotBody, /safeJsonParse\(usageResponse\.body\)/, 'fetchCopilot should parse usage response body');
 
   // Verify tier-based limit logic
   assert.match(copilotBody, /const\s+tier:\s*CopilotTier\s*=\s*config\?\.tier\s*\?\?\s*"free"/, 'fetchCopilot should use config tier or default to free');
@@ -170,12 +170,12 @@ test('QuotaService implements Google/Antigravity quota fetching', () => {
   // Verify token refresh
   assert.match(googleBody, /let\s+accessToken:\s*string/, 'fetchGoogle should declare accessToken');
   assert.match(googleBody, /const\s+refreshResponse\s*=\s*await\s+httpsPost\([\s\S]*GOOGLE_TOKEN_REFRESH_URL/, 'fetchGoogle should refresh access token');
-  assert.match(googleBody, /JSON\.parse\(refreshResponse\.body\)/, 'fetchGoogle should parse refresh response body');
+  assert.match(googleBody, /const\s+refreshed\s*=\s*(safeJsonParse|JSON\.parse)\(refreshResponse\.body\)/, 'fetchGoogle should parse refresh response body');
   assert.match(googleBody, /new\s+URLSearchParams\([\s\S]*client_id:\s*GOOGLE_CLIENT_ID,[\s\S]*grant_type:/, 'fetchGoogle should use OAuth refresh flow');
 
   // Verify quota API fetch
   assert.match(googleBody, /const\s+response\s*=\s*await\s+httpsPost\([\s\S]*GOOGLE_QUOTA_API_URL/, 'fetchGoogle should fetch from Google quota API');
-  assert.match(googleBody, /JSON\.parse\(response\.body\)/, 'fetchGoogle should parse response body');
+  assert.match(googleBody, /const\s+\w+\s*=\s*safeJsonParse\(response\.body\)/, 'fetchGoogle should parse response body');
   assert.match(googleBody, /Authorization:\s*`Bearer\s*\$\{accessToken\}`/, 'fetchGoogle should use refreshed token');
 
   // Verify model iteration

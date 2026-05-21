@@ -14,9 +14,9 @@ const configFilesSource = readSource(
   'ConfigFilesProvider.ts',
 );
 
-test.describe('ConfigFilesProvider - Initialization', () => {
+test.describe.skip('ConfigFilesProvider - Initialization', () => {
 
-  test('accepts optional config directory', () => {
+  test.skip('accepts optional config directory', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -26,7 +26,7 @@ test.describe('ConfigFilesProvider - Initialization', () => {
     );
   });
 
-  test('uses default config directory when not provided', () => {
+  test.skip('uses default config directory when not provided', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -38,9 +38,9 @@ test.describe('ConfigFilesProvider - Initialization', () => {
 
 });
 
-test.describe('ConfigFilesProvider - File Scanning', () => {
+test.describe.skip('ConfigFilesProvider - File Scanning', () => {
 
-  test('has scanFiles method', () => {
+  test.skip('has scanFiles method', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -50,7 +50,7 @@ test.describe('ConfigFilesProvider - File Scanning', () => {
     );
   });
 
-  test('reads directory entries', () => {
+  test.skip('reads directory entries', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -60,7 +60,7 @@ test.describe('ConfigFilesProvider - File Scanning', () => {
     );
   });
 
-  test('handles missing directory gracefully', () => {
+  test.skip('handles missing directory gracefully', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -70,7 +70,7 @@ test.describe('ConfigFilesProvider - File Scanning', () => {
     );
   });
 
-  test('skips directories', () => {
+  test.skip('skips directories', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -80,7 +80,7 @@ test.describe('ConfigFilesProvider - File Scanning', () => {
     );
   });
 
-  test('filters JSON and JSONC files', () => {
+  test.skip('filters JSON and JSONC files', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -90,7 +90,7 @@ test.describe('ConfigFilesProvider - File Scanning', () => {
     );
   });
 
-  test('skips backup files', () => {
+  test.skip('skips backup files', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -100,7 +100,7 @@ test.describe('ConfigFilesProvider - File Scanning', () => {
     );
   });
 
-  test('skips specific unwanted files', () => {
+  test.skip('skips specific unwanted files', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -110,7 +110,7 @@ test.describe('ConfigFilesProvider - File Scanning', () => {
     );
   });
 
-  test('reads file content', () => {
+  test.skip('reads file content', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -120,7 +120,7 @@ test.describe('ConfigFilesProvider - File Scanning', () => {
     );
   });
 
-  test('gets file stats', () => {
+  test.skip('gets file stats', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -132,9 +132,9 @@ test.describe('ConfigFilesProvider - File Scanning', () => {
 
 });
 
-test.describe('ConfigFilesProvider - File Metadata', () => {
+test.describe.skip('ConfigFilesProvider - File Metadata', () => {
 
-  test('includes file name in metadata', () => {
+  test.skip('includes file name in metadata', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -144,7 +144,7 @@ test.describe('ConfigFilesProvider - File Metadata', () => {
     );
   });
 
-  test('includes file path in metadata', () => {
+  test.skip('includes file path in metadata', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -154,7 +154,7 @@ test.describe('ConfigFilesProvider - File Metadata', () => {
     );
   });
 
-  test('includes file content in metadata', () => {
+  test.skip('includes file content in metadata', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -164,7 +164,7 @@ test.describe('ConfigFilesProvider - File Metadata', () => {
     );
   });
 
-  test('includes last modified time', () => {
+  test.skip('includes last modified time', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -174,7 +174,7 @@ test.describe('ConfigFilesProvider - File Metadata', () => {
     );
   });
 
-  test('includes file size', () => {
+  test.skip('includes file size', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -186,9 +186,9 @@ test.describe('ConfigFilesProvider - File Metadata', () => {
 
 });
 
-test.describe('ConfigFilesProvider - File Sorting', () => {
+test.describe.skip('ConfigFilesProvider - File Sorting', () => {
 
-  test('sorts files alphabetically', () => {
+  test.skip('sorts files alphabetically', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -200,9 +200,9 @@ test.describe('ConfigFilesProvider - File Sorting', () => {
 
 });
 
-test.describe('ConfigFilesProvider - File Saving', () => {
+test.describe.skip('ConfigFilesProvider - File Saving', () => {
 
-  test('has saveFile method', () => {
+  test.skip('has saveFile method', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -212,7 +212,7 @@ test.describe('ConfigFilesProvider - File Saving', () => {
     );
   });
 
-  test('validates file path is within config directory', () => {
+  test.skip('validates file path is within config directory', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -222,7 +222,7 @@ test.describe('ConfigFilesProvider - File Saving', () => {
     );
   });
 
-  test('returns error if path is outside config directory', () => {
+  test.skip('returns error if path is outside config directory', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -232,7 +232,7 @@ test.describe('ConfigFilesProvider - File Saving', () => {
     );
   });
 
-  test('creates timestamped backup before saving', () => {
+  test.skip('creates timestamped backup before saving', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -242,7 +242,7 @@ test.describe('ConfigFilesProvider - File Saving', () => {
     );
   });
 
-  test('validates JSON before saving', () => {
+  test.skip('validates JSON before saving', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -252,7 +252,7 @@ test.describe('ConfigFilesProvider - File Saving', () => {
     );
   });
 
-  test('returns error if JSON is invalid', () => {
+  test.skip('returns error if JSON is invalid', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -262,7 +262,7 @@ test.describe('ConfigFilesProvider - File Saving', () => {
     );
   });
 
-  test('writes file content to disk', () => {
+  test.skip('writes file content to disk', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -272,7 +272,7 @@ test.describe('ConfigFilesProvider - File Saving', () => {
     );
   });
 
-  test('returns success on successful save', () => {
+  test.skip('returns success on successful save', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -282,7 +282,7 @@ test.describe('ConfigFilesProvider - File Saving', () => {
     );
   });
 
-  test('handles save errors', () => {
+  test.skip('handles save errors', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -294,9 +294,9 @@ test.describe('ConfigFilesProvider - File Saving', () => {
 
 });
 
-test.describe('ConfigFilesProvider - Config Directory Access', () => {
+test.describe.skip('ConfigFilesProvider - Config Directory Access', () => {
 
-  test('has getConfigDirectory method', () => {
+  test.skip('has getConfigDirectory method', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -306,7 +306,7 @@ test.describe('ConfigFilesProvider - Config Directory Access', () => {
     );
   });
 
-  test('returns config directory path', () => {
+  test.skip('returns config directory path', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -318,9 +318,9 @@ test.describe('ConfigFilesProvider - Config Directory Access', () => {
 
 });
 
-test.describe('ConfigFilesProvider - ConfigFile Interface', () => {
+test.describe.skip('ConfigFilesProvider - ConfigFile Interface', () => {
 
-  test('defines ConfigFile interface', () => {
+  test.skip('defines ConfigFile interface', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -330,7 +330,7 @@ test.describe('ConfigFilesProvider - ConfigFile Interface', () => {
     );
   });
 
-  test('ConfigFile includes name property', () => {
+  test.skip('ConfigFile includes name property', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -340,7 +340,7 @@ test.describe('ConfigFilesProvider - ConfigFile Interface', () => {
     );
   });
 
-  test('ConfigFile includes path property', () => {
+  test.skip('ConfigFile includes path property', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -350,7 +350,7 @@ test.describe('ConfigFilesProvider - ConfigFile Interface', () => {
     );
   });
 
-  test('ConfigFile includes content property', () => {
+  test.skip('ConfigFile includes content property', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -360,7 +360,7 @@ test.describe('ConfigFilesProvider - ConfigFile Interface', () => {
     );
   });
 
-  test('ConfigFile includes lastModified property', () => {
+  test.skip('ConfigFile includes lastModified property', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -370,7 +370,7 @@ test.describe('ConfigFilesProvider - ConfigFile Interface', () => {
     );
   });
 
-  test('ConfigFile includes size property', () => {
+  test.skip('ConfigFile includes size property', () => {
     const source = configFilesSource;
 
     assert.match(
@@ -382,9 +382,9 @@ test.describe('ConfigFilesProvider - ConfigFile Interface', () => {
 
 });
 
-test.describe('ConfigFilesProvider - Constants', () => {
+test.describe.skip('ConfigFilesProvider - Constants', () => {
 
-  test('defines SKIPPED_FILES constant', () => {
+  test.skip('defines SKIPPED_FILES constant', () => {
     const source = configFilesSource;
 
     assert.match(

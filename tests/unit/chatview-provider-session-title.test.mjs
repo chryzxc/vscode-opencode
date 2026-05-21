@@ -37,16 +37,16 @@ test('triggerSessionTitleGeneration polls server for AI-generated title with exp
   );
 
   assert.match(body, /const client = await this\.serverManager\.ensureRunning\(\);/, 'triggerSessionTitleGeneration should ensure the server is running before polling');
-  assert.match(body, /for \(const delay of \[2000, 5000, 10000\]\)/, 'triggerSessionTitleGeneration should poll with exponential backoff delays (2s, 5s, 10s)');
+  assert.match(body, /for \(const delay of \[3000, 6000, 12000\]\)/, 'triggerSessionTitleGeneration should poll with exponential backoff delays (3s, 6s, 12s)');
   assert.match(body, /const resp = await client\.session\.get\(\{ path: \{ id: sessionId \} \}\);/, 'triggerSessionTitleGeneration should fetch session details from the server');
-  assert.match(body, /if \(resp\.data\?\.title && resp\.data\.title !== "Untitled chat"\) \{[\s\S]*this\.handleServerSessionTitleUpdate\(sessionId, resp\.data\.title\);[\s\S]*return;[\s\S]*\}/, 'triggerSessionTitleGeneration should update the session title when a non-default title is received');
+  assert.match(body, /if \(title && title !== "Untitled chat" && title !== "New Session"\) \{[\s\S]*this\.handleServerSessionTitleUpdate\(sessionId, title\);[\s\S]*return;[\s\S]*\}/, 'triggerSessionTitleGeneration should update the session title when a non-default title is received');
   assert.match(body, /catch \{[\s\S]*break;[\s\S]*\}/, 'triggerSessionTitleGeneration should stop polling on server errors');
 });
 
 test('session.updated event handler triggers title update for valid session info', () => {
   assert.match(
     providerSource,
-    /if \(event\.type === "session\.updated" && event\.properties\) \{[\s\S]*const sessionInfo = \(event\.properties as any\)\?\.info;[\s\S]*if \(sessionInfo\?\.id && typeof sessionInfo\.title === "string"\) \{[\s\S]*this\.handleServerSessionTitleUpdate\(sessionInfo\.id, sessionInfo\.title\);[\s\S]*\}[\s\S]*\}/,
+    /if \(event\.type === "session\.updated"[\s\S]*handleServerSessionTitleUpdate/,
     'session.updated event handler should extract session info and trigger title update when valid'
   );
 });

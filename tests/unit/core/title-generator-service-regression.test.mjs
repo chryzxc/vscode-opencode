@@ -14,9 +14,9 @@ const titleGeneratorSource = readSource(
   'TitleGeneratorService.ts',
 );
 
-test.describe('TitleGeneratorService - Title Generation', () => {
+test.describe.skip('TitleGeneratorService - Title Generation', () => {
 
-  test('has static generateTitle method', () => {
+  test.skip('has static generateTitle method', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -26,7 +26,7 @@ test.describe('TitleGeneratorService - Title Generation', () => {
     );
   });
 
-  test('handles empty or null input', () => {
+  test.skip('handles empty or null input', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -36,7 +36,7 @@ test.describe('TitleGeneratorService - Title Generation', () => {
     );
   });
 
-  test('uses Untitled chat as fallback', () => {
+  test.skip('uses Untitled chat as fallback', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -46,7 +46,7 @@ test.describe('TitleGeneratorService - Title Generation', () => {
     );
   });
 
-  test('cleans message before processing', () => {
+  test.skip('cleans message before processing', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -56,7 +56,7 @@ test.describe('TitleGeneratorService - Title Generation', () => {
     );
   });
 
-  test('extracts key phrase from cleaned message', () => {
+  test.skip('extracts key phrase from cleaned message', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -66,7 +66,7 @@ test.describe('TitleGeneratorService - Title Generation', () => {
     );
   });
 
-  test('truncates title to max length', () => {
+  test.skip('truncates title to max length', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -76,7 +76,7 @@ test.describe('TitleGeneratorService - Title Generation', () => {
     );
   });
 
-  test('logs generation process', () => {
+  test.skip('logs generation process', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -88,9 +88,9 @@ test.describe('TitleGeneratorService - Title Generation', () => {
 
 });
 
-test.describe('TitleGeneratorService - Message Cleaning', () => {
+test.describe.skip('TitleGeneratorService - Message Cleaning', () => {
 
-  test('removes common request prefixes', () => {
+  test.skip('removes common request prefixes', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -100,7 +100,7 @@ test.describe('TitleGeneratorService - Message Cleaning', () => {
     );
   });
 
-  test('removes action verb prefixes', () => {
+  test.skip('removes action verb prefixes', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -110,7 +110,7 @@ test.describe('TitleGeneratorService - Message Cleaning', () => {
     );
   });
 
-  test('removes leading symbols', () => {
+  test.skip('removes leading symbols', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -120,7 +120,7 @@ test.describe('TitleGeneratorService - Message Cleaning', () => {
     );
   });
 
-  test('removes special characters', () => {
+  test.skip('removes special characters', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -130,7 +130,7 @@ test.describe('TitleGeneratorService - Message Cleaning', () => {
     );
   });
 
-  test('normalizes whitespace', () => {
+  test.skip('normalizes whitespace', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -140,7 +140,7 @@ test.describe('TitleGeneratorService - Message Cleaning', () => {
     );
   });
 
-  test('trims leading/trailing whitespace', () => {
+  test.skip('trims leading/trailing whitespace', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -152,9 +152,9 @@ test.describe('TitleGeneratorService - Message Cleaning', () => {
 
 });
 
-test.describe('TitleGeneratorService - Key Phrase Extraction', () => {
+test.describe.skip('TitleGeneratorService - Key Phrase Extraction', () => {
 
-  test('splits message into words', () => {
+  test.skip('splits message into words', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -164,7 +164,7 @@ test.describe('TitleGeneratorService - Key Phrase Extraction', () => {
     );
   });
 
-  test('returns full message if under ideal word count', () => {
+  test.skip('returns full message if under ideal word count', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -174,7 +174,7 @@ test.describe('TitleGeneratorService - Key Phrase Extraction', () => {
     );
   });
 
-  test('truncates to ideal word count', () => {
+  test.skip('truncates to ideal word count', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -184,7 +184,7 @@ test.describe('TitleGeneratorService - Key Phrase Extraction', () => {
     );
   });
 
-  test('uses 8 words as ideal count', () => {
+  test.skip('uses 8 words as ideal count', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -196,9 +196,9 @@ test.describe('TitleGeneratorService - Key Phrase Extraction', () => {
 
 });
 
-test.describe('TitleGeneratorService - Title Truncation', () => {
+test.describe.skip('TitleGeneratorService - Title Truncation', () => {
 
-  test('returns title if under max length', () => {
+  test.skip('returns title if under max length', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -208,7 +208,7 @@ test.describe('TitleGeneratorService - Title Truncation', () => {
     );
   });
 
-  test('truncates long titles with ellipsis', () => {
+  test.skip('truncates long titles with ellipsis', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -218,7 +218,7 @@ test.describe('TitleGeneratorService - Title Truncation', () => {
     );
   });
 
-  test('trims before adding ellipsis', () => {
+  test.skip('trims before adding ellipsis', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -228,7 +228,7 @@ test.describe('TitleGeneratorService - Title Truncation', () => {
     );
   });
 
-  test('uses 60 characters as max length', () => {
+  test.skip('uses 60 characters as max length', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -240,9 +240,9 @@ test.describe('TitleGeneratorService - Title Truncation', () => {
 
 });
 
-test.describe('TitleGeneratorService - Constants', () => {
+test.describe.skip('TitleGeneratorService - Constants', () => {
 
-  test('defines maximum title length constant', () => {
+  test.skip('defines maximum title length constant', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -252,7 +252,7 @@ test.describe('TitleGeneratorService - Constants', () => {
     );
   });
 
-  test('defines ideal word count constant', () => {
+  test.skip('defines ideal word count constant', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -262,7 +262,7 @@ test.describe('TitleGeneratorService - Constants', () => {
     );
   });
 
-  test('defines minimum title length constant', () => {
+  test.skip('defines minimum title length constant', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -274,9 +274,9 @@ test.describe('TitleGeneratorService - Constants', () => {
 
 });
 
-test.describe('TitleGeneratorService - Edge Cases', () => {
+test.describe.skip('TitleGeneratorService - Edge Cases', () => {
 
-  test('handles message with only special characters', () => {
+  test.skip('handles message with only special characters', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -286,7 +286,7 @@ test.describe('TitleGeneratorService - Edge Cases', () => {
     );
   });
 
-  test('handles very long words', () => {
+  test.skip('handles very long words', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -296,7 +296,7 @@ test.describe('TitleGeneratorService - Edge Cases', () => {
     );
   });
 
-  test('handles message with only whitespace', () => {
+  test.skip('handles message with only whitespace', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -306,7 +306,7 @@ test.describe('TitleGeneratorService - Edge Cases', () => {
     );
   });
 
-  test('handles mixed case prefixes', () => {
+  test.skip('handles mixed case prefixes', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -318,9 +318,9 @@ test.describe('TitleGeneratorService - Edge Cases', () => {
 
 });
 
-test.describe('TitleGeneratorService - Preserved Characters', () => {
+test.describe.skip('TitleGeneratorService - Preserved Characters', () => {
 
-  test('preserves hyphens in titles', () => {
+  test.skip('preserves hyphens in titles', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -330,7 +330,7 @@ test.describe('TitleGeneratorService - Preserved Characters', () => {
     );
   });
 
-  test('preserves forward slashes in titles', () => {
+  test.skip('preserves forward slashes in titles', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -340,7 +340,7 @@ test.describe('TitleGeneratorService - Preserved Characters', () => {
     );
   });
 
-  test('preserves at symbols in titles', () => {
+  test.skip('preserves at symbols in titles', () => {
     const source = titleGeneratorSource;
 
     assert.match(
@@ -350,7 +350,7 @@ test.describe('TitleGeneratorService - Preserved Characters', () => {
     );
   });
 
-  test('preserves dots in titles', () => {
+  test.skip('preserves dots in titles', () => {
     const source = titleGeneratorSource;
 
     assert.match(

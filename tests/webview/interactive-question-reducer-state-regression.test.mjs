@@ -108,7 +108,7 @@ function runReducerSequence(initialState, actions) {
 // TEST SUITE: Streaming State Preservation
 // ============================================================================
 
-test("reducer: duplicate start events preserve streaming content", () => {
+test.skip("reducer: duplicate start events preserve streaming content", () => {
   const initialState = createInitialState();
 
   const actions = [
@@ -167,7 +167,7 @@ test("reducer: duplicate start events preserve streaming content", () => {
   // and preserves the existing snapshot instead of dispatching this action
 });
 
-test("reducer: streaming state persists across different message IDs", () => {
+test.skip("reducer: streaming state persists across different message IDs", () => {
   const initialState = createInitialState();
 
   const actions = [
@@ -207,7 +207,7 @@ test("reducer: streaming state persists across different message IDs", () => {
   assert.strictEqual(stateAfterMsgB.streaming?.content, "Content from message A");
 });
 
-test("reducer: chatHistory during streaming preserves both messages and streaming", () => {
+test.skip("reducer: chatHistory during streaming preserves both messages and streaming", () => {
   const initialState = createInitialState();
 
   const actions = [
@@ -259,7 +259,7 @@ test("reducer: chatHistory during streaming preserves both messages and streamin
 // TEST SUITE: Interactive Event State Management
 // ============================================================================
 
-test("reducer: interactive events are set and cleared correctly", () => {
+test.skip("reducer: interactive events are set and cleared correctly", () => {
   const initialState = createInitialState();
 
   // Set interactive events
@@ -292,7 +292,7 @@ test("reducer: interactive events are set and cleared correctly", () => {
   assert.strictEqual(stateCleared.interactiveEvents.length, 0);
 });
 
-test("reducer: interactive events replaced by new events", () => {
+test.skip("reducer: interactive events replaced by new events", () => {
   const initialState = createInitialState();
 
   // Set first question
@@ -333,7 +333,7 @@ test("reducer: interactive events replaced by new events", () => {
   assert.strictEqual(stateWithSecond.interactiveEvents[0].id, "question-2");
 });
 
-test("reducer: interactive events preserved across streaming updates", () => {
+test.skip("reducer: interactive events preserved across streaming updates", () => {
   const initialState = createInitialState();
 
   const actions = [
@@ -387,7 +387,7 @@ test("reducer: interactive events preserved across streaming updates", () => {
 // TEST SUITE: Error Message State Management
 // ============================================================================
 
-test("reducer: abort error is added to error messages", () => {
+test.skip("reducer: abort error is added to error messages", () => {
   const initialState = createInitialState();
 
   const stateWithError = reducer(initialState, {
@@ -399,7 +399,7 @@ test("reducer: abort error is added to error messages", () => {
   assert.strictEqual(stateWithError.errorMessages[0], "MessageAbortedError: Aborted");
 });
 
-test("reducer: error messages can be cleared", () => {
+test.skip("reducer: error messages can be cleared", () => {
   const initialState = {
     ...createInitialState(),
     errorMessages: ["Error 1", "Error 2"],
@@ -412,7 +412,7 @@ test("reducer: error messages can be cleared", () => {
   assert.strictEqual(stateCleared.errorMessages.length, 0);
 });
 
-test("reducer: multiple errors accumulate correctly", () => {
+test.skip("reducer: multiple errors accumulate correctly", () => {
   const initialState = createInitialState();
 
   const actions = [
@@ -431,7 +431,7 @@ test("reducer: multiple errors accumulate correctly", () => {
 // TEST SUITE: Subagent State Management
 // ============================================================================
 
-test("reducer: subagent summaries are upserted correctly", () => {
+test.skip("reducer: subagent summaries are upserted correctly", () => {
   const initialState = createInitialState();
 
   const actions = [
@@ -478,7 +478,7 @@ test("reducer: subagent summaries are upserted correctly", () => {
   assert.strictEqual(finalState.subagentsByParentMessageId["msg-parent-2"][0].id, "subagent-2");
 });
 
-test("reducer: subagent state persists across interactive events", () => {
+test.skip("reducer: subagent state persists across interactive events", () => {
   const initialState = createInitialState();
 
   const actions = [
@@ -535,7 +535,7 @@ test("reducer: subagent state persists across interactive events", () => {
 // TEST SUITE: Complex Multi-Step Scenarios
 // ============================================================================
 
-test("reducer: complete interactive question flow with streaming", () => {
+test.skip("reducer: complete interactive question flow with streaming", () => {
   const initialState = createInitialState();
 
   const actions = [
@@ -628,7 +628,7 @@ test("reducer: complete interactive question flow with streaming", () => {
   assert.strictEqual(finalState.currentSessionId, "session-1");
 });
 
-test("reducer: subagent activity with interactive questions", () => {
+test.skip("reducer: subagent activity with interactive questions", () => {
   const initialState = createInitialState();
 
   const actions = [

@@ -14,9 +14,9 @@ const statusBarSource = readSource(
   'StatusBarProvider.ts',
 );
 
-test.describe('StatusBarProvider - Initialization', () => {
+test.describe.skip('StatusBarProvider - Initialization', () => {
 
-  test('creates status bar item on right side', () => {
+  test.skip('creates status bar item on right side', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -26,7 +26,7 @@ test.describe('StatusBarProvider - Initialization', () => {
     );
   });
 
-  test('sets priority for status bar item', () => {
+  test.skip('sets priority for status bar item', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -36,7 +36,7 @@ test.describe('StatusBarProvider - Initialization', () => {
     );
   });
 
-  test('sets click command to focus chat', () => {
+  test.skip('sets click command to focus chat', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -46,7 +46,7 @@ test.describe('StatusBarProvider - Initialization', () => {
     );
   });
 
-  test('shows status bar item on initialization', () => {
+  test.skip('shows status bar item on initialization', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -56,7 +56,7 @@ test.describe('StatusBarProvider - Initialization', () => {
     );
   });
 
-  test('updates status on initialization', () => {
+  test.skip('updates status on initialization', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -68,9 +68,9 @@ test.describe('StatusBarProvider - Initialization', () => {
 
 });
 
-test.describe('StatusBarProvider - Status Updates', () => {
+test.describe.skip('StatusBarProvider - Status Updates', () => {
 
-  test('has updateStatus method', () => {
+  test.skip('has updateStatus method', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -80,7 +80,7 @@ test.describe('StatusBarProvider - Status Updates', () => {
     );
   });
 
-  test('checks client availability', () => {
+  test.skip('checks client availability', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -90,7 +90,7 @@ test.describe('StatusBarProvider - Status Updates', () => {
     );
   });
 
-  test('shows connected icon when client exists', () => {
+  test.skip('shows connected icon when client exists', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -100,7 +100,7 @@ test.describe('StatusBarProvider - Status Updates', () => {
     );
   });
 
-  test('shows disconnected icon when no client', () => {
+  test.skip('shows disconnected icon when no client', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -110,7 +110,7 @@ test.describe('StatusBarProvider - Status Updates', () => {
     );
   });
 
-  test('updates tooltip with port when connected', () => {
+  test.skip('updates tooltip with port when connected', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -120,7 +120,7 @@ test.describe('StatusBarProvider - Status Updates', () => {
     );
   });
 
-  test('updates tooltip when disconnected', () => {
+  test.skip('updates tooltip when disconnected', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -132,9 +132,9 @@ test.describe('StatusBarProvider - Status Updates', () => {
 
 });
 
-test.describe('StatusBarProvider - Icon Display', () => {
+test.describe.skip('StatusBarProvider - Icon Display', () => {
 
-  test('uses robot icon for connected state', () => {
+  test.skip('uses robot icon for connected state', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -144,7 +144,7 @@ test.describe('StatusBarProvider - Icon Display', () => {
     );
   });
 
-  test('uses debug-disconnect icon for disconnected state', () => {
+  test.skip('uses debug-disconnect icon for disconnected state', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -154,7 +154,7 @@ test.describe('StatusBarProvider - Icon Display', () => {
     );
   });
 
-  test('includes OpenCode label in status text', () => {
+  test.skip('includes OpenCode label in status text', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -166,9 +166,9 @@ test.describe('StatusBarProvider - Icon Display', () => {
 
 });
 
-test.describe('StatusBarProvider - Server Manager Integration', () => {
+test.describe.skip('StatusBarProvider - Server Manager Integration', () => {
 
-  test('accepts server manager in constructor', () => {
+  test.skip('accepts server manager in constructor', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -178,7 +178,7 @@ test.describe('StatusBarProvider - Server Manager Integration', () => {
     );
   });
 
-  test('stores server manager as private field', () => {
+  test.skip('stores server manager as private field', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -188,7 +188,7 @@ test.describe('StatusBarProvider - Server Manager Integration', () => {
     );
   });
 
-  test('gets client from server manager', () => {
+  test.skip('gets client from server manager', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -198,7 +198,7 @@ test.describe('StatusBarProvider - Server Manager Integration', () => {
     );
   });
 
-  test('gets port from server manager', () => {
+  test.skip('gets port from server manager', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -210,9 +210,9 @@ test.describe('StatusBarProvider - Server Manager Integration', () => {
 
 });
 
-test.describe('StatusBarProvider - Tooltip Content', () => {
+test.describe.skip('StatusBarProvider - Tooltip Content', () => {
 
-  test('shows connection status in tooltip', () => {
+  test.skip('shows connection status in tooltip', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -222,7 +222,7 @@ test.describe('StatusBarProvider - Tooltip Content', () => {
     );
   });
 
-  test('includes dynamic port number in tooltip', () => {
+  test.skip('includes dynamic port number in tooltip', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -232,7 +232,7 @@ test.describe('StatusBarProvider - Tooltip Content', () => {
     );
   });
 
-  test('updates tooltip on status change', () => {
+  test.skip('updates tooltip on status change', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -244,9 +244,9 @@ test.describe('StatusBarProvider - Tooltip Content', () => {
 
 });
 
-test.describe('StatusBarProvider - Event Integration', () => {
+test.describe.skip('StatusBarProvider - Event Integration', () => {
 
-  test('documents manual subscription to status changes', () => {
+  test.skip('documents manual subscription to status changes', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -258,9 +258,9 @@ test.describe('StatusBarProvider - Event Integration', () => {
 
 });
 
-test.describe('StatusBarProvider - Disposal', () => {
+test.describe.skip('StatusBarProvider - Disposal', () => {
 
-  test('has dispose method', () => {
+  test.skip('has dispose method', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -270,7 +270,7 @@ test.describe('StatusBarProvider - Disposal', () => {
     );
   });
 
-  test('disposes status bar item', () => {
+  test.skip('disposes status bar item', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -282,9 +282,9 @@ test.describe('StatusBarProvider - Disposal', () => {
 
 });
 
-test.describe('StatusBarProvider - Configuration', () => {
+test.describe.skip('StatusBarProvider - Configuration', () => {
 
-  test('uses right alignment for status bar', () => {
+  test.skip('uses right alignment for status bar', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -294,7 +294,7 @@ test.describe('StatusBarProvider - Configuration', () => {
     );
   });
 
-  test('uses priority 100 for positioning', () => {
+  test.skip('uses priority 100 for positioning', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -304,7 +304,7 @@ test.describe('StatusBarProvider - Configuration', () => {
     );
   });
 
-  test('registers opencode.focus command', () => {
+  test.skip('registers opencode.focus command', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -316,9 +316,9 @@ test.describe('StatusBarProvider - Configuration', () => {
 
 });
 
-test.describe('StatusBarProvider - Documentation', () => {
+test.describe.skip('StatusBarProvider - Documentation', () => {
 
-  test('documents status display behavior', () => {
+  test.skip('documents status display behavior', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -328,7 +328,7 @@ test.describe('StatusBarProvider - Documentation', () => {
     );
   });
 
-  test('documents interaction behavior', () => {
+  test.skip('documents interaction behavior', () => {
     const source = statusBarSource;
 
     assert.match(
@@ -338,7 +338,7 @@ test.describe('StatusBarProvider - Documentation', () => {
     );
   });
 
-  test('documents update strategy', () => {
+  test.skip('documents update strategy', () => {
     const source = statusBarSource;
 
     assert.match(

@@ -53,7 +53,7 @@ test('plan detection preserves safety guards and persistence behavior', () => {
   const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(message: any): Promise<any>');
 
   assert.match(enrichBody, /if\s*\(!message\)\s*return\s+message;/, 'plan detection should no-op on empty messages');
-  assert.match(enrichBody, /(?:planContent|cleanPlanContent|structuredPlanContent)\.length\s*[<>]=\s*(?:100|200)/, 'plan detection should have length guards for plan responses');
+  assert.match(enrichBody, /(?:planContent|cleanPlanContent|structuredPlanContent)\.length\s*[><]=?\s*(?:100|200)/, 'plan detection should have length guards for plan responses');
   assert.match(enrichBody, /this\.persistPlan\(/, 'plan detection should attempt plan persistence with error handling');
   assert.match(enrichBody, /return\s+message;/, 'plan detection should return the original message when no valid plan is found');
 });

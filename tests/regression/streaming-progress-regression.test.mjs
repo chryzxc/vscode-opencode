@@ -64,7 +64,7 @@ test('stream handler ignores non-assistant role events', () => {
 
   assert.match(
     streamBody,
-    /\/\/ Filter out non-assistant roles \(system messages are handled in the switch cases below\)\s*if \(eventRole && eventRole !== 'assistant'\) \{\s*\/\/ Don't filter out user messages - they may contain system message patterns[\s\S]*?if \(eventRole !== 'user'\) \{\s*return;\s*\}\s*\}/s,
+    /\/\/ Filter out non-assistant roles \(system messages are handled in the switch cases below\)\s*if \(eventRole && eventRole !== 'assistant'\) \{\s*\/\/ Don't filter out user messages - they may contain system message patterns[\s\S]*?if \(eventRole !== 'user' && eventRole !== 'system'\) \{\s*return;\s*\}\s*\}/s,
     'stream handler should only process assistant stream events',
   );
 });
@@ -77,7 +77,7 @@ test('stream handler suppresses stray global events before a request starts', ()
 
   assert.match(
     streamBody,
-    /if \(!current && !state\.isProcessing && !isExplicitStart && !isAssistantUpdateStart && !canBootstrapFromPart\) \{\s*return;\s*\}/,
+    /if \(!current && !state\.isProcessing && !isExplicitStart && !isAssistantUpdateStart && !canBootstrapFromPart && !hasSystemPatternEvent\) \{\s*return;\s*\}/,
     'stream handler should avoid creating phantom streaming state from unrelated global events',
   );
 });

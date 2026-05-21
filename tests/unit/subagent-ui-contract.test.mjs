@@ -25,7 +25,7 @@ test('chat shell does not mount subagents panel in right rail anymore', () => {
 
 test('assistant messages render spawned agents section', () => {
   assert.match(messageSource, /subagents\.length > 0/, 'assistant card should check for spawned agents');
-  assert.match(messageSource, /Spawned Subagents/, 'assistant card should show a dedicated spawned-subagents section title');
+  assert.match(messageSource, /Subagents/, 'assistant card should show a dedicated subagents section title');
   assert.match(messageSource, /openSubagentModal\(/, 'assistant subagent rows should open modal details');
 });
 

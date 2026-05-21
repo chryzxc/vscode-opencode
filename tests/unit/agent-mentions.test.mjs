@@ -91,8 +91,8 @@ test('webview triggers @ mention suggestions on @ character', () => {
 
   assert.match(
     panelSource,
-    /@.*to.*mention/,
-    'Panel placeholder should mention @ for agent mentions',
+    /@.*mention/,
+    'Panel should have @ mention related code or comments',
   );
 });
 

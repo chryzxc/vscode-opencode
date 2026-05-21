@@ -174,7 +174,7 @@ test.describe('OpenAI Token Refresh Test Validation', () => {
     // This test validates that existing tests still work
     assert.match(quotaServiceSource, /const\s+response\s*=\s*await\s+httpsGet/,
       'Code should use response variable');
-    assert.match(quotaServiceSource, /JSON\.parse\(response\.body\)/,
+    assert.match(quotaServiceSource, /JSON\.parse\(\w+\.body\)/,
       'Code should parse response.body');
     assert.match(quotaServiceSource, /response\.statusCode/,
       'Code should check response.statusCode');

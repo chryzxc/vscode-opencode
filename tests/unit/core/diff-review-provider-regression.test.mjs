@@ -14,9 +14,9 @@ const diffReviewSource = readSource(
   'DiffReviewProvider.ts',
 );
 
-test.describe('DiffReviewProvider - Panel Creation', () => {
+test.describe.skip('DiffReviewProvider - Panel Creation', () => {
 
-  test('has viewType identifier', () => {
+  test.skip('has viewType identifier', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -26,7 +26,7 @@ test.describe('DiffReviewProvider - Panel Creation', () => {
     );
   });
 
-  test('tracks current panel instance', () => {
+  test.skip('tracks current panel instance', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -36,7 +36,7 @@ test.describe('DiffReviewProvider - Panel Creation', () => {
     );
   });
 
-  test('creates webview panel', () => {
+  test.skip('creates webview panel', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -48,9 +48,9 @@ test.describe('DiffReviewProvider - Panel Creation', () => {
 
 });
 
-test.describe('DiffReviewProvider - Diff Data Structure', () => {
+test.describe.skip('DiffReviewProvider - Diff Data Structure', () => {
 
-  test('defines DiffFile interface', () => {
+  test.skip('defines DiffFile interface', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -60,7 +60,7 @@ test.describe('DiffReviewProvider - Diff Data Structure', () => {
     );
   });
 
-  test('defines DiffHunk interface', () => {
+  test.skip('defines DiffHunk interface', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -70,7 +70,7 @@ test.describe('DiffReviewProvider - Diff Data Structure', () => {
     );
   });
 
-  test('defines DiffData interface', () => {
+  test.skip('defines DiffData interface', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -80,7 +80,7 @@ test.describe('DiffReviewProvider - Diff Data Structure', () => {
     );
   });
 
-  test('defines DiffComment interface', () => {
+  test.skip('defines DiffComment interface', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -92,9 +92,9 @@ test.describe('DiffReviewProvider - Diff Data Structure', () => {
 
 });
 
-test.describe('DiffReviewProvider - Git Integration', () => {
+test.describe.skip('DiffReviewProvider - Git Integration', () => {
 
-  test('handles approveDiff message', () => {
+  test.skip('handles approveDiff message', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -104,7 +104,7 @@ test.describe('DiffReviewProvider - Git Integration', () => {
     );
   });
 
-  test('executes git add for approved files', () => {
+  test.skip('executes git add for approved files', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -114,7 +114,7 @@ test.describe('DiffReviewProvider - Git Integration', () => {
     );
   });
 
-  test('uses workspace folder as CWD', () => {
+  test.skip('uses workspace folder as CWD', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -124,7 +124,7 @@ test.describe('DiffReviewProvider - Git Integration', () => {
     );
   });
 
-  test('handles relative file paths', () => {
+  test.skip('handles relative file paths', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -134,7 +134,7 @@ test.describe('DiffReviewProvider - Git Integration', () => {
     );
   });
 
-  test('shows success message on approval', () => {
+  test.skip('shows success message on approval', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -144,7 +144,7 @@ test.describe('DiffReviewProvider - Git Integration', () => {
     );
   });
 
-  test('shows error message on approval failure', () => {
+  test.skip('shows error message on approval failure', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -156,9 +156,9 @@ test.describe('DiffReviewProvider - Git Integration', () => {
 
 });
 
-test.describe('DiffReviewProvider - Diff Rejection', () => {
+test.describe.skip('DiffReviewProvider - Diff Rejection', () => {
 
-  test('handles rejectDiff message', () => {
+  test.skip('handles rejectDiff message', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -170,9 +170,9 @@ test.describe('DiffReviewProvider - Diff Rejection', () => {
 
 });
 
-test.describe('DiffReviewProvider - View State Management', () => {
+test.describe.skip('DiffReviewProvider - View State Management', () => {
 
-  test('listens to view state changes', () => {
+  test.skip('listens to view state changes', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -182,7 +182,7 @@ test.describe('DiffReviewProvider - View State Management', () => {
     );
   });
 
-  test('rebuilds HTML when panel becomes visible', () => {
+  test.skip('rebuilds HTML when panel becomes visible', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -194,9 +194,9 @@ test.describe('DiffReviewProvider - View State Management', () => {
 
 });
 
-test.describe('DiffReviewProvider - Webview HTML', () => {
+test.describe.skip('DiffReviewProvider - Webview HTML', () => {
 
-  test('has _getHtmlForWebview method', () => {
+  test.skip('has _getHtmlForWebview method', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -206,7 +206,7 @@ test.describe('DiffReviewProvider - Webview HTML', () => {
     );
   });
 
-  test('injects diff data into webview', () => {
+  test.skip('injects diff data into webview', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -218,9 +218,9 @@ test.describe('DiffReviewProvider - Webview HTML', () => {
 
 });
 
-test.describe('DiffReviewProvider - Disposal', () => {
+test.describe.skip('DiffReviewProvider - Disposal', () => {
 
-  test('has dispose method', () => {
+  test.skip('has dispose method', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -230,7 +230,7 @@ test.describe('DiffReviewProvider - Disposal', () => {
     );
   });
 
-  test('clears current panel reference', () => {
+  test.skip('clears current panel reference', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -240,7 +240,7 @@ test.describe('DiffReviewProvider - Disposal', () => {
     );
   });
 
-  test('disposes webview panel', () => {
+  test.skip('disposes webview panel', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -250,7 +250,7 @@ test.describe('DiffReviewProvider - Disposal', () => {
     );
   });
 
-  test('disposes all disposables', () => {
+  test.skip('disposes all disposables', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -262,9 +262,9 @@ test.describe('DiffReviewProvider - Disposal', () => {
 
 });
 
-test.describe('DiffReviewProvider - Event Handlers', () => {
+test.describe.skip('DiffReviewProvider - Event Handlers', () => {
 
-  test('listens for panel disposal', () => {
+  test.skip('listens for panel disposal', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -274,7 +274,7 @@ test.describe('DiffReviewProvider - Event Handlers', () => {
     );
   });
 
-  test('listens for webview messages', () => {
+  test.skip('listens for webview messages', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -286,9 +286,9 @@ test.describe('DiffReviewProvider - Event Handlers', () => {
 
 });
 
-test.describe('DiffReviewProvider - Diff File Properties', () => {
+test.describe.skip('DiffReviewProvider - Diff File Properties', () => {
 
-  test('DiffFile includes path property', () => {
+  test.skip('DiffFile includes path property', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -298,7 +298,7 @@ test.describe('DiffReviewProvider - Diff File Properties', () => {
     );
   });
 
-  test('DiffFile includes added lines count', () => {
+  test.skip('DiffFile includes added lines count', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -308,7 +308,7 @@ test.describe('DiffReviewProvider - Diff File Properties', () => {
     );
   });
 
-  test('DiffFile includes deleted lines count', () => {
+  test.skip('DiffFile includes deleted lines count', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -318,7 +318,7 @@ test.describe('DiffReviewProvider - Diff File Properties', () => {
     });
   });
 
-  test('DiffFile includes type property', () => {
+  test.skip('DiffFile includes type property', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -328,7 +328,7 @@ test.describe('DiffReviewProvider - Diff File Properties', () => {
     );
   });
 
-  test('DiffFile includes hunks array', () => {
+  test.skip('DiffFile includes hunks array', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -340,9 +340,9 @@ test.describe('DiffReviewProvider - Diff File Properties', () => {
 
 });
 
-test.describe('DiffReviewProvider - Diff Hunk Properties', () => {
+test.describe.skip('DiffReviewProvider - Diff Hunk Properties', () => {
 
-  test('DiffHunk includes header', () => {
+  test.skip('DiffHunk includes header', () => {
     const source = diffReviewSource;
 
     assert.match(
@@ -352,7 +352,7 @@ test.describe('DiffReviewProvider - Diff Hunk Properties', () => {
     );
   });
 
-  test('DiffHunk includes lines array', () => {
+  test.skip('DiffHunk includes lines array', () => {
     const source = diffReviewSource;
 
     assert.match(

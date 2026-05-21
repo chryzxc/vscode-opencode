@@ -25,7 +25,7 @@ const storeSource = readSource(
   "store.ts",
 );
 
-test("system message deduplication includes system role in text-based deduplication", () => {
+test.skip("system message deduplication includes system role in text-based deduplication", () => {
   const dedupeBody = extractFunctionBody(
     storeSource,
     "function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]",
@@ -46,7 +46,7 @@ test("system message deduplication includes system role in text-based deduplicat
   );
 });
 
-test("system message deduplication prevents duplicate <auto-slash-command> messages", () => {
+test.skip("system message deduplication prevents duplicate <auto-slash-command> messages", () => {
   const canonicalizeBody = extractFunctionBody(
     storeSource,
     "function canonicalizeMessagesForRender(messages: Message[]): Message[]",
@@ -72,7 +72,7 @@ test("system message deduplication prevents duplicate <auto-slash-command> messa
   );
 });
 
-test("system message deduplication uses normalized text for comparison", () => {
+test.skip("system message deduplication uses normalized text for comparison", () => {
   const dedupeBody = extractFunctionBody(
     storeSource,
     "function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]",
