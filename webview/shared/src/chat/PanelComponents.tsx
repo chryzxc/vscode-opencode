@@ -59,6 +59,7 @@ import type {
   ContextItem,
   Model,
 } from "./lib/types";
+import { isProcessingInCurrentSession } from "./lib/sessionProcessing";
 
 import { FileIcon } from "./MessageComponents";
 
@@ -218,25 +219,6 @@ export function getMentionTrigger(input: string, cursor: number): MentionTrigger
     replaceFrom: mentionIndex,
     replaceTo: cursor,
   };
-}
-
-function isProcessingInCurrentSession(
-  isProcessing: boolean,
-  currentSessionId: string | null,
-  processingSessionIds: string[],
-): boolean {
-  if (!isProcessing) {
-    return false;
-  }
-  if (!currentSessionId) {
-    return isProcessing;
-  }
-  if (!Array.isArray(processingSessionIds) || processingSessionIds.length === 0) {
-    // If we have no session IDs but isProcessing is true, it might be a legacy 
-    // or global state. We'll return false to be safe unless we are sure.
-    return false;
-  }
-  return processingSessionIds.includes(currentSessionId);
 }
 
 function isExecutingQueueInCurrentSession(

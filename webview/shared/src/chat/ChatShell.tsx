@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
 import { createMessageHandler } from "./lib/messageHandler";
+import { isProcessingInCurrentSession } from "./lib/sessionProcessing";
 import vscode from "./lib/vscode";
 
 import {
@@ -396,10 +397,11 @@ function ChatContent() {
   }, [state.isLoadingSession, dispatch]);
 
   // Check if AI is currently responding (processing user message)
-  const isAiResponding =
-    state.isProcessing &&
-    (!state.currentSessionId ||
-      state.processingSessionIds.includes(state.currentSessionId));
+  const isAiResponding = isProcessingInCurrentSession(
+    state.isProcessing,
+    state.currentSessionId,
+    state.processingSessionIds,
+  );
 
   // Check if we're switching to a different session (loading conversation)
   // Uses the new isLoadingSession state which is set during session switches
@@ -446,7 +448,6 @@ function ChatContent() {
     !state.isLoadingSession && // Direct state check to avoid timing issues
     isAiResponding && // Must still be processing (not stopped)
     !state.isCompacting &&
-    !state.streaming?.isActive &&
     !hasAssistantText;
 
   const compactionDividerIndex =
