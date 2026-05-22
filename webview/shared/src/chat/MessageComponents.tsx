@@ -2266,9 +2266,13 @@ function SubagentsInlineCard({
   openSubagentModal: (subagentId: string) => void;
 }) {
   const [durationNow, setDurationNow] = useState(() => Date.now());
-
-  const visibleSubagents = (showAllSubagents ? subagents : subagents.slice(0, 10))
-    .filter((subagent: SubagentSummary) => subagent.status !== "orphaned");
+  const nonOrphanedSubagents = subagents.filter(
+    (subagent: SubagentSummary) => subagent.status !== "orphaned",
+  );
+  const totalSubagentCount = nonOrphanedSubagents.length;
+  const visibleSubagents = (showAllSubagents
+    ? nonOrphanedSubagents
+    : nonOrphanedSubagents.slice(0, 10));
   const hasLiveSubagentDuration = useMemo(
     () =>
       showSubagents &&
@@ -2293,7 +2297,7 @@ function SubagentsInlineCard({
     return () => window.clearInterval(timer);
   }, [hasLiveSubagentDuration]);
 
-  if (subagents.length === 0) {
+  if (totalSubagentCount === 0) {
     return null;
   }
 
@@ -2326,7 +2330,7 @@ function SubagentsInlineCard({
               Subagents
             </span>
             <span className="oc-subagents-count rounded-md border px-1.5 py-0.5 font-medium text-oc-2xs text-oc-text-soft">
-              {subagents.length}
+              {totalSubagentCount}
             </span>
           </div>
           <div className="flex items-center gap-1.5">
@@ -2474,13 +2478,13 @@ function SubagentsInlineCard({
                 </button>
               );
             })}
-            {subagents.length > 10 ? (
+            {totalSubagentCount > 10 ? (
               <button
                 type="button"
                 className="text-oc-2xs font-medium oc-readable-accent hover:underline"
                 onClick={() => setShowAllSubagents(!showAllSubagents)}
               >
-                {showAllSubagents ? "Show less" : `Show all (${subagents.length})`}
+                {showAllSubagents ? "Show less" : `Show all (${totalSubagentCount})`}
               </button>
             ) : null}
           </div>
@@ -3584,23 +3588,32 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     if (!messageId) {
       return [];
     }
-    const hasAnyScopedTodo = todoItems.some((item) => !!item.parentMessageId);
-    const strict = todoItems.filter((item) => item.parentMessageId === messageId);
+    const activeSessionId = state.currentSessionId;
+    const sessionScopedTodoItems = activeSessionId
+      ? todoItems.filter((item) => item.sessionId === activeSessionId)
+      : todoItems;
+    const hasAnyScopedTodo = sessionScopedTodoItems.some((item) => !!item.parentMessageId);
+    const strict = sessionScopedTodoItems.filter((item) => item.parentMessageId === messageId);
     if (strict.length > 0) {
       return strict;
     }
-    // Backward-compat fallback: older snapshots/todo feeds can omit parentMessageId.
-    // In that case, keep historical behavior and render on the latest assistant turn.
-    if (!hasAnyScopedTodo && latestAssistantMessageId === messageId) {
-      return todoItems;
-    }
     // Live-stream safety: if todos have not been stamped with parentMessageId yet,
-    // keep showing them on the current streaming assistant message.
-    if (isStreamingActive && latestAssistantMessageId === messageId) {
-      return todoItems.filter((item) => !item.parentMessageId);
+    // keep showing them on the currently streaming assistant message only.
+    if (
+      !hasAnyScopedTodo &&
+      isStreamingActive &&
+      latestAssistantMessageId === messageId
+    ) {
+      return sessionScopedTodoItems.filter((item) => !item.parentMessageId);
     }
     return [];
-  }, [todoItems, messageId, isStreamingActive, latestAssistantMessageId]);
+  }, [
+    todoItems,
+    messageId,
+    isStreamingActive,
+    latestAssistantMessageId,
+    state.currentSessionId,
+  ]);
   const shouldShowTodoInlineSummary = scopedTodoItems.length > 0;
   const { planStatus, isRevisedPlan } = useMemo(() => {
     let status: "Draft" | "Executing" | "Revision Requested" | undefined;
@@ -3700,16 +3713,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       }
       return subagent.parentMessageId === messageId;
     });
-
-    // Live-stream safety: if finalization temporarily leaves parentMessageId
-    // out-of-sync, keep rendering the scoped bucket/message-attached subagents
-    // instead of dropping the section until hydration catches up.
-    if (fromStore.length === 0 && fromMessage.length === 0) {
-      const activeScopedStore = scopedStore.filter(isInActiveSession);
-      const activeMessageSubagents = messageSubagents.filter(isInActiveSession);
-      if (activeScopedStore.length > 0) return activeScopedStore;
-      if (activeMessageSubagents.length > 0) return activeMessageSubagents;
-    }
 
     if (fromStore.length === 0) return fromMessage;
     if (fromMessage.length === 0) return fromStore;
@@ -4730,8 +4733,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                 )} */}
 
-              {/* Temporarily hidden per UI request: Raw Response (Debug) block */}
-              {false && hasRawResponseDebug && (
+              {hasRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
                   className={

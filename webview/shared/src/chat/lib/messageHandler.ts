@@ -1995,6 +1995,21 @@ function normalizeStructuredOutputWithFallback(value: unknown): StructuredOutput
   return normalizeStructuredOutput(value) ?? salvageStructuredOutput(value);
 }
 
+function hasTruncatedContentMarker(value: unknown): boolean {
+  if (typeof value === "string") {
+    return /\.\.\.<truncated\s+\d+\s+chars>/i.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => hasTruncatedContentMarker(entry));
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some((entry) =>
+      hasTruncatedContentMarker(entry),
+    );
+  }
+  return false;
+}
+
 function structuredOutputFromRawDebug(parsedRawDebug: ParsedRawDebug): StructuredOutput | undefined {
   const candidates: unknown[] = [];
   for (const part of parsedRawDebug.parts) {
@@ -2031,10 +2046,6 @@ function structuredOutputFromRawDebug(parsedRawDebug: ParsedRawDebug): Structure
 function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): StructuredOutput | undefined {
   const infoRec = asRecord(rec.info);
   const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
-  const fromRawDebug = structuredOutputFromRawDebug(parsedRawDebug);
-  if (fromRawDebug) {
-    return fromRawDebug;
-  }
   const localCandidates: unknown[] = [
     rec.structuredOutput,
     (rec as UnknownRecord).structured_output,
@@ -2050,7 +2061,29 @@ function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): Structure
       return normalized;
     }
   }
-  return undefined;
+
+  const fromRawDebug = structuredOutputFromRawDebug(parsedRawDebug);
+  if (!fromRawDebug) {
+    return undefined;
+  }
+
+  // Raw debug payloads are frequently capped for logging and may contain
+  // "...<truncated N chars>" markers inside plan/content fields. Treat those
+  // as unreliable and avoid propagating partial plan bodies into the viewer.
+  if (hasTruncatedContentMarker(fromRawDebug)) {
+    const plan = fromRawDebug.plan;
+    if (plan && typeof plan === "object") {
+      return {
+        ...fromRawDebug,
+        plan: {
+          ...plan,
+          content: undefined,
+        },
+      };
+    }
+  }
+
+  return fromRawDebug;
 }
 
 function parseNumberedQuestionsFromText(text: string): StructuredInteractiveEvent[] {

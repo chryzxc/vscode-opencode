@@ -12,6 +12,13 @@ import * as fs from "fs/promises";
 import { LoggingCategories } from "../../utils/LoggingSchema";
 
 export class PlanManager {
+  private hasTruncationMarker(value: string): boolean {
+    return (
+      /\.\.\.\[truncated\s+\d+\s+chars\]\s*$/i.test(value) ||
+      /\.\.\.<truncated\s+\d+\s+chars>\s*$/i.test(value)
+    );
+  }
+
   private stripTruncationMarker(value: string): string {
     return value
       .replace(/\n?\.\.\.\[truncated\s+\d+\s+chars\]\s*$/i, "")
@@ -42,6 +49,9 @@ export class PlanManager {
   }): string | undefined {
     const existing = this.firstNonEmptyString(plan.content);
     if (existing) {
+      if (this.hasTruncationMarker(existing)) {
+        return undefined;
+      }
       const cleaned = this.stripTruncationMarker(existing);
       if (cleaned.trim().length > 0) {
         return cleaned;
@@ -188,6 +198,13 @@ export class PlanManager {
       const normalizedContent = this.firstNonEmptyString(content);
       if (!normalizedContent) {
         this.logger.endFeatureFlow(flow, { status: 'skipped', reason: 'No content' });
+        return undefined;
+      }
+      if (this.hasTruncationMarker(normalizedContent)) {
+        this.logger.endFeatureFlow(flow, {
+          status: 'skipped',
+          reason: 'Refusing to persist truncated plan content',
+        });
         return undefined;
       }
       const cleanedContent = this.stripTruncationMarker(normalizedContent);

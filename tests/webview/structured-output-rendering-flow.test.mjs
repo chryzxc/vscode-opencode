@@ -41,7 +41,7 @@ test('progress updates flow through the structured-output pipeline', () => {
 });
 
 test('todo updates are surfaced through the inline todo summary path', () => {
-  assert.match(messageComponents, /todoItems\.length > 0/, 'todo summary gate is missing');
+  assert.match(messageComponents, /scopedTodoItems\.length > 0/, 'todo summary gate is missing');
   assert.match(messageComponents, /TodoInlineSummary/, 'todo inline summary renderer is missing');
 });
 

@@ -248,6 +248,55 @@ describe('normalizeMessage', () => {
       'structuredOutput should still be preserved when preferring streaming content'
     );
   });
+
+  it('should prefer canonical structuredOutput over truncated rawResponse structured payload', () => {
+    const fullPlanContent =
+      '# Plan\n\n- Setup completion rate\n- Time to first route generated\n- Add-rate of missed gems';
+    const truncatedPlanContent =
+      '# Plan\n\n- Setup completion rate\n- Time to first route generated\n- Add-rate of ...<truncated 940 chars>';
+
+    const inputMessage = {
+      id: 'msg-plan-precedence',
+      role: 'assistant',
+      responseType: 'implementation_plan',
+      structuredOutput: {
+        responseType: 'implementation_plan',
+        plan: {
+          file: 'docs/plans/tuklasia-unique-itinerary-flow-plan.md',
+          content: fullPlanContent,
+        },
+      },
+      rawResponse: {
+        info: {
+          structured: {
+            responseType: 'implementation_plan',
+            plan: {
+              file: 'docs/plans/tuklasia-unique-itinerary-flow-plan.md',
+              content: truncatedPlanContent,
+            },
+          },
+        },
+        parts: [],
+      },
+    } as Message & { rawResponse: unknown };
+
+    const result = normalizeMessage(inputMessage, null);
+    const normalized = result as Message & {
+      structuredOutput?: { plan?: { content?: string } };
+    };
+
+    assert.ok(normalized, 'normalizeMessage should return a message');
+    assert.ok(normalized.structuredOutput?.plan?.content, 'plan.content should exist');
+    assert.strictEqual(
+      normalized.structuredOutput?.plan?.content,
+      fullPlanContent,
+      'local structuredOutput plan.content should win over rawResponse truncated content',
+    );
+    assert.ok(
+      !(normalized.structuredOutput?.plan?.content || '').includes('<truncated'),
+      'normalized plan.content should not contain truncation markers',
+    );
+  });
 });
 
 describe('normalizeMessage - chatHistory regression tests', () => {
@@ -750,7 +799,5 @@ describe('dedupeSystemMessages', () => {
     ];
     const result = dedupeSystemMessages(messages);
     assert.strictEqual(result.length, 1, 'Should deduplicate messages with different newlines');
-  });
-});
   });
 });
