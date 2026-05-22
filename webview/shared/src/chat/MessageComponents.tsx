@@ -63,6 +63,10 @@ import type { DisplayError } from "../../../../src/providers/chat/types";
 import { useAppDispatch, useAppState } from "./lib/store";
 import { jumpToMessage } from "./lib/messageJump";
 import vscode from "./lib/vscode";
+import {
+  getSubagentDisplayActivity,
+  getSubagentDisplayDurationMs,
+} from "./lib/subagentDuration";
 
 // File extension color mapping for icons
 const FILE_COLOR_MAP: Record<string, string> = {
@@ -2261,12 +2265,38 @@ function SubagentsInlineCard({
   setShowAllSubagents: (next: boolean) => void;
   openSubagentModal: (subagentId: string) => void;
 }) {
+  const [durationNow, setDurationNow] = useState(() => Date.now());
+
+  const visibleSubagents = (showAllSubagents ? subagents : subagents.slice(0, 10))
+    .filter((subagent: SubagentSummary) => subagent.status !== "orphaned");
+  const hasLiveSubagentDuration = useMemo(
+    () =>
+      showSubagents &&
+      visibleSubagents.some((subagent) => {
+        const detail = subagentDetailsById[subagent.id] as
+          | SubagentDetail
+          | undefined;
+        const status = resolveSubagentStatus(subagent, detail);
+        return status === "running" || status === "pending";
+      }),
+    [showSubagents, visibleSubagents, subagentDetailsById],
+  );
+
+  useEffect(() => {
+    if (!hasLiveSubagentDuration) {
+      return;
+    }
+    setDurationNow(Date.now());
+    const timer = window.setInterval(() => {
+      setDurationNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [hasLiveSubagentDuration]);
+
   if (subagents.length === 0) {
     return null;
   }
 
-  const visibleSubagents = (showAllSubagents ? subagents : subagents.slice(0, 10))
-    .filter((subagent: SubagentSummary) => subagent.status !== "orphaned");
   const resolvedStatusCounts = visibleSubagents.reduce(
     (acc, subagent) => {
       const detail = subagentDetailsById[subagent.id] as SubagentDetail | undefined;
@@ -2361,8 +2391,18 @@ function SubagentsInlineCard({
               const cardStyle = getSubagentCardStyle(subagent.id);
               const accentTextStyle = getSubagentAccentTextStyle(subagent.id);
               const statusText = subagentStatusLabel(resolvedStatus) || "Pending";
-              const activityText =
-                subagent.latestActivity || statusText || "Initializing...";
+              const durationMs = getSubagentDisplayDurationMs(
+                subagent,
+                detail,
+                durationNow,
+                resolvedStatus,
+              );
+              const activityText = getSubagentDisplayActivity(
+                subagent,
+                detail,
+                resolvedStatus,
+                statusText || "Initializing...",
+              );
               const loadingHint =
                 resolvedStatus === "running" && !hasTerminalStopMarker
                   ? "Waiting for next progress..."
@@ -2404,7 +2444,7 @@ function SubagentsInlineCard({
                       </span>
                     </div>
                     <span className="font-medium text-oc-2xs oc-text-secondary">
-                      {formatDuration(subagent.durationMs ?? 0)}
+                      {formatDuration(durationMs)}
                     </span>
                   </div>
                   <div className="mt-1 flex min-w-0 items-center gap-1.5">
@@ -3872,6 +3912,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     !streaming && thoughtItems.length === 0 && reasoningTok > 0;
   const thinkingPlaceholderText =
     "Reasoning tokens were used, but this provider did not expose reasoning text.";
+  const hasActiveTimelineWork = timelineDisplayEvents.some(
+    (event) => event.status === "pending",
+  );
+  const showInProgressActivityPlaceholder =
+    !!streaming?.isActive &&
+    !hasActiveTimelineWork &&
+    !showThinkingPlaceholder;
   const { rawResponseText } = useMemo(() => {
     const maxRawDebugChars = 30000;
     const withCap = (value: string): string =>
@@ -4198,7 +4245,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         )}
 
         <div className="space-y-3">
-          {(displayEvents.length > 0 || showThinkingPlaceholder) && (
+          {(displayEvents.length > 0 ||
+            showThinkingPlaceholder ||
+            showInProgressActivityPlaceholder) && (
             <section data-assistant-section="activity">
               {timelineDisplayEvents.length > 0 && (
                 <>
@@ -4462,6 +4511,24 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   )}
 
                 </>
+              )}
+
+              {showInProgressActivityPlaceholder && (
+                <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
+                  <StepperItem
+                    isLast={true}
+                    indicator={<StepIndicator status="running" />}
+                  >
+                    <div className="flex min-w-0 items-center gap-2 flex-wrap">
+                      <span className="oc-refined-event-label activity">
+                        IN_PROGRESS
+                      </span>
+                      <span className="flex-1 whitespace-pre-wrap break-words text-[11px] leading-5 oc-text-secondary">
+                        Working in the background...
+                      </span>
+                    </div>
+                  </StepperItem>
+                </Stepper>
               )}
             </section>
           )}

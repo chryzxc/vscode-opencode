@@ -464,6 +464,14 @@ function ChatContent() {
   const hasAssistantText =
     !!state.streaming?.content &&
     state.streaming.content.trim().length > 0;
+  const hasStreamingCardSignal = Boolean(
+    state.streaming &&
+      (state.streaming.content.length > 0 ||
+        state.streaming.steps.length > 0 ||
+        state.streaming.progressEvents.length > 0 ||
+        state.streaming.isActive ||
+        state.streaming.messageId),
+  );
 
   // Show AI response loading indicator (thinking bubble) when:
   // 1. NOT switching sessions (session loading takes precedence), AND
@@ -472,6 +480,7 @@ function ChatContent() {
     !state.isLoadingSession && // Direct state check to avoid timing issues
     isAiResponding && // Must still be processing (not stopped)
     !hasCompletedAssistantReplyForLatestTurn &&
+    !hasStreamingCardSignal &&
     !state.isCompacting &&
     !hasAssistantText;
 
