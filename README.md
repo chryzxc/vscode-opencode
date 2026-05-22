@@ -1,5 +1,13 @@
 # OpenCode VS Code Extension
 
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Open-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/search?term=chryzxc&target=VSCode&category=All%20categories&sortBy=Relevance)
+[![Open VSX](https://img.shields.io/badge/Open%20VSX-Open-C160EF)](https://open-vsx.org/user/chryzxc)
+[![Installs](https://img.shields.io/badge/Installs-View%20on%20Marketplace-6E7781)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
+[![GitHub Repo stars](https://img.shields.io/github/stars/chryzxc/vscode-opencode?style=social)](https://github.com/chryzxc/vscode-opencode/stargazers)
+[![GitHub issues](https://img.shields.io/github/issues/chryzxc/vscode-opencode)](https://github.com/chryzxc/vscode-opencode/issues)
+
+If this extension helps your workflow, consider giving the repo a star.
+
 ### Demo: Main Conversation Flow
 
 ![Main conversation flow demo](./assets/demo.gif)
