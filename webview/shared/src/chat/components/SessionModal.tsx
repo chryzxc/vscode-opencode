@@ -369,7 +369,12 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                           >
                             <div className="flex items-center gap-1.5 min-w-0">
                               {isProcessing ? (
-                                <Loader2 className="h-3 w-3 shrink-0 animate-spin text-oc-accent" aria-label="Processing" />
+                                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-oc-accent-soft ring-1 ring-oc-accent/45">
+                                  <Loader2
+                                    className="h-3.5 w-3.5 animate-spin text-oc-accent"
+                                    aria-label="Processing"
+                                  />
+                                </span>
                               ) : null}
                               <span
                                 className={`truncate text-sm font-medium leading-tight ${

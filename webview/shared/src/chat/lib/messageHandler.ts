@@ -1,7 +1,7 @@
 import type { Dispatch } from 'react';
 
 import type { AppAction } from './store';
-import { hasSystemMessagePatternInText } from './store';
+import { appReducer, hasSystemMessagePatternInText } from './store';
 import type {
   ActivityDetail,
   ActivityDiffExcerpt,
@@ -676,6 +676,74 @@ function normalizeActivityDiffExcerpt(
     added,
     deleted,
   };
+}
+
+const FILE_PATH_HINT_KEYS = new Set([
+  "file",
+  "filepath",
+  "path",
+  "filename",
+  "targetfile",
+  "absolutepath",
+  "uri",
+  "directorypath",
+  "searchpath",
+  "searchdirectory",
+  "outputfile",
+  "inputfile",
+]);
+
+function normalizePossibleFileUri(value: string): string {
+  return value.startsWith("file://") ? value.replace(/^file:\/\//, "") : value;
+}
+
+function looksLikeFilePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || /\s{2,}/.test(trimmed)) return false;
+  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.startsWith("file://")) {
+    return true;
+  }
+  return /^[\w.-]+\.[\w.-]+$/.test(trimmed);
+}
+
+function extractFilePathCandidate(
+  value: unknown,
+  depth = 0,
+  seen = new WeakSet<object>(),
+): string | undefined {
+  if (depth > 4 || value === null || typeof value === "undefined") {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const normalized = normalizePossibleFileUri(value.trim());
+    return looksLikeFilePath(normalized) ? normalized : undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = extractFilePathCandidate(item, depth + 1, seen);
+      if (nested) return nested;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object") {
+    return undefined;
+  }
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  if (seen.has(rec)) return undefined;
+  seen.add(rec);
+
+  for (const [key, fieldValue] of Object.entries(rec)) {
+    if (!FILE_PATH_HINT_KEYS.has(key.toLowerCase())) continue;
+    const nested = extractFilePathCandidate(fieldValue, depth + 1, seen);
+    if (nested) return nested;
+  }
+
+  for (const fieldValue of Object.values(rec)) {
+    const nested = extractFilePathCandidate(fieldValue, depth + 1, seen);
+    if (nested) return nested;
+  }
+  return undefined;
 }
 
 function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
@@ -6303,6 +6371,34 @@ function hasVisibleStreamingSnapshot(streaming: StreamingState | null | undefine
   );
 }
 
+function activityScoreFromMessages(messages: Message[]): number {
+  return messages.reduce((score, message) => {
+    const contentScore = asString(message.content).trim().length > 0 ? 1 : 0;
+    const reasoningScore = Array.isArray(message.reasoningEvents)
+      ? message.reasoningEvents.length
+      : 0;
+    const progressScore = Array.isArray(message.progressEvents)
+      ? message.progressEvents.length * 3
+      : 0;
+    const stepScore = Array.isArray(message.steps)
+      ? message.steps.length * 3
+      : 0;
+    const editScore = Array.isArray(message.edits) ? message.edits.length : 0;
+    const interactiveScore = Array.isArray(message.interactiveEvents)
+      ? message.interactiveEvents.length
+      : 0;
+    return (
+      score +
+      contentScore +
+      reasoningScore +
+      progressScore +
+      stepScore +
+      editScore +
+      interactiveScore
+    );
+  }, 0);
+}
+
 function mergeStreamingSnapshotIntoHistory(
   messages: Message[],
   streaming: StreamingState,
@@ -6957,16 +7053,11 @@ function handleStreamEvent(
         const tool = asString(part.tool);
         const stateObj = asRecord(part.state);
         const inputObj = asRecord(stateObj?.input);
+        const partInputObj = asRecord((part as UnknownRecord).input);
         const filePath =
-          asString(inputObj?.file) ||
-          asString(inputObj?.path) ||
-          asString(inputObj?.filename) ||
-          asString(inputObj?.TargetFile) ||
-          asString(inputObj?.AbsolutePath) ||
-          asString(inputObj?.uri) ||
-          asString(inputObj?.DirectoryPath) ||
-          asString(inputObj?.SearchPath) ||
-          asString(inputObj?.SearchDirectory) ||
+          extractFilePathCandidate(inputObj) ||
+          extractFilePathCandidate(partInputObj) ||
+          extractFilePathCandidate(stateObj?.result) ||
           asString(part.filePath) ||
           undefined;
         const metaValues = [
@@ -7413,9 +7504,17 @@ function handleStreamEvent(
       const eventModelID = asString(infoRecord?.modelID) || asString(payload.modelID);
       const eventProviderID = asString(infoRecord?.providerID) || asString(payload.providerID);
       const latestStreaming = getState().streaming;
-      const duplicateStartForActiveStream =
-        latestStreaming?.isActive === true &&
+      const hasVisibleExistingStreaming =
         hasVisibleStreamingSnapshot(latestStreaming);
+      const duplicateStartForVisibleStream = !!(
+        latestStreaming &&
+        hasVisibleExistingStreaming &&
+        (
+          !messageId ||
+          !latestStreaming.messageId ||
+          latestStreaming.messageId === messageId
+        )
+      );
       const startMetadata = {
         agent: eventAgent || state.selectedAgent || undefined,
         model:
@@ -7441,7 +7540,7 @@ function handleStreamEvent(
 
       dispatch({
         type: "SET_STREAMING",
-        payload: duplicateStartForActiveStream && latestStreaming
+        payload: duplicateStartForVisibleStream && latestStreaming
           ? {
             ...latestStreaming,
             messageId: latestStreaming.messageId || messageId,
@@ -8760,6 +8859,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           dispatch({ type: "SET_PROCESSING", payload: false });
           if (shouldClearStreamingAfterResponse) {
             dispatch({ type: "SET_STREAMING", payload: null });
+          } else {
+            dispatch({ type: "FINISH_STREAMING" });
           }
           break;
         }
@@ -8792,9 +8893,21 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
             chatHistorySessionId = asString(data.sessionId);
             const currentState = getState();
+            const payloadProcessingSessionIds = asArray(
+              data.processingSessionIds,
+              (item): item is string => typeof item === "string",
+            );
+            const effectiveProcessingSessionIds =
+              payloadProcessingSessionIds.length > 0
+                ? payloadProcessingSessionIds
+                : currentState.processingSessionIds;
             const isSessionProcessing = !!(chatHistorySessionId &&
-              currentState.processingSessionIds.includes(chatHistorySessionId));
+              effectiveProcessingSessionIds.includes(chatHistorySessionId));
             const currentStreamingSnapshot = currentState.streaming;
+            const cachedStreamingForSwitch =
+              chatHistorySessionId
+                ? currentState.streamingBySessionId?.[chatHistorySessionId] ?? null
+                : null;
             const isSameActiveSessionHydration = !!(
               chatHistorySessionId &&
               currentState.currentSessionId === chatHistorySessionId
@@ -8807,6 +8920,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               isSameActiveSessionHydration &&
               currentStreamingSnapshot?.isActive === false &&
               hasVisibleStreamingSnapshot(currentStreamingSnapshot);
+            const shouldMergeCachedSwitchStreamingSnapshot = !!(
+              isSessionProcessing &&
+              !isSameActiveSessionHydration &&
+              cachedStreamingForSwitch &&
+              hasVisibleStreamingSnapshot(cachedStreamingForSwitch)
+            );
             const cachedMessagesForSwitch =
               chatHistorySessionId
                 ? currentState.messagesBySessionId?.[chatHistorySessionId] ?? []
@@ -8816,6 +8935,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const isSwitchingSession = !!(
               chatHistorySessionId &&
               currentState.currentSessionId !== chatHistorySessionId
+            );
+            const incomingHistoryActivityScore =
+              activityScoreFromMessages(dedupedSystemMessages);
+            const cachedHistoryActivityScore =
+              activityScoreFromMessages(cachedMessagesForSwitch);
+            const shouldUseCachedSwitchMessages = !!(
+              isSessionProcessing &&
+              cachedMessagesForSwitch.length > 0 &&
+              cachedHistoryActivityScore > incomingHistoryActivityScore
             );
 
             if (isSwitchingSession && cachedMessagesForSwitch.length > 0) {
@@ -8836,7 +8964,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
             hydrationPresentationPolicy = {
               mode: "hydration",
-              sessionProcessing: isSessionProcessing || shouldPreserveActiveStreaming,
+              sessionProcessing:
+                isSessionProcessing ||
+                shouldPreserveActiveStreaming ||
+                shouldMergeCachedSwitchStreamingSnapshot,
             };
 
             if (!shouldPreserveActiveStreaming) {
@@ -8854,7 +8985,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               dispatch({ type: "SET_STREAMING", payload: null });
               dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
             }
-            let stabilizedHydratedMessages = dedupedSystemMessages.map((message) => {
+            const hydrationSourceMessages = shouldUseCachedSwitchMessages
+              ? cachedMessagesForSwitch
+              : dedupedSystemMessages;
+            let stabilizedHydratedMessages = hydrationSourceMessages.map((message) => {
               if (!Array.isArray(message.subagents) || message.subagents.length === 0) {
                 return message;
               }
@@ -8877,6 +9011,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               stabilizedHydratedMessages = mergeStreamingSnapshotIntoHistory(
                 stabilizedHydratedMessages,
                 currentStreamingSnapshot,
+              );
+            }
+            if (
+              shouldMergeCachedSwitchStreamingSnapshot &&
+              cachedStreamingForSwitch
+            ) {
+              stabilizedHydratedMessages = mergeStreamingSnapshotIntoHistory(
+                stabilizedHydratedMessages,
+                cachedStreamingForSwitch,
               );
             }
             canonicalMessages = stabilizedHydratedMessages;
@@ -9218,6 +9361,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const payload = asRecord(data.event) ?? data;
           const eventSessionId =
             asString(payload.sessionId) ||
+            asString(payload.sessionID) ||
             asString(asRecord(payload.properties)?.sessionId) ||
             asString(asRecord(payload.properties)?.sessionID);
           const activeSessionId = stateBeforeStreamEvent.currentSessionId;
@@ -9261,6 +9405,52 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             structuredKind:
               asString(asRecord(payload.structured)?.kind) || "unknown",
           });
+          if (
+            eventSessionId &&
+            activeSessionId &&
+            eventSessionId !== activeSessionId
+          ) {
+            let scopedState: AppState = {
+              ...stateBeforeStreamEvent,
+              currentSessionId: eventSessionId,
+              isProcessing: true,
+              streaming:
+                stateBeforeStreamEvent.streamingBySessionId?.[eventSessionId] ??
+                null,
+            };
+            const scopedGetState = () => scopedState;
+            const scopedDispatch: Dispatch<AppAction> = (action) => {
+              switch (action.type) {
+                case "SET_STREAMING":
+                case "UPDATE_STREAMING_CONTENT":
+                case "UPDATE_STREAMING_REASONING":
+                case "SET_IN_REASONING_PART":
+                case "ADD_STREAMING_STEP":
+                case "UPDATE_STREAMING_STEP":
+                case "ADD_STREAMING_EDIT":
+                case "FINISH_STREAMING":
+                case "SET_PROCESSING":
+                  scopedState = appReducer(scopedState, action);
+                  break;
+                default:
+                  break;
+              }
+            };
+            handleStreamEvent(
+              scopedDispatch,
+              scopedGetState,
+              payload,
+              terminalErrorReached,
+            );
+            dispatch({
+              type: "SET_SESSION_STREAMING",
+              payload: {
+                sessionId: eventSessionId,
+                streaming: scopedState.streaming,
+              },
+            });
+            break;
+          }
           handleStreamEvent(dispatch, getState, payload, terminalErrorReached);
           const streamingAfter = getState().streaming;
           if (streamingAfter) {

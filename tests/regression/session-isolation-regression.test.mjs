@@ -5,8 +5,9 @@
  * UI are strictly scoped to the session in which they were created. Tests
  * cover three enforcement layers:
  *
- * 1. Extension host (ChatViewProvider) – early-drops events from non-active
- *    sessions and stamps every forwarded event with the active session ID.
+ * 1. Extension host (ChatViewProvider) – forwards explicit session-scoped
+ *    events for processing sessions and stamps every forwarded event with a
+ *    resolved session ID.
  * 2. Webview reducer (store.ts) – SET_SESSION_ID resets all transient
  *    per-session state (isProcessing, streaming, isSteering, isQueueOpen).
  * 3. Webview message handler (messageHandler.ts) – handleStreamEvent checks
@@ -62,13 +63,18 @@ test('SET_SESSION_ID reducer restores only target-session active streaming snaps
     const setSessionIdCase = extractFunctionBody(storeSource, 'case "SET_SESSION_ID":');
     assert.match(
         setSessionIdCase,
-        /const restoredStreamingForNew =[\s\S]*isNewSessionProcessing[\s\S]*streamingBySessionId\[newId\][\s\S]*streaming:\s*restoredStreamingForNew/,
-        'SET_SESSION_ID must restore cached progress only for the processing target session',
+        /const cachedStreamingForNew =[\s\S]*streamingBySessionId\[newId\][\s\S]*const restoredStreamingForNew =[\s\S]*isNewSessionProcessing[\s\S]*hasVisibleStreamingSnapshotLocal\(cachedStreamingForNew\)[\s\S]*streaming:\s*restoredStreamingForNew/,
+        'SET_SESSION_ID must restore cached progress for processing sessions or visible cached streaming snapshots',
     );
     assert.match(
         setSessionIdCase,
         /streamingBySessionId\s*=\s*cacheStreamingForSession\([\s\S]*state\.currentSessionId[\s\S]*state\.streaming/,
         'SET_SESSION_ID must cache the old session stream before switching away',
+    );
+    assert.match(
+        setSessionIdCase,
+        /messagesBySessionId[\s\S]*hasVisibleStreamingSnapshotLocal\(state\.streaming\)[\s\S]*mergeStreamingSnapshotIntoMessagesLocal\(/,
+        'SET_SESSION_ID must persist visible streaming snapshot into per-session message cache before switching away',
     );
 });
 
@@ -81,8 +87,8 @@ test('HYDRATE_SESSION_FROM_CACHE caches outgoing active streaming before switchi
     );
     assert.match(
         hydrateCase,
-        /const restoredStreamingForNew =[\s\S]*isNewSessionProcessing[\s\S]*streamingBySessionId\[action\.payload\.sessionId\][\s\S]*streaming:\s*restoredStreamingForNew/,
-        'HYDRATE_SESSION_FROM_CACHE must restore cached streaming only for the processing target session',
+        /const cachedStreamingForNew =[\s\S]*streamingBySessionId\[action\.payload\.sessionId\][\s\S]*const restoredStreamingForNew =[\s\S]*isNewSessionProcessing[\s\S]*hasVisibleStreamingSnapshotLocal\(cachedStreamingForNew\)[\s\S]*streaming:\s*restoredStreamingForNew/,
+        'HYDRATE_SESSION_FROM_CACHE must restore cached streaming for processing sessions or visible cached snapshots',
     );
     assert.match(
         hydrateCase,
@@ -122,18 +128,36 @@ test('SET_SESSION_ID reducer also resets isExecutingQueue on session switch', ()
 // Extension host – session-scoped stream event filtering
 // ---------------------------------------------------------------------------
 
-test('ChatViewProvider drops stream events from non-active sessions before forwarding to webview', () => {
-    // The stream callback must call extractEventSessionId and return early if the
-    // event belongs to a different session than this.currentSessionId.
+test('ChatViewProvider forwards inactive-session stream events when they can be attributed to a processing stream', () => {
     assert.match(
         chatViewProviderSource,
         /const eventSessionId\s*=\s*this\.extractEventSessionId\(event\)/,
         'Stream callback must extract the event session ID via extractEventSessionId()',
     );
-    assert.match(
+    assert.doesNotMatch(
         chatViewProviderSource,
         /if\s*\(eventSessionId\s*&&\s*this\.currentSessionId\s*&&\s*eventSessionId\s*!==\s*this\.currentSessionId\)\s*\{\s*return\s*;/,
-        'Stream callback must return early (drop) when the event session ID does not match the active session',
+        'Stream callback must not drop explicit session-scoped events just because the session is inactive',
+    );
+    assert.match(
+        chatViewProviderSource,
+        /if\s*\(eventSessionId\s*&&\s*!this\.isSessionEffectivelyProcessing\(eventSessionId\)\)\s*\{/,
+        'Stream callback must still drop explicit events for stopped/non-processing sessions',
+    );
+    assert.doesNotMatch(
+        chatViewProviderSource,
+        /if\s*\(!eventSessionId\s*&&\s*this\.activeStreamSessionId\s*&&\s*this\.currentSessionId\s*&&\s*this\.activeStreamSessionId\s*!==\s*this\.currentSessionId\)\s*\{/,
+        'Stream callback must not drop no-session events after switching when activeStreamSessionId can attribute them',
+    );
+    assert.match(
+        chatViewProviderSource,
+        /const resolvedSessionId = eventSessionId \|\| this\.activeStreamSessionId \|\| this\.currentSessionId/,
+        'Stream callback must stamp no-session events with activeStreamSessionId before forwarding',
+    );
+    assert.match(
+        chatViewProviderSource,
+        /if\s*\(!eventSessionId\s*&&\s*this\.activeStreamSessionId\s*&&\s*!this\.isSessionEffectivelyProcessing\(this\.activeStreamSessionId\)\)\s*\{/,
+        'Stream callback must still drop no-session events for a stopped active stream',
     );
 });
 
@@ -193,6 +217,24 @@ test('handleStreamEvent drops events whose session ID does not match current ses
         handleStreamEventBody,
         /if\s*\(eventSessionId\s*&&\s*state\.currentSessionId\s*&&\s*eventSessionId\s*!==\s*state\.currentSessionId\)\s*\{\s*return\s*;/,
         'handleStreamEvent must silently drop events from sessions other than state.currentSessionId',
+    );
+});
+
+test('message handler caches inactive-session stream events instead of rendering them into the active session', () => {
+    const streamEventCase = extractFunctionBody(
+        messageHandlerSource,
+        'case "streamEvent":',
+    );
+
+    assert.match(
+        streamEventCase,
+        /eventSessionId[\s\S]*eventSessionId !== activeSessionId[\s\S]*currentSessionId:\s*eventSessionId/s,
+        'streamEvent case must scope inactive-session events to their own session before handling them',
+    );
+    assert.match(
+        streamEventCase,
+        /streaming:\s*stateBeforeStreamEvent\.streamingBySessionId\?\.\[eventSessionId\][\s\S]*appReducer\(scopedState,\s*action\)[\s\S]*SET_SESSION_STREAMING/s,
+        'streamEvent case must update the per-session streaming cache for inactive streaming sessions',
     );
 });
 

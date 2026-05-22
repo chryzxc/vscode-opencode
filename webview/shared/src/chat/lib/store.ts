@@ -158,6 +158,10 @@ export type AppAction =
   | { type: "RESET_SESSION_STATS"; payload?: SessionStats }
   | { type: "ACCUMULATE_SESSION_STATS"; payload: SessionStats }
   | { type: "SET_STREAMING"; payload: StreamingState | null }
+  | {
+    type: "SET_SESSION_STREAMING";
+    payload: { sessionId: string; streaming: StreamingState | null };
+  }
   | { type: "UPDATE_STREAMING_CONTENT"; payload: StreamingContentPayload }
   | { type: "UPDATE_STREAMING_REASONING"; payload: StreamingReasoningPayload }
   | { type: "SET_IN_REASONING_PART"; payload: boolean }  // Track if we're processing a reasoning part
@@ -316,6 +320,90 @@ function cacheStreamingForSession(
     delete next[sessionId];
   }
   return next;
+}
+
+function buildStreamingMessageLocal(streaming: StreamingState): Message {
+  return {
+    role: "assistant",
+    content: streaming.content,
+    parts: [{ type: "text", text: streaming.content }],
+    reasoningEvents: streaming.reasoningEvents,
+    progressEvents: streaming.progressEvents,
+    steps: streaming.steps,
+    edits: streaming.edits.map((file) => ({ file })),
+    interactiveEvents: streaming.interactiveEvents,
+    info: {
+      id: streaming.messageId ?? undefined,
+      agent: streaming.agent,
+      model: streaming.model,
+      modelID: streaming.modelID,
+      providerID: streaming.providerID,
+      variant: streaming.variant,
+      duration: streaming.usage?.duration,
+    },
+    variant: streaming.variant,
+  };
+}
+
+function mergeStreamingSnapshotIntoMessagesLocal(
+  messages: Message[],
+  streaming: StreamingState,
+): Message[] {
+  const incoming = buildStreamingMessageLocal(streaming);
+  const incomingId = asStringLocal(incoming.info?.id, incoming.id);
+  if (!incomingId) {
+    return [...messages, incoming];
+  }
+
+  const next = [...messages];
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    const message = next[i];
+    const role = getMessageRoleForCanonical(message);
+    if (role !== "assistant") continue;
+    const messageId = getMessageIdForCanonical(message);
+    if (messageId && messageId === incomingId) {
+      next[i] = incoming;
+      return next;
+    }
+  }
+  next.push(incoming);
+  return next;
+}
+
+function hasVisibleStreamingSnapshotLocal(
+  streaming: StreamingState | null | undefined,
+): streaming is StreamingState {
+  if (!streaming) {
+    return false;
+  }
+  return (
+    asStringLocal(streaming.content).trim().length > 0 ||
+    asStringLocal(streaming.reasoning).trim().length > 0 ||
+    (Array.isArray(streaming.reasoningEvents) && streaming.reasoningEvents.length > 0) ||
+    (Array.isArray(streaming.progressEvents) && streaming.progressEvents.length > 0) ||
+    (Array.isArray(streaming.steps) && streaming.steps.length > 0) ||
+    (Array.isArray(streaming.edits) && streaming.edits.length > 0) ||
+    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0)
+  );
+}
+
+function cacheVisibleStreamingMessageForSession(
+  current: Record<string, Message[]> | undefined,
+  sessionId: string | null,
+  streaming: StreamingState | null,
+  activeMessages?: Message[],
+): Record<string, Message[]> {
+  if (!sessionId || !hasVisibleStreamingSnapshotLocal(streaming)) {
+    return current ?? {};
+  }
+  const existingMessages =
+    activeMessages ?? current?.[sessionId] ?? [];
+  return {
+    ...(current ?? {}),
+    [sessionId]: canonicalizeMessagesForRender(
+      mergeStreamingSnapshotIntoMessagesLocal(existingMessages, streaming),
+    ),
+  };
 }
 
 function getStructuredRecordLocal(message: Message): Record<string, unknown> | null {
@@ -1494,9 +1582,28 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         state.currentSessionId,
         state.streaming,
       );
+      const messagesBySessionId =
+        state.currentSessionId &&
+        hasVisibleStreamingSnapshotLocal(state.streaming)
+          ? {
+            ...(state.messagesBySessionId ?? {}),
+            [state.currentSessionId]: canonicalizeMessagesForRender(
+              mergeStreamingSnapshotIntoMessagesLocal(
+                state.messages ?? [],
+                state.streaming,
+              ),
+            ),
+          }
+          : state.messagesBySessionId;
+      const cachedStreamingForNew = newId
+        ? streamingBySessionId[newId] ?? null
+        : null;
       const restoredStreamingForNew =
-        newId && isNewSessionProcessing
-          ? streamingBySessionId[newId] ?? null
+        newId &&
+        cachedStreamingForNew &&
+        (isNewSessionProcessing ||
+          hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
+          ? cachedStreamingForNew
           : null;
 
       return {
@@ -1514,6 +1621,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         // processing; otherwise keep the old session's progress hidden.
         streaming: restoredStreamingForNew,
         streamingBySessionId,
+        messagesBySessionId,
         isCompacting: false,
         compactionError: undefined,
         compactionNotice: undefined,
@@ -1619,8 +1727,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         state.currentSessionId,
         state.streaming,
       );
-      const restoredStreamingForNew = isNewSessionProcessing
-        ? streamingBySessionId[action.payload.sessionId] ?? null
+      const cachedStreamingForNew =
+        streamingBySessionId[action.payload.sessionId] ?? null;
+      const restoredStreamingForNew =
+        cachedStreamingForNew &&
+        (isNewSessionProcessing ||
+          hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
+        ? cachedStreamingForNew
         : null;
       const resolvedDividerIndex = resolveCompactionDividerIndex(cachedMessages, {
         compactionDividerIndex: state.compactionDividerIndex,
@@ -1801,6 +1914,50 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          state.currentSessionId,
+          streaming,
+          state.messages,
+        ),
+      };
+    }
+    case "SET_SESSION_STREAMING": {
+      const streaming = action.payload.streaming
+        ? {
+          ...action.payload.streaming,
+          hasRenderableContent:
+            action.payload.streaming.hasRenderableContent ?? false,
+          reasoningEvents: action.payload.streaming.reasoningEvents ?? [],
+          progressEvents: action.payload.streaming.progressEvents ?? [],
+        }
+        : null;
+      const streamingBySessionId = cacheStreamingForSession(
+        state.streamingBySessionId,
+        action.payload.sessionId,
+        streaming,
+      );
+      if (state.currentSessionId !== action.payload.sessionId) {
+        return {
+          ...state,
+          streamingBySessionId,
+          messagesBySessionId: cacheVisibleStreamingMessageForSession(
+            state.messagesBySessionId,
+            action.payload.sessionId,
+            streaming,
+          ),
+        };
+      }
+      return {
+        ...state,
+        streaming,
+        streamingBySessionId,
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          action.payload.sessionId,
+          streaming,
+          state.messages,
+        ),
       };
     }
     case "UPDATE_STREAMING_CONTENT": {
@@ -1843,6 +2000,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.streamingBySessionId,
           state.currentSessionId,
           streaming,
+        ),
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          state.currentSessionId,
+          streaming,
+          state.messages,
         ),
       };
     }
@@ -1910,6 +2073,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          state.currentSessionId,
+          streaming,
+          state.messages,
+        ),
       };
     }
     case "ADD_STREAMING_STEP": {
@@ -1937,6 +2106,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.streamingBySessionId,
           state.currentSessionId,
           streaming,
+        ),
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          state.currentSessionId,
+          streaming,
+          state.messages,
         ),
       };
     }
@@ -1975,6 +2150,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          state.currentSessionId,
+          streaming,
+          state.messages,
+        ),
       };
     }
     case "ADD_STREAMING_EDIT": {
@@ -2000,6 +2181,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          state.currentSessionId,
+          streaming,
+          state.messages,
+        ),
       };
     }
     case "FINISH_STREAMING": {
@@ -2018,6 +2205,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.streamingBySessionId,
           state.currentSessionId,
           streaming,
+        ),
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          state.currentSessionId,
+          streaming,
+          state.messages,
         ),
       };
     }

@@ -102,6 +102,7 @@ const actionContracts = [
   { type: 'START_SESSION_LOADING', patterns: [/isLoadingSession:\s*true/, /loadingSessionId:\s*action\.payload\.sessionId/, /loadingSessionTitle:\s*action\.payload\.title/] },
   { type: 'END_SESSION_LOADING', patterns: [/isLoadingSession:\s*false/, /loadingSessionId:\s*null/, /loadingSessionTitle:\s*null/] },
   { type: 'SET_STREAMING', patterns: [/const streaming = action\.payload[\s\S]*\.\.\.action\.payload/, /hasRenderableContent:\s*action\.payload\.hasRenderableContent \?\? false/, /reasoningEvents:\s*action\.payload\.reasoningEvents \?\? \[\]/, /streamingBySessionId:\s*cacheStreamingForSession/] },
+  { type: 'SET_SESSION_STREAMING', span: 2600, patterns: [/action\.payload\.sessionId/, /cacheStreamingForSession\([\s\S]*action\.payload\.sessionId[\s\S]*streaming/, /state\.currentSessionId !== action\.payload\.sessionId/, /streamingBySessionId/] },
   { type: 'UPDATE_STREAMING_CONTENT', patterns: [/const content = action\.payload\.append/, /contentStartSeq/, /hasRenderableContent/, /content,/] },
   { type: 'UPDATE_STREAMING_REASONING', span: 2600, patterns: [/mergeStreamingReasoning\(/, /reasoningEvents = appendWithCap\(/, /inThoughtBlock/, /inReasoningPart/] },
   { type: 'ADD_STREAMING_STEP', patterns: [/const stampedStep = \{ \.\.\.action\.payload, streamSeq: Date\.now\(\) \}/, /steps: appendWithCap\(/, /progressEvents: appendWithCap\(/] },

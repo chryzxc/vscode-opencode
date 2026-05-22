@@ -2721,6 +2721,13 @@ function buildDisplayEvents(
     (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
   const normalizePathForMatch = (value?: string) =>
     (value || "").replace(/\\/g, "/").toLowerCase();
+  const extractFilePathFromText = (value?: string): string | undefined => {
+    if (!value) return undefined;
+    const match = value.match(
+      /(?:^|[\s("'`])((?:\.{1,2}\/|\/|[A-Za-z]:\\)?[\w./\\-]+\.[A-Za-z0-9]+)(?:$|[\s)"'`])/,
+    );
+    return match?.[1];
+  };
 
   // Clean event labels - remove unwanted prefixes and filter out system noise
   const cleanEventLabel = (label: string): string => {
@@ -2782,6 +2789,12 @@ function buildDisplayEvents(
       const partType = event.partType;
       const internal = Boolean(event.internal);
       let filePath = event.filePath || activityDetail?.file;
+      if (!filePath) {
+        filePath =
+          extractFilePathFromText(event.meta) ||
+          extractFilePathFromText(activityDetail?.command) ||
+          extractFilePathFromText(rawTitle);
+      }
       if (
         !filePath &&
         /edit|writ|modif|updat|patch/i.test(rawTitle) &&
@@ -3917,6 +3930,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   );
   const showInProgressActivityPlaceholder =
     !!streaming?.isActive &&
+    state.isProcessing &&
     !hasActiveTimelineWork &&
     !showThinkingPlaceholder;
   const { rawResponseText } = useMemo(() => {
@@ -4261,6 +4275,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   >
                     {timelineDisplayEvents.map((event, index) => {
                       const isLast =
+                        !showInProgressActivityPlaceholder &&
                         index === timelineDisplayEvents.length - 1;
                       const isLatestStreamingEvent =
                         isStreamingActive && isLast;
@@ -4468,6 +4483,22 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         </StepperItem>
                       );
                     })}
+                    {showInProgressActivityPlaceholder && (
+                      <StepperItem
+                        isLast={true}
+                        indicator={<StepIndicator status="running" />}
+                        className="oc-refined-stepper-item mt-2"
+                      >
+                        <div className="flex min-w-0 items-center gap-2 flex-wrap">
+                          <span className="oc-refined-event-label activity">
+                            IN_PROGRESS
+                          </span>
+                          <span className="flex-1 whitespace-pre-wrap break-words text-[11px] leading-5 oc-text-secondary">
+                            Working in the background...
+                          </span>
+                        </div>
+                      </StepperItem>
+                    )}
                   </Stepper>
 
                   {showThinkingPlaceholder && !hasThinkingEvents && timelineDisplayEvents.length === 0 && (
@@ -4513,23 +4544,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 </>
               )}
 
-              {showInProgressActivityPlaceholder && (
-                <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
-                  <StepperItem
-                    isLast={true}
-                    indicator={<StepIndicator status="running" />}
-                  >
-                    <div className="flex min-w-0 items-center gap-2 flex-wrap">
-                      <span className="oc-refined-event-label activity">
-                        IN_PROGRESS
-                      </span>
-                      <span className="flex-1 whitespace-pre-wrap break-words text-[11px] leading-5 oc-text-secondary">
-                        Working in the background...
-                      </span>
-                    </div>
-                  </StepperItem>
-                </Stepper>
-              )}
             </section>
           )}
 

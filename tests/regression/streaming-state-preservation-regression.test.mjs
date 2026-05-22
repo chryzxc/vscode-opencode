@@ -77,6 +77,11 @@ test("messageResponse handler only clears streaming state for matching message I
     /if\s*\(\s*shouldClearStreamingAfterResponse\s*\)\s*\{[\s\S]*SET_STREAMING/s,
     "messageResponse should only clear streaming/processing inside the guarded block",
   );
+  assert.match(
+    messageHandlerSource,
+    /if\s*\(\s*shouldClearStreamingAfterResponse\s*\)\s*\{[\s\S]*SET_STREAMING[\s\S]*\}\s*else\s*\{[\s\S]*FINISH_STREAMING/s,
+    "messageResponse should deactivate preserved streaming snapshots so the in-progress placeholder cannot get stuck",
+  );
 
   const messageResponseBlockMatch = messageHandlerSource.match(
     /case\s+"messageResponse"\s*:\s*\{[\s\S]*?break;\s*\}/,
@@ -163,10 +168,43 @@ test("chatHistory handler should not clear rendered messages during active-sessi
     /shouldMergeFinishedStreamingSnapshot[\s\S]*mergeStreamingSnapshotIntoHistory\([\s\S]*stabilizedHydratedMessages[\s\S]*currentStreamingSnapshot/s,
     "chatHistory should merge a finished local stream into stale hydrated history before rendering",
   );
+  assert.match(
+    messageHandlerSource,
+    /payloadProcessingSessionIds[\s\S]*effectiveProcessingSessionIds[\s\S]*isSessionProcessing[\s\S]*effectiveProcessingSessionIds\.includes\(chatHistorySessionId\)/s,
+    "chatHistory should use payload processing ids so session-switch hydration knows about active streams before initState arrives",
+  );
+  assert.match(
+    messageHandlerSource,
+    /const shouldMergeCachedSwitchStreamingSnapshot = !!\([\s\S]*isSessionProcessing[\s\S]*cachedStreamingForSwitch[\s\S]*hasVisibleStreamingSnapshot\(cachedStreamingForSwitch\)/s,
+    "chatHistory should merge cached streaming snapshots only while the target session is still processing",
+  );
+  assert.match(
+    messageHandlerSource,
+    /function activityScoreFromMessages\(/,
+    "message handler should be able to compare hydrated history against richer local activity cache",
+  );
+  assert.match(
+    messageHandlerSource,
+    /incomingHistoryActivityScore[\s\S]*cachedHistoryActivityScore[\s\S]*shouldUseCachedSwitchMessages[\s\S]*isSessionProcessing[\s\S]*cachedHistoryActivityScore > incomingHistoryActivityScore[\s\S]*const hydrationSourceMessages = shouldUseCachedSwitchMessages[\s\S]*cachedMessagesForSwitch[\s\S]*dedupedSystemMessages/s,
+    "chatHistory should not overwrite richer local activity cache with stale persisted history while a session is still processing, even if currentSessionId was already updated",
+  );
   assert.doesNotMatch(
     messageHandlerSource,
     /case\s+"chatHistory"[\s\S]*dispatch\(\{\s*type:\s*"CLEAR_MESSAGES"\s*\}\)/s,
     "chatHistory should not hard-clear message list and cause render flicker",
+  );
+});
+
+test("streamEvent handler preserves activity updates for inactive streaming sessions", () => {
+  assert.match(
+    messageHandlerSource,
+    /import \{ appReducer, hasSystemMessagePatternInText \} from '\.\/store';/,
+    "message handler should use the reducer to apply stream actions to inactive-session snapshots",
+  );
+  assert.match(
+    messageHandlerSource,
+    /eventSessionId[\s\S]*eventSessionId !== activeSessionId[\s\S]*const scopedDispatch:[\s\S]*appReducer\(scopedState,\s*action\)[\s\S]*type:\s*"SET_SESSION_STREAMING"/s,
+    "streamEvent should update streamingBySessionId when an inactive session keeps streaming",
   );
 });
 
@@ -178,7 +216,7 @@ test("duplicate stream start events should not reset populated assistant streami
   );
   assert.match(
     messageHandlerSource,
-    /case 'start':[\s\S]*case 'streamStart':[\s\S]*duplicateStartForActiveStream[\s\S]*hasVisibleStreamingSnapshot\(latestStreaming\)[\s\S]*SET_STREAMING[\s\S]*\.\.\.latestStreaming/s,
+    /case 'start':[\s\S]*case 'streamStart':[\s\S]*hasVisibleExistingStreaming[\s\S]*hasVisibleStreamingSnapshot\(latestStreaming\)[\s\S]*duplicateStartForVisibleStream[\s\S]*SET_STREAMING[\s\S]*\.\.\.latestStreaming/s,
     "start/streamStart should preserve existing populated stream snapshot instead of resetting to empty content",
   );
 });
@@ -201,5 +239,17 @@ test("compaction completion preserves visible assistant streaming before clearin
     messageHandlerSource,
     /case "compactionStatus"[\s\S]*if \(normalizedStatus !== "running"\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch, getState\)[\s\S]*SET_STREAMING[\s\S]*payload: null/s,
     "compaction completion should not discard a visible assistant streaming snapshot",
+  );
+});
+
+test("in-progress placeholder requires real processing state", () => {
+  const messageComponentsSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "MessageComponents.tsx")],
+    "MessageComponents.tsx",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const showInProgressActivityPlaceholder =[\s\S]*!!streaming\?\.isActive[\s\S]*state\.isProcessing[\s\S]*!hasActiveTimelineWork/s,
+    "activity placeholder should not stay visible from a stale active streaming flag after processing ends",
   );
 });

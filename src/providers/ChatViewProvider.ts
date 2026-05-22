@@ -1214,15 +1214,6 @@ export class ChatViewProvider
       return;
     }
 
-    // Session loading used to borrow processingSessionIds as a loading marker.
-    // If the target session is already running an AI turn, preserve that marker
-    // so switching away/back does not make the webview think the response ended.
-    const addedLoadProcessingMarker = !this.processingSessionIds.has(sessionId);
-    if (addedLoadProcessingMarker) {
-      this.processingSessionIds.add(sessionId);
-      this.sendProcessingSessionsUpdate();
-    }
-
     try {
       // CRITICAL: Switch the active session in SessionService
       // This updates the service's internal state and persists it
@@ -1301,6 +1292,7 @@ export class ChatViewProvider
         type: "chatHistory",
         sessionId: sessionId,
         messages: messages,
+        processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
       this.view?.webview.postMessage({
         type: "subagentSnapshot",
@@ -1385,12 +1377,6 @@ export class ChatViewProvider
       vscode.window.showErrorMessage(`Failed to load session: ${error}`);
       log.endFeatureFlow(flow, { status: 'failed', error: String(error) });
     } finally {
-      // Remove only the temporary loading marker. A pre-existing marker means
-      // the AI response is still active and must survive the session switch.
-      if (addedLoadProcessingMarker) {
-        this.processingSessionIds.delete(sessionId);
-        this.sendProcessingSessionsUpdate();
-      }
       // always finalize flow (was previously guarded by !flow.result)
       log.endFeatureFlow(flow, { status: 'completed', sessionId });
     }
@@ -2109,10 +2095,17 @@ export class ChatViewProvider
    */
   private getEffectiveProcessingSessionIds(): string[] {
     const ids = new Set(this.processingSessionIds);
+    if (this.activeStreamSessionId && this.processingSessionIds.size > 0) {
+      ids.add(this.activeStreamSessionId);
+    }
     for (const sessionId of this.subagentTracker.getActiveProcessingSessionIds()) {
       ids.add(sessionId);
     }
     return Array.from(ids);
+  }
+
+  private isSessionEffectivelyProcessing(sessionId: string | undefined): boolean {
+    return !!sessionId && this.getEffectiveProcessingSessionIds().includes(sessionId);
   }
 
   private sendProcessingSessionsUpdate(): void {
@@ -2508,6 +2501,7 @@ export class ChatViewProvider
                 type: "chatHistory",
                 sessionId: currentSession.id,
                 messages: messages,
+                processingSessionIds: this.getEffectiveProcessingSessionIds(),
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
               const subagentSnapshotPayload =
@@ -3165,6 +3159,7 @@ export class ChatViewProvider
               type: "chatHistory",
               sessionId: retrySessionId,
               messages: messages,
+              processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
           } catch (err) {
             this.logger.error("Failed to load messages for retry", { err });
@@ -3363,24 +3358,20 @@ export class ChatViewProvider
         }
       }
 
-      // We process all events for internal logic (tracking, persistence),
-      // but drop early if the stream event belongs to a different active session.
-      if (eventSessionId && this.currentSessionId && eventSessionId !== this.currentSessionId) {
-        return;
-      }
-      // When the event carries no sessionId, use activeStreamSessionId to decide:
-      // if we switched sessions after the stream started, these orphaned events
-      // belong to the old session and must not leak into the new one.
-      if (!eventSessionId && this.activeStreamSessionId && this.currentSessionId && this.activeStreamSessionId !== this.currentSessionId) {
-        return;
-      }
+      // Explicitly session-scoped stream events must still reach the webview
+      // when that session is inactive. The webview keeps per-session streaming
+      // caches so switching back to an active stream can restore its timeline.
+      // When the event carries no sessionId, keep using activeStreamSessionId
+      // to attribute it. If the user switched sessions mid-stream, forwarding
+      // with that resolved id lets the webview update the inactive session's
+      // streaming cache instead of losing activity events.
       if (await this.handleSdkTodoUpdatedEvent(event, eventSessionId)) {
         return;
       }
       // Skip forwarding events for sessions that were stopped by the user.
       // After abort() is called, in-flight stream events may still arrive from
       // the server, but we should not forward them to the webview.
-      if (eventSessionId && !this.processingSessionIds.has(eventSessionId)) {
+      if (eventSessionId && !this.isSessionEffectivelyProcessing(eventSessionId)) {
         this.logger.debug("Skipping stream event for non-processing session", {
           sessionId: eventSessionId,
           eventType: event.type,
@@ -3389,7 +3380,7 @@ export class ChatViewProvider
       }
       // For events without an explicit sessionId, check the active stream session.
       // If activeStreamSessionId was cleared (e.g., after stop), skip these events.
-      if (!eventSessionId && this.activeStreamSessionId && !this.processingSessionIds.has(this.activeStreamSessionId)) {
+      if (!eventSessionId && this.activeStreamSessionId && !this.isSessionEffectivelyProcessing(this.activeStreamSessionId)) {
         this.logger.debug("Skipping stream event for stopped active stream session", {
           activeStreamSessionId: this.activeStreamSessionId,
           eventType: event.type,
@@ -3962,6 +3953,7 @@ export class ChatViewProvider
             type: "chatHistory",
             sessionId,
             messages: processedMessages,
+            processingSessionIds: this.getEffectiveProcessingSessionIds(),
           });
           this.logger.info("Timeout recovery succeeded from session history", {
             sessionId,

@@ -65,16 +65,18 @@ test('handleStopRequest aborts the SDK session and cleans up processing state', 
   assert.match(body, /this\.handleExecuteQueue\(resolvedSessionId\);/, 'handleStopRequest should drain queued prompts after aborting');
 });
 
-test('handleLoadSession preserves existing AI processing markers while switching sessions', () => {
+test('handleLoadSession does not borrow AI processing markers for session loading', () => {
   const body = extractFunctionBody(source, '  private async handleLoadSession(');
-  assert.match(body, /const addedLoadProcessingMarker = !this\.processingSessionIds\.has\(sessionId\);/, 'handleLoadSession should detect whether the session was already processing');
-  assert.match(body, /if \(addedLoadProcessingMarker\) \{[\s\S]*this\.processingSessionIds\.add\(sessionId\);[\s\S]*this\.sendProcessingSessionsUpdate\(\);[\s\S]*\}/, 'handleLoadSession should only add a temporary loading marker when needed');
-  assert.match(body, /if \(addedLoadProcessingMarker\) \{[\s\S]*this\.processingSessionIds\.delete\(sessionId\);[\s\S]*this\.sendProcessingSessionsUpdate\(\);[\s\S]*\}/, 'handleLoadSession should not clear a pre-existing AI processing marker');
+  assert.doesNotMatch(body, /addedLoadProcessingMarker/, 'session loading must not create temporary AI processing markers');
+  assert.doesNotMatch(body, /this\.processingSessionIds\.add\(sessionId\)/, 'session loading must not mark a session as AI-processing');
+  assert.doesNotMatch(body, /this\.processingSessionIds\.delete\(sessionId\)/, 'session loading must not clear AI-processing state');
 });
 
 test('init payloads hydrate processing sessions for reloaded webviews', () => {
   assert.match(source, /type: "initState",[\s\S]*processingSessionIds: this\.getEffectiveProcessingSessionIds\(\),[\s\S]*todoItems:/, 'initState should include processingSessionIds during bootstrap/session load');
   assert.match(source, /type: "chatHistory",\s*sessionId: currentSession\.id,\s*messages: messages,/m, 'ready bootstrap should scope chatHistory to the current session');
+  assert.match(source, /type: "chatHistory",[\s\S]*processingSessionIds: this\.getEffectiveProcessingSessionIds\(\)/, 'chatHistory should include processingSessionIds so switch hydration can preserve active timelines before initState arrives');
+  assert.match(source, /if \(this\.activeStreamSessionId && this\.processingSessionIds\.size > 0\) \{[\s\S]*ids\.add\(this\.activeStreamSessionId\)/, 'effective processing sessions should include the active stream session without recursive getters');
 });
 
 test('send flow keeps structured-output and direct-send branches intact', () => {
