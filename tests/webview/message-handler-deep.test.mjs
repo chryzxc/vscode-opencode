@@ -89,8 +89,13 @@ test('handleStreamEvent routes lifecycle and streaming dispatch patterns', () =>
   );
   assert.match(
     handleStreamEventBody,
-    /hasSystemMessagePatternInText\(partText\)[\s\S]*type: 'SET_MESSAGES'/,
-    'system-message parts should be routed into SET_MESSAGES',
+    /hasSystemMessagePatternInText\(partText\)[\s\S]*upsertRealtimeSystemMessage\(partText\)/,
+    'system-message parts should be routed into realtime system-message upsert path',
+  );
+  assert.match(
+    handleStreamEventBody,
+    /const existingMessages = hasVisibleStreamingSnapshot\(stateNow\.streaming\)[\s\S]*mergeStreamingSnapshotIntoHistory\(stateNow\.messages \|\| \[\], stateNow\.streaming\)[\s\S]*stateNow\.messages \|\| \[\]/,
+    'system-message upserts should preserve the active streaming snapshot before SET_MESSAGES',
   );
 });
 
@@ -117,13 +122,13 @@ test('handleStreamEvent ingests structured output, interactive events, subagents
   );
   assert.match(
     handleStreamEventBody,
-    /structuredOutput\.subagents[\s\S]*type: 'UPSERT_SUBAGENT_SUMMARIES'[\s\S]*type: 'UPSERT_SUBAGENT_DETAIL'/,
-    'structured subagent payloads should upsert summaries and details',
+    /applyStructuredSubagentPayload\(dispatch, getState, structuredOutput, messageId\)/,
+    'structured subagent payloads should be delegated to applyStructuredSubagentPayload',
   );
   assert.match(
-    handleStreamEventBody,
-    /structuredOutput\.subagentsDelta[\s\S]*type: 'UPSERT_SUBAGENT_SUMMARIES'[\s\S]*type: 'UPSERT_SUBAGENT_DETAIL'/,
-    'subagentsDelta payloads should also upsert summaries and details',
+    source,
+    /function applyStructuredSubagentPayload\([\s\S]*structuredOutput\.subagentsDelta[\s\S]*UPSERT_SUBAGENT_SUMMARIES[\s\S]*UPSERT_SUBAGENT_DETAIL/s,
+    'subagentsDelta payloads should upsert summaries/details inside applyStructuredSubagentPayload',
   );
   assert.match(
     handleStreamEventBody,

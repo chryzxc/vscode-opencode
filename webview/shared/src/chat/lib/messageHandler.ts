@@ -6441,7 +6441,9 @@ function handleStreamEvent(
     }
 
     const stateNow = getState();
-    const existingMessages = stateNow.messages || [];
+    const existingMessages = hasVisibleStreamingSnapshot(stateNow.streaming)
+      ? mergeStreamingSnapshotIntoHistory(stateNow.messages || [], stateNow.streaming)
+      : stateNow.messages || [];
     const fallbackId = `sys-stream-${messageId || Date.now()}`;
     const matchedIndex = existingMessages.findIndex((msg) => {
       const msgRole = (
