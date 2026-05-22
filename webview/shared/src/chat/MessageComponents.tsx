@@ -3456,15 +3456,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     changeSummary,
   );
   const shouldShowFileChanges = useMemo(() => {
-    if (!message || !messageHasOwnFileChangeEvidence(message)) {
+    if (
+      !hasOwnedChangeSummary ||
+      !message ||
+      !messageHasOwnFileChangeEvidence(message)
+    ) {
       return false;
-    }
-
-    // Fallback must stay strict: showing on generic activity evidence can make
-    // the diff card drift to the latest assistant message. Only allow fallback
-    // when direct file edits are attached to this exact message.
-    if (!hasOwnedChangeSummary) {
-      return Array.isArray(message.edits) && message.edits.length > 0;
     }
 
     const ownFiles = fileChangePathsFromMessage(message);
@@ -4994,6 +4991,24 @@ function FileChangesSection({
   type FileChange = { file: string; added: number; deleted: number; diffExcerpt?: DiffExcerpt };
   type IndexedFileChange = FileChange & { sourcePriority: number };
 
+  const isLikelyFilePath = (value: string): boolean => {
+    const v = value.trim();
+    if (!v) return false;
+    if (v.includes("\n")) return false;
+    if (/[\\/]/.test(v)) return true;
+    if (/^\*?[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+$/.test(v)) return true;
+    if (/^\*\s+[A-Za-z0-9._-]+[\\/][^ ]+/.test(v)) return true;
+    return false;
+  };
+
+  const compactDisplayDir = (dir: string): string => {
+    const normalized = dir.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!normalized) return "";
+    const parts = normalized.split("/").filter(Boolean);
+    if (parts.length <= 3) return normalized;
+    return `.../${parts.slice(-3).join("/")}`;
+  };
+
   const basenameFromPath = (value: string) => {
     const normalized = value.replace(/\\/g, "/").trim();
     const parts = normalized.split("/");
@@ -5035,6 +5050,7 @@ function FileChangesSection({
     ) => {
       const file = (filePath || "").trim();
       if (!file) return;
+      if (!isLikelyFilePath(file)) return;
 
       const normalizedPath = normalizePath(file);
       const hasSeparator = normalizedPath.includes("/");
@@ -5270,6 +5286,7 @@ function FileChangesSection({
             const dirname = fileChange.file !== filename
               ? fileChange.file.slice(0, fileChange.file.length - filename.length - 1)
               : '';
+            const compactDirname = compactDisplayDir(dirname);
 
             return (
               <div
@@ -5308,9 +5325,9 @@ function FileChangesSection({
                     )}
                     <FileText className="h-3 w-3 shrink-0 text-oc-text-soft" />
                     <span className="text-[11px] font-medium text-oc-text truncate">{filename}</span>
-                    {dirname && (
+                    {compactDirname && (
                       <span className="text-[10px] font-medium text-oc-text-soft truncate hidden sm:inline">
-                        {dirname}
+                        {compactDirname}
                       </span>
                     )}
                   </button>

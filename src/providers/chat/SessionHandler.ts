@@ -84,8 +84,18 @@ export class SessionHandler {
       const sessionsPayload = topLevelSessions.map((session: any) => ({
         id: session.id,
         title: session.title || session.id,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
+        createdAt:
+          (typeof session.createdAt === "number" && Number.isFinite(session.createdAt)
+            ? session.createdAt
+            : typeof session.time?.created === "number" && Number.isFinite(session.time.created)
+              ? session.time.created
+              : undefined),
+        updatedAt:
+          (typeof session.updatedAt === "number" && Number.isFinite(session.updatedAt)
+            ? session.updatedAt
+            : typeof session.time?.updated === "number" && Number.isFinite(session.time.updated)
+              ? session.time.updated
+              : undefined),
         parentSessionId:
           (typeof session.parentSessionId === "string" &&
           session.parentSessionId.trim().length > 0

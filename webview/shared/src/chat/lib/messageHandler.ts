@@ -8241,6 +8241,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   let latestStreamingSnapshot: StreamingState | null = null;
   let terminalErrorReached = false;
   let activeSubagentParentMessageIds = new Set<string>();
+  const stoppedSessionIds = new Set<string>();
 
   const isLikelyInteractiveAnswerSubmissionMessage = (message: Message): boolean => {
     const role = asString(message.role) || asString(asRecord(message.info)?.role);
@@ -8547,6 +8548,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "stopRequestHandled": {
+          const stoppedSessionId = firstNonEmptyString(
+            asString(data.sessionId),
+            asString(data.sessionID),
+            getState().currentSessionId ?? undefined,
+          );
+          if (stoppedSessionId) {
+            stoppedSessionIds.add(stoppedSessionId);
+          }
           const currentStreaming = getState().streaming;
           latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
 
@@ -8634,6 +8643,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const msg =
             (asRecord(data.message) as Message | null) ??
             (data as unknown as Message);
+          const responseSessionId =
+            firstNonEmptyString(
+              asString(data.sessionId),
+              asString(data.sessionID),
+              deriveSessionIdFromMessage(msg, getState().currentSessionId),
+            ) ?? undefined;
+          if (responseSessionId && stoppedSessionIds.has(responseSessionId)) {
+            dispatch({ type: "SET_PROCESSING", payload: false });
+            dispatch({ type: "FINISH_STREAMING" });
+            dispatch({ type: "SET_STREAMING", payload: null });
+            break;
+          }
           const currentMessages = getState().messages;
 
           // FORBIDDEN TO REMOVE - token accumulation for sticky header
@@ -9429,6 +9450,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           if (streamEventType === "start" || streamEventType === "streamStart") {
             terminalErrorReached = false;
             activeSubagentParentMessageIds = new Set<string>();
+            const resumedSessionId =
+              eventSessionId ||
+              activeSessionId ||
+              getState().currentSessionId ||
+              "";
+            if (resumedSessionId) {
+              stoppedSessionIds.delete(resumedSessionId);
+            }
           }
 
           streamDebug("[OpenCode][webview] streamEvent received", {

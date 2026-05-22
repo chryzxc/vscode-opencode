@@ -136,6 +136,17 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
+  function fullSessionDateTime(ts: number | undefined): string {
+    if (!ts) return "";
+    return new Date(ts).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
   const handleStartEdit = (sessionId: string, title: string) => {
     setEditingSessionId(sessionId);
     setNewTitle(title || "");
@@ -386,7 +397,10 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                             </div>
                             {session.createdAt ? (
                               <div className="mt-0.5 text-[10px] oc-text-secondary tabular-nums">
-                                {relativeSessionTime(session.createdAt)}
+                                <div>{relativeSessionTime(session.createdAt)}</div>
+                                <div className="opacity-75">
+                                  {fullSessionDateTime(session.createdAt)}
+                                </div>
                               </div>
                             ) : null}
                           </button>
