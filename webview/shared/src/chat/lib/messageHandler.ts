@@ -588,13 +588,11 @@ function isTerminalProgressPart(part: UnknownRecord, partType: string): boolean 
     return true;
   }
   const stateObj = asRecord(part.state);
-  const status = asString(part.status).toLowerCase();
-  const stateStatus = asString(stateObj?.status).toLowerCase();
+  const status = normalizeProgressStatus(asString(part.status));
+  const stateStatus = normalizeProgressStatus(asString(stateObj?.status));
   return (
-    status === "done" ||
-    status === "error" ||
-    stateStatus === "done" ||
-    stateStatus === "error" ||
+    status !== "pending" ||
+    stateStatus !== "pending" ||
     Boolean(stateObj && "result" in stateObj)
   );
 }
@@ -6321,6 +6319,40 @@ function mergeStreamingSnapshotIntoHistory(
   ]);
 }
 
+function finalizeStreamingSnapshotSteps(
+  streaming: StreamingState | null | undefined,
+  terminalStatus: "done" | "error" = "done",
+): StreamingState | null | undefined {
+  if (!streaming) {
+    return streaming;
+  }
+
+  const normalizeStepStatus = (status: unknown): "pending" | "done" | "error" => {
+    const normalized = normalizeProgressStatus(asString(status));
+    return normalized === "pending" ? terminalStatus : normalized;
+  };
+
+  const steps = Array.isArray(streaming.steps)
+    ? streaming.steps.map((step) => {
+        const nextStatus = normalizeStepStatus(step.status);
+        return nextStatus === step.status ? step : { ...step, status: nextStatus };
+      })
+    : streaming.steps;
+
+  const progressEvents = Array.isArray(streaming.progressEvents)
+    ? streaming.progressEvents.map((step) => {
+        const nextStatus = normalizeStepStatus(step.status);
+        return nextStatus === step.status ? step : { ...step, status: nextStatus };
+      })
+    : streaming.progressEvents;
+
+  return {
+    ...streaming,
+    steps,
+    progressEvents,
+  };
+}
+
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -6962,14 +6994,18 @@ function handleStreamEvent(
           //   1. part.status === 'done' (direct top-level field)
           //   2. part.state.status === 'done' (nested state object)
           //   3. part.state.result exists (implicit done — tool produced a result)
-          const stateStatus = asString(stateObj?.status);
+          const normalizedPartStatus = normalizeProgressStatus(asString(part.status));
+          const normalizedStateStatus = normalizeProgressStatus(
+            asString(stateObj?.status),
+          );
           const hasResult = stateObj && "result" in stateObj;
           const resolvedStatus =
-            asString(part.status) === "done" ||
-              stateStatus === "done" ||
-              hasResult
+            normalizedPartStatus === "done" ||
+            normalizedStateStatus === "done" ||
+            hasResult
               ? "done"
-              : asString(part.status) === "error" || stateStatus === "error"
+              : normalizedPartStatus === "error" ||
+                  normalizedStateStatus === "error"
                 ? "error"
                 : existing.status; // keep current status if no new info
 
@@ -7306,6 +7342,18 @@ function handleStreamEvent(
 
 
       if (finish) {
+        const terminalStatus: "done" | "error" =
+          asString(asRecord(payload.info)?.error) ||
+          asString(asRecord(properties)?.error)
+            ? "error"
+            : "done";
+        const finalized = finalizeStreamingSnapshotSteps(
+          getState().streaming,
+          terminalStatus,
+        );
+        if (finalized) {
+          dispatch({ type: "SET_STREAMING", payload: finalized });
+        }
         dispatch({ type: 'FINISH_STREAMING' });
         dispatch({ type: 'SET_PROCESSING', payload: false });
       } else {
@@ -7584,6 +7632,17 @@ function handleStreamEvent(
     case 'session.completed':
     case 'finish':
     case 'done': {
+      const terminalStatus: "done" | "error" =
+        asString(payload.error) || asString(asRecord(payload.info)?.error)
+          ? "error"
+          : "done";
+      const finalized = finalizeStreamingSnapshotSteps(
+        getState().streaming,
+        terminalStatus,
+      );
+      if (finalized) {
+        dispatch({ type: "SET_STREAMING", payload: finalized });
+      }
       dispatch({
         type: 'FINISH_STREAMING',
         payload: {
@@ -8467,8 +8526,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             : [];
           const shouldPreserveStreamingSnapshot =
             !plainTextFallbackFinal || interactiveEventsInResponse.length > 0;
+          const terminalStatus: "done" | "error" =
+            asString(msg.error) || asString(asRecord(asRecord(msg.info)?.error)?.message)
+              ? "error"
+              : "done";
           const streaming = shouldPreserveStreamingSnapshot
-            ? snapshotStreaming
+            ? finalizeStreamingSnapshotSteps(snapshotStreaming, terminalStatus)
             : null;
           let normalizedMessage = isMessage(msg)
             ? normalizeMessage(msg, streaming)
