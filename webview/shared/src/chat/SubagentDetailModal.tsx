@@ -180,7 +180,10 @@ export function SubagentDetailModal({
 	}, [detail.conversationEvents]);
 
 	const shouldShowLoadingTimelineStep =
-		!isError && !hasTerminalStopMarker && status !== "done";
+		!isError &&
+		!hasTerminalStopMarker &&
+		status !== "done" &&
+		renderedConversation.length === 0;
 
 	// Determine step status based on event position in newest-first ordering.
 	const getStepStatus = (index: number): 'pending' | 'done' | 'error' | 'running' => {

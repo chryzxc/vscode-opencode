@@ -107,7 +107,7 @@ test('sorts rendered conversation newest-first', () => {
 test('shows loading timeline step while active without terminal stop', () => {
   assert.match(
     source,
-    /shouldShowLoadingTimelineStep[\s\S]*Waiting for next progress\.\.\./,
-    'SubagentDetailModal.tsx should render loading timeline row when stop marker has not arrived',
+    /shouldShowLoadingTimelineStep[\s\S]*renderedConversation\.length === 0[\s\S]*Waiting for next progress\.\.\./,
+    'SubagentDetailModal.tsx should only render loading timeline row when no real conversation steps exist yet',
   );
 });
