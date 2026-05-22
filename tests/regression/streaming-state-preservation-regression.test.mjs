@@ -171,19 +171,35 @@ test("chatHistory handler should not clear rendered messages during active-sessi
 });
 
 test("duplicate stream start events should not reset populated assistant streaming state", () => {
-  // TODO: Functionality was removed or refactored in source code
-  // The hasVisibleStreamingPayload function no longer exists
-  // Skipping assertions until functionality is restored
-  /*
   assert.match(
     messageHandlerSource,
-    /function hasVisibleStreamingPayload\(/,
+    /function hasVisibleStreamingSnapshot\(/,
     "message handler should define a visibility guard for populated streaming state",
   );
   assert.match(
     messageHandlerSource,
-    /case 'start':[\s\S]*case 'streamStart':[\s\S]*duplicateStartForActiveStream[\s\S]*hasVisibleStreamingPayload\(latestStreaming\)[\s\S]*SET_STREAMING[\s\S]*\.\.\.latestStreaming/s,
+    /case 'start':[\s\S]*case 'streamStart':[\s\S]*duplicateStartForActiveStream[\s\S]*hasVisibleStreamingSnapshot\(latestStreaming\)[\s\S]*SET_STREAMING[\s\S]*\.\.\.latestStreaming/s,
     "start/streamStart should preserve existing populated stream snapshot instead of resetting to empty content",
   );
-  */
+});
+
+test("interactive answer append flushes visible streaming before clearing it", () => {
+  assert.match(
+    messageHandlerSource,
+    /function flushVisibleStreamingSnapshotToMessages\(/,
+    "message handler should centralize visible streaming snapshot flushing",
+  );
+  assert.match(
+    messageHandlerSource,
+    /case "userMessageAppended":[\s\S]*if \(isInteractiveAnswerSubmission\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch, getState\)[\s\S]*SET_STREAMING[\s\S]*payload: null/s,
+    "interactive answer echo should persist visible assistant streaming before clearing stale streaming state",
+  );
+});
+
+test("compaction completion preserves visible assistant streaming before clearing transient state", () => {
+  assert.match(
+    messageHandlerSource,
+    /case "compactionStatus"[\s\S]*if \(normalizedStatus !== "running"\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch, getState\)[\s\S]*SET_STREAMING[\s\S]*payload: null/s,
+    "compaction completion should not discard a visible assistant streaming snapshot",
+  );
 });

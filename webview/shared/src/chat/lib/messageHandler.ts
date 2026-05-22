@@ -6319,6 +6319,36 @@ function mergeStreamingSnapshotIntoHistory(
   ]);
 }
 
+function flushVisibleStreamingSnapshotToMessages(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  streamingOverride?: StreamingState | null,
+): void {
+  const streaming = streamingOverride ?? getState().streaming;
+  if (!hasVisibleStreamingSnapshot(streaming)) {
+    return;
+  }
+
+  const finalized =
+    finalizeStreamingSnapshotSteps(streaming, "done") ?? streaming;
+  const messages = getState().messages || [];
+  const nextMessages = mergeStreamingSnapshotIntoHistory(messages, finalized);
+  dispatch({ type: "SET_MESSAGES", payload: nextMessages });
+
+  const message = buildStreamingMessage(finalized);
+  const sessionId = deriveSessionIdFromMessage(
+    message,
+    getState().currentSessionId,
+  );
+  if (sessionId) {
+    vscode.postMessage({
+      type: "persistAssistantMessage",
+      sessionId,
+      message,
+    });
+  }
+}
+
 function finalizeStreamingSnapshotSteps(
   streaming: StreamingState | null | undefined,
   terminalStatus: "done" | "error" = "done",
@@ -7382,41 +7412,55 @@ function handleStreamEvent(
       const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
       const eventModelID = asString(infoRecord?.modelID) || asString(payload.modelID);
       const eventProviderID = asString(infoRecord?.providerID) || asString(payload.providerID);
+      const latestStreaming = getState().streaming;
+      const duplicateStartForActiveStream =
+        latestStreaming?.isActive === true &&
+        hasVisibleStreamingSnapshot(latestStreaming);
+      const startMetadata = {
+        agent: eventAgent || state.selectedAgent || undefined,
+        model:
+          eventModel && typeof eventModel === "object"
+            ? {
+              modelID:
+                asString(eventModel.modelID) ||
+                state.selectedModel?.modelID ||
+                "",
+              providerID:
+                asString(eventModel.providerID) ||
+                state.selectedModel?.providerID ||
+                "",
+              name:
+                asString((eventModel as Record<string, unknown>).name) ||
+                undefined,
+            }
+            : undefined,
+        modelID: eventModelID || state.selectedModel?.modelID,
+        providerID: eventProviderID || state.selectedModel?.providerID,
+        variant: state.thinkingLevel,
+      };
 
       dispatch({
         type: "SET_STREAMING",
-        payload: {
-          messageId,
-          content: "",
-          hasRenderableContent: false,
-          reasoning: "",
-          reasoningEvents: [],
-          steps: [],
-          progressEvents: [],
-          edits: [],
-          isActive: true,
-          // Include model/agent metadata for display during streaming
-          agent: eventAgent || state.selectedAgent || undefined,
-          model:
-            eventModel && typeof eventModel === "object"
-              ? {
-                modelID:
-                  asString(eventModel.modelID) ||
-                  state.selectedModel?.modelID ||
-                  "",
-                providerID:
-                  asString(eventModel.providerID) ||
-                  state.selectedModel?.providerID ||
-                  "",
-                name:
-                  asString((eventModel as Record<string, unknown>).name) ||
-                  undefined,
-              }
-              : undefined,
-          modelID: eventModelID || state.selectedModel?.modelID,
-          providerID: eventProviderID || state.selectedModel?.providerID,
-          variant: state.thinkingLevel,
-        },
+        payload: duplicateStartForActiveStream && latestStreaming
+          ? {
+            ...latestStreaming,
+            messageId: latestStreaming.messageId || messageId,
+            isActive: true,
+            ...startMetadata,
+          }
+          : {
+            messageId,
+            content: "",
+            hasRenderableContent: false,
+            reasoning: "",
+            reasoningEvents: [],
+            steps: [],
+            progressEvents: [],
+            edits: [],
+            isActive: true,
+            // Include model/agent metadata for display during streaming
+            ...startMetadata,
+          },
       });
       dispatch({ type: 'SET_PROCESSING', payload: true });
       break;
@@ -8335,6 +8379,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             }
           }
           if (normalizedStatus !== "running") {
+            flushVisibleStreamingSnapshotToMessages(dispatch, getState);
             latestStreamingSnapshot = null;
             dispatch({ type: "SET_STEERING", payload: false });
             dispatch({ type: "SET_PROCESSING", payload: false });
@@ -8702,6 +8747,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             interactiveEventsInResponse.length > 0;
 
           if (shouldClearStreamingAfterResponse) {
+            if (!normalizedMessage) {
+              flushVisibleStreamingSnapshotToMessages(
+                dispatch,
+                getState,
+                snapshotStreaming,
+              );
+            }
             latestStreamingSnapshot = null;
             activeSubagentParentMessageIds = new Set<string>();
           }
@@ -9451,6 +9503,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               // Interactive answer submit starts a brand-new assistant turn.
               // Clear stale stream snapshots so previous turn content cannot leak or
               // duplicate into the next messageResponse normalization pass.
+              flushVisibleStreamingSnapshotToMessages(dispatch, getState);
               latestStreamingSnapshot = null;
               activeSubagentParentMessageIds = new Set<string>();
               dispatch({ type: "SET_STREAMING", payload: null });
