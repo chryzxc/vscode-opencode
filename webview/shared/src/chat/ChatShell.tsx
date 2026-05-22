@@ -417,6 +417,30 @@ function ChatContent() {
     state.messages.length > 0 || hasCachedCurrentSessionMessages;
   const isConnecting = false;
 
+  const hasCompletedAssistantReplyForLatestTurn = (() => {
+    if (state.messages.length === 0) {
+      return false;
+    }
+    for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+      const message = state.messages[i];
+      if (message.role === "assistant") {
+        const text = typeof message.content === "string" ? message.content.trim() : "";
+        const structuredText =
+          typeof message.structuredOutput?.message === "string"
+            ? message.structuredOutput.message.trim()
+            : "";
+        if (text.length > 0 || structuredText.length > 0) {
+          return true;
+        }
+        continue;
+      }
+      if (message.role === "user") {
+        return false;
+      }
+    }
+    return false;
+  })();
+
   if (isConnecting) {
     return (
       <div className="oc-shell relative flex h-screen items-center justify-center overflow-hidden bg-oc-bg text-oc-text">
@@ -447,6 +471,7 @@ function ChatContent() {
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
     isAiResponding && // Must still be processing (not stopped)
+    !hasCompletedAssistantReplyForLatestTurn &&
     !state.isCompacting &&
     !hasAssistantText;
 
