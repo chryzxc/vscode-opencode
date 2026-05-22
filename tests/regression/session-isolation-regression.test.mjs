@@ -72,6 +72,25 @@ test('SET_SESSION_ID reducer restores only target-session active streaming snaps
     );
 });
 
+test('HYDRATE_SESSION_FROM_CACHE caches outgoing active streaming before switching sessions', () => {
+    const hydrateCase = extractFunctionBody(storeSource, 'case "HYDRATE_SESSION_FROM_CACHE":');
+    assert.match(
+        hydrateCase,
+        /const streamingBySessionId = cacheStreamingForSession\([\s\S]*state\.streamingBySessionId[\s\S]*state\.currentSessionId[\s\S]*state\.streaming/,
+        'HYDRATE_SESSION_FROM_CACHE must cache the old session stream before changing currentSessionId',
+    );
+    assert.match(
+        hydrateCase,
+        /const restoredStreamingForNew =[\s\S]*isNewSessionProcessing[\s\S]*streamingBySessionId\[action\.payload\.sessionId\][\s\S]*streaming:\s*restoredStreamingForNew/,
+        'HYDRATE_SESSION_FROM_CACHE must restore cached streaming only for the processing target session',
+    );
+    assert.match(
+        hydrateCase,
+        /isProcessing:\s*isNewSessionProcessing/,
+        'HYDRATE_SESSION_FROM_CACHE must scope the processing flag to the target session',
+    );
+});
+
 test('SET_SESSION_ID reducer resets isSteering to false on session switch', () => {
     const setSessionIdCase = extractFunctionBody(storeSource, 'case "SET_SESSION_ID":');
     assert.match(

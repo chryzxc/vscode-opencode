@@ -1611,6 +1611,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (cachedMessages.length === 0) {
         return state;
       }
+      const isNewSessionProcessing = state.processingSessionIds.includes(
+        action.payload.sessionId,
+      );
+      const streamingBySessionId = cacheStreamingForSession(
+        state.streamingBySessionId,
+        state.currentSessionId,
+        state.streaming,
+      );
+      const restoredStreamingForNew = isNewSessionProcessing
+        ? streamingBySessionId[action.payload.sessionId] ?? null
+        : null;
       const resolvedDividerIndex = resolveCompactionDividerIndex(cachedMessages, {
         compactionDividerIndex: state.compactionDividerIndex,
         compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
@@ -1629,6 +1640,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         currentSessionId: action.payload.sessionId,
         messages: cachedMessages,
+        isProcessing: isNewSessionProcessing,
+        isSteering: false,
+        streaming: restoredStreamingForNew,
+        streamingBySessionId,
         isLoadingSession: false,
         loadingSessionId: null,
         loadingSessionTitle: null,
