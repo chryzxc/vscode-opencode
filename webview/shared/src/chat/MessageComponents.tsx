@@ -3456,12 +3456,15 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     changeSummary,
   );
   const shouldShowFileChanges = useMemo(() => {
-    if (
-      !hasOwnedChangeSummary ||
-      !message ||
-      !messageHasOwnFileChangeEvidence(message)
-    ) {
+    if (!message || !messageHasOwnFileChangeEvidence(message)) {
       return false;
+    }
+
+    // Fallback must stay strict: showing on generic activity evidence can make
+    // the diff card drift to the latest assistant message. Only allow fallback
+    // when direct file edits are attached to this exact message.
+    if (!hasOwnedChangeSummary) {
+      return Array.isArray(message.edits) && message.edits.length > 0;
     }
 
     const ownFiles = fileChangePathsFromMessage(message);
@@ -3967,6 +3970,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   // Render raw debug whenever payload exists. Do not gate behind stream-debug
   // flags, otherwise streamed + hydrated sessions can silently hide rawResponse.
   const hasRawResponseDebug = rawResponseText.trim().length > 0;
+  const showRawResponseDebug = false;
   const planLeadMessage = useMemo(() => {
     if (!plan) return "";
     const candidate = (
@@ -4733,7 +4737,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                 )} */}
 
-              {hasRawResponseDebug && (
+              {showRawResponseDebug && hasRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
                   className={
@@ -4882,6 +4886,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               messageEdits={message?.edits || []}
               changeSummary={changeSummary}
               messageId={messageId}
+              sessionId={state.currentSessionId}
             />
           </div>
         )}
@@ -4959,6 +4964,7 @@ function FileChangesSection({
   messageEdits,
   changeSummary,
   messageId,
+  sessionId,
 }: {
   streamingSteps: Array<{
     filePath?: string;
@@ -4982,6 +4988,7 @@ function FileChangesSection({
   messageEdits: Array<{ file: string; added?: number; deleted?: number }>;
   changeSummary?: Message["changeSummary"];
   messageId?: string | null;
+  sessionId?: string | null;
 }) {
   type DiffExcerpt = { header?: string; lines?: string[]; added?: number; deleted?: number };
   type FileChange = { file: string; added: number; deleted: number; diffExcerpt?: DiffExcerpt };
@@ -5188,10 +5195,16 @@ function FileChangesSection({
     return ordered.slice(0, 12);
   }, [changeSummary, fileChanges]);
 
+  const undoMessageId = firstNonEmptyString(changeSummary?.messageId, messageId);
+
   const handleUndo = () => {
+    if (!undoMessageId) {
+      return;
+    }
     vscode.postMessage({
       type: "undoMessageChanges",
-      messageId: changeSummary?.messageId || messageId,
+      messageId: undoMessageId,
+      sessionId: sessionId || undefined,
     });
   };
 
@@ -5226,7 +5239,13 @@ function FileChangesSection({
           <button
             type="button"
             onClick={handleUndo}
+            disabled={!undoMessageId}
             className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs oc-text-secondary transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
+            title={
+              undoMessageId
+                ? "Undo changes from this assistant message"
+                : "Undo unavailable: no message identifier for this change set"
+            }
           >
             <Undo2 className="h-3 w-3" />
             Undo
