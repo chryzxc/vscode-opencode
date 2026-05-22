@@ -195,6 +195,51 @@ test("chatHistory handler should not clear rendered messages during active-sessi
   );
 });
 
+test("assistant replacements merge activity instead of clearing rendered timelines", () => {
+  assert.match(
+    messageHandlerSource,
+    /function mergeAssistantReplacement\(/,
+    "message handler should centralize assistant replacement merging",
+  );
+  assert.match(
+    messageHandlerSource,
+    /next\[index\]\s*=\s*mergeAssistantReplacement\(message,\s*incoming\)/,
+    "matching assistant turns should be merged, not replaced wholesale by final or hydrated payloads",
+  );
+  assert.match(
+    messageHandlerSource,
+    /mergeAssistantActivitySteps\([\s\S]*existing\.progressEvents[\s\S]*incoming\.progressEvents[\s\S]*mergeAssistantActivitySteps\([\s\S]*existing\.steps[\s\S]*incoming\.steps/s,
+    "assistant replacement should preserve existing progress and step timeline arrays when incoming data is thinner",
+  );
+  assert.match(
+    messageHandlerSource,
+    /mergeActivityArrays\([\s\S]*existing\.reasoningEvents[\s\S]*incoming\.reasoningEvents[\s\S]*mergeActivityArrays\([\s\S]*existing\.interactiveEvents[\s\S]*incoming\.interactiveEvents/s,
+    "assistant replacement should preserve reasoning and interactive activity arrays across final updates",
+  );
+});
+
+test("session message cache merges streaming snapshots without dropping existing activity", () => {
+  const storeSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],
+    "store.ts",
+  );
+  assert.match(
+    storeSource,
+    /function mergeCachedAssistantMessageLocal\(/,
+    "store should centralize cached assistant message merging",
+  );
+  assert.match(
+    storeSource,
+    /next\[i\]\s*=\s*mergeCachedAssistantMessageLocal\(message,\s*incoming\)/,
+    "session cache streaming snapshots should merge into existing assistant turns instead of replacing them",
+  );
+  assert.match(
+    storeSource,
+    /reasoningEvents:\s*mergeActivityArraysLocal\([\s\S]*progressEvents:\s*mergeActivityArraysLocal\([\s\S]*steps:\s*mergeActivityArraysLocal/s,
+    "cached assistant merge should keep previously rendered activity arrays",
+  );
+});
+
 test("streamEvent handler preserves activity updates for inactive streaming sessions", () => {
   assert.match(
     messageHandlerSource,

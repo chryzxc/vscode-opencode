@@ -2500,6 +2500,16 @@ body {
 }
 
 .markdown-body img {
+  display: block;
+  max-width: min(100%, 420px);
+  width: auto;
+  height: auto;
+  max-height: min(40vh, 320px);
+  object-fit: contain;
+  margin: 0.55rem 0;
+  border-radius: 0.5rem;
+  border: 1px solid var(--oc-border-soft);
+  background: color-mix(in srgb, var(--oc-bg-soft) 85%, transparent);
   cursor: zoom-in;
 }
 

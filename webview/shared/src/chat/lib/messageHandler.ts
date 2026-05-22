@@ -4507,6 +4507,144 @@ function getMessageId(message: Message): string | null {
   );
 }
 
+function mergeAssistantActivitySteps(
+  existing: MessageStep[] | undefined,
+  incoming: MessageStep[] | undefined,
+): MessageStep[] | undefined {
+  const existingSteps = Array.isArray(existing) ? existing : [];
+  const incomingSteps = Array.isArray(incoming) ? incoming : [];
+  if (existingSteps.length === 0) {
+    return incomingSteps.length > 0 ? incomingSteps : undefined;
+  }
+  if (incomingSteps.length === 0) {
+    return existingSteps;
+  }
+
+  const merged: MessageStep[] = [];
+  const indexByKey = new Map<string, number>();
+  [...existingSteps, ...incomingSteps].forEach((step, index) => {
+    const normalized = normalizeActivityStepRecord(step, "final");
+    if (!normalized) {
+      return;
+    }
+    const key = activityStepMergeKey(normalized, index);
+    const existingIndex = indexByKey.get(key);
+    if (typeof existingIndex !== "number") {
+      indexByKey.set(key, merged.length);
+      merged.push(normalized);
+      return;
+    }
+    merged[existingIndex] = mergeCanonicalActivityStep(
+      merged[existingIndex],
+      normalized,
+    );
+  });
+
+  return merged.length > 0 ? merged : undefined;
+}
+
+function activityArrayItemKey(item: unknown, index: number): string {
+  const rec = asRecord(item);
+  if (!rec) {
+    return `primitive:${String(item)}:${index}`;
+  }
+  const id = asString(rec.id).trim();
+  if (id) {
+    return `id:${id}`;
+  }
+  const callID = (asString(rec.callID) || asString(rec.callId)).trim();
+  if (callID) {
+    return `call:${callID}`;
+  }
+  const file = (
+    asString(rec.file) ||
+    asString(rec.path) ||
+    asString(rec.filePath)
+  ).trim();
+  if (file) {
+    return `file:${file}`;
+  }
+  const createdAt = asString(rec.createdAt).trim();
+  const text = normalizeComparableText(
+    asString(rec.text) ||
+      asString(rec.content) ||
+      asString(rec.reasoning) ||
+      asString(rec.question) ||
+      asString(rec.title) ||
+      asString(rec.message),
+  );
+  if (createdAt || text) {
+    return `text:${createdAt}|${text}`;
+  }
+  return `index:${index}`;
+}
+
+function mergeActivityArrays<T>(
+  existing: T[] | undefined,
+  incoming: T[] | undefined,
+): T[] | undefined {
+  const existingItems = Array.isArray(existing) ? existing : [];
+  const incomingItems = Array.isArray(incoming) ? incoming : [];
+  if (existingItems.length === 0) {
+    return incomingItems.length > 0 ? incomingItems : undefined;
+  }
+  if (incomingItems.length === 0) {
+    return existingItems;
+  }
+
+  const merged: T[] = [];
+  const indexByKey = new Map<string, number>();
+  [...existingItems, ...incomingItems].forEach((item, index) => {
+    const key = activityArrayItemKey(item, index);
+    const existingIndex = indexByKey.get(key);
+    if (typeof existingIndex !== "number") {
+      indexByKey.set(key, merged.length);
+      merged.push(item);
+      return;
+    }
+    const previous = merged[existingIndex];
+    if (asRecord(previous) && asRecord(item)) {
+      merged[existingIndex] = {
+        ...(previous as Record<string, unknown>),
+        ...(item as Record<string, unknown>),
+      } as T;
+    } else {
+      merged[existingIndex] = item;
+    }
+  });
+
+  return merged.length > 0 ? merged : undefined;
+}
+
+function mergeAssistantReplacement(existing: Message, incoming: Message): Message {
+  const mergedBurst = coalesceAssistantHistoryBurst([existing, incoming]);
+  const progressEvents = mergeAssistantActivitySteps(
+    existing.progressEvents,
+    incoming.progressEvents,
+  );
+  const steps = mergeAssistantActivitySteps(existing.steps, incoming.steps);
+  const reasoningEvents = mergeActivityArrays(
+    existing.reasoningEvents,
+    incoming.reasoningEvents,
+  );
+  const edits = mergeActivityArrays(existing.edits, incoming.edits);
+  const interactiveEvents = mergeActivityArrays(
+    existing.interactiveEvents,
+    incoming.interactiveEvents,
+  );
+  const subagents = mergeActivityArrays(existing.subagents, incoming.subagents);
+
+  return {
+    ...mergedBurst,
+    reasoningEvents,
+    progressEvents,
+    steps,
+    edits,
+    interactiveEvents,
+    subagents,
+  };
+}
+
 function replaceMatchingAssistantTurn(
   messages: Message[],
   incoming: Message,
@@ -4527,7 +4665,7 @@ function replaceMatchingAssistantTurn(
       continue;
     }
     const next = [...messages];
-    next[index] = incoming;
+    next[index] = mergeAssistantReplacement(message, incoming);
     return next;
   }
 

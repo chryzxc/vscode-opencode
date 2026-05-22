@@ -345,6 +345,104 @@ function buildStreamingMessageLocal(streaming: StreamingState): Message {
   };
 }
 
+function activityArrayItemKeyLocal(item: unknown, index: number): string {
+  const rec = asRecordLocal(item);
+  if (!rec) {
+    return `primitive:${String(item)}:${index}`;
+  }
+  const id = asStringLocal(rec.id);
+  if (id) return `id:${id}`;
+  const callID = asStringLocal(rec.callID, rec.callId);
+  if (callID) return `call:${callID}`;
+  const file = asStringLocal(rec.file, rec.path, rec.filePath);
+  if (file) return `file:${file}`;
+  const createdAt = asStringLocal(rec.createdAt);
+  const text = normalizeComparableTextLocal(
+    asStringLocal(
+      rec.text,
+      rec.content,
+      rec.reasoning,
+      rec.question,
+      rec.title,
+      rec.message,
+    ),
+  );
+  if (createdAt || text) {
+    return `text:${createdAt}|${text}`;
+  }
+  return `index:${index}`;
+}
+
+function mergeActivityArraysLocal<T>(
+  existing: T[] | undefined,
+  incoming: T[] | undefined,
+): T[] | undefined {
+  const existingItems = Array.isArray(existing) ? existing : [];
+  const incomingItems = Array.isArray(incoming) ? incoming : [];
+  if (existingItems.length === 0) {
+    return incomingItems.length > 0 ? incomingItems : undefined;
+  }
+  if (incomingItems.length === 0) {
+    return existingItems;
+  }
+
+  const merged: T[] = [];
+  const indexByKey = new Map<string, number>();
+  [...existingItems, ...incomingItems].forEach((item, index) => {
+    const key = activityArrayItemKeyLocal(item, index);
+    const existingIndex = indexByKey.get(key);
+    if (typeof existingIndex !== "number") {
+      indexByKey.set(key, merged.length);
+      merged.push(item);
+      return;
+    }
+    const previous = merged[existingIndex];
+    if (asRecordLocal(previous) && asRecordLocal(item)) {
+      merged[existingIndex] = {
+        ...(previous as Record<string, unknown>),
+        ...(item as Record<string, unknown>),
+      } as T;
+    } else {
+      merged[existingIndex] = item;
+    }
+  });
+
+  return merged.length > 0 ? merged : undefined;
+}
+
+function mergeCachedAssistantMessageLocal(
+  existing: Message,
+  incoming: Message,
+): Message {
+  const incomingContent = asStringLocal(incoming.content, incoming.text);
+  const existingContent = asStringLocal(existing.content, existing.text);
+  const content = incomingContent || existingContent;
+  return {
+    ...existing,
+    ...incoming,
+    content,
+    text: content || incoming.text || existing.text,
+    parts: Array.isArray(incoming.parts) && incoming.parts.length > 0
+      ? incoming.parts
+      : existing.parts,
+    reasoningEvents: mergeActivityArraysLocal(
+      existing.reasoningEvents,
+      incoming.reasoningEvents,
+    ),
+    progressEvents: mergeActivityArraysLocal(
+      existing.progressEvents,
+      incoming.progressEvents,
+    ),
+    steps: mergeActivityArraysLocal(existing.steps, incoming.steps),
+    edits: mergeActivityArraysLocal(existing.edits, incoming.edits),
+    interactiveEvents: mergeActivityArraysLocal(
+      existing.interactiveEvents,
+      incoming.interactiveEvents,
+    ),
+    subagents: mergeActivityArraysLocal(existing.subagents, incoming.subagents),
+  };
+}
+
 function mergeStreamingSnapshotIntoMessagesLocal(
   messages: Message[],
   streaming: StreamingState,
@@ -362,7 +460,7 @@ function mergeStreamingSnapshotIntoMessagesLocal(
     if (role !== "assistant") continue;
     const messageId = getMessageIdForCanonical(message);
     if (messageId && messageId === incomingId) {
-      next[i] = incoming;
+      next[i] = mergeCachedAssistantMessageLocal(message, incoming);
       return next;
     }
   }

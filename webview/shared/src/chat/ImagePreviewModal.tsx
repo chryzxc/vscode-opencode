@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { X } from "lucide-react";
+import { createPortal } from "react-dom";
 
 type ImagePreviewModalProps = {
   isOpen: boolean;
@@ -33,7 +34,7 @@ export function ImagePreviewModal({
     return null;
   }
 
-  return (
+  const modalContent = (
     <div className="oc-image-preview-shell">
       <button
         type="button"
@@ -65,4 +66,6 @@ export function ImagePreviewModal({
       </div>
     </div>
   );
+
+  return createPortal(modalContent, document.body);
 }
