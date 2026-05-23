@@ -1,6 +1,6 @@
-# OpenCode VS Code Extension
+# OpenCode Chat for VS Code
 
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Open-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/search?term=chryzxc&target=VSCode&category=All%20categories&sortBy=Relevance)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Open-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
 [![Open VSX](https://img.shields.io/badge/Open%20VSX-Open-C160EF)](https://open-vsx.org/user/chryzxc)
 [![Installs](https://img.shields.io/badge/Installs-View%20on%20Marketplace-6E7781)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
 [![GitHub Repo stars](https://img.shields.io/github/stars/chryzxc/vscode-opencode?style=social)](https://github.com/chryzxc/vscode-opencode/stargazers)
@@ -16,7 +16,7 @@ If this extension helps your workflow, consider giving the repo a star.
 
 ![Interactive plan viewer demo](./assets/demo-1.gif)
 
-The [OpenCode](https://opencode.ai) VS Code extension brings OpenCode into Visual Studio Code with AI chat, image and file attachments, selected-code context, an interactive plan builder, inline questions, plan annotations, agent-generated tasks, context compaction, coding agents, subagent tracking, session history, and quota monitoring.
+OpenCode Chat is a VS Code extension for [OpenCode](https://opencode.ai), bringing the OpenCode AI coding agent into Visual Studio Code with chat, image and file attachments, selected-code context, an interactive implementation plan builder, inline questions, plan annotations, agent-generated tasks, context compaction, subagent tracking, session history, and quota monitoring.
 
 Requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be installed locally.
 
