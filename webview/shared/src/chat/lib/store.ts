@@ -283,6 +283,35 @@ function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   };
 }
 
+function areStringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function areSessionsListsEqual(a: Session[] | undefined, b: Session[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (
+      left.id !== right.id ||
+      left.title !== right.title ||
+      left.createdAt !== right.createdAt ||
+      left.parentSessionId !== right.parentSessionId
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function asRecordLocal(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -1737,6 +1766,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_SERVER_ERROR":
       return { ...state, serverError: action.payload };
     case "SET_PROCESSING_SESSIONS":
+      if (areStringArraysEqual(state.processingSessionIds, action.payload)) {
+        return state;
+      }
       return { ...state, processingSessionIds: action.payload };
     case "START_SESSION_LOADING":
       return {
@@ -1949,6 +1981,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_STEERING":
       return { ...state, isSteering: action.payload };
     case "SET_SESSIONS_LIST":
+      if (areSessionsListsEqual(state.sessionsList, action.payload)) {
+        return state;
+      }
       return { ...state, sessionsList: action.payload };
     case "UPDATE_SESSION_TITLE": {
       const { sessionId, title } = action.payload;

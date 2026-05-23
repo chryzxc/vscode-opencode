@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  appReducer,
+  initialState,
   isInternalTransportReminderMessage,
   hasSystemMessagePatternInText,
   normalizeComparableTextLocal,
@@ -15,7 +17,7 @@ import {
   upsertTodoItemArray,
   mergeStreamingReasoning,
 } from './store';
-import type { Message, TodoItem } from './types';
+import type { Message, Session, TodoItem } from './types';
 
 describe('isInternalTransportReminderMessage', () => {
   it('should detect square-bracketed system messages', () => {
@@ -239,6 +241,36 @@ describe('hasSystemMessagePatternInText', () => {
   it('should detect comment-style system messages with content', () => {
     const text = '<!-- internal_initiator some_content -->';
     assert.strictEqual(hasSystemMessagePatternInText(text), true);
+  });
+});
+
+describe("appReducer render-stability guards", () => {
+  it("reuses state object for unchanged sessions list payload", () => {
+    const sessions: Session[] = [
+      { id: "s-1", title: "One", createdAt: 1 },
+      { id: "s-2", title: "Two", createdAt: 2 },
+    ];
+    const first = appReducer(initialState, {
+      type: "SET_SESSIONS_LIST",
+      payload: sessions,
+    });
+    const second = appReducer(first, {
+      type: "SET_SESSIONS_LIST",
+      payload: [...sessions],
+    });
+    assert.strictEqual(second, first);
+  });
+
+  it("reuses state object for unchanged processing session ids", () => {
+    const first = appReducer(initialState, {
+      type: "SET_PROCESSING_SESSIONS",
+      payload: ["session-a"],
+    });
+    const second = appReducer(first, {
+      type: "SET_PROCESSING_SESSIONS",
+      payload: ["session-a"],
+    });
+    assert.strictEqual(second, first);
   });
 });
 
