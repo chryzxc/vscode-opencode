@@ -98,7 +98,6 @@ import type { FileDiff, SessionPromptData } from "@opencode-ai/sdk" with { "reso
 import * as cp from "child_process";
 import * as path from "path";
 import * as vscode from "vscode";
-import { TitleGeneratorService } from "../services/TitleGeneratorService";
 import { ErrorBuilder } from "./chat/ErrorBuilder";
 import type { DisplayError } from "./chat/types";
 import {
@@ -433,21 +432,6 @@ export class ChatViewProvider
     }
   }
 
-  private async updateSessionTitle(sessionId: string, title: string): Promise<void> {
-    try {
-      const client = await this.serverManager.ensureRunning();
-      await client.session.update({
-        path: { id: sessionId },
-        body: { title }
-      });
-
-      const updatedSession = await this.sessionService.switchSession(sessionId);
-      this.logger.info(`Updated session ${sessionId} title to: ${title}`);
-    } catch (error) {
-      this.logger.warn(`Failed to update session title for ${sessionId}:`, { error: String(error) });
-    }
-  }
-
   private handleServerSessionTitleUpdate(sessionId: string, title: string): void {
     if (!title || title === "Untitled chat") return;
 
@@ -484,22 +468,6 @@ export class ChatViewProvider
         break;
       }
     }
-
-    // OpenCode server title generation is unreliable — use local fallback.
-    try {
-      const messages = await this.sessionService.getMessages(sessionId);
-      const firstUserMsg = (messages as any[]).find((m) => m.role === "user");
-      const text: string = firstUserMsg?.content || firstUserMsg?.text || "";
-      if (text) {
-        const localTitle = TitleGeneratorService.generateTitle(text);
-        if (localTitle && localTitle !== "Untitled chat") {
-          this.handleServerSessionTitleUpdate(sessionId, localTitle);
-          try {
-            await this.updateSessionTitle(sessionId, localTitle);
-          } catch { /* best effort */ }
-        }
-      }
-    } catch { /* best effort */ }
 
     await this.sessionHandler.handleGetSessions();
   }
@@ -5911,11 +5879,7 @@ export class ChatViewProvider
       const isNewSession = existingMessages.length === 0;
 
       if (isNewSession) {
-        const config = vscode.workspace.getConfiguration('opencode');
-        const autoGenerateTitle = config.get<boolean>('autoGenerateSessionTitle', true);
-        if (autoGenerateTitle) {
-          this.fetchServerSessionTitle(session.id);
-        }
+        this.fetchServerSessionTitle(session.id);
       }
 
       const slashSkillInvocation = await this.resolveSlashSkillInvocation(

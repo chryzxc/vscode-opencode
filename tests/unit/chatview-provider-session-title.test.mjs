@@ -41,6 +41,8 @@ test('triggerSessionTitleGeneration polls server for AI-generated title with exp
   assert.match(body, /const resp = await client\.session\.get\(\{ path: \{ id: sessionId \} \}\);/, 'triggerSessionTitleGeneration should fetch session details from the server');
   assert.match(body, /if \(title && title !== "Untitled chat" && title !== "New Session"\) \{[\s\S]*this\.handleServerSessionTitleUpdate\(sessionId, title\);[\s\S]*return;[\s\S]*\}/, 'triggerSessionTitleGeneration should update the session title when a non-default title is received');
   assert.match(body, /catch \{[\s\S]*break;[\s\S]*\}/, 'triggerSessionTitleGeneration should stop polling on server errors');
+  assert.doesNotMatch(body, /TitleGeneratorService\.generateTitle/, 'triggerSessionTitleGeneration must not generate titles locally');
+  assert.doesNotMatch(body, /this\.updateSessionTitle\(/, 'triggerSessionTitleGeneration must not write a locally generated title back to OpenCode');
 });
 
 test('session.updated event handler triggers title update for valid session info', () => {
@@ -59,16 +61,16 @@ test('stream completion triggers title generation for sessions that need it', ()
   );
 });
 
-test('autoGenerateSessionTitle uses server-side title generation instead of client-side', () => {
+test('new session title flow uses server-side title generation instead of client-side', () => {
   assert.match(
     providerSource,
-    /const autoGenerateTitle = config\.get<boolean>\('autoGenerateSessionTitle', true\);[\s\S]*if \(autoGenerateTitle\) \{[\s\S]*this\.fetchServerSessionTitle\(session\.id\);[\s\S]*\}/,
-    'when autoGenerateSessionTitle is enabled, fetchServerSessionTitle should be called instead of client-side TitleGeneratorService'
+    /if \(isNewSession\) \{[\s\S]*this\.fetchServerSessionTitle\(session\.id\);[\s\S]*\}/,
+    'new sessions should fetch the OpenCode-owned title after the first turn'
   );
 
   assert.doesNotMatch(
     providerSource,
-    /const generatedTitle = TitleGeneratorService\.generateTitle\(text\);[\s\S]*await this\.updateSessionTitle\(session\.id, generatedTitle\);/,
+    /TitleGeneratorService\.generateTitle/,
     'client-side TitleGeneratorService should not be used for title generation'
   );
 });
@@ -100,10 +102,10 @@ test('title update flow includes proper error handling and logging', () => {
   );
 });
 
-test('title generation respects user preferences and configuration', () => {
-  assert.match(
+test('title generation is delegated to OpenCode without an extension preference gate', () => {
+  assert.doesNotMatch(
     providerSource,
-    /const config = vscode\.workspace\.getConfiguration\('opencode'\);[\s\S]*const autoGenerateTitle = config\.get<boolean>\('autoGenerateSessionTitle', true\);/,
-    'title generation should check the autoGenerateSessionTitle configuration setting'
+    /autoGenerateSessionTitle/,
+    'session title generation should not be gated by an extension-side preference'
   );
 });

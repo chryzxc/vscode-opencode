@@ -1033,10 +1033,9 @@ export class SessionService {
    * 4. Adds to local history (if not duplicate)
    * 5. Persists state to workspace storage
    *
-   * **Title Generation:**
-   * - If title provided: Uses provided title
-   * - If no title: Generates timestamp-based title
-   * - Format: "Session HH:MM:SS" based on local time
+   * **Title Handling:**
+   * - If title provided: Sends it to OpenCode explicitly
+   * - If no title: Omits the title so OpenCode owns title generation
    *
    * **Error Handling:**
    * - Throws if server returns error response
@@ -1047,7 +1046,7 @@ export class SessionService {
    * If session with same ID already exists in history, doesn't add duplicate.
    * This can happen if server returns session we already know about.
    *
-   * @param title - Optional title for the session (auto-generated if omitted)
+   * @param title - Optional explicit title for the session
    * @returns Promise resolving to the created session
    * @throws {Error} If server fails to create session
    *
@@ -1063,12 +1062,8 @@ export class SessionService {
     const client = await this.serverManager.ensureRunning();
     log.featureStep(flow, 'server_ready');
 
-    // Create the session
-    const response = await client.session.create({
-      body: {
-        title: title || "Untitled chat",
-      },
-    });
+    const createOptions = title ? { body: { title } } : {};
+    const response = await client.session.create(createOptions);
 
     if (!response.data) {
       const errorDetails = JSON.stringify(response.error || {}, null, 2);

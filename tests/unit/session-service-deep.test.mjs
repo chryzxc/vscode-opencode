@@ -15,7 +15,8 @@ test('createNewSession persists successful creates and surfaces server-side erro
   );
 
   assert.match(body, /const client = await this\.serverManager\.ensureRunning\(\);/, 'createNewSession should ensure the server is running before creating a session');
-  assert.match(body, /const response = await client\.session\.create\(\{[\s\S]*title: title \|\| "Untitled chat",[\s\S]*\}\);/, 'createNewSession should default untitled sessions when no title is provided');
+  assert.match(body, /const createOptions = title\s*\?\s*\{ body: \{ title \} \}\s*:\s*\{\};[\s\S]*const response = await client\.session\.create\(createOptions\);/, 'createNewSession should omit title for untitled sessions so OpenCode owns generation');
+  assert.doesNotMatch(body, /Untitled chat/, 'createNewSession should not send an extension-authored fallback title');
   assert.match(body, /if \(!response\.data\) \{[\s\S]*const msg =[\s\S]*em\?\.message[\s\S]*em\.errors\[0\]\?\.message[\s\S]*"Unknown error";[\s\S]*throw new Error\(`Failed to create session: \$\{msg\}`\);[\s\S]*\}/, 'createNewSession should surface detailed server error messages when creation fails');
   assert.match(body, /this\.currentSession = session;/, 'createNewSession should set the new session as current');
   assert.match(body, /const exists = this\.sessionHistory\.some\(\(s\) => s\.id === session\.id\);[\s\S]*if \(!exists\) \{[\s\S]*this\.sessionHistory\.unshift\(session\);[\s\S]*\}/, 'createNewSession should avoid duplicate history entries');

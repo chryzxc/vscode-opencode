@@ -41,8 +41,13 @@ test.describe('Session Service - Core CRUD Operations', () => {
 
     assert.match(
       createBody,
-      /title.*Untitled|title:\s*title/,
-      'must set session title'
+      /title\s*\?\s*\{ body: \{ title \} \}\s*:\s*\{\}/,
+      'must only send an explicit title when the caller provided one'
+    );
+    assert.doesNotMatch(
+      createBody,
+      /Untitled chat/,
+      'must not send a local fallback title for new sessions'
     );
     assert.match(
       createBody,

@@ -208,11 +208,6 @@
           "maximum": 0.99,
           "description": "Fraction of model context limit at which auto-compaction fires (0.9 = 90%)"
         },
-        "opencode.autoGenerateSessionTitle": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically generate session title from first message"
-        },
         "opencode.requestTimeout": {
           "type": "number",
           "default": 120000,
