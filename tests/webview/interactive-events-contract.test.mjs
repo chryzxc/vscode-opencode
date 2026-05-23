@@ -508,7 +508,7 @@ test('interactive popover sendMessage path marks interactive submits to avoid ab
   );
 });
 
-test('interactive answer echo starts the next assistant loading state', () => {
+test('interactive answer echo clears stale popover state without forcing local loading', () => {
   const userMessageAppendedBody = extractFunctionBody(
     handlerSource,
     'case "userMessageAppended":',
@@ -523,10 +523,10 @@ test('interactive answer echo starts the next assistant loading state', () => {
     /if \(isInteractiveAnswerSubmission\) \{[\s\S]*type:\s*"SET_INTERACTIVE_EVENTS"[\s\S]*\}/s,
     'interactive answer echoes should clear stale popover state before loading',
   );
-  assert.match(
+  assert.doesNotMatch(
     userMessageAppendedBody,
     /if \(isInteractiveAnswerSubmission\) \{[\s\S]*type:\s*"SET_PROCESSING"[\s\S]*payload:\s*true/s,
-    'interactive answer echoes should show the next assistant loading state',
+    'interactive answer echoes should not force local processing true (host lifecycle owns loading state)',
   );
 });
 

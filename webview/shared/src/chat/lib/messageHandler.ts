@@ -9137,6 +9137,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               cachedMessagesForSwitch.length > 0 &&
               cachedHistoryActivityScore > incomingHistoryActivityScore
             );
+            const existingActiveMessages = currentState.messages ?? [];
+            const existingActiveHistoryActivityScore =
+              activityScoreFromMessages(existingActiveMessages);
+            // Same-session stale hydration guard:
+            // after streaming completes we can briefly receive chatHistory that
+            // does not yet include the just-rendered assistant turn. Keep the
+            // richer local timeline until persisted history catches up.
+            const shouldUseExistingActiveMessages = !!(
+              isSameActiveSessionHydration &&
+              existingActiveMessages.length > 0 &&
+              existingActiveHistoryActivityScore > incomingHistoryActivityScore
+            );
 
             if (isSwitchingSession && cachedMessagesForSwitch.length > 0) {
               dispatch({
@@ -9177,9 +9189,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               dispatch({ type: "SET_STREAMING", payload: null });
               dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
             }
-            const hydrationSourceMessages = shouldUseCachedSwitchMessages
-              ? cachedMessagesForSwitch
-              : dedupedSystemMessages;
+            const hydrationSourceMessages = shouldUseExistingActiveMessages
+              ? existingActiveMessages
+              : shouldUseCachedSwitchMessages
+                ? cachedMessagesForSwitch
+                : dedupedSystemMessages;
             let stabilizedHydratedMessages = hydrationSourceMessages.map((message) => {
               if (!Array.isArray(message.subagents) || message.subagents.length === 0) {
                 return message;
@@ -9931,9 +9945,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               type: "SET_MESSAGES",
               payload: updatedMessages,
             });
-            if (isInteractiveAnswerSubmission) {
-              dispatch({ type: "SET_PROCESSING", payload: true });
-            }
           }
           break;
         }

@@ -185,8 +185,13 @@ test("chatHistory handler should not clear rendered messages during active-sessi
   );
   assert.match(
     messageHandlerSource,
-    /incomingHistoryActivityScore[\s\S]*cachedHistoryActivityScore[\s\S]*shouldUseCachedSwitchMessages[\s\S]*isSessionProcessing[\s\S]*cachedHistoryActivityScore > incomingHistoryActivityScore[\s\S]*const hydrationSourceMessages = shouldUseCachedSwitchMessages[\s\S]*cachedMessagesForSwitch[\s\S]*dedupedSystemMessages/s,
+    /incomingHistoryActivityScore[\s\S]*cachedHistoryActivityScore[\s\S]*shouldUseCachedSwitchMessages[\s\S]*isSessionProcessing[\s\S]*cachedHistoryActivityScore > incomingHistoryActivityScore[\s\S]*const hydrationSourceMessages =[\s\S]*shouldUseCachedSwitchMessages[\s\S]*cachedMessagesForSwitch[\s\S]*dedupedSystemMessages/s,
     "chatHistory should not overwrite richer local activity cache with stale persisted history while a session is still processing, even if currentSessionId was already updated",
+  );
+  assert.match(
+    messageHandlerSource,
+    /existingActiveHistoryActivityScore[\s\S]*shouldUseExistingActiveMessages[\s\S]*isSameActiveSessionHydration[\s\S]*existingActiveHistoryActivityScore > incomingHistoryActivityScore[\s\S]*const hydrationSourceMessages = shouldUseExistingActiveMessages[\s\S]*existingActiveMessages/s,
+    "chatHistory should preserve richer same-session local history when stale hydration arrives right after streaming completion",
   );
   assert.doesNotMatch(
     messageHandlerSource,
