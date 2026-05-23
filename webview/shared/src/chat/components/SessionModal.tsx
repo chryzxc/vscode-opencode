@@ -223,7 +223,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
 
       {/* Modal panel */}
       <div
-        className="oc-modal-shell relative z-50 flex w-full max-w-md flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200 max-h-[80vh]"
+        className="oc-modal-shell relative z-50 flex w-full max-w-4xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200 max-h-[80vh]"
         role="dialog"
         aria-modal="true"
         aria-label="Sessions"
