@@ -3456,15 +3456,23 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     changeSummary,
   );
   const shouldShowFileChanges = useMemo(() => {
-    if (
-      !hasOwnedChangeSummary ||
-      !message ||
-      !messageHasOwnFileChangeEvidence(message)
-    ) {
+    if (!message || !messageHasOwnFileChangeEvidence(message)) {
       return false;
     }
 
     const ownFiles = fileChangePathsFromMessage(message);
+
+    // If summary ownership metadata is missing, keep local evidence visible.
+    // This avoids dropping the file-change card when providers omit
+    // message-scoped diff summary payloads.
+    if (!hasOwnedChangeSummary) {
+      return (
+        ownFiles.size > 0 ||
+        (Array.isArray(message.steps) && message.steps.length > 0) ||
+        (Array.isArray(message.progressEvents) && message.progressEvents.length > 0)
+      );
+    }
+
     if (ownFiles.size === 0) {
       return true;
     }
@@ -4878,8 +4886,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         {shouldShowFileChanges && (
           <div className="mt-4">
             <FileChangesSection
-              streamingSteps={[]}
-              timelineEvents={[]}
+              streamingSteps={Array.isArray(message?.steps) ? message.steps : []}
+              timelineEvents={
+                Array.isArray(message?.progressEvents) ? message.progressEvents : []
+              }
               messageEdits={message?.edits || []}
               changeSummary={changeSummary}
               messageId={messageId}
@@ -5304,25 +5314,21 @@ function FileChangesSection({
                       })
                     }
                   >
-                    {hasPreview ? (
-                      <button
-                        type="button"
-                        aria-label={isExpanded ? "Collapse" : "Expand"}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleExpanded(fileChange.file);
-                        }}
-                        className="shrink-0 text-oc-text-soft hover:text-oc-text transition-colors"
-                      >
-                        {isExpanded ? (
-                          <ChevronDown className="h-3 w-3" />
-                        ) : (
-                          <ChevronRight className="h-3 w-3" />
-                        )}
-                      </button>
-                    ) : (
-                      <span className="w-3 shrink-0" />
-                    )}
+                    <button
+                      type="button"
+                      aria-label={isExpanded ? "Collapse" : "Expand"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleExpanded(fileChange.file);
+                      }}
+                      className="shrink-0 text-oc-text-soft hover:text-oc-text transition-colors"
+                    >
+                      {isExpanded ? (
+                        <ChevronDown className="h-3 w-3" />
+                      ) : (
+                        <ChevronRight className="h-3 w-3" />
+                      )}
+                    </button>
                     <FileText className="h-3 w-3 shrink-0 text-oc-text-soft" />
                     <span className="text-[11px] font-medium text-oc-text truncate">{filename}</span>
                     {compactDirname && (
