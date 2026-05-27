@@ -52,7 +52,7 @@ test('ConfigSidebar keeps save interaction and active styling logic', () => {
   );
   assert.match(
     configSidebarSource,
-    /isActive\s*\?[\s\S]*'bg-oc-accent\/20 text-oc-accent'[\s\S]*:[\s\S]*'hover:bg-oc-bg-soft text-oc-text'/,
+    /isActive\s*\?[\s\S]*'bg-oc-accent\/20 oc-tinted-badge-text'[\s\S]*:[\s\S]*'hover:bg-oc-bg-soft text-oc-text'/,
     'ConfigFileItem should switch between active and inactive class names',
   );
 });

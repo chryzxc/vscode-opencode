@@ -204,7 +204,7 @@ test('late terminal edit/tool activity does not reactivate a finished stream', (
 
   assert.match(
     messageHandlerSource,
-    /function isTerminalProgressPart\(part: UnknownRecord, partType: string\): boolean \{[\s\S]*partType === "step-finish"[\s\S]*stateStatus === "done"[\s\S]*"result" in stateObj/s,
+    /function isTerminalProgressPart\(part: UnknownRecord, partType: string\): boolean \{[\s\S]*partType === "step-finish"[\s\S]*status !== "pending"[\s\S]*"result" in stateObj/s,
     'message handler should identify completed edit/tool progress parts',
   );
   assert.match(

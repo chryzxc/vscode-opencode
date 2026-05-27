@@ -239,7 +239,7 @@ test('SET_PROCESSING creates streaming state without model validation', () => {
   // Should create streaming state unconditionally when processing starts
   assert.match(
     processingLogic,
-    /if\s*\(\s*action\.payload\s*&&\s*\(!state\.streaming/,
+    /if\s*\(action\.payload && !state\.streaming\)/,
     'Should create streaming state when processing starts'
   );
 });

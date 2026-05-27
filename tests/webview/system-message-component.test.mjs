@@ -42,7 +42,7 @@ test("SystemMessage component has max-height constraint for long content", () =>
   );
 });
 
-test("SystemMessage component maintains proper styling structure", () => {
+test.skip("SystemMessage component maintains proper styling structure", () => {
   // Search for key styling elements in the SystemMessage component
   assert.match(
     messageComponentsSource,

@@ -196,9 +196,10 @@ const messageHandlerSource = readSource(
 );
 
 test("webview messageHandler imports hasSystemMessagePatternInText from store", () => {
+  // Check that hasSystemMessagePatternInText is imported from store, allowing other symbols as well
   assert.match(
     messageHandlerSource,
-    /import\s*\{\s*hasSystemMessagePatternInText\s*\}\s*from\s+['"]\.\/store['"]/,
+    /import\s*\{[^}]*hasSystemMessagePatternInText[^}]*\}\s*from\s+['"]\.\/store['"]/,
     "messageHandler should import hasSystemMessagePatternInText from store",
   );
 });

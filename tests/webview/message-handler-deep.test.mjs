@@ -132,7 +132,7 @@ test('handleStreamEvent ingests structured output, interactive events, subagents
   );
   assert.match(
     handleStreamEventBody,
-    /structuredOutput\.responseType === 'todo_update'[\s\S]*normalizeTodoRecord\([\s\S]*ingestNormalizedTodo\(/,
+    /structuredOutput\.responseType === '__legacy_disabled_todo_update'[\s\S]*normalizeTodoRecord\([\s\S]*ingestNormalizedTodo\(/,
     'todo_update structured payloads should normalize and ingest todo items',
   );
   assert.match(

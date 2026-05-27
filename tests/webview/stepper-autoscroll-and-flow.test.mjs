@@ -350,7 +350,7 @@ test('AssistantMessage renders activity steps via StepperItem components', () =>
 test('last StepperItem has isLast=true', () => {
     assert.match(
         messageComponentsSource,
-        /const isLast\s*=\s*index\s*===\s*timelineDisplayEvents\.length\s*-\s*1/,
+        /const isLast\s*=\s*!showInProgressActivityPlaceholder[\s\S]*index\s*===\s*timelineDisplayEvents\.length\s*-\s*1/,
         'isLast should be derived from the event index vs array length',
     );
     assert.match(

@@ -19,7 +19,7 @@ test('exports SubagentDetailModal with props type', () => {
 test('defines the expected props fields', () => {
   assert.match(
     source,
-    /type SubagentDetailModalProps = \{[\s\S]*?isOpen: boolean;[\s\S]*?title: string;[\s\S]*?providerLabel\?: string;[\s\S]*?detail:[\s\S]*?onClose: \(\) => void;[\s\S]*?onCopyRefs: \([\s\S]*?\) => void;[\s\S]*?onJumpToParent: \([\s\S]*?\) => void;[\s\S]*?colorClass\?: string;[\s\S]*?\}/,
+    /type SubagentDetailModalProps = \{[\s\S]*?isOpen: boolean;[\s\S]*?title: string;[\s\S]*?detail:[\s\S]*?onClose: \(\) => void;[\s\S]*?onCopyRefs: \([\s\S]*?\) => void;[\s\S]*?onJumpToParent: \([\s\S]*?\) => void;[\s\S]*?colorClass\?: string;[\s\S]*?\}/,
     'SubagentDetailModal.tsx must define SubagentDetailModalProps with the expected fields',
   );
 });

@@ -127,7 +127,7 @@ test('viewPlan enforces disk-first content when plan.file is present', () => {
   );
   assert.match(
     viewPlanBody,
-    /if \(\s*!planData &&\s*prioritizedCandidates\.length === 0[\s\S]*plan\.content &&[\s\S]*typeof plan\.content === "string"\s*\)/,
+    /if \(\s*!planData &&\s*prioritizedCandidates\.length === 0 &&\s*this\.buildFallbackPlanContent\(plan\)\s*\)/,
     'structured plan.content fallback should only apply when no plan.file is provided',
   );
   assert.doesNotMatch(
