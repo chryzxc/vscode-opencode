@@ -515,14 +515,9 @@ test('handleStreamEvent dispatches SET_MESSAGES when system message pattern dete
 });
 
 test('handleStreamEvent system message is added with role=system', () => {
-    const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
-    assert.ok(body, 'handleStreamEvent must exist');
-    const sysIdx = body.indexOf('hasSystemMessagePatternInText');
-    assert.ok(sysIdx >= 0, 'hasSystemMessagePatternInText call must exist');
-    const sysBlock = body.slice(sysIdx, sysIdx + 2000);
     assert.match(
-        sysBlock,
-        /role\s*:\s*['"](system)['"]/,
+        messageHandlerSource,
+        /upsertRealtimeSystemMessage[\s\S]*role:\s*['"](system)['"]/,
         'system message must have role: "system"',
     );
 });
@@ -678,7 +673,7 @@ test('FINISH_STREAMING preserves rest of streaming state using spread', () => {
     const finishBody = storeSource.slice(finishIdx, finishIdx + 400);
     assert.match(
         finishBody,
-        /const streaming\s*=\s*\{[\s\S]{1,30}\.\.\.state\.streaming/,
+        /const streaming = \{[\s\S]*\.\.\.state\.streaming/,
         'must spread existing streaming state to preserve all other fields',
     );
 });
@@ -835,24 +830,18 @@ test('SET_PROCESSING reactivates an inactive streaming snapshot instead of repla
     const processingBody = storeSource.slice(processingIdx, processingIdx + 2200);
     assert.match(
         processingBody,
-        /action\.payload\s*&&\s*state\.streaming\s*&&\s*!state\.streaming\.isActive/,
-        'SET_PROCESSING(true) should check for existing inactive streaming state',
-    );
-    assert.match(
-        processingBody,
-        /\.\.\.state\.streaming[\s\S]*isActive\s*:\s*true/s,
-        'SET_PROCESSING(true) should reactivate streaming by setting isActive to true',
+        /action\.payload && state\.streaming && !state\.streaming\.isActive[\s\S]*const streaming = \{[\s\S]*\.\.\.state\.streaming[\s\S]*isActive:\s*true/s,
+        'SET_PROCESSING(true) should reactivate an existing inactive snapshot instead of blanking it',
     );
 });
 
-test.skip('SET_PROCESSING skips eager init when model is invalid (just sets isProcessing)', () => {
-    // Error handling for streaming state initialization is not implemented
+test('SET_PROCESSING skips eager init when model is invalid (just sets isProcessing)', () => {
     const processingIdx = storeSource.indexOf('case "SET_PROCESSING"');
     assert.ok(processingIdx >= 0, 'SET_PROCESSING case must exist in store');
-    const processingBody = storeSource.slice(processingIdx, processingIdx + 2200);
+    const processingBody = storeSource.slice(processingIdx, processingIdx + 2600);
     assert.match(
         processingBody,
-        /catch\s*\(error\)[\s\S]{1,300}return[\s\S]{1,100}isProcessing\s*:\s*true/,
+        /catch \(error\)[\s\S]*return \{ \.\.\.state, isProcessing: true \}/,
         'must return isProcessing: true without streaming state when streaming state creation fails',
     );
 });

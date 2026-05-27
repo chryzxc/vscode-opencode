@@ -66,8 +66,8 @@ test.skip("SystemMessage component maintains proper styling structure", () => {
   );
   assert.match(
     messageComponentsSource,
-    /SystemMessage[\s\S]*?font-mono/,
-    "SystemMessage content should use monospace font",
+    /SystemMessage[\s\S]*?oc-code/,
+    "SystemMessage content should use oc-code monospace styling",
   );
   assert.match(
     messageComponentsSource,

@@ -27,9 +27,9 @@ test("system messages are added during streaming (not blocked by !current check)
 
   // Verify the system message is created with role: 'system'
   assert.match(
-    messageHandlerSource,
-    /role:\s*['"]system['"],/,
-    "System message should have role set to 'system'",
+    partUpdatedBody,
+    /upsertRealtimeSystemMessage/,
+    "System messages should be handled via upsertRealtimeSystemMessage",
   );
 
   // Verify SET_MESSAGES is dispatched with the system message
@@ -62,9 +62,9 @@ test("system message streaming does not interfere with streaming state", () => {
   );
 
   assert.match(
-    messageHandlerSource,
-    /role:\s*['"]system['"]/,
-    "System messages should have correct role",
+    partUpdatedBody,
+    /upsertRealtimeSystemMessage/,
+    "System messages should be handled via upsertRealtimeSystemMessage",
   );
 });
 

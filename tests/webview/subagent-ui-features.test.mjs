@@ -41,10 +41,10 @@ test('AssistantMessage component types subagent data to SubagentDetail', () => {
 
 test('inline subagent rows are integrated into the assistant item loop', () => {
   assert.doesNotMatch(messageSource, /SubagentProgressPopover/, 'Legacy SubagentProgressPopover should not be present');
-  assert.match(messageSource, /visibleSubagents\.map\(\(subagent:\s*SubagentSummary\)\s*=>/, 'AssistantMessage should map inline subagent rows');
+  assert.match(messageSource, /visibleSubagents\.map\(\(subagent:\s*SubagentSummary\)\s*=> \{/, 'AssistantMessage should map inline subagent rows');
   assert.match(messageSource, /onClick=\{\(\)\s*=>\s*openSubagentModal\(subagent\.id\)\}/, 'Inline subagent rows should open modal details');
-  assert.match(messageSource, /statusText\s*\|\|\s*"Initializing\.\.\."/,
-    'Inline subagent rows should show status with fallback'
+  assert.match(messageSource, /statusText \|\| "Initializing\.\.\."/,
+    'Inline subagent rows should show status text with fallback'
   );
 });
 
@@ -58,7 +58,7 @@ test('subagent list container is scrollable for large agent batches', () => {
 
 test('subagent detail modal is wired for selected subagents', () => {
   assert.match(messageSource, /<SubagentDetailModal/, 'AssistantMessage should render SubagentDetailModal');
-  assert.match(messageSource, /title=/, 'SubagentDetailModal should receive title');
+  assert.match(messageSource, /modelInfo/, 'SubagentDetailModal should receive model info label');
 });
 
 test('subagent color differentiation is applied deterministically', () => {
