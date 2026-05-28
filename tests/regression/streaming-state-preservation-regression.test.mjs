@@ -292,6 +292,14 @@ test("compaction completion preserves visible assistant streaming before clearin
   );
 });
 
+test("hydration stream-merge resolves same-turn assistant fallback when streaming id is missing", () => {
+  assert.match(
+    messageHandlerSource,
+    /function mergeStreamingSnapshotIntoHistory\([\s\S]*const candidateIds:[\s\S]*if \(!streamingMessageId\)[\s\S]*lastUserIndex[\s\S]*extractMessageText\(candidate\)[\s\S]*candidateIds\.push\(candidateId\)[\s\S]*replaceMatchingAssistantTurn\(messages,\s*streamingMessage,\s*candidateIds\)/s,
+    "missing streaming message ids should use same-turn assistant text matching to replace instead of append duplicate hydration cards",
+  );
+});
+
 test("in-progress placeholder requires real processing state", () => {
   const messageComponentsSource = readSource(
     [joinFromRoot("webview", "shared", "src", "chat", "MessageComponents.tsx")],

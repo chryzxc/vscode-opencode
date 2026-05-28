@@ -795,12 +795,21 @@ export class ModelAndAgentManager {
         agent: settings.agent,
       });
     }
-    if (settings.model?.providerID && settings.model?.modelID) {
-      this.selectedModel = settings.model;
+    const legacyProviderID = (settings as unknown as { providerID?: string }).providerID;
+    const legacyModelID = (settings as unknown as { modelID?: string }).modelID;
+    const modelToRestore =
+      settings.model?.providerID && settings.model?.modelID
+        ? settings.model
+        : legacyProviderID && legacyModelID
+          ? { providerID: legacyProviderID, modelID: legacyModelID }
+          : undefined;
+
+    if (modelToRestore?.providerID && modelToRestore?.modelID) {
+      this.selectedModel = modelToRestore;
       this.logger.debug("Restored model for session", {
         sessionId,
-        modelId: settings.model.modelID,
-        providerId: settings.model.providerID,
+        modelId: modelToRestore.modelID,
+        providerId: modelToRestore.providerID,
       });
     }
   }

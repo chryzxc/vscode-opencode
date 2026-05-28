@@ -970,7 +970,11 @@ function getMessageContent(
       return '';
     }
 
-    if (!streamingFinished && hasReasoningEvents) {
+    // Do not hide normal assistant text solely because reasoning exists.
+    // Reasoning often streams in parallel with answer text; suppressing on
+    // `hasReasoningEvents` alone can leave the main chat body stuck showing
+    // only the loading ticker.
+    if (!streamingFinished && hasReasoningEvents && !content.trim()) {
       return '';
     }
 

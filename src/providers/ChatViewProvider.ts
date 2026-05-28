@@ -1984,8 +1984,12 @@ export class ChatViewProvider
     },
   ): Promise<void> {
     const partial: any = {};
-    if (settings.providerID) partial.providerID = settings.providerID;
-    if (settings.modelID) partial.modelID = settings.modelID;
+    if (settings.providerID || settings.modelID) {
+      const model: Record<string, string> = {};
+      if (settings.providerID) model.providerID = settings.providerID;
+      if (settings.modelID) model.modelID = settings.modelID;
+      partial.model = model;
+    }
     if (settings.agent) partial.agent = settings.agent;
     if ("thinkingLevel" in settings) partial.thinkingLevel = settings.thinkingLevel;
     if (settings.thinkingByModel) partial.thinkingByModel = settings.thinkingByModel;

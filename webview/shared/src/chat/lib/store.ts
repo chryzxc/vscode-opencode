@@ -1786,6 +1786,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         currentSessionId: action.payload,
+        // Immediately switch the visible transcript to the target session's
+        // cached timeline. Without this, the previous session's messages can
+        // remain on screen until a later hydration event lands.
+        messages: messagesForNew,
         sessionStats: statsForNew,
         promptQueue: queueForNew,
         interactiveEvents: pendingInteractiveEventsFromMessagesLocal(messagesForNew),
@@ -1861,10 +1865,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
               state.compactionDividerBeforeMessageId,
             compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
           };
-      const nextInteractiveEvents =
+      const derivedInteractiveEvents =
         canonicalMessages.length > 0
           ? pendingInteractiveEventsFromMessagesLocal(canonicalMessages)
           : [];
+      const hasLiveInteractiveEvents =
+        Array.isArray(state.interactiveEvents) &&
+        state.interactiveEvents.length > 0;
+      const isTurnStillActive =
+        state.isProcessing || state.streaming?.isActive === true;
+      const nextInteractiveEvents =
+        derivedInteractiveEvents.length === 0 &&
+        hasLiveInteractiveEvents &&
+        isTurnStillActive
+          ? state.interactiveEvents
+          : derivedInteractiveEvents;
       return {
         ...state,
         messages: canonicalMessages,

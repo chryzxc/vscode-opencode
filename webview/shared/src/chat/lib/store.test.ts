@@ -272,6 +272,56 @@ describe("appReducer render-stability guards", () => {
     });
     assert.strictEqual(second, first);
   });
+
+  it("preserves live interactive events during active turn when SET_MESSAGES has no question payload yet", () => {
+    const liveInteractive = [
+      {
+        type: "question" as const,
+        id: "q-live-1",
+        question: "Pick one",
+        options: [
+          { label: "A", value: "A" },
+          { label: "B", value: "B" },
+        ],
+      },
+    ];
+    const activeState = {
+      ...initialState,
+      isProcessing: true,
+      interactiveEvents: liveInteractive,
+      messages: [{ role: "user", content: "ask me" } as Message],
+    };
+    const next = appReducer(activeState, {
+      type: "SET_MESSAGES",
+      payload: [
+        { role: "user", content: "ask me" },
+        { role: "assistant", content: "Running question" },
+      ],
+    });
+
+    assert.deepStrictEqual(next.interactiveEvents, liveInteractive);
+  });
+
+  it("switches visible messages immediately on SET_SESSION_ID", () => {
+    const stateWithSessionCache = {
+      ...initialState,
+      currentSessionId: "session-a",
+      messages: [{ role: "user", content: "from A" } as Message],
+      messagesBySessionId: {
+        "session-a": [{ role: "user", content: "from A" } as Message],
+        "session-b": [{ role: "user", content: "from B" } as Message],
+      },
+    };
+
+    const next = appReducer(stateWithSessionCache, {
+      type: "SET_SESSION_ID",
+      payload: "session-b",
+    });
+
+    assert.strictEqual(next.currentSessionId, "session-b");
+    assert.strictEqual(next.messages.length, 1);
+    assert.strictEqual(next.messages[0].content, "from B");
+  });
 });
 
 describe('normalizeComparableTextLocal', () => {

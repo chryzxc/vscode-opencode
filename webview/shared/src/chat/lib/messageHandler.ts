@@ -6877,10 +6877,51 @@ function mergeStreamingSnapshotIntoHistory(
     asString(asRecord(streamingMessage.info)?.id) ||
     asString(streamingMessage.id) ||
     null;
+  const candidateIds: Array<string | null | undefined> = [streamingMessageId];
 
-  return replaceMatchingAssistantTurn(messages, streamingMessage, [
-    streamingMessageId,
-  ]);
+  // Some providers/hydration paths do not preserve a stable final assistant ID.
+  // In that case, resolve the latest same-turn assistant by content so we replace
+  // instead of appending a duplicate hydrated assistant card.
+  if (!streamingMessageId) {
+    const incomingText = normalizeComparableText(
+      extractMessageText(streamingMessage),
+    );
+    if (incomingText.length > 0) {
+      let lastUserIndex = -1;
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (!message) {
+          continue;
+        }
+        const role =
+          (asString(message.role) || asString(asRecord(message.info)?.role))
+            .toLowerCase()
+            .trim();
+        if (role === "user") {
+          lastUserIndex = index;
+          break;
+        }
+      }
+
+      for (let index = messages.length - 1; index > lastUserIndex; index -= 1) {
+        const candidate = messages[index];
+        if (!isAssistantHistoryMessage(candidate)) {
+          continue;
+        }
+        const candidateText = normalizeComparableText(extractMessageText(candidate));
+        if (!candidateText || candidateText !== incomingText) {
+          continue;
+        }
+        const candidateId = getMessageId(candidate);
+        if (candidateId) {
+          candidateIds.push(candidateId);
+          break;
+        }
+      }
+    }
+  }
+
+  return replaceMatchingAssistantTurn(messages, streamingMessage, candidateIds);
 }
 
 function flushVisibleStreamingSnapshotToMessages(
@@ -10307,6 +10348,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               flushVisibleStreamingSnapshotToMessages(dispatch, getState);
               latestStreamingSnapshot = null;
               activeSubagentParentMessageIds = new Set<string>();
+              // Some providers/models can momentarily leave the prior turn in a
+              // "processing" state after question submit. Reset local processing
+              // flags here so the UI doesn't get stuck on loading text while we
+              // wait for the next turn's real stream lifecycle events.
+              dispatch({ type: "SET_PROCESSING", payload: false });
+              dispatch({ type: "SET_STEERING", payload: false });
               dispatch({ type: "SET_STREAMING", payload: null });
               // Defensive cleanup: once an interactive answer bundle is echoed back
               // from the extension host, clear any stale quick-input popover state.
