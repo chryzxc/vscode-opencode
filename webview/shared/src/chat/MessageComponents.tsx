@@ -1234,10 +1234,6 @@ function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
     Boolean(activityDetail);
   const normalizedTitle = (step.title ?? "").trim().toLowerCase();
 
-  // Filter out reasoning/thinking and internal bookkeeping steps
-  if (type === "reasoning" || type === "thinking") {
-    return false;
-  }
   // Filter out empty step-start and step-finish bookkeeping, but keep rows that
   // carry file/diff/activity detail because they are the only visible evidence
   // for some background edits.
@@ -1854,6 +1850,24 @@ function fileChangePathsFromMessage(message?: Message): Set<string> {
     }
   }
 
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured =
+    asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured) ||
+    asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured);
+  const structuredFileChanges = Array.isArray(structured?.fileChanges)
+    ? structured.fileChanges
+    : [];
+  for (const item of structuredFileChanges) {
+    const rec = asRecord(item);
+    const normalized = normalizeFileChangePathForComparison(rec?.file);
+    if (normalized) {
+      files.add(normalized);
+    }
+  }
+
   return files;
 }
 
@@ -1902,6 +1916,25 @@ function messageHasOwnFileChangeEvidence(message?: Message): boolean {
   }
 
   if (Array.isArray(message.edits) && message.edits.length > 0) {
+    return true;
+  }
+
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured =
+    asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured) ||
+    asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured);
+  const structuredFileChanges = Array.isArray(structured?.fileChanges)
+    ? structured.fileChanges
+    : [];
+  if (
+    structuredFileChanges.some((item) => {
+      const rec = asRecord(item);
+      return !!firstNonEmptyString(rec?.file);
+    })
+  ) {
     return true;
   }
 
@@ -2791,13 +2824,14 @@ function buildDisplayEvents(
       for (const item of block.items) {
         const text = (item.text || "").trim();
         if (!text) continue;
+        const source = sourceFromThoughtKey(item.key);
         rawEvents.push({
           key: `reasoning-${item.key}`,
           kind: "reasoning",
           label: "Reasoning",
           summary: text,
-          status: "done",
-          source: sourceFromThoughtKey(item.key),
+          status: isStreamingActive && source === "stream" ? "pending" : "done",
+          source,
           isImportant: false,
           updateCount: 1,
         });
@@ -3425,7 +3459,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     message?.responseType,
     typeof structured?.responseType === "string" ? structured.responseType : undefined,
   )?.toLowerCase();
-  const hideReasoningTimeline = responseType === "implementation_plan";
   let plan = responseType === "implementation_plan" ? message?.plan : undefined;
   if (!plan && responseType === "implementation_plan") {
     const structuredPlanRec = asRecord(structured?.plan);
@@ -3583,7 +3616,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     : displayEvents;
   const userFacingDisplayEvents = visibleDisplayEvents.filter((event) => {
     if (event.internal) return false;
-    if (hideReasoningTimeline && event.kind === "reasoning") return false;
     return true;
   });
   const internalDisplayEvents = visibleDisplayEvents.filter(
@@ -3993,11 +4025,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const hasActiveTimelineWork = timelineDisplayEvents.some(
     (event) => event.status === "pending",
   );
-  const showInProgressActivityPlaceholder =
-    !!streaming?.isActive &&
-    state.isProcessing &&
-    !hasActiveTimelineWork &&
-    !showThinkingPlaceholder;
   const { rawResponseText } = useMemo(() => {
     const maxRawDebugChars = 30000;
     const withCap = (value: string): string =>
@@ -4326,8 +4353,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
         <div className="space-y-3">
           {(displayEvents.length > 0 ||
-            showThinkingPlaceholder ||
-            showInProgressActivityPlaceholder) && (
+            showThinkingPlaceholder) && (
               <section data-assistant-section="activity">
                 {timelineDisplayEvents.length > 0 && (
                   <>
@@ -4340,9 +4366,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       autoScrollToBottom={isStreamingActive}
                     >
                       {timelineDisplayEvents.map((event, index) => {
-                        const isLast =
-                          !showInProgressActivityPlaceholder &&
-                          index === timelineDisplayEvents.length - 1;
+                        const isLast = index === timelineDisplayEvents.length - 1;
                         const isLatestStreamingEvent =
                           isStreamingActive && isLast;
                         const indicatorNode = (
@@ -4551,22 +4575,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </StepperItem>
                         );
                       })}
-                      {showInProgressActivityPlaceholder && (
-                        <StepperItem
-                          isLast={true}
-                          indicator={<StepIndicator status="running" />}
-                          className="oc-refined-stepper-item mt-2"
-                        >
-                          <div className="flex min-w-0 items-center gap-2 flex-wrap">
-                            <span className="oc-refined-event-label activity">
-                              IN_PROGRESS
-                            </span>
-                            <span className="flex-1 whitespace-pre-wrap break-words text-[11px] leading-5 oc-text-secondary">
-                              Working in the background...
-                            </span>
-                          </div>
-                        </StepperItem>
-                      )}
                     </Stepper>
 
                     {showThinkingPlaceholder && !hasThinkingEvents && timelineDisplayEvents.length === 0 && (
@@ -5327,8 +5335,65 @@ function FileChangesSection({
     });
   };
   const [expandedByFile, setExpandedByFile] = useState<Record<string, boolean>>({});
+  const [fetchedPreviewByFile, setFetchedPreviewByFile] = useState<
+    Record<string, { header?: string; lines: string[] }>
+  >({});
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const data = event?.data as
+        | {
+            type?: string;
+            file?: string;
+            messageId?: string;
+            diffExcerpt?: { header?: string; lines?: string[] };
+          }
+        | undefined;
+      if (!data || data.type !== "messageFileDiffPreview") {
+        return;
+      }
+      if (messageId && data.messageId && data.messageId !== messageId) {
+        return;
+      }
+      const file = (data.file || "").trim();
+      const lines = Array.isArray(data.diffExcerpt?.lines)
+        ? data.diffExcerpt!.lines.filter(
+            (line): line is string => typeof line === "string" && line.trim().length > 0,
+          )
+        : [];
+      if (!file || lines.length === 0) {
+        return;
+      }
+      setFetchedPreviewByFile((prev) => ({
+        ...prev,
+        [normalizePath(file)]: {
+          header: data.diffExcerpt?.header,
+          lines,
+        },
+      }));
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [messageId]);
 
   const toggleExpanded = (file: string) => {
+    const key = normalizePath(file);
+    const hasLocalPreview = !!fetchedPreviewByFile[key];
+    const current = visibleChanges.find(
+      (change) => normalizePath(change.file) === key,
+    );
+    const hasExistingPreview =
+      !!current &&
+      Array.isArray(current.diffExcerpt?.lines) &&
+      current.diffExcerpt.lines.length > 0;
+    if (!hasLocalPreview && !hasExistingPreview && messageId) {
+      vscode.postMessage({
+        type: "getMessageFileDiffPreview",
+        messageId,
+        sessionId: sessionId || undefined,
+        file,
+      });
+    }
     setExpandedByFile((prev) => ({
       ...prev,
       [file]: !prev[file],
@@ -5375,8 +5440,15 @@ function FileChangesSection({
       <div className="border-t border-oc-border-soft">
         <div className="space-y-0.5 p-1.5">
           {visibleChanges.map((fileChange) => {
+            const fetchedPreview = fetchedPreviewByFile[normalizePath(fileChange.file)];
+            const previewExcerpt = fetchedPreview
+              ? {
+                  header: fetchedPreview.header,
+                  lines: fetchedPreview.lines,
+                }
+              : fileChange.diffExcerpt;
             const hasPreview =
-              Array.isArray(fileChange.diffExcerpt?.lines) && fileChange.diffExcerpt.lines.length > 0;
+              Array.isArray(previewExcerpt?.lines) && previewExcerpt.lines.length > 0;
             const isExpanded = !!expandedByFile[fileChange.file];
             const filename = fileChange.file.split(/[\\/]/).pop() ?? fileChange.file;
             const dirname = fileChange.file !== filename
@@ -5438,8 +5510,8 @@ function FileChangesSection({
                   <div className="border-t border-oc-border-soft bg-black/10">
                     <ActivityDiffExcerpt
                       excerpt={{
-                        header: fileChange.diffExcerpt?.header,
-                        lines: fileChange.diffExcerpt?.lines || [],
+                        header: previewExcerpt?.header,
+                        lines: previewExcerpt?.lines || [],
                       }}
                     />
                   </div>

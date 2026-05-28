@@ -11,7 +11,7 @@ export const config = {
      * Show raw response debug information in chat messages
      * @default false
      */
-    showRawResponse: false,
+    showRawResponse: true,
   },
 } as const;
 

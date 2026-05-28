@@ -2708,6 +2708,14 @@ export class ChatViewProvider
           );
           break;
         }
+        case "getMessageFileDiffPreview": {
+          await this.handleGetMessageFileDiffPreview(
+            this.firstNonEmptyString(message.messageId),
+            this.firstNonEmptyString(message.file),
+            this.firstNonEmptyString(message.sessionId, this.currentSessionId),
+          );
+          break;
+        }
         case "searchFiles":
         case "getMentions": {
           await this.handleMentions(message.query);
@@ -8156,6 +8164,74 @@ export class ChatViewProvider
       });
       vscode.window.showErrorMessage(`Failed to undo changes: ${errorMessage}`);
     }
+  }
+
+  private async handleGetMessageFileDiffPreview(
+    messageId?: string,
+    filePath?: string,
+    requestedSessionId?: string,
+  ): Promise<void> {
+    const targetMessageId = this.firstNonEmptyString(messageId);
+    const targetFilePath = this.firstNonEmptyString(filePath);
+    const targetSessionId = this.firstNonEmptyString(
+      requestedSessionId,
+      this.currentSessionId,
+    );
+    if (!targetMessageId || !targetFilePath || !targetSessionId || !this.view) {
+      return;
+    }
+
+    let diffExcerpt:
+      | { header?: string; lines: string[]; added?: number; deleted?: number }
+      | undefined;
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const workspaceDir = this.getWorkspaceDirectory();
+      const diffResponse = workspaceDir
+        ? await client.session.diff({
+            path: { id: targetSessionId },
+            query: { directory: workspaceDir, messageID: targetMessageId },
+          })
+        : await client.session.diff({
+            path: { id: targetSessionId },
+            query: { messageID: targetMessageId },
+          });
+      const rows = Array.isArray(diffResponse?.data)
+        ? (diffResponse.data as Array<Record<string, unknown>>)
+        : [];
+      const normalizedTarget = targetFilePath.replace(/\\/g, "/").toLowerCase();
+      const matched = rows.find((row) => {
+        const file = this.firstNonEmptyString(row?.file)?.replace(/\\/g, "/").toLowerCase();
+        return !!file && (file === normalizedTarget || file.endsWith(`/${normalizedTarget}`));
+      });
+      if (matched) {
+        diffExcerpt = this.buildSdkDiffExcerpt({
+          file: this.firstNonEmptyString(matched.file),
+          before: typeof matched.before === "string" ? matched.before : undefined,
+          after: typeof matched.after === "string" ? matched.after : undefined,
+          patch: typeof matched.patch === "string" ? matched.patch : undefined,
+        });
+      }
+      if (!diffExcerpt) {
+        const enrichment = await this.getDiffActivityEnrichment(targetFilePath);
+        diffExcerpt = enrichment?.diffExcerpt;
+      }
+    } catch (error) {
+      this.logger.warn("Failed to fetch message file diff preview", {
+        messageId: targetMessageId,
+        file: targetFilePath,
+        sessionId: targetSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    this.view.webview.postMessage({
+      type: "messageFileDiffPreview",
+      messageId: targetMessageId,
+      sessionId: targetSessionId,
+      file: targetFilePath,
+      diffExcerpt,
+    });
   }
 
   private async handleReviewChanges(targetFiles?: string[]) {
