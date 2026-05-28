@@ -6147,10 +6147,15 @@ export class ChatViewProvider
       // Send the message using the SDK
       const startTime = Date.now();
       const thinkingLevel = this.modelAndAgentManager.getEffectiveThinkingLevel(session.id);
+      const modelReasoning = this.resolveCapabilityForModel(
+        this.selectedModel.providerID,
+        this.selectedModel.modelID,
+      )?.reasoning ?? false;
+      const disableThinkingStructuredOutput = thinkingLevel === "none" && modelReasoning;
       const useStructuredOutput =
         !slashCommandInvocation &&
         !retryWithoutStructuredOutput &&
-        thinkingLevel !== "none" &&
+        !disableThinkingStructuredOutput &&
         this.shouldUseStructuredOutput(
           this.getStructuredOutputModelKey(this.selectedModel.providerID, this.selectedModel.modelID)
         );

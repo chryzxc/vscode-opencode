@@ -105,19 +105,24 @@ test("resolveCapabilityForModel always prepends 'none' when reasoning is true an
 // ChatViewProvider — prompt body strips thinking when "none" selected
 // ---------------------------------------------------------------------------
 
-test("prompt construction sets variant: null and disables structured output when thinking is 'none'", () => {
-  // thinkingLevel is read before prompt body construction
+test("prompt construction sets variant: null and disables structured output when thinking is 'none' and model supports reasoning", () => {
   assert.match(
     providerSource,
     /const thinkingLevel = this\.modelAndAgentManager\.getEffectiveThinkingLevel\(session\.id\);/,
-    "prompt construction should read thinkingLevel before building the prompt body",
+    "prompt construction should read thinkingLevel",
   );
 
-  // When thinkingLevel is "none", useStructuredOutput should be false
+  // Structured output should only disable when "none" AND model supports reasoning
   assert.match(
     providerSource,
-    /thinkingLevel !== "none"/,
-    "useStructuredOutput condition should exclude when thinkingLevel is 'none'",
+    /const disableThinkingStructuredOutput = thinkingLevel === "none" && modelReasoning;/,
+    "structured output should only be disabled when thinking is 'none' AND model supports reasoning",
+  );
+
+  assert.match(
+    providerSource,
+    /!disableThinkingStructuredOutput/,
+    "useStructuredOutput should use disableThinkingStructuredOutput guard",
   );
 
   // When thinkingLevel is "none", variant should be set to null
