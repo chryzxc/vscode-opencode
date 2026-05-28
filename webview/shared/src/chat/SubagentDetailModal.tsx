@@ -234,7 +234,7 @@ export function SubagentDetailModal({
 												? "border-none bg-transparent oc-text-secondary"
 												: isError
 													? "border-destructive bg-transparent text-destructive"
-													: "border-oc-accent/40 bg-oc-accent/20 oc-tinted-badge-text pulse-border",
+													: "border-transparent bg-oc-accent/18 oc-tinted-badge-text",
 										)}
 									>
 										{status.toUpperCase()}

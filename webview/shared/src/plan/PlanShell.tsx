@@ -167,9 +167,37 @@ export default function PlanShell() {
 
   const renderedHtml = renderMarkdown(displayedPlan);
 
+  function focusPlanAnchor(commentId: string) {
+    const container = planContentRef.current;
+    if (!container) return;
+    const anchorEl =
+      (container.querySelector(
+        `mark[data-comment-id="${commentId}"]`,
+      ) as HTMLElement | null) ||
+      (container.querySelector(
+        `[data-plan-comment-anchor="${commentId}"]`,
+      ) as HTMLElement | null);
+    if (!anchorEl) return;
+
+    anchorEl.scrollIntoView({ block: "center", behavior: "smooth" });
+    anchorEl.classList.add(
+      "ring-2",
+      "ring-[color-mix(in_srgb,#7dd3fc_72%,transparent)]",
+      "shadow-[0_0_0_2px_color-mix(in_srgb,#7dd3fc_48%,transparent)]",
+    );
+    window.setTimeout(() => {
+      anchorEl.classList.remove(
+        "ring-2",
+        "ring-[color-mix(in_srgb,#7dd3fc_72%,transparent)]",
+        "shadow-[0_0_0_2px_color-mix(in_srgb,#7dd3fc_48%,transparent)]",
+      );
+    }, 1200);
+  }
+
   function revealComment(commentId: string) {
     setActiveCommentId(commentId);
     setCommentsPanelOpen(true);
+    focusPlanAnchor(commentId);
     setTimeout(() => {
       const commentCard = document.querySelector(
         `[data-comment-id="${commentId}"]`,
@@ -767,7 +795,10 @@ export default function PlanShell() {
                 <div
                   key={comment.id}
                   data-comment-id={comment.id}
-                  onClick={() => setActiveCommentId(comment.id)}
+                  onClick={() => {
+                    setActiveCommentId(comment.id);
+                    focusPlanAnchor(comment.id);
+                  }}
                   className={`relative rounded-xl border p-3.5 text-xs shadow-sm transition-all duration-200 ease-out ${
                     activeCommentId === comment.id
                       ? "border-[color-mix(in_srgb,var(--vscode-focusBorder)_65%,var(--vscode-panel-border)_35%)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_80%,var(--vscode-focusBorder)_20%)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--vscode-focusBorder)_30%,transparent)]"

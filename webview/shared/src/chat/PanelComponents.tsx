@@ -465,13 +465,13 @@ function todoStatusLabel(status: TodoItem["status"]) {
 function todoPriorityTone(priority?: TodoItem["priority"]) {
   switch (priority) {
     case "high":
-      return "text-oc-red border-oc-border-soft bg-oc-red/10";
+      return "text-oc-red border-oc-border bg-oc-red/10";
     case "medium":
-      return "oc-quota-warning border-oc-border-soft bg-oc-quota-warning-bg";
+      return "oc-quota-warning border-oc-border bg-oc-quota-warning-bg";
     case "low":
-      return "text-[var(--oc-text-soft)] border-oc-border-soft bg-oc-panel-soft";
+      return "text-[var(--oc-text-soft)] border-oc-border bg-oc-panel-soft";
     default:
-      return "text-[var(--oc-text-soft)] border-oc-border-soft bg-oc-panel-soft";
+      return "text-[var(--oc-text-soft)] border-oc-border bg-oc-panel-soft";
   }
 }
 
@@ -485,7 +485,7 @@ function TodoChecklistIcon({ status }: { status: TodoItem["status"] }) {
       );
     case "in_progress":
       return (
-        <span className="flex h-4 w-4 items-center justify-center rounded-full border border-oc-accent/45 text-oc-accent">
+        <span className="flex h-4 w-4 items-center justify-center rounded-full border border-oc-green/45 text-oc-green">
           <RefreshCw className="h-2.5 w-2.5 animate-spin" />
         </span>
       );
@@ -759,7 +759,7 @@ export function ActiveTaskPanel() {
                         {todo.description ?? todo.text ?? "Untitled task"}
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                        <span className="rounded border border-oc-border-soft bg-oc-panel-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--oc-text-soft)]">
+                        <span className="rounded border border-oc-border bg-oc-panel-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--oc-text-soft)]">
                           {todoStatusLabel(todo.status)}
                         </span>
                         {todo.priority ? (

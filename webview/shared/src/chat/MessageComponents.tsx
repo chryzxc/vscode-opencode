@@ -1415,29 +1415,29 @@ function getLatestTodoTransition(items: TodoItem[]): TodoItem | undefined {
 function todoStatusTone(status: TodoItem["status"]): string {
   switch (status) {
     case "completed":
-      return "text-oc-green border-oc-border-soft bg-oc-green/8";
+      return "text-oc-green border-oc-border bg-oc-green/8";
     case "in_progress":
-      return "oc-tinted-badge-text border-oc-border-soft bg-oc-accent/10";
+      return "oc-tinted-badge-text border-oc-border bg-oc-accent/10";
     case "failed":
-      return "text-oc-red border-oc-border-soft bg-oc-red/10";
+      return "text-oc-red border-oc-border bg-oc-red/10";
     case "cancelled":
-      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+      return "oc-text-secondary border-oc-border bg-oc-panel-soft";
     case "pending":
     default:
-      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+      return "oc-text-secondary border-oc-border bg-oc-panel-soft";
   }
 }
 
 function todoPriorityTone(priority?: TodoItem["priority"]): string {
   switch (priority) {
     case "high":
-      return "text-oc-red border-oc-border-soft bg-oc-red/10";
+      return "text-oc-red border-oc-border bg-oc-red/10";
     case "medium":
-      return "oc-quota-warning border-oc-border-soft bg-oc-quota-warning-bg";
+      return "oc-quota-warning border-oc-border bg-oc-quota-warning-bg";
     case "low":
-      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+      return "oc-text-secondary border-oc-border bg-oc-panel-soft";
     default:
-      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+      return "oc-text-secondary border-oc-border bg-oc-panel-soft";
   }
 }
 
@@ -1532,7 +1532,7 @@ function TodoInlineSummary({
                   {todo.status === "completed" ? (
                     <Check className="h-3.5 w-3.5 text-oc-green" />
                   ) : todo.status === "in_progress" ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-oc-accent" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-oc-green" />
                   ) : todo.status === "failed" ? (
                     <AlertCircle className="h-3.5 w-3.5 text-oc-red" />
                   ) : todo.status === "cancelled" ? (
