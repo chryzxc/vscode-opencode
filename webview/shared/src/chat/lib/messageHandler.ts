@@ -5680,6 +5680,26 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   if (latestPlan) {
     base.plan = latestPlan;
   }
+  const hasPlanAttachment =
+    !!base.plan &&
+    typeof base.plan === "object" &&
+    !!(
+      asString(base.plan.file).trim() ||
+      asString(base.plan.content).trim() ||
+      (Array.isArray(base.plan.files) && base.plan.files.length > 0)
+    );
+  if (hasPlanAttachment) {
+    base.responseType = "implementation_plan";
+    const structuredOut = asRecord(
+      (base as unknown as UnknownRecord).structuredOutput,
+    );
+    if (structuredOut) {
+      (base as unknown as UnknownRecord).structuredOutput = {
+        ...structuredOut,
+        responseType: "implementation_plan",
+      };
+    }
+  }
   const scopedSubagents = (() => {
     let candidate: Message["subagents"] | undefined;
     if (canonicalMessageId) {
