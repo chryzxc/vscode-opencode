@@ -997,17 +997,25 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
       const key = `${meta.role}|${meta.normalizedText}`;
       const candidates = textToIndexes.get(key) ?? [];
       let matched = -1;
+      const candidateMaxDistance = 2;
       for (const idx of candidates) {
         const existing = deduped[idx];
         if (!existing) continue;
         const existingMeta = getMessageMeta(existing);
         if (
-          typeof existingMeta.createdAt !== "number" ||
-          typeof meta.createdAt !== "number"
+          typeof existingMeta.createdAt === "number" &&
+          typeof meta.createdAt === "number"
         ) {
+          if (Math.abs(existingMeta.createdAt - meta.createdAt) <= 4_000) {
+            matched = idx;
+            break;
+          }
           continue;
         }
-        if (Math.abs(existingMeta.createdAt - meta.createdAt) <= 4_000) {
+        // Hydrated history can omit createdAt on one side of a mirrored pair.
+        // In that case, only dedupe near-neighbor entries to avoid collapsing
+        // legitimate repeated prompts/responses far apart in the timeline.
+        if (deduped.length - idx <= candidateMaxDistance) {
           matched = idx;
           break;
         }

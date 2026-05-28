@@ -8045,7 +8045,7 @@ export class ChatViewProvider
               };
             })
             .filter(
-              (item): item is { file: string; added: number; deleted: number; diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number } } =>
+              (item): item is { file: string; added: number; deleted: number; diffExcerpt: { header?: string; lines: string[]; added?: number; deleted?: number } | undefined } =>
                 Boolean(item.file),
             )
         : [];

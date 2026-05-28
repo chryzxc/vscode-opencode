@@ -463,6 +463,29 @@ describe('dedupeMirrorMessagesForCanonical', () => {
     assert.strictEqual(result.length, 1);
     assert.strictEqual((result[0] as any).rawResponse, '{"debug":"yes"}');
   });
+
+  it('should deduplicate near-neighbor mirrored assistant text when createdAt is missing', () => {
+    const msgHydrated: Message = {
+      role: 'assistant',
+      content: 'same assistant reply',
+      rawResponse: '{"source":"hydrated"}',
+    };
+    const msgStreamFinal: Message = {
+      role: 'assistant',
+      content: 'same assistant reply',
+      created: Date.now(),
+    };
+
+    const result = dedupeMirrorMessagesForCanonical([
+      { role: 'user', content: 'prompt' },
+      msgHydrated,
+      msgStreamFinal,
+    ]);
+
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[1].content, 'same assistant reply');
+    assert.strictEqual((result[1] as any).rawResponse, '{"source":"hydrated"}');
+  });
 });
 
 describe('coalesceAssistantRunForCanonical', () => {
