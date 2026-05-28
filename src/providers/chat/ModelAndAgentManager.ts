@@ -845,6 +845,8 @@ export class ModelAndAgentManager {
         : [];
     }
     if (variants.length === 0 || !variants.includes(normalizedLevel)) return undefined;
+    // "none" means no extra reasoning — omit the variant field entirely
+    if (normalizedLevel === "none") return undefined;
     return normalizedLevel;
   }
 }

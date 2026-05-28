@@ -2023,7 +2023,9 @@ export class ChatViewProvider
 
     return {
       reasoning,
-      variants: variants.length > 0 ? variants : undefined,
+      variants: variants.length > 0
+        ? (variants.includes("none") ? variants : ["none", ...variants])
+        : undefined,
     };
   }
 
@@ -6144,9 +6146,11 @@ export class ChatViewProvider
 
       // Send the message using the SDK
       const startTime = Date.now();
+      const thinkingLevel = this.modelAndAgentManager.getEffectiveThinkingLevel(session.id);
       const useStructuredOutput =
         !slashCommandInvocation &&
         !retryWithoutStructuredOutput &&
+        thinkingLevel !== "none" &&
         this.shouldUseStructuredOutput(
           this.getStructuredOutputModelKey(this.selectedModel.providerID, this.selectedModel.modelID)
         );
@@ -6156,7 +6160,9 @@ export class ChatViewProvider
         parts: parts,
       };
       const promptVariant = await this.resolvePromptVariant(session.id);
-      if (promptVariant) {
+      if (thinkingLevel === "none") {
+        (promptBody as Record<string, unknown>).variant = null;
+      } else if (promptVariant) {
         (promptBody as Record<string, unknown>).variant = promptVariant;
       }
       if (capturePromptDebug) {
