@@ -5005,6 +5005,8 @@ function FileChangesSection({
     const v = value.trim();
     if (!v) return false;
     if (v.includes("\n")) return false;
+    if (/\s/.test(v)) return false;
+    if (!/^[A-Za-z0-9._/\-\\]+$/.test(v)) return false;
     if (/[\\/]/.test(v)) return true;
     if (/^\*?[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+$/.test(v)) return true;
     if (/^\*\s+[A-Za-z0-9._-]+[\\/][^ ]+/.test(v)) return true;
@@ -5134,8 +5136,15 @@ function FileChangesSection({
     };
 
     for (const step of streamingSteps) {
+      const hasConcreteChangeEvidence =
+        Boolean(step.diffStats) ||
+        Boolean(step.activityDetail?.diffExcerpt) ||
+        Boolean(step.activityDetail?.file);
+      if (!hasConcreteChangeEvidence) {
+        continue;
+      }
       upsert(
-        step.filePath || step.activityDetail?.file || step.title,
+        step.filePath || step.activityDetail?.file,
         step.diffStats?.added,
         step.diffStats?.deleted,
         1,
@@ -5144,8 +5153,15 @@ function FileChangesSection({
     }
 
     for (const event of timelineEvents) {
+      const hasConcreteChangeEvidence =
+        Boolean(event.diffStats) ||
+        Boolean(event.activityDetail?.diffExcerpt) ||
+        Boolean(event.activityDetail?.file);
+      if (!hasConcreteChangeEvidence) {
+        continue;
+      }
       upsert(
-        event.filePath || event.activityDetail?.file || event.summary || event.description,
+        event.filePath || event.activityDetail?.file,
         event.diffStats?.added,
         event.diffStats?.deleted,
         1,
@@ -5159,6 +5175,9 @@ function FileChangesSection({
 
     if (changeSummary && Array.isArray(changeSummary.files)) {
       for (const summaryFile of changeSummary.files) {
+        if (!isLikelyFilePath(summaryFile.file)) {
+          continue;
+        }
         upsert(summaryFile.file, summaryFile.added, summaryFile.deleted, 3);
       }
     }
@@ -5198,6 +5217,9 @@ function FileChangesSection({
 
     if (changeSummary && Array.isArray(changeSummary.files)) {
       for (const summaryFile of changeSummary.files) {
+        if (!isLikelyFilePath(summaryFile.file)) {
+          continue;
+        }
         const key = normalizePath(summaryFile.file);
         if (seen.has(key)) continue;
         const matched = fileChanges.find((file) => normalizePath(file.file) === key);

@@ -227,13 +227,20 @@ export function validateStructuredOutput(
             (line) => typeof line === "string" && line.trim().length > 0,
           );
         const diffStats = asRecord(update.diffStats);
-        const hasDiffStats =
-          typeof diffStats?.added === "number" ||
-          typeof diffStats?.deleted === "number";
+        const addedCount =
+          typeof diffStats?.added === "number" ? Math.max(0, diffStats.added) : 0;
+        const deletedCount =
+          typeof diffStats?.deleted === "number" ? Math.max(0, diffStats.deleted) : 0;
+        const hasDiffStats = addedCount > 0 || deletedCount > 0;
 
         if (!hasExcerptLines && !hasDiffStats) {
           errors.push(
             `progressUpdates[${index}] file_edit step requires diffExcerpt.lines or diffStats for done/error status`,
+          );
+        }
+        if (!hasExcerptLines && hasDiffStats) {
+          errors.push(
+            `progressUpdates[${index}] file_edit step with changes must include diffExcerpt.lines`,
           );
         }
       });

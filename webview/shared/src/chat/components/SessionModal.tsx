@@ -191,6 +191,10 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     const sessionTitle = session?.title || sessionId;
     const hasCachedMessages =
       (messagesBySessionId?.[sessionId]?.length ?? 0) > 0;
+    // Switch local session context immediately so session-scoped UI (like
+    // pending queue items above composer) does not bleed across sessions
+    // while we wait for backend hydration.
+    dispatch({ type: "SET_SESSION_ID", payload: sessionId });
 
     // Skip full loading state when we already have a local render cache.
     if (!hasCachedMessages) {

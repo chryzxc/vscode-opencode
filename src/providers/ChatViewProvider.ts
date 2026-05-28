@@ -7934,19 +7934,32 @@ export class ChatViewProvider
 
       const rows = Array.isArray(diffResponse?.data)
         ? (diffResponse.data as FileDiff[])
-            .map((item) => ({
-              file: this.firstNonEmptyString(item?.file),
-              added:
-                typeof item?.additions === "number" && Number.isFinite(item.additions)
-                  ? Math.max(0, item.additions)
-                  : 0,
-              deleted:
-                typeof item?.deletions === "number" && Number.isFinite(item.deletions)
-                  ? Math.max(0, item.deletions)
-                  : 0,
-            }))
+            .map((item) => {
+              const itemRec = this.asRecord(item) || {};
+              const file = this.firstNonEmptyString(itemRec.file);
+              return {
+                file,
+                added:
+                  typeof itemRec.additions === "number" && Number.isFinite(itemRec.additions)
+                    ? Math.max(0, itemRec.additions)
+                    : 0,
+                deleted:
+                  typeof itemRec.deletions === "number" && Number.isFinite(itemRec.deletions)
+                    ? Math.max(0, itemRec.deletions)
+                    : 0,
+                diffExcerpt: this.buildSdkDiffExcerpt({
+                  file,
+                  before:
+                    typeof itemRec.before === "string" ? itemRec.before : undefined,
+                  after:
+                    typeof itemRec.after === "string" ? itemRec.after : undefined,
+                  patch:
+                    typeof itemRec.patch === "string" ? itemRec.patch : undefined,
+                }),
+              };
+            })
             .filter(
-              (item): item is { file: string; added: number; deleted: number } =>
+              (item): item is { file: string; added: number; deleted: number; diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number } } =>
                 Boolean(item.file),
             )
         : [];
@@ -7961,7 +7974,9 @@ export class ChatViewProvider
           if (index >= MAX_PREVIEW_FILES) {
             return row;
           }
-          const enrichment = await this.getDiffActivityEnrichment(row.file);
+          const enrichment = row.diffExcerpt
+            ? undefined
+            : await this.getDiffActivityEnrichment(row.file);
           const diffStats = enrichment?.diffStats;
           return {
             ...row,
@@ -7973,7 +7988,7 @@ export class ChatViewProvider
               row.added > 0 || row.deleted > 0
                 ? row.deleted
                 : diffStats?.deleted ?? row.deleted,
-            diffExcerpt: enrichment?.diffExcerpt,
+            diffExcerpt: enrichment?.diffExcerpt ?? row.diffExcerpt,
           };
         }),
       );
@@ -8160,6 +8175,65 @@ export class ChatViewProvider
         typeof firstFile.deleted === "number" && Number.isFinite(firstFile.deleted)
           ? firstFile.deleted
           : undefined,
+    };
+  }
+
+  private buildSdkDiffExcerpt(
+    diff: { file?: string; before?: string; after?: string; patch?: string },
+  ): {
+    header?: string;
+    lines: string[];
+    added?: number;
+    deleted?: number;
+  } | undefined {
+    const patchText = typeof diff.patch === "string" ? diff.patch : "";
+    if (patchText.trim().length > 0) {
+      return this.buildDiffExcerpt(patchText);
+    }
+
+    const beforeText = typeof diff.before === "string" ? diff.before : "";
+    const afterText = typeof diff.after === "string" ? diff.after : "";
+    if (!beforeText && !afterText) {
+      return undefined;
+    }
+
+    const beforeLines = beforeText.split("\n");
+    const afterLines = afterText.split("\n");
+    const maxLines = Math.max(beforeLines.length, afterLines.length);
+    let firstDiffIndex = 0;
+    for (let i = 0; i < maxLines; i++) {
+      if ((beforeLines[i] ?? "") !== (afterLines[i] ?? "")) {
+        firstDiffIndex = i;
+        break;
+      }
+    }
+    const start = Math.max(0, firstDiffIndex - 2);
+    const end = Math.min(maxLines, start + 10);
+    const lines: string[] = [];
+    for (let i = start; i < end; i++) {
+      const beforeLine = beforeLines[i];
+      const afterLine = afterLines[i];
+      if (beforeLine === afterLine) {
+        if (typeof beforeLine === "string") {
+          lines.push(` ${beforeLine.slice(0, 299)}`);
+        }
+        continue;
+      }
+      if (typeof beforeLine === "string") {
+        lines.push(`-${beforeLine.slice(0, 299)}`);
+      }
+      if (typeof afterLine === "string") {
+        lines.push(`+${afterLine.slice(0, 299)}`);
+      }
+    }
+
+    if (lines.length === 0) {
+      return undefined;
+    }
+
+    return {
+      header: diff.file ? `@@ ${diff.file} @@` : undefined,
+      lines,
     };
   }
 

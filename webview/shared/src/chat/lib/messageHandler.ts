@@ -450,6 +450,28 @@ function isOpaqueIdLike(value: string): boolean {
   );
 }
 
+function normalizeChoiceAnswerValue(value: string | undefined, label: string): string {
+  const rawValue = typeof value === "string" ? value.trim() : "";
+  const rawLabel = label.trim();
+  const fallbackLabelAnswer = rawLabel
+    .replace(/\s*\((?:recommended|suggested)\)\s*$/i, "")
+    .trim();
+  const labelAnswer = fallbackLabelAnswer || rawLabel;
+
+  if (!rawValue) {
+    return labelAnswer;
+  }
+
+  const looksLikeMachineSlug =
+    /^[a-z0-9]+(?:_[a-z0-9]+)+$/i.test(rawValue) ||
+    /^[a-z0-9]+(?:-[a-z0-9]+)+$/i.test(rawValue);
+  if (isOpaqueIdLike(rawValue) || looksLikeMachineSlug) {
+    return labelAnswer;
+  }
+
+  return rawValue;
+}
+
 function sanitizeReasoningChunk(value: string): string {
   const text = value.trim();
   if (!text || isOpaqueIdLike(text)) {
@@ -1452,7 +1474,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
         return {
           id: asString(option.id) || undefined,
           label,
-          value: asString(option.value) || label,
+          value: normalizeChoiceAnswerValue(asString(option.value), label),
           description: asString(option.description) || asString(option.detail) || undefined
         } as InteractiveChoice;
       })
@@ -2341,7 +2363,73 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
     }
   }
 
-  return mapped;
+  return dedupeInteractiveEvents(mapped);
+}
+
+function interactiveChoiceKey(choice: InteractiveChoice): string {
+  const label = normalizeComparableText(asString(choice.label));
+  const value = normalizeComparableText(asString(choice.value) || asString(choice.label));
+  const description = normalizeComparableText(asString(choice.description));
+  return `${label}::${value}::${description}`;
+}
+
+function interactiveEventKey(event: InteractiveEvent): string {
+  if (event.type === "question") {
+    const options = Array.isArray(event.options)
+      ? event.options.map(interactiveChoiceKey).join("|")
+      : "";
+    return [
+      "question",
+      normalizeComparableText(asString(event.title)),
+      normalizeComparableText(asString(event.question)),
+      options,
+      event.multiSelect ? "1" : "0",
+      event.allowCustomInput ? "1" : "0",
+      normalizeComparableText(asString(event.contextMessage)),
+    ].join("::");
+  }
+  if (event.type === "confirm") {
+    return [
+      "confirm",
+      normalizeComparableText(asString(event.title)),
+      normalizeComparableText(asString(event.question)),
+      normalizeComparableText(asString(event.confirmLabel)),
+      normalizeComparableText(asString(event.cancelLabel)),
+      normalizeComparableText(asString(event.contextMessage)),
+    ].join("::");
+  }
+  if (event.type === "quick_actions") {
+    const actions = Array.isArray(event.actions)
+      ? event.actions.map(interactiveChoiceKey).join("|")
+      : "";
+    return [
+      "quick_actions",
+      normalizeComparableText(asString(event.title)),
+      actions,
+      normalizeComparableText(asString(event.contextMessage)),
+    ].join("::");
+  }
+  return [
+    "message",
+    normalizeComparableText(asString(event.title)),
+    normalizeComparableText(asString(event.message)),
+    normalizeComparableText(asString(event.dismissLabel)),
+    normalizeComparableText(asString(event.contextMessage)),
+  ].join("::");
+}
+
+function dedupeInteractiveEvents(events: InteractiveEvent[]): InteractiveEvent[] {
+  const seen = new Set<string>();
+  const out: InteractiveEvent[] = [];
+  for (const event of events) {
+    const key = interactiveEventKey(event);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(event);
+  }
+  return out;
 }
 
 function hasBlockingInteractiveEvents(events: InteractiveEvent[]): boolean {
@@ -2437,7 +2525,7 @@ function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
       return {
         id: asString(rec.id) || undefined,
         label,
-        value: asString(rec.value) || label,
+        value: normalizeChoiceAnswerValue(asString(rec.value), label),
         description: asString(rec.description) || asString(rec.detail) || undefined,
       } as InteractiveChoice;
     })
@@ -5702,14 +5790,6 @@ function logRenderSnapshot(source: string, messages: Message[]): void {
   });
 }
 
-function slugifyChoiceValue(input: string): string {
-  const value = input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return value || 'option';
-}
-
 function stripChoicePrefix(input: string): string {
   return input
     .replace(/^(?:[-*]|\u2022)\s+/, '')
@@ -5798,7 +5878,7 @@ function normalizeChoiceFromLine(line: string, index: number): InteractiveChoice
   return {
     id: `auto-opt-${index}`,
     label,
-    value: slugifyChoiceValue(label),
+    value: label,
     description
   };
 }
@@ -5873,8 +5953,8 @@ function extractInlineOrChoices(question: string): InteractiveChoice[] {
     const first = useMatch[1];
     const second = useMatch[2];
     return [
-      { id: 'auto-opt-0', label: first, value: slugifyChoiceValue(first) },
-      { id: 'auto-opt-1', label: second, value: slugifyChoiceValue(second) }
+      { id: 'auto-opt-0', label: first, value: first },
+      { id: 'auto-opt-1', label: second, value: second }
     ];
   }
 
@@ -5890,8 +5970,8 @@ function extractInlineOrChoices(question: string): InteractiveChoice[] {
     return [];
   }
   return [
-    { id: 'auto-opt-0', label: first, value: slugifyChoiceValue(first) },
-    { id: 'auto-opt-1', label: second, value: slugifyChoiceValue(second) }
+    { id: 'auto-opt-0', label: first, value: first },
+    { id: 'auto-opt-1', label: second, value: second }
   ];
 }
 
@@ -5906,7 +5986,7 @@ function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
   }
 
   if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
-    return message.interactiveEvents;
+    return dedupeInteractiveEvents(message.interactiveEvents);
   }
   const rec = asRecord(message);
   if (!rec) {
@@ -5915,7 +5995,7 @@ function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
   const structured = resolveStructuredOutputFromMessageRecord(rec);
   const fromStructured = toInteractiveEvents(structured);
   if (fromStructured.length > 0) {
-    return fromStructured;
+    return dedupeInteractiveEvents(fromStructured);
   }
 
   const infoRec = asRecord(rec.info);
@@ -5965,9 +6045,39 @@ function interactiveEventsFromMessage(message: Message): InteractiveEvent[] {
     });
     const fromTopLevel = toInteractiveEvents(fallbackStructured);
     if (fromTopLevel.length > 0) {
-      return fromTopLevel;
+      return dedupeInteractiveEvents(fromTopLevel);
     }
   }
+  return [];
+}
+
+function latestPendingInteractiveEvents(messages: Message[]): InteractiveEvent[] {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const role = asString(messages[index].role) || asString(asRecord(messages[index].info)?.role);
+    if (role.toLowerCase().trim() === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+
+  const unresolvedAssistantTail = messages.slice(lastUserIndex + 1);
+  for (let index = unresolvedAssistantTail.length - 1; index >= 0; index -= 1) {
+    const msg = unresolvedAssistantTail[index];
+    const role = asString(msg.role) || asString(asRecord(msg.info)?.role);
+    if (role.toLowerCase().trim() !== "assistant") {
+      continue;
+    }
+    const events = interactiveEventsFromMessage(msg);
+    if (events.length > 0) {
+      return events;
+    }
+  }
+
   return [];
 }
 
@@ -9294,25 +9404,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               payload: normalizedHydratedSubagents.detailsById,
             });
           }
-          let latestInteractive: InteractiveEvent[] = [];
-          if (canonicalMessages.length > 0) {
-            const lastMessage = canonicalMessages[canonicalMessages.length - 1];
-            const lastRec = asRecord(lastMessage);
-            const lastInfo = asRecord(lastRec?.info);
-            const lastStructured =
-              asRecord(lastRec?.structuredOutput) ||
-              asRecord(lastRec?.structured_output) ||
-              asRecord(lastInfo?.structuredOutput) ||
-              asRecord(lastInfo?.structured_output) ||
-              asRecord(lastInfo?.structured);
-            const lastResponseType =
-              asString(lastRec?.responseType) ||
-              asString(lastInfo?.responseType) ||
-              asString(lastStructured?.responseType);
-            if (lastResponseType.toLowerCase() === "question") {
-              latestInteractive = interactiveEventsFromMessage(lastMessage);
-            }
-          }
+          const latestInteractive = latestPendingInteractiveEvents(canonicalMessages);
           dispatch({
             type: "SET_INTERACTIVE_EVENTS",
             payload: latestInteractive,

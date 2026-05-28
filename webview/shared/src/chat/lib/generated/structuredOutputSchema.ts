@@ -92,12 +92,12 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
           options: {
             type: "array",
-            description: "Available choices for the user. For responseType='question' and type='question', provide at least two choices unless custom free-form input is explicitly enabled by the host.",
+            description: "Available choices for the user. For responseType='question' and type='question', provide at least two choices unless custom free-form input is explicitly enabled by the host. Each option.value must be the exact answer text to send back to the assistant on selection (human-readable, not snake_case/id slugs).",
             items: {
               type: "object",
               properties: {
                 label: { type: "string", description: "Option label" },
-                value: { type: "string", description: "Option value" },
+                value: { type: "string", description: "Answer text that should be sent back if selected. Use natural language text (e.g. 'English only'), not identifiers like 'english_only'." },
               },
               required: ["label"],
             },

@@ -640,8 +640,16 @@ function interactiveEventsFromLatestQuestionMessageLocal(
     return message.interactiveEvents;
   }
   const structured = getStructuredRecordLocal(message);
-  const responseType = asStringLocal(message.responseType, structured?.responseType).toLowerCase();
-  if (responseType !== "question") {
+  const responseType = asStringLocal(
+    message.responseType,
+    structured?.responseType,
+  ).toLowerCase();
+  const hasQuestionLikePayload =
+    responseType === "question" ||
+    typeof (message as unknown as Record<string, unknown>).question !==
+      "undefined" ||
+    typeof structured?.question !== "undefined";
+  if (!hasQuestionLikePayload) {
     return [];
   }
   const structuredEvents = Array.isArray(structured?.interactiveEvents)
@@ -662,6 +670,36 @@ function interactiveEventsFromLatestQuestionMessageLocal(
     `question-${Date.now()}`,
   );
   return event ? [event] : [];
+}
+
+function pendingInteractiveEventsFromMessagesLocal(
+  messages: Message[],
+): InteractiveEvent[] {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (getMessageRoleForCanonical(messages[index]) === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+
+  const unresolvedAssistantTail = messages.slice(lastUserIndex + 1);
+  for (let index = unresolvedAssistantTail.length - 1; index >= 0; index -= 1) {
+    const msg = unresolvedAssistantTail[index];
+    if (getMessageRoleForCanonical(msg) !== "assistant") {
+      continue;
+    }
+    const events = interactiveEventsFromLatestQuestionMessageLocal(msg);
+    if (events.length > 0) {
+      return events;
+    }
+  }
+
+  return [];
 }
 
 export function normalizeComparableTextLocal(value: string): string {
@@ -1732,12 +1770,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
           ? cachedStreamingForNew
           : null;
+      const messagesForNew = newId ? messagesBySessionId?.[newId] ?? [] : [];
 
       return {
         ...state,
         currentSessionId: action.payload,
         sessionStats: statsForNew,
         promptQueue: queueForNew,
+        interactiveEvents: pendingInteractiveEventsFromMessagesLocal(messagesForNew),
         isExecutingQueue: false,
         isQueueOpen: false,
         // Reset all transient per-session processing/streaming UI so states from
@@ -1810,11 +1850,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
               state.compactionDividerBeforeMessageId,
             compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
           };
-      const lastMessage = canonicalMessages[canonicalMessages.length - 1];
-      const latestQuestionEvents =
-        interactiveEventsFromLatestQuestionMessageLocal(lastMessage);
       const nextInteractiveEvents =
-        canonicalMessages.length > 0 ? latestQuestionEvents : [];
+        canonicalMessages.length > 0
+          ? pendingInteractiveEventsFromMessagesLocal(canonicalMessages)
+          : [];
       return {
         ...state,
         messages: canonicalMessages,
@@ -1883,6 +1922,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         currentSessionId: action.payload.sessionId,
         messages: cachedMessages,
+        interactiveEvents: pendingInteractiveEventsFromMessagesLocal(cachedMessages),
         isProcessing: isNewSessionProcessing,
         isSteering: false,
         streaming: restoredStreamingForNew,

@@ -82,12 +82,12 @@ export const simplifiedStructuredOutputSchema: StructuredOutputSchema = {
           },
           options: {
             type: "array",
-            description: "Available choices for the user",
+            description: "Available choices for the user. option.value should be the exact answer text to send back (human-readable, not snake_case/id slugs).",
             items: {
               type: "object",
               properties: {
                 label: { type: "string", description: "Option label" },
-                value: { type: "string", description: "Option value" },
+                value: { type: "string", description: "Answer text sent back on selection (e.g. 'English only', not 'english_only')." },
               },
               required: ["label"],
             },
