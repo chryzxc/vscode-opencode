@@ -1969,22 +1969,99 @@ function structuredFileChangesFromMessage(message?: Message): StructuredFileChan
   if (!message) {
     return [];
   }
+  const parseRawResponseRecord = (raw: unknown): Record<string, unknown> | null => {
+    const rec = asRecord(raw);
+    if (rec) {
+      return rec;
+    }
+    if (typeof raw !== "string") {
+      return null;
+    }
+    const text = raw.trim();
+    if (!text) {
+      return null;
+    }
+    const truncMatch = text.match(/\.\.\.<truncated\s+\d+\s+chars>\s*$/i);
+    const candidate = truncMatch ? text.slice(0, truncMatch.index).trim() : text;
+    try {
+      return asRecord(JSON.parse(candidate));
+    } catch {
+      return null;
+    }
+  };
   const messageRec = asRecord(message);
   const infoRec = asRecord(messageRec?.info);
   const structured =
     asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured_output) ||
     asRecord(messageRec?.structured) ||
     asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured_output) ||
     asRecord(infoRec?.structured);
   const direct = normalizeStructuredFileChanges(structured?.fileChanges);
   if (direct.length > 0) {
+    if (config.debug.showRawResponse) {
+      console.debug("[DIFF PREVIEW] source=message/info structured", {
+        messageId: message.info?.id || message.id,
+        count: direct.length,
+      });
+    }
     return direct;
   }
 
-  const rawResponseRec = asRecord(messageRec?.rawResponse);
+  const rawResponseRec = parseRawResponseRecord(messageRec?.rawResponse);
   const rawInfoRec = asRecord(rawResponseRec?.info);
-  const rawStructured = asRecord(rawInfoRec?.structured);
-  return normalizeStructuredFileChanges(rawStructured?.fileChanges);
+  const rawStructured =
+    asRecord(rawInfoRec?.structuredOutput) ||
+    asRecord(rawInfoRec?.structured_output) ||
+    asRecord(rawInfoRec?.structured);
+  const fromRawStructured = normalizeStructuredFileChanges(rawStructured?.fileChanges);
+  if (fromRawStructured.length > 0) {
+    if (config.debug.showRawResponse) {
+      console.debug("[DIFF PREVIEW] source=rawResponse.info.structured", {
+        messageId: message.info?.id || message.id,
+        count: fromRawStructured.length,
+        rawResponseType: typeof messageRec?.rawResponse,
+      });
+    }
+    return fromRawStructured;
+  }
+
+  const rawParts = Array.isArray(rawResponseRec?.parts) ? rawResponseRec.parts : [];
+  for (const part of rawParts) {
+    const partRec = asRecord(part);
+    if (!partRec) {
+      continue;
+    }
+    const toolName = asString(partRec.tool).toLowerCase();
+    if (toolName !== "structuredoutput" && toolName !== "structured_output") {
+      continue;
+    }
+    const stateRec = asRecord(partRec.state);
+    const inputRec = asRecord(stateRec?.input);
+    const fromToolInput = normalizeStructuredFileChanges(inputRec?.fileChanges);
+    if (fromToolInput.length > 0) {
+      if (config.debug.showRawResponse) {
+        console.debug("[DIFF PREVIEW] source=rawResponse.parts[].StructuredOutput.input", {
+          messageId: message.info?.id || message.id,
+          count: fromToolInput.length,
+        });
+      }
+      return fromToolInput;
+    }
+  }
+
+  if (config.debug.showRawResponse) {
+    console.debug("[DIFF PREVIEW] source=none", {
+      messageId: message.info?.id || message.id,
+      hasStructuredOutput: !!asRecord(messageRec?.structuredOutput),
+      hasInfoStructured: !!asRecord(infoRec?.structured),
+      rawResponseType: typeof messageRec?.rawResponse,
+      rawHasInfoStructured: !!rawStructured,
+      rawPartsCount: rawParts.length,
+    });
+  }
+  return [];
 }
 
 function messageHasOwnFileChangeEvidence(message?: Message): boolean {
@@ -3618,6 +3695,24 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       return candidateRichness === ownRichness && ownIndex >= 0 && index > ownIndex;
     });
   }, [hasOwnedChangeSummary, message, messageId, state.messages]);
+  useEffect(() => {
+    if (!message || !config.debug.showRawResponse) {
+      return;
+    }
+    const structuredCount = structuredFileChangesFromMessage(message).length;
+    console.debug("[DIFF PREVIEW] render-gate", {
+      messageId,
+      shouldShowFileChanges,
+      hasOwnEvidence: messageHasOwnFileChangeEvidence(message),
+      structuredCount,
+      editsCount: Array.isArray(message.edits) ? message.edits.length : 0,
+      stepsCount: Array.isArray(message.steps) ? message.steps.length : 0,
+      progressEventsCount: Array.isArray(message.progressEvents)
+        ? message.progressEvents.length
+        : 0,
+      hasOwnedChangeSummary,
+    });
+  }, [message, messageId, shouldShowFileChanges, hasOwnedChangeSummary]);
   const shouldShowPlanCard = useMemo(() => {
     if (!plan?.file) {
       return !!plan;
@@ -5017,7 +5112,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 Array.isArray(message?.progressEvents) ? message.progressEvents : []
               }
               messageEdits={message?.edits || []}
-              structuredFileChanges={normalizeStructuredFileChanges(structured?.fileChanges)}
+              structuredFileChanges={structuredFileChangesFromMessage(message)}
               changeSummary={changeSummary}
               messageId={messageId}
               sessionId={state.currentSessionId}

@@ -3608,22 +3608,57 @@ export class ChatViewProvider
       return [];
     }
 
-    this.logger.info('[DEBUG] processHistoryMessages input:', { count: messages.length, sessionId });
+    const summarizeDiffPreviewEvidence = (items: any[]) => {
+      const assistants = (Array.isArray(items) ? items : []).filter((m) =>
+        this.firstNonEmptyString(m?.role, m?.info?.role)?.toLowerCase() === "assistant",
+      );
+      const withStructuredFileChanges = assistants.filter((m) =>
+        Array.isArray(m?.structuredOutput?.fileChanges) && m.structuredOutput.fileChanges.length > 0,
+      ).length;
+      const withInfoStructuredFileChanges = assistants.filter((m) =>
+        Array.isArray(m?.info?.structured?.fileChanges) && m.info.structured.fileChanges.length > 0,
+      ).length;
+      const withRawResponse = assistants.filter((m) => typeof m?.rawResponse !== "undefined").length;
+      return {
+        assistantCount: assistants.length,
+        withStructuredFileChanges,
+        withInfoStructuredFileChanges,
+        withRawResponse,
+      };
+    };
+
+    this.logger.info("[DIFF PREVIEW] processHistoryMessages input", {
+      count: messages.length,
+      sessionId,
+      evidence: summarizeDiffPreviewEvidence(messages),
+    });
 
     try {
       // Load any session overrides first
       const overriddenMessages = await this.historyProcessor.applySessionMessageOverrides(sessionId, messages);
 
-      this.logger.info('[DEBUG] After applySessionMessageOverrides:', { count: overriddenMessages?.length || 0 });
+      this.logger.info("[DIFF PREVIEW] after applySessionMessageOverrides", {
+        count: overriddenMessages?.length || 0,
+        sessionId,
+        evidence: summarizeDiffPreviewEvidence(overriddenMessages || []),
+      });
 
       // Then process through the canonical pipeline
       const processed = await this.historyProcessor.processHistoryMessages(overriddenMessages, sessionId);
 
-      this.logger.info('[DEBUG] processHistoryMessages output:', { count: processed?.length || 0, sessionId });
+      this.logger.info("[DIFF PREVIEW] processHistoryMessages output", {
+        count: processed?.length || 0,
+        sessionId,
+        evidence: summarizeDiffPreviewEvidence(processed || []),
+      });
 
       return processed || [];
     } catch (error) {
-      this.logger.error('[ERROR] processHistoryMessages failed:', { error: error instanceof Error ? error.message : String(error), sessionId, stack: error instanceof Error ? error.stack : undefined });
+      this.logger.error("[DIFF PREVIEW] processHistoryMessages failed", {
+        error: error instanceof Error ? error.message : String(error),
+        sessionId,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       // Return original messages as fallback
       return messages;
     }
