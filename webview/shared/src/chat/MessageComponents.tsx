@@ -578,6 +578,26 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function collectMessageIdentityCandidates(message?: Message): Set<string> {
+  const candidates = new Set<string>();
+  if (!message) {
+    return candidates;
+  }
+  const info = asRecord(message.info);
+  const values = [
+    message.id,
+    message.messageId,
+    info?.id,
+    info?.messageId,
+  ];
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      candidates.add(value.trim());
+    }
+  }
+  return candidates;
+}
+
 function normalizeComparableText(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
 }
@@ -3601,9 +3621,34 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       ? todoItems.filter((item) => item.sessionId === activeSessionId)
       : todoItems;
     const hasAnyScopedTodo = sessionScopedTodoItems.some((item) => !!item.parentMessageId);
-    const strict = sessionScopedTodoItems.filter((item) => item.parentMessageId === messageId);
+    const messageIdentityCandidates = collectMessageIdentityCandidates(message);
+    const strict = sessionScopedTodoItems.filter((item) => {
+      if (!item.parentMessageId) {
+        return false;
+      }
+      return messageIdentityCandidates.has(item.parentMessageId);
+    });
     if (strict.length > 0) {
       return strict;
+    }
+    const assistantMessageIdentitySet = new Set<string>();
+    for (const candidate of state.messages) {
+      const role = candidate.role ?? candidate.info?.role ?? "user";
+      if (role !== "assistant") {
+        continue;
+      }
+      const ids = collectMessageIdentityCandidates(candidate);
+      for (const id of ids) {
+        assistantMessageIdentitySet.add(id);
+      }
+    }
+    const orphanMappedTodos = sessionScopedTodoItems.filter(
+      (item) =>
+        !!item.parentMessageId &&
+        !assistantMessageIdentitySet.has(item.parentMessageId),
+    );
+    if (orphanMappedTodos.length > 0 && isLatestAssistantMessage) {
+      return orphanMappedTodos;
     }
     // Live-stream safety: if todos have not been stamped with parentMessageId yet,
     // keep showing them on the currently streaming assistant message only.
@@ -3614,6 +3659,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     ) {
       return sessionScopedTodoItems.filter((item) => !item.parentMessageId);
     }
+    // Hydration safety: if snapshot todos are session-scoped but unstamped,
+    // keep them visible on the latest assistant message even after streaming.
+    if (!hasAnyScopedTodo && isLatestAssistantMessage) {
+      return sessionScopedTodoItems.filter((item) => !item.parentMessageId);
+    }
     return [];
   }, [
     todoItems,
@@ -3621,6 +3671,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     isStreamingActive,
     latestAssistantMessageId,
     state.currentSessionId,
+    state.messages,
+    isLatestAssistantMessage,
+    message,
   ]);
   const shouldShowTodoInlineSummary = scopedTodoItems.length > 0;
   const { planStatus, isRevisedPlan } = useMemo(() => {

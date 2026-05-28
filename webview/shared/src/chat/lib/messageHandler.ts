@@ -8960,6 +8960,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               asString(data.sessionID),
               deriveSessionIdFromMessage(msg, getState().currentSessionId),
             ) ?? undefined;
+          const stateBeforeResponse = getState();
+          const hasResumedAfterStop = !!(
+            responseSessionId &&
+            (
+              stateBeforeResponse.isProcessing ||
+              stateBeforeResponse.processingSessionIds.includes(responseSessionId) ||
+              stateBeforeResponse.streaming
+            )
+          );
+          if (responseSessionId && hasResumedAfterStop) {
+            stoppedSessionIds.delete(responseSessionId);
+          }
           if (responseSessionId && stoppedSessionIds.has(responseSessionId)) {
             dispatch({ type: "SET_PROCESSING", payload: false });
             dispatch({ type: "FINISH_STREAMING" });
@@ -9720,6 +9732,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "streamEvent": {
           const stateBeforeStreamEvent = getState();
           const payload = asRecord(data.event) ?? data;
+          const streamEventType = asString(payload.type) || "unknown";
           const eventSessionId =
             asString(payload.sessionId) ||
             asString(payload.sessionID) ||
@@ -9736,11 +9749,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           // Accept stream events when either:
           // 1) global processing is true, OR
           // 2) backend confirms the session is processing, OR
-          // 3) we already have a stream snapshot in flight.
+          // 3) we already have a stream snapshot in flight, OR
+          // 4) this is an explicit stream start signal (can race ahead of state flags).
+          const isExplicitStreamStart =
+            streamEventType === "start" || streamEventType === "streamStart";
           if (
             !stateBeforeStreamEvent.isProcessing &&
             !hasConfirmedProcessingSession &&
-            !stateBeforeStreamEvent.streaming
+            !stateBeforeStreamEvent.streaming &&
+            !isExplicitStreamStart
           ) {
             break;
           }
@@ -9751,7 +9768,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           if (streamingBefore) {
             latestStreamingSnapshot = streamingBefore;
           }
-          const streamEventType = asString(payload.type) || "unknown";
 
           // Reset terminal error flag on explicit stream start
           if (streamEventType === "start" || streamEventType === "streamStart") {
@@ -10089,6 +10105,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "userMessageAppended": {
           terminalErrorReached = false;
           const message = data.message as Message;
+          const resumedSessionId = firstNonEmptyString(
+            asString(data.sessionId),
+            asString(data.sessionID),
+            getState().currentSessionId ?? undefined,
+          );
+          if (resumedSessionId) {
+            stoppedSessionIds.delete(resumedSessionId);
+          }
           if (message && typeof message === "object") {
             const isInteractiveAnswerSubmission =
               isLikelyInteractiveAnswerSubmissionMessage(message);

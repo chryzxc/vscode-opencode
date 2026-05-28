@@ -736,7 +736,6 @@ export function ActiveTaskPanel() {
               <span className="font-medium">
                 {completedTodoCount} / {sortedTodoItems.length} done
               </span>
-              <span className="uppercase tracking-wider">OpenCode SDK</span>
             </div>
             <div className="space-y-1.5">
               {sortedTodoItems.map((todo) => {
