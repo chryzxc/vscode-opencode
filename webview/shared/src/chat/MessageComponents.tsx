@@ -3975,7 +3975,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   // Render raw debug whenever payload exists. Do not gate behind stream-debug
   // flags, otherwise streamed + hydrated sessions can silently hide rawResponse.
   const hasRawResponseDebug = rawResponseText.trim().length > 0;
-  const showRawResponseDebug = false;
+  const showRawResponseDebug = true;
   const planLeadMessage = useMemo(() => {
     if (!plan) return "";
     const candidate = (
@@ -4274,290 +4274,290 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           {(displayEvents.length > 0 ||
             showThinkingPlaceholder ||
             showInProgressActivityPlaceholder) && (
-            <section data-assistant-section="activity">
-              {timelineDisplayEvents.length > 0 && (
-                <>
-                  <Stepper
-                    className={cn(
-                      "oc-refined-stepper",
-                      viewState.showAllCompletedActivity && "max-h-[400px] overflow-y-auto",
-                    )}
-                    ref={progressTimelineRef}
-                    autoScrollToBottom={isStreamingActive}
-                  >
-                    {timelineDisplayEvents.map((event, index) => {
-                      const isLast =
-                        !showInProgressActivityPlaceholder &&
-                        index === timelineDisplayEvents.length - 1;
-                      const isLatestStreamingEvent =
-                        isStreamingActive && isLast;
-                      const indicatorNode = (
-                        <StepIndicator
-                          status={isLatestStreamingEvent && event.status === "pending" ? "running" : event.status}
-                        />
-                      );
-                      const fileName = event.filePath
-                        ? event.filePath.split(/[/\\]/).pop()
-                        : undefined;
-                      const shouldShowDetail = viewState.showActivityDetails;
+              <section data-assistant-section="activity">
+                {timelineDisplayEvents.length > 0 && (
+                  <>
+                    <Stepper
+                      className={cn(
+                        "oc-refined-stepper",
+                        viewState.showAllCompletedActivity && "max-h-[400px] overflow-y-auto",
+                      )}
+                      ref={progressTimelineRef}
+                      autoScrollToBottom={isStreamingActive}
+                    >
+                      {timelineDisplayEvents.map((event, index) => {
+                        const isLast =
+                          !showInProgressActivityPlaceholder &&
+                          index === timelineDisplayEvents.length - 1;
+                        const isLatestStreamingEvent =
+                          isStreamingActive && isLast;
+                        const indicatorNode = (
+                          <StepIndicator
+                            status={isLatestStreamingEvent && event.status === "pending" ? "running" : event.status}
+                          />
+                        );
+                        const fileName = event.filePath
+                          ? event.filePath.split(/[/\\]/).pop()
+                          : undefined;
+                        const shouldShowDetail = viewState.showActivityDetails;
 
-                      return (
-                        <StepperItem
-                          key={event.key}
-                          isLast={isLast}
-                          indicator={indicatorNode}
-                          className={cn(
-                            "oc-refined-stepper-item group",
-                            isLatestStreamingEvent
-                              ? "is-streaming"
-                              : "",
-                          )}
-                        >
-                          <ExpandableStep>
-                            <div className="flex min-w-0 flex-col items-start gap-2 w-full">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span
-                                  className={cn(
-                                    "oc-refined-event-label",
-                                    event.kind === "reasoning" && "reasoning",
-                                    // event.kind === "activity" && "uppercase"
-                                    event.kind === "activity" && "activity",
-                                  )}
-                                  data-operation={event.label.toLowerCase()}
-                                >
-                                  {event.label}
-                                </span>
-                                {event.kind === "activity" && event.source && event.source !== "stream" && event.source !== "final" && (
-                                  <span className="oc-refined-meta-badge">
-                                    {event.source === "raw_debug"
-                                      ? "raw"
-                                      : event.source}
-                                  </span>
-                                )}
-                                {event.kind === "activity" && event.internal && (
-                                  <span className="oc-refined-meta-badge">
-                                    internal
-                                  </span>
-                                )}
-                              </div>
-
-                              <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
-                                {event.filePath ? (
-                                  SEARCH_LABELS.has(event.label) ? (
-                                    <SearchBlock
-                                      pattern={
-                                        [
-                                          event.activityDetail?.query || event.summary,
-                                          event.description,
-                                        ]
-                                          .filter((value): value is string => !!value?.trim())
-                                          .join("\n")
-                                      }
-                                      scope={event.label}
-                                      path={event.filePath}
-                                    />
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      className="oc-refined-file-link"
-                                      title={event.filePath}
-                                      onClick={() =>
-                                        vscode.postMessage({
-                                          type: "openFile",
-                                          file: event.filePath!,
-                                        })
-                                      }
-                                    >
-                                      <FileIcon filePath={event.filePath} />
-                                      <span className="break-words whitespace-pre-wrap">
-                                        {fileName || event.summary}
-                                      </span>
-                                    </button>
-                                  )
-                                ) : (
-                                  event.summary && (
-                                    <div
-                                      className={cn(
-                                        "oc-refined-event-summary",
-                                        event.kind === "reasoning" &&
-                                        !viewState.showThinkingDetails &&
-                                        "line-clamp-2",
-                                      )}
-                                    >
-                                      {event.label === "bash" ? (
-                                        <TerminalBlockWithOutput
-                                          event={event}
-                                          messageContent={content}
-                                        />
-                                      ) : SEARCH_LABELS.has(event.label) ? (
-                                        <SearchBlock
-                                          pattern={
-                                            [
-                                              event.activityDetail?.query || event.summary,
-                                              event.description,
-                                            ]
-                                              .filter((value): value is string => !!value?.trim())
-                                              .join("\n")
-                                          }
-                                          scope={event.label}
-                                        />
-                                      ) : (
-                                        <MarkdownRenderer
-                                          content={event.summary}
-                                          className="markdown-body"
-                                        />
-                                      )}
-                                    </div>
-                                  )
-                                )}
-
-                                {/* For non-bash events, render description separately */}
-                                {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.description && (
-                                  <div className="oc-refined-event-content">
-                                    <MarkdownRenderer
-                                      content={event.description}
-                                      className="markdown-body"
-                                    />
-                                  </div>
-                                )}
-
-                                {event.updateCount > 1 && (
-                                  <span className="oc-refined-update-count">
-                                    x{event.updateCount} updates
-                                  </span>
-                                )}
-
-                                {shouldShowDetail && event.detail && (
-                                  <div className="oc-refined-event-content">
-                                    <MarkdownRenderer
-                                      content={event.detail}
-                                      className="markdown-body"
-                                    />
-                                  </div>
-                                )}
-
-                                {shouldShowDetail && event.activityDetail && (
-                                  <div className="oc-refined-activity-details flex flex-col gap-2">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      {event.activityDetail.tool && (
-                                        <span className="oc-refined-detail-badge">
-                                          tool {event.activityDetail.tool}
-                                        </span>
-                                      )}
-                                      {event.activityDetail.query && (
-                                        <span className="oc-refined-detail-badge">
-                                          query {event.activityDetail.query}
-                                        </span>
-                                      )}
-                                    </div>
-
-                                    {/* Don't show TerminalBlock here for bash - already shown in summary section above */}
-                                    {event.label !== "bash" && event.activityDetail.command && (
-                                      <TerminalBlock command={event.activityDetail.command} />
-                                    )}
-                                  </div>
-                                )}
-                              </span>
-
-                              {event.diffStats &&
-                                (event.diffStats.added > 0 ||
-                                  event.diffStats.deleted > 0) && (
-                                  <span className="oc-refined-diff-stats">
-                                    {event.diffStats.added > 0 && (
-                                      <span className="oc-refined-diff-add">
-                                        +{event.diffStats.added}
-                                      </span>
-                                    )}
-                                    {event.diffStats.deleted > 0 && (
-                                      <span className="oc-refined-diff-del">
-                                        -{event.diffStats.deleted}
-                                      </span>
-                                    )}
-                                  </span>
-                                )}
-
-                              {event.viewDiffFile && (
-                                <button
-                                  type="button"
-                                  className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium oc-text-secondary hover:text-oc-text-soft"
-                                  onClick={() =>
-                                    vscode.postMessage({
-                                      type: "openDiff",
-                                      file: event.viewDiffFile,
-                                    })
-                                  }
-                                >
-                                  View diff
-                                </button>
-                              )}
-                            </div>
-                          </ExpandableStep>
-                        </StepperItem>
-                      );
-                    })}
-                    {showInProgressActivityPlaceholder && (
-                      <StepperItem
-                        isLast={true}
-                        indicator={<StepIndicator status="running" />}
-                        className="oc-refined-stepper-item mt-2"
-                      >
-                        <div className="flex min-w-0 items-center gap-2 flex-wrap">
-                          <span className="oc-refined-event-label activity">
-                            IN_PROGRESS
-                          </span>
-                          <span className="flex-1 whitespace-pre-wrap break-words text-[11px] leading-5 oc-text-secondary">
-                            Working in the background...
-                          </span>
-                        </div>
-                      </StepperItem>
-                    )}
-                  </Stepper>
-
-                  {showThinkingPlaceholder && !hasThinkingEvents && timelineDisplayEvents.length === 0 && (
-                    <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
-                      <StepperItem
-                        isLast={true}
-                        indicator={<StepIndicator status="pending" />}
-                      >
-                        <div className="flex min-w-0 items-start gap-2 flex-wrap">
-                          <span className="oc-refined-event-label reasoning">
-                            Reasoning
-                          </span>
-                          <span
+                        return (
+                          <StepperItem
+                            key={event.key}
+                            isLast={isLast}
+                            indicator={indicatorNode}
                             className={cn(
-                              "flex-1 whitespace-pre-wrap break-words text-[11px] oc-text-secondary",
-                              !viewState.showThinkingDetails && "line-clamp-2",
+                              "oc-refined-stepper-item group",
+                              isLatestStreamingEvent
+                                ? "is-streaming"
+                                : "",
                             )}
                           >
-                            {thinkingPlaceholderText}
-                          </span>
-                        </div>
-                      </StepperItem>
+                            <ExpandableStep>
+                              <div className="flex min-w-0 flex-col items-start gap-2 w-full">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span
+                                    className={cn(
+                                      "oc-refined-event-label",
+                                      event.kind === "reasoning" && "reasoning",
+                                      // event.kind === "activity" && "uppercase"
+                                      event.kind === "activity" && "activity",
+                                    )}
+                                    data-operation={event.label.toLowerCase()}
+                                  >
+                                    {event.label}
+                                  </span>
+                                  {event.kind === "activity" && event.source && event.source !== "stream" && event.source !== "final" && (
+                                    <span className="oc-refined-meta-badge">
+                                      {event.source === "raw_debug"
+                                        ? "raw"
+                                        : event.source}
+                                    </span>
+                                  )}
+                                  {event.kind === "activity" && event.internal && (
+                                    <span className="oc-refined-meta-badge">
+                                      internal
+                                    </span>
+                                  )}
+                                </div>
+
+                                <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
+                                  {event.filePath ? (
+                                    SEARCH_LABELS.has(event.label) ? (
+                                      <SearchBlock
+                                        pattern={
+                                          [
+                                            event.activityDetail?.query || event.summary,
+                                            event.description,
+                                          ]
+                                            .filter((value): value is string => !!value?.trim())
+                                            .join("\n")
+                                        }
+                                        scope={event.label}
+                                        path={event.filePath}
+                                      />
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className="oc-refined-file-link"
+                                        title={event.filePath}
+                                        onClick={() =>
+                                          vscode.postMessage({
+                                            type: "openFile",
+                                            file: event.filePath!,
+                                          })
+                                        }
+                                      >
+                                        <FileIcon filePath={event.filePath} />
+                                        <span className="break-words whitespace-pre-wrap">
+                                          {fileName || event.summary}
+                                        </span>
+                                      </button>
+                                    )
+                                  ) : (
+                                    event.summary && (
+                                      <div
+                                        className={cn(
+                                          "oc-refined-event-summary",
+                                          event.kind === "reasoning" &&
+                                          !viewState.showThinkingDetails &&
+                                          "line-clamp-2",
+                                        )}
+                                      >
+                                        {event.label === "bash" ? (
+                                          <TerminalBlockWithOutput
+                                            event={event}
+                                            messageContent={content}
+                                          />
+                                        ) : SEARCH_LABELS.has(event.label) ? (
+                                          <SearchBlock
+                                            pattern={
+                                              [
+                                                event.activityDetail?.query || event.summary,
+                                                event.description,
+                                              ]
+                                                .filter((value): value is string => !!value?.trim())
+                                                .join("\n")
+                                            }
+                                            scope={event.label}
+                                          />
+                                        ) : (
+                                          <MarkdownRenderer
+                                            content={event.summary}
+                                            className="markdown-body"
+                                          />
+                                        )}
+                                      </div>
+                                    )
+                                  )}
+
+                                  {/* For non-bash events, render description separately */}
+                                  {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.description && (
+                                    <div className="oc-refined-event-content">
+                                      <MarkdownRenderer
+                                        content={event.description}
+                                        className="markdown-body"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {event.updateCount > 1 && (
+                                    <span className="oc-refined-update-count">
+                                      x{event.updateCount} updates
+                                    </span>
+                                  )}
+
+                                  {shouldShowDetail && event.detail && (
+                                    <div className="oc-refined-event-content">
+                                      <MarkdownRenderer
+                                        content={event.detail}
+                                        className="markdown-body"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {shouldShowDetail && event.activityDetail && (
+                                    <div className="oc-refined-activity-details flex flex-col gap-2">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        {event.activityDetail.tool && (
+                                          <span className="oc-refined-detail-badge">
+                                            tool {event.activityDetail.tool}
+                                          </span>
+                                        )}
+                                        {event.activityDetail.query && (
+                                          <span className="oc-refined-detail-badge">
+                                            query {event.activityDetail.query}
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      {/* Don't show TerminalBlock here for bash - already shown in summary section above */}
+                                      {event.label !== "bash" && event.activityDetail.command && (
+                                        <TerminalBlock command={event.activityDetail.command} />
+                                      )}
+                                    </div>
+                                  )}
+                                </span>
+
+                                {event.diffStats &&
+                                  (event.diffStats.added > 0 ||
+                                    event.diffStats.deleted > 0) && (
+                                    <span className="oc-refined-diff-stats">
+                                      {event.diffStats.added > 0 && (
+                                        <span className="oc-refined-diff-add">
+                                          +{event.diffStats.added}
+                                        </span>
+                                      )}
+                                      {event.diffStats.deleted > 0 && (
+                                        <span className="oc-refined-diff-del">
+                                          -{event.diffStats.deleted}
+                                        </span>
+                                      )}
+                                    </span>
+                                  )}
+
+                                {event.viewDiffFile && (
+                                  <button
+                                    type="button"
+                                    className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium oc-text-secondary hover:text-oc-text-soft"
+                                    onClick={() =>
+                                      vscode.postMessage({
+                                        type: "openDiff",
+                                        file: event.viewDiffFile,
+                                      })
+                                    }
+                                  >
+                                    View diff
+                                  </button>
+                                )}
+                              </div>
+                            </ExpandableStep>
+                          </StepperItem>
+                        );
+                      })}
+                      {showInProgressActivityPlaceholder && (
+                        <StepperItem
+                          isLast={true}
+                          indicator={<StepIndicator status="running" />}
+                          className="oc-refined-stepper-item mt-2"
+                        >
+                          <div className="flex min-w-0 items-center gap-2 flex-wrap">
+                            <span className="oc-refined-event-label activity">
+                              IN_PROGRESS
+                            </span>
+                            <span className="flex-1 whitespace-pre-wrap break-words text-[11px] leading-5 oc-text-secondary">
+                              Working in the background...
+                            </span>
+                          </div>
+                        </StepperItem>
+                      )}
                     </Stepper>
-                  )}
 
-                  {displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY && (
-                    <button
-                      type="button"
-                      className="mt-4 rounded-full border border-oc-border px-2.5 py-0.5 text-left font-medium text-[10px] oc-text-secondary transition-colors hover:bg-oc-panel hover:text-oc-text-soft"
-                      onClick={() =>
-                        setViewState((prev) => ({
-                          ...prev,
-                          showAllCompletedActivity: !prev.showAllCompletedActivity,
-                        }))
-                      }
-                    >
-                      {viewState.showAllCompletedActivity
-                        ? "Show less"
-                        : `Show more (${hiddenActivityEventCount})`}
-                    </button>
-                  )}
+                    {showThinkingPlaceholder && !hasThinkingEvents && timelineDisplayEvents.length === 0 && (
+                      <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
+                        <StepperItem
+                          isLast={true}
+                          indicator={<StepIndicator status="pending" />}
+                        >
+                          <div className="flex min-w-0 items-start gap-2 flex-wrap">
+                            <span className="oc-refined-event-label reasoning">
+                              Reasoning
+                            </span>
+                            <span
+                              className={cn(
+                                "flex-1 whitespace-pre-wrap break-words text-[11px] oc-text-secondary",
+                                !viewState.showThinkingDetails && "line-clamp-2",
+                              )}
+                            >
+                              {thinkingPlaceholderText}
+                            </span>
+                          </div>
+                        </StepperItem>
+                      </Stepper>
+                    )}
 
-                </>
-              )}
+                    {displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY && (
+                      <button
+                        type="button"
+                        className="mt-4 rounded-full border border-oc-border px-2.5 py-0.5 text-left font-medium text-[10px] oc-text-secondary transition-colors hover:bg-oc-panel hover:text-oc-text-soft"
+                        onClick={() =>
+                          setViewState((prev) => ({
+                            ...prev,
+                            showAllCompletedActivity: !prev.showAllCompletedActivity,
+                          }))
+                        }
+                      >
+                        {viewState.showAllCompletedActivity
+                          ? "Show less"
+                          : `Show more (${hiddenActivityEventCount})`}
+                      </button>
+                    )}
 
-            </section>
-          )}
+                  </>
+                )}
+
+              </section>
+            )}
 
           <SubagentsInlineCard
             subagents={subagents}
@@ -4902,9 +4902,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           !showResponseSection &&
           hasStreamingActivity &&
           !showStreamingLoading && (
-          <div className="mt-2 mb-2 px-1">
-            <ThinkingStatusTicker className="oc-thinking-status" />
-          </div>
+            <div className="mt-2 mb-2 px-1">
+              <ThinkingStatusTicker className="oc-thinking-status" />
+            </div>
           )}
         {/* Raw Data â€" moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (

@@ -6952,12 +6952,9 @@ function handleStreamEvent(
         break; // Don't process this as regular content
       }
 
-      // Ignore regular user-role stream parts for assistant rendering.
-      // We still allow the system-pattern path above for transport notices.
-      if (eventRole === "user") {
-        dispatch({ type: "SET_PROCESSING", payload: true });
-        break;
-      }
+      // Transport-level user echoes can be mislabeled by some providers.
+      // Do not early-return here; continue parsing so assistant-like payloads
+      // still render, while other guards prevent phantom stream bootstrap.
 
       const partType = normalizePartType(part.type);
       const deltaChunk =
@@ -7419,10 +7416,8 @@ function handleStreamEvent(
         dispatch({ type: "SET_PROCESSING", payload: true });
         break;
       }
-      if (eventRole === "user") {
-        dispatch({ type: "SET_PROCESSING", payload: true });
-        break;
-      }
+      // Some providers can emit final assistant updates with role mislabels.
+      // Continue processing instead of dropping the update.
       webviewLogger.debug(`Processing message.updated`, {
         messageId,
         finish: asBoolean(asRecord(payload.info)?.finish, false),
@@ -9969,11 +9964,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             if (stateAfterProcessingUpdate.isSteering) {
               dispatch({ type: "SET_STEERING", payload: false });
             }
+            // If the backend says the active session is no longer processing,
+            // treat any visible stream snapshot as final and persist it.
+            flushVisibleStreamingSnapshotToMessages(dispatch, getState);
             if (stateAfterProcessingUpdate.isProcessing) {
               dispatch({ type: "SET_PROCESSING", payload: false });
             }
-            if (stateAfterProcessingUpdate.streaming?.isActive) {
+            if (stateAfterProcessingUpdate.streaming) {
               dispatch({ type: "FINISH_STREAMING" });
+              dispatch({ type: "SET_STREAMING", payload: null });
             }
           }
           break;
