@@ -25,6 +25,7 @@ import type {
   Session,
   StreamingState,
   StreamingStep,
+  StructuredFileChange,
   SubagentDetail,
   SubagentSummary,
   SubagentReference,
@@ -177,11 +178,11 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
 
 type UnknownRecord = Record<string, unknown>;
 
-function asRecord(value: unknown): UnknownRecord | null {
+export function asRecord(value: unknown): UnknownRecord | null {
   return typeof value === 'object' && value !== null ? (value as UnknownRecord) : null;
 }
 
-function asString(value: unknown, fallback = ''): string {
+export function asString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
@@ -1245,6 +1246,7 @@ type StructuredSubagent = {
 type StructuredOutput = {
   responseType?: StructuredResponseType | string;
   message?: string;
+  fileChanges?: StructuredFileChange[];
   plan?: {
     file?: string;
     files?: unknown[];
@@ -1581,6 +1583,75 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     : singleInteractive
       ? [singleInteractive]
       : [];
+
+  const fileChangesRaw = sanitizedRec.fileChanges ?? rec.fileChanges;
+  const fileChanges = Array.isArray(fileChangesRaw)
+    ? fileChangesRaw
+        .map((item) => {
+          const change = asRecord(item);
+          if (!change) {
+            return null;
+          }
+          const file = asString(change.file).trim();
+          if (!file) {
+            return null;
+          }
+          const kindValue = asString(change.kind).trim();
+          const kind =
+            kindValue === "file_edit" ||
+            kindValue === "file_create" ||
+            kindValue === "file_delete" ||
+            kindValue === "file_move" ||
+            kindValue === "other"
+              ? kindValue
+              : undefined;
+          const diffStatsRec = asRecord(change.diffStats);
+          const diffExcerptRec = asRecord(change.diffExcerpt);
+          return {
+            file,
+            kind,
+            diffStats: diffStatsRec
+              ? {
+                  added:
+                    typeof diffStatsRec.added === "number" &&
+                    Number.isFinite(diffStatsRec.added)
+                      ? diffStatsRec.added
+                      : undefined,
+                  deleted:
+                    typeof diffStatsRec.deleted === "number" &&
+                    Number.isFinite(diffStatsRec.deleted)
+                      ? diffStatsRec.deleted
+                      : undefined,
+                }
+              : undefined,
+            diffExcerpt: diffExcerptRec
+              ? {
+                  header:
+                    typeof diffExcerptRec.header === "string"
+                      ? diffExcerptRec.header
+                      : undefined,
+                  lines: Array.isArray(diffExcerptRec.lines)
+                    ? diffExcerptRec.lines.filter(
+                        (line): line is string =>
+                          typeof line === "string" && line.trim().length > 0,
+                      )
+                    : undefined,
+                  added:
+                    typeof diffExcerptRec.added === "number" &&
+                    Number.isFinite(diffExcerptRec.added)
+                      ? diffExcerptRec.added
+                      : undefined,
+                  deleted:
+                    typeof diffExcerptRec.deleted === "number" &&
+                    Number.isFinite(diffExcerptRec.deleted)
+                      ? diffExcerptRec.deleted
+                      : undefined,
+                }
+              : undefined,
+          } satisfies StructuredFileChange;
+        })
+        .filter((item): item is StructuredFileChange => Boolean(item))
+    : [];
 
   const rootQuestion =
     asString(normalizedQuestion?.question) ||
@@ -1939,6 +2010,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     !hasNormalizedPlan &&
     cleanedReasoning.length === 0 &&
     progressUpdates.length === 0 &&
+    fileChanges.length === 0 &&
     interactiveEvents.length === 0 &&
     subagents.length === 0 &&
     !subagentsDelta
@@ -1952,6 +2024,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     plan: hasNormalizedPlan ? normalizedPlan : undefined,
     reasoning: cleanedReasoning.length > 0 ? cleanedReasoning : undefined,
     progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
+    fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
     interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined,
     question: normalizedQuestion as StructuredOutput['question'] | undefined,
     subagents: subagents.length > 0 ? subagents : undefined,
@@ -2002,7 +2075,63 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
   const normalizedResponseType =
     responseType || (hasPlan ? "implementation_plan" : undefined);
 
-  if (!normalizedResponseType && !message && !hasPlan) {
+  const fileChangesRaw = rec.fileChanges;
+  const fileChanges = Array.isArray(fileChangesRaw)
+    ? fileChangesRaw
+        .map((item) => {
+          const change = asRecord(item);
+          if (!change) return null;
+          const file = asString(change.file).trim();
+          if (!file) return null;
+          const diffStatsRec = asRecord(change.diffStats);
+          const diffExcerptRec = asRecord(change.diffExcerpt);
+          const kindValue = asString(change.kind).trim();
+          const kind =
+            kindValue === "file_edit" ||
+            kindValue === "file_create" ||
+            kindValue === "file_delete" ||
+            kindValue === "file_move" ||
+            kindValue === "other"
+              ? kindValue
+              : undefined;
+          return {
+            file,
+            kind,
+            diffStats: diffStatsRec
+              ? {
+                  added:
+                    typeof diffStatsRec.added === "number" ? diffStatsRec.added : undefined,
+                  deleted:
+                    typeof diffStatsRec.deleted === "number" ? diffStatsRec.deleted : undefined,
+                }
+              : undefined,
+            diffExcerpt: diffExcerptRec
+              ? {
+                  header:
+                    typeof diffExcerptRec.header === "string"
+                      ? diffExcerptRec.header
+                      : undefined,
+                  lines: Array.isArray(diffExcerptRec.lines)
+                    ? diffExcerptRec.lines.filter(
+                        (line): line is string => typeof line === "string",
+                      )
+                    : undefined,
+                  added:
+                    typeof diffExcerptRec.added === "number"
+                      ? diffExcerptRec.added
+                      : undefined,
+                  deleted:
+                    typeof diffExcerptRec.deleted === "number"
+                      ? diffExcerptRec.deleted
+                      : undefined,
+                }
+              : undefined,
+          } satisfies StructuredFileChange;
+        })
+        .filter((item): item is StructuredFileChange => Boolean(item))
+    : [];
+
+  if (!normalizedResponseType && !message && !hasPlan && fileChanges.length === 0) {
     return undefined;
   }
 
@@ -2010,6 +2139,7 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
     responseType: normalizedResponseType,
     message,
     plan: hasPlan ? plan : undefined,
+    fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
   };
 }
 
@@ -5529,6 +5659,37 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   let latestStructuredOutput = asRecord(
     (base as unknown as UnknownRecord).structuredOutput,
   );
+  const mergeStructuredOutputRecords = (
+    existing: UnknownRecord | null,
+    incoming: UnknownRecord | null,
+  ): UnknownRecord | null => {
+    if (!existing && !incoming) {
+      return null;
+    }
+    if (!existing) {
+      return incoming ? { ...incoming } : null;
+    }
+    if (!incoming) {
+      return existing ? { ...existing } : null;
+    }
+
+    const existingFileChanges = Array.isArray(existing.fileChanges)
+      ? existing.fileChanges
+      : [];
+    const incomingFileChanges = Array.isArray(incoming.fileChanges)
+      ? incoming.fileChanges
+      : [];
+    const mergedFileChanges =
+      incomingFileChanges.length >= existingFileChanges.length
+        ? incomingFileChanges
+        : existingFileChanges;
+
+    return {
+      ...existing,
+      ...incoming,
+      ...(mergedFileChanges.length > 0 ? { fileChanges: mergedFileChanges } : {}),
+    };
+  };
   let canonicalMessageId: string | null = getMessageId(base);
 
   const appendReasoningEvent = (event: ReasoningEvent) => {
@@ -5629,7 +5790,10 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
       (message as unknown as UnknownRecord).structuredOutput,
     );
     if (structured) {
-      latestStructuredOutput = structured;
+      latestStructuredOutput = mergeStructuredOutputRecords(
+        latestStructuredOutput,
+        structured,
+      );
     }
 
     if (Array.isArray(message.parts)) {

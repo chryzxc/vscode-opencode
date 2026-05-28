@@ -283,6 +283,12 @@ export interface MessageInfo {
   };
   duration?: number;
   finish?: boolean;
+  structured?: {
+    fileChanges?: StructuredFileChange[];
+  } & Record<string, unknown>;
+  structuredOutput?: {
+    fileChanges?: StructuredFileChange[];
+  } & Record<string, unknown>;
 }
 
 export interface MessagePart {
@@ -331,6 +337,16 @@ export interface MessageChangeSummaryFile {
   file: string;
   added: number;
   deleted: number;
+  diffExcerpt?: ActivityDiffExcerpt;
+}
+
+export interface StructuredFileChange {
+  file: string;
+  kind?: "file_edit" | "file_create" | "file_delete" | "file_move" | "other";
+  diffStats?: {
+    added?: number;
+    deleted?: number;
+  };
   diffExcerpt?: ActivityDiffExcerpt;
 }
 
@@ -508,6 +524,20 @@ export interface SubagentDetail extends SubagentSummary {
 export interface Message {
   role?: string;
   responseType?: StructuredResponseType;
+  structuredOutput?: {
+    responseType?: StructuredResponseType;
+    message?: string;
+    fileChanges?: StructuredFileChange[];
+    plan?: {
+      file?: string;
+      files?: unknown[];
+      content?: string;
+      title?: string;
+      intro?: string;
+      summary?: string;
+      fileCount?: number;
+    };
+  };
   parts?: MessagePart[];
   text?: string;
 

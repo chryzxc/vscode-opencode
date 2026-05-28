@@ -44,6 +44,7 @@ import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 import { DiffStats } from "./DiffStats";
+import { asString } from "./lib/messageHandler";
 
 import type {
   ActivityDetail,
@@ -55,6 +56,7 @@ import type {
   ReasoningEvent,
   StreamingState,
   StreamingStep,
+  StructuredFileChange,
   SubagentDetail,
   SubagentSummary,
   TodoItem,
@@ -1850,19 +1852,8 @@ function fileChangePathsFromMessage(message?: Message): Set<string> {
     }
   }
 
-  const messageRec = asRecord(message);
-  const infoRec = asRecord(messageRec?.info);
-  const structured =
-    asRecord(messageRec?.structuredOutput) ||
-    asRecord(messageRec?.structured) ||
-    asRecord(infoRec?.structuredOutput) ||
-    asRecord(infoRec?.structured);
-  const structuredFileChanges = Array.isArray(structured?.fileChanges)
-    ? structured.fileChanges
-    : [];
-  for (const item of structuredFileChanges) {
-    const rec = asRecord(item);
-    const normalized = normalizeFileChangePathForComparison(rec?.file);
+  for (const item of structuredFileChangesFromMessage(message)) {
+    const normalized = normalizeFileChangePathForComparison(item.file);
     if (normalized) {
       files.add(normalized);
     }
@@ -1910,6 +1901,92 @@ function fileChangeRenderRichness(message?: Message): number {
   return files.size * 10 + summaryFiles.length * 4 + perFileStats * 3 + statsScore;
 }
 
+function normalizeStructuredFileChanges(
+  value: unknown,
+): StructuredFileChange[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) return null;
+      const file = asString(rec.file).trim();
+      if (!file) return null;
+      const diffStatsRec = asRecord(rec.diffStats);
+      const diffExcerptRec = asRecord(rec.diffExcerpt);
+      const kind = asString(rec.kind).trim();
+      const normalizedKind =
+        kind === "file_edit" ||
+        kind === "file_create" ||
+        kind === "file_delete" ||
+        kind === "file_move" ||
+        kind === "other"
+          ? kind
+          : undefined;
+      return {
+        file,
+        kind: normalizedKind,
+        diffStats: diffStatsRec
+          ? {
+              added:
+                typeof diffStatsRec.added === "number"
+                  ? diffStatsRec.added
+                  : undefined,
+              deleted:
+                typeof diffStatsRec.deleted === "number"
+                  ? diffStatsRec.deleted
+                  : undefined,
+            }
+          : undefined,
+        diffExcerpt: diffExcerptRec
+          ? {
+              header:
+                typeof diffExcerptRec.header === "string"
+                  ? diffExcerptRec.header
+                  : undefined,
+              lines: Array.isArray(diffExcerptRec.lines)
+                ? diffExcerptRec.lines.filter(
+                    (line): line is string => typeof line === "string",
+                  )
+                : undefined,
+              added:
+                typeof diffExcerptRec.added === "number"
+                  ? diffExcerptRec.added
+                  : undefined,
+              deleted:
+                typeof diffExcerptRec.deleted === "number"
+                  ? diffExcerptRec.deleted
+                  : undefined,
+            }
+          : undefined,
+      } satisfies StructuredFileChange;
+    })
+    .filter((item): item is StructuredFileChange => item !== null);
+}
+
+function structuredFileChangesFromMessage(message?: Message): StructuredFileChange[] {
+  if (!message) {
+    return [];
+  }
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured =
+    asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured) ||
+    asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured);
+  const direct = normalizeStructuredFileChanges(structured?.fileChanges);
+  if (direct.length > 0) {
+    return direct;
+  }
+
+  const rawResponseRec = asRecord(messageRec?.rawResponse);
+  const rawInfoRec = asRecord(rawResponseRec?.info);
+  const rawStructured = asRecord(rawInfoRec?.structured);
+  return normalizeStructuredFileChanges(rawStructured?.fileChanges);
+}
+
 function messageHasOwnFileChangeEvidence(message?: Message): boolean {
   if (!message) {
     return false;
@@ -1919,22 +1996,7 @@ function messageHasOwnFileChangeEvidence(message?: Message): boolean {
     return true;
   }
 
-  const messageRec = asRecord(message);
-  const infoRec = asRecord(messageRec?.info);
-  const structured =
-    asRecord(messageRec?.structuredOutput) ||
-    asRecord(messageRec?.structured) ||
-    asRecord(infoRec?.structuredOutput) ||
-    asRecord(infoRec?.structured);
-  const structuredFileChanges = Array.isArray(structured?.fileChanges)
-    ? structured.fileChanges
-    : [];
-  if (
-    structuredFileChanges.some((item) => {
-      const rec = asRecord(item);
-      return !!firstNonEmptyString(rec?.file);
-    })
-  ) {
+  if (structuredFileChangesFromMessage(message).length > 0) {
     return true;
   }
 
@@ -4955,6 +5017,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 Array.isArray(message?.progressEvents) ? message.progressEvents : []
               }
               messageEdits={message?.edits || []}
+              structuredFileChanges={normalizeStructuredFileChanges(structured?.fileChanges)}
               changeSummary={changeSummary}
               messageId={messageId}
               sessionId={state.currentSessionId}
@@ -5033,6 +5096,7 @@ function FileChangesSection({
   streamingSteps,
   timelineEvents,
   messageEdits,
+  structuredFileChanges,
   changeSummary,
   messageId,
   sessionId,
@@ -5057,6 +5121,7 @@ function FileChangesSection({
     diffStats?: { added: number; deleted: number };
   }>;
   messageEdits: Array<{ file: string; added?: number; deleted?: number }>;
+  structuredFileChanges: StructuredFileChange[];
   changeSummary?: Message["changeSummary"];
   messageId?: string | null;
   sessionId?: string | null;
@@ -5245,12 +5310,30 @@ function FileChangesSection({
       upsert(edit.file, edit.added, edit.deleted, 2);
     }
 
+    for (const item of structuredFileChanges) {
+      const excerptLines = Array.isArray(item.diffExcerpt?.lines)
+        ? item.diffExcerpt.lines.filter(
+            (line): line is string => typeof line === "string" && line.trim().length > 0,
+          )
+        : [];
+      upsert(
+        item.file,
+        item.diffStats?.added,
+        item.diffStats?.deleted,
+        3,
+        {
+          ...item.diffExcerpt,
+          lines: excerptLines,
+        },
+      );
+    }
+
     if (changeSummary && Array.isArray(changeSummary.files)) {
       for (const summaryFile of changeSummary.files) {
         if (!isLikelyFilePath(summaryFile.file)) {
           continue;
         }
-        upsert(summaryFile.file, summaryFile.added, summaryFile.deleted, 3);
+        upsert(summaryFile.file, summaryFile.added, summaryFile.deleted, 4);
       }
     }
 
@@ -5262,7 +5345,7 @@ function FileChangesSection({
         diffExcerpt: item.diffExcerpt,
       }))
       .sort((a, b) => a.file.localeCompare(b.file));
-  }, [streamingSteps, timelineEvents, messageEdits, changeSummary]);
+  }, [streamingSteps, timelineEvents, messageEdits, structuredFileChanges, changeSummary]);
 
   if (fileChanges.length === 0) {
     return null;
