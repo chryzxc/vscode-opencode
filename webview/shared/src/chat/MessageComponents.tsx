@@ -37,7 +37,7 @@ import { TerminalBlock } from "@/components/ui/TerminalBlock";
 import { SearchBlock } from "@/components/ui/SearchBlock";
 import { ExpandableStep } from "@/components/ui/ExpandableStep";
 import { StepIndicator } from "@/components/ui/StepIndicator";
-import { cn, formatDuration } from "@/utils";
+import { cn, formatDuration, toWorkspaceRelativePath } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
@@ -4631,7 +4631,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       {plan.file ? (
                         <div className="plan-card-file mt-1 flex items-center gap-1.5 text-[11px] font-medium">
                           <FileIcon filePath={plan.file} />
-                          <span className="truncate" title={plan.file}>{plan.file}</span>
+                          <span className="truncate" title={plan.file}>{toWorkspaceRelativePath(plan.file)}</span>
                         </div>
                       ) : (
                         <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-oc-text-soft italic">
@@ -5097,6 +5097,14 @@ function FileChangesSection({
             ? diffExcerpt.deleted
             : 0,
       );
+      const hasExcerptLines =
+        Array.isArray(diffExcerpt?.lines) &&
+        diffExcerpt.lines.some((line) => typeof line === "string" && line.trim().length > 0);
+      const hasStructuredChangeEvidence =
+        resolvedAdded > 0 || resolvedDeleted > 0 || hasExcerptLines;
+      if (!hasStructuredChangeEvidence) {
+        return;
+      }
 
       const existing = byFile.get(key);
       if (!existing) {

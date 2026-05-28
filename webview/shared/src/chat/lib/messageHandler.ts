@@ -6617,13 +6617,16 @@ function buildStreamingMessage(streaming: StreamingState): Message {
 
   return {
     role: "assistant",
+    responseType: streaming.responseType,
     content: streaming.content,
     parts,
+    plan: streaming.plan,
     reasoningEvents: streaming.reasoningEvents,
     progressEvents: canonicalSteps,
     steps: canonicalSteps,
     edits: streaming.edits.map((file) => ({ file })),
     interactiveEvents: streaming.interactiveEvents,
+    structuredOutput: streaming.structuredOutput,
     info: {
       id: streaming.messageId ?? undefined,
       agent: streaming.agent,
@@ -6802,13 +6805,28 @@ function handleStreamEvent(
     asString(structuredRecord?.message) ||
     asString(structuredRecord?.text);
   const structuredOutput =
-    normalizeStructuredOutput(payload.structuredOutput) ??
-    normalizeStructuredOutput((payload as UnknownRecord).structured_output) ??
-    normalizeStructuredOutput(properties?.structuredOutput) ??
-    normalizeStructuredOutput((properties as UnknownRecord | null)?.structured_output) ??
-    normalizeStructuredOutput(infoRecord?.structuredOutput) ??
-    normalizeStructuredOutput((infoRecord as UnknownRecord | null)?.structured_output) ??
-    normalizeStructuredOutput((infoRecord as UnknownRecord | null)?.structured);
+    normalizeStructuredOutputWithFallback(payload.structuredOutput) ??
+    normalizeStructuredOutputWithFallback((payload as UnknownRecord).structured_output) ??
+    normalizeStructuredOutputWithFallback(properties?.structuredOutput) ??
+    normalizeStructuredOutputWithFallback((properties as UnknownRecord | null)?.structured_output) ??
+    normalizeStructuredOutputWithFallback(infoRecord?.structuredOutput) ??
+    normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured_output) ??
+    normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured) ??
+    normalizeStructuredOutputWithFallback({
+      responseType:
+        asString(payload.responseType) ||
+        asString(properties?.responseType) ||
+        asString(infoRecord?.responseType),
+      message:
+        asString(payload.message) ||
+        asString(properties?.message) ||
+        asString(infoRecord?.message),
+      plan:
+        asRecord(payload.plan) ||
+        asRecord(properties?.plan) ||
+        asRecord(infoRecord?.plan) ||
+        undefined,
+    });
   const eventSessionId =
     asString(payload.sessionId) ||
     asString(payload.sessionID) ||
@@ -6992,6 +7010,46 @@ function handleStreamEvent(
       },
     });
     dispatch({ type: "SET_PROCESSING", payload: true });
+  }
+
+  const streamResponseType = firstNonEmptyString(
+    structuredOutput?.responseType,
+    asString(payload.responseType),
+    asString(properties?.responseType),
+    asString(infoRecord?.responseType),
+  )?.toLowerCase();
+  const streamPlan = structuredOutput?.plan;
+  const hasStreamPlan =
+    !!streamPlan &&
+    !!(
+      asString(streamPlan.file).trim() ||
+      asString(streamPlan.content).trim() ||
+      (Array.isArray(streamPlan.files) && streamPlan.files.length > 0)
+    );
+  const normalizedStreamResponseType =
+    streamResponseType || (hasStreamPlan ? "implementation_plan" : undefined);
+  const shouldPatchStreamingStructured =
+    !!structuredOutput || !!normalizedStreamResponseType || hasStreamPlan;
+  if (shouldPatchStreamingStructured) {
+    const streamNow = getState().streaming;
+    if (streamNow) {
+      dispatch({
+        type: "SET_STREAMING",
+        payload: {
+          ...streamNow,
+          responseType: normalizedStreamResponseType as StructuredResponseType | undefined,
+          plan: hasStreamPlan ? streamPlan : streamNow.plan,
+          structuredOutput: structuredOutput
+            ? {
+              ...structuredOutput,
+              responseType:
+                (normalizedStreamResponseType as StructuredResponseType | undefined) ??
+                structuredOutput.responseType,
+            }
+            : streamNow.structuredOutput,
+        },
+      });
+    }
   }
 
   // Pattern-based system reminders must not depend on role field correctness.

@@ -110,3 +110,35 @@ export function getFilename(filePath: string): string {
   // Get the last segment (filename)
   return segments[segments.length - 1] || filePath;
 }
+
+export function toWorkspaceRelativePath(
+  filePath?: string,
+  workspaceRoot?: string,
+): string {
+  const rawPath = (filePath || "").trim();
+  if (!rawPath) return "";
+  const normalize = (value: string) =>
+    value.replace(/\\/g, "/").replace(/\/+$/, "");
+
+  const normalizedFilePath = normalize(rawPath);
+  const rootFromGlobal =
+    typeof globalThis !== "undefined"
+      ? String(
+          (globalThis as { __workspace_root__?: string }).__workspace_root__ ||
+            "",
+        )
+      : "";
+  const normalizedWorkspaceRoot = normalize((workspaceRoot || rootFromGlobal).trim());
+
+  if (!normalizedWorkspaceRoot) return rawPath;
+  if (
+    normalizedFilePath === normalizedWorkspaceRoot ||
+    normalizedFilePath.startsWith(`${normalizedWorkspaceRoot}/`)
+  ) {
+    const relative = normalizedFilePath
+      .slice(normalizedWorkspaceRoot.length)
+      .replace(/^\/+/, "");
+    return relative || rawPath;
+  }
+  return rawPath;
+}

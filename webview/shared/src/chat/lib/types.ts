@@ -234,6 +234,30 @@ export interface StreamingState {
   modelID?: string;
   providerID?: string;
   variant?: string;
+  responseType?: StructuredResponseType;
+  plan?: {
+    file?: string;
+    files?: unknown[];
+    content?: string;
+    title?: string;
+    intro?: string;
+    summary?: string;
+    fileCount?: number;
+  };
+  structuredOutput?: {
+    responseType?: StructuredResponseType;
+    message?: string;
+    plan?: {
+      file?: string;
+      files?: unknown[];
+      content?: string;
+      title?: string;
+      intro?: string;
+      summary?: string;
+      fileCount?: number;
+    };
+  };
+  interactiveEvents?: InteractiveEvent[];
   inThoughtBlock?: boolean;
   /** Track if currently processing a reasoning part to prevent content leakage */
   inReasoningPart?: boolean;

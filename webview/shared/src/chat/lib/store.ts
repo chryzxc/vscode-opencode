@@ -354,13 +354,16 @@ function cacheStreamingForSession(
 function buildStreamingMessageLocal(streaming: StreamingState): Message {
   return {
     role: "assistant",
+    responseType: streaming.responseType,
     content: streaming.content,
     parts: [{ type: "text", text: streaming.content }],
+    plan: streaming.plan,
     reasoningEvents: streaming.reasoningEvents,
     progressEvents: streaming.progressEvents,
     steps: streaming.steps,
     edits: streaming.edits.map((file) => ({ file })),
     interactiveEvents: streaming.interactiveEvents,
+    structuredOutput: streaming.structuredOutput,
     info: {
       id: streaming.messageId ?? undefined,
       agent: streaming.agent,

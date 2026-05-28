@@ -253,6 +253,51 @@ export function validateStructuredOutput(
     }
   }
 
+  if (typeof record.fileChanges !== "undefined") {
+    if (!Array.isArray(record.fileChanges)) {
+      errors.push("fileChanges must be an array");
+    } else {
+      record.fileChanges.forEach((item, index) => {
+        const change = asRecord(item);
+        if (!change) {
+          errors.push(`fileChanges[${index}] must be an object`);
+          return;
+        }
+        const file = asString(change.file).trim();
+        if (!file) {
+          errors.push(`fileChanges[${index}] file is required`);
+          return;
+        }
+
+        const diffExcerpt = asRecord(change.diffExcerpt);
+        const hasExcerptLines =
+          Array.isArray(diffExcerpt?.lines) &&
+          diffExcerpt.lines.some(
+            (line) => typeof line === "string" && line.trim().length > 0,
+          );
+        const diffStats = asRecord(change.diffStats);
+        const addedCount =
+          typeof diffStats?.added === "number" ? Math.max(0, diffStats.added) : 0;
+        const deletedCount =
+          typeof diffStats?.deleted === "number"
+            ? Math.max(0, diffStats.deleted)
+            : 0;
+        const hasDiffStats = addedCount > 0 || deletedCount > 0;
+
+        if (!hasExcerptLines && !hasDiffStats) {
+          errors.push(
+            `fileChanges[${index}] requires diffExcerpt.lines or diffStats`,
+          );
+        }
+        if (!hasExcerptLines && hasDiffStats) {
+          errors.push(
+            `fileChanges[${index}] with non-zero diffStats must include diffExcerpt.lines`,
+          );
+        }
+      });
+    }
+  }
+
   if (typeof record.error !== "undefined") {
     const errorRecord = asRecord(record.error);
     if (!errorRecord) {

@@ -3291,6 +3291,16 @@ export class ChatViewProvider
         sessionId: this.extractEventSessionId(event),
         hasStructured: !!structuredRec,
       });
+      if (eventType === "session.diff") {
+        const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
+        const diffs = Array.isArray(props?.diff) ? (props.diff as Array<Record<string, unknown>>) : [];
+        this.logger.debug("session.diff stream event observed", {
+          sessionId: this.extractEventSessionId(event),
+          rows: diffs.length,
+          withPatch: diffs.filter((row) => typeof row?.patch === "string" && row.patch.length > 0).length,
+          sampleFiles: diffs.slice(0, 8).map((row) => String(row?.file || "")),
+        });
+      }
 
       const eventSessionId = this.extractEventSessionId(event);
       // Always run subagent tracking before any session-scoped early return so child
@@ -7932,6 +7942,24 @@ export class ChatViewProvider
             query: { messageID: messageId },
           });
 
+      const diffData = Array.isArray(diffResponse?.data)
+        ? (diffResponse.data as Array<Record<string, unknown>>)
+        : [];
+      this.logger.debug("session.diff response received", {
+        sessionId,
+        messageId,
+        rows: diffData.length,
+        withPatch: diffData.filter((row) => typeof row?.patch === "string" && row.patch.length > 0).length,
+        withBeforeAfter: diffData.filter(
+          (row) =>
+            typeof row?.before === "string" &&
+            row.before.length > 0 &&
+            typeof row?.after === "string" &&
+            row.after.length > 0,
+        ).length,
+        sampleFiles: diffData.slice(0, 8).map((row) => String(row?.file || "")),
+      });
+
       const rows = Array.isArray(diffResponse?.data)
         ? (diffResponse.data as FileDiff[])
             .map((item) => {
@@ -7992,6 +8020,18 @@ export class ChatViewProvider
           };
         }),
       );
+
+      this.logger.debug("session.diff summary built", {
+        sessionId,
+        messageId,
+        rows: enrichedRows.length,
+        rowsWithExcerpt: enrichedRows.filter(
+          (row) => Array.isArray(row.diffExcerpt?.lines) && row.diffExcerpt.lines.length > 0,
+        ).length,
+        rowsWithoutExcerpt: enrichedRows.filter(
+          (row) => !Array.isArray(row.diffExcerpt?.lines) || row.diffExcerpt.lines.length === 0,
+        ).map((row) => row.file).slice(0, 12),
+      });
 
       const added = enrichedRows.reduce((sum, row) => sum + row.added, 0);
       const deleted = enrichedRows.reduce((sum, row) => sum + row.deleted, 0);
