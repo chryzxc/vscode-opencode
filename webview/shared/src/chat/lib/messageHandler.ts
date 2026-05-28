@@ -8901,10 +8901,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             // Set aborted flag to indicate user stopped the response
             (normalizedMessage as unknown as UnknownRecord).aborted = true;
 
-            // Persist to messages array (locked data)
+            const normalizedMessageId =
+              asString(asRecord(normalizedMessage.info)?.id) ||
+              asString((normalizedMessage as unknown as UnknownRecord).id) ||
+              null;
+
+            // Persist to messages array (locked data). Replace matching assistant
+            // turn instead of blind-append so already rendered content is never
+            // displaced by a duplicate/empty terminal card.
             dispatch({
               type: "SET_MESSAGES",
-              payload: [...currentMessages, normalizedMessage],
+              payload: replaceMatchingAssistantTurn(currentMessages, normalizedMessage, [
+                normalizedMessageId,
+                streamingMessageId,
+              ]),
             });
 
             // Extract and persist subagents
@@ -9862,6 +9872,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const errorMsg = asString(data.message, "Unknown error");
           const stateBeforeError = getState();
           const currentStreaming = stateBeforeError.streaming;
+          const errorSessionId = firstNonEmptyString(
+            asString(data.sessionId),
+            asString(data.sessionID),
+            stateBeforeError.currentSessionId ?? undefined,
+          );
+
+          // User explicitly stopped this session. Ignore trailing transport errors
+          // so a rendered assistant turn is not replaced by an error-only card.
+          if (errorSessionId && stoppedSessionIds.has(errorSessionId)) {
+            dispatch({ type: "SET_PROCESSING", payload: false });
+            dispatch({ type: "FINISH_STREAMING" });
+            dispatch({ type: "SET_STREAMING", payload: null });
+            break;
+          }
 
           // When the AI is actively streaming meaningful content and a transport
           // timeout fires (e.g. undici headers timeout), the response is still
@@ -9910,11 +9934,32 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               error: errorMsg,
             };
             const messages = getState().messages;
+            const partialMessageId =
+              asString(asRecord(partialMessage.info)?.id) ||
+              asString((partialMessage as unknown as UnknownRecord).id) ||
+              currentStreaming.messageId ||
+              null;
             dispatch({
               type: "SET_MESSAGES",
-              payload: [...messages, partialMessage],
+              payload: replaceMatchingAssistantTurn(messages, partialMessage, [
+                partialMessageId,
+                currentStreaming.messageId,
+              ]),
             });
           } else {
+            const messages = stateBeforeError.messages || [];
+            const hasRenderedAssistantTurn = messages.some((message) => {
+              if (!isAssistantHistoryMessage(message)) {
+                return false;
+              }
+              return hasRenderableHistoryPayload(message);
+            });
+            if (hasRenderedAssistantTurn) {
+              dispatch({ type: "SET_PROCESSING", payload: false });
+              dispatch({ type: "FINISH_STREAMING" });
+              dispatch({ type: "SET_STREAMING", payload: null });
+              break;
+            }
             // No active stream — create an error-only message so the error banner
             // appears at the bottom of the message instead of at the top of the chat.
             const errorMessage: Message = {
@@ -9924,7 +9969,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               error: errorMsg,
               created: Date.now(),
             };
-            const messages = getState().messages;
             dispatch({
               type: "SET_MESSAGES",
               payload: [...messages, errorMessage],
