@@ -67,6 +67,7 @@ import {
   getSubagentDisplayActivity,
   getSubagentDisplayDurationMs,
 } from "./lib/subagentDuration";
+import { config } from "../config";
 
 // File extension color mapping for icons
 const FILE_COLOR_MAP: Record<string, string> = {
@@ -4028,7 +4029,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   // Render raw debug whenever payload exists. Do not gate behind stream-debug
   // flags, otherwise streamed + hydrated sessions can silently hide rawResponse.
   const hasRawResponseDebug = rawResponseText.trim().length > 0;
-  const showRawResponseDebug = true;
+  const showRawResponseDebug = config.debug.showRawResponse;
   const planLeadMessage = useMemo(() => {
     if (!plan) return "";
     const candidate = (
