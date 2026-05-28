@@ -2772,6 +2772,36 @@ body {
   transition: all 0.2s ease-out;
 }
 
+.oc-refined-file-link-with-tooltip {
+  position: relative;
+}
+
+.oc-refined-file-link-tooltip {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  display: none;
+  max-width: min(80vw, 920px);
+  padding: 6px 10px;
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  border-radius: 6px;
+  background: var(--vscode-editorHoverWidget-background, var(--oc-panel));
+  color: var(--vscode-editorHoverWidget-foreground, var(--oc-text));
+  box-shadow: 0 6px 16px color-mix(in srgb, black 35%, transparent);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  pointer-events: none;
+}
+
+.oc-refined-file-link-with-tooltip:hover .oc-refined-file-link-tooltip,
+.oc-refined-file-link-with-tooltip:focus-visible .oc-refined-file-link-tooltip {
+  display: block;
+}
+
 .oc-refined-file-link:hover {
   color: var(--oc-accent);
   background: color-mix(in srgb, var(--oc-accent) 8%, transparent);

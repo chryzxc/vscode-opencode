@@ -4359,8 +4359,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                     ) : (
                                       <button
                                         type="button"
-                                        className="oc-refined-file-link"
-                                        title={event.filePath}
+                                        className="oc-refined-file-link oc-refined-file-link-with-tooltip"
                                         onClick={() =>
                                           vscode.postMessage({
                                             type: "openFile",
@@ -4371,6 +4370,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                         <FileIcon filePath={event.filePath} />
                                         <span className="break-words whitespace-pre-wrap">
                                           {fileName || event.summary}
+                                        </span>
+                                        <span className="oc-refined-file-link-tooltip" role="tooltip">
+                                          {event.filePath}
                                         </span>
                                       </button>
                                     )
