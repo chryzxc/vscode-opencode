@@ -1,7 +1,7 @@
 {
   "name": "opencode-vscode-chryzxc",
-  "displayName": "OpenCode Chat - AI Coding Agent",
-  "description": "Chat with OpenCode in VS Code: AI coding agents, implementation plans, file and code context, subagent tracking, and session history.",
+  "displayName": "OpenCode Chat for VS Code",
+  "description": "Use OpenCode in VS Code with streaming AI chat, implementation plan workflow, code context attachments, and live quota monitoring.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -24,39 +24,24 @@
   },
   "keywords": [
     "opencode",
-    "open code",
-    "open-code",
-    "opencode vscode",
-    "opencode vs code",
-    "opencode ai",
-    "opencode chat",
-    "opencode agent",
-    "opencode gui",
-    "opencode ui",
-    "vscode",
-    "vs code",
-    "vscode extension",
-    "ai coding",
-    "coding agent",
-    "ai agent",
+    "ai coding agent",
     "coding assistant",
-    "ai chat",
-    "agentic coding",
     "implementation plan",
-    "plan builder",
-    "subagent",
-    "multi-agent",
     "code context",
     "session history",
-    "quota",
+    "subagent",
     "mcp",
-    "lsp",
-    "code generation"
+    "developer tools",
+    "ai chat",
+    "quota monitor",
+    "github copilot quota",
+    "openai quota",
+    "z.ai quota"
   ],
   "categories": [
     "AI",
     "Chat",
-    "Programming Languages"
+    "Other"
   ],
   "activationEvents": [
     "onStartupFinished"

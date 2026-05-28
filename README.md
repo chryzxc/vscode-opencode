@@ -16,9 +16,18 @@ If this extension helps your workflow, consider giving the repo a star.
 
 ![Interactive plan viewer demo](./assets/demo-1.gif)
 
-OpenCode Chat is a VS Code extension for [OpenCode](https://opencode.ai), bringing the OpenCode AI coding agent into Visual Studio Code with chat, image and file attachments, selected-code context, an interactive implementation plan builder, inline questions, plan annotations, agent-generated tasks, context compaction, subagent tracking, session history, and quota monitoring.
+OpenCode Chat is a VS Code AI coding assistant for [OpenCode](https://opencode.ai), bringing the OpenCode coding agent into Visual Studio Code with streaming chat, image and file attachments, selected-code context, an interactive implementation plan workflow, inline questions, plan annotations, agent-generated tasks, context compaction, subagent tracking, session history, and live quota monitoring for GitHub Copilot, Z.ai, and OpenAI.
 
 Requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be installed locally.
+
+### Quota Provider Support
+
+Live quota status is available for:
+
+- OpenAI
+- GitHub Copilot
+- Z.ai
+- Other supported providers exposed by OpenCode
 
 ---
 
@@ -36,6 +45,7 @@ If you already use OpenCode in the terminal, this extension gives you a more int
 - Track the agent-generated task list created from your prompt
 - Keep long-running sessions usable with automatic context compaction
 - Track subagents, quotas, MCP status, LSP status, and session stats in one UI
+- Monitor live quota status for GitHub Copilot, Z.ai, OpenAI, and other supported providers
 - Keep persistent session history inside VS Code
 - Use file references, image attachments, slash-command skills, and quick session controls without leaving the editor
 
