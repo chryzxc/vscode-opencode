@@ -21,6 +21,7 @@ interface PlanEnvelope {
 interface PositionedComment {
   id: string;
   preview: string;
+  lineLabel: string;
   top: number;
 }
 
@@ -59,6 +60,15 @@ function stripRedundantLeadingTitle(raw: string, title: string): string {
 
 function normalizeCommentText(value: string | undefined): string {
   return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function formatCommentLineLabel(comment: PlanComment): string {
+  const { startLine, endLine } = comment.anchor;
+  if (startLine < 0 || endLine < 0) return "General";
+  const start = startLine + 1;
+  const end = endLine + 1;
+  if (start === end) return `L${start}`;
+  return `L${Math.min(start, end)}-L${Math.max(start, end)}`;
 }
 
 declare global {
@@ -479,12 +489,14 @@ export default function PlanShell() {
         }
         seenTops.push(top);
         const previewSource = comment.text || comment.anchor.selectedText || "Comment";
+        const lineLabel = formatCommentLineLabel(comment);
         nextPositions.push({
           id: comment.id,
           preview:
             previewSource.length > 42
               ? `${previewSource.slice(0, 42).trimEnd()}...`
               : previewSource,
+          lineLabel,
           top,
         });
       });
@@ -621,7 +633,7 @@ export default function PlanShell() {
                     : "border-[color-mix(in_srgb,#93c5fd_34%,var(--vscode-panel-border)_66%)] bg-[color-mix(in_srgb,#93c5fd_14%,var(--vscode-editor-background)_86%)] text-[color-mix(in_srgb,#bfdbfe_74%,var(--vscode-editor-foreground)_26%)] hover:bg-[color-mix(in_srgb,#93c5fd_20%,var(--vscode-editor-background)_80%)]"
                 }`}
                 style={{ top: `${comment.top}px` }}
-                title={comment.preview}
+                title={`${comment.lineLabel}: ${comment.preview}`}
               >
                 <MessageSquare className="h-4 w-4" />
               </button>
@@ -750,6 +762,7 @@ export default function PlanShell() {
             </div>
           ) : (
             comments.map((comment) => {
+              const lineLabel = formatCommentLineLabel(comment);
               return (
                 <div
                   key={comment.id}
@@ -768,6 +781,9 @@ export default function PlanShell() {
                         ? "(General Feedback)"
                         : `\u201C${comment.anchor.selectedText}\u201D`}
                     </p>
+                    <span className="shrink-0 rounded border border-[color-mix(in_srgb,var(--vscode-panel-border)_68%,transparent)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_70%,var(--vscode-focusBorder)_30%)] px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-[var(--vscode-descriptionForeground)]">
+                      {lineLabel}
+                    </span>
                   </div>
                   <p className="mb-3 whitespace-pre-wrap break-words text-[13px] leading-6 text-[var(--vscode-editor-foreground)]">
                     {comment.text}
