@@ -20,7 +20,7 @@ export const TerminalBlock = React.forwardRef<
     <div ref={ref} className={cn("oc-bash-command-block", className)}>
       <div className="oc-bash-command-code">
         <span className="oc-bash-inline-prompt" aria-hidden="true">$</span>
-        <code>{command}</code>
+        <code title={command}>{command}</code>
       </div>
       {output && (
         <div className="oc-bash-output">

@@ -6056,7 +6056,7 @@ export class ChatViewProvider
                 type: "file",
                 mime: ctx.languageId || "text/plain",
                 filename: ctx.file.split(/[\\/]/).pop(),
-                url: `file://${ctx.file}`,
+                url: absoluteUri.toString(),
                 source: {
                   type: "file",
                   path: ctx.file,
@@ -6115,7 +6115,7 @@ export class ChatViewProvider
                 type: "file",
                 mime: "text/plain",
                 filename: filePath.split(/[\\/]/).pop(),
-                url: `file://${filePath}`,
+                url: absoluteUri.toString(),
                 source: {
                   type: "file",
                   path: filePath,

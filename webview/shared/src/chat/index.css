@@ -4773,3 +4773,36 @@ body {
   }
 }
 
+/* ── Reasoning Step Fade Effect ───────────────────────────────────────────── */
+/* Subtle text opacity fade for collapsed reasoning steps */
+.reasoning-subtle-fade {
+  mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black 70%,
+    rgba(0, 0, 0, 0.3) 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0%,
+    black 70%,
+    rgba(0, 0, 0, 0.3) 100%
+  );
+}
+
+/* Subtle shadow indicator at the bottom */
+.reasoning-fade-indicator {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--oc-bg) 60%, transparent) 100%
+  );
+  pointer-events: none;
+  opacity: 0.6;
+}
+

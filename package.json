@@ -1,7 +1,7 @@
 {
   "name": "opencode-vscode-chryzxc",
-  "displayName": "OpenCode Chat for VS Code",
-  "description": "Use OpenCode in VS Code with streaming AI chat, implementation plan workflow, code context attachments, and live quota monitoring.",
+  "displayName": "OpenCode UI for VS Code",
+  "description": "OpenCode CLI UI for VS Code with streaming chat, code context, implementation plans, subagents, session history, and quota monitoring.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -24,15 +24,20 @@
   },
   "keywords": [
     "opencode",
+    "opencode cli",
+    "opencode ui",
+    "opencode vscode",
+    "copilot style",
+    "ai assistant",
     "ai coding agent",
     "coding assistant",
+    "agentic coding",
+    "code assistant",
+    "subagents",
     "implementation plan",
     "code context",
     "session history",
-    "subagent",
     "mcp",
-    "developer tools",
-    "ai chat",
     "quota monitor",
     "github copilot quota",
     "openai quota",
@@ -40,7 +45,6 @@
   ],
   "categories": [
     "AI",
-    "Chat",
     "Other"
   ],
   "activationEvents": [
@@ -179,7 +183,7 @@
         "opencode.logging.maxFiles": {
           "type": "number",
           "default": 3,
-          "description": "Maximum number of backup log files to keep"
+          "description": "Number of backup log files to keep"
         },
         "opencode.autoCompact": {
           "type": "boolean",

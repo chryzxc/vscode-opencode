@@ -2244,11 +2244,46 @@ function parseNumberedQuestionsFromText(text: string): StructuredInteractiveEven
   const events: StructuredInteractiveEvent[] = [];
   let index = 0;
 
+  // Patterns that suggest a line is NOT a question requiring user input
+  const nonQuestionPatterns = [
+    // Code formatting/markdown
+    /```/,
+    /`[^`]+`/,
+    /\*\*[^*]+\*\*/,
+    // Arrows and explanations
+    /→|←|↦/,
+    /answered by|validated by|just fixed/i,
+    // Descriptive statements
+    /There are|types of|fields exist|remaining/i,
+    // Technical references
+    /\[\S+\]/,
+  ];
+
+  // Patterns that suggest a line IS a question
+  const questionPatterns = [
+    /\?$/,
+    /^(what|how|why|when|where|who|which|should|can|could|would|will|do|does|is|are)/i,
+  ];
+
   for (const line of lines) {
     const match = line.match(/^\s*\d+\.\s+(.+)$/);
     if (match) {
       const questionText = match[1].trim();
-      if (questionText) {
+      if (!questionText) continue;
+
+      // Skip lines that match non-question patterns
+      const looksLikeNonQuestion = nonQuestionPatterns.some(pattern =>
+        pattern.test(questionText)
+      );
+      if (looksLikeNonQuestion) continue;
+
+      // Check if it looks like an actual question
+      const looksLikeQuestion = questionPatterns.some(pattern =>
+        pattern.test(questionText)
+      );
+
+      // Only include if it looks like a question OR it's short and direct
+      if (looksLikeQuestion || questionText.length < 100) {
         events.push({
           type: 'question',
           id: `interactive-${Date.now()}-fallback-${index++}`,
@@ -2261,8 +2296,13 @@ function parseNumberedQuestionsFromText(text: string): StructuredInteractiveEven
     }
   }
 
-  // Only return if we found 2 or more numbered questions (to avoid false positives on normal lists)
-  return events.length >= 2 ? events : [];
+  // Only return if we found 3 or more numbered questions (higher threshold to avoid false positives)
+  // AND at least one of them looks like a real question
+  const hasRealQuestions = events.some(event =>
+    questionPatterns.some(pattern => pattern.test(event.question || ''))
+  );
+
+  return (events.length >= 3 && hasRealQuestions) ? events : [];
 }
 
 // Normalize incoming todo-like records into a canonical Todo shape used by the
@@ -6988,6 +7028,30 @@ function finalizeStreamingSnapshotSteps(
   };
 }
 
+function maybeCompleteOnStepsFinished(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+): boolean {
+  const streaming = getState().streaming;
+  if (!streaming?.isActive) return false;
+  if (streaming.inReasoningPart) return false;
+
+  const steps = streaming.steps;
+  const hasSteps = Array.isArray(steps) && steps.length > 0;
+  if (!hasSteps) return false;
+
+  const allStepsTerminal = steps.every(
+    (step) => step.status === "done" || step.status === "error",
+  );
+  if (!allStepsTerminal) return false;
+
+  const hasContent = streaming.hasRenderableContent === true;
+  if (!hasContent) return false;
+
+  dispatch({ type: "SET_PROCESSING", payload: false });
+  return true;
+}
+
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -7608,6 +7672,7 @@ function handleStreamEvent(
           duration: asOptionalNumber(asRecord(part.timing)?.duration),
           diffStats,
         });
+        maybeCompleteOnStepsFinished(dispatch, getState);
       }
 
       if (partType === 'tool') {
@@ -8304,6 +8369,7 @@ function handleStreamEvent(
           }
         }
       });
+      maybeCompleteOnStepsFinished(dispatch, getState);
       break;
     }
     case 'stepError': {
@@ -8320,6 +8386,7 @@ function handleStreamEvent(
           }
         }
       });
+      maybeCompleteOnStepsFinished(dispatch, getState);
       break;
     }
     case 'edit':
@@ -9185,23 +9252,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               asString(data.sessionID),
               deriveSessionIdFromMessage(msg, getState().currentSessionId),
             ) ?? undefined;
-          const stateBeforeResponse = getState();
-          const hasResumedAfterStop = !!(
-            responseSessionId &&
-            (
-              stateBeforeResponse.isProcessing ||
-              stateBeforeResponse.processingSessionIds.includes(responseSessionId) ||
-              stateBeforeResponse.streaming
-            )
-          );
-          if (responseSessionId && hasResumedAfterStop) {
+          if (responseSessionId) {
             stoppedSessionIds.delete(responseSessionId);
-          }
-          if (responseSessionId && stoppedSessionIds.has(responseSessionId)) {
-            dispatch({ type: "SET_PROCESSING", payload: false });
-            dispatch({ type: "FINISH_STREAMING" });
-            dispatch({ type: "SET_STREAMING", payload: null });
-            break;
           }
           const currentMessages = getState().messages;
 

@@ -85,3 +85,18 @@ test('send flow keeps structured-output and direct-send branches intact', () => 
   assert.match(body, /if \(response\.error\) \{[\s\S]*return this\.handleSendMessage\(/, 'handleSendMessage should retain the retry path for interactive transport failures');
   assert.doesNotMatch(body, /describe\(/, 'handleSendMessage should remain source-introspection only, not a runtime test');
 });
+
+test('file context URLs use absoluteUri.toString() for valid file URLs', () => {
+  // Verify that file contexts use proper absolute file URLs instead of invalid template literals
+  assert.match(source, /url: absoluteUri\.toString\(\)/, 'file context URLs should use absoluteUri.toString() for valid file URLs');
+  assert.doesNotMatch(source, /url:\s*`file:\/\/\$\{ctx\.file\}`/, 'file context URLs should not use invalid template literal format file://${ctx.file}');
+  assert.doesNotMatch(source, /url:\s*`file:\/\/\$\{filePath\}`/, 'file attachment URLs should not use invalid template literal format file://${filePath}');
+});
+
+test('file contexts include content with start and end positions', () => {
+  // Verify that file contexts include the full file content with proper position markers
+  const body = extractFunctionBody(source, '  private async handleSendMessage(');
+  assert.match(body, /value:\s*textContent/, 'file contexts should include text content value');
+  assert.match(body, /start:\s*0/, 'file contexts should start from position 0');
+  assert.match(body, /end:\s*textContent\.length/, 'file contexts should end at content length');
+});

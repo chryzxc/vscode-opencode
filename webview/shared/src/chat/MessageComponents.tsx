@@ -315,6 +315,12 @@ function resolveSubagentStatus(
     )
   );
 
+  // If subagent has ended, don't show it as running
+  const hasEnded = subagent.endedAt || detail?.endedAt;
+  if (hasEnded && !detail?.errorText && subagent.status === "running") {
+    return "done";
+  }
+
   const detailStatus = detail?.status;
   if (detailStatus === "error" || detailStatus === "orphaned") {
     return detailStatus;
@@ -354,6 +360,8 @@ function TerminalBlockWithOutput({
   event: DisplayEvent;
   messageContent: string;
 }) {
+  // Use activityDetail.command first as it contains the full unmodified command
+  // Fall back to event.summary only if command is not available
   const command = event.activityDetail?.command || event.summary;
 
   // Try to extract bash output from message content
@@ -943,6 +951,16 @@ function modelLabel(message?: Message): string {
   return model ?? provider ?? "assistant";
 }
 
+function hasPendingStreamingSteps(streaming: StreamingState): boolean {
+  if (Array.isArray(streaming.steps)) {
+    return streaming.steps.some((step) => step.status === "pending");
+  }
+  if (Array.isArray(streaming.progressEvents)) {
+    return streaming.progressEvents.some((step) => step.status === "pending");
+  }
+  return false;
+}
+
 function getMessageContent(
   message?: Message,
   streaming?: StreamingState,
@@ -970,16 +988,25 @@ function getMessageContent(
       return '';
     }
 
-    // Do not hide normal assistant text solely because reasoning exists.
-    // Reasoning often streams in parallel with answer text; suppressing on
-    // `hasReasoningEvents` alone can leave the main chat body stuck showing
-    // only the loading ticker.
-    if (!streamingFinished && hasReasoningEvents && !content.trim()) {
+    // CRITICAL: If reasoning events are active and streaming is in progress,
+    // completely block content from going to the AI final response component.
+    // This prevents reasoning text from appearing in the main chat bubble.
+    // Reasoning should only appear in the activity timeline, not in the response body.
+    if (streaming.isActive && hasReasoningEvents) {
+      return '';
+    }
+
+    // Prevent reasoning data from leaking into the AI final response body
+    // when activity steps are still in progress. Content should only render
+    // once all steps complete, avoiding raw reasoning text appearing as
+    // final assistant output.
+    if (streaming.isActive && hasPendingStreamingSteps(streaming)) {
       return '';
     }
 
     return content;
   }
+
   if (!message) {
     return "";
   }
@@ -2353,6 +2380,7 @@ type MessageViewState = {
   showThinkingDetails: boolean;
   showAllCompletedActivity: boolean;
   showInternalActivity: boolean;
+  expandedReasoningSteps: Set<string>; // Track individual reasoning step expansion
 };
 
 type DisplayEvent = {
@@ -3768,6 +3796,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     showThinkingDetails: false,
     showAllCompletedActivity: false,
     showInternalActivity: false,
+    expandedReasoningSteps: new Set<string>(),
   });
   const hasCompletedCondensedActivity =
     displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY &&
@@ -4552,9 +4581,80 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                 : "",
                             )}
                           >
-                            <ExpandableStep>
-                              <div className="flex min-w-0 flex-col items-start gap-2 w-full">
-                                <div className="flex items-center gap-2 flex-wrap">
+                            {(() => {
+                              if (event.kind === "reasoning") {
+                                const isExpanded = viewState.expandedReasoningSteps.has(event.key);
+                                return (
+                                  <div className="flex items-start justify-between gap-2 w-full">
+                                    <div className="flex-1 min-w-0 flex-col items-start gap-2 w-full">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <span
+                                          className={cn(
+                                            "oc-refined-event-label",
+                                            "reasoning",
+                                          )}
+                                          data-operation={event.label.toLowerCase()}
+                                        >
+                                          {event.label}
+                                        </span>
+                                      </div>
+
+                                      <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
+                                        {event.summary && (
+                                          <div className={cn(
+                                            "w-full relative transition-all duration-200",
+                                            !isExpanded && "max-h-[80px] overflow-hidden",
+                                            isExpanded && "max-h-none",
+                                          )}>
+                                            <div className={cn(
+                                              "oc-refined-event-summary text-left w-full",
+                                              !isExpanded && "reasoning-subtle-fade"
+                                            )}>
+                                              <MarkdownRenderer
+                                                content={event.summary}
+                                                className="markdown-body"
+                                              />
+                                            </div>
+                                            {!isExpanded && (
+                                              <div className="reasoning-fade-indicator" />
+                                            )}
+                                          </div>
+                                        )}
+                                      </span>
+                                    </div>
+
+                                    {/* Chevron button at right end */}
+                                    <button
+                                      type="button"
+                                      className="shrink-0 p-1 hover:bg-oc-panel-soft rounded transition-colors"
+                                      onClick={() =>
+                                        setViewState((prev) => {
+                                          const newExpanded = new Set(prev.expandedReasoningSteps);
+                                          if (newExpanded.has(event.key)) {
+                                            newExpanded.delete(event.key);
+                                          } else {
+                                            newExpanded.add(event.key);
+                                          }
+                                          return { ...prev, expandedReasoningSteps: newExpanded };
+                                        })
+                                      }
+                                      title={isExpanded ? "Collapse reasoning" : "Expand reasoning"}
+                                    >
+                                      <ChevronDown
+                                        className={cn(
+                                          "h-4 w-4 transition-transform duration-200 oc-text-secondary",
+                                          isExpanded && "rotate-180",
+                                        )}
+                                      />
+                                    </button>
+                                  </div>
+                                );
+                              } else {
+                                return (
+                                  <div className="flex items-start justify-between gap-2 w-full">
+                                    <ExpandableStep className="flex-1 min-w-0">
+                                <div className="flex min-w-0 flex-col items-start gap-2 w-full">
+                                  <div className="flex items-center gap-2 flex-wrap">
                                   <span
                                     className={cn(
                                       "oc-refined-event-label",
@@ -4617,14 +4717,26 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                     )
                                   ) : (
                                     event.summary && (
-                                      <div
-                                        className={cn(
-                                          "oc-refined-event-summary",
-                                          event.kind === "reasoning" &&
-                                          !viewState.showThinkingDetails &&
-                                          "line-clamp-2",
-                                        )}
-                                      >
+                                      event.kind === "reasoning" ? (
+                                        <div className="w-full">
+                                          <div
+                                            className={cn(
+                                              "oc-refined-event-summary text-left w-full",
+                                              !viewState.expandedReasoningSteps.has(event.key) && "line-clamp-2",
+                                            )}
+                                          >
+                                            <MarkdownRenderer
+                                              content={event.summary}
+                                              className="markdown-body"
+                                            />
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div
+                                          className={cn(
+                                            "oc-refined-event-summary",
+                                          )}
+                                        >
                                         {event.label === "bash" ? (
                                           <TerminalBlockWithOutput
                                             event={event}
@@ -4650,7 +4762,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                         )}
                                       </div>
                                     )
-                                  )}
+                                  ))}
 
                                   {/* For non-bash events, render description separately */}
                                   {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.description && (
@@ -4731,8 +4843,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                     View diff
                                   </button>
                                 )}
-                              </div>
-                            </ExpandableStep>
+                                </div>
+                              </ExpandableStep>
+                            </div>
+                        );
+                      }
+                    })()}
                           </StepperItem>
                         );
                       })}
