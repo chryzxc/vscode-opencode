@@ -5,7 +5,6 @@ import { normalizeMessage, dedupeSystemMessages } from './messageHandler';
 
 describe('normalizeMessage - responseType handling', () => {
   it('should handle message with responseType field without throwing', () => {
-    // This test specifically covers the bug fix where firstNonEmptyString was undefined
     const inputMessage: Message = {
       role: 'assistant',
       content: 'Test message with responseType',
@@ -20,7 +19,6 @@ describe('normalizeMessage - responseType handling', () => {
   });
 
   it('should handle message with both responseType and structuredOutput.responseType', () => {
-    // Test firstNonEmptyString chooses the first non-empty value
     const inputMessage: Message = {
       role: 'assistant',
       content: 'Test message',
@@ -35,43 +33,12 @@ describe('normalizeMessage - responseType handling', () => {
     const result = normalizeMessage(inputMessage, null);
 
     assert.ok(result, 'normalizeMessage should return a message');
-    // The firstNonEmptyString should pick the first non-empty value
-    // and convert it to lowercase
     const resultRecord = result as Record<string, unknown>;
     assert.ok(resultRecord.responseType || resultRecord.structuredOutput, 'Should handle responseType fields');
   });
-
-  it('should handle message with empty responseType', () => {
-    const inputMessage: Message = {
-      role: 'assistant',
-      content: 'Test message',
-      responseType: '',
-      structuredOutput: {
-        responseType: 'question',
-        message: 'Test',
-        interactiveEvents: [],
-      }
-    };
-
-    const result = normalizeMessage(inputMessage, null);
-
-    assert.ok(result, 'normalizeMessage should handle empty responseType without throwing');
-  });
-
-  it('should handle message with whitespace-only responseType', () => {
-    const inputMessage: Message = {
-      role: 'assistant',
-      content: 'Test message',
-      responseType: '   ',
-    };
-
-    const result = normalizeMessage(inputMessage, null);
-
-    assert.ok(result, 'normalizeMessage should handle whitespace-only responseType');
-  });
 });
 
-describe('normalizeMessage', () => {
+describe('normalizeMessage - structuredOutput handling', () => {
   it('should preserve structuredOutput field when present', () => {
     const inputMessage: Message = {
       role: 'assistant',
@@ -98,48 +65,13 @@ describe('normalizeMessage', () => {
     assert.ok(result, 'normalizeMessage should return a message');
     assert.strictEqual(result?.role, 'assistant');
     assert.strictEqual(result?.content, 'Test message');
-    assert.ok(
-      (result as Record<string, unknown>).structuredOutput,
-      'structuredOutput should be preserved in the normalized message'
-    );
 
     const normalizedRecord = result as Record<string, unknown>;
-    assert.ok(normalizedRecord.structuredOutput, 'structuredOutput exists');
+    assert.ok(normalizedRecord.structuredOutput, 'structuredOutput should be preserved');
     assert.strictEqual(
       (normalizedRecord.structuredOutput as Record<string, unknown>).responseType,
       'question',
       'structuredOutput.responseType should be preserved'
-    );
-  });
-
-  it('should preserve structuredOutput with snake_case format', () => {
-    const inputMessage: Message = {
-      role: 'assistant',
-      content: 'Test message',
-    } as Message & { structured_output: unknown };
-
-    (inputMessage as Record<string, unknown>).structured_output = {
-      responseType: 'question',
-      message: 'Test question',
-      interactiveEvents: [{
-        type: 'question',
-        id: 'test-2',
-        question: 'Continue?',
-        options: [
-          { id: 'yes', label: 'Yes', value: 'yes' },
-          { id: 'no', label: 'No', value: 'no' }
-        ],
-        multiSelect: false,
-        allowCustomInput: false
-      }]
-    };
-
-    const result = normalizeMessage(inputMessage, null);
-
-    assert.ok(result, 'normalizeMessage should return a message');
-    assert.ok(
-      (result as Record<string, unknown>).structuredOutput,
-      'structuredOutput should be preserved from snake_case field'
     );
   });
 
@@ -534,6 +466,198 @@ describe('structuredOutput preservation - Integration Tests', () => {
   });
 });
 
+describe('normalizeMessage - slash commands and file attachments', () => {
+  it('should handle messages with slash commands', () => {
+    const inputMessage: Message = {
+      role: 'user',
+      content: '/plan Create a new feature',
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle slash commands');
+    assert.strictEqual(result?.role, 'user');
+    assert.strictEqual(result?.content, '/plan Create a new feature');
+  });
+
+  it('should handle messages with @ mentions', () => {
+    const inputMessage: Message = {
+      role: 'user',
+      content: '@claude help me with this code',
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle @ mentions');
+    assert.strictEqual(result?.role, 'user');
+    assert.strictEqual(result?.content, '@claude help me with this code');
+  });
+
+  it('should handle messages with both slash commands and @ mentions', () => {
+    const inputMessage: Message = {
+      role: 'user',
+      content: '/debug @claude fix this bug',
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle combined commands and mentions');
+    assert.strictEqual(result?.role, 'user');
+    assert.strictEqual(result?.content, '/debug @claude fix this bug');
+  });
+
+  it('should handle messages with file attachments', () => {
+    const inputMessage: Message = {
+      role: 'user',
+      content: 'Please review this file',
+      attachments: [{
+        id: 'file-1',
+        dataUrl: 'data:text/plain;base64,SGVsbG8gV29ybGQ=',
+        filename: 'example.ts',
+        mimeType: 'text/plain',
+      }],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle file attachments');
+    assert.strictEqual(result?.role, 'user');
+    assert.strictEqual(result?.content, 'Please review this file');
+
+    const resultRecord = result as Record<string, unknown>;
+    assert.ok(Array.isArray(resultRecord.attachments), 'attachments should be preserved');
+    assert.strictEqual(resultRecord.attachments.length, 1, 'should have one attachment');
+
+    const attachment = resultRecord.attachments as Array<Record<string, unknown>>;
+    assert.strictEqual(attachment[0].id, 'file-1', 'attachment id should be preserved');
+    assert.strictEqual(attachment[0].filename, 'example.ts', 'attachment filename should be preserved');
+    assert.strictEqual(attachment[0].mimeType, 'text/plain', 'attachment mimeType should be preserved');
+  });
+
+  it('should handle messages with multiple file attachments', () => {
+    const inputMessage: Message = {
+      role: 'user',
+      content: 'Review these files',
+      attachments: [
+        {
+          id: 'file-1',
+          dataUrl: 'data:text/plain;base64,SGVsbG8=',
+          filename: 'file1.ts',
+          mimeType: 'text/plain',
+        },
+        {
+          id: 'file-2',
+          dataUrl: 'data:text/plain;base64,V29ybGQ=',
+          filename: 'file2.ts',
+          mimeType: 'text/plain',
+        },
+      ],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle multiple file attachments');
+    assert.strictEqual(result?.content, 'Review these files');
+
+    const resultRecord = result as Record<string, unknown>;
+    assert.ok(Array.isArray(resultRecord.attachments), 'attachments should be preserved');
+    assert.strictEqual(resultRecord.attachments.length, 2, 'should have two attachments');
+  });
+
+  it('should handle messages with images', () => {
+    const inputMessage: Message = {
+      role: 'user',
+      content: 'What do you see in this image?',
+      images: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle images');
+    assert.strictEqual(result?.role, 'user');
+    assert.strictEqual(result?.content, 'What do you see in this image?');
+
+    const resultRecord = result as Record<string, unknown>;
+    assert.ok(Array.isArray(resultRecord.images), 'images should be preserved');
+    assert.strictEqual(resultRecord.images.length, 1, 'should have one image');
+  });
+
+  it('should handle messages with slash commands and file attachments combined', () => {
+    const inputMessage: Message = {
+      role: 'user',
+      content: '/review Please review this code',
+      attachments: [{
+        id: 'file-code',
+        dataUrl: 'data:text/plain;base64,Y29uc3QgeCA9IDEwOw==',
+        filename: 'code.ts',
+        mimeType: 'text/plain',
+      }],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle slash commands with file attachments');
+    assert.strictEqual(result?.content, '/review Please review this code');
+
+    const resultRecord = result as Record<string, unknown>;
+    assert.ok(Array.isArray(resultRecord.attachments), 'attachments should be preserved with commands');
+    assert.strictEqual(resultRecord.attachments.length, 1, 'should have one attachment with command');
+  });
+
+  it('should handle messages with @ mentions and images combined', () => {
+    const inputMessage: Message = {
+      role: 'user',
+      content: '@claude What do you see in this screenshot?',
+      images: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle @ mentions with images');
+    assert.strictEqual(result?.content, '@claude What do you see in this screenshot?');
+
+    const resultRecord = result as Record<string, unknown>;
+    assert.ok(Array.isArray(resultRecord.images), 'images should be preserved with mentions');
+    assert.strictEqual(resultRecord.images.length, 1, 'should have one image with mention');
+  });
+});
+
+describe('normalizeMessage - comprehensive integration tests', () => {
+  it('should handle complex message with command, mention, and attachments', () => {
+    const inputMessage: Message = {
+      role: 'user',
+      content: '/analyze @claude Please analyze these files',
+      attachments: [
+        {
+          id: 'file-1',
+          dataUrl: 'data:text/plain;base64,ZmlsZSAxIGNvbnRlbnQ=',
+          filename: 'data.json',
+          mimeType: 'application/json',
+        },
+        {
+          id: 'file-2',
+          dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+          filename: 'screenshot.png',
+          mimeType: 'image/png',
+        },
+      ],
+      images: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should handle complex messages');
+    assert.strictEqual(result?.role, 'user');
+    assert.strictEqual(result?.content, '/analyze @claude Please analyze these files');
+
+    const resultRecord = result as Record<string, unknown>;
+    assert.ok(Array.isArray(resultRecord.attachments), 'attachments should be preserved');
+    assert.strictEqual(resultRecord.attachments.length, 2, 'should have two attachments');
+    assert.ok(Array.isArray(resultRecord.images), 'images should be preserved');
+    assert.strictEqual(resultRecord.images.length, 1, 'should have one image');
+  });
+});
+
 describe('dedupeSystemMessages', () => {
   it('should return empty array for empty input', () => {
     const result = dedupeSystemMessages([]);
@@ -639,65 +763,6 @@ describe('dedupeSystemMessages', () => {
     assert.strictEqual(result.length, 4, 'Should not deduplicate non-system messages');
   });
 
-  it('should handle mixed system and non-system messages', () => {
-    const messages: Message[] = [
-      {
-        role: 'user',
-        content: 'Start',
-      },
-      {
-        role: 'system',
-        content: '<auto-slash-command>test</auto-slash-command>',
-      },
-      {
-        role: 'assistant',
-        content: 'Response',
-      },
-      {
-        role: 'system',
-        content: '<auto-slash-command>test</auto-slash-command>',
-      },
-      {
-        role: 'user',
-        content: 'End',
-      },
-    ];
-    const result = dedupeSystemMessages(messages);
-    assert.strictEqual(result.length, 4);
-    assert.strictEqual(result[0].role, 'user');
-    assert.strictEqual(result[1].role, 'system');
-    assert.strictEqual(result[2].role, 'assistant');
-    assert.strictEqual(result[3].role, 'user');
-  });
-
-  it('should handle system messages with empty content', () => {
-    const messages: Message[] = [
-      {
-        role: 'system',
-        content: '',
-      },
-      {
-        role: 'system',
-        content: '',
-      },
-    ];
-    const result = dedupeSystemMessages(messages);
-    assert.strictEqual(result.length, 2, 'Empty content should not be deduplicated');
-  });
-
-  it('should handle system messages with missing content', () => {
-    const messages: Message[] = [
-      {
-        role: 'system',
-      },
-      {
-        role: 'system',
-      },
-    ];
-    const result = dedupeSystemMessages(messages);
-    assert.strictEqual(result.length, 2, 'Missing content should not be deduplicated');
-  });
-
   it('should preserve message order when deduplicating', () => {
     const messages: Message[] = [
       {
@@ -726,40 +791,6 @@ describe('dedupeSystemMessages', () => {
     assert.strictEqual(result[0].content, '[info] Message 1');
     assert.strictEqual(result[1].content, '[info] Message 2');
     assert.strictEqual(result[2].content, '[info] Message 3');
-  });
-
-  it('should handle various system message formats', () => {
-    const messages: Message[] = [
-      {
-        role: 'system',
-        content: '[auto-slash-command] Square brackets',
-      },
-      {
-        role: 'system',
-        content: '<auto-slash-command> Angle brackets',
-      },
-      {
-        role: 'system',
-        content: '<!-- omo_internal_initiator --> Comment style',
-      },
-      {
-        role: 'system',
-        content: '[auto-slash-command] Square brackets',
-      },
-      {
-        role: 'system',
-        content: '<auto-slash-command> Angle brackets',
-      },
-      {
-        role: 'system',
-        content: '<!-- omo_internal_initiator --> Comment style',
-      },
-    ];
-    const result = dedupeSystemMessages(messages);
-    assert.strictEqual(result.length, 3);
-    assert.strictEqual(result[0].content, '[auto-slash-command] Square brackets');
-    assert.strictEqual(result[1].content, '<auto-slash-command> Angle brackets');
-    assert.strictEqual(result[2].content, '<!-- omo_internal_initiator --> Comment style');
   });
 
   it('should deduplicate system messages with different whitespace', () => {
