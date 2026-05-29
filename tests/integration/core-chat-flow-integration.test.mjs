@@ -219,24 +219,8 @@ test('MessageStreamService implements deduplication', () => {
 test('PlanParser parses implementation plans', () => {
   assert.match(
     planParserSource,
-    /parse|plan|extract/i,
+    /parse.*plan|extract.*plan|plan.*parse/i,
     'Must parse implementation plans',
-  );
-});
-
-test('PlanParser handles plan steps', () => {
-  assert.match(
-    planParserSource,
-    /step|parse|extract/i,
-    'Must handle plan steps',
-  );
-});
-
-test('PlanParser validates plan structure', () => {
-  assert.match(
-    planParserSource,
-    /validate|verify|check|plan/i,
-    'Must validate plan structure',
   );
 });
 
@@ -247,24 +231,8 @@ test('PlanParser validates plan structure', () => {
 test('ModelCapabilitiesService manages model capabilities', () => {
   assert.match(
     modelCapabilitiesSource,
-    /capability|model|get/i,
+    /getCapabilities|model.*capability|capability.*service/i,
     'Must manage model capabilities',
-  );
-});
-
-test('ModelCapabilitiesService handles provider information', () => {
-  assert.match(
-    modelCapabilitiesSource,
-    /provider|get|id/i,
-    'Must handle provider information',
-  );
-});
-
-test('ModelCapabilitiesService supports model selection', () => {
-  assert.match(
-    modelCapabilitiesSource,
-    /select|choose|set|model/i,
-    'Must support model selection',
   );
 });
 

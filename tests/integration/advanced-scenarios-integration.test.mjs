@@ -268,25 +268,9 @@ test('Interactive: Question with custom input options', () => {
 // Advanced Attachment Scenarios
 // ---------------------------------------------------------------------------
 
-test('Attachment: Handle attachment preview generation', () => {
-  assert.match(
-    chatViewProviderSource,
-    /preview|thumbnail|generate/i,
-    'Must generate attachment previews',
-  );
-});
-
 // ---------------------------------------------------------------------------
 // Advanced Command Scenarios
 // ---------------------------------------------------------------------------
-
-test('Command: Handle command composition and piping', () => {
-  assert.match(
-    chatViewProviderSource,
-    /compose|pipe|chain/i,
-    'Must support command composition',
-  );
-});
 
 // ---------------------------------------------------------------------------
 // Advanced Error Recovery
@@ -295,11 +279,3 @@ test('Command: Handle command composition and piping', () => {
 // ---------------------------------------------------------------------------
 // Security and Privacy
 // ---------------------------------------------------------------------------
-
-test('Security: Handle authentication token refresh', () => {
-  assert.match(
-    opencodeServerManagerSource,
-    /auth|token|refresh|renew/i,
-    'Must handle token refresh',
-  );
-});

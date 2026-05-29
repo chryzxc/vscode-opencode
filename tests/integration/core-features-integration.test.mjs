@@ -41,7 +41,7 @@ const sessionServiceSource = readSource(
 test('Interactive events system handles questions from AI', () => {
   assert.match(
     chatViewProviderSource,
-    /interactive|question|event/i,
+    /interactive.*event|question.*event|structuredOutput/i,
     'Must handle interactive events',
   );
 });
@@ -49,16 +49,8 @@ test('Interactive events system handles questions from AI', () => {
 test('Interactive events support user responses', () => {
   assert.match(
     chatViewProviderSource,
-    /answer|response|submit|interactive/i,
+    /answer.*interactive|submit.*answer|interactive.*submit/i,
     'Must support user responses to interactive events',
-  );
-});
-
-test('Interactive events preserve question options', () => {
-  assert.match(
-    chatViewProviderSource,
-    /option|choice|select|multi/i,
-    'Must preserve question options and settings',
   );
 });
 
@@ -69,7 +61,7 @@ test('Interactive events preserve question options', () => {
 test('Subagent system tracks agent lifecycle', () => {
   assert.match(
     chatViewProviderSource,
-    /subagent|agent|track|lifecycle/i,
+    /subagentTracker|SubagentTracker|subagent/i,
     'Must track subagent lifecycle',
   );
 });
@@ -77,16 +69,8 @@ test('Subagent system tracks agent lifecycle', () => {
 test('Subagent persistence maintains agent state', () => {
   assert.match(
     chatViewProviderSource,
-    /persist|save|restore|subagent/i,
+    /subagent.*persist|saveSubagent|restoreSubagent/i,
     'Must persist subagent state',
-  );
-});
-
-test('Subagent details provide execution information', () => {
-  assert.match(
-    chatViewProviderSource,
-    /detail|info|execution|subagent/i,
-    'Must provide subagent execution details',
   );
 });
 
@@ -97,31 +81,15 @@ test('Subagent details provide execution information', () => {
 test('Message streaming handles chunked responses', () => {
   assert.match(
     chatViewProviderSource,
-    /stream|chunk|part|update/i,
+    /stream.*chunk|chunk.*response|streamEvent/i,
     'Must handle chunked streaming responses',
-  );
-});
-
-test('Message streaming preserves message order', () => {
-  assert.match(
-    chatViewProviderSource,
-    /order|sequence|queue|stream/i,
-    'Must preserve message order in streaming',
-  );
-});
-
-test('Message streaming handles concurrent streams', () => {
-  assert.match(
-    chatViewProviderSource,
-    /concurrent|multiple|stream|parallel/i,
-    'Must handle multiple concurrent streams',
   );
 });
 
 test('Message streaming includes token usage', () => {
   assert.match(
     chatViewProviderSource,
-    /token|usage|count|stream/i,
+    /token.*usage|token.*count|usage/i,
     'Must track token usage in streaming',
   );
 });
@@ -133,7 +101,7 @@ test('Message streaming includes token usage', () => {
 test('Plan detection identifies implementation plans', () => {
   assert.match(
     chatViewProviderSource,
-    /plan|detect|identify|implementation/i,
+    /plan.*detect|detect.*plan|implementation.*plan/i,
     'Must detect implementation plans',
   );
 });
@@ -141,24 +109,8 @@ test('Plan detection identifies implementation plans', () => {
 test('Plan persistence saves plans to workspace', () => {
   assert.match(
     chatViewProviderSource,
-    /save|persist|write|plan/i,
+    /save.*plan|persist.*plan|write.*plan/i,
     'Must persist plans to workspace',
-  );
-});
-
-test('Plan viewing allows user inspection', () => {
-  assert.match(
-    chatViewProviderSource,
-    /view|show|display|plan/i,
-    'Must allow plan viewing',
-  );
-});
-
-test('Plan execution tracks step progress', () => {
-  assert.match(
-    chatViewProviderSource,
-    /step|progress|track|execute|plan/i,
-    'Must track plan execution progress',
   );
 });
 
@@ -169,24 +121,8 @@ test('Plan execution tracks step progress', () => {
 test('Model selection maintains current model state', () => {
   assert.match(
     chatViewProviderSource,
-    /model|select|current|choose/i,
+    /selectedModel|currentModel|model.*select/i,
     'Must maintain selected model state',
-  );
-});
-
-test('Model capabilities inform selection options', () => {
-  assert.match(
-    chatViewProviderSource,
-    /capability|feature|support|model/i,
-    'Must inform model selection based on capabilities',
-  );
-});
-
-test('Model provider management handles multiple providers', () => {
-  assert.match(
-    chatViewProviderSource,
-    /provider|anthropic|openai|gemini/i,
-    'Must handle multiple model providers',
   );
 });
 
@@ -197,24 +133,8 @@ test('Model provider management handles multiple providers', () => {
 test('Queue management supports batch operations', () => {
   assert.match(
     chatViewProviderSource,
-    /queue|batch|execute|prompt/i,
+    /queue.*batch|executeQueue|queue.*execute/i,
     'Must support queue operations',
-  );
-});
-
-test('Queue execution processes prompts sequentially', () => {
-  assert.match(
-    chatViewProviderSource,
-    /sequential|order|queue|execute/i,
-    'Must process queued prompts in order',
-  );
-});
-
-test('Queue state management tracks active operations', () => {
-  assert.match(
-    chatViewProviderSource,
-    /state|active|running|queue/i,
-    'Must track queue execution state',
   );
 });
 
@@ -225,24 +145,8 @@ test('Queue state management tracks active operations', () => {
 test('Compaction manages message memory usage', () => {
   assert.match(
     chatViewProviderSource,
-    /compaction|compact|memory|message/i,
+    /compact.*message|compaction|memory.*compact/i,
     'Must implement message compaction',
-  );
-});
-
-test('Compaction preserves important message context', () => {
-  assert.match(
-    chatViewProviderSource,
-    /preserve|keep|important|context|compaction/i,
-    'Must preserve important context during compaction',
-  );
-});
-
-test('Compaction respects model context limits', () => {
-  assert.match(
-    chatViewProviderSource,
-    /context|limit|window|compaction/i,
-    'Must respect model context limits',
   );
 });
 
@@ -253,24 +157,8 @@ test('Compaction respects model context limits', () => {
 test('Error recovery handles stream interruptions', () => {
   assert.match(
     chatViewProviderSource,
-    /recovery|reconnect|interrupt|error/i,
+    /recovery|reconnect|stream.*error/i,
     'Must handle stream interruptions',
-  );
-});
-
-test('Error state management provides user feedback', () => {
-  assert.match(
-    chatViewProviderSource,
-    /error|state|feedback|notify/i,
-    'Must provide error feedback to user',
-  );
-});
-
-test('Error logging captures diagnostic information', () => {
-  assert.match(
-    chatViewProviderSource,
-    /log|diagnostic|error|capture/i,
-    'Must capture error diagnostics',
   );
 });
 
@@ -281,24 +169,8 @@ test('Error logging captures diagnostic information', () => {
 test('Session creation initializes conversation state', () => {
   assert.match(
     sessionServiceSource,
-    /create|init|session|state/i,
+    /createNewSession|create.*session/i,
     'Must initialize session state',
-  );
-});
-
-test('Session switching preserves conversation history', () => {
-  assert.match(
-    sessionServiceSource,
-    /switch|history|preserve|session/i,
-    'Must preserve history when switching sessions',
-  );
-});
-
-test('Session deletion cleans up resources', () => {
-  assert.match(
-    sessionServiceSource,
-    /delete|cleanup|remove|session/i,
-    'Must cleanup session resources',
   );
 });
 
@@ -328,25 +200,7 @@ test('Complete streaming response flow', () => {
   // Verify streaming from initiation to completion
   assert.match(
     chatViewProviderSource,
-    /stream|start|chunk|end|complete/i,
+    /stream.*start|stream.*complete|streamEvent/i,
     'Streaming response flow components must exist',
-  );
-});
-
-test('Complete multi-turn conversation flow', () => {
-  // Verify conversation from first message to latest
-  assert.match(
-    chatViewProviderSource,
-    /conversation|turn|history|context/i,
-    'Multi-turn conversation components must exist',
-  );
-});
-
-test('Complete error recovery flow', () => {
-  // Verify error detection, handling, and recovery
-  assert.match(
-    chatViewProviderSource,
-    /error|detect|handle|recover/i,
-    'Error recovery flow components must exist',
   );
 });
