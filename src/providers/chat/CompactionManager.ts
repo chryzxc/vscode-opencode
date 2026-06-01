@@ -16,6 +16,12 @@ type CompactSessionOptions = {
   baselineStats?: CompactionBaselineStats;
 };
 
+type ResolvedCompactionDividerState = {
+  compactionDividerIndex?: number;
+  compactionDividerBeforeMessageId?: string;
+  compactionDividerAfterMessageId?: string;
+};
+
 export class CompactionManager {
   private static readonly COMPACTION_VIEW_STATE_PREFIX =
     "opencode.session.compaction-view.";
@@ -114,6 +120,91 @@ export class CompactionManager {
         return `${id}|${role}|${body.slice(0, 180)}`;
       })
       .join("\n");
+  }
+
+  private getMessageId(message: unknown): string | undefined {
+    const rec = this.asRecord(message);
+    const info = this.asRecord(rec?.info);
+    return this.firstNonEmptyString(
+      rec?.id,
+      rec?.messageId,
+      rec?.messageID,
+      info?.id,
+      info?.messageId,
+      info?.messageID,
+    );
+  }
+
+  private findMessageIndexById(messages: any[], messageId: string): number {
+    return messages.findIndex((message) => this.getMessageId(message) === messageId);
+  }
+
+  private extractLatestCompactionPart(messages: any[]): Record<string, unknown> | undefined {
+    let latest: Record<string, unknown> | undefined;
+    for (const message of messages) {
+      const rec = this.asRecord(message);
+      const parts = Array.isArray(rec?.parts) ? rec.parts : [];
+      for (const rawPart of parts) {
+        const part = this.asRecord(rawPart);
+        const type = this.firstNonEmptyString(part?.type)?.toLowerCase();
+        if (type === "compaction") {
+          latest = part;
+        }
+      }
+    }
+    return latest;
+  }
+
+  private resolveDividerStateFromTailStartId(
+    messages: any[],
+    tailStartId: string | undefined,
+  ): ResolvedCompactionDividerState | undefined {
+    if (!tailStartId) {
+      return undefined;
+    }
+
+    const dividerIndex = this.findMessageIndexById(messages, tailStartId);
+    if (dividerIndex <= 0) {
+      return undefined;
+    }
+
+    return {
+      compactionDividerIndex: dividerIndex,
+      compactionDividerBeforeMessageId: this.getMessageId(messages[dividerIndex - 1]),
+      compactionDividerAfterMessageId: tailStartId,
+    };
+  }
+
+  resolveSdkCompactionDividerState(messages: any[]): ResolvedCompactionDividerState | undefined {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return undefined;
+    }
+
+    const compactionPart = this.extractLatestCompactionPart(messages);
+    const tailStartId = this.firstNonEmptyString(
+      compactionPart?.tail_start_id,
+      compactionPart?.tailStartId,
+      compactionPart?.tailStartID,
+    );
+
+    return this.resolveDividerStateFromTailStartId(messages, tailStartId);
+  }
+
+  resolveSdkCompactionViewState(
+    messages: any[],
+    existingState?: PersistedCompactionViewState | null,
+  ): PersistedCompactionViewState | null {
+    const dividerState = this.resolveSdkCompactionDividerState(messages);
+    if (!dividerState?.compactionDividerIndex) {
+      return null;
+    }
+
+    return {
+      lastCompactedAt: existingState?.lastCompactedAt ?? Date.now(),
+      baselineStats: existingState?.baselineStats,
+      collapsed: existingState?.collapsed ?? true,
+      ...dividerState,
+    };
   }
 
   /**
@@ -277,6 +368,22 @@ export class CompactionManager {
       return;
     }
     this.postCompactionViewState(sessionId, state);
+  }
+
+  async sendCompactionViewStateForMessages(
+    sessionId: string,
+    messages: any[],
+  ): Promise<void> {
+    const persisted = await this.loadPersistedCompactionViewState(sessionId);
+    const sdkState = this.resolveSdkCompactionViewState(messages, persisted);
+    if (sdkState) {
+      await this.persistAndPublishCompactionViewState(sessionId, sdkState);
+      return;
+    }
+
+    if (persisted) {
+      this.postCompactionViewState(sessionId, persisted);
+    }
   }
 
   /**
@@ -512,22 +619,25 @@ export class CompactionManager {
 
       const baselineStats = options.baselineStats;
 
-      const state: PersistedCompactionViewState = {
-        lastCompactedAt: Date.now(),
-        baselineStats,
-        collapsed: true,
-        // After compaction, server history is rewritten (typically with a summary
-        // message). Use a zero divider so rewritten messages remain visible.
-        compactionDividerIndex: 0,
-        compactionDividerBeforeMessageId: undefined,
-        compactionDividerAfterMessageId: undefined,
-      };
-
-      await this.persistAndPublishCompactionViewState(sessionId, state);
       const refreshedRawMessages = await sessionService.getMessages(sessionId);
       const refreshedMessages = Array.isArray(refreshedRawMessages)
         ? await this.processHistoryMessages(refreshedRawMessages, sessionId)
         : [];
+      const sdkState = this.resolveSdkCompactionViewState(refreshedMessages);
+      const state: PersistedCompactionViewState = sdkState ?? {
+        lastCompactedAt: Date.now(),
+        baselineStats,
+        collapsed: true,
+        // If the SDK did not expose a tail anchor, keep rewritten history visible.
+        compactionDividerIndex: 0,
+        compactionDividerBeforeMessageId: undefined,
+        compactionDividerAfterMessageId: undefined,
+      };
+      if (baselineStats && !state.baselineStats) {
+        state.baselineStats = baselineStats;
+      }
+
+      await this.persistAndPublishCompactionViewState(sessionId, state);
       const postSignature = this.compactMessageSignature(refreshedMessages);
       const noVisibleChange = preSignature === postSignature;
 
@@ -545,9 +655,9 @@ export class CompactionManager {
           ? "Nothing to compact yet. This session is already concise."
           : undefined,
         baselineStats,
-        compactionDividerIndex: 0,
-        compactionDividerBeforeMessageId: undefined,
-        compactionDividerAfterMessageId: undefined,
+        compactionDividerIndex: state.compactionDividerIndex,
+        compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
+        compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
       });
 
       this.logger.info("Session compacted successfully", {
@@ -570,6 +680,100 @@ export class CompactionManager {
     } finally {
       this.compactingSessions.delete(sessionId);
     }
+  }
+
+  async handleSdkCompactionStreamEvent(
+    event: unknown,
+    sessionService: any,
+  ): Promise<boolean> {
+    const rec = this.asRecord(event);
+    if (!rec) {
+      return false;
+    }
+
+    const type = this.firstNonEmptyString(rec.type)?.toLowerCase();
+    const properties = this.asRecord(rec.properties) ?? {};
+    const part = this.asRecord(properties.part);
+    const sessionId = this.firstNonEmptyString(
+      properties.sessionID,
+      properties.sessionId,
+      part?.sessionID,
+      part?.sessionId,
+      rec.sessionID,
+      rec.sessionId,
+    );
+
+    const isCompactionPart =
+      type?.startsWith("message.part.") &&
+      this.firstNonEmptyString(part?.type)?.toLowerCase() === "compaction";
+    const isStarted = type === "session.next.compaction.started";
+    const isDelta = type === "session.next.compaction.delta";
+    const isEnded =
+      type === "session.next.compaction.ended" ||
+      type === "session.compacted";
+
+    if (!isCompactionPart && !isStarted && !isDelta && !isEnded) {
+      return false;
+    }
+    if (!sessionId) {
+      return true;
+    }
+
+    if (isStarted || isCompactionPart) {
+      this.postCompactionStatus({
+        sessionId,
+        status: "running",
+      });
+      return true;
+    }
+
+    if (isDelta) {
+      return true;
+    }
+
+    try {
+      const refreshedRawMessages = await sessionService.getMessages(sessionId);
+      const refreshedMessages = Array.isArray(refreshedRawMessages)
+        ? await this.processHistoryMessages(refreshedRawMessages, sessionId)
+        : [];
+      const state =
+        this.resolveSdkCompactionViewState(refreshedMessages) ?? {
+          lastCompactedAt: Date.now(),
+          collapsed: true,
+          compactionDividerIndex: 0,
+          compactionDividerBeforeMessageId: undefined,
+          compactionDividerAfterMessageId: undefined,
+        };
+
+      await this.persistAndPublishCompactionViewState(sessionId, state);
+      this.postMessage({
+        type: "chatHistory",
+        sessionId,
+        messages: refreshedMessages,
+      });
+      this.postCompactionStatus({
+        sessionId,
+        status: "done",
+        compacted: true,
+        compactionDividerIndex: state.compactionDividerIndex,
+        compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
+        compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
+        baselineStats: state.baselineStats,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error("Failed to refresh compacted session", {
+        sessionId,
+        error: errorMessage,
+      });
+      this.postCompactionStatus({
+        sessionId,
+        status: "error",
+        error: errorMessage,
+      });
+    }
+
+    return true;
   }
 
   /**
