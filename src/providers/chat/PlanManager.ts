@@ -145,7 +145,11 @@ export class PlanManager {
     if (!cleaned) return undefined;
 
     const title = cleaned
-      .replace(/[-_]+/g, " ")
+      // Preserve hyphens inside numeric tokens (for example 2026-05-28),
+      // but keep using separators for word boundaries elsewhere.
+      .replace(/_+/g, " ")
+      .replace(/(?<!\d)-+|-(?!\d)/g, " ")
+      .replace(/\s+/g, " ")
       .replace(/\b\w/g, (c) => c.toUpperCase())
       .trim();
 

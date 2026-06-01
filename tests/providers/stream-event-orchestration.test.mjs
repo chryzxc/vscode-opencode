@@ -13,6 +13,7 @@ const streamEventHandlerSource = readSource(
 );
 const streamSubscribeBody = extractFunctionBody(chatViewProviderSource, 'resolveWebviewView(');
 const streamHandlerBody = extractFunctionBody(streamEventHandlerSource, 'async handleStreamEvent(event: any): Promise<void>');
+const blockingInteractiveBody = extractFunctionBody(chatViewProviderSource, 'private hasBlockingInteractiveInStreamPayload(event: unknown): boolean {');
 
 test('ChatViewProvider subscribes to MessageStreamService', () => {
   assert.match(
@@ -38,7 +39,7 @@ test('subagent tracker consumes stream events before session gating', () => {
   );
   assert.match(
     streamSubscribeBody,
-    /if \(eventSessionId && this\.currentSessionId && eventSessionId !== this\.currentSessionId\) \{[\s\S]*return;/,
+    /if \(eventSessionId && !this\.isSessionEffectivelyProcessing\(eventSessionId\)\)[\s\S]*return;/,
     'session scoping should drop foreign-session events after internal tracking',
   );
 });
@@ -105,6 +106,16 @@ test('interactive stream payloads are detected via blocking question checks', ()
     chatViewProviderSource,
     /const hasBlockingInteractive = interactiveEvents\.some\(/,
     'interactive detection should look for blocking interactive events',
+  );
+  assert.match(
+    blockingInteractiveBody,
+    /const allowsCustomInput =/,
+    'free-form structured questions should be treated as blocking final prompts',
+  );
+  assert.match(
+    blockingInteractiveBody,
+    /questionLike\.allowCustomInput === true/,
+    'allowCustomInput should check for true value',
   );
 });
 

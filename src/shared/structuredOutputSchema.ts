@@ -33,7 +33,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it), 'question' for any final assistant turn whose intent is to ask the user a question or present choices, or 'progress_update' for execution steps. If the intent is a question, responseType MUST be 'question' and the question payload MUST be in the top-level question object. If emitting subagent/background-task payloads through compatible fields, include a stable background task id as 'backgroundTaskId' (for example 'bg_123abc') and subagent role hints as 'agentRole' (or 'agentType') such as 'explorer' or 'librarian'.",
+      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it), 'question' for any final assistant turn whose intent is to ask the user a question or present choices, or 'progress_update' for execution steps. If the intent is a question, responseType MUST be 'question' and the question payload MUST be in the top-level question object. If files were modified in this turn, include top-level fileChanges with per-file diff data (diffExcerpt.lines preferred, plus diffStats). If emitting subagent/background-task payloads through compatible fields, include a stable background task id as 'backgroundTaskId' (for example 'bg_123abc') and subagent role hints as 'agentRole' (or 'agentType') such as 'explorer' or 'librarian'.",
     additionalProperties: false,
     required: ["responseType"],
     properties: {
@@ -47,6 +47,50 @@ export const structuredOutputSchema: StructuredOutputSchema = {
       message: {
         type: "string",
         description: "User-facing text response for normal replies",
+      },
+
+      fileChanges: {
+        type: "array",
+        description:
+          "Top-level per-file diff payload for this turn. Include when files were created/modified/deleted, even when responseType='message'.",
+        items: {
+          type: "object",
+          properties: {
+            file: {
+              type: "string",
+              description: "File path that changed.",
+            },
+            kind: {
+              type: "string",
+              enum: ["file_edit", "file_create", "file_delete", "file_move", "other"],
+              description: "Optional file-change kind.",
+            },
+            diffStats: {
+              type: "object",
+              description: "Total line counts for this file diff.",
+              properties: {
+                added: { type: "number", description: "Lines added." },
+                deleted: { type: "number", description: "Lines deleted." },
+              },
+            },
+            diffExcerpt: {
+              type: "object",
+              description:
+                "Compact diff preview for this file. Prefer 3-10 representative lines, prefixed with + / - / context.",
+              properties: {
+                header: { type: "string", description: "Optional hunk/file header." },
+                lines: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Diff lines with + / - / context prefixes.",
+                },
+                added: { type: "number", description: "Optional total additions." },
+                deleted: { type: "number", description: "Optional total deletions." },
+              },
+            },
+          },
+          required: ["file"],
+        },
       },
 
       reasoning: {
@@ -86,12 +130,12 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
           options: {
             type: "array",
-            description: "Available choices for the user. For responseType='question' and type='question', provide at least two choices unless custom free-form input is explicitly enabled by the host.",
+            description: "Available choices for the user. For responseType='question' and type='question', provide at least two choices unless custom free-form input is explicitly enabled by the host. Each option.value must be the exact answer text to send back to the assistant on selection (human-readable, not snake_case/id slugs).",
             items: {
               type: "object",
               properties: {
                 label: { type: "string", description: "Option label" },
-                value: { type: "string", description: "Option value" },
+                value: { type: "string", description: "Answer text that should be sent back if selected. Use natural language text (e.g. 'English only'), not identifiers like 'english_only'." },
               },
               required: ["label"],
             },

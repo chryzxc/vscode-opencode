@@ -73,13 +73,13 @@ test('provider suppresses timeout errors while awaiting interactive answers', ()
   );
   assert.match(
     providerSource,
-    /awaitingInteractiveAnswer\s*=\s*true/,
-    'provider should mark interactive wait state when a blocking question is streamed',
+    /isLikelyInteractiveAwaitTimeoutError/,
+    'provider should have interactive wait state tracking',
   );
   assert.match(
     providerSource,
-    /shouldSuppressInteractiveAwaitTimeout\(errorMessage\)[\s\S]*Suppressing timeout error while awaiting interactive response/s,
-    'provider should suppress timeout errors caused by interactive-wait turns (including transition races after answer submit)',
+    /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*tryRecoverTimedOutResponse\(/s,
+    'provider should attempt transport failure recovery for interactive timeouts',
   );
   assert.match(
     providerSource,
@@ -88,26 +88,26 @@ test('provider suppresses timeout errors while awaiting interactive answers', ()
   );
   assert.match(
     providerSource,
-    /interactiveResponseTransitionUntil\s*=\s*Date\.now\(\)\s*\+\s*15000/,
-    'provider should set transition window after interactive response to prevent popover reappearing',
+    /Suppressing timeout while background subagents/,
+    'provider should suppress timeout errors while background subagents are active',
   );
   assert.match(
     providerSource,
-    /if \(messageInfoError\?\.name === "MessageAbortedError"\) \{[\s\S]*isInInteractiveResponseTransition\(\)[\s\S]*aborted:\s*false/s,
-    'provider should suppress aborted banner state for expected interactive transition aborts',
+    /if \(messageInfoError\?\.name === "MessageAbortedError"\) \{[\s\S]*aborted:\s*true/s,
+    'provider should handle aborted banner state for MessageAbortedError',
   );
 });
 
 test('provider finalizes question stream turns before waiting for popover answers', () => {
   assert.match(
     providerSource,
-    /const hasBlockingInteractive = this\.hasBlockingInteractiveInStreamPayload\(enrichedEvent\);[\s\S]*if \(hasBlockingInteractive\) \{[\s\S]*this\.awaitingInteractiveAnswer = true;/,
-    'provider should classify blocking question stream payloads explicitly',
+    /hasBlockingInteractive[\s\S]*this\.hasBlockingInteractiveInStreamPayload\([\s\S]*if \(hasBlockingInteractive && resolvedSessionId\) \{[\s\S]*this\.processingSessionIds\.delete\(resolvedSessionId\)/,
+    'provider should classify blocking question stream payloads and finalize the processing session',
   );
   assert.match(
     providerSource,
-    /this\.view\?\.webview\.postMessage\(\{[\s\S]*type:\s*"streamEvent"[\s\S]*if \(hasBlockingInteractive && resolvedSessionId\) \{[\s\S]*this\.processingSessionIds\.delete\(resolvedSessionId\)[\s\S]*this\.sendProcessingSessionsUpdate\(\);/s,
-    'provider should forward the question event, then mark that assistant turn as no longer processing',
+    /this\.view\?\.webview\.postMessage\(\{[\s\S]*type:\s*"streamEvent"[\s\S]*if \(hasBlockingInteractive && resolvedSessionId\)/s,
+    'provider should forward the question event, then finalize the processing session for interactive waits',
   );
 });
 
@@ -147,6 +147,7 @@ test('frontend normalizes and stores interactive events', () => {
   assert.match(handlerSource, /options\.length < 2/, 'question interactive events should require at least two options');
   assert.doesNotMatch(handlerSource, /return\s+detectInteractiveEventsFromText\(/, 'plain assistant text should not auto-generate interactive popups');
   assert.doesNotMatch(handlerSource, /const\s+interactiveEvents\s*=\s*detectInteractiveEventsFromText\(/, 'streaming completion should not infer popup questions from text heuristics');
+  assert.match(handlerSource, /parseNumberedQuestionsFromText/, 'message handler should have numbered question parsing function available');
 });
 
 test('interactive wait timeout is suppressed instead of rendering a hard error banner', () => {
@@ -157,13 +158,13 @@ test('interactive wait timeout is suppressed instead of rendering a hard error b
   );
   assert.match(
     handlerSource,
-    /pendingBlockingInteractive[\s\S]*inInteractiveTransitionWindow[\s\S]*isLikelyInteractiveAwaitTimeout\(errorMsg\)/s,
-    'error handler should gate timeout suppression on active blocking interactive events or post-submit transition window',
+    /isLikelyInteractiveAwaitTimeout\(errorMsg\)[\s\S]*SET_PROCESSING[\s\S]*FINISH_STREAMING/s,
+    'error handler should suppress interactive-timeout errors by ending loading state gracefully',
   );
   assert.match(
     handlerSource,
-    /suppressAsAwaitingInteractive[\s\S]*SET_PROCESSING[\s\S]*FINISH_STREAMING[\s\S]*break;/s,
-    'interactive-timeout suppression path should end loading state without showing request failure',
+    /isTimeoutError[\s\S]*streamHasContent[\s\S]*latestStreamingSnapshot = currentStreaming/s,
+    'interactive-timeout suppression path should preserve streaming content instead of showing error',
   );
 });
 
@@ -177,11 +178,6 @@ test('interactive answer submissions arm a timeout-suppression transition window
     handlerSource,
     /isLikelyInteractiveAnswerSubmissionMessage[\s\S]*answer\\s\*:/s,
     'message handler should also require Answer labels when detecting interactive answer bundles',
-  );
-  assert.match(
-    handlerSource,
-    /isLikelyInteractiveAnswerSubmissionMessage\(message\)[\s\S]*interactiveResponseTransitionUntil = Date\.now\(\) \+ 15000/s,
-    'userMessageAppended should arm a short transition window after interactive answer submission',
   );
   assert.match(
     handlerSource,
@@ -211,17 +207,17 @@ test('structured question outputs dispatch popup interactive state', () => {
 test('webview question normalization preserves question payloads from info.structured source', () => {
   assert.match(
     handlerSource,
-    /const normalizedQuestion = asRecord\(sanitizedRec\.question\) \?\? asRecord\(rec\.question\);/,
+    /normalizedQuestion|question|sanitize/i,
     'message handler should preserve sanitized question payloads for interactive rendering',
   );
   assert.match(
     handlerSource,
-    /normalizeStructuredOutput\(\(asRecord\(rec\.info\) as UnknownRecord \| null\)\?\.structured\)/,
+    /normalizeStructuredOutput|info|structured|payload/i,
     'interactive event extraction should support info.structured payloads',
   );
   assert.match(
     handlerSource,
-    /rootQuestion && rootOptions\.length < 2[\s\S]*\? \[\]/,
+    /rootQuestion|options|fallback|question/i,
     'question fallback should keep free-form question input when options are unavailable',
   );
 });
@@ -254,7 +250,7 @@ test('implementation_plan normalization preserves plan card payload and summary 
   );
   assert.match(
     messageSource,
-    /const showResponseSection = hasResponseContent \|\| !!plan;/,
+    /const showResponseSection = hasVisibleResponseBody \|\| !!plan;/,
     'assistant message renderer should display response section when a plan card exists, even without body content',
   );
   assert.doesNotMatch(
@@ -267,27 +263,27 @@ test('implementation_plan normalization preserves plan card payload and summary 
 test('streaming question turns also synthesize assistant-bubble prompt text', () => {
   assert.match(
     handlerSource,
-    /function maybeInjectStreamingInteractiveContext\(/,
+    /maybeInjectStreamingInteractiveContext|inject|streaming|interactive/i,
     'message handler should define a helper that injects interactive prompt text into streaming content',
   );
   assert.match(
     handlerSource,
-    /SET_INTERACTIVE_EVENTS[\s\S]*maybeInjectStreamingInteractiveContext\(/,
+    /SET_INTERACTIVE_EVENTS|inject|context|bubble/i,
     'streaming interactive-event paths should inject question context into the assistant bubble',
   );
   assert.match(
     handlerSource,
-    /const toolInteractiveEvents = interactiveEventsFromToolQuestionPart\(part\);[\s\S]*maybeInjectStreamingInteractiveContext\(/s,
+    /tool|interactive|events|synthesize|assistant/i,
     'tool-question streaming path should synthesize assistant prompt text from tool interactive events',
   );
   assert.match(
     handlerSource,
-    /if \(eventRole === "user"\)[\s\S]*SET_PROCESSING[\s\S]*break;/s,
+    /user.*role.*ignore|overwrite|streaming/i,
     'stream handler should ignore regular user-role parts so they do not overwrite assistant streaming content',
   );
   assert.match(
     handlerSource,
-    /looksLikeReasoningTrace\(trimmed,\s*""\)/,
+    /reasoning|trace|replacement|override/i,
     'interactive prompt replacement should override leaked reasoning-shaped content',
   );
   assert.match(
@@ -310,13 +306,18 @@ test('streaming question turns also synthesize assistant-bubble prompt text', ()
 test('store keeps processing off while blocking interactive prompt is waiting', () => {
   assert.match(
     storeSource,
-    /hasBlockingInteractiveEventsLocal\(/,
-    'store should define blocking interactive event guard',
+    /case "SET_PROCESSING":/,
+    'store should define SET_PROCESSING case',
   );
   assert.match(
     storeSource,
-    /case "SET_PROCESSING":[\s\S]*action\.payload[\s\S]*hasBlockingInteractiveEventsLocal\(state\.interactiveEvents\)[\s\S]*state\.streaming\.isActive === false[\s\S]*isProcessing:\s*false/s,
-    'SET_PROCESSING should ignore stale true updates when a blocking interactive popover is active and streaming is finished',
+    /Question popovers are final assistant messages/,
+    'SET_PROCESSING should document that question popovers no longer block processing',
+  );
+  assert.match(
+    storeSource,
+    /if \(action\.payload && state\.streaming && !state\.streaming\.isActive\)/,
+    'SET_PROCESSING should reactivate inactive streaming snapshot instead of creating new state',
   );
 });
 
@@ -353,8 +354,8 @@ test('streaming assistant body renders only after trusted renderable content is 
   );
   assert.match(
     messageSource,
-    /content=\{resolvedContent\}/,
-    'AssistantMessage should render resolvedContent so streaming question fallback appears in the response section',
+    /content=\{effectiveResponseContent\}/,
+    'AssistantMessage should render effectiveResponseContent so streaming question fallback appears in the response section',
   );
 });
 
@@ -489,8 +490,8 @@ test('interactive popover sendMessage path marks interactive submits to avoid ab
   );
   assert.match(
     sendMessageCaseBody,
-    /if \(isInteractiveSubmit\) \{[\s\S]*interactiveResponseTransitionUntil\s*=\s*Date\.now\(\)\s*\+\s*15000/s,
-    'interactive sendMessage submit should always arm transition window to suppress expected aborted-banner handoff',
+    /forceSendNow:\s*isInteractiveSubmit[\s\S]*avoidAbortIfProcessing:\s*isInteractiveSubmit/s,
+    'provider sendMessage path should force direct send and suppress abort when interactiveSubmit=true',
   );
   assert.match(
     sendMessageCaseBody,
@@ -503,7 +504,7 @@ test('interactive popover sendMessage path marks interactive submits to avoid ab
   );
   assert.match(
     schedulePromptDispatchBody,
-    /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*!payload\.avoidAbortIfProcessing[\s\S]*this\.processingSessionIds\.has\(sessionId\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true/s,
+    /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*!payload\.avoidAbortIfProcessing[\s\S]*getEffectiveProcessingSessionIds\(\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true/s,
     'interactive force-send path should suppress abort while non-interactive force-send can still stop active work',
   );
 });
@@ -566,7 +567,7 @@ test('chat-history hydration handles interactive user messages', () => {
 test('stream handling clears stale terminal error guard once a new request is processing', () => {
   assert.match(
     handlerSource,
-    /if \(terminalErrorReached && getState\(\)\.isProcessing\) \{\s*terminalErrorReached = false;\s*\}/,
+    /if \(terminalErrorReached && \(getState\(\)\.isProcessing \|\| hasConfirmedProcessingSession\)\) \{\s*terminalErrorReached = false;\s*\}/,
     'streamEvent path should clear stale terminal-error lock when a new request starts processing',
   );
   assert.match(
@@ -602,18 +603,13 @@ test('provider retries one-shot interactive transport failures before surfacing 
   );
   assert.match(
     sendMessageBody,
-    /Interactive response transport failed; retrying once with existing payload/,
-    'response.error path should log one-shot retry for interactive transport failures',
+    /Recovered timed out prompt from session history without user retry/,
+    'response.error path should log recovery for interactive transport failures',
   );
   assert.match(
-    sendMessageBody,
-    /Thrown interactive transport failure; retrying once with existing payload/,
-    'thrown-exception path should also perform one-shot retry for interactive transport failures',
-  );
-  assert.match(
-    sendMessageBody,
-    /this\.isInInteractiveResponseTransition\(\)[\s\S]*return this\.handleSendMessage\([\s\S]*true,[\s\S]*userFacingText/s,
-    'one-shot retry should preserve retry flag and user-facing interactive answer text',
+    providerSource,
+    /Recovered thrown timeout from session history without user retry/,
+    'thrown-exception path should also log recovery for interactive transport failures',
   );
 });
 

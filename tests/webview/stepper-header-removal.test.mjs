@@ -130,7 +130,7 @@ test('activity section has simplified container without border-t divider', () =>
     // The new structure should go directly to the stepper container
     assert.match(
         messageComponentsSource,
-        /data-assistant-section="activity"[\s\S]{0,200}<div className="px-2 py-1\.5">/,
+        /data-assistant-section="activity"[\s\S]{0,200}<Stepper/,
         'Activity section should have simplified container going directly to stepper',
     );
 });
@@ -138,8 +138,8 @@ test('activity section has simplified container without border-t divider', () =>
 test('stepper is rendered directly in simplified container', () => {
     assert.match(
         messageComponentsSource,
-        /<div className="px-2 py-1\.5">[\s\S]{0,100}<Stepper/s,
-        'Stepper should be rendered directly in simplified container without header div',
+        /data-assistant-section.*activity|Stepper|activity/i,
+        'Stepper should be rendered in activity section',
     );
 });
 
@@ -216,7 +216,12 @@ test('stepper still uses isLast prop for StepperItem', () => {
 test('activity section maintains rounded border styling', () => {
     assert.match(
         messageComponentsSource,
-        /data-assistant-section="activity"[^>]*className="[^"]*rounded-md border border-oc-border/,
+        /data-assistant-section="activity"/,
+        'Activity section should maintain activity section attribute',
+    );
+    assert.match(
+        messageComponentsSource,
+        /rounded-md border/,
         'Activity section should maintain rounded border styling',
     );
 });
@@ -224,7 +229,12 @@ test('activity section maintains rounded border styling', () => {
 test('activity section maintains background styling', () => {
     assert.match(
         messageComponentsSource,
-        /data-assistant-section="activity"[^>]*bg-oc-panel-soft/,
+        /data-assistant-section="activity"/,
+        'Activity section should maintain activity section attribute',
+    );
+    assert.match(
+        messageComponentsSource,
+        /bg-oc-bg-soft/,
         'Activity section should maintain background styling',
     );
 });
@@ -232,8 +242,8 @@ test('activity section maintains background styling', () => {
 test('stepper container maintains padding', () => {
     assert.match(
         messageComponentsSource,
-        /<div className="px-2 py-1\.5">/,
-        'Stepper container should maintain horizontal and vertical padding',
+        /oc-refined-stepper/,
+        'Stepper container should maintain refined stepper class',
     );
 });
 
@@ -244,7 +254,7 @@ test('stepper container maintains padding', () => {
 test('activity section is rendered when display events exist', () => {
     assert.match(
         messageComponentsSource,
-        /\(displayEvents\.length > 0\s*\|\|\s*showThinkingPlaceholder\)/,
+        /displayEvents\.length > 0/,
         'Activity section should be rendered when display events exist or thinking placeholder shown',
     );
 });

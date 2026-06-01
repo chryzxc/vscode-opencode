@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, Play, X } from "lucide-react";
+import { MessageSquare, Pencil, Play, Quote, Trash2, X } from "lucide-react";
 
 import type { PlanComment } from "@/chat/lib/types";
 import { Badge } from "@/components/ui/badge";
@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { renderMarkdown } from "./markdownRenderer";
-import { getFilename } from "@/utils";
+import { getFilename, toWorkspaceRelativePath } from "@/utils";
 
 interface PlanEnvelope {
   raw?: string;
@@ -21,6 +21,7 @@ interface PlanEnvelope {
 interface PositionedComment {
   id: string;
   preview: string;
+  lineLabel: string;
   top: number;
 }
 
@@ -61,6 +62,15 @@ function normalizeCommentText(value: string | undefined): string {
   return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+function formatCommentLineLabel(comment: PlanComment): string {
+  const { startLine, endLine } = comment.anchor;
+  if (startLine < 0 || endLine < 0) return "General";
+  const start = startLine + 1;
+  const end = endLine + 1;
+  if (start === end) return `L${start}`;
+  return `L${Math.min(start, end)}-L${Math.max(start, end)}`;
+}
+
 declare global {
   interface Window {
     __PLAN_DATA__?: PlanEnvelope;
@@ -80,6 +90,9 @@ export default function PlanShell() {
   const planTitle = envelope?.title?.trim() || "Implementation Plan";
   const displayedPlan = stripRedundantLeadingTitle(rawPlan, planTitle);
   const sourceFile = envelope?.sourceFile?.trim();
+  const displayedSourceFile = sourceFile
+    ? toWorkspaceRelativePath(sourceFile)
+    : "";
   const planId = envelope?.planId?.trim() || planTitle;
 
   const [executing, setExecuting] = useState(false);
@@ -154,9 +167,37 @@ export default function PlanShell() {
 
   const renderedHtml = renderMarkdown(displayedPlan);
 
+  function focusPlanAnchor(commentId: string) {
+    const container = planContentRef.current;
+    if (!container) return;
+    const anchorEl =
+      (container.querySelector(
+        `mark[data-comment-id="${commentId}"]`,
+      ) as HTMLElement | null) ||
+      (container.querySelector(
+        `[data-plan-comment-anchor="${commentId}"]`,
+      ) as HTMLElement | null);
+    if (!anchorEl) return;
+
+    anchorEl.scrollIntoView({ block: "center", behavior: "smooth" });
+    anchorEl.classList.add(
+      "ring-2",
+      "ring-[color-mix(in_srgb,#7dd3fc_72%,transparent)]",
+      "shadow-[0_0_0_2px_color-mix(in_srgb,#7dd3fc_48%,transparent)]",
+    );
+    window.setTimeout(() => {
+      anchorEl.classList.remove(
+        "ring-2",
+        "ring-[color-mix(in_srgb,#7dd3fc_72%,transparent)]",
+        "shadow-[0_0_0_2px_color-mix(in_srgb,#7dd3fc_48%,transparent)]",
+      );
+    }, 1200);
+  }
+
   function revealComment(commentId: string) {
     setActiveCommentId(commentId);
     setCommentsPanelOpen(true);
+    focusPlanAnchor(commentId);
     setTimeout(() => {
       const commentCard = document.querySelector(
         `[data-comment-id="${commentId}"]`,
@@ -476,12 +517,14 @@ export default function PlanShell() {
         }
         seenTops.push(top);
         const previewSource = comment.text || comment.anchor.selectedText || "Comment";
+        const lineLabel = formatCommentLineLabel(comment);
         nextPositions.push({
           id: comment.id,
           preview:
             previewSource.length > 42
               ? `${previewSource.slice(0, 42).trimEnd()}...`
               : previewSource,
+          lineLabel,
           top,
         });
       });
@@ -540,7 +583,7 @@ export default function PlanShell() {
             </div>
             {sourceFile ? (
               <p className="line-clamp-2 break-all font-medium text-[11px] text-[color-mix(in_srgb,var(--vscode-descriptionForeground)_75%,var(--vscode-editor-foreground)_25%)]" title={sourceFile}>
-                Source: {sourceFile}
+                Source: {displayedSourceFile}
               </p>
             ) : (
               <p className="font-medium text-[11px] italic text-[color-mix(in_srgb,var(--vscode-descriptionForeground)_75%,var(--vscode-editor-foreground)_25%)]">
@@ -618,7 +661,7 @@ export default function PlanShell() {
                     : "border-[color-mix(in_srgb,#93c5fd_34%,var(--vscode-panel-border)_66%)] bg-[color-mix(in_srgb,#93c5fd_14%,var(--vscode-editor-background)_86%)] text-[color-mix(in_srgb,#bfdbfe_74%,var(--vscode-editor-foreground)_26%)] hover:bg-[color-mix(in_srgb,#93c5fd_20%,var(--vscode-editor-background)_80%)]"
                 }`}
                 style={{ top: `${comment.top}px` }}
-                title={comment.preview}
+                title={`${comment.lineLabel}: ${comment.preview}`}
               >
                 <MessageSquare className="h-4 w-4" />
               </button>
@@ -702,37 +745,44 @@ export default function PlanShell() {
           transition: "transform 0.2s ease",
           zIndex: 40,
         }}
-        className="flex flex-col border-l border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background,var(--vscode-editor-background))] shadow-xl"
+        className="flex flex-col border-l border-[var(--vscode-panel-border)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--vscode-sideBar-background,var(--vscode-editor-background))_92%,var(--vscode-focusBorder)_8%)_0%,var(--vscode-sideBar-background,var(--vscode-editor-background))_100%)] shadow-2xl"
       >
         {/* Panel header */}
-        <div className="flex items-center justify-between border-b border-[var(--vscode-panel-border)] px-4 py-3">
-          <h2 className="text-sm font-semibold">
-            Comments
-            {comments.length > 0 && (
-              <span className="ml-2 rounded-full bg-[var(--vscode-badge-background)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--vscode-badge-foreground)]">
-                {comments.length}
-              </span>
-            )}
-          </h2>
-          <button
-            type="button"
-            onClick={() => setCommentsPanelOpen(false)}
-            className="rounded p-1 hover:bg-oc-bg text-[var(--vscode-descriptionForeground)]"
-            aria-label="Close comments panel"
-          >
-            <X className="h-4 w-4" />
-          </button>
+        <div className="sticky top-0 z-10 border-b border-[var(--vscode-panel-border)] bg-[color-mix(in_srgb,var(--vscode-sideBar-background,var(--vscode-editor-background))_90%,var(--vscode-focusBorder)_10%)] px-4 py-3 backdrop-blur-sm">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold tracking-tight">
+              Comments
+              {comments.length > 0 && (
+                <span className="ml-2 rounded-full bg-[var(--vscode-badge-background)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--vscode-badge-foreground)]">
+                  {comments.length}
+                </span>
+              )}
+            </h2>
+            <button
+              type="button"
+              onClick={() => setCommentsPanelOpen(false)}
+              className="rounded p-1 text-[var(--vscode-descriptionForeground)] transition-colors hover:bg-oc-bg hover:text-[var(--vscode-foreground)]"
+              aria-label="Close comments panel"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <p className="mt-1 text-[11px] text-[var(--vscode-descriptionForeground)]">
+            Review feedback, edit wording, and remove resolved notes.
+          </p>
         </div>
 
         {/* Panel body */}
         <div className="flex-1 space-y-4 overflow-y-auto p-4 pb-8">
           {comments.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-70 mt-12 pb-12">
-              <div className="bg-white/5 p-3 rounded-full">
+            <div className="mt-12 flex h-full flex-col items-center justify-center space-y-3 pb-12 text-center opacity-80">
+              <div className="rounded-full border border-[var(--vscode-panel-border)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_85%,var(--vscode-focusBorder)_15%)] p-3">
                 <MessageSquare className="h-6 w-6 text-[var(--vscode-descriptionForeground)]" />
               </div>
               <div>
-                <p className="text-xs font-medium text-[var(--vscode-foreground)] mb-1">No comments yet</p>
+                <p className="mb-1 text-xs font-medium text-[var(--vscode-foreground)]">
+                  No comments yet
+                </p>
                 <p className="text-xs text-[var(--vscode-descriptionForeground)]">
                   Highlight text in the plan or use the form below to add one.
                 </p>
@@ -740,21 +790,33 @@ export default function PlanShell() {
             </div>
           ) : (
             comments.map((comment) => {
+              const lineLabel = formatCommentLineLabel(comment);
               return (
                 <div
                   key={comment.id}
                   data-comment-id={comment.id}
-                  onClick={() => setActiveCommentId(comment.id)}
-                  className="relative rounded-lg border border-[color-mix(in_srgb,var(--vscode-panel-border)_80%,var(--vscode-focusBorder)_20%)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_84%,var(--vscode-focusBorder)_16%)] p-3.5 text-xs shadow-sm transition-all duration-200 ease-out"
+                  onClick={() => {
+                    setActiveCommentId(comment.id);
+                    focusPlanAnchor(comment.id);
+                  }}
+                  className={`relative rounded-xl border p-3.5 text-xs shadow-sm transition-all duration-200 ease-out ${
+                    activeCommentId === comment.id
+                      ? "border-[color-mix(in_srgb,var(--vscode-focusBorder)_65%,var(--vscode-panel-border)_35%)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_80%,var(--vscode-focusBorder)_20%)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--vscode-focusBorder)_30%,transparent)]"
+                      : "border-[color-mix(in_srgb,var(--vscode-panel-border)_82%,var(--vscode-focusBorder)_18%)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_88%,var(--vscode-focusBorder)_12%)] hover:border-[color-mix(in_srgb,var(--vscode-focusBorder)_38%,var(--vscode-panel-border)_62%)]"
+                  }`}
                 >
                   <div className="mb-2 flex items-start justify-between gap-2">
-                    <p className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-[13px] italic leading-relaxed text-[color-mix(in_srgb,var(--vscode-editor-foreground)_75%,var(--vscode-descriptionForeground)_25%)]">
+                    <p className="min-w-0 flex-1 whitespace-normal break-words rounded-md border border-[color-mix(in_srgb,var(--vscode-panel-border)_74%,transparent)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_72%,var(--vscode-focusBorder)_28%)] px-2 py-1.5 pr-1 text-[12px] italic leading-relaxed text-[color-mix(in_srgb,var(--vscode-editor-foreground)_72%,var(--vscode-descriptionForeground)_28%)]">
+                      <Quote className="mr-1 inline h-3 w-3 -translate-y-px opacity-75" />
                       {comment.anchor.startLine === -1
                         ? "(General Feedback)"
                         : `\u201C${comment.anchor.selectedText}\u201D`}
                     </p>
+                    <span className="shrink-0 rounded border border-[color-mix(in_srgb,var(--vscode-panel-border)_68%,transparent)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_70%,var(--vscode-focusBorder)_30%)] px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-[var(--vscode-descriptionForeground)]">
+                      {lineLabel}
+                    </span>
                   </div>
-                  <p className="mb-3 whitespace-pre-wrap break-words text-[15px] leading-7 text-[var(--vscode-editor-foreground)]">
+                  <p className="mb-3 whitespace-pre-wrap break-words text-[13px] leading-6 text-[var(--vscode-editor-foreground)]">
                     {comment.text}
                   </p>
 
@@ -805,20 +867,22 @@ export default function PlanShell() {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="border-[var(--vscode-panel-border)] bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-list-hoverBackground)]"
+                        className="h-8 gap-1.5 border-[var(--vscode-panel-border)] bg-[var(--vscode-editor-background)] px-2.5 text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-list-hoverBackground)]"
                         onClick={() => {
                           setEditingId(comment.id);
                           setEditText(comment.text);
                         }}
                       >
+                        <Pencil className="h-3.5 w-3.5" />
                         Edit
                       </Button>
                       <Button
                         size="sm"
                         variant="outline"
-                        className="border-[var(--vscode-panel-border)] bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-list-hoverBackground)]"
+                        className="h-8 gap-1.5 border-[color-mix(in_srgb,var(--vscode-errorForeground)_30%,var(--vscode-panel-border)_70%)] bg-[var(--vscode-editor-background)] px-2.5 text-[color-mix(in_srgb,var(--vscode-errorForeground)_75%,var(--vscode-editor-foreground)_25%)] hover:bg-[color-mix(in_srgb,var(--vscode-errorForeground)_10%,var(--vscode-editor-background)_90%)]"
                         onClick={() => window.postDeleteComment?.(comment.id)}
                       >
+                        <Trash2 className="h-3.5 w-3.5" />
                         Delete
                       </Button>
                     </div>

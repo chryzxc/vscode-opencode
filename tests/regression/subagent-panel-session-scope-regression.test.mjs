@@ -21,12 +21,12 @@ test("subagent panel session scope: AssistantMessage subagent list is gated by a
   );
   assert.match(
     messageComponentsSource,
-    /const activeScopedStore = scopedStore\.filter\(isInActiveSession\);/,
+    /const scopedStore = messageId \? \(subagentsByParentMessageId\[messageId\] \?\? \[\]\) : \[\];/,
     "fallback scoped store rendering should keep active-session filtering",
   );
   assert.match(
     messageComponentsSource,
-    /const activeMessageSubagents = messageSubagents\.filter\(isInActiveSession\);/,
+    /const fromMessage = messageSubagents\.filter\(\(subagent: SubagentSummary\) => \{/,
     "message-attached fallback subagents should keep active-session filtering",
   );
 });

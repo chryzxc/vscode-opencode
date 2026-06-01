@@ -1,4 +1,4 @@
-# OpenCode Chat for VS Code
+# OpenCode UI for VS Code
 
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Open-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
 [![Open VSX](https://img.shields.io/badge/Open%20VSX-Open-C160EF)](https://open-vsx.org/user/chryzxc)
@@ -6,47 +6,170 @@
 [![GitHub Repo stars](https://img.shields.io/github/stars/chryzxc/vscode-opencode?style=social)](https://github.com/chryzxc/vscode-opencode/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/chryzxc/vscode-opencode)](https://github.com/chryzxc/vscode-opencode/issues)
 
+A OpenCode GUI for VS Code.
+
+OpenCode GUI brings the OpenCode coding agent directly into Visual Studio Code with streaming chat, code context, file and image attachments, implementation plans, subagent tracking, session history, and live quota monitoring.
+
+It is built for developers who use OpenCode but want a smoother IDE workflow instead of switching between the terminal and editor.
+
 If this extension helps your workflow, consider giving the repo a star.
 
-### Demo: Main Conversation Flow
+---
+
+## Demo
+
+### Main Conversation Flow
 
 ![Main conversation flow demo](./assets/demo.gif)
 
-### Demo: Interactive Plan Viewer
+### Interactive Plan Viewer
 
 ![Interactive plan viewer demo](./assets/demo-1.gif)
 
-OpenCode Chat is a VS Code extension for [OpenCode](https://opencode.ai), bringing the OpenCode AI coding agent into Visual Studio Code with chat, image and file attachments, selected-code context, an interactive implementation plan builder, inline questions, plan annotations, agent-generated tasks, context compaction, subagent tracking, session history, and quota monitoring.
+---
 
-Requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be installed locally.
+## Requirements
+
+This extension requires the [OpenCode CLI](https://github.com/anomalyco/opencode) to be installed locally.
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+```
+
+You can also install OpenCode with a package manager such as:
+
+```bash
+brew install anomalyco/tap/opencode
+```
+
+or:
+
+```bash
+npm i -g opencode-ai@latest
+```
 
 ---
 
 > [!IMPORTANT]
 > **Disclaimer:** This extension is an independent personal project and is **not affiliated with, endorsed by, or maintained by OpenCode or its creators**.
 
+---
+
 ## Why Install This
 
-If you already use OpenCode in the terminal, this extension gives you a more integrated VS Code workflow:
+If you already use OpenCode in the terminal, this extension gives you a more integrated VS Code workflow.
 
-- Chat with OpenCode in a dedicated sidebar instead of juggling terminal sessions
-- Attach images, files, and highlighted code selections directly into the chat box
-- Generate, annotate, and review `implementation_plan.md` files before code changes
-- Answer interactive planning questions inline so agents can clarify scope before acting
-- Track the agent-generated task list created from your prompt
-- Keep long-running sessions usable with automatic context compaction
-- Track subagents, quotas, MCP status, LSP status, and session stats in one UI
-- Keep persistent session history inside VS Code
-- Use file references, image attachments, slash-command skills, and quick session controls without leaving the editor
+- Use OpenCode inside a dedicated VS Code sidebar
+- Chat with the OpenCode coding agent without leaving your editor
+- Attach files, images, and selected code directly into the chat
+- Generate and review `implementation_plan.md` files before code changes
+- Answer inline planning questions from the agent
+- Add annotations and comments to implementation plans
+- Track agent-generated todos and active tasks
+- View subagent activity, tool calls, and execution progress
+- Monitor live quota usage for GitHub Copilot, Z.ai, OpenAI, and other supported providers
+- Keep persistent session history across VS Code restarts
+- Use slash-command skills, MCP status, LSP status, and agent panels from one UI
 
-## Quick Start
+---
 
-1. Install the [OpenCode CLI](https://github.com/anomalyco/opencode):
-   ```bash
-   curl -fsSL https://opencode.ai/install | bash
-   ```
-2. Install this extension in VS Code.
-3. Open the chat from the Activity Bar using the OpenCode icon.
+## Key Features
+
+### OpenCode CLI UI inside VS Code
+
+OpenCode UI wraps your local OpenCode runtime with a native VS Code experience. It talks to the OpenCode server through `@opencode-ai/sdk`, streams events over SSE, and renders the workflow inside a React-powered webview.
+
+This gives you the power of OpenCode while keeping your planning, prompting, reviewing, and coding flow inside VS Code.
+
+### Streaming AI Chat
+
+- Real-time streaming responses
+- Markdown rendering with syntax highlighting
+- Collapsible reasoning/thinking sections
+- Copy message content to clipboard
+- Inline image previews
+- Unified error cards for API failures and timeout issues
+- Token usage tracking for prompt, response, reasoning, and cache activity
+
+### Code Context and Attachments
+
+- Attach highlighted code selections from the editor
+- Insert file references directly into the chat input
+- Attach images through paste or drag-and-drop
+- Ground prompts with files, screenshots, code snippets, and project context
+- Use keyboard shortcuts for fast file and code context insertion
+
+### Implementation Plan Workflow
+
+- Generate structured `implementation_plan.md` files before code changes
+- Review implementation plans in a dedicated plan viewer
+- Add annotations and comments before execution
+- Track checklist progress
+- Request revisions before switching to build mode
+- Keep planning, review, and execution connected in the same workflow
+
+### Interactive Questions
+
+- The agent can ask clarification questions inline
+- Supports selectable quick answers
+- Supports custom answers
+- Helps the Plan agent gather missing requirements before generating or revising a plan
+- Preserves interactive context across session reloads
+
+### Subagent Tracking
+
+- Track active background subagents
+- View subagent status, progress, thinking events, and tool calls
+- Inspect subagent details in a modal
+- See subagent cards inside assistant messages
+- Understand what the agent is doing while work is in progress
+
+### Agent Task Tracking
+
+- View agent-generated todos and tasks
+- Keep track of what the agent thinks still needs to be done
+- See active work beside quotas, MCP status, LSP status, skills, and agent panels
+
+### Session History
+
+- Persistent chat sessions across VS Code restarts
+- Rename, delete, and fork sessions
+- Keep long-running work organized
+- Automatically compact sessions when context usage gets too high
+- Continue working without losing important context
+
+### Quota and Budget Monitoring
+
+Live quota status is available for:
+
+- OpenAI
+- GitHub Copilot
+- Z.ai
+- Google Gemini
+- Zhipu
+- Other supported providers exposed by OpenCode
+
+The quota panel helps you see provider usage, limits, and daily budget signals directly inside VS Code.
+
+### MCP, LSP, Skills, and Agents
+
+The right sidebar can show:
+
+- MCP server status
+- MCP tool lists
+- LSP server status
+- Slash-command skills
+- Available OpenCode agents
+- Agent mode, color, and description
+- Active tasks and quota state
+
+### Plugin Ecosystem Support
+
+OpenCode UI works with OpenCode plugin-driven workflows, including community plugin collections like **Oh My OpenCode**.
+
+Plugin-provided agents, skills, and capabilities can be surfaced directly inside the extension UI.
+
+---
 
 ## Screenshots
 
@@ -59,9 +182,9 @@ Full chat flow with streaming responses, structured outputs, and session continu
 ![Conversation view 3](./assets/conversation-3.png)
 ![Conversation view](./assets/conversation.png)
 
-### Plan Builder + Annotations
+### Plan Builder and Annotations
 
-Plan workflow from generation to review, including adding comments in the plan as annotations before execution.
+Plan workflow from generation to review, including comments and annotations before execution.
 
 ![Interactive planner](./assets/interactive-planner.png)
 ![Plan builder](./assets/plan-builder.png)
@@ -71,21 +194,21 @@ Plan workflow from generation to review, including adding comments in the plan a
 ![Plan annotations](./assets/plan-annotations.png)
 ![Adding comments in plan as annotations](./assets/add-comments-in-plan.png)
 
-### Attachments + Code Context
+### Attachments and Code Context
 
-Attaching file references and highlighted code lines directly in the chat box for faster, grounded prompts.
+Attach file references and highlighted code lines directly in the chat box.
 
 ![File line reference](./assets/file-line-reference.png)
 
-### Tasks, Subagents + Side Panels
+### Tasks, Subagents, and Side Panels
 
-Agent-generated todo tasks, subagent activity, and side-panel visibility for active execution state.
+Agent-generated tasks, subagent activity, and side-panel visibility for active execution state.
 
 ![Extended panel](./assets/extended-panel.png)
 ![Subagents](./assets/subagents.png)
 ![Todo panel](./assets/todo.png)
 
-### Quota + Interactive Questions
+### Quota and Interactive Questions
 
 Interactive question flow with selectable answers, custom responses, and live quota visibility.
 
@@ -94,266 +217,21 @@ Interactive question flow with selectable answers, custom responses, and live qu
 ![Interactive question 2](./assets/interactive-question-2.png)
 ![Custom answer](./assets/custom-answer.png)
 
-## Table of Contents
-
-- [Why Install This](#why-install-this)
-- [Quick Start](#quick-start)
-- [Overview](#overview)
-- [Features](#features)
-- [Screenshots](#screenshots)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Development](#development)
-- [Usage](#usage)
-- [Configuration](#configuration)
-- [Project Structure](#project-structure)
-- [Core Services](#core-services)
-- [Webview (React UI)](#webview-react-ui)
-- [Logging](#logging)
-- [Testing](#testing)
-- [Contributing](#contributing)
-
 ---
 
-## Overview
+## Quick Start
 
-This extension adds a VS Code-native interface on top of the local OpenCode runtime. It talks to the OpenCode server through `@opencode-ai/sdk`, streams activity over SSE, and renders the chat experience in a React webview.
+1. Install the OpenCode CLI:
 
-It is built for people who want OpenCode’s agent workflow without leaving the editor.
-
-What it adds beyond a terminal-only setup:
-
-- **Interactive plan builder** — AI generates a structured `implementation_plan.md` before touching any code; plans are parsed, rendered, annotated, revised, and prepared for execution
-- **Inline questions** — agent questions, confirmations, and quick actions render directly in the chat timeline so review loops stay inside VS Code
-- **Agent-generated task tracking** — prompts can produce the agent's own todo/task list, surfaced in the right panel as work progresses
-- **Context compaction** — long sessions can be compacted automatically near the configured context threshold while keeping the workflow moving
-- **Subagent orchestration UI** — background tasks are tracked, rendered inline as cards, and inspectable in a detail modal
-- **Per-session quota & budget monitoring** — surfaces provider-reported usage, limits, and daily budget signals across OpenAI, GitHub Copilot, Google Gemini, Zhipu, Z.ai, and other providers
-- **Extended right panel** — live MCP server status, LSP server status, installed skills, and agent roster always visible on wide screens
-
----
-
-## Features
-
-### AI Chat
-
-- Full streaming chat with real-time token counting (prompt / response / reasoning / cache read-write)
-- Markdown rendering with syntax highlighting via `highlight.js`
-- Thinking/reasoning bubble display with collapsible sections
-- Copy message content to clipboard
-- Image attachments with inline image preview modal
-- File references and highlighted code selections can be attached directly in the chat box for quick context
-- Contiguous message grouping for visual clarity
-- Unified error cards for API failures, timeouts, and structured-output compatibility issues
-
-### Plan Builder
-
-- Switch to **Plan** agent to generate an `implementation_plan.md` before any code changes
-- "View Implementation Plan" button appears on every AI response that generated a plan
-- Dedicated plan viewer (`PlanViewProvider`) with interactive checklist tracking
-- Plan annotations and comments let you mark concerns, request changes, and keep review context attached to the plan
-- Plan can be revised, checked off, and then executed
-- Interactive review loop for revising a plan before execution
-
-### Agents & Skills
-
-- Agent selector (Build, Plan, and any plugin agents registered via `app.agents()`)
-- Per-message agent name badge with the agent's configured color
-- **Skills** (`/command`) panel in the right sidebar listing all slash-command skills from the server
-
-### Subagent Orchestration
-
-- Background tasks ("subagents") are tracked via `SubagentTracker`
-- Active task panel with live status dots and step progress
-- Expandable subagent detail modal with full timeline, thinking events, and tool calls
-- Subagent cards rendered inline inside assistant messages
-
-### Interactive Q&A Flow
-
-- Supports interactive question/answer exchanges inside the chat timeline
-- Handles multiple interaction types (question, quick actions, confirm) with inline response controls
-- Lets the Plan agent gather missing requirements before generating or revising a plan
-- Preserves interactive context across session hydration/reload
-
-### Agent Task Tracking
-
-- The agent can create its own todo/task list from your prompt
-- Agent tasks stay visible alongside active work, quotas, MCP/LSP status, skills, and agents
-- Helpful for seeing what the agent believes still needs to be worked on without leaving the chat
-
-### Session Management
-
-- Persistent chat history across VS Code restarts (stored in `globalState`)
-- Session list sidebar with rename, delete, and fork support
-- Automatic session compaction support for large histories as context usage approaches the configured threshold
-- Compacted histories keep the active workflow readable without forcing a new session
-- VCS diff review panel (`DiffReviewProvider`) — inspects changes made in a session
-
-### Quota & Budget Monitoring
-
-- Real-time quota data fetched from provider APIs (OpenAI, Copilot, Gemini, Zhipu, ZAI)
-- `QuotaMonitor` panel in the right sidebar with usage bars and projected monthly consumption
-- `RequestBudgeter` calculates a daily request allowance to last the full billing month
-- Configurable warning thresholds and optional hard enforcement
-
-### Plugin Ecosystem Support
-
-- Works with OpenCode plugin-driven workflows (including community plugin collections like **Oh My OpenCode**)
-- Surfaces plugin-provided agents, skills, and capabilities directly in the extension UI
-
-### Extended Right Panel (Desktop ≥ 1100 px)
-
-- **Active Task Panel** — current subagent progress
-- **Quota Monitor** — provider quota and budget
-- **Todo Panel** — agent-generated todo/task items created from the current prompt
-- **MCP Servers** — live status of all Model Context Protocol servers with per-server tool lists
-- **LSP Servers** — Language Server Protocol status
-- **Skills** — slash-command catalog from `client.command.list()`
-- **Agents** — all agents from `client.app.agents()` with mode badge, color dot, and description
-
-### Streaming & Reliability
-
-- Fetch-based SSE client (not `EventSource`) for full header control
-- Auto-reconnect with 5-second back-off on connection loss
-- AbortController cancellation on stop/new session
-- Stop Request button to interrupt any in-flight AI response
-
-### Built for Daily Use
-
-- Keyboard shortcuts for focus, new session, file reference insertion, and sending selections
-- Persistent sessions across restarts
-- Fast access from the Activity Bar
-- Designed around OpenCode’s local CLI workflow rather than a separate hosted chat product
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    VS Code Extension Host                    │
-│                                                             │
-│  extension.ts                                               │
-│    ├── OpencodeServerManager  (manages local OpenCode server)│
-│    ├── SessionService         (persistence + sync)          │
-│    ├── StatusBarProvider      (connection indicator)        │
-│    ├── ChatViewProvider       (main webview host)           │
-│    ├── PlanViewProvider       (implementation plan viewer)  │
-│    └── DiffReviewProvider     (VCS diff panel)              │
-│                                                             │
-│  Services                                                   │
-│    ├── MessageStreamService   (SSE event streaming)         │
-│    ├── SubagentTracker        (background task tracking)    │
-│    ├── QuotaService           (provider quota polling)      │
-│    ├── RequestBudgeter        (daily budget calculation)    │
-│    ├── PlanParser             (implementation_plan.md)      │
-│    └── GeminiTokenUsageTracker                              │
-└────────────────────┬────────────────────────────────────────┘
-                     │  HTTP + SSE via @opencode-ai/sdk
-                     │  (port: auto-assigned or configured)
-┌────────────────────▼────────────────────────────────────────┐
-│                    OpenCode Local Server                     │
-│                (accessed via `@opencode-ai/sdk`)            │
-│                                                             │
-│  REST API                                                   │
-│    GET  /agent         — list agents                        │
-│    GET  /command       — list slash-command skills          │
-│    GET  /mcp           — MCP server status                  │
-│    GET  /lsp/status    — LSP server status                  │
-│    GET  /event         — SSE event stream                   │
-│    POST /session/:id/prompt — send message                  │
-│    ...and many more session, file, tool, VCS endpoints      │
-└─────────────────────────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────────┐
-│                   Webview (React + Tailwind)                 │
-│                   webview/shared/dist/chat.js               │
-│                                                             │
-│  ChatShell.tsx           — layout container                 │
-│  MessageComponents.tsx   — user + assistant messages        │
-│  PanelComponents.tsx     — all sidebar panels               │
-│  StreamingComponents.tsx — live streaming card              │
-│  BudgetIndicator.tsx     — inline budget banner             │
-│  SubagentDetailModal.tsx — subagent inspection modal        │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Data flow:**
-
-1. User types in the chat input → `vscode.postMessage({ type: "sendPrompt", ... })`
-2. `ChatViewProvider` receives the message, calls `client.session.prompt()`
-3. `MessageStreamService` streams SSE events from the server
-4. Events are forwarded to the webview as `postMessage` calls
-5. `messageHandler.ts` in the webview dispatches them into the React reducer
-6. Components re-render reactively
-
----
-
-## Prerequisites
-
-1. **Node.js** ≥ 18
-2. **VS Code** ≥ 1.85.0
-3. **OpenCode CLI installed on your device** (required runtime). Repository: [anomalyco/opencode](https://github.com/anomalyco/opencode)
    ```bash
    curl -fsSL https://opencode.ai/install | bash
    ```
-   You can also install it with a package manager such as `brew install anomalyco/tap/opencode` or `npm i -g opencode-ai@latest`.
 
----
+2. Install this extension in VS Code.
 
-## Installation
+3. Open the OpenCode panel from the Activity Bar.
 
-This extension depends on the local OpenCode CLI runtime.
-
-### From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/chryzxc/vscode-opencode.git
-cd vscode-opencode
-
-# Install root dependencies
-npm install
-
-# Build the webview and extension
-npm run build
-```
-
-Then press **F5** in VS Code to launch an Extension Development Host.
-
-### Packaging (.vsix)
-
-```bash
-npm install -g @vscode/vsce
-vsce package
-```
-
-This produces `opencode-vscode-<version>.vsix`, installable via **Extensions → Install from VSIX**.
-
----
-
-## Development
-
-```bash
-# Start both the extension compiler and webview bundler in watch mode
-npm run watch                  # extension TypeScript (esbuild)
-npm run webview:watch          # React webview (in a second terminal)
-```
-
-During development:
-
-- **Extension code** (`src/`): esbuild recompiles automatically; reload the Extension Host with **Ctrl+R** / **Cmd+R** inside the host window, or run the "Developer: Reload Window" command.
-- **Webview code** (`webview/shared/src/`): Vite/esbuild rebuilds automatically; reload the webview by running `opencode.focus` again or reloading the window.
-
-### Structured Output Contract Sync
-
-The JSON schema for structured AI responses is shared between the backend and webview. Keep it in sync whenever you modify it:
-
-```bash
-npm run structured-output:sync   # write to webview/shared/src/chat/lib/generated/
-npm run structured-output:check  # verify the generated file is up to date (CI)
-```
+4. Start a new session and send your first prompt.
 
 ---
 
@@ -368,67 +246,78 @@ npm run structured-output:check  # verify the generated file is up to date (CI)
 | Send selected code    | `Ctrl+L` / `Cmd+L`                 |
 | Insert file reference | `Ctrl+Alt+K` / `Cmd+Alt+K`         |
 
-Open the panel from the Activity Bar (the OpenCode icon).
+You can also open the panel from the Activity Bar using the OpenCode icon.
 
 ### Sending a Message
 
-Type your prompt in the text area and press **Enter** (or **Shift+Enter** for a newline). You can:
+Type your prompt in the chat input and press **Enter**.
 
-- **Attach images** — paste or drag images directly into the input
-- **Reference files** — press `Ctrl+Alt+K` to pick a file; it's inserted as `@path/to/file`
-- **Attach highlighted code** — select lines in the editor and use `Ctrl+L` / `Cmd+L` to send them into the chat box as context
-- **Use slash commands** — type `/` to see available skills from the server (e.g. `/build`, `/plan`)
-- **Select an agent** — use the agent dropdown to switch between Build, Plan, and any custom agents
+Use **Shift+Enter** for a new line.
+
+You can:
+
+- Attach images by pasting or dragging them into the input
+- Reference files with `Ctrl+Alt+K` / `Cmd+Alt+K`
+- Attach selected code with `Ctrl+L` / `Cmd+L`
+- Use slash commands by typing `/`
+- Select an agent from the agent dropdown
+- Switch between Plan, Build, and custom agents exposed by OpenCode
 
 ### Plan Mode
 
-1. Select the **Plan** agent from the agent dropdown
-2. Describe the feature or change you want
-3. Answer any inline questions the agent asks to clarify scope
-4. OpenCode generates an `implementation_plan.md`
-5. Click **View Implementation Plan** on the response to open the plan viewer
-6. Review sections, add annotations or comments, and check off steps
-7. Request revisions until the plan matches what you want
-8. Click **Proceed** (or switch to the Build agent) to execute
+1. Select the **Plan** agent from the agent dropdown.
+2. Describe the feature or change you want.
+3. Answer any inline questions from the agent.
+4. OpenCode generates an `implementation_plan.md`.
+5. Click **View Implementation Plan**.
+6. Review the plan.
+7. Add annotations or comments.
+8. Request revisions if needed.
+9. Switch to Build mode or proceed with implementation.
 
 ### Managing Sessions
 
-- Click the **History** icon in the chat header to open the sessions sidebar
-- Sessions are listed with title, date, and token count
-- Right-click (or use the `⋯` menu) to rename, delete, or fork a session
+- Click the history icon in the chat header to open the session list.
+- Sessions are listed with title, date, and token count.
+- Use the session menu to rename, delete, or fork a session.
 
 ### Stopping a Response
 
-Click the **Stop** button (square icon) in the chat header at any time to abort the current AI request.
+Click the **Stop** button in the chat header to abort the current AI request.
 
 ---
 
 ## Configuration
 
-Access via **File → Preferences → Settings → OpenCode** or add to `settings.json`:
+Access settings through:
 
-### Server
+```txt
+File → Preferences → Settings → OpenCode
+```
 
-| Setting                             | Type      | Default  | Description                                                             |
-| ----------------------------------- | --------- | -------- | ----------------------------------------------------------------------- |
-| `opencode.serverPort`               | `number`  | `0`      | Port for the OpenCode server. `0` auto-assigns a free port.             |
-| `opencode.autoStart`                | `boolean` | `true`   | Start the server automatically when the extension activates.            |
-| `opencode.persistSessions`          | `boolean` | `true`   | Persist chat sessions across VS Code restarts.                          |
-| `opencode.autoCompact`              | `boolean` | `true`   | Compact a session automatically when context usage nears the threshold. |
-| `opencode.autoCompactThreshold`     | `number`  | `0.9`    | Fraction of model context usage that triggers auto-compaction.          |
-| `opencode.autoGenerateSessionTitle` | `boolean` | `true`   | Generate a session title from the first user message.                   |
-| `opencode.requestTimeout`           | `number`  | `120000` | Request timeout in milliseconds.                                        |
-| `opencode.complexQueryMultiplier`   | `number`  | `1.5`    | Timeout multiplier for prompts with heavier context.                    |
+or add them to `settings.json`.
 
-### Logging
+### Server Settings
 
-| Setting                          | Type      | Default   | Description                                                |
-| -------------------------------- | --------- | --------- | ---------------------------------------------------------- |
-| `opencode.logging.level`         | `string`  | `"info"`  | Minimum log level: `error`, `warn`, `info`, `debug`.       |
-| `opencode.logging.enableConsole` | `boolean` | `true`    | Write logs to the VS Code Output channel.                  |
-| `opencode.logging.enableFile`    | `boolean` | `false`   | Write logs to a rotating file on disk.                     |
-| `opencode.logging.maxFileSize`   | `number`  | `5242880` | Max log file size in bytes before rotation (5 MB default). |
-| `opencode.logging.maxFiles`      | `number`  | `3`       | Number of backup log files to keep.                        |
+| Setting                           | Type      | Default  | Description                                                             |
+| --------------------------------- | --------- | -------- | ----------------------------------------------------------------------- |
+| `opencode.serverPort`             | `number`  | `0`      | Port for the OpenCode server. `0` auto-assigns a free port.             |
+| `opencode.autoStart`              | `boolean` | `true`   | Start the server automatically when the extension activates.            |
+| `opencode.persistSessions`        | `boolean` | `true`   | Persist chat sessions across VS Code restarts.                          |
+| `opencode.autoCompact`            | `boolean` | `true`   | Compact a session automatically when context usage nears the threshold. |
+| `opencode.autoCompactThreshold`   | `number`  | `0.9`    | Fraction of model context usage that triggers auto-compaction.          |
+| `opencode.requestTimeout`         | `number`  | `120000` | Request timeout in milliseconds.                                        |
+| `opencode.complexQueryMultiplier` | `number`  | `1.5`    | Timeout multiplier for prompts with heavier context.                    |
+
+### Logging Settings
+
+| Setting                          | Type      | Default   | Description                                          |
+| -------------------------------- | --------- | --------- | ---------------------------------------------------- |
+| `opencode.logging.level`         | `string`  | `"info"`  | Minimum log level: `error`, `warn`, `info`, `debug`. |
+| `opencode.logging.enableConsole` | `boolean` | `true`    | Write logs to the VS Code Output channel.            |
+| `opencode.logging.enableFile`    | `boolean` | `false`   | Write logs to a rotating file on disk.               |
+| `opencode.logging.maxFileSize`   | `number`  | `5242880` | Max log file size in bytes before rotation.          |
+| `opencode.logging.maxFiles`      | `number`  | `3`       | Number of backup log files to keep.                  |
 
 ### Example `settings.json`
 
@@ -447,58 +336,119 @@ Access via **File → Preferences → Settings → OpenCode** or add to `setting
 
 ---
 
+## Architecture
+
+```txt
+┌─────────────────────────────────────────────────────────────┐
+│                    VS Code Extension Host                    │
+│                                                             │
+│  extension.ts                                               │
+│    ├── OpencodeServerManager  (manages local OpenCode server)│
+│    ├── SessionService         (persistence + sync)           │
+│    ├── StatusBarProvider      (connection indicator)         │
+│    ├── ChatViewProvider       (main webview host)            │
+│    ├── PlanViewProvider       (implementation plan viewer)   │
+│    └── DiffReviewProvider     (VCS diff panel)               │
+│                                                             │
+│  Services                                                   │
+│    ├── MessageStreamService   (SSE event streaming)          │
+│    ├── SubagentTracker        (background task tracking)     │
+│    ├── QuotaService           (provider quota polling)       │
+│    ├── RequestBudgeter        (daily budget calculation)     │
+│    ├── PlanParser             (implementation_plan.md)       │
+│    └── GeminiTokenUsageTracker                              │
+└────────────────────┬────────────────────────────────────────┘
+                     │  HTTP + SSE via @opencode-ai/sdk
+                     │  port: auto-assigned or configured
+┌────────────────────▼────────────────────────────────────────┐
+│                    OpenCode Local Server                     │
+│                accessed via @opencode-ai/sdk                 │
+│                                                             │
+│  REST API                                                   │
+│    GET  /agent                  — list agents                │
+│    GET  /command                — list slash-command skills  │
+│    GET  /mcp                    — MCP server status          │
+│    GET  /lsp/status             — LSP server status          │
+│    GET  /event                  — SSE event stream           │
+│    POST /session/:id/prompt     — send message               │
+│    ...and more session, file, tool, and VCS endpoints        │
+└─────────────────────────────────────────────────────────────┘
+                     │
+┌────────────────────▼────────────────────────────────────────┐
+│                   Webview React UI                          │
+│                   webview/shared/dist/chat.js               │
+│                                                             │
+│  ChatShell.tsx           — layout container                  │
+│  MessageComponents.tsx   — user and assistant messages       │
+│  PanelComponents.tsx     — sidebar panels                    │
+│  StreamingComponents.tsx — live streaming card               │
+│  BudgetIndicator.tsx     — inline budget banner              │
+│  SubagentDetailModal.tsx — subagent inspection modal         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+1. User types in the chat input.
+2. The webview sends a `sendPrompt` message to the extension host.
+3. `ChatViewProvider` receives the message.
+4. The extension calls `client.session.prompt()`.
+5. `MessageStreamService` streams SSE events from the OpenCode server.
+6. Events are forwarded to the webview.
+7. The React reducer updates the UI in real time.
+
+---
+
 ## Project Structure
 
-```
+```txt
 vscode-opencode/
-├── src/                          # Extension host TypeScript source
-│   ├── extension.ts              # Activation entry point, command registration
+├── src/
+│   ├── extension.ts
 │   ├── providers/
-│   │   ├── ChatViewProvider.ts   # Main webview host, message routing
-│   │   ├── DiffReviewProvider.ts # VCS diff review panel
-│   │   ├── PlanViewProvider.ts   # Implementation plan viewer
-│   │   └── StatusBarProvider.ts  # Status bar connection indicator
+│   │   ├── ChatViewProvider.ts
+│   │   ├── DiffReviewProvider.ts
+│   │   ├── PlanViewProvider.ts
+│   │   └── StatusBarProvider.ts
 │   ├── services/
-│   │   ├── OpencodeServerManager.ts    # OpenCode server lifecycle management
-│   │   ├── SessionService.ts           # Session persistence and sync
-│   │   ├── MessageStreamService.ts     # SSE event streaming
-│   │   ├── SubagentTracker.ts          # Background task tracking
-│   │   ├── QuotaService.ts             # Provider quota polling
-│   │   ├── RequestBudgeter.ts          # Daily budget calculation
-│   │   ├── PlanParser.ts               # implementation_plan.md parser
-│   │   └── GeminiTokenUsageTracker.ts  # Gemini-specific token tracking
-│   ├── shared/                   # Types and utilities shared by providers
-│   ├── types/                    # TypeScript type definitions
+│   │   ├── OpencodeServerManager.ts
+│   │   ├── SessionService.ts
+│   │   ├── MessageStreamService.ts
+│   │   ├── SubagentTracker.ts
+│   │   ├── QuotaService.ts
+│   │   ├── RequestBudgeter.ts
+│   │   ├── PlanParser.ts
+│   │   └── GeminiTokenUsageTracker.ts
+│   ├── shared/
+│   ├── types/
 │   └── utils/
-│       └── Logger.ts             # Structured logging utility
+│       └── Logger.ts
 ├── webview/
 │   └── shared/
 │       ├── src/
 │       │   ├── chat/
-│       │   │   ├── ChatShell.tsx          # Layout container
-│       │   │   ├── MessageComponents.tsx  # User + assistant message rendering
-│       │   │   ├── PanelComponents.tsx    # All right-panel sections
+│       │   │   ├── ChatShell.tsx
+│       │   │   ├── MessageComponents.tsx
+│       │   │   ├── PanelComponents.tsx
 │       │   │   ├── StreamingComponents.tsx
 │       │   │   ├── BudgetIndicator.tsx
 │       │   │   ├── SubagentDetailModal.tsx
 │       │   │   ├── ImagePreviewModal.tsx
 │       │   │   └── lib/
-│       │   │       ├── store.ts           # React reducer + context
-│       │   │       ├── types.ts           # All shared TypeScript types
-│       │   │       ├── messageHandler.ts  # Processes extension → webview messages
+│       │   │       ├── store.ts
+│       │   │       ├── types.ts
+│       │   │       ├── messageHandler.ts
 │       │   │       ├── structuredOutputValidator.ts
-│       │   │       └── generated/        # Auto-generated from structured output contract
-│       │   ├── plan/                      # Plan viewer webview
-│       │   ├── diff-review/               # Diff review webview
-│       │   └── components/ui/             # Shared UI primitives (Button, Badge, etc.)
-│       └── dist/                          # Built assets (chat.js, chat.css)
+│       │   │       └── generated/
+│       │   ├── plan/
+│       │   ├── diff-review/
+│       │   └── components/ui/
+│       └── dist/
 ├── scripts/
-│   ├── sync-structured-output-contract.mjs
-│   └── patch-timeline.js
-├── tests/                         # Node test runner (.mjs) test suite
-├── resources/                     # Extension icons and static assets
-├── AGENTS.md                      # Agent contribution rules (for AI agents)
-├── LOGGING.md                     # Logging system documentation
+├── tests/
+├── resources/
+├── AGENTS.md
+├── LOGGING.md
 ├── package.json
 ├── tsconfig.json
 └── esbuild.config.js
@@ -508,262 +458,360 @@ vscode-opencode/
 
 ## Core Services
 
-These are the main extension-host services worth knowing when you need to trace behavior or make changes.
-
 ### `OpencodeServerManager`
 
-Starts and manages the local OpenCode server process. Handles:
+Starts and manages the local OpenCode server process.
 
-- Dynamic port allocation (default start: 4097)
-- Server readiness detection (stdout scan for `"Server running"` / `"listening"`)
-- Cross-platform process cleanup (Unix `SIGKILL` vs Windows `taskkill /T /F`)
-- Automatic reconnection with 5-second back-off after unexpected exit
-- Emits `status` events consumed by `StatusBarProvider` and `ChatViewProvider`
+Handles:
+
+- Dynamic port allocation
+- Server readiness detection
+- Cross-platform process cleanup
+- Automatic reconnection
+- Status events for the status bar and chat provider
 
 ### `MessageStreamService`
 
-Custom fetch-based SSE client connecting to `GET /event`. Features:
+Custom fetch-based SSE client for OpenCode events.
 
-- Manual SSE line parsing with chunk-boundary buffering
-- `AbortController`-based cancellation
-- Subscriber count management (starts/stops connection automatically)
-- 5-second auto-reconnect when connection drops with active subscribers
+Handles:
+
+- SSE line parsing
+- Chunk-boundary buffering
+- Request cancellation
+- Subscriber management
+- Auto-reconnect with back-off
 
 ### `SessionService`
 
-Persists sessions between VS Code restarts using `context.globalState`. Syncs with the server on startup, reconciling any sessions created externally.
+Persists sessions between VS Code restarts using `context.globalState`.
+
+It also syncs with the server on startup and reconciles sessions created externally.
 
 ### `SubagentTracker`
 
-Parses SSE events for `subagent.*` event types, builds a tree of parent → child session relationships, and exposes `SubagentSummary` and `SubagentDetail` objects to `ChatViewProvider` for forwarding to the webview.
+Parses subagent-related events and builds parent-child session relationships.
+
+It exposes subagent summaries and details to the webview.
 
 ### `QuotaService`
 
-Polls provider-specific quota APIs on a configurable interval (default: 5 min):
+Polls provider-specific quota APIs.
 
-- **OpenAI** — `chatgpt.com/backend-api/wham/usage`
-- **GitHub Copilot** — `api.github.com` copilot billing endpoints
-- **Google Gemini** — `cloudcode-pa.googleapis.com` + OAuth token refresh
-- **Zhipu / ZAI** — `bigmodel.cn` and `api.z.ai` usage endpoints
+Supported providers include:
+
+- OpenAI
+- GitHub Copilot
+- Google Gemini
+- Zhipu
+- Z.ai
 
 ### `RequestBudgeter`
 
-Calculates a daily request allowance based on `monthlyQuota` and days remaining in the billing cycle. Stores usage in a per-date JSON file under `~/.opencode/budget/`. Provides `ok` / `warning` / `critical` warning levels and optional hard enforcement.
+Calculates daily request allowance based on monthly quota and days remaining in the billing cycle.
+
+Stores usage data under:
+
+```txt
+~/.opencode/budget/
+```
 
 ### `PlanParser`
 
-Regex-based parser for `implementation_plan.md` files. Extracts:
+Parses `implementation_plan.md` files.
 
-- Goal (first heading)
-- Description text
-- File operations (`[MODIFY]`, `[CREATE]`, `[DELETE]` annotations)
+Extracts:
+
+- Goal
+- Description
+- File operations
 - Verification steps
-- Checklist items with completion state
+- Checklist items
+- Completion state
 
 ---
 
-## Webview (React UI)
+## Webview React UI
 
-The webview is a standalone React application bundled by Vite/esbuild into `webview/shared/dist/chat.js` and `chat.css`. It uses a Redux-style reducer (`store.ts`) and communicates with the extension host exclusively through `vscode.postMessage` / `window.addEventListener('message', ...)`.
+The webview is a standalone React application bundled into:
 
-### State Management
+```txt
+webview/shared/dist/chat.js
+webview/shared/dist/chat.css
+```
 
-`AppState` in `types.ts` holds all UI state:
+It communicates with the extension host through:
 
-| Field                        | Type                     | Purpose                             |
-| ---------------------------- | ------------------------ | ----------------------------------- |
-| `messages`                   | `Message[]`              | Full session message history        |
-| `streaming`                  | `StreamingState \| null` | Live streaming card state           |
-| `availableAgents`            | `Agent[]`                | Agents from `client.app.agents()`   |
-| `availableCommands`          | `SlashCommand[]`         | Skills from `client.command.list()` |
-| `mcpServers`                 | `McpServerInfo[]`        | Live MCP server status              |
-| `lspServers`                 | `LspServerInfo[]`        | Live LSP server status              |
-| `subagentsByParentMessageId` | `Record<…>`              | Subagent summaries per message      |
-| `quotaData`                  | `QuotaData \| null`      | Provider quota details              |
-| `budgetInfo`                 | `BudgetInfo \| null`     | Daily budget calculations           |
-| `todoItems`                  | `TodoItem[]`             | Agent-generated todo/task items     |
-| `sessionStats`               | `SessionStats`           | Token counts and duration           |
+```ts
+vscode.postMessage(...)
+window.addEventListener("message", ...)
+```
+
+### Main UI Files
+
+| File                      | Purpose                        |
+| ------------------------- | ------------------------------ |
+| `ChatShell.tsx`           | Main layout container          |
+| `MessageComponents.tsx`   | User and assistant messages    |
+| `PanelComponents.tsx`     | Sidebar panels                 |
+| `StreamingComponents.tsx` | Live streaming card            |
+| `BudgetIndicator.tsx`     | Inline quota and budget banner |
+| `SubagentDetailModal.tsx` | Subagent inspection modal      |
 
 ### Message Protocol
 
-The extension host and webview communicate through typed messages. Key types:
+| Direction           | Type           | Purpose                     |
+| ------------------- | -------------- | --------------------------- |
+| Extension → Webview | `initState`    | Initial state on panel open |
+| Extension → Webview | `streamEvent`  | SSE event chunk             |
+| Extension → Webview | `mcpStatus`    | MCP server status           |
+| Extension → Webview | `lspStatus`    | LSP server status           |
+| Extension → Webview | `agentsList`   | Available agents            |
+| Extension → Webview | `commandsList` | Available slash commands    |
+| Extension → Webview | `quotaData`    | Provider quota data         |
+| Extension → Webview | `budgetInfo`   | Daily budget data           |
+| Webview → Extension | `sendPrompt`   | Send a user prompt          |
+| Webview → Extension | `getMcpStatus` | Request MCP status          |
+| Webview → Extension | `getLspStatus` | Request LSP status          |
+| Webview → Extension | `getAgents`    | Request agents              |
+| Webview → Extension | `stopRequest`  | Stop active request         |
+| Webview → Extension | `newSession`   | Create new session          |
 
-| Direction | `type`         | Payload                            |
-| --------- | -------------- | ---------------------------------- |
-| → webview | `initState`    | Full initial state on panel open   |
-| → webview | `streamEvent`  | SSE event chunk during AI response |
-| → webview | `mcpStatus`    | `{ servers, toolIds }`             |
-| → webview | `lspStatus`    | `{ servers }`                      |
-| → webview | `agentsList`   | `{ agents, selectedAgent }`        |
-| → webview | `commandsList` | `{ commands }`                     |
-| → webview | `quotaData`    | Provider quota payload             |
-| → webview | `budgetInfo`   | Daily budget payload               |
-| webview → | `sendPrompt`   | `{ text, files, agent, model }`    |
-| webview → | `getMcpStatus` | —                                  |
-| webview → | `getLspStatus` | —                                  |
-| webview → | `getAgents`    | —                                  |
-| webview → | `stopRequest`  | —                                  |
-| webview → | `newSession`   | —                                  |
+---
 
-### Structured Output
+## Development
 
-AI responses use a JSON schema format instead of raw markdown when the server is asked for `type: 'json_schema'`. The `responseType` field routes the response to the correct renderer:
+### Install Dependencies
 
-- `message` — standard markdown text
-- `implementation_plan` — triggers plan detection and "View Implementation Plan" button
-- `progress_update` — subagent progress cards
-- `question` / `interactive` — clickable option buttons
-- `error` — error card
+```bash
+npm install
+```
 
-The contract is defined in `scripts/sync-structured-output-contract.mjs` and auto-generated into `webview/shared/src/chat/lib/generated/` before every build.
+### Build
+
+```bash
+npm run build
+```
+
+### Run in VS Code
+
+Press **F5** to launch an Extension Development Host.
+
+### Watch Mode
+
+Use two terminals:
+
+```bash
+npm run watch
+```
+
+```bash
+npm run webview:watch
+```
+
+During development:
+
+- Extension code is rebuilt by esbuild.
+- Webview code is rebuilt separately.
+- Reload the Extension Host with `Ctrl+R` / `Cmd+R`.
+
+---
+
+## Structured Output Contract Sync
+
+The JSON schema for structured AI responses is shared between the backend and webview.
+
+Run this when changing the structured output contract:
+
+```bash
+npm run structured-output:sync
+```
+
+Verify generated files are up to date:
+
+```bash
+npm run structured-output:check
+```
+
+---
+
+## Packaging
+
+Install `vsce`:
+
+```bash
+npm install -g @vscode/vsce
+```
+
+Build and package:
+
+```bash
+npm run build
+vsce package
+```
+
+This creates a `.vsix` file that can be installed through:
+
+```txt
+Extensions → Install from VSIX
+```
+
+---
+
+## Publishing
+
+Marketplace packaging uses hosted image/content URLs.
+
+```bash
+VSCE_BASE_IMAGES_URL="https://your-cdn-url.com" npm run package:marketplace
+```
+
+Publish:
+
+```bash
+VSCE_BASE_IMAGES_URL="https://your-cdn-url.com" npm run publish:marketplace
+```
 
 ---
 
 ## Logging
 
-The extension uses a comprehensive structured logging system with feature flow tracking, correlation IDs, and performance monitoring.
+The extension includes structured logging with correlation IDs, feature flow tracking, and performance monitoring.
 
-### Key Features
+### Enable File Logging
 
-- **Correlation IDs**: Track multi-step operations from start to finish
-- **Feature Flow Tracking**: Monitor operations like "SendMessage" or "SwitchSession"
-- **Performance Monitoring**: Automatic warnings for operations taking >3 seconds
-- **State Change Logging**: Track state transitions with old/new values
-- **UI Interaction Logging**: Capture user actions for debugging
-- **Log Analysis Tools**: Query and analyze logs via CLI or API
+Add this to `settings.json`:
 
-### Quick Start
-
-```bash
-# Enable file logging in settings.json
+```json
 {
   "opencode.logging.enableFile": true,
   "opencode.logging.level": "info"
 }
-
-# Analyze logs
-npm run analyze-logs:summary  # Generate a summary
-npm run analyze-logs:flows    # Show all feature flows
-npm run analyze-logs:errors   # Show errors only
-npm run analyze-logs:perf     # Show performance issues
 ```
 
-### Log Format (JSON)
+### Analyze Logs
 
-```json
-{
-  "timestamp": "2026-04-02T14:30:00.000Z",
-  "level": "info",
-  "category": "CHAT_VIEW",
-  "message": "Feature started: SendMessage",
-  "context": {
-    "correlationId": "CHAT_VIEW-1712051400000-abc123",
-    "featureName": "SendMessage",
-    "sessionId": "sess-456",
-    "messageLength": 240
-  }
-}
+```bash
+npm run analyze-logs:summary
+npm run analyze-logs:flows
+npm run analyze-logs:errors
+npm run analyze-logs:perf
 ```
 
 ### Viewing Logs
 
-**Console**: Open **Output** panel → select **OpenCode** from the dropdown.
+Open:
 
-**File**: Check `logs/opencode.log` in the extension storage (when `enableFile: true`).
-
-### Debugging with Correlation IDs
-
-Each feature flow gets a unique correlation ID that ties all related logs together. Use the LogQuery utility's `filterByCorrelationId()` method for programmatic filtering, or the `--correlation` flag with the CLI tool—see [LOGGING.md](LOGGING.md) for details.
-
-### Performance Monitoring
-
-Operations taking >3 seconds automatically log a warning:
-
-```json
-{
-  "level": "warn",
-  "category": "QUEUE_MANAGER",
-  "message": "Slow operation detected: executeQueue",
-  "context": {
-    "operation": "executeQueue",
-    "duration": 3247
-  }
-}
+```txt
+Output → OpenCode
 ```
 
-See [LOGGING.md](LOGGING.md) for complete documentation including:
+For full details, see:
 
-- All logging methods and usage patterns
-- Feature flow tracking best practices
-- Log analysis CLI and API
-- Debugging tips and troubleshooting
+```txt
+LOGGING.md
+```
 
 ---
 
 ## Testing
 
-Most regression coverage uses Node's built-in test runner:
+Run all tests:
 
 ```bash
-# Run all tests
 npm test
+```
 
-# Run a specific test file
+Run a specific test file:
+
+```bash
 node --test tests/plan-parser.test.mjs
 ```
 
-The suite covers:
+The test suite covers:
 
-- Unit tests for services (plan parsing, structured output validation, quota logic, subagent tracking)
-- Integration tests for message streaming and session CRUD
-- Regression tests for UI contracts, streaming behaviour, MCP/LSP panels, and model dropdown
+- Plan parsing
+- Structured output validation
+- Quota logic
+- Subagent tracking
+- Message streaming
+- Session CRUD
+- UI contracts
+- MCP/LSP panels
+- Model dropdown behavior
+
+---
 
 ## Regression Guardrails
 
-Use the built-in guard scripts before pushing:
+Install repo-managed git hooks:
 
 ```bash
-# one-time setup: activate repo-managed git hooks
 npm run hooks:install
+```
 
-# run the same local pre-push guard manually
+Run the local pre-push guard manually:
+
+```bash
 npm run guard:prepush
+```
 
-# run only impacted tests based on changed files
+Run impacted tests only:
+
+```bash
 npm run test:impacted
 ```
 
-What this enforces:
+The guard checks:
 
-- `structured-output:check` before tests
-- extension compile and lint checks
-- webview build check when webview files changed
-- impacted contract/regression suites (or full `npm test` on high-risk changes)
+- Structured output contract
+- Extension compile
+- Type checking
+- Linting
+- Webview build when needed
+- Impacted regression tests
+
+---
+
+## Core Feature Protection
+
+The following features should not be silently removed or broken:
+
+- Token usage sticky header
+- View Implementation Plan button
+- Stop Request button
+- React webview contract
+- Chat script and stylesheet loading
+- Plan viewer workflow
+- Session persistence
+- Subagent tracking
+- Quota monitor
 
 ---
 
 ## Contributing
 
-1. Fork the repo and create a feature branch.
-2. Follow the rules in [AGENTS.md](AGENTS.md), especially around protected UX contracts.
-3. Run `npm run structured-output:check` if you changed the structured-output contract.
-4. Run `npm test` and any relevant verification commands before opening a PR.
-5. Open a pull request with a clear summary of the change.
+1. Fork the repository.
+2. Create a feature branch.
+3. Follow the rules in `AGENTS.md`.
+4. Run the required checks.
+5. Open a pull request with a clear summary.
 
-### Core Feature Protection
+Before opening a PR, run:
 
-The following must never be silently removed or broken:
+```bash
+npm run structured-output:check
+npm test
+```
 
-- **Token usage sticky header** — real-time prompt/response/cache token counts
-- **View Implementation Plan button** — appears on any message that produced a plan
-- **Stop Request button** — aborts in-flight AI responses
-- **React webview contract** — `<div id="root">`, `chat.js`, and `chat.css` must be wired in `getHtmlContent`
+---
 
 ## License
 
 MIT
 
+---
+
 ## Credits
 
 Built on top of [OpenCode](https://opencode.ai) by Anomaly.
-

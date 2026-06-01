@@ -1,4 +1,4 @@
-import { Copy, Sparkles, X } from "lucide-react";
+import { Copy, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -221,9 +221,6 @@ export function SubagentDetailModal({
 				<div className="oc-modal-header shrink-0 bg-oc-panel-soft/70 p-3 sm:p-4">
 					<div className="flex items-start justify-between gap-3">
 							<div className="flex min-w-0 items-start gap-3">
-								<div className="mt-0.5 flex shrink-0 items-center justify-center oc-subagent-modal-title">
-									<Sparkles className="h-5 w-5" />
-								</div>
 								<div className="min-w-0">
 									<div className="flex flex-wrap items-center gap-2">
 										<span className="oc-subagent-modal-title text-sm font-semibold sm:text-base">
@@ -237,7 +234,7 @@ export function SubagentDetailModal({
 												? "border-none bg-transparent oc-text-secondary"
 												: isError
 													? "border-destructive bg-transparent text-destructive"
-													: "border-primary bg-transparent text-primary pulse-border",
+													: "border-transparent bg-oc-accent/18 oc-tinted-badge-text",
 										)}
 									>
 										{status.toUpperCase()}

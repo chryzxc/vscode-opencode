@@ -131,6 +131,29 @@ test('question payload properties are defined', () => {
   assert.match(schemaSource, /question:[\s\S]*?type:[\s\S]*?enum/, 'question should have type field with enum');
 });
 
+test('question schema requires an actual question payload with choices or free-form input', () => {
+  assert.match(
+    schemaSource,
+    /allOf:\s*\[/,
+    'schema should encode responseType-specific requirements',
+  );
+  assert.match(
+    schemaSource,
+    /responseType:\s*{\s*const:\s*"question"\s*}[\s\S]*then:\s*{[\s\S]*required:\s*\["question"\]/,
+    'responseType=question should require the question object',
+  );
+  assert.match(
+    schemaSource,
+    /options:[\s\S]*?minItems:\s*2/,
+    'question options should require at least two choices when present',
+  );
+  assert.match(
+    schemaSource,
+    /anyOf:\s*\[[\s\S]*required:\s*\["options"\][\s\S]*required:\s*\["allowCustomInput"\][\s\S]*const:\s*true/,
+    'question payload should require choices or explicit free-form input',
+  );
+});
+
 test('plan property is defined', () => {
   assert.match(schemaSource, /plan:\s*{[\s\S]*?type:\s*"object"/, 'plan should be object');
   assert.match(schemaSource, /plan:[\s\S]*?file:[\s\S]*?type:\s*"string"/, 'plan should have file property');

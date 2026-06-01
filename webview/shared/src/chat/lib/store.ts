@@ -354,13 +354,16 @@ function cacheStreamingForSession(
 function buildStreamingMessageLocal(streaming: StreamingState): Message {
   return {
     role: "assistant",
+    responseType: streaming.responseType,
     content: streaming.content,
     parts: [{ type: "text", text: streaming.content }],
+    plan: streaming.plan,
     reasoningEvents: streaming.reasoningEvents,
     progressEvents: streaming.progressEvents,
     steps: streaming.steps,
     edits: streaming.edits.map((file) => ({ file })),
     interactiveEvents: streaming.interactiveEvents,
+    structuredOutput: streaming.structuredOutput,
     info: {
       id: streaming.messageId ?? undefined,
       agent: streaming.agent,
@@ -402,7 +405,7 @@ function activityArrayItemKeyLocal(item: unknown, index: number): string {
   return `index:${index}`;
 }
 
-function mergeActivityArraysLocal<T>(
+export function mergeActivityArraysLocal<T>(
   existing: T[] | undefined,
   incoming: T[] | undefined,
 ): T[] | undefined {
@@ -417,8 +420,37 @@ function mergeActivityArraysLocal<T>(
 
   const merged: T[] = [];
   const indexByKey = new Map<string, number>();
-  [...existingItems, ...incomingItems].forEach((item, index) => {
-    const key = activityArrayItemKeyLocal(item, index);
+
+  // Combine all items with their source and original index for stable sorting
+  const allItems = [
+    ...existingItems.map((item, idx) => ({ item, source: 'existing' as const, originalIndex: idx })),
+    ...incomingItems.map((item, idx) => ({ item, source: 'incoming' as const, originalIndex: idx }))
+  ];
+
+  // Sort by timestamp to preserve temporal order
+  allItems.sort((a, b) => {
+    const aTimestamp = getTimestampForItem(a.item);
+    const bTimestamp = getTimestampForItem(b.item);
+
+    // If both have timestamps, sort by timestamp
+    if (typeof aTimestamp === 'number' && typeof bTimestamp === 'number') {
+      return aTimestamp - bTimestamp;
+    }
+
+    // If only one has a timestamp, prioritize the one with timestamp
+    if (typeof aTimestamp === 'number') return -1;
+    if (typeof bTimestamp === 'number') return 1;
+
+    // If neither has timestamp, maintain relative order: existing before incoming
+    if (a.source === 'existing' && b.source === 'incoming') return -1;
+    if (a.source === 'incoming' && b.source === 'existing') return 1;
+
+    // Same source: maintain original order
+    return a.originalIndex - b.originalIndex;
+  });
+
+  allItems.forEach(({ item }) => {
+    const key = activityArrayItemKeyLocal(item, 0);
     const existingIndex = indexByKey.get(key);
     if (typeof existingIndex !== "number") {
       indexByKey.set(key, merged.length);
@@ -437,6 +469,22 @@ function mergeActivityArraysLocal<T>(
   });
 
   return merged.length > 0 ? merged : undefined;
+}
+
+export function getTimestampForItem(item: unknown): number | undefined {
+  const rec = asRecordLocal(item);
+  if (!rec) return undefined;
+
+  // Check for common timestamp fields
+  const timestampFields = ['createdAt', 'timestamp', 'time', 'date'];
+  for (const field of timestampFields) {
+    const value = rec[field];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return undefined;
 }
 
 function mergeCachedAssistantMessageLocal(
@@ -637,11 +685,48 @@ function interactiveEventsFromLatestQuestionMessageLocal(
     return [];
   }
   if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
-    return message.interactiveEvents;
+    // Filter out false positive fallback interactive events from rehydrated messages
+    const filteredEvents = message.interactiveEvents.filter((event) => {
+      // Only filter fallback events (created by parseNumberedQuestionsFromText)
+      if (!event.id || !event.id.startsWith('interactive-')) {
+        return true; // Keep non-fallback events
+      }
+
+      // Filter out events that contain patterns indicating false positives
+      const questionText = (event.question || event.title || '').toString();
+
+      // Patterns that suggest this is NOT a real question
+      const nonQuestionPatterns = [
+        /```/,              // Code blocks
+        /`[^`]+`/,          // Inline code
+        /\*\*[^*]+\*\*/,    // Bold markdown
+        /→|←|↦/,           // Arrows
+        /answered by|validated by|just fixed/i,  // Explanatory phrases
+        /There are|types of|fields exist|remaining/i,  // Descriptive statements
+        /\[\S+\]/,          // References
+      ];
+
+      const looksLikeFalsePositive = nonQuestionPatterns.some(pattern =>
+        pattern.test(questionText)
+      );
+
+      return !looksLikeFalsePositive;
+    });
+
+    // Only return filtered events if we still have some, otherwise return empty
+    return filteredEvents.length > 0 ? filteredEvents : [];
   }
   const structured = getStructuredRecordLocal(message);
-  const responseType = asStringLocal(message.responseType, structured?.responseType).toLowerCase();
-  if (responseType !== "question") {
+  const responseType = asStringLocal(
+    message.responseType,
+    structured?.responseType,
+  ).toLowerCase();
+  const hasQuestionLikePayload =
+    responseType === "question" ||
+    typeof (message as unknown as Record<string, unknown>).question !==
+      "undefined" ||
+    typeof structured?.question !== "undefined";
+  if (!hasQuestionLikePayload) {
     return [];
   }
   const structuredEvents = Array.isArray(structured?.interactiveEvents)
@@ -662,6 +747,36 @@ function interactiveEventsFromLatestQuestionMessageLocal(
     `question-${Date.now()}`,
   );
   return event ? [event] : [];
+}
+
+function pendingInteractiveEventsFromMessagesLocal(
+  messages: Message[],
+): InteractiveEvent[] {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (getMessageRoleForCanonical(messages[index]) === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+
+  const unresolvedAssistantTail = messages.slice(lastUserIndex + 1);
+  for (let index = unresolvedAssistantTail.length - 1; index >= 0; index -= 1) {
+    const msg = unresolvedAssistantTail[index];
+    if (getMessageRoleForCanonical(msg) !== "assistant") {
+      continue;
+    }
+    const events = interactiveEventsFromLatestQuestionMessageLocal(msg);
+    if (events.length > 0) {
+      return events;
+    }
+  }
+
+  return [];
 }
 
 export function normalizeComparableTextLocal(value: string): string {
@@ -956,17 +1071,25 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
       const key = `${meta.role}|${meta.normalizedText}`;
       const candidates = textToIndexes.get(key) ?? [];
       let matched = -1;
+      const candidateMaxDistance = 2;
       for (const idx of candidates) {
         const existing = deduped[idx];
         if (!existing) continue;
         const existingMeta = getMessageMeta(existing);
         if (
-          typeof existingMeta.createdAt !== "number" ||
-          typeof meta.createdAt !== "number"
+          typeof existingMeta.createdAt === "number" &&
+          typeof meta.createdAt === "number"
         ) {
+          if (Math.abs(existingMeta.createdAt - meta.createdAt) <= 4_000) {
+            matched = idx;
+            break;
+          }
           continue;
         }
-        if (Math.abs(existingMeta.createdAt - meta.createdAt) <= 4_000) {
+        // Hydrated history can omit createdAt on one side of a mirrored pair.
+        // In that case, only dedupe near-neighbor entries to avoid collapsing
+        // legitimate repeated prompts/responses far apart in the timeline.
+        if (deduped.length - idx <= candidateMaxDistance) {
           matched = idx;
           break;
         }
@@ -1732,12 +1855,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
           ? cachedStreamingForNew
           : null;
+      const messagesForNew = newId ? messagesBySessionId?.[newId] ?? [] : [];
 
       return {
         ...state,
         currentSessionId: action.payload,
+        // Immediately switch the visible transcript to the target session's
+        // cached timeline. Without this, the previous session's messages can
+        // remain on screen until a later hydration event lands.
+        messages: messagesForNew,
         sessionStats: statsForNew,
         promptQueue: queueForNew,
+        interactiveEvents: pendingInteractiveEventsFromMessagesLocal(messagesForNew),
         isExecutingQueue: false,
         isQueueOpen: false,
         // Reset all transient per-session processing/streaming UI so states from
@@ -1810,11 +1939,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
               state.compactionDividerBeforeMessageId,
             compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
           };
-      const lastMessage = canonicalMessages[canonicalMessages.length - 1];
-      const latestQuestionEvents =
-        interactiveEventsFromLatestQuestionMessageLocal(lastMessage);
+      const derivedInteractiveEvents =
+        canonicalMessages.length > 0
+          ? pendingInteractiveEventsFromMessagesLocal(canonicalMessages)
+          : [];
+      const hasLiveInteractiveEvents =
+        Array.isArray(state.interactiveEvents) &&
+        state.interactiveEvents.length > 0;
+      const isTurnStillActive =
+        state.isProcessing || state.streaming?.isActive === true;
       const nextInteractiveEvents =
-        canonicalMessages.length > 0 ? latestQuestionEvents : [];
+        derivedInteractiveEvents.length === 0 &&
+        hasLiveInteractiveEvents &&
+        isTurnStillActive
+          ? state.interactiveEvents
+          : derivedInteractiveEvents;
       return {
         ...state,
         messages: canonicalMessages,
@@ -1883,6 +2022,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         currentSessionId: action.payload.sessionId,
         messages: cachedMessages,
+        interactiveEvents: pendingInteractiveEventsFromMessagesLocal(cachedMessages),
         isProcessing: isNewSessionProcessing,
         isSteering: false,
         streaming: restoredStreamingForNew,

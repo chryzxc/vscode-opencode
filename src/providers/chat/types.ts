@@ -215,6 +215,24 @@ export type StructuredInteractiveEvent =
 export type StructuredAssistantOutput = {
   responseType?: StructuredResponseType | string;
   message?: string;
+  /**
+   * Per-file change metadata emitted by structured output.
+   * Runtime normalization may coerce malformed provider payloads before validation.
+   */
+  fileChanges?: Array<{
+    file: string;
+    kind?: string;
+    diffStats?: {
+      added?: number;
+      deleted?: number;
+    };
+    diffExcerpt?: {
+      header?: string;
+      lines?: string[];
+      added?: number;
+      deleted?: number;
+    };
+  }>;
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
   interactiveEvents?: StructuredInteractiveEvent[];

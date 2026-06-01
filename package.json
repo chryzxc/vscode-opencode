@@ -1,7 +1,7 @@
 {
   "name": "opencode-vscode-chryzxc",
-  "displayName": "OpenCode Chat - AI Coding Agent",
-  "description": "Chat with OpenCode in VS Code: AI coding agents, implementation plans, file and code context, subagent tracking, and session history.",
+  "displayName": "OpenCode UI for VS Code",
+  "description": "OpenCode CLI UI for VS Code with streaming chat, code context, implementation plans, subagents, session history, and quota monitoring.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -11,7 +11,7 @@
   "bugs": {
     "url": "https://github.com/chryzxc/vscode-opencode/issues"
   },
-  "version": "0.1.12",
+  "version": "0.1.14",
   "icon": "resources/extension-icon.png",
   "publisher": "chryzxc",
   "galleryBanner": {
@@ -24,39 +24,28 @@
   },
   "keywords": [
     "opencode",
-    "open code",
-    "open-code",
-    "opencode vscode",
-    "opencode vs code",
-    "opencode ai",
-    "opencode chat",
-    "opencode agent",
-    "opencode gui",
+    "opencode cli",
     "opencode ui",
-    "vscode",
-    "vs code",
-    "vscode extension",
-    "ai coding",
-    "coding agent",
-    "ai agent",
+    "opencode vscode",
+    "copilot style",
+    "ai assistant",
+    "ai coding agent",
     "coding assistant",
-    "ai chat",
     "agentic coding",
+    "code assistant",
+    "subagents",
     "implementation plan",
-    "plan builder",
-    "subagent",
-    "multi-agent",
     "code context",
     "session history",
-    "quota",
     "mcp",
-    "lsp",
-    "code generation"
+    "quota monitor",
+    "github copilot quota",
+    "openai quota",
+    "z.ai quota"
   ],
   "categories": [
     "AI",
-    "Chat",
-    "Programming Languages"
+    "Other"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -194,7 +183,7 @@
         "opencode.logging.maxFiles": {
           "type": "number",
           "default": 3,
-          "description": "Maximum number of backup log files to keep"
+          "description": "Number of backup log files to keep"
         },
         "opencode.autoCompact": {
           "type": "boolean",

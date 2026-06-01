@@ -619,7 +619,13 @@ export class StructuredOutputProcessor {
   }
 
   /**
-   * Normalize structured output from raw response
+   * Runtime boundary for provider/model output.
+   *
+   * Even when we request json-schema output, providers can still return
+   * malformed or legacy-shaped payloads. This method converts unknown input
+   * into a canonical, validated `StructuredAssistantOutput` for the rest of
+   * the app. If validation still fails, we return `undefined` so callers can
+   * apply safe fallback behavior.
    */
   normalizeStructuredOutput(
     raw: unknown,
@@ -643,6 +649,7 @@ export class StructuredOutputProcessor {
       return undefined;
     }
 
+    // First-pass sanitation normalizes legacy aliases to schema field names.
     const sanitizedRec = sanitizeStructuredOutput(rec);
 
     // Don't sanitize rec.plan separately - sanitizeStructuredOutput() is for
@@ -736,6 +743,15 @@ export class StructuredOutputProcessor {
       ...sanitizedRec,
       responseType: responseTypeRaw,
     };
+    // Normalize fileChanges before schema validation so malformed provider
+    // values (ex: diffExcerpt.lines as string) don't cause the whole payload
+    // to be downgraded to message-only fallback.
+    const normalizedFileChanges = this.normalizeStructuredFileChangesForValidation(
+      canonicalRec.fileChanges ?? rec.fileChanges,
+    );
+    if (normalizedFileChanges.length > 0) {
+      canonicalRec.fileChanges = normalizedFileChanges;
+    }
     if (
       messageCandidate &&
       !this.firstNonEmptyString(canonicalRec.message)
@@ -822,6 +838,86 @@ export class StructuredOutputProcessor {
     }
 
     return sanitizedCanonicalRec as StructuredAssistantOutput;
+  }
+
+  /**
+   * Coerce provider file-change payloads into a schema-compatible shape.
+   * This keeps strong validation while tolerating common wire-format glitches.
+   */
+  private normalizeStructuredFileChangesForValidation(
+    value: unknown,
+  ): NonNullable<StructuredAssistantOutput["fileChanges"]> {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const out: NonNullable<StructuredAssistantOutput["fileChanges"]> = [];
+    for (const item of value) {
+      const rec = this.asRecord(item);
+      if (!rec) {
+        continue;
+      }
+      const file = this.firstNonEmptyString(rec.file);
+      if (!file) {
+        continue;
+      }
+
+      const next: NonNullable<StructuredAssistantOutput["fileChanges"]>[number] = {
+        file,
+      };
+      const kind = this.firstNonEmptyString(rec.kind);
+      if (kind) {
+        next.kind = kind;
+      }
+
+      const diffStatsRec = this.asRecord(rec.diffStats);
+      if (diffStatsRec) {
+        const added = Number(diffStatsRec.added);
+        const deleted = Number(diffStatsRec.deleted);
+        next.diffStats = {
+          added: Number.isFinite(added) ? added : 0,
+          deleted: Number.isFinite(deleted) ? deleted : 0,
+        };
+      }
+
+      const diffExcerptRec = this.asRecord(rec.diffExcerpt);
+      if (diffExcerptRec) {
+        const header = this.firstNonEmptyString(diffExcerptRec.header);
+        const rawLines = diffExcerptRec.lines;
+        const lines = Array.isArray(rawLines)
+          ? rawLines
+              .map((line) => (typeof line === "string" ? line : String(line ?? "")))
+              .filter((line) => line.trim().length > 0)
+          : typeof rawLines === "string"
+            ? []
+            : [];
+        const excerpt: NonNullable<
+          NonNullable<StructuredAssistantOutput["fileChanges"]>[number]["diffExcerpt"]
+        > = {
+          lines,
+        };
+        if (header) {
+          excerpt.header = header;
+        }
+        const added = Number(diffExcerptRec.added);
+        const deleted = Number(diffExcerptRec.deleted);
+        if (Number.isFinite(added)) {
+          excerpt.added = added;
+        }
+        if (Number.isFinite(deleted)) {
+          excerpt.deleted = deleted;
+        }
+        next.diffExcerpt = excerpt;
+      }
+
+      out.push(next);
+    }
+    if (out.length > 0) {
+      this.logger.info("[DIFF PREVIEW] normalized structured fileChanges", {
+        inputCount: value.length,
+        outputCount: out.length,
+      });
+    }
+    return out;
   }
 
   /**

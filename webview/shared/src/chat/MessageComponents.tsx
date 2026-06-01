@@ -37,13 +37,14 @@ import { TerminalBlock } from "@/components/ui/TerminalBlock";
 import { SearchBlock } from "@/components/ui/SearchBlock";
 import { ExpandableStep } from "@/components/ui/ExpandableStep";
 import { StepIndicator } from "@/components/ui/StepIndicator";
-import { cn, formatDuration } from "@/utils";
+import { cn, formatDuration, toWorkspaceRelativePath } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 import { DiffStats } from "./DiffStats";
+import { asString } from "./lib/messageHandler";
 
 import type {
   ActivityDetail,
@@ -55,6 +56,7 @@ import type {
   ReasoningEvent,
   StreamingState,
   StreamingStep,
+  StructuredFileChange,
   SubagentDetail,
   SubagentSummary,
   TodoItem,
@@ -67,6 +69,7 @@ import {
   getSubagentDisplayActivity,
   getSubagentDisplayDurationMs,
 } from "./lib/subagentDuration";
+import { config } from "../config";
 
 // File extension color mapping for icons
 const FILE_COLOR_MAP: Record<string, string> = {
@@ -312,6 +315,12 @@ function resolveSubagentStatus(
     )
   );
 
+  // If subagent has ended, don't show it as running
+  const hasEnded = subagent.endedAt || detail?.endedAt;
+  if (hasEnded && !detail?.errorText && subagent.status === "running") {
+    return "done";
+  }
+
   const detailStatus = detail?.status;
   if (detailStatus === "error" || detailStatus === "orphaned") {
     return detailStatus;
@@ -351,6 +360,8 @@ function TerminalBlockWithOutput({
   event: DisplayEvent;
   messageContent: string;
 }) {
+  // Use activityDetail.command first as it contains the full unmodified command
+  // Fall back to event.summary only if command is not available
   const command = event.activityDetail?.command || event.summary;
 
   // Try to extract bash output from message content
@@ -576,6 +587,26 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
     }
   }
   return undefined;
+}
+
+function collectMessageIdentityCandidates(message?: Message): Set<string> {
+  const candidates = new Set<string>();
+  if (!message) {
+    return candidates;
+  }
+  const info = asRecord(message.info);
+  const values = [
+    message.id,
+    message.messageId,
+    info?.id,
+    info?.messageId,
+  ];
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      candidates.add(value.trim());
+    }
+  }
+  return candidates;
 }
 
 function normalizeComparableText(value: string): string {
@@ -920,6 +951,16 @@ function modelLabel(message?: Message): string {
   return model ?? provider ?? "assistant";
 }
 
+function hasPendingStreamingSteps(streaming: StreamingState): boolean {
+  if (Array.isArray(streaming.steps)) {
+    return streaming.steps.some((step) => step.status === "pending");
+  }
+  if (Array.isArray(streaming.progressEvents)) {
+    return streaming.progressEvents.some((step) => step.status === "pending");
+  }
+  return false;
+}
+
 function getMessageContent(
   message?: Message,
   streaming?: StreamingState,
@@ -947,12 +988,25 @@ function getMessageContent(
       return '';
     }
 
-    if (!streamingFinished && hasReasoningEvents) {
+    // CRITICAL: If reasoning events are active and streaming is in progress,
+    // completely block content from going to the AI final response component.
+    // This prevents reasoning text from appearing in the main chat bubble.
+    // Reasoning should only appear in the activity timeline, not in the response body.
+    if (streaming.isActive && hasReasoningEvents) {
+      return '';
+    }
+
+    // Prevent reasoning data from leaking into the AI final response body
+    // when activity steps are still in progress. Content should only render
+    // once all steps complete, avoiding raw reasoning text appearing as
+    // final assistant output.
+    if (streaming.isActive && hasPendingStreamingSteps(streaming)) {
       return '';
     }
 
     return content;
   }
+
   if (!message) {
     return "";
   }
@@ -1213,10 +1267,6 @@ function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
     Boolean(activityDetail);
   const normalizedTitle = (step.title ?? "").trim().toLowerCase();
 
-  // Filter out reasoning/thinking and internal bookkeeping steps
-  if (type === "reasoning" || type === "thinking") {
-    return false;
-  }
   // Filter out empty step-start and step-finish bookkeeping, but keep rows that
   // carry file/diff/activity detail because they are the only visible evidence
   // for some background edits.
@@ -1415,29 +1465,29 @@ function getLatestTodoTransition(items: TodoItem[]): TodoItem | undefined {
 function todoStatusTone(status: TodoItem["status"]): string {
   switch (status) {
     case "completed":
-      return "text-oc-green border-oc-border-soft bg-oc-green/8";
+      return "text-oc-green border-oc-border bg-oc-green/8";
     case "in_progress":
-      return "oc-tinted-badge-text border-oc-border-soft bg-oc-accent/10";
+      return "oc-tinted-badge-text border-oc-border bg-oc-accent/10";
     case "failed":
-      return "text-oc-red border-oc-border-soft bg-oc-red/10";
+      return "text-oc-red border-oc-border bg-oc-red/10";
     case "cancelled":
-      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+      return "oc-text-secondary border-oc-border bg-oc-panel-soft";
     case "pending":
     default:
-      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+      return "oc-text-secondary border-oc-border bg-oc-panel-soft";
   }
 }
 
 function todoPriorityTone(priority?: TodoItem["priority"]): string {
   switch (priority) {
     case "high":
-      return "text-oc-red border-oc-border-soft bg-oc-red/10";
+      return "text-oc-red border-oc-border bg-oc-red/10";
     case "medium":
-      return "oc-quota-warning border-oc-border-soft bg-oc-quota-warning-bg";
+      return "oc-quota-warning border-oc-border bg-oc-quota-warning-bg";
     case "low":
-      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+      return "oc-text-secondary border-oc-border bg-oc-panel-soft";
     default:
-      return "oc-text-secondary border-oc-border-soft bg-oc-panel-soft";
+      return "oc-text-secondary border-oc-border bg-oc-panel-soft";
   }
 }
 
@@ -1532,7 +1582,7 @@ function TodoInlineSummary({
                   {todo.status === "completed" ? (
                     <Check className="h-3.5 w-3.5 text-oc-green" />
                   ) : todo.status === "in_progress" ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-oc-accent" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-oc-green" />
                   ) : todo.status === "failed" ? (
                     <AlertCircle className="h-3.5 w-3.5 text-oc-red" />
                   ) : todo.status === "cancelled" ? (
@@ -1833,6 +1883,13 @@ function fileChangePathsFromMessage(message?: Message): Set<string> {
     }
   }
 
+  for (const item of structuredFileChangesFromMessage(message)) {
+    const normalized = normalizeFileChangePathForComparison(item.file);
+    if (normalized) {
+      files.add(normalized);
+    }
+  }
+
   return files;
 }
 
@@ -1875,12 +1932,179 @@ function fileChangeRenderRichness(message?: Message): number {
   return files.size * 10 + summaryFiles.length * 4 + perFileStats * 3 + statsScore;
 }
 
+function normalizeStructuredFileChanges(
+  value: unknown,
+): StructuredFileChange[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) return null;
+      const file = asString(rec.file).trim();
+      if (!file) return null;
+      const diffStatsRec = asRecord(rec.diffStats);
+      const diffExcerptRec = asRecord(rec.diffExcerpt);
+      const kind = asString(rec.kind).trim();
+      const normalizedKind =
+        kind === "file_edit" ||
+        kind === "file_create" ||
+        kind === "file_delete" ||
+        kind === "file_move" ||
+        kind === "other"
+          ? kind
+          : undefined;
+      return {
+        file,
+        kind: normalizedKind,
+        diffStats: diffStatsRec
+          ? {
+              added:
+                typeof diffStatsRec.added === "number"
+                  ? diffStatsRec.added
+                  : undefined,
+              deleted:
+                typeof diffStatsRec.deleted === "number"
+                  ? diffStatsRec.deleted
+                  : undefined,
+            }
+          : undefined,
+        diffExcerpt: diffExcerptRec
+          ? {
+              header:
+                typeof diffExcerptRec.header === "string"
+                  ? diffExcerptRec.header
+                  : undefined,
+              lines: Array.isArray(diffExcerptRec.lines)
+                ? diffExcerptRec.lines.filter(
+                    (line): line is string => typeof line === "string",
+                  )
+                : undefined,
+              added:
+                typeof diffExcerptRec.added === "number"
+                  ? diffExcerptRec.added
+                  : undefined,
+              deleted:
+                typeof diffExcerptRec.deleted === "number"
+                  ? diffExcerptRec.deleted
+                  : undefined,
+            }
+          : undefined,
+      } satisfies StructuredFileChange;
+    })
+    .filter((item): item is StructuredFileChange => item !== null);
+}
+
+function structuredFileChangesFromMessage(message?: Message): StructuredFileChange[] {
+  if (!message) {
+    return [];
+  }
+  const parseRawResponseRecord = (raw: unknown): Record<string, unknown> | null => {
+    const rec = asRecord(raw);
+    if (rec) {
+      return rec;
+    }
+    if (typeof raw !== "string") {
+      return null;
+    }
+    const text = raw.trim();
+    if (!text) {
+      return null;
+    }
+    const truncMatch = text.match(/\.\.\.<truncated\s+\d+\s+chars>\s*$/i);
+    const candidate = truncMatch ? text.slice(0, truncMatch.index).trim() : text;
+    try {
+      return asRecord(JSON.parse(candidate));
+    } catch {
+      return null;
+    }
+  };
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured =
+    asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured_output) ||
+    asRecord(messageRec?.structured) ||
+    asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured_output) ||
+    asRecord(infoRec?.structured);
+  const direct = normalizeStructuredFileChanges(structured?.fileChanges);
+  if (direct.length > 0) {
+    if (config.debug.showRawResponse) {
+      console.debug("[DIFF PREVIEW] source=message/info structured", {
+        messageId: message.info?.id || message.id,
+        count: direct.length,
+      });
+    }
+    return direct;
+  }
+
+  const rawResponseRec = parseRawResponseRecord(messageRec?.rawResponse);
+  const rawInfoRec = asRecord(rawResponseRec?.info);
+  const rawStructured =
+    asRecord(rawInfoRec?.structuredOutput) ||
+    asRecord(rawInfoRec?.structured_output) ||
+    asRecord(rawInfoRec?.structured);
+  const fromRawStructured = normalizeStructuredFileChanges(rawStructured?.fileChanges);
+  if (fromRawStructured.length > 0) {
+    if (config.debug.showRawResponse) {
+      console.debug("[DIFF PREVIEW] source=rawResponse.info.structured", {
+        messageId: message.info?.id || message.id,
+        count: fromRawStructured.length,
+        rawResponseType: typeof messageRec?.rawResponse,
+      });
+    }
+    return fromRawStructured;
+  }
+
+  const rawParts = Array.isArray(rawResponseRec?.parts) ? rawResponseRec.parts : [];
+  for (const part of rawParts) {
+    const partRec = asRecord(part);
+    if (!partRec) {
+      continue;
+    }
+    const toolName = asString(partRec.tool).toLowerCase();
+    if (toolName !== "structuredoutput" && toolName !== "structured_output") {
+      continue;
+    }
+    const stateRec = asRecord(partRec.state);
+    const inputRec = asRecord(stateRec?.input);
+    const fromToolInput = normalizeStructuredFileChanges(inputRec?.fileChanges);
+    if (fromToolInput.length > 0) {
+      if (config.debug.showRawResponse) {
+        console.debug("[DIFF PREVIEW] source=rawResponse.parts[].StructuredOutput.input", {
+          messageId: message.info?.id || message.id,
+          count: fromToolInput.length,
+        });
+      }
+      return fromToolInput;
+    }
+  }
+
+  if (config.debug.showRawResponse) {
+    console.debug("[DIFF PREVIEW] source=none", {
+      messageId: message.info?.id || message.id,
+      hasStructuredOutput: !!asRecord(messageRec?.structuredOutput),
+      hasInfoStructured: !!asRecord(infoRec?.structured),
+      rawResponseType: typeof messageRec?.rawResponse,
+      rawHasInfoStructured: !!rawStructured,
+      rawPartsCount: rawParts.length,
+    });
+  }
+  return [];
+}
+
 function messageHasOwnFileChangeEvidence(message?: Message): boolean {
   if (!message) {
     return false;
   }
 
   if (Array.isArray(message.edits) && message.edits.length > 0) {
+    return true;
+  }
+
+  if (structuredFileChangesFromMessage(message).length > 0) {
     return true;
   }
 
@@ -2156,6 +2380,7 @@ type MessageViewState = {
   showThinkingDetails: boolean;
   showAllCompletedActivity: boolean;
   showInternalActivity: boolean;
+  expandedReasoningSteps: Set<string>; // Track individual reasoning step expansion
 };
 
 type DisplayEvent = {
@@ -2770,13 +2995,14 @@ function buildDisplayEvents(
       for (const item of block.items) {
         const text = (item.text || "").trim();
         if (!text) continue;
+        const source = sourceFromThoughtKey(item.key);
         rawEvents.push({
           key: `reasoning-${item.key}`,
           kind: "reasoning",
           label: "Reasoning",
           summary: text,
-          status: "done",
-          source: sourceFromThoughtKey(item.key),
+          status: isStreamingActive && source === "stream" ? "pending" : "done",
+          source,
           isImportant: false,
           updateCount: 1,
         });
@@ -3404,7 +3630,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     message?.responseType,
     typeof structured?.responseType === "string" ? structured.responseType : undefined,
   )?.toLowerCase();
-  const hideReasoningTimeline = responseType === "implementation_plan";
   let plan = responseType === "implementation_plan" ? message?.plan : undefined;
   if (!plan && responseType === "implementation_plan") {
     const structuredPlanRec = asRecord(structured?.plan);
@@ -3502,6 +3727,24 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       return candidateRichness === ownRichness && ownIndex >= 0 && index > ownIndex;
     });
   }, [hasOwnedChangeSummary, message, messageId, state.messages]);
+  useEffect(() => {
+    if (!message || !config.debug.showRawResponse) {
+      return;
+    }
+    const structuredCount = structuredFileChangesFromMessage(message).length;
+    console.debug("[DIFF PREVIEW] render-gate", {
+      messageId,
+      shouldShowFileChanges,
+      hasOwnEvidence: messageHasOwnFileChangeEvidence(message),
+      structuredCount,
+      editsCount: Array.isArray(message.edits) ? message.edits.length : 0,
+      stepsCount: Array.isArray(message.steps) ? message.steps.length : 0,
+      progressEventsCount: Array.isArray(message.progressEvents)
+        ? message.progressEvents.length
+        : 0,
+      hasOwnedChangeSummary,
+    });
+  }, [message, messageId, shouldShowFileChanges, hasOwnedChangeSummary]);
   const shouldShowPlanCard = useMemo(() => {
     if (!plan?.file) {
       return !!plan;
@@ -3553,6 +3796,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     showThinkingDetails: false,
     showAllCompletedActivity: false,
     showInternalActivity: false,
+    expandedReasoningSteps: new Set<string>(),
   });
   const hasCompletedCondensedActivity =
     displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY &&
@@ -3562,7 +3806,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     : displayEvents;
   const userFacingDisplayEvents = visibleDisplayEvents.filter((event) => {
     if (event.internal) return false;
-    if (hideReasoningTimeline && event.kind === "reasoning") return false;
     return true;
   });
   const internalDisplayEvents = visibleDisplayEvents.filter(
@@ -3601,9 +3844,34 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       ? todoItems.filter((item) => item.sessionId === activeSessionId)
       : todoItems;
     const hasAnyScopedTodo = sessionScopedTodoItems.some((item) => !!item.parentMessageId);
-    const strict = sessionScopedTodoItems.filter((item) => item.parentMessageId === messageId);
+    const messageIdentityCandidates = collectMessageIdentityCandidates(message);
+    const strict = sessionScopedTodoItems.filter((item) => {
+      if (!item.parentMessageId) {
+        return false;
+      }
+      return messageIdentityCandidates.has(item.parentMessageId);
+    });
     if (strict.length > 0) {
       return strict;
+    }
+    const assistantMessageIdentitySet = new Set<string>();
+    for (const candidate of state.messages) {
+      const role = candidate.role ?? candidate.info?.role ?? "user";
+      if (role !== "assistant") {
+        continue;
+      }
+      const ids = collectMessageIdentityCandidates(candidate);
+      for (const id of ids) {
+        assistantMessageIdentitySet.add(id);
+      }
+    }
+    const orphanMappedTodos = sessionScopedTodoItems.filter(
+      (item) =>
+        !!item.parentMessageId &&
+        !assistantMessageIdentitySet.has(item.parentMessageId),
+    );
+    if (orphanMappedTodos.length > 0 && isLatestAssistantMessage) {
+      return orphanMappedTodos;
     }
     // Live-stream safety: if todos have not been stamped with parentMessageId yet,
     // keep showing them on the currently streaming assistant message only.
@@ -3614,6 +3882,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     ) {
       return sessionScopedTodoItems.filter((item) => !item.parentMessageId);
     }
+    // Hydration safety: if snapshot todos are session-scoped but unstamped,
+    // keep them visible on the latest assistant message even after streaming.
+    if (!hasAnyScopedTodo && isLatestAssistantMessage) {
+      return sessionScopedTodoItems.filter((item) => !item.parentMessageId);
+    }
     return [];
   }, [
     todoItems,
@@ -3621,6 +3894,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     isStreamingActive,
     latestAssistantMessageId,
     state.currentSessionId,
+    state.messages,
+    isLatestAssistantMessage,
+    message,
   ]);
   const shouldShowTodoInlineSummary = scopedTodoItems.length > 0;
   const { planStatus, isRevisedPlan } = useMemo(() => {
@@ -3939,11 +4215,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const hasActiveTimelineWork = timelineDisplayEvents.some(
     (event) => event.status === "pending",
   );
-  const showInProgressActivityPlaceholder =
-    !!streaming?.isActive &&
-    state.isProcessing &&
-    !hasActiveTimelineWork &&
-    !showThinkingPlaceholder;
   const { rawResponseText } = useMemo(() => {
     const maxRawDebugChars = 30000;
     const withCap = (value: string): string =>
@@ -3975,7 +4246,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   // Render raw debug whenever payload exists. Do not gate behind stream-debug
   // flags, otherwise streamed + hydrated sessions can silently hide rawResponse.
   const hasRawResponseDebug = rawResponseText.trim().length > 0;
-  const showRawResponseDebug = false;
+  const showRawResponseDebug = config.debug.showRawResponse;
   const planLeadMessage = useMemo(() => {
     if (!plan) return "";
     const candidate = (
@@ -4272,292 +4543,362 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
         <div className="space-y-3">
           {(displayEvents.length > 0 ||
-            showThinkingPlaceholder ||
-            showInProgressActivityPlaceholder) && (
-            <section data-assistant-section="activity">
-              {timelineDisplayEvents.length > 0 && (
-                <>
-                  <Stepper
-                    className={cn(
-                      "oc-refined-stepper",
-                      viewState.showAllCompletedActivity && "max-h-[400px] overflow-y-auto",
-                    )}
-                    ref={progressTimelineRef}
-                    autoScrollToBottom={isStreamingActive}
-                  >
-                    {timelineDisplayEvents.map((event, index) => {
-                      const isLast =
-                        !showInProgressActivityPlaceholder &&
-                        index === timelineDisplayEvents.length - 1;
-                      const isLatestStreamingEvent =
-                        isStreamingActive && isLast;
-                      const indicatorNode = (
-                        <StepIndicator
-                          status={isLatestStreamingEvent && event.status === "pending" ? "running" : event.status}
-                        />
-                      );
-                      const fileName = event.filePath
-                        ? event.filePath.split(/[/\\]/).pop()
-                        : undefined;
-                      const shouldShowDetail = viewState.showActivityDetails;
+            showThinkingPlaceholder) && (
+              <section data-assistant-section="activity">
+                {timelineDisplayEvents.length > 0 && (
+                  <>
+                    <Stepper
+                      className={cn(
+                        "oc-refined-stepper",
+                        viewState.showAllCompletedActivity && "max-h-[400px] overflow-y-auto",
+                      )}
+                      ref={progressTimelineRef}
+                      autoScrollToBottom={isStreamingActive}
+                    >
+                      {timelineDisplayEvents.map((event, index) => {
+                        const isLast = index === timelineDisplayEvents.length - 1;
+                        const isLatestStreamingEvent =
+                          isStreamingActive && isLast;
+                        const indicatorNode = (
+                          <StepIndicator
+                            status={isLatestStreamingEvent && event.status === "pending" ? "running" : event.status}
+                          />
+                        );
+                        const fileName = event.filePath
+                          ? event.filePath.split(/[/\\]/).pop()
+                          : undefined;
+                        const shouldShowDetail = viewState.showActivityDetails;
 
-                      return (
-                        <StepperItem
-                          key={event.key}
-                          isLast={isLast}
-                          indicator={indicatorNode}
-                          className={cn(
-                            "oc-refined-stepper-item group",
-                            isLatestStreamingEvent
-                              ? "is-streaming"
-                              : "",
-                          )}
-                        >
-                          <ExpandableStep>
-                            <div className="flex min-w-0 flex-col items-start gap-2 w-full">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span
-                                  className={cn(
-                                    "oc-refined-event-label",
-                                    event.kind === "reasoning" && "reasoning",
-                                    // event.kind === "activity" && "uppercase"
-                                    event.kind === "activity" && "activity",
-                                  )}
-                                  data-operation={event.label.toLowerCase()}
-                                >
-                                  {event.label}
-                                </span>
-                                {event.kind === "activity" && event.source && event.source !== "stream" && event.source !== "final" && (
-                                  <span className="oc-refined-meta-badge">
-                                    {event.source === "raw_debug"
-                                      ? "raw"
-                                      : event.source}
-                                  </span>
-                                )}
-                                {event.kind === "activity" && event.internal && (
-                                  <span className="oc-refined-meta-badge">
-                                    internal
-                                  </span>
-                                )}
-                              </div>
-
-                              <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
-                                {event.filePath ? (
-                                  SEARCH_LABELS.has(event.label) ? (
-                                    <SearchBlock
-                                      pattern={
-                                        [
-                                          event.activityDetail?.query || event.summary,
-                                          event.description,
-                                        ]
-                                          .filter((value): value is string => !!value?.trim())
-                                          .join("\n")
-                                      }
-                                      scope={event.label}
-                                      path={event.filePath}
-                                    />
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      className="oc-refined-file-link"
-                                      title={event.filePath}
-                                      onClick={() =>
-                                        vscode.postMessage({
-                                          type: "openFile",
-                                          file: event.filePath!,
-                                        })
-                                      }
-                                    >
-                                      <FileIcon filePath={event.filePath} />
-                                      <span className="break-words whitespace-pre-wrap">
-                                        {fileName || event.summary}
-                                      </span>
-                                    </button>
-                                  )
-                                ) : (
-                                  event.summary && (
-                                    <div
-                                      className={cn(
-                                        "oc-refined-event-summary",
-                                        event.kind === "reasoning" &&
-                                        !viewState.showThinkingDetails &&
-                                        "line-clamp-2",
-                                      )}
-                                    >
-                                      {event.label === "bash" ? (
-                                        <TerminalBlockWithOutput
-                                          event={event}
-                                          messageContent={content}
-                                        />
-                                      ) : SEARCH_LABELS.has(event.label) ? (
-                                        <SearchBlock
-                                          pattern={
-                                            [
-                                              event.activityDetail?.query || event.summary,
-                                              event.description,
-                                            ]
-                                              .filter((value): value is string => !!value?.trim())
-                                              .join("\n")
-                                          }
-                                          scope={event.label}
-                                        />
-                                      ) : (
-                                        <MarkdownRenderer
-                                          content={event.summary}
-                                          className="markdown-body"
-                                        />
-                                      )}
-                                    </div>
-                                  )
-                                )}
-
-                                {/* For non-bash events, render description separately */}
-                                {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.description && (
-                                  <div className="oc-refined-event-content">
-                                    <MarkdownRenderer
-                                      content={event.description}
-                                      className="markdown-body"
-                                    />
-                                  </div>
-                                )}
-
-                                {event.updateCount > 1 && (
-                                  <span className="oc-refined-update-count">
-                                    x{event.updateCount} updates
-                                  </span>
-                                )}
-
-                                {shouldShowDetail && event.detail && (
-                                  <div className="oc-refined-event-content">
-                                    <MarkdownRenderer
-                                      content={event.detail}
-                                      className="markdown-body"
-                                    />
-                                  </div>
-                                )}
-
-                                {shouldShowDetail && event.activityDetail && (
-                                  <div className="oc-refined-activity-details flex flex-col gap-2">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      {event.activityDetail.tool && (
-                                        <span className="oc-refined-detail-badge">
-                                          tool {event.activityDetail.tool}
-                                        </span>
-                                      )}
-                                      {event.activityDetail.query && (
-                                        <span className="oc-refined-detail-badge">
-                                          query {event.activityDetail.query}
-                                        </span>
-                                      )}
-                                    </div>
-
-                                    {/* Don't show TerminalBlock here for bash - already shown in summary section above */}
-                                    {event.label !== "bash" && event.activityDetail.command && (
-                                      <TerminalBlock command={event.activityDetail.command} />
-                                    )}
-                                  </div>
-                                )}
-                              </span>
-
-                              {event.diffStats &&
-                                (event.diffStats.added > 0 ||
-                                  event.diffStats.deleted > 0) && (
-                                  <span className="oc-refined-diff-stats">
-                                    {event.diffStats.added > 0 && (
-                                      <span className="oc-refined-diff-add">
-                                        +{event.diffStats.added}
-                                      </span>
-                                    )}
-                                    {event.diffStats.deleted > 0 && (
-                                      <span className="oc-refined-diff-del">
-                                        -{event.diffStats.deleted}
-                                      </span>
-                                    )}
-                                  </span>
-                                )}
-
-                              {event.viewDiffFile && (
-                                <button
-                                  type="button"
-                                  className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium oc-text-secondary hover:text-oc-text-soft"
-                                  onClick={() =>
-                                    vscode.postMessage({
-                                      type: "openDiff",
-                                      file: event.viewDiffFile,
-                                    })
-                                  }
-                                >
-                                  View diff
-                                </button>
-                              )}
-                            </div>
-                          </ExpandableStep>
-                        </StepperItem>
-                      );
-                    })}
-                    {showInProgressActivityPlaceholder && (
-                      <StepperItem
-                        isLast={true}
-                        indicator={<StepIndicator status="running" />}
-                        className="oc-refined-stepper-item mt-2"
-                      >
-                        <div className="flex min-w-0 items-center gap-2 flex-wrap">
-                          <span className="oc-refined-event-label activity">
-                            IN_PROGRESS
-                          </span>
-                          <span className="flex-1 whitespace-pre-wrap break-words text-[11px] leading-5 oc-text-secondary">
-                            Working in the background...
-                          </span>
-                        </div>
-                      </StepperItem>
-                    )}
-                  </Stepper>
-
-                  {showThinkingPlaceholder && !hasThinkingEvents && timelineDisplayEvents.length === 0 && (
-                    <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
-                      <StepperItem
-                        isLast={true}
-                        indicator={<StepIndicator status="pending" />}
-                      >
-                        <div className="flex min-w-0 items-start gap-2 flex-wrap">
-                          <span className="oc-refined-event-label reasoning">
-                            Reasoning
-                          </span>
-                          <span
+                        return (
+                          <StepperItem
+                            key={event.key}
+                            isLast={isLast}
+                            indicator={indicatorNode}
                             className={cn(
-                              "flex-1 whitespace-pre-wrap break-words text-[11px] oc-text-secondary",
-                              !viewState.showThinkingDetails && "line-clamp-2",
+                              "oc-refined-stepper-item group",
+                              isLatestStreamingEvent
+                                ? "is-streaming"
+                                : "",
                             )}
                           >
-                            {thinkingPlaceholderText}
-                          </span>
-                        </div>
-                      </StepperItem>
-                    </Stepper>
-                  )}
+                            {(() => {
+                              if (event.kind === "reasoning") {
+                                const isExpanded = viewState.expandedReasoningSteps.has(event.key);
+                                return (
+                                  <div className="flex items-start justify-between gap-2 w-full">
+                                    <div className="flex-1 min-w-0 flex-col items-start gap-2 w-full">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <span
+                                          className={cn(
+                                            "oc-refined-event-label",
+                                            "reasoning",
+                                          )}
+                                          data-operation={event.label.toLowerCase()}
+                                        >
+                                          {event.label}
+                                        </span>
+                                      </div>
 
-                  {displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY && (
-                    <button
-                      type="button"
-                      className="mt-4 rounded-full border border-oc-border px-2.5 py-0.5 text-left font-medium text-[10px] oc-text-secondary transition-colors hover:bg-oc-panel hover:text-oc-text-soft"
-                      onClick={() =>
-                        setViewState((prev) => ({
-                          ...prev,
-                          showAllCompletedActivity: !prev.showAllCompletedActivity,
-                        }))
+                                      <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
+                                        {event.summary && (
+                                          <div className={cn(
+                                            "w-full relative transition-all duration-200",
+                                            !isExpanded && "max-h-[80px] overflow-hidden",
+                                            isExpanded && "max-h-none",
+                                          )}>
+                                            <div className={cn(
+                                              "oc-refined-event-summary text-left w-full",
+                                              !isExpanded && "reasoning-subtle-fade"
+                                            )}>
+                                              <MarkdownRenderer
+                                                content={event.summary}
+                                                className="markdown-body"
+                                              />
+                                            </div>
+                                            {!isExpanded && (
+                                              <div className="reasoning-fade-indicator" />
+                                            )}
+                                          </div>
+                                        )}
+                                      </span>
+                                    </div>
+
+                                    {/* Chevron button at right end */}
+                                    <button
+                                      type="button"
+                                      className="shrink-0 p-1 hover:bg-oc-panel-soft rounded transition-colors"
+                                      onClick={() =>
+                                        setViewState((prev) => {
+                                          const newExpanded = new Set(prev.expandedReasoningSteps);
+                                          if (newExpanded.has(event.key)) {
+                                            newExpanded.delete(event.key);
+                                          } else {
+                                            newExpanded.add(event.key);
+                                          }
+                                          return { ...prev, expandedReasoningSteps: newExpanded };
+                                        })
+                                      }
+                                      title={isExpanded ? "Collapse reasoning" : "Expand reasoning"}
+                                    >
+                                      <ChevronDown
+                                        className={cn(
+                                          "h-4 w-4 transition-transform duration-200 oc-text-secondary",
+                                          isExpanded && "rotate-180",
+                                        )}
+                                      />
+                                    </button>
+                                  </div>
+                                );
+                              } else {
+                                return (
+                                  <div className="flex items-start justify-between gap-2 w-full">
+                                    <ExpandableStep className="flex-1 min-w-0">
+                                <div className="flex min-w-0 flex-col items-start gap-2 w-full">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                  <span
+                                    className={cn(
+                                      "oc-refined-event-label",
+                                      event.kind === "reasoning" && "reasoning",
+                                      // event.kind === "activity" && "uppercase"
+                                      event.kind === "activity" && "activity",
+                                    )}
+                                    data-operation={event.label.toLowerCase()}
+                                  >
+                                    {event.label}
+                                  </span>
+                                  {event.kind === "activity" && event.source && event.source !== "stream" && event.source !== "final" && (
+                                    <span className="oc-refined-meta-badge">
+                                      {event.source === "raw_debug"
+                                        ? "raw"
+                                        : event.source}
+                                    </span>
+                                  )}
+                                  {event.kind === "activity" && event.internal && (
+                                    <span className="oc-refined-meta-badge">
+                                      internal
+                                    </span>
+                                  )}
+                                </div>
+
+                                <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
+                                  {event.filePath ? (
+                                    SEARCH_LABELS.has(event.label) ? (
+                                      <SearchBlock
+                                        pattern={
+                                          [
+                                            event.activityDetail?.query || event.summary,
+                                            event.description,
+                                          ]
+                                            .filter((value): value is string => !!value?.trim())
+                                            .join("\n")
+                                        }
+                                        scope={event.label}
+                                        path={event.filePath}
+                                      />
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className="oc-refined-file-link oc-refined-file-link-with-tooltip"
+                                        onClick={() =>
+                                          vscode.postMessage({
+                                            type: "openFile",
+                                            file: event.filePath!,
+                                          })
+                                        }
+                                      >
+                                        <FileIcon filePath={event.filePath} />
+                                        <span className="break-words whitespace-pre-wrap">
+                                          {fileName || event.summary}
+                                        </span>
+                                        <span className="oc-refined-file-link-tooltip" role="tooltip">
+                                          {event.filePath}
+                                        </span>
+                                      </button>
+                                    )
+                                  ) : (
+                                    event.summary && (
+                                      event.kind === "reasoning" ? (
+                                        <div className="w-full">
+                                          <div
+                                            className={cn(
+                                              "oc-refined-event-summary text-left w-full",
+                                              !viewState.expandedReasoningSteps.has(event.key) && "line-clamp-2",
+                                            )}
+                                          >
+                                            <MarkdownRenderer
+                                              content={event.summary}
+                                              className="markdown-body"
+                                            />
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div
+                                          className={cn(
+                                            "oc-refined-event-summary",
+                                          )}
+                                        >
+                                        {event.label === "bash" ? (
+                                          <TerminalBlockWithOutput
+                                            event={event}
+                                            messageContent={content}
+                                          />
+                                        ) : SEARCH_LABELS.has(event.label) ? (
+                                          <SearchBlock
+                                            pattern={
+                                              [
+                                                event.activityDetail?.query || event.summary,
+                                                event.description,
+                                              ]
+                                                .filter((value): value is string => !!value?.trim())
+                                                .join("\n")
+                                            }
+                                            scope={event.label}
+                                          />
+                                        ) : (
+                                          <MarkdownRenderer
+                                            content={event.summary}
+                                            className="markdown-body"
+                                          />
+                                        )}
+                                      </div>
+                                    )
+                                  ))}
+
+                                  {/* For non-bash events, render description separately */}
+                                  {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.description && (
+                                    <div className="oc-refined-event-content">
+                                      <MarkdownRenderer
+                                        content={event.description}
+                                        className="markdown-body"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {event.updateCount > 1 && (
+                                    <span className="oc-refined-update-count">
+                                      x{event.updateCount} updates
+                                    </span>
+                                  )}
+
+                                  {shouldShowDetail && event.detail && (
+                                    <div className="oc-refined-event-content">
+                                      <MarkdownRenderer
+                                        content={event.detail}
+                                        className="markdown-body"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {shouldShowDetail && event.activityDetail && (
+                                    <div className="oc-refined-activity-details flex flex-col gap-2">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        {event.activityDetail.tool && (
+                                          <span className="oc-refined-detail-badge">
+                                            tool {event.activityDetail.tool}
+                                          </span>
+                                        )}
+                                        {event.activityDetail.query && (
+                                          <span className="oc-refined-detail-badge">
+                                            query {event.activityDetail.query}
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      {/* Don't show TerminalBlock here for bash - already shown in summary section above */}
+                                      {event.label !== "bash" && event.activityDetail.command && (
+                                        <TerminalBlock command={event.activityDetail.command} />
+                                      )}
+                                    </div>
+                                  )}
+                                </span>
+
+                                {event.diffStats &&
+                                  (event.diffStats.added > 0 ||
+                                    event.diffStats.deleted > 0) && (
+                                    <span className="oc-refined-diff-stats">
+                                      {event.diffStats.added > 0 && (
+                                        <span className="oc-refined-diff-add">
+                                          +{event.diffStats.added}
+                                        </span>
+                                      )}
+                                      {event.diffStats.deleted > 0 && (
+                                        <span className="oc-refined-diff-del">
+                                          -{event.diffStats.deleted}
+                                        </span>
+                                      )}
+                                    </span>
+                                  )}
+
+                                {event.viewDiffFile && (
+                                  <button
+                                    type="button"
+                                    className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium oc-text-secondary hover:text-oc-text-soft"
+                                    onClick={() =>
+                                      vscode.postMessage({
+                                        type: "openDiff",
+                                        file: event.viewDiffFile,
+                                      })
+                                    }
+                                  >
+                                    View diff
+                                  </button>
+                                )}
+                                </div>
+                              </ExpandableStep>
+                            </div>
+                        );
                       }
-                    >
-                      {viewState.showAllCompletedActivity
-                        ? "Show less"
-                        : `Show more (${hiddenActivityEventCount})`}
-                    </button>
-                  )}
+                    })()}
+                          </StepperItem>
+                        );
+                      })}
+                    </Stepper>
 
-                </>
-              )}
+                    {showThinkingPlaceholder && !hasThinkingEvents && timelineDisplayEvents.length === 0 && (
+                      <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
+                        <StepperItem
+                          isLast={true}
+                          indicator={<StepIndicator status="pending" />}
+                        >
+                          <div className="flex min-w-0 items-start gap-2 flex-wrap">
+                            <span className="oc-refined-event-label reasoning">
+                              Reasoning
+                            </span>
+                            <span
+                              className={cn(
+                                "flex-1 whitespace-pre-wrap break-words text-[11px] oc-text-secondary",
+                                !viewState.showThinkingDetails && "line-clamp-2",
+                              )}
+                            >
+                              {thinkingPlaceholderText}
+                            </span>
+                          </div>
+                        </StepperItem>
+                      </Stepper>
+                    )}
 
-            </section>
-          )}
+                    {displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY && (
+                      <button
+                        type="button"
+                        className="mt-4 rounded-full border border-oc-border px-2.5 py-0.5 text-left font-medium text-[10px] oc-text-secondary transition-colors hover:bg-oc-panel hover:text-oc-text-soft"
+                        onClick={() =>
+                          setViewState((prev) => ({
+                            ...prev,
+                            showAllCompletedActivity: !prev.showAllCompletedActivity,
+                          }))
+                        }
+                      >
+                        {viewState.showAllCompletedActivity
+                          ? "Show less"
+                          : `Show more (${hiddenActivityEventCount})`}
+                      </button>
+                    )}
+
+                  </>
+                )}
+
+              </section>
+            )}
 
           <SubagentsInlineCard
             subagents={subagents}
@@ -4629,7 +4970,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                       {plan.file ? (
                         <div className="plan-card-file mt-1 flex items-center gap-1.5 text-[11px] font-medium">
                           <FileIcon filePath={plan.file} />
-                          <span className="truncate" title={plan.file}>{plan.file}</span>
+                          <span className="truncate" title={plan.file}>{toWorkspaceRelativePath(plan.file)}</span>
                         </div>
                       ) : (
                         <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-oc-text-soft italic">
@@ -4891,6 +5232,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 Array.isArray(message?.progressEvents) ? message.progressEvents : []
               }
               messageEdits={message?.edits || []}
+              structuredFileChanges={structuredFileChangesFromMessage(message)}
               changeSummary={changeSummary}
               messageId={messageId}
               sessionId={state.currentSessionId}
@@ -4902,9 +5244,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
           !showResponseSection &&
           hasStreamingActivity &&
           !showStreamingLoading && (
-          <div className="mt-2 mb-2 px-1">
-            <ThinkingStatusTicker className="oc-thinking-status" />
-          </div>
+            <div className="mt-2 mb-2 px-1">
+              <ThinkingStatusTicker className="oc-thinking-status" />
+            </div>
           )}
         {/* Raw Data â€" moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (
@@ -4969,6 +5311,7 @@ function FileChangesSection({
   streamingSteps,
   timelineEvents,
   messageEdits,
+  structuredFileChanges,
   changeSummary,
   messageId,
   sessionId,
@@ -4993,6 +5336,7 @@ function FileChangesSection({
     diffStats?: { added: number; deleted: number };
   }>;
   messageEdits: Array<{ file: string; added?: number; deleted?: number }>;
+  structuredFileChanges: StructuredFileChange[];
   changeSummary?: Message["changeSummary"];
   messageId?: string | null;
   sessionId?: string | null;
@@ -5005,6 +5349,8 @@ function FileChangesSection({
     const v = value.trim();
     if (!v) return false;
     if (v.includes("\n")) return false;
+    if (/\s/.test(v)) return false;
+    if (!/^[A-Za-z0-9._/\-\\]+$/.test(v)) return false;
     if (/[\\/]/.test(v)) return true;
     if (/^\*?[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+$/.test(v)) return true;
     if (/^\*\s+[A-Za-z0-9._-]+[\\/][^ ]+/.test(v)) return true;
@@ -5093,6 +5439,14 @@ function FileChangesSection({
             ? diffExcerpt.deleted
             : 0,
       );
+      const hasExcerptLines =
+        Array.isArray(diffExcerpt?.lines) &&
+        diffExcerpt.lines.some((line) => typeof line === "string" && line.trim().length > 0);
+      const hasStructuredChangeEvidence =
+        resolvedAdded > 0 || resolvedDeleted > 0 || hasExcerptLines;
+      if (!hasStructuredChangeEvidence) {
+        return;
+      }
 
       const existing = byFile.get(key);
       if (!existing) {
@@ -5134,8 +5488,15 @@ function FileChangesSection({
     };
 
     for (const step of streamingSteps) {
+      const hasConcreteChangeEvidence =
+        Boolean(step.diffStats) ||
+        Boolean(step.activityDetail?.diffExcerpt) ||
+        Boolean(step.activityDetail?.file);
+      if (!hasConcreteChangeEvidence) {
+        continue;
+      }
       upsert(
-        step.filePath || step.activityDetail?.file || step.title,
+        step.filePath || step.activityDetail?.file,
         step.diffStats?.added,
         step.diffStats?.deleted,
         1,
@@ -5144,8 +5505,15 @@ function FileChangesSection({
     }
 
     for (const event of timelineEvents) {
+      const hasConcreteChangeEvidence =
+        Boolean(event.diffStats) ||
+        Boolean(event.activityDetail?.diffExcerpt) ||
+        Boolean(event.activityDetail?.file);
+      if (!hasConcreteChangeEvidence) {
+        continue;
+      }
       upsert(
-        event.filePath || event.activityDetail?.file || event.summary || event.description,
+        event.filePath || event.activityDetail?.file,
         event.diffStats?.added,
         event.diffStats?.deleted,
         1,
@@ -5157,9 +5525,30 @@ function FileChangesSection({
       upsert(edit.file, edit.added, edit.deleted, 2);
     }
 
+    for (const item of structuredFileChanges) {
+      const excerptLines = Array.isArray(item.diffExcerpt?.lines)
+        ? item.diffExcerpt.lines.filter(
+            (line): line is string => typeof line === "string" && line.trim().length > 0,
+          )
+        : [];
+      upsert(
+        item.file,
+        item.diffStats?.added,
+        item.diffStats?.deleted,
+        3,
+        {
+          ...item.diffExcerpt,
+          lines: excerptLines,
+        },
+      );
+    }
+
     if (changeSummary && Array.isArray(changeSummary.files)) {
       for (const summaryFile of changeSummary.files) {
-        upsert(summaryFile.file, summaryFile.added, summaryFile.deleted, 3);
+        if (!isLikelyFilePath(summaryFile.file)) {
+          continue;
+        }
+        upsert(summaryFile.file, summaryFile.added, summaryFile.deleted, 4);
       }
     }
 
@@ -5171,7 +5560,7 @@ function FileChangesSection({
         diffExcerpt: item.diffExcerpt,
       }))
       .sort((a, b) => a.file.localeCompare(b.file));
-  }, [streamingSteps, timelineEvents, messageEdits, changeSummary]);
+  }, [streamingSteps, timelineEvents, messageEdits, structuredFileChanges, changeSummary]);
 
   if (fileChanges.length === 0) {
     return null;
@@ -5198,6 +5587,9 @@ function FileChangesSection({
 
     if (changeSummary && Array.isArray(changeSummary.files)) {
       for (const summaryFile of changeSummary.files) {
+        if (!isLikelyFilePath(summaryFile.file)) {
+          continue;
+        }
         const key = normalizePath(summaryFile.file);
         if (seen.has(key)) continue;
         const matched = fileChanges.find((file) => normalizePath(file.file) === key);
@@ -5241,8 +5633,65 @@ function FileChangesSection({
     });
   };
   const [expandedByFile, setExpandedByFile] = useState<Record<string, boolean>>({});
+  const [fetchedPreviewByFile, setFetchedPreviewByFile] = useState<
+    Record<string, { header?: string; lines: string[] }>
+  >({});
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const data = event?.data as
+        | {
+            type?: string;
+            file?: string;
+            messageId?: string;
+            diffExcerpt?: { header?: string; lines?: string[] };
+          }
+        | undefined;
+      if (!data || data.type !== "messageFileDiffPreview") {
+        return;
+      }
+      if (messageId && data.messageId && data.messageId !== messageId) {
+        return;
+      }
+      const file = (data.file || "").trim();
+      const lines = Array.isArray(data.diffExcerpt?.lines)
+        ? data.diffExcerpt!.lines.filter(
+            (line): line is string => typeof line === "string" && line.trim().length > 0,
+          )
+        : [];
+      if (!file || lines.length === 0) {
+        return;
+      }
+      setFetchedPreviewByFile((prev) => ({
+        ...prev,
+        [normalizePath(file)]: {
+          header: data.diffExcerpt?.header,
+          lines,
+        },
+      }));
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [messageId]);
 
   const toggleExpanded = (file: string) => {
+    const key = normalizePath(file);
+    const hasLocalPreview = !!fetchedPreviewByFile[key];
+    const current = visibleChanges.find(
+      (change) => normalizePath(change.file) === key,
+    );
+    const hasExistingPreview =
+      !!current &&
+      Array.isArray(current.diffExcerpt?.lines) &&
+      current.diffExcerpt.lines.length > 0;
+    if (!hasLocalPreview && !hasExistingPreview && messageId) {
+      vscode.postMessage({
+        type: "getMessageFileDiffPreview",
+        messageId,
+        sessionId: sessionId || undefined,
+        file,
+      });
+    }
     setExpandedByFile((prev) => ({
       ...prev,
       [file]: !prev[file],
@@ -5289,8 +5738,15 @@ function FileChangesSection({
       <div className="border-t border-oc-border-soft">
         <div className="space-y-0.5 p-1.5">
           {visibleChanges.map((fileChange) => {
+            const fetchedPreview = fetchedPreviewByFile[normalizePath(fileChange.file)];
+            const previewExcerpt = fetchedPreview
+              ? {
+                  header: fetchedPreview.header,
+                  lines: fetchedPreview.lines,
+                }
+              : fileChange.diffExcerpt;
             const hasPreview =
-              Array.isArray(fileChange.diffExcerpt?.lines) && fileChange.diffExcerpt.lines.length > 0;
+              Array.isArray(previewExcerpt?.lines) && previewExcerpt.lines.length > 0;
             const isExpanded = !!expandedByFile[fileChange.file];
             const filename = fileChange.file.split(/[\\/]/).pop() ?? fileChange.file;
             const dirname = fileChange.file !== filename
@@ -5352,8 +5808,8 @@ function FileChangesSection({
                   <div className="border-t border-oc-border-soft bg-black/10">
                     <ActivityDiffExcerpt
                       excerpt={{
-                        header: fileChange.diffExcerpt?.header,
-                        lines: fileChange.diffExcerpt?.lines || [],
+                        header: previewExcerpt?.header,
+                        lines: previewExcerpt?.lines || [],
                       }}
                     />
                   </div>

@@ -1288,6 +1288,7 @@ export class ChatViewProvider
         selectedModel: this.modelAndAgentManager.getSelectedModel(),
         selectedAgent: this.modelAndAgentManager.getSelectedAgent(),
         serverVersion: this.serverManager.getVersion(),
+        workspaceRoot: this.getWorkspaceDirectory(),
         currentSessionId: this.currentSessionId,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
         todoItems: [],
@@ -1985,8 +1986,12 @@ export class ChatViewProvider
     },
   ): Promise<void> {
     const partial: any = {};
-    if (settings.providerID) partial.providerID = settings.providerID;
-    if (settings.modelID) partial.modelID = settings.modelID;
+    if (settings.providerID || settings.modelID) {
+      const model: Record<string, string> = {};
+      if (settings.providerID) model.providerID = settings.providerID;
+      if (settings.modelID) model.modelID = settings.modelID;
+      partial.model = model;
+    }
     if (settings.agent) partial.agent = settings.agent;
     if ("thinkingLevel" in settings) partial.thinkingLevel = settings.thinkingLevel;
     if (settings.thinkingByModel) partial.thinkingByModel = settings.thinkingByModel;
@@ -2024,7 +2029,9 @@ export class ChatViewProvider
 
     return {
       reasoning,
-      variants: variants.length > 0 ? variants : undefined,
+      variants: variants.length > 0
+        ? (variants.includes("none") ? variants : ["none", ...variants])
+        : undefined,
     };
   }
 
@@ -2355,6 +2362,7 @@ export class ChatViewProvider
               selectedModel: this.selectedModel,
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
+              workspaceRoot: this.getWorkspaceDirectory(),
               currentSessionId: this.currentSessionId,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
               todoItems: [],
@@ -2400,6 +2408,7 @@ export class ChatViewProvider
               selectedModel: this.selectedModel,
               selectedAgent: this.selectedAgent,
               serverVersion: this.serverManager.getVersion(),
+              workspaceRoot: this.getWorkspaceDirectory(),
               currentSessionId: this.currentSessionId,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
@@ -2704,6 +2713,14 @@ export class ChatViewProvider
           await this.handleUndoMessageChanges(
             this.firstNonEmptyString(message.messageId),
             this.firstNonEmptyString(message.sessionId),
+          );
+          break;
+        }
+        case "getMessageFileDiffPreview": {
+          await this.handleGetMessageFileDiffPreview(
+            this.firstNonEmptyString(message.messageId),
+            this.firstNonEmptyString(message.file),
+            this.firstNonEmptyString(message.sessionId, this.currentSessionId),
           );
           break;
         }
@@ -3293,6 +3310,16 @@ export class ChatViewProvider
         sessionId: this.extractEventSessionId(event),
         hasStructured: !!structuredRec,
       });
+      if (eventType === "session.diff") {
+        const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
+        const diffs = Array.isArray(props?.diff) ? (props.diff as Array<Record<string, unknown>>) : [];
+        this.logger.debug("session.diff stream event observed", {
+          sessionId: this.extractEventSessionId(event),
+          rows: diffs.length,
+          withPatch: diffs.filter((row) => typeof row?.patch === "string" && row.patch.length > 0).length,
+          sampleFiles: diffs.slice(0, 8).map((row) => String(row?.file || "")),
+        });
+      }
 
       const eventSessionId = this.extractEventSessionId(event);
       // Always run subagent tracking before any session-scoped early return so child
@@ -3597,22 +3624,57 @@ export class ChatViewProvider
       return [];
     }
 
-    this.logger.info('[DEBUG] processHistoryMessages input:', { count: messages.length, sessionId });
+    const summarizeDiffPreviewEvidence = (items: any[]) => {
+      const assistants = (Array.isArray(items) ? items : []).filter((m) =>
+        this.firstNonEmptyString(m?.role, m?.info?.role)?.toLowerCase() === "assistant",
+      );
+      const withStructuredFileChanges = assistants.filter((m) =>
+        Array.isArray(m?.structuredOutput?.fileChanges) && m.structuredOutput.fileChanges.length > 0,
+      ).length;
+      const withInfoStructuredFileChanges = assistants.filter((m) =>
+        Array.isArray(m?.info?.structured?.fileChanges) && m.info.structured.fileChanges.length > 0,
+      ).length;
+      const withRawResponse = assistants.filter((m) => typeof m?.rawResponse !== "undefined").length;
+      return {
+        assistantCount: assistants.length,
+        withStructuredFileChanges,
+        withInfoStructuredFileChanges,
+        withRawResponse,
+      };
+    };
+
+    this.logger.info("[DIFF PREVIEW] processHistoryMessages input", {
+      count: messages.length,
+      sessionId,
+      evidence: summarizeDiffPreviewEvidence(messages),
+    });
 
     try {
       // Load any session overrides first
       const overriddenMessages = await this.historyProcessor.applySessionMessageOverrides(sessionId, messages);
 
-      this.logger.info('[DEBUG] After applySessionMessageOverrides:', { count: overriddenMessages?.length || 0 });
+      this.logger.info("[DIFF PREVIEW] after applySessionMessageOverrides", {
+        count: overriddenMessages?.length || 0,
+        sessionId,
+        evidence: summarizeDiffPreviewEvidence(overriddenMessages || []),
+      });
 
       // Then process through the canonical pipeline
       const processed = await this.historyProcessor.processHistoryMessages(overriddenMessages, sessionId);
 
-      this.logger.info('[DEBUG] processHistoryMessages output:', { count: processed?.length || 0, sessionId });
+      this.logger.info("[DIFF PREVIEW] processHistoryMessages output", {
+        count: processed?.length || 0,
+        sessionId,
+        evidence: summarizeDiffPreviewEvidence(processed || []),
+      });
 
       return processed || [];
     } catch (error) {
-      this.logger.error('[ERROR] processHistoryMessages failed:', { error: error instanceof Error ? error.message : String(error), sessionId, stack: error instanceof Error ? error.stack : undefined });
+      this.logger.error("[DIFF PREVIEW] processHistoryMessages failed", {
+        error: error instanceof Error ? error.message : String(error),
+        sessionId,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       // Return original messages as fallback
       return messages;
     }
@@ -6004,7 +6066,7 @@ export class ChatViewProvider
                 type: "file",
                 mime: ctx.languageId || "text/plain",
                 filename: ctx.file.split(/[\\/]/).pop(),
-                url: `file://${ctx.file}`,
+                url: absoluteUri.toString(),
                 source: {
                   type: "file",
                   path: ctx.file,
@@ -6063,7 +6125,7 @@ export class ChatViewProvider
                 type: "file",
                 mime: "text/plain",
                 filename: filePath.split(/[\\/]/).pop(),
-                url: `file://${filePath}`,
+                url: absoluteUri.toString(),
                 source: {
                   type: "file",
                   path: filePath,
@@ -6098,9 +6160,16 @@ export class ChatViewProvider
 
       // Send the message using the SDK
       const startTime = Date.now();
+      const thinkingLevel = this.modelAndAgentManager.getEffectiveThinkingLevel(session.id);
+      const modelReasoning = this.resolveCapabilityForModel(
+        this.selectedModel.providerID,
+        this.selectedModel.modelID,
+      )?.reasoning ?? false;
+      const disableThinkingStructuredOutput = thinkingLevel === "none" && modelReasoning;
       const useStructuredOutput =
         !slashCommandInvocation &&
         !retryWithoutStructuredOutput &&
+        !disableThinkingStructuredOutput &&
         this.shouldUseStructuredOutput(
           this.getStructuredOutputModelKey(this.selectedModel.providerID, this.selectedModel.modelID)
         );
@@ -6110,7 +6179,9 @@ export class ChatViewProvider
         parts: parts,
       };
       const promptVariant = await this.resolvePromptVariant(session.id);
-      if (promptVariant) {
+      if (thinkingLevel === "none") {
+        (promptBody as Record<string, unknown>).variant = null;
+      } else if (promptVariant) {
         (promptBody as Record<string, unknown>).variant = promptVariant;
       }
       if (capturePromptDebug) {
@@ -7396,6 +7467,7 @@ export class ChatViewProvider
           : undefined,
       selectedModel: this.selectedModel,
       selectedAgent: this.selectedAgent,
+      workspaceRoot: this.getWorkspaceDirectory(),
       currentSessionId: this.currentSessionId,
       processingSessionIds: this.getEffectiveProcessingSessionIds(),
       todoItems: [],
@@ -7942,21 +8014,52 @@ export class ChatViewProvider
             query: { messageID: messageId },
           });
 
+      const diffData = Array.isArray(diffResponse?.data)
+        ? (diffResponse.data as Array<Record<string, unknown>>)
+        : [];
+      this.logger.debug("session.diff response received", {
+        sessionId,
+        messageId,
+        rows: diffData.length,
+        withPatch: diffData.filter((row) => typeof row?.patch === "string" && row.patch.length > 0).length,
+        withBeforeAfter: diffData.filter(
+          (row) =>
+            typeof row?.before === "string" &&
+            row.before.length > 0 &&
+            typeof row?.after === "string" &&
+            row.after.length > 0,
+        ).length,
+        sampleFiles: diffData.slice(0, 8).map((row) => String(row?.file || "")),
+      });
+
       const rows = Array.isArray(diffResponse?.data)
         ? (diffResponse.data as FileDiff[])
-            .map((item) => ({
-              file: this.firstNonEmptyString(item?.file),
-              added:
-                typeof item?.additions === "number" && Number.isFinite(item.additions)
-                  ? Math.max(0, item.additions)
-                  : 0,
-              deleted:
-                typeof item?.deletions === "number" && Number.isFinite(item.deletions)
-                  ? Math.max(0, item.deletions)
-                  : 0,
-            }))
+            .map((item) => {
+              const itemRec = this.asRecord(item) || {};
+              const file = this.firstNonEmptyString(itemRec.file);
+              return {
+                file,
+                added:
+                  typeof itemRec.additions === "number" && Number.isFinite(itemRec.additions)
+                    ? Math.max(0, itemRec.additions)
+                    : 0,
+                deleted:
+                  typeof itemRec.deletions === "number" && Number.isFinite(itemRec.deletions)
+                    ? Math.max(0, itemRec.deletions)
+                    : 0,
+                diffExcerpt: this.buildSdkDiffExcerpt({
+                  file,
+                  before:
+                    typeof itemRec.before === "string" ? itemRec.before : undefined,
+                  after:
+                    typeof itemRec.after === "string" ? itemRec.after : undefined,
+                  patch:
+                    typeof itemRec.patch === "string" ? itemRec.patch : undefined,
+                }),
+              };
+            })
             .filter(
-              (item): item is { file: string; added: number; deleted: number } =>
+              (item): item is { file: string; added: number; deleted: number; diffExcerpt: { header?: string; lines: string[]; added?: number; deleted?: number } | undefined } =>
                 Boolean(item.file),
             )
         : [];
@@ -7971,7 +8074,9 @@ export class ChatViewProvider
           if (index >= MAX_PREVIEW_FILES) {
             return row;
           }
-          const enrichment = await this.getDiffActivityEnrichment(row.file);
+          const enrichment = row.diffExcerpt
+            ? undefined
+            : await this.getDiffActivityEnrichment(row.file);
           const diffStats = enrichment?.diffStats;
           return {
             ...row,
@@ -7983,10 +8088,22 @@ export class ChatViewProvider
               row.added > 0 || row.deleted > 0
                 ? row.deleted
                 : diffStats?.deleted ?? row.deleted,
-            diffExcerpt: enrichment?.diffExcerpt,
+            diffExcerpt: enrichment?.diffExcerpt ?? row.diffExcerpt,
           };
         }),
       );
+
+      this.logger.debug("session.diff summary built", {
+        sessionId,
+        messageId,
+        rows: enrichedRows.length,
+        rowsWithExcerpt: enrichedRows.filter(
+          (row) => Array.isArray(row.diffExcerpt?.lines) && row.diffExcerpt.lines.length > 0,
+        ).length,
+        rowsWithoutExcerpt: enrichedRows.filter(
+          (row) => !Array.isArray(row.diffExcerpt?.lines) || row.diffExcerpt.lines.length === 0,
+        ).map((row) => row.file).slice(0, 12),
+      });
 
       const added = enrichedRows.reduce((sum, row) => sum + row.added, 0);
       const deleted = enrichedRows.reduce((sum, row) => sum + row.deleted, 0);
@@ -8109,6 +8226,74 @@ export class ChatViewProvider
     }
   }
 
+  private async handleGetMessageFileDiffPreview(
+    messageId?: string,
+    filePath?: string,
+    requestedSessionId?: string,
+  ): Promise<void> {
+    const targetMessageId = this.firstNonEmptyString(messageId);
+    const targetFilePath = this.firstNonEmptyString(filePath);
+    const targetSessionId = this.firstNonEmptyString(
+      requestedSessionId,
+      this.currentSessionId,
+    );
+    if (!targetMessageId || !targetFilePath || !targetSessionId || !this.view) {
+      return;
+    }
+
+    let diffExcerpt:
+      | { header?: string; lines: string[]; added?: number; deleted?: number }
+      | undefined;
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const workspaceDir = this.getWorkspaceDirectory();
+      const diffResponse = workspaceDir
+        ? await client.session.diff({
+            path: { id: targetSessionId },
+            query: { directory: workspaceDir, messageID: targetMessageId },
+          })
+        : await client.session.diff({
+            path: { id: targetSessionId },
+            query: { messageID: targetMessageId },
+          });
+      const rows = Array.isArray(diffResponse?.data)
+        ? (diffResponse.data as Array<Record<string, unknown>>)
+        : [];
+      const normalizedTarget = targetFilePath.replace(/\\/g, "/").toLowerCase();
+      const matched = rows.find((row) => {
+        const file = this.firstNonEmptyString(row?.file)?.replace(/\\/g, "/").toLowerCase();
+        return !!file && (file === normalizedTarget || file.endsWith(`/${normalizedTarget}`));
+      });
+      if (matched) {
+        diffExcerpt = this.buildSdkDiffExcerpt({
+          file: this.firstNonEmptyString(matched.file),
+          before: typeof matched.before === "string" ? matched.before : undefined,
+          after: typeof matched.after === "string" ? matched.after : undefined,
+          patch: typeof matched.patch === "string" ? matched.patch : undefined,
+        });
+      }
+      if (!diffExcerpt) {
+        const enrichment = await this.getDiffActivityEnrichment(targetFilePath);
+        diffExcerpt = enrichment?.diffExcerpt;
+      }
+    } catch (error) {
+      this.logger.warn("Failed to fetch message file diff preview", {
+        messageId: targetMessageId,
+        file: targetFilePath,
+        sessionId: targetSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    this.view.webview.postMessage({
+      type: "messageFileDiffPreview",
+      messageId: targetMessageId,
+      sessionId: targetSessionId,
+      file: targetFilePath,
+      diffExcerpt,
+    });
+  }
+
   private async handleReviewChanges(targetFiles?: string[]) {
     try {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -8170,6 +8355,65 @@ export class ChatViewProvider
         typeof firstFile.deleted === "number" && Number.isFinite(firstFile.deleted)
           ? firstFile.deleted
           : undefined,
+    };
+  }
+
+  private buildSdkDiffExcerpt(
+    diff: { file?: string; before?: string; after?: string; patch?: string },
+  ): {
+    header?: string;
+    lines: string[];
+    added?: number;
+    deleted?: number;
+  } | undefined {
+    const patchText = typeof diff.patch === "string" ? diff.patch : "";
+    if (patchText.trim().length > 0) {
+      return this.buildDiffExcerpt(patchText);
+    }
+
+    const beforeText = typeof diff.before === "string" ? diff.before : "";
+    const afterText = typeof diff.after === "string" ? diff.after : "";
+    if (!beforeText && !afterText) {
+      return undefined;
+    }
+
+    const beforeLines = beforeText.split("\n");
+    const afterLines = afterText.split("\n");
+    const maxLines = Math.max(beforeLines.length, afterLines.length);
+    let firstDiffIndex = 0;
+    for (let i = 0; i < maxLines; i++) {
+      if ((beforeLines[i] ?? "") !== (afterLines[i] ?? "")) {
+        firstDiffIndex = i;
+        break;
+      }
+    }
+    const start = Math.max(0, firstDiffIndex - 2);
+    const end = Math.min(maxLines, start + 10);
+    const lines: string[] = [];
+    for (let i = start; i < end; i++) {
+      const beforeLine = beforeLines[i];
+      const afterLine = afterLines[i];
+      if (beforeLine === afterLine) {
+        if (typeof beforeLine === "string") {
+          lines.push(` ${beforeLine.slice(0, 299)}`);
+        }
+        continue;
+      }
+      if (typeof beforeLine === "string") {
+        lines.push(`-${beforeLine.slice(0, 299)}`);
+      }
+      if (typeof afterLine === "string") {
+        lines.push(`+${afterLine.slice(0, 299)}`);
+      }
+    }
+
+    if (lines.length === 0) {
+      return undefined;
+    }
+
+    return {
+      header: diff.file ? `@@ ${diff.file} @@` : undefined,
+      lines,
     };
   }
 

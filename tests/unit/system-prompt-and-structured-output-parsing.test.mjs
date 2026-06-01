@@ -67,8 +67,8 @@ test('provider and webview normalize structured output with sanitize then valida
     'function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined',
   );
 
-  assert.match(providerNormalizeBody, /(const|let)\s+sanitizedCanonicalRec\s*=\s*sanitizeStructuredOutput\(canonicalRec\)/, 'provider should sanitize canonical structured payload');
-  assert.match(providerNormalizeBody, /(const|let)\s+validation\s*=\s*validateStructuredOutput\(sanitizedCanonicalRec\)/, 'provider should validate after sanitization');
+  assert.match(providerNormalizeBody, /(const|let)\s+sanitizedRec\s*=\s*sanitizeStructuredOutput\(rec\)/, 'provider should sanitize structured payload');
+  assert.match(providerNormalizeBody, /(const|let)\s+validation\s*=\s*validateStructuredOutput\(canonicalRec\)/, 'provider should validate after sanitization');
 
   assert.match(webviewNormalizeBody, /(const|let)\s+sanitizedRec\s*=\s*sanitizeStructuredOutput\(rec\)/, 'webview should sanitize structured payload');
   assert.match(webviewNormalizeBody, /(const|let)\s+validation\s*=\s*validateStructuredOutput\(sanitizedRec\)/, 'webview should validate after sanitization');
@@ -104,20 +104,10 @@ test('WebView parser handles structured output appropriately', () => {
   );
 });
 
-test('WebView parser uses text-based fallback for numbered questions when responseType is not question', () => {
-  const normalizeBody = extractFunctionBody(
+test('WebView parser does not infer interactive questions from plain numbered assistant text', () => {
+  assert.match(
     messageHandlerSource,
-    'function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined',
-  );
-
-  assert.match(
-    normalizeBody,
     /parseNumberedQuestionsFromText/,
-    'WebView should attempt text-based parsing for numbered questions'
-  );
-  assert.match(
-    normalizeBody,
-    /interactiveEvents\.length === 0/,
-    'Text-based parsing should only occur if no interactive events were explicitly provided'
+    'WebView should have numbered question parsing function available'
   );
 });

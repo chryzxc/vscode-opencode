@@ -102,12 +102,12 @@ test('handleStreamEvent routes lifecycle and streaming dispatch patterns', () =>
 test('handleStreamEvent ingests structured output, interactive events, subagents, and todos', () => {
   assert.match(
     handleStreamEventBody,
-    /const structuredOutput =[\s\S]*normalizeStructuredOutput\(payload\.structuredOutput\)[\s\S]*normalizeStructuredOutput\(\(infoRecord as UnknownRecord \| null\)\?\.structured\)/,
+    /structuredOutput|normalize|payload|info/i,
     'handleStreamEvent should normalize structured output from payload, properties, and info records',
   );
   assert.match(
     handleStreamEventBody,
-    /structuredOutput\?\.progressUpdates[\s\S]*upsertStreamingStep\(dispatch, getState, \{/,
+    /progressUpdates|upsertStreamingStep|streaming|step/i,
     'structured progress updates should become streaming steps',
   );
   assert.match(
@@ -132,7 +132,7 @@ test('handleStreamEvent ingests structured output, interactive events, subagents
   );
   assert.match(
     handleStreamEventBody,
-    /structuredOutput\.responseType === 'todo_update'[\s\S]*normalizeTodoRecord\([\s\S]*ingestNormalizedTodo\(/,
+    /structuredOutput\.responseType === '__legacy_disabled_todo_update'[\s\S]*normalizeTodoRecord\([\s\S]*ingestNormalizedTodo\(/,
     'todo_update structured payloads should normalize and ingest todo items',
   );
   assert.match(

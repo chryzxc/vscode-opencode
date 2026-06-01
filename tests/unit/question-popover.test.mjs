@@ -46,6 +46,12 @@ test('question popover: structured output is properly sanitized', () => {
     /questionObj\.options = JSON\.parse/,
     'sanitizeStructuredOutput should parse JSON options',
   );
+
+  assert.doesNotMatch(
+    validatorSource,
+    /fallbackQuestion/,
+    'sanitizeStructuredOutput should not fabricate question text from non-question message content',
+  );
 });
 
 test('question popover: webview extracts interactive events from question object', () => {
@@ -85,8 +91,8 @@ test('question popover: webview extracts interactive events from question object
 
   assert.match(
     messageHandlerSource,
-    /else if \(options\.length >= 2\) \{/,
-    'toInteractiveEvents should only synthesize question events when at least two options exist',
+    /else if \(options\.length >= 2 \|\| questionObj\.allowCustomInput === true\) \{/,
+    'toInteractiveEvents should synthesize question events for choices or explicit free-form input',
   );
 });
 
@@ -100,32 +106,32 @@ test('question popover: webview renders question correctly', () => {
   // Check that event.question is used as bodyText for question type
   assert.match(
     panelSource,
-    /event\.type === "message"\s*\?\s*event\.message/,
+    /event\?\.type === "message"[\s\S]*\?\s*event\.message/,
     'PanelComponents should use event.message for message type events',
   );
 
   assert.match(
     panelSource,
-    /:\s*event\.question/,
+    /\?\s*event\.question/,
     'PanelComponents should use event.question for question type events',
   );
 
   // Check that contextMessage is shown in separate box
   assert.match(
     panelSource,
-    /const ctx = event\.contextMessage\?\.trim\(\)/,
+    /const eventContextMessage = event\?\.contextMessage\?\.trim\(\)/,
     'PanelComponents should extract contextMessage',
   );
 
   assert.match(
     panelSource,
-    /<MarkdownRenderer content=\{ctx\} \/>/,
+    /<MarkdownRenderer content=\{eventContextMessage\} \/>/,
     'PanelComponents should render contextMessage in separate box',
   );
 
   assert.match(
     panelSource,
-    /<MarkdownRenderer content=\{bodyText\} \/>/,
+    /<MarkdownRenderer content=\{eventBodyText\} \/>/,
     'PanelComponents should render bodyText (question) as main content',
   );
 });

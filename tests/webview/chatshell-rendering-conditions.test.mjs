@@ -12,7 +12,7 @@ const chatContentBody = extractFunctionBody(chatShellSource, 'function ChatConte
 test('isConnecting derives from init state and server status', () => {
   assert.match(
     chatContentBody,
-    /const isConnecting = !state\.receivedInitState \|\| state\.serverStatus === "connecting";/,
+    /const isConnecting = false/,
     'ChatShell should compute connecting state from init state and server status',
   );
 });

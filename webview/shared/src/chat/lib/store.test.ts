@@ -17,6 +17,12 @@ import {
   upsertTodoItemArray,
   mergeStreamingReasoning,
 } from './store';
+
+// Import the internal functions for testing
+import {
+  mergeActivityArraysLocal,
+  getTimestampForItem,
+} from './store';
 import type { Message, Session, TodoItem } from './types';
 
 describe('isInternalTransportReminderMessage', () => {
@@ -272,6 +278,56 @@ describe("appReducer render-stability guards", () => {
     });
     assert.strictEqual(second, first);
   });
+
+  it("preserves live interactive events during active turn when SET_MESSAGES has no question payload yet", () => {
+    const liveInteractive = [
+      {
+        type: "question" as const,
+        id: "q-live-1",
+        question: "Pick one",
+        options: [
+          { label: "A", value: "A" },
+          { label: "B", value: "B" },
+        ],
+      },
+    ];
+    const activeState = {
+      ...initialState,
+      isProcessing: true,
+      interactiveEvents: liveInteractive,
+      messages: [{ role: "user", content: "ask me" } as Message],
+    };
+    const next = appReducer(activeState, {
+      type: "SET_MESSAGES",
+      payload: [
+        { role: "user", content: "ask me" },
+        { role: "assistant", content: "Running question" },
+      ],
+    });
+
+    assert.deepStrictEqual(next.interactiveEvents, liveInteractive);
+  });
+
+  it("switches visible messages immediately on SET_SESSION_ID", () => {
+    const stateWithSessionCache = {
+      ...initialState,
+      currentSessionId: "session-a",
+      messages: [{ role: "user", content: "from A" } as Message],
+      messagesBySessionId: {
+        "session-a": [{ role: "user", content: "from A" } as Message],
+        "session-b": [{ role: "user", content: "from B" } as Message],
+      },
+    };
+
+    const next = appReducer(stateWithSessionCache, {
+      type: "SET_SESSION_ID",
+      payload: "session-b",
+    });
+
+    assert.strictEqual(next.currentSessionId, "session-b");
+    assert.strictEqual(next.messages.length, 1);
+    assert.strictEqual(next.messages[0].content, "from B");
+  });
 });
 
 describe('normalizeComparableTextLocal', () => {
@@ -463,6 +519,29 @@ describe('dedupeMirrorMessagesForCanonical', () => {
     assert.strictEqual(result.length, 1);
     assert.strictEqual((result[0] as any).rawResponse, '{"debug":"yes"}');
   });
+
+  it('should deduplicate near-neighbor mirrored assistant text when createdAt is missing', () => {
+    const msgHydrated: Message = {
+      role: 'assistant',
+      content: 'same assistant reply',
+      rawResponse: '{"source":"hydrated"}',
+    };
+    const msgStreamFinal: Message = {
+      role: 'assistant',
+      content: 'same assistant reply',
+      created: Date.now(),
+    };
+
+    const result = dedupeMirrorMessagesForCanonical([
+      { role: 'user', content: 'prompt' },
+      msgHydrated,
+      msgStreamFinal,
+    ]);
+
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[1].content, 'same assistant reply');
+    assert.strictEqual((result[1] as any).rawResponse, '{"source":"hydrated"}');
+  });
 });
 
 describe('coalesceAssistantRunForCanonical', () => {
@@ -633,5 +712,246 @@ describe('mergeStreamingReasoning', () => {
     // Should append with space
     assert.strictEqual(result.reasoning, 'Step1 Step2');
     assert.strictEqual(result.eventChunk, 'Step2');
+  });
+});
+
+describe('mergeActivityArraysLocal', () => {
+  describe('temporal ordering preservation', () => {
+    it('should preserve temporal order when merging items with timestamps', () => {
+      const existing = [
+        { id: 'step-1', title: 'First step', createdAt: 1000 },
+        { id: 'step-3', title: 'Third step', createdAt: 3000 },
+      ];
+
+      const incoming = [
+        { id: 'step-2', title: 'Second step', createdAt: 2000 },
+        { id: 'step-4', title: 'Fourth step', createdAt: 4000 },
+      ];
+
+      const result = mergeActivityArraysLocal(existing, incoming);
+
+      assert.ok(result, 'should return merged array');
+      assert.strictEqual(result!.length, 4, 'should have all 4 steps');
+
+      // Verify temporal order is preserved
+      assert.strictEqual(result![0].id, 'step-1', 'first item should be step-1 (earliest timestamp)');
+      assert.strictEqual(result![1].id, 'step-2', 'second item should be step-2 (second timestamp)');
+      assert.strictEqual(result![2].id, 'step-3', 'third item should be step-3 (third timestamp)');
+      assert.strictEqual(result![3].id, 'step-4', 'fourth item should be step-4 (latest timestamp)');
+    });
+
+    it('should handle user message during AI response streaming (real-world scenario)', () => {
+      // Scenario: User sends message during active AI response stream
+      // Existing: AI response steps already in progress
+      // Incoming: New steps from continued streaming + user message interference
+
+      const existing = [
+        { id: 'tool-1', title: 'Reading file', createdAt: 1000, status: 'completed' },
+        { id: 'tool-3', title: 'Analyzing code', createdAt: 3000, status: 'in_progress' },
+      ];
+
+      const incoming = [
+        // User message came in at 2000, causing a new tool call
+        { id: 'tool-2', title: 'User message received', createdAt: 2000, status: 'completed' },
+        // AI continues after user message
+        { id: 'tool-4', title: 'Generating response', createdAt: 4000, status: 'pending' },
+      ];
+
+      const result = mergeActivityArraysLocal(existing, incoming);
+
+      assert.ok(result, 'should return merged array');
+      assert.strictEqual(result!.length, 4, 'should have all 4 steps');
+
+      // Verify the order respects actual timestamps, not array position
+      assert.strictEqual(result![0].id, 'tool-1', 'should be tool-1 (1000)');
+      assert.strictEqual(result![1].id, 'tool-2', 'should be tool-2 (2000) - user message step');
+      assert.strictEqual(result![2].id, 'tool-3', 'should be tool-3 (3000)');
+      assert.strictEqual(result![3].id, 'tool-4', 'should be tool-4 (4000)');
+    });
+
+    it('should maintain stable order for items without timestamps', () => {
+      const existing = [
+        { id: 'step-1', title: 'First' }, // no timestamp
+        { id: 'step-3', title: 'Third' }, // no timestamp
+      ];
+
+      const incoming = [
+        { id: 'step-2', title: 'Second' }, // no timestamp
+        { id: 'step-4', title: 'Fourth' }, // no timestamp
+      ];
+
+      const result = mergeActivityArraysLocal(existing, incoming);
+
+      assert.ok(result, 'should return merged array');
+      assert.strictEqual(result!.length, 4, 'should have all 4 steps');
+
+      // Without timestamps, existing items should come before incoming
+      assert.strictEqual(result![0].id, 'step-1', 'existing items should come first');
+      assert.strictEqual(result![1].id, 'step-3', 'existing items should come first');
+      assert.strictEqual(result![2].id, 'step-2', 'incoming items should come after');
+      assert.strictEqual(result![3].id, 'step-4', 'incoming items should come after');
+    });
+
+    it('should handle mixed items with and without timestamps', () => {
+      const existing = [
+        { id: 'step-1', title: 'First', createdAt: 1000 },
+        { id: 'step-no-time-1', title: 'No time 1' }, // no timestamp
+      ];
+
+      const incoming = [
+        { id: 'step-2', title: 'Second', createdAt: 2000 },
+        { id: 'step-no-time-2', title: 'No time 2' }, // no timestamp
+      ];
+
+      const result = mergeActivityArraysLocal(existing, incoming);
+
+      assert.ok(result, 'should return merged array');
+      assert.strictEqual(result!.length, 4, 'should have all 4 steps');
+
+      // Items with timestamps should be ordered first by time
+      assert.strictEqual(result![0].id, 'step-1', 'step-1 has timestamp 1000');
+      assert.strictEqual(result![1].id, 'step-2', 'step-2 has timestamp 2000');
+
+      // Items without timestamps come after, maintaining relative order
+      assert.strictEqual(result![2].id, 'step-no-time-1', 'no-time items come after timed items');
+      assert.strictEqual(result![3].id, 'step-no-time-2', 'no-time items maintain source order');
+    });
+
+    it('should deduplicate items with same key while preserving temporal order', () => {
+      const existing = [
+        { id: 'step-1', title: 'First version', createdAt: 1000 },
+        { id: 'step-2', title: 'Original step 2', createdAt: 2000 },
+      ];
+
+      const incoming = [
+        { id: 'step-2', title: 'Updated step 2', createdAt: 2500 }, // same ID, later time
+        { id: 'step-3', title: 'Step 3', createdAt: 3000 },
+      ];
+
+      const result = mergeActivityArraysLocal(existing, incoming);
+
+      assert.ok(result, 'should return merged array');
+      assert.strictEqual(result!.length, 3, 'should deduplicate step-2');
+
+      assert.strictEqual(result![0].id, 'step-1', 'first item should be step-1');
+      assert.strictEqual(result![1].id, 'step-2', 'step-2 should be updated but keep position');
+      assert.strictEqual(result![1].title, 'Updated step 2', 'step-2 should have updated title');
+      assert.strictEqual(result![2].id, 'step-3', 'last item should be step-3');
+    });
+  });
+
+  describe('edge cases and hydration scenarios', () => {
+    it('should handle empty arrays', () => {
+      const result1 = mergeActivityArraysLocal([], []);
+      assert.strictEqual(result1, undefined, 'two empty arrays should return undefined');
+
+      const result2 = mergeActivityArraysLocal([{ id: '1', createdAt: 100 }], []);
+      assert.strictEqual(result2!.length, 1, 'should return existing when incoming is empty');
+
+      const result3 = mergeActivityArraysLocal([], [{ id: '2', createdAt: 200 }]);
+      assert.strictEqual(result3!.length, 1, 'should return incoming when existing is empty');
+    });
+
+    it('should handle complex activity step scenario from user report', () => {
+      // Simulate the exact scenario from the bug report:
+      // User sends message during event stream, AI response comes after,
+      // but when hydrated, AI response appears first (incorrect)
+
+      const timestamp = Date.now();
+
+      // Existing: Some steps from ongoing AI response
+      const existingSteps = [
+        { callID: 'tool-1', title: 'Reading config', createdAt: timestamp - 300, status: 'done' },
+        { callID: 'tool-3', title: 'Analyzing requirements', createdAt: timestamp - 100, status: 'in_progress' },
+      ];
+
+      // Incoming: Steps that arrived during user message interruption
+      const incomingSteps = [
+        // User message came in and was processed
+        { callID: 'user-msg-1', title: 'User message processed', createdAt: timestamp - 200, status: 'done' },
+        // AI continues after interruption
+        { callID: 'tool-4', title: 'Generating response', createdAt: timestamp, status: 'pending' },
+      ];
+
+      const result = mergeActivityArraysLocal(existingSteps, incomingSteps);
+
+      assert.ok(result, 'should return merged array');
+      assert.strictEqual(result!.length, 4, 'should have all 4 steps');
+
+      // The critical fix: verify correct temporal order
+      assert.strictEqual(result![0].callID, 'tool-1', 'oldest step should be first');
+      assert.strictEqual(result![1].callID, 'user-msg-1', 'user message step should be in correct chronological position');
+      assert.strictEqual(result![2].callID, 'tool-3', 'should be in middle');
+      assert.strictEqual(result![3].callID, 'tool-4', 'newest step should be last');
+
+      // Verify timestamps are in ascending order
+      for (let i = 1; i < result!.length; i++) {
+        const prevTime = result![i - 1].createdAt;
+        const currTime = result![i].createdAt;
+        assert.ok(currTime >= prevTime, `Item ${i} should have timestamp >= previous item`);
+      }
+    });
+
+    it('should preserve activity steps during rehydration (fixes missing steps)', () => {
+      // Test scenario where activity steps were missing after rehydration
+
+      const baseTime = Date.now();
+
+      // Existing: Cached steps with some detail
+      const existing = [
+        { id: '1', title: 'Step 1', createdAt: baseTime, status: 'completed', detail: 'full detail' },
+        { id: '3', title: 'Step 3', createdAt: baseTime + 200, status: 'pending' },
+      ];
+
+      // Incoming: Rehydrated steps with additional information
+      const incoming = [
+        { id: '2', title: 'Step 2', createdAt: baseTime + 100, status: 'completed' },
+        { id: '3', title: 'Step 3', createdAt: baseTime + 200, status: 'in_progress', detail: 'new detail' },
+      ];
+
+      const result = mergeActivityArraysLocal(existing, incoming);
+
+      assert.ok(result, 'should return merged array');
+      assert.strictEqual(result!.length, 3, 'should have 3 steps after deduplication');
+
+      // Step 3 should be merged with both details
+      assert.strictEqual(result![2].id, '3');
+      assert.strictEqual(result![2].detail, 'new detail', 'should preserve incoming details for same ID');
+    });
+  });
+});
+
+describe('getTimestampForItem', () => {
+  it('should extract timestamp from common timestamp fields', () => {
+    const item1 = { createdAt: 12345, title: 'Test' };
+    assert.strictEqual(getTimestampForItem(item1), 12345, 'should extract createdAt');
+
+    const item2 = { timestamp: 67890, title: 'Test' };
+    assert.strictEqual(getTimestampForItem(item2), 67890, 'should extract timestamp');
+
+    const item3 = { time: 11111, title: 'Test' };
+    assert.strictEqual(getTimestampForItem(item3), 11111, 'should extract time');
+
+    const item4 = { date: 22222, title: 'Test' };
+    assert.strictEqual(getTimestampForItem(item4), 22222, 'should extract date');
+  });
+
+  it('should return undefined for items without timestamps', () => {
+    const item = { title: 'No timestamp' };
+    assert.strictEqual(getTimestampForItem(item), undefined, 'should return undefined for no timestamp');
+
+    assert.strictEqual(getTimestampForItem(null), undefined, 'should handle null');
+    assert.strictEqual(getTimestampForItem(undefined), undefined, 'should handle undefined');
+  });
+
+  it('should ignore invalid timestamp values', () => {
+    const item1 = { createdAt: NaN, title: 'Test' };
+    assert.strictEqual(getTimestampForItem(item1), undefined, 'should ignore NaN');
+
+    const item2 = { createdAt: Infinity, title: 'Test' };
+    assert.strictEqual(getTimestampForItem(item2), undefined, 'should ignore Infinity');
+
+    const item3 = { createdAt: 'not a number', title: 'Test' };
+    assert.strictEqual(getTimestampForItem(item3), undefined, 'should ignore non-numeric values');
   });
 });

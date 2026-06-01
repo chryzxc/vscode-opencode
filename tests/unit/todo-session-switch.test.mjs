@@ -16,15 +16,15 @@ test('handleLoadSession clears in-memory todos and posts rehydrated todo snapsho
   // Ensure switching sessions clears in-memory todo cache before rehydration
   assert.match(
     providerSource,
-    /private async handleLoadSession\(sessionId: string\): Promise<void>[\s\S]*this\.clearSessionTodos\(\);[\s\S]*todoItems\s*:\s*this\.loadPersistedTodos\(this\.currentSessionId\)\.items/,
-    'handleLoadSession should clear in-memory todos and then post initState with todoItems loaded from workspaceState',
+    /private async handleLoadSession\(sessionId: string\): Promise<void>[\s\S]*this\.clearSessionTodos\(sessionId\);[\s\S]*todoItems:\s*\[\s*\]/,
+    'handleLoadSession should clear in-memory todos and then post initState with empty todoItems',
   );
 });
 
 test('clearSessionTodos implementation resets currentTodoItems', () => {
   assert.match(
     providerSource,
-    /private clearSessionTodos\(sessionId\?:\s*string\):\s*void \{[\s\S]*this\.currentTodoItems\s*=\s*\[\s*\];[\s\S]*\}/,
+    /private clearSessionTodos\(sessionId\?\: string\): void \{[\s\S]*this\.currentTodoItems = \[\];/,
     'clearSessionTodos should reset this.currentTodoItems to an empty array',
   );
 });
@@ -32,15 +32,15 @@ test('clearSessionTodos implementation resets currentTodoItems', () => {
 test('initState sent during webview ready includes todoItems for rehydration', () => {
   assert.match(
     providerSource,
-    /postMessage\(\{[\s\S]*type:\s*["']initState["'][\s\S]*todoItems\s*:\s*this\.loadPersistedTodos\(this\.currentSessionId\)\.items[\s\S]*\}\)/,
-    'initial initState sent during webview ready should include todoItems loaded from workspaceState',
+    /postMessage\(\{[\s\S]*type: "initState"[\s\S]*todoItems: \[\]/,
+    'initial initState sent during webview ready should include empty todoItems',
   );
 });
 
 test('messageHandler exposes todo normalization and ingestion helpers', () => {
   assert.match(
     handlerSource,
-    /function normalizeTodoRecord\(raw: unknown\): \{ id: string; text: string; status: TodoItem\['status'\]; sessionId\?: string \} \| null/,
+    /function normalizeTodoRecord\(raw: unknown\): TodoItem \| null/,
     'messageHandler should export normalizeTodoRecord helper for incoming todo-like payloads',
   );
 

@@ -103,4 +103,5 @@ test('session settings persistence and prompt variant resolution remain session-
   assert.match(migrateSessionSettingsBody, /map\[newSessionId\] = \{ \.\.\.oldSettings, \.\.\.map\[newSessionId\] \};/, 'migrateSessionSettings should carry settings forward to the new session id');
   assert.match(resolvePromptVariantBody, /this\.getEffectiveThinkingLevel\(sessionId\)/, 'resolvePromptVariant should derive the level from effective per-model preferences');
   assert.match(resolvePromptVariantBody, /if \(variants\.length === 0 \|\| !variants\.includes\(normalizedLevel\)\) return undefined;/, 'resolvePromptVariant should only return variants supported by the selected model');
+  assert.match(resolvePromptVariantBody, /if \(normalizedLevel === "none"\) return undefined;/, 'resolvePromptVariant should return undefined for "none" so no variant is sent in the prompt');
 });
