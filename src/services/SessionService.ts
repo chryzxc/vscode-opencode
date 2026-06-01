@@ -426,22 +426,46 @@ function getMessageCreatedTime(message: unknown): number {
   }
 
   const rec = message as Record<string, unknown>;
-  const messageTime = rec.time;
-  if (messageTime && typeof messageTime === "object") {
-    const created = (messageTime as Record<string, unknown>).created;
-    if (typeof created === "number" && Number.isFinite(created)) {
-      return created;
+  const messageTime =
+    rec.time && typeof rec.time === "object"
+      ? (rec.time as Record<string, unknown>)
+      : undefined;
+  const info =
+    rec.info && typeof rec.info === "object"
+      ? (rec.info as Record<string, unknown>)
+      : undefined;
+  const infoTime =
+    info?.time && typeof info.time === "object"
+      ? (info.time as Record<string, unknown>)
+      : undefined;
+
+  const numericCandidates = [
+    messageTime?.created,
+    infoTime?.created,
+    rec.createdAt,
+    rec.timestamp,
+    info?.createdAt,
+    info?.timestamp,
+  ];
+  for (const candidate of numericCandidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
     }
   }
 
-  const info = rec.info;
-  if (info && typeof info === "object") {
-    const infoTime = (info as Record<string, unknown>).time;
-    if (infoTime && typeof infoTime === "object") {
-      const created = (infoTime as Record<string, unknown>).created;
-      if (typeof created === "number" && Number.isFinite(created)) {
-        return created;
-      }
+  const stringCandidates = [
+    rec.createdAt,
+    rec.timestamp,
+    info?.createdAt,
+    info?.timestamp,
+  ];
+  for (const candidate of stringCandidates) {
+    if (typeof candidate !== "string" || candidate.trim().length === 0) {
+      continue;
+    }
+    const parsed = new Date(candidate).getTime();
+    if (Number.isFinite(parsed)) {
+      return parsed;
     }
   }
 
