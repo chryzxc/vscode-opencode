@@ -392,4 +392,103 @@ describe("CompactionManager", () => {
       });
     });
   });
+
+  describe("SDK compaction anchors", () => {
+    it("derives the compacted history boundary from CompactionPart.tail_start_id", () => {
+      const { manager } = createManager();
+      const messages = [
+        { id: "old-user", role: "user", content: "Long context" },
+        {
+          id: "compact-marker",
+          role: "assistant",
+          parts: [
+            {
+              type: "compaction",
+              auto: true,
+              tail_start_id: "retained-user",
+            },
+          ],
+        },
+        { id: "retained-user", role: "user", content: "Recent request" },
+        { id: "retained-assistant", role: "assistant", content: "Recent answer" },
+      ];
+
+      assert.deepEqual(manager.resolveSdkCompactionDividerState(messages), {
+        compactionDividerIndex: 2,
+        compactionDividerBeforeMessageId: "compact-marker",
+        compactionDividerAfterMessageId: "retained-user",
+      });
+    });
+
+    it("publishes SDK-derived compaction view state for hydrated messages", async () => {
+      const { manager, workspaceState } = createManager();
+      const captured = captureMessages();
+      manager.setPostMessage(captured.postMessage);
+
+      await manager.sendCompactionViewStateForMessages("session-sdk", [
+        { id: "old-user", role: "user", content: "Long context" },
+        {
+          id: "compact-marker",
+          role: "assistant",
+          parts: [{ type: "compaction", auto: false, tail_start_id: "tail-1" }],
+        },
+        { id: "tail-1", role: "user", content: "Retained tail" },
+      ]);
+
+      const posted = captured.getLastMessage() as Record<string, unknown>;
+      assert.equal(posted.type, "compactionViewState");
+      assert.equal(posted.sessionId, "session-sdk");
+      assert.equal(posted.compactionDividerIndex, 2);
+      assert.equal(posted.compactionDividerBeforeMessageId, "compact-marker");
+      assert.equal(posted.compactionDividerAfterMessageId, "tail-1");
+      assert.equal(posted.collapsed, true);
+      assert.equal(typeof posted.lastCompactedAt, "number");
+
+      const persisted = workspaceState.get<Record<string, unknown>>(
+        "opencode.session.compaction-view.session-sdk",
+      );
+      assert.equal(persisted?.compactionDividerAfterMessageId, "tail-1");
+    });
+
+    it("consumes session.next compaction completion by refreshing messages and posting view state", async () => {
+      const { manager } = createManager();
+      const captured = captureMessages();
+      manager.setPostMessage(captured.postMessage);
+
+      const handled = await manager.handleSdkCompactionStreamEvent(
+        {
+          type: "session.next.compaction.ended",
+          properties: {
+            sessionID: "session-live",
+            timestamp: Date.now(),
+            text: "Compacted",
+          },
+        },
+        {
+          getMessages: async () => [
+            { id: "old-user", role: "user", content: "Long context" },
+            {
+              id: "compact-marker",
+              role: "assistant",
+              parts: [{ type: "compaction", auto: true, tail_start_id: "tail-1" }],
+            },
+            { id: "tail-1", role: "user", content: "Retained tail" },
+          ],
+        },
+      );
+
+      assert.equal(handled, true);
+      const messages = captured.getMessages();
+      assert.equal(messages.some((msg) => msg.type === "chatHistory"), true);
+      assert.equal(
+        messages.some(
+          (msg) =>
+            msg.type === "compactionStatus" &&
+            msg.status === "done" &&
+            msg.compactionDividerAfterMessageId === "tail-1",
+        ),
+        true,
+      );
+    });
+  });
 });

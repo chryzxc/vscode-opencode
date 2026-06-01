@@ -1249,8 +1249,6 @@ export class ChatViewProvider
           sessionId,
           messages,
         );
-      await this.compactionManager.sendPersistedCompactionViewState(sessionId);
-
       // Step 3: Log diagnostic information for debugging
       const planMessages = messages.filter((m: any) => m?.plan);
       log.debug('Sending messages to webview', {
@@ -1272,6 +1270,10 @@ export class ChatViewProvider
         messages: messages,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
+      await this.compactionManager.sendCompactionViewStateForMessages(
+        sessionId,
+        messages,
+      );
       this.view?.webview.postMessage({
         type: "subagentSnapshot",
         ...subagentSnapshotPayload,
@@ -3371,6 +3373,14 @@ export class ChatViewProvider
       // with that resolved id lets the webview update the inactive session's
       // streaming cache instead of losing activity events.
       if (await this.handleSdkTodoUpdatedEvent(event, eventSessionId)) {
+        return;
+      }
+      if (
+        await this.compactionManager.handleSdkCompactionStreamEvent(
+          event,
+          this.sessionService,
+        )
+      ) {
         return;
       }
       // Skip forwarding events for sessions that were stopped by the user.

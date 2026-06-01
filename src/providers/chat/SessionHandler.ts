@@ -163,7 +163,6 @@ export class SessionHandler {
         : [];
 
       await this.subagentPersistence.syncSubagentSnapshotForSession(sessionId, messages);
-      await this.compactionManager.sendPersistedCompactionViewState(sessionId);
       await this.modelAndAgentManager.applySessionSettings(sessionId);
 
       this.postMessage({
@@ -171,6 +170,10 @@ export class SessionHandler {
         sessionId,
         messages,
       });
+      await this.compactionManager.sendCompactionViewStateForMessages(
+        sessionId,
+        messages,
+      );
 
       this.setCurrentSessionId(sessionId);
       this.logger.info("Session loaded", { sessionId, messageCount: messages.length });

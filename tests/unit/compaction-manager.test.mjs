@@ -279,8 +279,8 @@ test('CompactionManager auto-compacts above threshold and guards the compaction 
   );
   assert.match(
     handleCompactBody,
-    /await this\.persistAndPublishCompactionViewState\(sessionId, state\);[\s\S]*const refreshedRawMessages = await sessionService\.getMessages\(sessionId\);[\s\S]*type: "chatHistory",[\s\S]*messages: refreshedMessages,/,
-    'handleCompactSession should reload SDK-owned messages and publish fresh chat history after compaction',
+    /const refreshedRawMessages = await sessionService\.getMessages\(sessionId\);[\s\S]*const sdkState = this\.resolveSdkCompactionViewState\(refreshedMessages\);[\s\S]*await this\.persistAndPublishCompactionViewState\(sessionId, state\);[\s\S]*type: "chatHistory",[\s\S]*messages: refreshedMessages,/,
+    'handleCompactSession should reload SDK-owned messages, derive SDK compaction anchors, and publish fresh chat history after compaction',
   );
   assert.match(
     handleCompactBody,
