@@ -12,6 +12,25 @@
     "url": "https://github.com/chryzxc/vscode-opencode/issues"
   },
   "version": "0.1.14",
+  "opencodeCompatibility": {
+    "extensionVersion": "0.1.14",
+    "sdk": {
+      "package": "@opencode-ai/sdk",
+      "supportedRange": ">=1.15.12 <1.16.0",
+      "testedVersions": [
+        "1.15.12",
+        "1.15.13"
+      ]
+    },
+    "server": {
+      "supportedRange": ">=1.15.0 <1.16.0",
+      "testedVersions": [
+        "1.15.12",
+        "1.15.13"
+      ]
+    },
+    "policy": "warn"
+  },
   "icon": "resources/extension-icon.png",
   "publisher": "chryzxc",
   "galleryBanner": {

@@ -60,6 +60,11 @@ import * as fs from "fs";
 import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
+import {
+  checkOpencodeSdkVersion,
+  checkOpencodeServerVersion,
+  detectInstalledOpencodeSdkVersion,
+} from "./opencodeVersionCompatibility";
 
 const log = createLogger(LoggingCategories.SERVER_MANAGER);
 /**
@@ -141,6 +146,8 @@ export class OpencodeServerManager {
 
   /** OpenCode server version */
   private serverVersion: string | undefined;
+  private hasCheckedSdkCompatibility = false;
+  private opencodeBinaryPath: string | undefined;
 
   /** Current server status (for state machine) */
   private _status: ServerStatus = "idle";
@@ -163,6 +170,20 @@ export class OpencodeServerManager {
    * @param context - VSCode extension context (used for storage if needed in future)
    */
   constructor(private context: vscode.ExtensionContext) { }
+
+  private logSdkCompatibilityOnce(): void {
+    if (this.hasCheckedSdkCompatibility) {
+      return;
+    }
+    this.hasCheckedSdkCompatibility = true;
+    const sdkVersion = detectInstalledOpencodeSdkVersion();
+    const compatibility = checkOpencodeSdkVersion(sdkVersion);
+    if (compatibility.status !== "supported") {
+      log.warn("OpenCode SDK compatibility warning", compatibility);
+    } else {
+      log.debug("OpenCode SDK compatibility check", compatibility);
+    }
+  }
 
   private stopCurrentServer(): void {
     this.startupPromise = null;
@@ -259,6 +280,58 @@ export class OpencodeServerManager {
     }
 
     return path;
+  }
+
+  private resolveOpencodeBinaryPath(): string {
+    if (this.opencodeBinaryPath) {
+      return this.opencodeBinaryPath;
+    }
+
+    let opencodeBinary = "opencode";
+    try {
+      const resolverCommand =
+        process.platform === "win32" ? "where opencode" : "which opencode";
+      const resolverResult = cp
+        .execSync(resolverCommand, {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+        })
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (resolverResult.length > 0) {
+        opencodeBinary = this.normalizeWindowsExecutablePath(
+          resolverResult[0],
+        );
+        log.debug("Resolved opencode binary path", { path: opencodeBinary });
+      }
+    } catch (error) {
+      log.debug(
+        "Could not resolve opencode binary path, will try direct spawn",
+        { error },
+      );
+    }
+
+    this.opencodeBinaryPath = opencodeBinary;
+    return opencodeBinary;
+  }
+
+  private probeOpencodeBinaryVersion(binaryPath: string): string | undefined {
+    try {
+      const raw = cp.execFileSync(binaryPath, ["--version"], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const version = String(raw).trim().split(/\r?\n/)[0]?.trim();
+      return version || undefined;
+    } catch (error) {
+      log.debug("Failed to probe opencode binary version", {
+        binaryPath,
+        error,
+      });
+      return undefined;
+    }
   }
 
   private getPersistedManagedPort(): number {
@@ -361,6 +434,7 @@ export class OpencodeServerManager {
    */
   async ensureRunning(): Promise<OpencodeClient> {
     this.isDisposed = false;
+    this.logSdkCompatibilityOnce();
 
     if (this.startupPromise) {
       log.debug('Server startup already in progress, returning existing promise');
@@ -654,32 +728,7 @@ export class OpencodeServerManager {
       }
 
       // Step 3: Find the full path to opencode binary
-      // Use platform-native resolution command for better reliability:
-      // - Windows: `where opencode`
-      // - Unix/macOS/Linux: `which opencode`
-      let opencodeBinary = "opencode";
-      try {
-        const resolverCommand =
-          process.platform === "win32" ? "where opencode" : "which opencode";
-        const resolverResult = cp
-          .execSync(resolverCommand, {
-            encoding: "utf-8",
-            stdio: ["ignore", "pipe", "ignore"],
-          })
-          .trim()
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .filter(Boolean);
-        if (resolverResult.length > 0) {
-          opencodeBinary = this.normalizeWindowsExecutablePath(
-            resolverResult[0],
-          );
-          log.debug("Resolved opencode binary path", { path: opencodeBinary });
-        }
-      } catch (error) {
-        log.debug("Could not resolve opencode binary path, will try direct spawn", { error });
-        // Fall back to direct spawn with "opencode"
-      }
+      const opencodeBinary = this.resolveOpencodeBinaryPath();
 
       // Step 4: Spawn the OpenCode CLI server process
       const spawnedProcess = cp.spawn(
@@ -897,6 +946,26 @@ export class OpencodeServerManager {
         if (health?.data && typeof health.data.version === "string") {
           this.serverVersion = health.data.version;
           log.info(`Server version: ${this.serverVersion}`);
+          const compatibility = checkOpencodeServerVersion(this.serverVersion);
+          if (compatibility.status !== "supported") {
+            log.warn("OpenCode server compatibility warning", compatibility);
+          } else {
+            log.debug("OpenCode server compatibility check", compatibility);
+          }
+        } else if (!this.serverVersion) {
+          const binaryVersion = this.probeOpencodeBinaryVersion(
+            this.resolveOpencodeBinaryPath(),
+          );
+          if (binaryVersion) {
+            this.serverVersion = binaryVersion;
+            log.info(`OpenCode CLI version: ${this.serverVersion}`);
+            const compatibility = checkOpencodeServerVersion(this.serverVersion);
+            if (compatibility.status !== "supported") {
+              log.warn("OpenCode server compatibility warning", compatibility);
+            } else {
+              log.debug("OpenCode server compatibility check", compatibility);
+            }
+          }
         }
         // No version field is acceptable; connection can still be healthy.
         return true;
@@ -904,6 +973,21 @@ export class OpencodeServerManager {
 
       const healthy = await compatibilityProbe();
       if (healthy) {
+        if (!this.serverVersion) {
+          const binaryVersion = this.probeOpencodeBinaryVersion(
+            this.resolveOpencodeBinaryPath(),
+          );
+          if (binaryVersion) {
+            this.serverVersion = binaryVersion;
+            log.info(`OpenCode CLI version: ${this.serverVersion}`);
+            const compatibility = checkOpencodeServerVersion(this.serverVersion);
+            if (compatibility.status !== "supported") {
+              log.warn("OpenCode server compatibility warning", compatibility);
+            } else {
+              log.debug("OpenCode server compatibility check", compatibility);
+            }
+          }
+        }
         return true;
       }
 
