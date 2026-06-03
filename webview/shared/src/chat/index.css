@@ -4961,3 +4961,141 @@ body {
   opacity: 0.6;
 }
 
+
+/* ── Revamped Simplified Empty State Vector Overrides ────────────────────── */
+
+.oc-empty-state {
+  position: relative;
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 32px 24px;
+  text-align: center;
+  color: var(--oc-text);
+  box-sizing: border-box;
+}
+
+/* Background soft glow centered behind the logo */
+.oc-empty-state::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(300px, 70vw);
+  height: min(300px, 70vw);
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--oc-text-secondary, #aeb7d8) 6%, transparent) 0%,
+    transparent 66%
+  );
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+/* Centered hero area containing the logo container and subtitle */
+.oc-empty-hero-simple {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  margin-top: auto;
+  margin-bottom: auto;
+}
+
+/* Glassmorphic squircle container for the modern vector logo */
+.oc-empty-logo-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 22px;
+  border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.12));
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--oc-panel-soft) 85%, transparent),
+    color-mix(in srgb, var(--oc-bg) 60%, transparent)
+  );
+  box-shadow:
+    0 12px 32px color-mix(in srgb, black 35%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--oc-text-secondary, #aeb7d8) 8%, transparent) inset;
+  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: oc-logo-float 6s ease-in-out infinite;
+  backdrop-filter: blur(8px);
+}
+
+.oc-empty-logo-container:hover {
+  transform: scale(1.1) translateY(-2px);
+  border-color: color-mix(in srgb, var(--oc-text) 35%, var(--oc-border));
+  box-shadow:
+    0 16px 36px color-mix(in srgb, black 40%, transparent),
+    0 0 20px color-mix(in srgb, var(--oc-text) 10%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--oc-text) 25%, transparent) inset;
+}
+
+/* SVG logo stroke coloring - adaptive to VS Code buttons/accent theme */
+.oc-empty-logo-svg {
+  color: var(--oc-text-secondary, #aeb7d8);
+  filter: drop-shadow(0 2px 10px color-mix(in srgb, var(--oc-text-secondary, #aeb7d8) 15%, transparent));
+  transition: all 0.3s ease;
+}
+
+.oc-empty-logo-container:hover .oc-empty-logo-svg {
+  color: var(--oc-text, #ffffff);
+  filter: drop-shadow(0 2px 16px color-mix(in srgb, var(--oc-text) 35%, transparent));
+}
+
+@keyframes oc-logo-float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+/* Subtitle under the logo */
+.oc-empty-subtitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--oc-text-secondary);
+  opacity: 0.85;
+  letter-spacing: -0.01em;
+}
+
+/* Bottom guide text style */
+.oc-empty-hint {
+  position: relative;
+  z-index: 1;
+  font-size: 11px;
+  color: var(--oc-text-secondary);
+  opacity: 0.7;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  padding-bottom: 4px;
+}
+
+/* Kbd key badge styling matching VS Code keybinding styles */
+.oc-empty-kbd {
+  display: inline-block;
+  min-width: 16px;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 80%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 85%, transparent);
+  color: var(--oc-text-secondary);
+  font-family: var(--vscode-font-family, inherit);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.15);
+  margin: 0 2px;
+}

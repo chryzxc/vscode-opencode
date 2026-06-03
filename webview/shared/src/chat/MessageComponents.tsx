@@ -6108,63 +6108,34 @@ export function EmptyState() {
 
   return (
     <div className="oc-empty-state">
-      <div className="oc-empty-brand" aria-label="OpenCode">
-        <span className="oc-empty-brand-mark" aria-hidden="true">
-          {iconUri ? (
-            <img className="oc-empty-mark-img" src={iconUri} alt="" />
-          ) : (
-            <span className="oc-empty-mark-fallback">OC</span>
-          )}
-        </span>
-        <span className="oc-empty-brand-name">OpenCode</span>
-      </div>
-
-      <div className="oc-empty-hero">
-        <div className="oc-empty-mark" aria-hidden="true">
-          <span className="oc-empty-mark-glow" />
-          {iconUri ? (
-            <img className="oc-empty-mark-img" src={iconUri} alt="" />
-          ) : (
-            <span className="oc-empty-mark-fallback">OC</span>
-          )}
+      {/* Main minimalist hero section containing modern abstract logo and ready title */}
+      <div className="oc-empty-hero-simple">
+        <div className="oc-empty-logo-container" aria-hidden="true">
+          <svg
+            width="38"
+            height="38"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="oc-empty-logo-svg"
+          >
+            {/* O - Left ellipse representing Open */}
+            <ellipse cx="8" cy="12" rx="4" ry="6" />
+            {/* C - Right arc representing Code */}
+            <path d="M 22 8 A 4 6 0 0 0 18 6 A 4 6 0 0 0 14 12 A 4 6 0 0 0 18 18 A 4 6 0 0 0 22 16" />
+          </svg>
         </div>
         <div className="oc-empty-copy">
-          <h1>Ready to build?</h1>
-          <p>
-            Turn a workspace into a plan, a patch, or a clean run at the next
-            change.
-          </p>
+          <p className="oc-empty-subtitle">Ready to build?</p>
         </div>
       </div>
 
-      <div className="oc-empty-tags" aria-label="OpenCode capabilities">
-        <span>file-aware</span>
-        <span>plan-first</span>
-        <span>session-ready</span>
-      </div>
-
-      <div className="oc-empty-shortcuts" aria-label="Chat shortcuts">
-        <div className="oc-empty-shortcut">
-          <span className="oc-empty-shortcut-icon" aria-hidden="true">
-            <CornerDownLeft className="h-3.5 w-3.5" />
-          </span>
-          <span>Ask a question or draft a change</span>
-          <kbd>Enter</kbd>
-        </div>
-        <div className="oc-empty-shortcut">
-          <span className="oc-empty-shortcut-icon" aria-hidden="true">
-            <AtSign className="h-3.5 w-3.5" />
-          </span>
-          <span>Pull files into the conversation</span>
-          <kbd>@</kbd>
-        </div>
-        <div className="oc-empty-shortcut">
-          <span className="oc-empty-shortcut-icon" aria-hidden="true">
-            <Terminal className="h-3.5 w-3.5" />
-          </span>
-          <span>Run workspace commands</span>
-          <kbd>/</kbd>
-        </div>
+      {/* Simplified, elegant keyboard commands helper text */}
+      <div className="oc-empty-hint">
+        Type a message, <kbd className="oc-empty-kbd">@</kbd> to add files, or <kbd className="oc-empty-kbd">/</kbd> for commands
       </div>
     </div>
   );
