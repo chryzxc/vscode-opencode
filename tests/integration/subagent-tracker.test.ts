@@ -305,5 +305,44 @@ describe("SubagentTracker", () => {
       assert.ok(erroredDetail);
       assert.equal(erroredDetail.status, "error");
     });
+
+    it("prefers the nested server error message over the UnknownError wrapper name", () => {
+      tracker.consumeStreamEvent(
+        makeEvent("message.part.updated", {
+          part: makeSubtaskPart("parent-session-1", "msg-1", "part-1"),
+        }),
+      );
+
+      tracker.consumeStreamEvent(
+        makeEvent("session.created", {
+          info: {
+            id: "child-1",
+            parentID: "parent-session-1",
+          },
+        }),
+      );
+
+      const payload = tracker.consumeStreamEvent(
+        makeEvent("session.error", {
+          sessionID: "child-1",
+          error: {
+            name: "UnknownError",
+            data: {
+              message: "Unexpected server error. Check server logs for details.",
+            },
+          },
+        }),
+      );
+
+      assert.ok(payload);
+      const erroredDetail = Object.values(payload.detailsById).find(
+        (d) => d.childSessionId === "child-1",
+      );
+      assert.ok(erroredDetail);
+      assert.equal(
+        erroredDetail.errorText,
+        "Unexpected server error. Check server logs for details.",
+      );
+    });
   });
 });

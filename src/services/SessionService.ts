@@ -490,6 +490,36 @@ function getMessageRoleForSignature(message: unknown): string {
   return "";
 }
 
+function getMessageSessionIdForSignature(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  const rec = message as Record<string, unknown>;
+  const directCandidates = [
+    rec.sessionID,
+    rec.sessionId,
+  ];
+  for (const candidate of directCandidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  const info =
+    rec.info && typeof rec.info === "object"
+      ? (rec.info as Record<string, unknown>)
+      : undefined;
+  const infoCandidates = [
+    info?.sessionID,
+    info?.sessionId,
+  ];
+  for (const candidate of infoCandidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return "";
+}
+
 function getMessageTextForSignature(message: unknown): string {
   if (!message || typeof message !== "object") {
     return "";
@@ -581,30 +611,20 @@ function getAssistantContentAliasSignature(message: unknown): string | undefined
     return undefined;
   }
 
-  const rec = message as Record<string, unknown>;
-  if (typeof rec.role !== "string" || rec.role !== "assistant") {
+  const role = getMessageRoleForSignature(message).toLowerCase();
+  if (role !== "assistant") {
     return undefined;
   }
 
-  const content = normalizeSignatureText(rec.content);
-  const text = normalizeSignatureText(rec.text);
-  const body = content || text;
+  const body = normalizeSignatureText(getMessageTextForSignature(message));
   if (!body) {
     return undefined;
   }
 
-  const hasActivityPayload =
-    (Array.isArray(rec.progressEvents) && rec.progressEvents.length > 0) ||
-    (Array.isArray(rec.steps) && rec.steps.length > 0) ||
-    (Array.isArray(rec.subagents) && rec.subagents.length > 0);
-
-  if (!hasActivityPayload) {
-    return undefined;
-  }
-
   const created = getMessageCreatedTime(message);
-  const createdPart = created > 0 ? String(created) : "unknown";
-  return `assistant-activity:${createdPart}|${body.slice(0, 500)}`;
+  const createdPart = created > 0 ? String(Math.floor(created / 15_000)) : "unknown";
+  const sessionId = getMessageSessionIdForSignature(message) || "unknown";
+  return `assistant-activity:${sessionId}|${createdPart}|${body.slice(0, 500)}`;
 }
 
 function getMessageSignaturesForMerge(message: unknown): string[] {
@@ -858,6 +878,36 @@ function mergeConversationMessages(messageGroups: unknown[][]): unknown[] {
   }
 
   return merged;
+}
+
+function summarizePotentialAssistantDuplicates(messages: unknown[]): {
+  totalAssistantMessages: number;
+  duplicateGroups: number;
+  duplicateMessages: number;
+  samples: string[];
+} {
+  const buckets = new Map<string, number>();
+  let totalAssistantMessages = 0;
+
+  for (const message of messages) {
+    if (getMessageRoleForSignature(message).toLowerCase() !== "assistant") {
+      continue;
+    }
+    totalAssistantMessages += 1;
+    const alias = getAssistantContentAliasSignature(message);
+    if (!alias) {
+      continue;
+    }
+    buckets.set(alias, (buckets.get(alias) ?? 0) + 1);
+  }
+
+  const duplicateEntries = Array.from(buckets.entries()).filter(([, count]) => count > 1);
+  return {
+    totalAssistantMessages,
+    duplicateGroups: duplicateEntries.length,
+    duplicateMessages: duplicateEntries.reduce((sum, [, count]) => sum + count, 0),
+    samples: duplicateEntries.slice(0, 5).map(([key, count]) => `${count}x ${key.slice(0, 160)}`),
+  };
 }
 
 function hasSessionAliasConflicts(
@@ -1567,14 +1617,36 @@ export class SessionService {
       });
 
       if (response.data && response.data.length > 0) {
+        const serverDuplicateSummary = summarizePotentialAssistantDuplicates(response.data);
         log.info("Fetched messages from server", {
           sessionId,
           count: response.data.length,
+          rawAssistantDuplicateGroups: serverDuplicateSummary.duplicateGroups,
+          rawAssistantDuplicateMessages: serverDuplicateSummary.duplicateMessages,
         });
         const mergedMessages =
           localMessages.length > 0
             ? mergeConversationMessages([localMessages, response.data])
             : response.data;
+        const mergedDuplicateSummary =
+          summarizePotentialAssistantDuplicates(mergedMessages);
+        if (
+          serverDuplicateSummary.duplicateGroups > 0 ||
+          mergedDuplicateSummary.duplicateGroups > serverDuplicateSummary.duplicateGroups
+        ) {
+          log.warn("Assistant duplicate analysis for session history hydration", {
+            sessionId,
+            localCount: localMessages.length,
+            serverCount: response.data.length,
+            mergedCount: mergedMessages.length,
+            serverDuplicateGroups: serverDuplicateSummary.duplicateGroups,
+            serverDuplicateMessages: serverDuplicateSummary.duplicateMessages,
+            mergedDuplicateGroups: mergedDuplicateSummary.duplicateGroups,
+            mergedDuplicateMessages: mergedDuplicateSummary.duplicateMessages,
+            serverSamples: serverDuplicateSummary.samples,
+            mergedSamples: mergedDuplicateSummary.samples,
+          });
+        }
         // Keep the nested info structure from server for proper type compatibility
         // Server returns: { info: {...}, parts: [...] } which matches Message interface
         await this.saveSessionMessages(sessionId, mergedMessages);

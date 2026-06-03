@@ -19,11 +19,10 @@ const managerSource = readSource(
 );
 
 // ---------------------------------------------------------------------------
-// ModelCapabilitiesService — "none" in KNOWN_THINKING_MODELS
+// ModelCapabilitiesService — preserve SDK-returned thinking variants
 // ---------------------------------------------------------------------------
 
-test("every known thinking model includes 'none' as the first variant", () => {
-  // Each entry in KNOWN_THINKING_MODELS should start its variants array with "none"
+test("every known thinking model preserves the SDK thinking variants without a hardcoded fallback", () => {
   const modelEntries = capabilitiesSource.match(
     /variants:\s*\[([^\]]+)\]/g,
   );
@@ -31,13 +30,10 @@ test("every known thinking model includes 'none' as the first variant", () => {
   assert.ok(modelEntries.length >= 7, "should define at least 7 model entries");
 
   for (const entry of modelEntries) {
-    // Extract the first quoted string in the variants array
-    const firstVariant = entry.match(/\[\s*"([^"]+)"/);
-    assert.ok(firstVariant, `every model variant array should contain quoted strings, found: ${entry}`);
-    assert.strictEqual(
-      firstVariant[1],
-      "none",
-      `first variant should be "none", found "${firstVariant[1]}" in: ${entry.slice(0, 60)}`,
+    assert.doesNotMatch(
+      entry,
+      /\[\s*"none"/,
+      `variant arrays should not inject a hardcoded "none" fallback: ${entry.slice(0, 60)}`,
     );
   }
 });
@@ -82,30 +78,22 @@ test("known thinking models retain reasoning: true", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ChatViewProvider — resolveCapabilityForModel always includes "none"
+// ChatViewProvider — resolveCapabilityForModel preserves SDK variants
 // ---------------------------------------------------------------------------
 
-test("resolveCapabilityForModel always prepends 'none' when reasoning is true and variants exist", () => {
-  // The return statement should conditionally include "none" when variants exist
+test("resolveCapabilityForModel returns the SDK variants without prepending a fallback", () => {
   assert.match(
     providerSource,
-    /variants\.includes\("none"\)\s*\?\s*variants\s*:\s*\["none",\s*\.\.\.variants\]/,
-    "resolveCapabilityForModel should prepend 'none' to variants when not already present",
-  );
-
-  // The reasoning flag should still be correct
-  assert.match(
-    providerSource,
-    /reasoning,\s*\n\s*variants:\s*variants\.length\s*>\s*0[\s\S]*includes\("none"\)/,
-    "return value should include reasoning flag and variants with 'none'",
+    /variants:\s*variants\.length\s*>\s*0\s*\?\s*variants\s*:\s*undefined/,
+    "resolveCapabilityForModel should return the upstream variants unchanged",
   );
 });
 
 // ---------------------------------------------------------------------------
-// ChatViewProvider — prompt body strips thinking when "none" selected
+// ChatViewProvider — prompt body still preserves legacy no-reasoning handling
 // ---------------------------------------------------------------------------
 
-test("prompt construction sets variant: null and disables structured output when thinking is 'none' and model supports reasoning", () => {
+test("prompt construction still guards legacy 'none' thinking state for persisted sessions", () => {
   assert.match(
     providerSource,
     /const thinkingLevel = this\.modelAndAgentManager\.getEffectiveThinkingLevel\(session\.id\);/,
@@ -116,7 +104,7 @@ test("prompt construction sets variant: null and disables structured output when
   assert.match(
     providerSource,
     /const disableThinkingStructuredOutput = thinkingLevel === "none" && modelReasoning;/,
-    "structured output should only be disabled when thinking is 'none' AND model supports reasoning",
+    "structured output guard should remain for legacy persisted 'none' state",
   );
 
   assert.match(
@@ -129,7 +117,7 @@ test("prompt construction sets variant: null and disables structured output when
   assert.match(
     providerSource,
     /if \(thinkingLevel === "none"\) \{[\s\S]*variant = null/,
-    "variant should be explicitly set to null when thinkingLevel is 'none'",
+    "legacy sessions using 'none' should still omit the variant field",
   );
 });
 

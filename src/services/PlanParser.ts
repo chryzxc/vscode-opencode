@@ -235,10 +235,11 @@ export class PlanParser {
     }
 
     // Extract Verification Steps - Flexible headers
-    const verificationRegex = /^#+\s+Verification Plan\s*([\s\S]*?)(?=#+|$)/im;
-    const vMatch = markdown.match(verificationRegex);
-    if (vMatch) {
-      const content = vMatch[1];
+    const verificationContent = this.extractSectionContent(markdown, [
+      "Verification Plan",
+    ]);
+    if (verificationContent) {
+      const content = verificationContent;
       const items = content.split("\n");
       items.forEach((item) => {
         const desc = item.replace(/^[-*+]\s*/, "").trim();
@@ -265,18 +266,25 @@ export class PlanParser {
     // This assumes the core "description" is already extracted and we are crawling technical sections
     if (!foundCheckboxes) {
       // Find a likely "Tasks" section first to avoid grabbing random text
-      const tasksSectionRegex =
-        /^#+\s+(Tasks|Steps|Implementation Plan|Proposed Changes)\s*([\s\S]*?)(?=#+|$)/im;
-      const tasksMatch = markdown.match(tasksSectionRegex);
-
-      const textToSearch = tasksMatch ? tasksMatch[2] : markdown;
+      const textToSearch =
+        this.extractSectionContent(markdown, [
+          "Tasks",
+          "Steps",
+          "Implementation Plan",
+          "Proposed Changes",
+        ]) || markdown;
       const listRegex = /^(?:[-*+]|\d+\.)\s+(?!\[([ xX/])\])(.*)/gm;
 
       while ((match = listRegex.exec(textToSearch)) !== null) {
+        const listItemText = match[2]?.trim();
+        if (!listItemText) {
+          continue;
+        }
+
         // Ignore lines that look like file operations (handled separately)
-        if (!/\[(MODIFY|NEW|DELETE)\]/i.test(match[1])) {
+        if (!/\[(MODIFY|NEW|DELETE)\]/i.test(listItemText)) {
           plan.steps.push({
-            title: match[1].trim(),
+            title: listItemText,
             completed: false,
           });
         }
@@ -284,6 +292,38 @@ export class PlanParser {
     }
 
     return plan;
+  }
+
+  private static extractSectionContent(
+    markdown: string,
+    sectionNames: string[],
+  ): string | undefined {
+    if (!markdown || sectionNames.length === 0) {
+      return undefined;
+    }
+
+    const headerPattern = sectionNames
+      .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|");
+    const sectionHeaderRegex = new RegExp(
+      `^#+\\s+(?:${headerPattern})\\s*$`,
+      "im",
+    );
+    const sectionMatch = sectionHeaderRegex.exec(markdown);
+    if (!sectionMatch || typeof sectionMatch.index !== "number") {
+      return undefined;
+    }
+
+    const sectionStartIndex = sectionMatch.index + sectionMatch[0].length;
+    const remaining = markdown.slice(sectionStartIndex);
+    const nextHeaderMatch = /^#+\s+/m.exec(remaining);
+    const sectionContent = (
+      nextHeaderMatch
+        ? remaining.slice(0, nextHeaderMatch.index)
+        : remaining
+    ).trim();
+
+    return sectionContent || undefined;
   }
 
   /**

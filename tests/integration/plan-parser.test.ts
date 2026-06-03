@@ -108,6 +108,25 @@ describe("PlanParser", () => {
       assert.equal(plan.steps[0].completed, false);
     });
 
+    it("extracts plain bullet tasks when the tasks section has no checkboxes", () => {
+      const md = `## Plan
+
+### Tasks
+- Audit the current history hydration path
+- Patch the fallback task parser
+- Verify diff preview hydration`;
+      const plan = PlanParser.parse(md);
+      assert.deepEqual(
+        plan.steps.map((step) => step.title),
+        [
+          "Audit the current history hydration path",
+          "Patch the fallback task parser",
+          "Verify diff preview hydration",
+        ],
+      );
+      assert.ok(plan.steps.every((step) => step.completed === false));
+    });
+
     it("does not confuse file operations with list items", () => {
       const md = `## Plan
 - [ ] Some task

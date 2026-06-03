@@ -516,8 +516,6 @@ export async function activate(context: vscode.ExtensionContext) {
       }),
     );
 
-
-
     // ============================================================================
     // PHASE 4: Auto-Start Server (Optional)
     // ============================================================================

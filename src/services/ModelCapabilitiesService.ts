@@ -16,22 +16,22 @@ export class ModelCapabilitiesService {
   public static KNOWN_THINKING_MODELS: Record<string, ModelCapability> = {
     "anthropic/claude-sonnet-4-5-20250929": {
       reasoning: true,
-      variants: ["none", "high", "max"],
+      variants: ["high", "max"],
     },
     "anthropic/claude-opus-4-5-20251101": {
       reasoning: true,
-      variants: ["none", "high", "max"],
+      variants: ["high", "max"],
     },
     "anthropic/claude-3-7-sonnet-20250219": {
       reasoning: true,
-      variants: ["none", "low", "medium", "high", "max"],
+      variants: ["low", "medium", "high", "max"],
     },
-    "openai/o1": { reasoning: true, variants: ["none", "low", "minimal", "high"] },
-    "openai/o1-mini": { reasoning: true, variants: ["none", "low", "minimal", "high"] },
-    "openai/o3-mini": { reasoning: true, variants: ["none", "low", "minimal", "high"] },
+    "openai/o1": { reasoning: true, variants: ["low", "minimal", "high"] },
+    "openai/o1-mini": { reasoning: true, variants: ["low", "minimal", "high"] },
+    "openai/o3-mini": { reasoning: true, variants: ["low", "minimal", "high"] },
     "deepseek/deepseek-r1": {
       reasoning: true,
-      variants: ["none", "low", "medium", "high"],
+      variants: ["low", "medium", "high"],
     },
   };
 

@@ -41,6 +41,29 @@ export class StructuredOutputProcessor {
     return this.planManager.persistPlan(content, preferredPath);
   }
 
+  private parseRawResponseRecord(rawResponse: unknown): Record<string, unknown> | undefined {
+    const direct = this.asRecord(rawResponse);
+    if (direct) {
+      return direct;
+    }
+
+    if (typeof rawResponse !== "string") {
+      return undefined;
+    }
+
+    const trimmed = rawResponse.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      return this.asRecord(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * Get the structured output format for API requests
    */
@@ -797,6 +820,32 @@ export class StructuredOutputProcessor {
     }
 
     let validation = validateStructuredOutput(canonicalRec);
+    if (!validation.valid) {
+      const candidatePlan = this.asRecord(canonicalRec.plan) ?? this.asRecord(rec.plan);
+      const planFile =
+        candidatePlan && typeof candidatePlan.file === "string"
+          ? candidatePlan.file.trim()
+          : "";
+      if (planFile && canonicalResponseType !== "implementation_plan") {
+        const planFiles = Array.isArray(candidatePlan?.files)
+          ? candidatePlan.files
+              .map((entry) => this.firstNonEmptyString(entry))
+              .filter((entry): entry is string => Boolean(entry))
+          : [];
+        canonicalRec = {
+          ...canonicalRec,
+          responseType: "implementation_plan",
+          plan: {
+            ...candidatePlan,
+            file: planFile,
+            files: planFiles.includes(planFile)
+              ? planFiles
+              : [planFile, ...planFiles],
+          },
+        };
+        validation = validateStructuredOutput(canonicalRec);
+      }
+    }
     if (!validation.valid && messageCandidate) {
       canonicalRec = {
         responseType: "message",
@@ -1032,12 +1081,20 @@ export class StructuredOutputProcessor {
   extractStructuredOutput(message: any): StructuredAssistantOutput | undefined {
     if (!message) return undefined;
 
+    const rawResponseRec = this.parseRawResponseRecord(message.rawResponse);
+    const rawResponseInfoRec = this.asRecord(rawResponseRec?.info);
     const candidates = [
       message.structuredOutput,
       message.structured_output,
       message.info?.structuredOutput,
       message.info?.structured_output,
       message.info?.structured,
+      rawResponseRec?.structuredOutput,
+      rawResponseRec?.structured_output,
+      rawResponseRec?.structured,
+      rawResponseInfoRec?.structuredOutput,
+      rawResponseInfoRec?.structured_output,
+      rawResponseInfoRec?.structured,
     ];
 
     for (const candidate of candidates) {

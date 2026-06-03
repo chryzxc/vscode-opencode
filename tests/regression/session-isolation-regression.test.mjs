@@ -141,7 +141,7 @@ test('ChatViewProvider forwards inactive-session stream events when they can be 
     );
     assert.match(
         chatViewProviderSource,
-        /if\s*\(eventSessionId\s*&&\s*!this\.isSessionEffectivelyProcessing\(eventSessionId\)\)\s*\{/,
+        /const shouldBypassProcessingGateForInteractiveQuestion\s*=\s*eventType === "question\.asked";[\s\S]*if\s*\(\s*eventSessionId\s*&&\s*!shouldBypassProcessingGateForInteractiveQuestion\s*&&\s*!this\.isSessionEffectivelyProcessing\(eventSessionId\)\s*\)\s*\{/,
         'Stream callback must still drop explicit events for stopped/non-processing sessions',
     );
     assert.doesNotMatch(
@@ -156,8 +156,26 @@ test('ChatViewProvider forwards inactive-session stream events when they can be 
     );
     assert.match(
         chatViewProviderSource,
-        /if\s*\(!eventSessionId\s*&&\s*this\.activeStreamSessionId\s*&&\s*!this\.isSessionEffectivelyProcessing\(this\.activeStreamSessionId\)\)\s*\{/,
+        /if\s*\(\s*!eventSessionId\s*&&\s*this\.activeStreamSessionId\s*&&\s*!shouldBypassProcessingGateForInteractiveQuestion\s*&&\s*!this\.isSessionEffectivelyProcessing\(this\.activeStreamSessionId\)\s*\)\s*\{/,
         'Stream callback must still drop no-session events for a stopped active stream',
+    );
+});
+
+test('store preserves finalized blocking question popovers across message hydration', () => {
+    const storeSource = readSource(
+        [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'store.ts')],
+        'store.ts',
+    );
+
+    assert.match(
+        storeSource,
+        /function requiresUserResponseLocal\(events: InteractiveEvent\[\]\): boolean \{[\s\S]*type === "question"[\s\S]*type === "confirm"[\s\S]*type === "quick_actions"/,
+        'store should classify blocking interactive events that still require a user response',
+    );
+    assert.match(
+        storeSource,
+        /const nextInteractiveEvents =[\s\S]*derivedInteractiveEvents\.length === 0[\s\S]*hasLiveInteractiveEvents[\s\S]*\(isTurnStillActive \|\| liveInteractiveRequiresUserResponse\)[\s\S]*state\.interactiveEvents[\s\S]*derivedInteractiveEvents/s,
+        'SET_MESSAGES should preserve a live blocking question popover even after the stream has already been finalized',
     );
 });
 

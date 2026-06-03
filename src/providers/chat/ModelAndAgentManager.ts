@@ -254,10 +254,28 @@ export class ModelAndAgentManager {
           this.availableModels = models;
           await this.resolveDefaultModel(models);
 
+          // Fetch configured/connected providers
+          let configuredProviders: string[] = [];
+          try {
+            const configResponse = (await client.config.providers()) as any;
+            if (configResponse?.data?.providers && Array.isArray(configResponse.data.providers)) {
+              configuredProviders = configResponse.data.providers
+                .map((p: any) => p.id)
+                .filter((id: string) => id && id.toLowerCase() !== "opencode");
+              this.logger.info("Fetched configured providers", {
+                count: configuredProviders.length,
+                providers: configuredProviders,
+              });
+            }
+          } catch (configError) {
+            this.logger.warn("Failed to fetch configured providers", {}, configError as Error);
+          }
+
           this.postMessage({
             type: "modelsList",
             models,
             selectedModel: this.selectedModel,
+            configuredProviders, // Send connected providers for badge filtering
           });
 
           const duration = Date.now() - startTime;

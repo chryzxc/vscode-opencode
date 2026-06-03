@@ -60,6 +60,16 @@ test('session service merges server/local messages and keeps richer duplicates',
     /mergeConversationMessages\(\[localMessages,\s*response\.data\]\)/,
     'getMessages should merge local and server histories to preserve richer local metadata',
   );
+  assert.match(
+    getMessagesBody,
+    /summarizePotentialAssistantDuplicates\(response\.data\)/,
+    'getMessages should inspect raw SDK server history for duplicate assistant turns before merging local cache',
+  );
+  assert.match(
+    getMessagesBody,
+    /summarizePotentialAssistantDuplicates\(mergedMessages\)/,
+    'getMessages should compare merged history duplicates against raw SDK server history',
+  );
 
   assert.match(
     sessionServiceSource,
@@ -116,6 +126,11 @@ test('session service merges server/local messages and keeps richer duplicates',
     /backfillArrayField\("progressEvents"\)/,
     'duplicate merge should preserve progress events from either copy',
   );
+  assert.match(
+    sessionServiceSource,
+    /function getAssistantContentAliasSignature\(message: unknown\): string \| undefined \{[\s\S]*getMessageRoleForSignature\(message\)[\s\S]*getMessageTextForSignature\(message\)[\s\S]*Math\.floor\(created \/ 15_000\)/,
+    'assistant alias signatures should use canonical role/text extraction and a time bucket to merge local assistant snapshots with SDK history',
+  );
 });
 
 test('session service compaction preserves rich assistant metadata used by history UI', () => {
@@ -168,6 +183,23 @@ test('session service compaction preserves rich assistant metadata used by histo
     compactSubagentBody,
     /compact\.timelineEvents =/,
     'compactSubagentForPersistence should retain timeline events',
+  );
+});
+
+test('chat provider stamps persisted assistant snapshots with session and created time before caching', () => {
+  const persistAssistantBody = extractFunctionBody(
+    chatProviderSource,
+    'case "persistAssistantMessage":'
+  );
+  assert.match(
+    persistAssistantBody,
+    /createdAt:\s*this\.historyMessageCreatedAt\(message\.message\)\s*\?\?\s*Date\.now\(\)/,
+    'persistAssistantMessage should stamp a createdAt on assistant snapshots that do not yet have canonical SDK timestamps',
+  );
+  assert.match(
+    persistAssistantBody,
+    /sessionID:\s*this\.firstNonEmptyString\([\s\S]*message\.message\?\.sessionID[\s\S]*sessionId[\s\S]*\)/,
+    'persistAssistantMessage should stamp the active session id onto assistant snapshots before local caching',
   );
 });
 

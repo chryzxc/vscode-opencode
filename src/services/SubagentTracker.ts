@@ -130,6 +130,47 @@ function asBoolean(value: unknown): boolean {
   return typeof value === "boolean" ? value : false;
 }
 
+function extractErrorText(value: unknown): string {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  const rec = asRecord(value);
+  if (!rec) {
+    return "";
+  }
+
+  const directMessage = asString(rec.message).trim();
+  if (directMessage) {
+    return directMessage;
+  }
+
+  const data = asRecord(rec.data);
+  const dataMessage = asString(data?.message).trim();
+  if (dataMessage) {
+    return dataMessage;
+  }
+
+  const nestedDataError = asRecord(data?.error);
+  const nestedDataErrorMessage = asString(nestedDataError?.message).trim();
+  if (nestedDataErrorMessage) {
+    return nestedDataErrorMessage;
+  }
+
+  const nestedError = asRecord(rec.error);
+  const nestedErrorMessage = asString(nestedError?.message).trim();
+  if (nestedErrorMessage) {
+    return nestedErrorMessage;
+  }
+
+  const name = asString(rec.name).trim();
+  if (name && name.toLowerCase() !== "unknownerror") {
+    return name;
+  }
+
+  return "";
+}
+
 function toTimestamp(value: unknown, fallback = Date.now()): number {
   const n = asNumber(value);
   if (typeof n === "number" && Number.isFinite(n)) {
@@ -1237,8 +1278,7 @@ export class SubagentTracker {
       detail.latestActivity = "Running";
     }
 
-    const err = asRecord(info.error);
-    const errorText = asString(err?.message) || asString(info.error);
+    const errorText = extractErrorText(info.error);
     if (errorText) {
       detail.status = "error";
       detail.errorText = errorText;
@@ -1389,12 +1429,7 @@ export class SubagentTracker {
     }
 
     const createdAt = Date.now();
-    const err = asRecord(properties.error);
-    const errorText =
-      asString(err?.message) ||
-      asString(err?.name) ||
-      asString(properties.error) ||
-      "Session error";
+    const errorText = extractErrorText(properties.error) || "Session error";
 
     detail.status = "error";
     detail.errorText = errorText;
