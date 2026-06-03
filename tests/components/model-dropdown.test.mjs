@@ -17,16 +17,17 @@ test('model dropdown manages tab selection state', () => {
 });
 
 test('model dropdown derives subscribed providers from quota platforms', () => {
-  // Verify logic for generating chips from subscription data.
+  // Verify logic for generating chips from configured provider IDs returned by the SDK.
   const dropdownBody = extractFunctionBody(panelSource, 'export function ModelDropdown()');
 
   assert.match(dropdownBody, /const\s+subscribedProviders\s*=\s*useMemo\(/, 'subscribedProviders should be memoized');
-  assert.match(dropdownBody, /key\s*===\s*["']openai["']\)\s*return\s*["']OpenAI["']/, 'should normalize OpenAI provider name exactly');
-  assert.match(dropdownBody, /key\s*===\s*["']zai["']\)\s*return\s*["']Z\.ai["']/, 'should normalize Z.ai provider name exactly');
-  assert.match(dropdownBody, /key\.includes\("opencode"\)\)\s*return\s*null/, 'should ignore raw opencode platform in mapped providers');
+  assert.match(dropdownBody, /configuredProviders/, 'should read configuredProviders from app state');
+  assert.match(dropdownBody, /if\s*\(!configuredProviders\s*\|\|\s*configuredProviders\.length\s*===\s*0\)\s*\{\s*return\s*\[\]/, 'should hide provider chips when no configured providers are available');
+  assert.match(dropdownBody, /const\s+configuredProviderIds\s*=\s*new\s+Set\(\s*configuredProviders\.map\(\(id\)\s*=>\s*id\.toLowerCase\(\)\)\s*\)/, 'should normalize configured provider IDs from the SDK');
+  assert.match(dropdownBody, /configuredProviderIds\.has\(providerId\)/, 'should use exact providerID matching against configured providers');
   assert.match(dropdownBody, /result\s*=\s*\[\s*["']OpenCode Free["'],\s*\.\.\.providers\s*\]/, 'should always prepend OpenCode Free chip');
   assert.match(dropdownBody, /self\.indexOf\(name\)\s*===\s*index/, 'should deduplicate provider chips');
-  assert.match(dropdownBody, /\[quotaData\]/, 'subscribedProviders should react to quotaData change');
+  assert.match(dropdownBody, /\[availableModels,\s*configuredProviders\]/, 'subscribedProviders should react to availableModels and configuredProviders changes');
 });
 
 test('model dropdown groups and filters models based on selected tab', () => {
@@ -53,7 +54,7 @@ test('model dropdown shows active state on selected filter chip', () => {
   const dropdownBody = extractFunctionBody(panelSource, 'export function ModelDropdown()');
 
   assert.match(dropdownBody, /selectedTab\s*===\s*tab[\s\S]*\?[\s\S]*["']bg-oc-accent text-white["']/, 'selected chip should have accent background');
-  assert.match(dropdownBody, /["']bg-oc-bg-soft oc-text-secondary[\s\S]*hover:bg-oc-panel-soft["']/, 'inactive chips should have subtle background');
+  assert.match(dropdownBody, /["']bg-oc-bg-soft oc-text-secondary hover:bg-oc-panel-soft hover:text-oc-text["']/, 'inactive chips should have subtle background');
 });
 
 test('model dropdown provides feedback when no models match filters', () => {
@@ -64,16 +65,37 @@ test('model dropdown provides feedback when no models match filters', () => {
   assert.match(dropdownBody, /No models found/, 'empty state should show descriptive text');
 });
 
-test('model dropdown normalizes both google and google-gemini-cli platforms to Google', () => {
-  // FIX: Both "google" and "google-gemini-cli" platforms should map to a single "Google" tab.
-  // This prevents duplicate tabs and ensures models appear under the correct provider.
+test('model dropdown filters tabs by resolved providerName rather than legacy quota aliases', () => {
+  // The current dropdown builds tabs from configured provider IDs plus available model provider names.
+  // Filtering must continue to match against the visible providerName exposed by the model payload.
   const dropdownBody = extractFunctionBody(panelSource, 'export function ModelDropdown()');
 
-  // Verify that both google platforms are explicitly mapped to "Google"
   assert.match(
     dropdownBody,
-    /if\s*\(\s*key\s*===\s*["']google["']\s*\|\|\s*key\s*===\s*["']google-gemini-cli["']\s*\)\s*return\s*["']Google["']/,
-    'both "google" and "google-gemini-cli" should be normalized to "Google"'
+    /const\s+providerName\s*=\s*model\.providerName\s*\?\?\s*model\.providerID;/,
+    'tab filtering should resolve the provider name from each model'
+  );
+  assert.match(
+    dropdownBody,
+    /providerName\.toLowerCase\(\)\s*===\s*selectedTab\.toLowerCase\(\)/,
+    'tab filtering should match the selected tab against the resolved provider name'
+  );
+});
+
+test('model dropdown suppresses only the exact opencode provider while preserving providers like OpenCode Go', () => {
+  // Regression: SDK-backed configured providers can include OpenCode Go and similar names.
+  // The dropdown must keep those tabs visible and only suppress the raw free-tier "opencode" provider ID.
+  const dropdownBody = extractFunctionBody(panelSource, 'export function ModelDropdown()');
+
+  assert.match(
+    dropdownBody,
+    /return\s+providerId\s*!==\s*["']opencode["']/,
+    'should exclude only the exact "opencode" provider ID'
+  );
+  assert.doesNotMatch(
+    dropdownBody,
+    /providerId\.includes\(["']opencode["']\)/,
+    'should not exclude providers by substring match because that would hide OpenCode Go'
   );
 });
 

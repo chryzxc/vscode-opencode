@@ -145,3 +145,43 @@ test("resolvePromptVariant returns undefined for 'none' so no variant is sent in
     "resolvePromptVariant should still guard against unsupported variants",
   );
 });
+
+test("resolvePromptVariant returns the normalized SDK variant unchanged for supported reasoning models", () => {
+  assert.match(
+    managerSource,
+    /return normalizedLevel;/,
+    "resolvePromptVariant should pass through supported SDK variants like auto without remapping them",
+  );
+
+  assert.doesNotMatch(
+    managerSource,
+    /normalizedLevel === "auto"/,
+    "resolvePromptVariant should not special-case the SDK auto variant",
+  );
+
+  assert.match(
+    managerSource,
+    /capability\?\.variants[\s\S]*map\(\(v\) => v\.toLowerCase\(\)\.trim\(\)\)/,
+    "resolvePromptVariant should normalize SDK capability variants before validating the saved level",
+  );
+});
+
+test("thinking prompt construction keeps the extension workaround scoped only to legacy none mode", () => {
+  assert.match(
+    providerSource,
+    /const disableThinkingStructuredOutput = thinkingLevel === "none" && modelReasoning;/,
+    "structured output should only be disabled for the legacy none mode on reasoning models",
+  );
+
+  assert.doesNotMatch(
+    providerSource,
+    /tool_choice/i,
+    "ChatViewProvider should not carry an extension-side tool_choice workaround for reasoning models",
+  );
+
+  assert.doesNotMatch(
+    providerSource,
+    /deepseek/i,
+    "ChatViewProvider should stay provider-agnostic and rely on SDK capability handling for reasoning models",
+  );
+});
