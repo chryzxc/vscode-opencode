@@ -88,14 +88,19 @@ test('handleStreamEvent routes lifecycle and streaming dispatch patterns', () =>
     'reasoning leak detection should divert leaked reasoning into reasoning state',
   );
   assert.match(
+    source,
+    /function looksLikeReasoningPlanningText\(/,
+    'message handler should define a planning-style reasoning detector for SDK text-only reasoning chunks',
+  );
+  assert.match(
     handleStreamEventBody,
     /hasSystemMessagePatternInText\(partText\)[\s\S]*upsertRealtimeSystemMessage\(partText\)/,
     'system-message parts should be routed into realtime system-message upsert path',
   );
   assert.match(
     handleStreamEventBody,
-    /const existingMessages = hasVisibleStreamingSnapshot\(stateNow\.streaming\)[\s\S]*mergeStreamingSnapshotIntoHistory\(stateNow\.messages \|\| \[\], stateNow\.streaming\)[\s\S]*stateNow\.messages \|\| \[\]/,
-    'system-message upserts should preserve the active streaming snapshot before SET_MESSAGES',
+    /Keep realtime system banners separate from the active assistant snapshot[\s\S]*const existingMessages = stateNow\.messages \|\| \[\];/,
+    'system-message upserts should avoid duplicating the live streaming snapshot in history',
   );
 });
 
@@ -209,7 +214,7 @@ test('toInteractiveEvents maps structured events and question fallback into UI e
   );
   assert.match(
     toInteractiveEventsBody,
-    /if \(mapped\.length === 0 && questionObj\)[\s\S]*qType === 'confirm'[\s\S]*qType === 'quick_actions'[\s\S]*qType === 'message'[\s\S]*options\.length >= 2/,
+    /if \(mapped\.length === 0 && responseType === 'question' && questionObj\)[\s\S]*qType === 'confirm'[\s\S]*qType === 'quick_actions'[\s\S]*qType === 'message'[\s\S]*options\.length >= 2/,
     'question object fallback should synthesize confirm, quick_actions, message, or question events',
   );
   assert.doesNotMatch(
@@ -234,6 +239,11 @@ test('normalizeMessage blends streaming snapshots with final messages and struct
     normalizeMessageBody,
     /parts: shouldUseStreamingContent[\s\S]*partsWithStreamingContent\(/,
     'normalizeMessage should merge streaming content back into parts when streaming wins',
+  );
+  assert.match(
+    normalizeMessageBody,
+    /hasStreamingReasoningSignal[\s\S]*looksLikeReasoningPlanningText\(textLike\)/,
+    'normalizeMessage should detach planning-style leaked reasoning parts when streaming reasoning evidence exists',
   );
   assert.match(
     normalizeMessageBody,

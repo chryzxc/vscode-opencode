@@ -37,6 +37,32 @@ test('AssistantMessage renders content based on streaming state', () => {
   );
 });
 
+test('Activity step content uses block-level wrappers for markdown rendering', () => {
+  assert.match(
+    messageComponentsSource,
+    /<div className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">/,
+    'Activity step content should use a div wrapper so markdown blocks can lay out correctly.',
+  );
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /<span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">/,
+    'Activity step content must not be wrapped in a span because it contains block elements.',
+  );
+});
+
+test('Activity step file-linked content renders the full summary inline', () => {
+  assert.match(
+    messageComponentsSource,
+    /\{event\.summary \|\| event\.filePath\}/,
+    'Activity step file-linked content should show the full summary/path inline instead of a shortened basename.',
+  );
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /fileName\s*\|\|\s*event\.summary/,
+    'Activity step file-linked content should not prefer the basename for display.',
+  );
+});
+
 // ── File icon injection ──────────────────────────────────────────────────────
 
 test('injectFileIcons uses VS Code theme CSS classes and SVG fallback for unrecognised extensions', () => {
@@ -163,7 +189,7 @@ test('MarkdownRenderer preprocesses markdown to remove blank lines between numbe
 test('MarkdownRenderer applies preprocessing when isPreParsed is false', () => {
   assert.match(
     markdownRendererSource,
-    /const\s+processedContent\s*=\s*isPreParsed\s*\?\s*content\s*:\s*preprocessMarkdown/,
+    /const\s+processedContent\s*=\s*useMemo\([\s\S]*isPreParsed\s*\?\s*content\s*:\s*preprocessMarkdown/,
     'MarkdownRenderer must apply preprocessMarkdown when isPreParsed is false.',
   );
 });
@@ -171,7 +197,25 @@ test('MarkdownRenderer applies preprocessing when isPreParsed is false', () => {
 test('MarkdownRenderer does NOT apply preprocessing when isPreParsed is true', () => {
   assert.match(
     markdownRendererSource,
-    /const\s+html\s*=\s*isPreParsed\s*\?\s*content\s*:/,
+    /const\s+html\s*=\s*useMemo\([\s\S]*isPreParsed[\s\S]*\?\s*content\s*:/,
     'MarkdownRenderer must skip preprocessing when isPreParsed is true.',
+  );
+});
+
+test('MarkdownRenderer memoizes markdown preprocessing and HTML generation', () => {
+  assert.match(
+    markdownRendererSource,
+    /const\s+processedContent\s*=\s*useMemo\(/,
+    'MarkdownRenderer should memoize preprocessing so parent rerenders do not recompute markdown unnecessarily.',
+  );
+  assert.match(
+    markdownRendererSource,
+    /const\s+html\s*=\s*useMemo\(/,
+    'MarkdownRenderer should memoize HTML generation so unchanged content avoids repeated marked parsing.',
+  );
+  assert.match(
+    markdownRendererSource,
+    /export\s+const\s+MarkdownRenderer\s*=\s*memo\(/,
+    'MarkdownRenderer should be wrapped in React.memo to avoid rerendering unchanged markdown blocks.',
   );
 });

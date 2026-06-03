@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, forwardRef } from 'react';
+import React, { useEffect, useMemo, useRef, forwardRef, memo } from 'react';
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css'; // Default base, we'll custom style it further
@@ -71,6 +71,15 @@ function makeFileSvg(): string {
   );
 }
 
+function makeFolderSvg(): string {
+  return (
+    '<svg class="file-icon-svg" viewBox="0 0 16 16" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+    '<path d="M1.5 3.5h4.25l1.5 1.5h7.25v8.5H1.5V3.5Z" fill="#6e7681" opacity="0.18"/>' +
+    '<path d="M1.5 3.5h4.25l1.5 1.5h7.25v8.5H1.5V3.5Z" stroke="#6e7681" stroke-width="1.2" stroke-linejoin="round"/>' +
+    '</svg>'
+  );
+}
+
 /**
  * Injects a file-icon + clickable link for text that looks like a file path.
  * Matches: src/foo.ts, ./bar.tsx, path/to/file.py, bare filenames like foo.ts
@@ -90,9 +99,9 @@ function makeFileSvg(): string {
  * Clicking a path posts { type: 'openFile', file: <path> } to VS Code.
  */
 function injectFileIcons(container: HTMLElement): void {
-  // Group 1 = optional boundary char, Group 2 = the file path.
+  // Group 1 = optional boundary char, Group 2 = the file path (including directories ending with /)
   const FILE_PATH_RE =
-    /(^|[\s(["'`])((?:\.{1,2}\/)?(?:[\w.-]+\/)+[\w.-]+\.[\w]+|[\w.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|c|cpp|h|hpp|java|rb|php|sh|bash|zsh|fish|json|yaml|yml|toml|md|mdx|css|scss|less|html|xml|svg|sql|prisma|lock|env|gitignore|dockerfile|makefile))(?=$|[\s)"'`])/gi;
+    /(^|[\s(["'`])((?:\.{1,2}\/)?(?:[\w.-]+\/)+[\w.-]+\.[\w]+|[\w.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|c|cpp|h|hpp|java|rb|php|sh|bash|zsh|fish|json|yaml|yml|toml|md|mdx|css|scss|less|html|xml|svg|sql|prisma|lock|env|gitignore|dockerfile|makefile)|(?:\.{1,2}\/)?(?:[\w.-]+\/)+)(?=$|[\s)"'`])/gi;
 
   const walk = (node: Node) => {
     if (
@@ -128,6 +137,9 @@ function injectFileIcons(container: HTMLElement): void {
           fragments.push(document.createTextNode(text.slice(lastIndex, pathStart)));
         }
 
+        // Detect if this is a directory (ends with /)
+        const isDirectory = filePath.endsWith('/');
+
         const ext = getFileExtension(filePath);
         const iconKeys = getFileIconKeys(filePath);
 
@@ -153,12 +165,21 @@ function injectFileIcons(container: HTMLElement): void {
         // Icon span — intentionally EMPTY, same as FileIcon in MessageComponents.tsx.
         // The VS Code icon theme injects the icon via a CSS ::before pseudo-element.
         const iconEl = document.createElement('span');
-        iconEl.className = [
-          'file-icon',
-          ...iconKeys.map((key) => `file-icon-type-${cleanKey(key)}`),
-        ].join(' ');
+
+        if (isDirectory) {
+          // For directories, use folder icon classes
+          iconEl.className = 'file-icon file-icon-type-folder';
+        } else {
+          // For files, use file extension based classes
+          iconEl.className = [
+            'file-icon',
+            ...iconKeys.map((key) => `file-icon-type-${cleanKey(key)}`),
+          ].join(' ');
+        }
+
         iconEl.setAttribute('aria-hidden', 'true');
         iconEl.dataset.fileIconPendingFallback = 'true';
+        iconEl.dataset.isDirectory = isDirectory ? 'true' : 'false';
         // Inline style mirrors FileIcon's exact layout so theme CSS aligns correctly
         iconEl.style.cssText =
           'width:16px;height:16px;display:inline-flex;align-items:center;' +
@@ -168,7 +189,7 @@ function injectFileIcons(container: HTMLElement): void {
         textEl.textContent = filePath;
         textEl.style.cssText =
           `min-width:0;vertical-align:middle;word-break:break-word;overflow-wrap:anywhere;` +
-          `color:${EXT_COLORS[ext] || 'var(--oc-text-soft)'};`;
+          `color:${isDirectory ? 'var(--oc-text-soft)' : (EXT_COLORS[ext] || 'var(--oc-text-soft)')};`;
 
         btn.appendChild(iconEl);
         btn.appendChild(textEl);
@@ -205,7 +226,10 @@ function injectFileIcons(container: HTMLElement): void {
         delete icon.dataset.fileIconPendingFallback;
         continue;
       }
-      icon.classList.add('file-icon-type-file');
+      // For directories, keep the folder class; for files, add file class
+      if (icon.dataset.isDirectory !== 'true') {
+        icon.classList.add('file-icon-type-file');
+      }
     }
 
     requestAnimationFrame(() => {
@@ -215,7 +239,12 @@ function injectFileIcons(container: HTMLElement): void {
           continue;
         }
 
-        icon.innerHTML = makeFileSvg();
+        // Use folder icon for directories, file icon for files
+        if (icon.dataset.isDirectory === 'true') {
+          icon.innerHTML = makeFolderSvg();
+        } else {
+          icon.innerHTML = makeFileSvg();
+        }
         delete icon.dataset.fileIconPendingFallback;
       }
     });
@@ -252,7 +281,7 @@ function preprocessMarkdown(content: string): string {
 /**
  * A reusable, stylish Markdown renderer with syntax highlighting.
  */
-export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps>(({
+const MarkdownRendererInner = forwardRef<HTMLDivElement, MarkdownRendererProps>(({
   content,
   className = '',
   isPreParsed = false,
@@ -270,6 +299,23 @@ export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps
     }
   };
 
+  // Pre-process markdown to fix numbered lists with blank lines
+  const processedContent = useMemo(
+    () => (isPreParsed ? content : preprocessMarkdown(content || '')),
+    [content, isPreParsed],
+  );
+
+  const html = useMemo(
+    () => (
+      isPreParsed
+        ? content
+        : isInline
+          ? marked.parseInline(processedContent)
+          : marked.parse(processedContent)
+    ),
+    [content, isInline, isPreParsed, processedContent],
+  );
+
   useEffect(() => {
     if (innerRef.current) {
       // Syntax-highlight code blocks
@@ -281,16 +327,7 @@ export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps
       // Inject file icons next to file-path-like text
       injectFileIcons(innerRef.current);
     }
-  }, [content, isPreParsed]);
-
-  // Pre-process markdown to fix numbered lists with blank lines
-  const processedContent = isPreParsed ? content : preprocessMarkdown(content || '');
-
-  const html = isPreParsed
-    ? content
-    : isInline
-      ? marked.parseInline(processedContent)
-      : marked.parse(processedContent);
+  }, [html]);
 
   const Tag = isInline ? 'span' : 'div';
 
@@ -303,4 +340,6 @@ export const MarkdownRenderer = forwardRef<HTMLDivElement, MarkdownRendererProps
     />
   );
 });
+
+export const MarkdownRenderer = memo(MarkdownRendererInner);
 MarkdownRenderer.displayName = 'MarkdownRenderer';

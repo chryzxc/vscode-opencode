@@ -258,6 +258,7 @@ export interface StreamingState {
     };
   };
   interactiveEvents?: InteractiveEvent[];
+  rawStructuredOutputs?: unknown[];
   inThoughtBlock?: boolean;
   /** Track if currently processing a reasoning part to prevent content leakage */
   inReasoningPart?: boolean;
@@ -391,6 +392,10 @@ export interface InteractiveQuestionEvent {
   id: string;
   title?: string;
   uiCategory?: InteractiveUiCategory;
+  /** SDK-native question request id, used to reply through /question/{requestID}/reply. */
+  requestID?: string;
+  /** SDK-native index of this question within the request. */
+  questionIndex?: number;
   question: string;
   options: InteractiveChoice[];
   multiSelect?: boolean;
@@ -571,6 +576,7 @@ export interface Message {
   subagents?: SubagentDetail[];
   // Optional interactive UI event payloads
   interactiveEvents?: InteractiveEvent[];
+  rawStructuredOutputs?: unknown[];
   // Optional top-level fields for backwards compatibility with flattened persisted messages
   // These fields are also in info, but older persisted messages may have them at top level
   id?: string;
@@ -635,6 +641,14 @@ export interface QuotaData {
   lastUpdated: number;
 }
 
+export interface CompatibilityWarning {
+  component: "sdk" | "server";
+  status: "untested" | "unknown";
+  version?: string;
+  supportedRange: string;
+  message: string;
+}
+
 // ── MCP / LSP Server Info Types ────────────────────────────────────────────────
 
 export type McpServerStatus =
@@ -666,6 +680,8 @@ export interface AppState {
   selectedFiles: string[];
   selectedContexts: ContextItem[];
   availableModels: Model[];
+  /** Provider IDs that are configured/connected in OpenCode (from SDK config.providers()) */
+  configuredProviders: string[];
   selectedModel: { providerID: string; modelID: string } | null;
   modelSearchQuery: string;
   availableAgents: Agent[];
@@ -710,7 +726,9 @@ export interface AppState {
   receivedInitState: boolean;
   serverStatus: string;
   serverError?: string;
+  sdkVersion?: string;
   serverVersion?: string;
+  compatibilityWarnings: CompatibilityWarning[];
   modelDropdownOpen: boolean;
   agentDropdownOpen: boolean;
   thinkingDropdownOpen: boolean;
@@ -754,6 +772,8 @@ export interface AppState {
     error?: string;
   };
   configFiles?: ConfigFilesState;
+  /** Incremented when theme CSS is injected to force FileIcon components to re-check for theme icons */
+  themeCssVersion: number;
 }
 
 export interface ConfigFileInfo {

@@ -7,6 +7,7 @@ import type {
   ActivityDiffExcerpt,
   AppState,
   ContextItem,
+  CompatibilityWarning,
   FileResult,
   InteractiveChoice,
   InteractiveEvent,
@@ -130,40 +131,6 @@ function streamDebug(...args: unknown[]): void {
   }
 }
 
-function logAssistantContentSource(
-  stage: string,
-  payload: {
-    messageId?: string | null;
-    responseType?: string | null;
-    selectedSource?: string;
-    renderable?: boolean;
-    eventType?: string;
-    structuredKind?: string;
-    partType?: string;
-    finalContent?: string;
-    partsContent?: string;
-    structuredMessage?: string;
-    topLevelContent?: string;
-    streamingContent?: string;
-  },
-): void {
-  webviewLogger.info("[OpenCode][assistant-content-source]", {
-    stage,
-    messageId: payload.messageId ?? null,
-    responseType: payload.responseType ?? null,
-    selectedSource: payload.selectedSource ?? null,
-    renderable: typeof payload.renderable === "boolean" ? payload.renderable : null,
-    eventType: payload.eventType ?? null,
-    structuredKind: payload.structuredKind ?? null,
-    partType: payload.partType ?? null,
-    finalPreview: (payload.finalContent ?? "").slice(0, 240),
-    partsPreview: (payload.partsContent ?? "").slice(0, 240),
-    structuredPreview: (payload.structuredMessage ?? "").slice(0, 240),
-    topLevelPreview: (payload.topLevelContent ?? "").slice(0, 240),
-    streamingPreview: (payload.streamingContent ?? "").slice(0, 240),
-  });
-}
-
 /**
  * Returns the first non-empty string from the provided values, or undefined if all are empty.
  */
@@ -198,6 +165,39 @@ function asOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value
     : undefined;
+}
+
+function normalizeCompatibilityWarnings(value: unknown): CompatibilityWarning[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) {
+        return undefined;
+      }
+      const component = asString(rec.component).toLowerCase();
+      const status = asString(rec.status).toLowerCase();
+      const message = asOptionalString(rec.message);
+      const supportedRange = asOptionalString(rec.supportedRange);
+      if (
+        (component !== "sdk" && component !== "server") ||
+        (status !== "untested" && status !== "unknown") ||
+        !message ||
+        !supportedRange
+      ) {
+        return undefined;
+      }
+      return {
+        component: component as CompatibilityWarning["component"],
+        status: status as CompatibilityWarning["status"],
+        version: asOptionalString(rec.version),
+        supportedRange,
+        message,
+      } satisfies CompatibilityWarning;
+    })
+    .filter((item): item is CompatibilityWarning => !!item);
 }
 
 function asSessionStats(value: unknown): AppState["sessionStats"] | undefined {
@@ -481,14 +481,30 @@ function sanitizeReasoningChunk(value: string): string {
   return value;
 }
 
+function looksLikeReasoningPlanningText(value: string): boolean {
+  const normalized = normalizeComparableText(value);
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.startsWith("let me ") ||
+    normalized.startsWith("i should ") ||
+    normalized.startsWith("i need to ") ||
+    normalized.startsWith("i will ") ||
+    normalized.startsWith("the user wants ") ||
+    normalized.startsWith("the user asked ")
+  );
+}
+
 function looksLikeReasoningTrace(value: string, currentContent: string): boolean {
-  void currentContent;
   const trimmed = value.trim();
   if (!trimmed) {
     return false;
   }
-  // Structured-only signal: detect explicit thought tags only.
-  return /<\s*\/?\s*thought\s*>/i.test(trimmed);
+  if (/<\s*\/?\s*thought\s*>/i.test(trimmed)) {
+    return true;
+  }
+  return !normalizeComparableText(currentContent) && looksLikeReasoningPlanningText(trimmed);
 }
 
 function splitMixedReasoningFromContent(
@@ -1562,7 +1578,10 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     return undefined;
   };
 
-  const normalizedQuestion = asRecord(sanitizedRec.question) ?? asRecord(rec.question);
+  const isInteractiveResponseType = responseType === 'question';
+  const normalizedQuestion = isInteractiveResponseType
+    ? asRecord(sanitizedRec.question) ?? asRecord(rec.question)
+    : null;
   const sanitizedInteractiveEvents = Array.isArray(sanitizedRec.interactiveEvents)
     ? sanitizedRec.interactiveEvents
     : undefined;
@@ -1570,11 +1589,9 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     (sanitizedInteractiveEvents && sanitizedInteractiveEvents.length > 0
       ? sanitizedInteractiveEvents
       : undefined) ??
-    normalizedQuestion ??
     rec.interactions ??
     rec.uiEvents ??
-    rec.question ??
-    rec.questions;
+    normalizedQuestion;
   const singleInteractive = normalizeInteractiveEvent(interactiveRaw, 0);
   let interactiveEvents = Array.isArray(interactiveRaw)
     ? interactiveRaw
@@ -1653,12 +1670,16 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
         .filter((item): item is StructuredFileChange => Boolean(item))
     : [];
 
-  const rootQuestion =
-    asString(normalizedQuestion?.question) ||
-    asString(normalizedQuestion?.text) ||
-    asString(rec.question) ||
-    asString(rec.prompt);
+  const rootQuestion = isInteractiveResponseType
+    ? asString(normalizedQuestion?.question) ||
+      asString(normalizedQuestion?.text) ||
+      asString(rec.question) ||
+      asString(rec.prompt)
+    : '';
   const questionOptionSource = (() => {
+    if (!isInteractiveResponseType) {
+      return undefined;
+    }
     const normalizedSource =
       normalizedQuestion?.options ?? normalizedQuestion?.choices;
     if (Array.isArray(normalizedSource)) {
@@ -1698,7 +1719,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     }
   }
 
-  const isInteractiveResponseType = responseType === 'question';
   if (interactiveEvents.length === 0 && isInteractiveResponseType) {
     const fallbackQuestion =
       rootQuestion ||
@@ -1729,15 +1749,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
             : rootAllowCustomInput || !rootQuestion,
       },
     ];
-  }
-
-  // Text-based fallback: detect numbered question lists in plain-text message responses
-  if (interactiveEvents.length === 0 && !isInteractiveResponseType) {
-    const text = messageText || '';
-    const parsed = parseNumberedQuestionsFromText(text);
-    if (parsed.length >= 2) {
-      interactiveEvents = parsed;
-    }
   }
 
   const subagentsRaw =
@@ -2147,6 +2158,48 @@ function normalizeStructuredOutputWithFallback(value: unknown): StructuredOutput
   return normalizeStructuredOutput(value) ?? salvageStructuredOutput(value);
 }
 
+function collectRawStructuredOutputCandidates(rec: UnknownRecord): unknown[] {
+  const infoRec = asRecord(rec.info);
+  const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
+  const rawResponseInfoRec = asRecord(parsedRawDebug.info);
+  return [
+    rec.structuredOutput,
+    rec.structured_output,
+    rec.structured,
+    infoRec?.structuredOutput,
+    infoRec?.structured_output,
+    infoRec?.structured,
+    parsedRawDebug.info,
+    rawResponseInfoRec?.structuredOutput,
+    rawResponseInfoRec?.structured_output,
+    rawResponseInfoRec?.structured,
+  ].filter((candidate): candidate is unknown => typeof candidate !== "undefined" && candidate !== null);
+}
+
+function extractRawPlanFromStructuredCandidate(candidate: unknown): Message["plan"] | undefined {
+  const rec = asRecord(candidate);
+  if (!rec) {
+    return undefined;
+  }
+  const planRec = asRecord(rec.plan);
+  if (!planRec) {
+    return undefined;
+  }
+  return {
+    ...(planRec as Record<string, unknown>),
+  } as Message["plan"];
+}
+
+function extractRawPlanFromMessageRecord(rec: UnknownRecord): Message["plan"] | undefined {
+  for (const candidate of collectRawStructuredOutputCandidates(rec)) {
+    const plan = extractRawPlanFromStructuredCandidate(candidate);
+    if (plan) {
+      return plan;
+    }
+  }
+  return undefined;
+}
+
 function hasTruncatedContentMarker(value: unknown): boolean {
   if (typeof value === "string") {
     return /\.\.\.<truncated\s+\d+\s+chars>/i.test(value);
@@ -2213,7 +2266,6 @@ function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): Structure
       return normalized;
     }
   }
-
   const fromRawDebug = structuredOutputFromRawDebug(parsedRawDebug);
   if (!fromRawDebug) {
     return undefined;
@@ -2236,73 +2288,6 @@ function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): Structure
   }
 
   return fromRawDebug;
-}
-
-function parseNumberedQuestionsFromText(text: string): StructuredInteractiveEvent[] {
-  if (!text) return [];
-  const lines = text.split('\n');
-  const events: StructuredInteractiveEvent[] = [];
-  let index = 0;
-
-  // Patterns that suggest a line is NOT a question requiring user input
-  const nonQuestionPatterns = [
-    // Code formatting/markdown
-    /```/,
-    /`[^`]+`/,
-    /\*\*[^*]+\*\*/,
-    // Arrows and explanations
-    /→|←|↦/,
-    /answered by|validated by|just fixed/i,
-    // Descriptive statements
-    /There are|types of|fields exist|remaining/i,
-    // Technical references
-    /\[\S+\]/,
-  ];
-
-  // Patterns that suggest a line IS a question
-  const questionPatterns = [
-    /\?$/,
-    /^(what|how|why|when|where|who|which|should|can|could|would|will|do|does|is|are)/i,
-  ];
-
-  for (const line of lines) {
-    const match = line.match(/^\s*\d+\.\s+(.+)$/);
-    if (match) {
-      const questionText = match[1].trim();
-      if (!questionText) continue;
-
-      // Skip lines that match non-question patterns
-      const looksLikeNonQuestion = nonQuestionPatterns.some(pattern =>
-        pattern.test(questionText)
-      );
-      if (looksLikeNonQuestion) continue;
-
-      // Check if it looks like an actual question
-      const looksLikeQuestion = questionPatterns.some(pattern =>
-        pattern.test(questionText)
-      );
-
-      // Only include if it looks like a question OR it's short and direct
-      if (looksLikeQuestion || questionText.length < 100) {
-        events.push({
-          type: 'question',
-          id: `interactive-${Date.now()}-fallback-${index++}`,
-          title: "Question",
-          question: questionText,
-          options: [],
-          allowCustomInput: true,
-        });
-      }
-    }
-  }
-
-  // Only return if we found 3 or more numbered questions (higher threshold to avoid false positives)
-  // AND at least one of them looks like a real question
-  const hasRealQuestions = events.some(event =>
-    questionPatterns.some(pattern => pattern.test(event.question || ''))
-  );
-
-  return (events.length >= 3 && hasRealQuestions) ? events : [];
 }
 
 // Normalize incoming todo-like records into a canonical Todo shape used by the
@@ -2404,6 +2389,7 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
   // card. We prefer displayPrompt from the question sub-object.
   // top level. This is intentionally sourced once for all events (they belong to the same turn).
   const structuredRec = asRecord(structured as UnknownRecord | undefined);
+  const responseType = asOptionalString(structuredRec?.responseType)?.toLowerCase();
   const questionObj = asRecord(structuredRec?.question);
   const contextMessage: string | undefined =
     asOptionalString(questionObj?.displayPrompt) ||
@@ -2478,7 +2464,7 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
   // question object, synthesize an interactive event from it. This handles the common
   // case where the model populates only the question object without the interactiveEvents
   // array (minimal valid question output).
-  if (mapped.length === 0 && questionObj) {
+  if (mapped.length === 0 && responseType === 'question' && questionObj) {
     const questionText =
       asOptionalString(questionObj.question) ||
       asOptionalString(questionObj.text);
@@ -2841,6 +2827,66 @@ function interactiveEventsFromToolQuestionPart(part: UnknownRecord): Interactive
     .filter((event): event is InteractiveEvent => !!event);
 }
 
+function interactiveEventsFromQuestionAskedPayload(payload: UnknownRecord): InteractiveEvent[] {
+  const request =
+    asRecord(payload.properties) ||
+    asRecord((payload as UnknownRecord).data) ||
+    payload;
+  const questions = Array.isArray(request.questions)
+    ? request.questions
+    : Array.isArray((payload as UnknownRecord).questions)
+      ? (payload as UnknownRecord).questions
+      : [];
+  if (questions.length === 0) {
+    return [];
+  }
+
+  const requestId =
+    asString(request.id) ||
+    asString((request as UnknownRecord).requestID) ||
+    asString((request as UnknownRecord).requestId) ||
+    `question-${Date.now()}`;
+  return questions
+    .map((entry, index) => {
+      const question = asRecord(entry);
+      if (!question) {
+        return undefined;
+      }
+      const questionText =
+        asString(question.question) ||
+        asString(question.prompt) ||
+        asString(question.message) ||
+        asString(question.text);
+      if (!questionText) {
+        return undefined;
+      }
+      const options = normalizeInteractiveChoices(
+        question.options ?? question.choices ?? question.answers,
+      );
+      const allowCustomInput =
+        asBoolean(question.allowCustomInput, false) ||
+        asBoolean(question.allow_custom_input, false) ||
+        asBoolean(question.custom, true);
+      if (options.length < 2 && !allowCustomInput) {
+        return undefined;
+      }
+      return {
+        type: "question",
+        id: `${requestId}-${index}`,
+        title: asString(question.header) || asString(question.title) || undefined,
+        requestID: requestId,
+        questionIndex: index,
+        question: questionText,
+        options,
+        multiSelect:
+          asBoolean(question.multiSelect, false) ||
+          asBoolean(question.multiple, false),
+        allowCustomInput,
+      } as InteractiveEvent;
+    })
+    .filter((event): event is InteractiveEvent => !!event);
+}
+
 /**
  * Synthesizes a human-readable context message from tool-triggered interactive events.
  * Used when the AI calls the Question tool (no text in streaming.content) so the chat
@@ -2864,9 +2910,63 @@ function synthesizeQuestionContextMessage(events: InteractiveEvent[]): string {
   return lines.join('\n');
 }
 
+function matchesStreamingReasoningLeak(
+  content: string,
+  streamingState?: StreamingState | null,
+): boolean {
+  const contentNorm = normalizeComparableText(content);
+  if (!contentNorm || contentNorm.length < 40) {
+    return false;
+  }
+
+  const contentTokens = comparableTokens(contentNorm);
+  if (contentTokens.length < 5) {
+    return false;
+  }
+
+  const reasoningCandidates = [
+    asString(streamingState?.reasoning),
+    ...(Array.isArray(streamingState?.reasoningEvents)
+      ? streamingState!.reasoningEvents.map((event) =>
+          asString((event as UnknownRecord).content) || asString(event.text),
+        )
+      : []),
+  ]
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  for (const reasoning of reasoningCandidates) {
+    const reasoningNorm = normalizeComparableText(reasoning);
+    if (!reasoningNorm) {
+      continue;
+    }
+    if (
+      contentNorm === reasoningNorm ||
+      contentNorm.includes(reasoningNorm) ||
+      reasoningNorm.includes(contentNorm)
+    ) {
+      return true;
+    }
+
+    const reasoningTokens = comparableTokens(reasoningNorm);
+    if (reasoningTokens.length < 5) {
+      continue;
+    }
+    const overlap = contentTokens.filter((token) =>
+      reasoningTokens.includes(token),
+    ).length;
+    if (overlap / contentTokens.length > 0.6) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function shouldOverrideStreamingContentWithInteractivePrompt(
   content: string,
   latestUserText = "",
+  streamingState?: StreamingState | null,
 ): boolean {
   const trimmed = content.trim();
   const normalized = normalizeComparableText(content).toLowerCase();
@@ -2880,6 +2980,10 @@ function shouldOverrideStreamingContentWithInteractivePrompt(
   }
 
   if (looksLikeReasoningTrace(trimmed, "")) {
+    return true;
+  }
+
+  if (matchesStreamingReasoningLeak(trimmed, streamingState)) {
     return true;
   }
 
@@ -2934,6 +3038,7 @@ function maybeInjectStreamingInteractiveContext(
     !shouldOverrideStreamingContentWithInteractivePrompt(
       currentContent,
       latestUserText,
+      streamingState,
     )
   ) {
     return;
@@ -3043,15 +3148,46 @@ function isReasoningPart(part: UnknownRecord): boolean {
   );
 }
 
+function isActivityLikePart(part: UnknownRecord): boolean {
+  const activityKeys = [
+    "title",
+    "label",
+    "summary",
+    "status",
+    "tool",
+    "callID",
+    "callId",
+    "activityDetail",
+    "diffStats",
+    "filePath",
+    "file",
+    "path",
+    "priority",
+    "state",
+    "input",
+    "result",
+  ];
+
+  return activityKeys.some((key) => typeof part[key] !== "undefined");
+}
+
 function isRenderableAssistantTextPart(part: UnknownRecord): boolean {
   if (isReasoningPart(part)) {
     return false;
   }
   const type = normalizePartType(part.type);
-  if (!type) {
-    return true;
+  if (type) {
+    return type === "text" || type === "message" || type === "output_text";
   }
-  return type === "text" || type === "message" || type === "output_text";
+  const hasTextLikeField =
+    typeof part.text === "string" ||
+    typeof part.content === "string" ||
+    typeof part.delta === "string" ||
+    typeof part.message === "string";
+  if (!hasTextLikeField) {
+    return false;
+  }
+  return !isActivityLikePart(part);
 }
 
 function isRenderableStreamingPartType(partType: string): boolean {
@@ -3150,6 +3286,121 @@ function contentFromParts(parts: unknown[]): string {
     })
     .join('')
     .trim();
+}
+
+function collectReasoningFingerprintsForHydration(message: Message): Set<string> {
+  const fingerprints = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const normalized = normalizeComparableText(value);
+    if (normalized) {
+      fingerprints.add(normalized);
+    }
+  };
+
+  if (Array.isArray(message.reasoningEvents)) {
+    for (const event of message.reasoningEvents) {
+      const rec = asRecord(event);
+      add(rec?.text);
+    }
+  }
+
+  if (Array.isArray(message.parts)) {
+    for (const part of message.parts) {
+      const rec = asRecord(part);
+      if (!rec) {
+        continue;
+      }
+      add(rec.reasoning);
+      add(rec.thought);
+      add(rec.thinking);
+      add(rec.text);
+      add(rec.content);
+    }
+  }
+
+  const rec = asRecord(message);
+  add(rec?.reasoning);
+  add(rec?.thinking);
+  add(rec?.thoughts);
+
+  return fingerprints;
+}
+
+function looksLikeReasoningPlanningTextForHydration(value: string): boolean {
+  const normalized = normalizeComparableText(value);
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.startsWith("let me ") ||
+    normalized.startsWith("i should ") ||
+    normalized.startsWith("i need to ") ||
+    normalized.startsWith("i will ") ||
+    normalized.startsWith("the user wants ") ||
+    normalized.startsWith("the user asked ")
+  );
+}
+
+function isReasoningLeakCandidateForHydration(
+  value: string,
+  message?: Message,
+  parts?: unknown[],
+): boolean {
+  if (!value.trim()) {
+    return false;
+  }
+  const candidateNorm = normalizeComparableText(value);
+  if (!candidateNorm) {
+    return false;
+  }
+
+  const reasoningFingerprints = collectReasoningFingerprintsForHydration(
+    message ?? ({ parts } as Message),
+  );
+  for (const reasoningNorm of reasoningFingerprints) {
+    if (!reasoningNorm) {
+      continue;
+    }
+    if (candidateNorm === reasoningNorm) {
+      return true;
+    }
+    if (
+      candidateNorm.length < 220 &&
+      (candidateNorm.includes(reasoningNorm) ||
+        reasoningNorm.includes(candidateNorm))
+    ) {
+      return true;
+    }
+  }
+
+  return reasoningFingerprints.size > 0 &&
+    looksLikeReasoningPlanningTextForHydration(value);
+}
+
+function extractRenderableAssistantTextForHydration(message: Message): string {
+  const rec = asRecord(message);
+  if (!rec) {
+    return "";
+  }
+
+  if (typeof rec.content === "string" && rec.content.trim()) {
+    const content = rec.content.trim();
+    if (!isReasoningLeakCandidateForHydration(content, message, rec.parts)) {
+      return content;
+    }
+  }
+  if (typeof rec.text === "string" && rec.text.trim()) {
+    const text = rec.text.trim();
+    if (!isReasoningLeakCandidateForHydration(text, message, rec.parts)) {
+      return text;
+    }
+  }
+
+  const parts = Array.isArray(rec.parts) ? rec.parts : [];
+  return contentFromParts(parts);
 }
 
 function hasRenderableAssistantTextInParts(parts: unknown[]): boolean {
@@ -3470,6 +3721,11 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     });
   }
   const detachedReasoningChunks: string[] = [];
+  const hasStreamingReasoningSignal = Boolean(
+    streaming?.reasoning?.trim() ||
+      (Array.isArray(streaming?.reasoningEvents) &&
+        streaming.reasoningEvents.length > 0),
+  );
   const sanitizedMergedParts = mergedParts.map((part) => {
     const rec = asRecord(part);
     if (!rec || isReasoningPart(rec)) {
@@ -3501,6 +3757,35 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     }
     return nextPart as MessagePart;
   });
+  const normalizedPartsWithLeakFiltering = sanitizedMergedParts.map((part) => {
+    const rec = asRecord(part);
+    if (!rec || isReasoningPart(rec)) {
+      return part;
+    }
+    const textLike =
+      asRichString(rec.text) || asRichString(rec.content) || asRichString(rec.delta);
+    if (
+      !textLike ||
+      !hasStreamingReasoningSignal ||
+      !looksLikeReasoningPlanningText(textLike)
+    ) {
+      return part;
+    }
+    const detached = sanitizeReasoningChunk(textLike).trim();
+    if (detached) {
+      detachedReasoningChunks.push(detached);
+    }
+    const nextPart: Record<string, unknown> = { ...(part as Record<string, unknown>) };
+    if (typeof rec.text === "string" || normalizePartType(rec.type) === "text") {
+      nextPart.type = normalizePartType(rec.type) || "text";
+      nextPart.text = "";
+    } else if (typeof rec.content === "string") {
+      nextPart.content = "";
+    } else if (typeof rec.delta === "string") {
+      nextPart.delta = "";
+    }
+    return nextPart as MessagePart;
+  });
 
   const splitReasoningFromCandidate = (raw: string): string => {
     const mixed = splitMixedReasoningFromContent(raw);
@@ -3519,7 +3804,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   const normalizedStructuredOutput = resolveStructuredOutputFromMessageRecord(rec);
 
   const role = asString(rec.role) || asString(asRecord(rec.info)?.role);
-  const nonReasoningPartsContent = contentFromParts(sanitizedMergedParts).trim();
+  const nonReasoningPartsContent = contentFromParts(normalizedPartsWithLeakFiltering).trim();
   const contentFromTopLevel = pickBestContentCandidate([
     splitReasoningFromCandidate(asRichString(rec.content)),
     splitReasoningFromCandidate(asRichString(rec.text)),
@@ -3536,7 +3821,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   // Structured-first rule: when provider parts exist, non-reasoning text parts
   // are authoritative for assistant body rendering.
   let content = hasParts
-    ? shouldPreferStructuredMessage
+      ? shouldPreferStructuredMessage
       ? structuredMessage
       : nonReasoningPartsContent || (provisionalResponseType === "message" ? structuredMessage : "")
     : structuredMessage || contentFromTopLevel;
@@ -3555,15 +3840,6 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
       : contentFromTopLevel
         ? "top-level"
         : "none";
-  logAssistantContentSource("normalizeMessage:content-selection", {
-    messageId: sourceMessageId,
-    responseType: provisionalResponseType ?? null,
-    selectedSource: contentSelectedSource,
-    finalContent: content,
-    partsContent: nonReasoningPartsContent,
-    structuredMessage,
-    topLevelContent: contentFromTopLevel,
-  });
   if (
     hasParts &&
     !nonReasoningPartsContent &&
@@ -3657,9 +3933,9 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     role: role || message.role || (parts.length > 0 ? 'assistant' : undefined),
     content: shouldUseStreamingContent ? streamingContent : content || message.content,
     parts: shouldUseStreamingContent
-      ? partsWithStreamingContent(sanitizedMergedParts as MessagePart[], streamingContent)
-      : sanitizedMergedParts.length > 0
-        ? (sanitizedMergedParts as Message['parts'])
+      ? partsWithStreamingContent(normalizedPartsWithLeakFiltering as MessagePart[], streamingContent)
+      : normalizedPartsWithLeakFiltering.length > 0
+        ? (normalizedPartsWithLeakFiltering as Message['parts'])
         : message.parts
   };
 
@@ -3703,6 +3979,18 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
       if (structuredInteractiveEvents.length > 0) {
         normalized.interactiveEvents = structuredInteractiveEvents;
       }
+    }
+  }
+
+  const rawStructuredOutputs = collectRawStructuredOutputCandidates(rec);
+  if (rawStructuredOutputs.length > 0) {
+    (normalized as Record<string, unknown>).rawStructuredOutputs = rawStructuredOutputs;
+  }
+
+  if (!normalized.plan) {
+    const rawPlan = extractRawPlanFromMessageRecord(rec);
+    if (rawPlan) {
+      normalized.plan = rawPlan as Message["plan"];
     }
   }
 
@@ -3852,7 +4140,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   const canonicalSteps = normalizeActivitySteps(
     normalized,
     streaming,
-    sanitizedMergedParts as MessagePart[],
+    normalizedPartsWithLeakFiltering as MessagePart[],
   );
   if (canonicalSteps.length > 0) {
     normalized.steps = canonicalSteps;
@@ -3887,6 +4175,8 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     (structuredEvents.length > 0 &&
       shouldOverrideStreamingContentWithInteractivePrompt(
         asString(normalized.content),
+        "",
+        streaming,
       )) ||
     !normalized.content?.trim()
   ) {
@@ -5798,11 +6088,14 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
       canonicalMessageId = messageId;
     }
 
-    const content = extractMessageText(message).trim();
+    const content = extractRenderableAssistantTextForHydration(message).trim();
     if (content.length > 0) {
       latestText = content;
       latestTextPart = Array.isArray(message.parts)
-        ? message.parts.find((part) => isTextLikePart(part))
+        ? message.parts.find((part) => {
+            const rec = asRecord(part);
+            return !!rec && isRenderableAssistantTextPart(rec);
+          })
         : undefined;
     }
 
@@ -6303,6 +6596,75 @@ function latestPendingInteractiveEvents(messages: Message[]): InteractiveEvent[]
   }
 
   return [];
+}
+
+function requiresUserResponse(events: InteractiveEvent[]): boolean {
+  return events.some((event) => {
+    const type = asString((event as Record<string, unknown>)?.type).toLowerCase();
+    return (
+      type === "question" ||
+      type === "confirm" ||
+      type === "quick_actions" ||
+      type === "quick-actions"
+    );
+  });
+}
+
+function backfillLiveInteractiveEventsIntoAssistantMessage(
+  message: Message,
+  liveInteractiveEvents: InteractiveEvent[],
+): Message {
+  if (
+    !Array.isArray(liveInteractiveEvents) ||
+    liveInteractiveEvents.length === 0 ||
+    !requiresUserResponse(liveInteractiveEvents)
+  ) {
+    return message;
+  }
+
+  const role =
+    asString(message.role) || asString(asRecord(message.info)?.role);
+  if (role.toLowerCase().trim() !== "assistant") {
+    return message;
+  }
+
+  if (interactiveEventsFromMessage(message).length > 0) {
+    return message;
+  }
+
+  const existingStructured = asRecord(
+    (message as unknown as UnknownRecord).structuredOutput,
+  );
+
+  return {
+    ...message,
+    responseType:
+      asOptionalString((message as unknown as UnknownRecord).responseType) ||
+      "question",
+    interactiveEvents: liveInteractiveEvents,
+    structuredOutput: {
+      ...(existingStructured || {}),
+      responseType:
+        asString(existingStructured?.responseType) || "question",
+      interactiveEvents: liveInteractiveEvents,
+    },
+  } as Message;
+}
+
+function interactiveEventsFromStreamingSnapshot(
+  streaming: StreamingState | null | undefined,
+): InteractiveEvent[] {
+  if (!streaming) {
+    return [];
+  }
+  if (
+    Array.isArray(streaming.interactiveEvents) &&
+    streaming.interactiveEvents.length > 0
+  ) {
+    return streaming.interactiveEvents;
+  }
+  const structuredEvents = toInteractiveEvents(streaming.structuredOutput);
+  return structuredEvents.length > 0 ? structuredEvents : [];
 }
 
 function policyAwareFreeze(
@@ -7187,9 +7549,11 @@ function handleStreamEvent(
     }
 
     const stateNow = getState();
-    const existingMessages = hasVisibleStreamingSnapshot(stateNow.streaming)
-      ? mergeStreamingSnapshotIntoHistory(stateNow.messages || [], stateNow.streaming)
-      : stateNow.messages || [];
+    // Keep realtime system banners separate from the active assistant snapshot.
+    // If we materialize the visible stream into history here, ChatShell will
+    // render that assistant block from `messages` and also keep the live
+    // StreamingCard mounted, which duplicates the entire assistant response.
+    const existingMessages = stateNow.messages || [];
     const fallbackId = `sys-stream-${messageId || Date.now()}`;
     const matchedIndex = existingMessages.findIndex((msg) => {
       const msgRole = (
@@ -7351,6 +7715,38 @@ function handleStreamEvent(
   }
 
   switch (normalizedEventType) {
+    case 'question.asked': {
+      const questionEvents = interactiveEventsFromQuestionAskedPayload(payload);
+      webviewLogger.info("[QUESTION DEBUG] question.asked received in webview", {
+        messageId,
+        questionEvents: questionEvents.map((event) => ({
+          id: event.id,
+          type: event.type,
+          title: "title" in event ? event.title : undefined,
+          question: event.type === "question" || event.type === "confirm" ? event.question : undefined,
+          optionCount: event.type === "question" ? event.options.length : undefined,
+          requestID: event.type === "question" ? event.requestID : undefined,
+        })),
+        payloadKeys: Object.keys(payload),
+        propertyKeys: Object.keys(asRecord(payload.properties) || {}),
+      });
+      if (questionEvents.length > 0) {
+        dispatch({
+          type: "SET_INTERACTIVE_EVENTS",
+          payload: questionEvents,
+        });
+        maybeInjectStreamingInteractiveContext(
+          dispatch,
+          getState,
+          questionEvents,
+        );
+        if (hasBlockingInteractiveEvents(questionEvents)) {
+          dispatch({ type: "FINISH_STREAMING" });
+          dispatch({ type: "SET_PROCESSING", payload: false });
+        }
+      }
+      break;
+    }
     case 'message.part.updated':
     case 'message.part.added':
     case 'message.part.created': {
@@ -7623,16 +8019,6 @@ function handleStreamEvent(
                 renderable: isRenderableStreamingPartType(partType),
               },
             });
-            logAssistantContentSource("stream:message.part.updated", {
-              messageId,
-              selectedSource: "message.part.updated",
-              renderable: isRenderableStreamingPartType(partType),
-              eventType,
-              structuredKind,
-              partType,
-              finalContent: contentPatch.content,
-              streamingContent: streamingState?.content || "",
-            });
           }
         }
       } // End of if (!isReasoningPart) - skip content processing for reasoning parts
@@ -7776,6 +8162,29 @@ function handleStreamEvent(
         }
 
         const toolInteractiveEvents = interactiveEventsFromToolQuestionPart(part);
+        if (
+          tool === "question" ||
+          tool.includes("question") ||
+          tool.includes("request_user_input") ||
+          tool.includes("request-user-input")
+        ) {
+          webviewLogger.info("[QUESTION DEBUG] tool-part interactive inspection", {
+            messageId,
+            tool,
+            title,
+            callID,
+            toolStateStatus: asString(stateObj?.status),
+            inputKeys: Object.keys(inputObj || {}),
+            extractedEventCount: toolInteractiveEvents.length,
+            extractedEvents: toolInteractiveEvents.map((event) => ({
+              id: event.id,
+              type: event.type,
+              title: "title" in event ? event.title : undefined,
+              question: event.type === "question" || event.type === "confirm" ? event.question : undefined,
+              optionCount: event.type === "question" ? event.options.length : undefined,
+            })),
+          });
+        }
         if (toolInteractiveEvents.length > 0) {
           dispatch({
             type: "SET_INTERACTIVE_EVENTS",
@@ -7887,6 +8296,29 @@ function handleStreamEvent(
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId);
       }
 
+      const liveStructuredInteractiveEvents = structuredOutput
+        ? toInteractiveEvents(structuredOutput)
+        : [];
+      const liveHasBlockingInteractive = hasBlockingInteractiveEvents(
+        liveStructuredInteractiveEvents,
+      );
+      if (liveStructuredInteractiveEvents.length > 0) {
+        dispatch({
+          type: "SET_INTERACTIVE_EVENTS",
+          payload: liveStructuredInteractiveEvents,
+        });
+        maybeInjectStreamingInteractiveContext(
+          dispatch,
+          getState,
+          liveStructuredInteractiveEvents,
+        );
+        if (liveHasBlockingInteractive && !finish) {
+          dispatch({ type: "FINISH_STREAMING" });
+          dispatch({ type: "SET_PROCESSING", payload: false });
+          break;
+        }
+      }
+
       if (finish && structuredOutput) {
         if (structuredOutput.reasoning) {
           structuredOutput.reasoning.forEach((chunk) => {
@@ -7994,18 +8426,6 @@ function handleStreamEvent(
                     renderable: canRenderStructuredMessageLive,
                   }
                 });
-                logAssistantContentSource("stream:message.updated:structured-message", {
-                  messageId,
-                  responseType: structuredOutput?.responseType ?? null,
-                  selectedSource: "message.updated.structured.message",
-                  renderable: canRenderStructuredMessageLive,
-                  eventType,
-                  structuredKind,
-                  partType,
-                  finalContent: contentPatch.content,
-                  structuredMessage: messageText,
-                  streamingContent: streamingState?.content || "",
-                });
               }
             } else {
               const contentPatch = resolveStreamingContentUpdate(
@@ -8022,38 +8442,9 @@ function handleStreamEvent(
                     renderable: canRenderStructuredMessageLive,
                   }
                 });
-                logAssistantContentSource("stream:message.updated:structured-message-raw", {
-                  messageId,
-                  responseType: structuredOutput?.responseType ?? null,
-                  selectedSource: "message.updated.structured.message.raw",
-                  renderable: canRenderStructuredMessageLive,
-                  eventType,
-                  structuredKind,
-                  partType,
-                  finalContent: contentPatch.content,
-                  structuredMessage,
-                  streamingContent: streamingState?.content || "",
-                });
               }
             }
           }
-        }
-
-        const interactiveEvents = toInteractiveEvents(structuredOutput);
-        const hasBlockingInteractive =
-          hasBlockingInteractiveEvents(interactiveEvents);
-        if (interactiveEvents.length > 0) {
-          dispatch({ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents });
-          maybeInjectStreamingInteractiveContext(
-            dispatch,
-            getState,
-            interactiveEvents,
-          );
-        }
-        if (hasBlockingInteractive && !finish) {
-          dispatch({ type: "FINISH_STREAMING" });
-          dispatch({ type: "SET_PROCESSING", payload: false });
-          break;
         }
 
         // Legacy structured todo updates are intentionally disabled. The
@@ -8270,16 +8661,6 @@ function handleStreamEvent(
             append: contentPatch.append,
             renderable: !!streamingState?.hasRenderableContent,
           },
-        });
-        logAssistantContentSource("stream:content-delta", {
-          messageId,
-          selectedSource: "contentDelta",
-          renderable: !!streamingState?.hasRenderableContent,
-          eventType,
-          structuredKind,
-          partType,
-          finalContent: contentPatch.content,
-          streamingContent: streamingState?.content || "",
         });
       }
       break;
@@ -8536,18 +8917,6 @@ function handleStreamEvent(
             append: contentPatch.append,
             renderable: true,
           },
-        });
-        logAssistantContentSource("stream:structured.message", {
-          messageId,
-          responseType: structuredOutput?.responseType ?? null,
-          selectedSource: "structured.message",
-          renderable: true,
-          eventType,
-          structuredKind,
-          partType,
-          finalContent: contentPatch.content,
-          structuredMessage: messageText,
-          streamingContent: streamingState?.content || "",
         });
         consumed = true;
       } else if (structuredKind === "progress") {
@@ -8958,6 +9327,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             payload: asString(state.serverStatus, "connected"),
           });
           dispatch({
+            type: "SET_SDK_VERSION",
+            payload: asString(state.sdkVersion) || undefined,
+          });
+          dispatch({
             type: "SET_SERVER_ERROR",
             payload: asString(state.serverError) || undefined,
           });
@@ -8975,6 +9348,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           dispatch({
             type: "SET_SERVER_VERSION",
             payload: asString(state.serverVersion) || undefined,
+          });
+          dispatch({
+            type: "SET_COMPATIBILITY_WARNINGS",
+            payload: normalizeCompatibilityWarnings(state.compatibilityWarnings),
           });
           dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
 
@@ -9025,6 +9402,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             },
           );
           dispatch({ type: "SET_MODELS_LIST", payload: models });
+
+          // Handle configured providers from SDK config.providers()
+          if (data.configuredProviders && Array.isArray(data.configuredProviders)) {
+            const providers = asArray(
+              data.configuredProviders,
+              (item): item is string => typeof item === "string"
+            );
+            dispatch({ type: "SET_CONFIGURED_PROVIDERS", payload: providers });
+          }
+
           dispatchContextUsageFromMessages(dispatch, getState(), getState().messages);
           break;
         }
@@ -9049,9 +9436,28 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             type: "SET_SERVER_STATUS",
             payload: asString(data.status, "unknown"),
           });
+          if (typeof data.serverVersion !== "undefined") {
+            dispatch({
+              type: "SET_SERVER_VERSION",
+              payload: asString(data.serverVersion) || undefined,
+            });
+          }
+          if (typeof data.sdkVersion !== "undefined") {
+            dispatch({
+              type: "SET_SDK_VERSION",
+              payload: asString(data.sdkVersion) || undefined,
+            });
+          }
           dispatch({
             type: "SET_SERVER_ERROR",
             payload: asString(data.serverError) || undefined,
+          });
+          break;
+        }
+        case "compatibilityStatus": {
+          dispatch({
+            type: "SET_COMPATIBILITY_WARNINGS",
+            payload: normalizeCompatibilityWarnings(data.compatibilityWarnings),
           });
           break;
         }
@@ -9434,6 +9840,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             sanitized = alignMessageSubagentParentIds(
               sanitized,
               preferredParentMessageId,
+            );
+            sanitized = backfillLiveInteractiveEventsIntoAssistantMessage(
+              sanitized,
+              interactiveEventsFromStreamingSnapshot(snapshotStreaming),
             );
 
             finalMessageId =
@@ -10663,6 +11073,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               document.head.appendChild(styleTag);
             }
             styleTag.textContent = css;
+            // Force re-render of FileIcon components to check for theme icons
+            dispatch({ type: "THEME_CSS_INJECTED" });
           }
           break;
         }

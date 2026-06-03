@@ -23,6 +23,7 @@ import type {
   SubagentSummary,
   StreamingState,
   StreamingStep,
+  CompatibilityWarning,
   ConfigFile,
   ConfigFilesState,
 } from "./types";
@@ -75,6 +76,8 @@ export const initialState: AppState = {
   commandsLoaded: false,
   receivedInitState: false,
   serverStatus: "connecting",
+  sdkVersion: undefined,
+  compatibilityWarnings: [],
   modelDropdownOpen: false,
   agentDropdownOpen: false,
   thinkingDropdownOpen: false,
@@ -109,6 +112,7 @@ export const initialState: AppState = {
   opencodeConfigSaveStatus: undefined,
   configFiles: undefined,
   streamingBySessionId: {},
+  themeCssVersion: 0,
 };
 
 type StreamingContentPayload = {
@@ -128,11 +132,14 @@ export type AppAction =
   | { type: "SET_RECEIVED_INIT_STATE"; payload: boolean }
   | { type: "SET_SESSION_ID"; payload: string | null }
   | { type: "SET_SERVER_STATUS"; payload: string }
+  | { type: "SET_SDK_VERSION"; payload: string | undefined }
+  | { type: "SET_COMPATIBILITY_WARNINGS"; payload: CompatibilityWarning[] }
   | {
     type: "SET_SELECTED_MODEL";
     payload: { providerID: string; modelID: string } | null;
   }
   | { type: "SET_MODELS_LIST"; payload: Model[] }
+  | { type: "SET_CONFIGURED_PROVIDERS"; payload: string[] }
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
   | { type: "SET_MESSAGES"; payload: Message[] }
@@ -779,6 +786,18 @@ function pendingInteractiveEventsFromMessagesLocal(
   return [];
 }
 
+function requiresUserResponseLocal(events: InteractiveEvent[]): boolean {
+  return events.some((event) => {
+    const type = asStringLocal((event as Record<string, unknown>)?.type).toLowerCase();
+    return (
+      type === "question" ||
+      type === "confirm" ||
+      type === "quick_actions" ||
+      type === "quick-actions"
+    );
+  });
+}
+
 export function normalizeComparableTextLocal(value: string): string {
   return (value || "").toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -846,6 +865,190 @@ export function extractMessageTextForCanonical(message: Message): string {
     }
   }
   return textParts.join("\n").trim();
+}
+
+function isReasoningPartForCanonical(part: Record<string, unknown>): boolean {
+  const type = asStringLocal(part.type).toLowerCase();
+  return (
+    type === "reasoning" ||
+    type === "thinking" ||
+    type === "thought" ||
+    typeof part.reasoning !== "undefined" ||
+    typeof part.thought !== "undefined" ||
+    typeof part.thinking !== "undefined"
+  );
+}
+
+function isActivityLikePartForCanonical(part: Record<string, unknown>): boolean {
+  const activityKeys = [
+    "title",
+    "label",
+    "summary",
+    "status",
+    "tool",
+    "callID",
+    "callId",
+    "activityDetail",
+    "diffStats",
+    "filePath",
+    "file",
+    "path",
+    "priority",
+    "state",
+    "input",
+    "result",
+  ];
+
+  return activityKeys.some((key) => typeof part[key] !== "undefined");
+}
+
+function isRenderableAssistantTextPartForCanonical(
+  part: Record<string, unknown>,
+): boolean {
+  if (isReasoningPartForCanonical(part)) {
+    return false;
+  }
+  const type = asStringLocal(part.type).toLowerCase();
+  if (type) {
+    return type === "text" || type === "message" || type === "output_text";
+  }
+  const hasTextLikeField =
+    typeof part.text === "string" ||
+    typeof part.content === "string" ||
+    typeof part.delta === "string" ||
+    typeof part.message === "string";
+  if (!hasTextLikeField) {
+    return false;
+  }
+  return !isActivityLikePartForCanonical(part);
+}
+
+function contentFromRenderablePartsForCanonical(parts: unknown[]): string {
+  return parts
+    .map((part) => {
+      const partRec = asRecordLocal(part);
+      if (!partRec || !isRenderableAssistantTextPartForCanonical(partRec)) {
+        return "";
+      }
+      return asStringLocal(partRec.text, partRec.content, partRec.delta);
+    })
+    .join("")
+    .trim();
+}
+
+function collectReasoningFingerprintsForCanonical(message: Message): Set<string> {
+  const fingerprints = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const normalized = normalizeComparableTextLocal(value);
+    if (normalized) {
+      fingerprints.add(normalized);
+    }
+  };
+
+  if (Array.isArray(message.reasoningEvents)) {
+    for (const event of message.reasoningEvents) {
+      const rec = asRecordLocal(event);
+      add(rec?.text);
+    }
+  }
+
+  if (Array.isArray(message.parts)) {
+    for (const part of message.parts) {
+      const partRec = asRecordLocal(part);
+      if (!partRec) {
+        continue;
+      }
+      add(partRec.reasoning);
+      add(partRec.thought);
+      add(partRec.thinking);
+      add(partRec.text);
+      add(partRec.content);
+    }
+  }
+
+  const rec = asRecordLocal(message);
+  add(rec?.reasoning);
+  add(rec?.thinking);
+  add(rec?.thoughts);
+
+  return fingerprints;
+}
+
+function looksLikeReasoningPlanningTextForCanonical(value: string): boolean {
+  const normalized = normalizeComparableTextLocal(value);
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.startsWith("let me ") ||
+    normalized.startsWith("i should ") ||
+    normalized.startsWith("i need to ") ||
+    normalized.startsWith("i will ") ||
+    normalized.startsWith("the user wants ") ||
+    normalized.startsWith("the user asked ")
+  );
+}
+
+function isReasoningLeakCandidateForCanonical(
+  value: string,
+  message?: Message,
+  parts?: unknown[],
+): boolean {
+  if (!value.trim()) {
+    return false;
+  }
+  const candidateNorm = normalizeComparableTextLocal(value);
+  if (!candidateNorm) {
+    return false;
+  }
+
+  const reasoningFingerprints = collectReasoningFingerprintsForCanonical(
+    message ?? ({ parts } as Message),
+  );
+  for (const reasoningNorm of reasoningFingerprints) {
+    if (!reasoningNorm) {
+      continue;
+    }
+    if (candidateNorm === reasoningNorm) {
+      return true;
+    }
+    if (
+      candidateNorm.length < 220 &&
+      (candidateNorm.includes(reasoningNorm) ||
+        reasoningNorm.includes(candidateNorm))
+    ) {
+      return true;
+    }
+  }
+
+  return reasoningFingerprints.size > 0 &&
+    looksLikeReasoningPlanningTextForCanonical(value);
+}
+
+function extractRenderableAssistantTextForCanonical(message: Message): string {
+  const rec = asRecordLocal(message);
+  if (!rec) {
+    return "";
+  }
+
+  if (typeof rec.content === "string" && rec.content.trim()) {
+    const content = rec.content.trim();
+    if (!isReasoningLeakCandidateForCanonical(content, message, rec.parts)) {
+      return content;
+    }
+  }
+  if (typeof rec.text === "string" && rec.text.trim()) {
+    const text = rec.text.trim();
+    if (!isReasoningLeakCandidateForCanonical(text, message, rec.parts)) {
+      return text;
+    }
+  }
+
+  const parts = Array.isArray(rec.parts) ? rec.parts : [];
+  return contentFromRenderablePartsForCanonical(parts);
 }
 
 export function isInternalTransportReminderMessage(message: Message): boolean {
@@ -1251,11 +1454,14 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
     if (messageId) {
       canonicalId = messageId;
     }
-    const text = extractMessageTextForCanonical(message);
+    const text = extractRenderableAssistantTextForCanonical(message);
     if (text) {
       latestText = text;
       latestTextPart = Array.isArray(message.parts)
-        ? message.parts.find((part) => isTextLikePartForCanonical(part))
+        ? message.parts.find((part) => {
+            const partRec = asRecordLocal(part);
+            return !!partRec && isRenderableAssistantTextPartForCanonical(partRec);
+          })
         : undefined;
     }
     if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
@@ -1437,7 +1643,36 @@ export function canonicalizeMessagesForRender(messages: Message[]): Message[] {
     return message;
   });
 
-  const deduped = dedupeMirrorMessagesForCanonical(processed);
+  const chronologicallyOrdered = processed
+    .map((message, index) => ({
+      message,
+      index,
+      createdAt: getMessageCreatedAtForCanonical(message),
+    }))
+    .sort((left, right) => {
+      if (
+        typeof left.createdAt === "number" &&
+        typeof right.createdAt === "number" &&
+        left.createdAt !== right.createdAt
+      ) {
+        return left.createdAt - right.createdAt;
+      }
+      if (
+        typeof left.createdAt === "number" &&
+        typeof right.createdAt === "number"
+      ) {
+        if (left.message.role === "user" && right.message.role === "assistant") {
+          return -1;
+        }
+        if (left.message.role === "assistant" && right.message.role === "user") {
+          return 1;
+        }
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.message);
+
+  const deduped = dedupeMirrorMessagesForCanonical(chronologicallyOrdered);
 
   const canonical: Message[] = [];
   let index = 0;
@@ -1892,6 +2127,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "SET_SERVER_STATUS":
       return { ...state, serverStatus: action.payload };
+    case "SET_SDK_VERSION":
+      return { ...state, sdkVersion: action.payload };
+    case "SET_COMPATIBILITY_WARNINGS":
+      return { ...state, compatibilityWarnings: action.payload };
     case "SET_SERVER_ERROR":
       return { ...state, serverError: action.payload };
     case "SET_PROCESSING_SESSIONS":
@@ -1919,6 +2158,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, selectedModel: action.payload };
     case "SET_MODELS_LIST":
       return { ...state, availableModels: action.payload };
+    case "SET_CONFIGURED_PROVIDERS":
+      return { ...state, configuredProviders: action.payload };
     case "SET_SELECTED_AGENT":
       return { ...state, selectedAgent: action.payload };
     case "SET_AGENTS_LIST":
@@ -1948,10 +2189,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         state.interactiveEvents.length > 0;
       const isTurnStillActive =
         state.isProcessing || state.streaming?.isActive === true;
+      const liveInteractiveRequiresUserResponse =
+        hasLiveInteractiveEvents &&
+        requiresUserResponseLocal(state.interactiveEvents);
       const nextInteractiveEvents =
         derivedInteractiveEvents.length === 0 &&
         hasLiveInteractiveEvents &&
-        isTurnStillActive
+        (isTurnStillActive || liveInteractiveRequiresUserResponse)
           ? state.interactiveEvents
           : derivedInteractiveEvents;
       return {
@@ -2850,7 +3094,28 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "SET_INTERACTIVE_EVENTS": {
-      return { ...state, interactiveEvents: action.payload };
+      const streaming = state.streaming
+        ? {
+            ...state.streaming,
+            interactiveEvents: action.payload,
+          }
+        : state.streaming;
+      return {
+        ...state,
+        interactiveEvents: action.payload,
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          state.currentSessionId,
+          streaming,
+          state.messages,
+        ),
+      };
     }
     case "DISMISS_INTERACTIVE_EVENT": {
       return {
@@ -2907,6 +3172,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           },
         };
       }
+    }
+    case "THEME_CSS_INJECTED": {
+      return {
+        ...state,
+        themeCssVersion: state.themeCssVersion + 1,
+      };
     }
     default:
       return state;
