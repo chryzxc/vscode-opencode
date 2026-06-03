@@ -190,6 +190,29 @@ test('progressItemsFromSteps deduplicates by title using a Map', () => {
     );
 });
 
+test('search activity steps dedupe repeated query/description lines before rendering', () => {
+    assert.match(
+        messageComponentsSource,
+        /function buildSearchPattern\(\.\.\.values: Array<string \| undefined>\)/,
+        'MessageComponents should define a helper for search-step pattern assembly',
+    );
+    assert.match(
+        messageComponentsSource,
+        /const key = trimmed\.toLowerCase\(\)/,
+        'Search pattern helper should normalize lines before deduping them',
+    );
+    assert.match(
+        messageComponentsSource,
+        /pattern=\{buildSearchPattern\(\s*event\.activityDetail\?\.query \|\| event\.summary,\s*event\.description,\s*\)\}/,
+        'SearchBlock in the file-path branch should use the deduping helper',
+    );
+    assert.match(
+        messageComponentsSource,
+        /pattern=\{buildSearchPattern\(\s*event\.activityDetail\?\.query \|\| event\.summary,\s*event\.description,\s*\)\}/,
+        'SearchBlock in the inline summary branch should use the deduping helper',
+    );
+});
+
 // ---------------------------------------------------------------------------
 // 4. Reasoning – thoughtItems construction
 // ---------------------------------------------------------------------------

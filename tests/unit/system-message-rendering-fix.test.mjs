@@ -73,6 +73,28 @@ test("system message rendering fix: system reminder messages are converted to sy
   );
 });
 
+test("message ordering fix: canonicalizeMessagesForRender stabilizes hydrated history by created time", () => {
+  const webviewStoreSource = readAllSources(
+    [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],
+    "store.ts",
+  );
+  const canonicalizeBody = extractFunctionBody(
+    webviewStoreSource,
+    "export function canonicalizeMessagesForRender(messages: Message[]): Message[] {",
+  );
+
+  assert.match(
+    canonicalizeBody,
+    /getMessageCreatedAtForCanonical\(message\)/,
+    "canonicalizeMessagesForRender should read canonical created timestamps before rendering",
+  );
+  assert.match(
+    canonicalizeBody,
+    /\.sort\(\(left,\s*right\)\s*=>\s*\{[\s\S]*left\.createdAt - right\.createdAt[\s\S]*typeof left\.createdAt === "number"[\s\S]*typeof right\.createdAt === "number"[\s\S]*left\.message\.role === "user"[\s\S]*right\.message\.role === "assistant"[\s\S]*return -1;[\s\S]*left\.message\.role === "assistant"[\s\S]*right\.message\.role === "user"[\s\S]*return 1;[\s\S]*left\.index - right\.index/s,
+    "canonicalizeMessagesForRender should sort by created time, prefer user before assistant only for real timestamp ties, then preserve original order",
+  );
+});
+
 test("system message rendering fix: SystemMessage component exists and is used in ChatShell", () => {
   const chatShellSource = readAllSources(
     [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],

@@ -547,6 +547,16 @@ test('handleStreamEvent dispatches SET_PROCESSING false when hasBlockingInteract
     );
 });
 
+test('handleStreamEvent dispatches live interactive question events from tool parts before finishing the stream', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
+    assert.ok(body, 'handleStreamEvent must exist');
+    assert.match(
+        body,
+        /const toolInteractiveEvents = interactiveEventsFromToolQuestionPart\(part\);[\s\S]*SET_INTERACTIVE_EVENTS[\s\S]*maybeInjectStreamingInteractiveContext[\s\S]*hasBlockingInteractiveEvents\(toolInteractiveEvents\)[\s\S]*FINISH_STREAMING/s,
+        'tool-question parts should arm the interactive popover and inject visible question context before the stream is finalized',
+    );
+});
+
 // ---------------------------------------------------------------------------
 // 13. shouldBootstrapStreamingFromPart – accepted part types
 // ---------------------------------------------------------------------------

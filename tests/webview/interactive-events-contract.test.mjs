@@ -137,6 +137,11 @@ test('provider does not finalize empty question placeholders as completed turns'
     /collection\.some\(\(item\) => isRenderableToolQuestion\(item\)\)/,
     'question input collections should finalize only when at least one item is renderable',
   );
+  assert.match(
+    blockingDetectorBody,
+    /eventRec\.type === "question\.asked"[\s\S]*questions\.some\(\(item\) => isRenderableToolQuestion\(item\)\)/,
+    'SDK question.asked events should finalize only when they include a renderable question payload',
+  );
 });
 
 test('frontend normalizes and stores interactive events', () => {
@@ -147,7 +152,71 @@ test('frontend normalizes and stores interactive events', () => {
   assert.match(handlerSource, /options\.length < 2/, 'question interactive events should require at least two options');
   assert.doesNotMatch(handlerSource, /return\s+detectInteractiveEventsFromText\(/, 'plain assistant text should not auto-generate interactive popups');
   assert.doesNotMatch(handlerSource, /const\s+interactiveEvents\s*=\s*detectInteractiveEventsFromText\(/, 'streaming completion should not infer popup questions from text heuristics');
-  assert.match(handlerSource, /parseNumberedQuestionsFromText/, 'message handler should have numbered question parsing function available');
+  assert.doesNotMatch(handlerSource, /parseNumberedQuestionsFromText/, 'message handler should not keep numbered-question parsing heuristics');
+});
+
+test('question.asked stream events arm live popover state', () => {
+  const questionAskedBody = extractFunctionBody(
+    handlerSource,
+    "case 'question.asked': {",
+  );
+
+  assert.match(
+    handlerSource,
+    /function interactiveEventsFromQuestionAskedPayload\([\s\S]*requestID:\s*requestId,[\s\S]*questionIndex:\s*index,/,
+    'message handler should normalize SDK question.asked payloads into interactive events with reply metadata',
+  );
+  assert.match(
+    questionAskedBody,
+    /interactiveEventsFromQuestionAskedPayload\(payload\)[\s\S]*SET_INTERACTIVE_EVENTS[\s\S]*maybeInjectStreamingInteractiveContext[\s\S]*hasBlockingInteractiveEvents\(questionEvents\)[\s\S]*FINISH_STREAMING/s,
+    'question.asked should open the popover, inject visible prompt context, and finish the active stream for blocking questions',
+  );
+  assert.match(
+    storeSource,
+    /case "SET_INTERACTIVE_EVENTS": \{[\s\S]*interactiveEvents:\s*action\.payload[\s\S]*streamingBySessionId:\s*cacheStreamingForSession\(/s,
+    'interactive events should also be mirrored into the live streaming snapshot so finalized question turns keep their assistant bubble before hydration',
+  );
+});
+
+test('final assistant normalization backfills live blocking question events when final payload is empty', () => {
+  assert.match(
+    handlerSource,
+    /function interactiveEventsFromStreamingSnapshot\([\s\S]*streaming\.interactiveEvents[\s\S]*toInteractiveEvents\(streaming\.structuredOutput\)/s,
+    'question backfill should read interactive events from the current streaming snapshot, not global state',
+  );
+  assert.match(
+    handlerSource,
+    /function backfillLiveInteractiveEventsIntoAssistantMessage\([\s\S]*interactiveEventsFromMessage\(message\)\.length > 0[\s\S]*responseType:[\s\S]*"question"[\s\S]*interactiveEvents:\s*liveInteractiveEvents/s,
+    'final assistant messages should inherit the live blocking question payload when the final response omits it',
+  );
+  assert.match(
+    handlerSource,
+    /backfillLiveInteractiveEventsIntoAssistantMessage\([\s\S]*interactiveEventsFromStreamingSnapshot\(snapshotStreaming\)/s,
+    'final assistant backfill should be scoped to the active question turn snapshot',
+  );
+});
+
+test('SDK question replies use native question.reply transport', () => {
+  assert.match(
+    panelSource,
+    /type:\s*"questionReply"[\s\S]*requestID,[\s\S]*answers,/,
+    'input popover should send SDK-native question replies when request metadata is present',
+  );
+  assert.match(
+    providerSource,
+    /case "questionReply":[\s\S]*processingSessionIds\.add\(replySessionId\)[\s\S]*activeStreamSessionId = replySessionId[\s\S]*sendProcessingSessionsUpdate\(\)[\s\S]*client\.question\.reply\(\{[\s\S]*requestID,[\s\S]*answers,/,
+    'provider should answer SDK-native questions through client.question.reply',
+  );
+  assert.doesNotMatch(
+    providerSource,
+    /case "questionReply":[\s\S]*processingSessionIds\.delete\(message\.sessionId\)[\s\S]*sendProcessingSessionsUpdate\(\)/,
+    'question replies should not clear processing immediately after submit; the follow-up assistant turn owns that lifecycle',
+  );
+  assert.match(
+    providerSource,
+    /case "questionReply":[\s\S]*await client\.question\.reply\([\s\S]*const status = await this\.getSessionStatusType\(replySessionId\)[\s\S]*status !== "busy" && status !== "retry"[\s\S]*processingSessionIds\.delete\(replySessionId\)/s,
+    'SDK question replies should release loading state when no continuation stream actually starts',
+  );
 });
 
 test('interactive wait timeout is suppressed instead of rendering a hard error banner', () => {
@@ -189,8 +258,8 @@ test('interactive answer submissions arm a timeout-suppression transition window
 test('structured question outputs dispatch popup interactive state', () => {
   assert.match(
     handlerSource,
-    /const interactiveEvents = toInteractiveEvents\(structuredOutput\);[\s\S]*dispatch\(\{ type: 'SET_INTERACTIVE_EVENTS', payload: interactiveEvents \}\);/s,
-    'message completion path should dispatch interactive popup events from structured output',
+    /toInteractiveEvents\(structuredOutput\)[\s\S]*SET_INTERACTIVE_EVENTS/,
+    'structured question paths should dispatch interactive popup events from structured output',
   );
   assert.match(
     handlerSource,
@@ -201,6 +270,25 @@ test('structured question outputs dispatch popup interactive state', () => {
     providerSource,
     /Coerced question response into fallback question event/,
     'provider should not coerce malformed question responses into synthetic fallback events',
+  );
+});
+
+test('message.updated can arm structured question popovers before finish arrives', () => {
+  const messageUpdatedBody = extractFunctionBody(
+    handlerSource,
+    "case 'message.updated': {",
+  );
+
+  assert.match(
+    messageUpdatedBody,
+    /const liveStructuredInteractiveEvents = structuredOutput[\s\S]*toInteractiveEvents\(structuredOutput\)[\s\S]*SET_INTERACTIVE_EVENTS/s,
+    'message.updated should derive and dispatch interactive question events whenever structured output is present',
+  );
+
+  assert.match(
+    messageUpdatedBody,
+    /hasBlockingInteractive[\s\S]*!finish/,
+    'message.updated should be able to finalize the visible stream on blocking questions before terminal finish',
   );
 });
 
@@ -734,6 +822,32 @@ test('substantial AI responses are preserved when questions are asked', () => {
   );
 });
 
+test('reasoning-leak streaming content can still be overridden by interactive question context', () => {
+  assert.match(
+    handlerSource,
+    /function shouldOverrideStreamingContentWithInteractivePrompt\([^)]*streamingState[^)]*\)/,
+    'override check should accept streaming state so it can distinguish real content from leaked reasoning',
+  );
+
+  assert.match(
+    handlerSource,
+    /streamingState\?\.reasoningEvents|streamingState\?\.reasoning/,
+    'override check should inspect streaming reasoning when deciding whether to replace content',
+  );
+
+  assert.match(
+    handlerSource,
+    /trimmed\.length\s*>\s*CONTENT_THRESHOLD[\s\S]*return\s*false/s,
+    'substantial real assistant content should still be preserved by default',
+  );
+
+  assert.match(
+    handlerSource,
+    /reasoning[\s\S]*return\s*true/s,
+    'reasoning-overlap content should still be replaceable even when it is long',
+  );
+});
+
 test('maybeInjectStreamingInteractiveContext uses override check correctly', () => {
   assert.match(
     handlerSource,
@@ -744,7 +858,7 @@ test('maybeInjectStreamingInteractiveContext uses override check correctly', () 
   // Verify it calls shouldOverrideStreamingContentWithInteractivePrompt
   assert.match(
     handlerSource,
-    /maybeInjectStreamingInteractiveContext[\s\S]*shouldOverrideStreamingContentWithInteractivePrompt\(/s,
+    /maybeInjectStreamingInteractiveContext[\s\S]*shouldOverrideStreamingContentWithInteractivePrompt\([\s\S]*streamingState/s,
     'should call override check function before dispatching content update'
   );
 

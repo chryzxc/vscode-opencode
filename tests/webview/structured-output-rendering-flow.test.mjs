@@ -20,13 +20,26 @@ const schemaSource = readSource([
 ], 'structuredOutputSchema');
 
 test('implementation plans route into the plan card renderer', () => {
-  assert.match(messageComponents, /responseType === "implementation_plan"/, 'implementation plan response routing is missing');
-  assert.match(messageComponents, /let plan = responseType === "implementation_plan" \? message\?\.plan : undefined;/, 'plan extraction is missing');
+  assert.match(messageComponents, /const plan = message\?\.plan;/, 'plan extraction should use canonical message.plan only');
+  assert.doesNotMatch(messageComponents, /structuredOutputForPlanRendering|planAttachmentFromStructuredCandidate|structuredOutputCandidatesForMessage/, 'plan renderer should not rely on plan-specific fallback helpers');
 });
 
 test('plan cards can render from plan.file without requiring plan.content', () => {
   assert.match(messageComponents, /plan\.file|file|plan/i, 'plan.file rendering branch is missing');
   assert.match(messageComponents, /plan|file|span|title/i, 'plan.file display text is missing');
+});
+
+test('latest implementation plan wins when duplicate plan files exist', () => {
+  assert.match(
+    messageComponents,
+    /const matchingPlanIndexes = messages[\s\S]*Math\.max\(\.\.\.matchingPlanIndexes\)[\s\S]*return ownIndex === lastMatchingPlanIndex;/s,
+    'plan-card duplicate suppression should prefer the latest matching plan message',
+  );
+  assert.match(
+    messageComponents,
+    /asRecord\(infoRec\?\.structuredOutput\)[\s\S]*asRecord\(infoRec\?\.structured\)/s,
+    'plan-file comparison should inspect structured output from message.info as well as top-level fields',
+  );
 });
 
 test('question responses render interactive options', () => {
@@ -67,6 +80,27 @@ test('structured output is normalized before rendering', () => {
   assert.match(messageHandler, /function normalizeStructuredOutput\(value: unknown\): StructuredOutput \| undefined/, 'structured output normalizer is missing');
   assert.match(messageHandler, /const sanitizedRec = sanitizeStructuredOutput\(rec\);/, 'structured output sanitization is missing');
   assert.match(messageHandler, /const validation = validateStructuredOutput\(sanitizedRec\);/, 'structured output validation is missing');
+});
+
+test('raw structured payloads are preserved alongside canonical fields', () => {
+  assert.match(
+    messageHandler,
+    /const rawStructuredOutputs = collectRawStructuredOutputCandidates\(rec\);/,
+    'raw structured candidates should be preserved on the normalized message',
+  );
+  assert.match(
+    messageHandler,
+    /const rawPlan = extractRawPlanFromMessageRecord\(rec\);[\s\S]*normalized\.plan = rawPlan(?: as Message\["plan"\])?;/,
+    'raw plan objects should be copied through without being normalized',
+  );
+});
+
+test('implementation plan messages suppress the aggregated diff section on the same turn', () => {
+  assert.match(
+    messageComponents,
+    /if \(plan\?\.file\) \{[\s\S]*return false;[\s\S]*\}/,
+    'implementation plan turns should skip the aggregated file changes section',
+  );
 });
 
 test('raw stream debug can be converted back into structured output', () => {

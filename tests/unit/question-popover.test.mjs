@@ -64,8 +64,14 @@ test('question popover: webview extracts interactive events from question object
   // Check for fallback logic when interactiveEvents array is empty
   assert.match(
     messageHandlerSource,
-    /if \(mapped\.length === 0 && questionObj\) \{/,
-    'toInteractiveEvents should have fallback for question object',
+    /const responseType = asOptionalString\(structuredRec\?\.responseType\)\?\.toLowerCase\(\);/,
+    'toInteractiveEvents should read the structured response type before synthesizing events',
+  );
+
+  assert.match(
+    messageHandlerSource,
+    /if \(mapped\.length === 0 && responseType === 'question' && questionObj\) \{/,
+    'toInteractiveEvents should only synthesize question-object events for responseType=question',
   );
 
   // Check that question text is extracted correctly

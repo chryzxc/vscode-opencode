@@ -181,19 +181,87 @@ function isReasoningPart(part: MessagePart): boolean {
   );
 }
 
+function isActivityLikePart(part: MessagePart): boolean {
+  const activityKeys: Array<keyof MessagePart | string> = [
+    "title",
+    "label",
+    "summary",
+    "status",
+    "tool",
+    "callID",
+    "callId",
+    "activityDetail",
+    "diffStats",
+    "filePath",
+    "file",
+    "path",
+    "priority",
+    "state",
+    "input",
+    "result",
+  ];
+
+  return activityKeys.some((key) => typeof (part as Record<string, unknown>)[key] !== "undefined");
+}
+
 function isRenderableAssistantTextPart(part: MessagePart): boolean {
   if (isReasoningPart(part)) {
     return false;
   }
   const type = (part.type ?? "").toLowerCase();
-  if (!type) {
-    return true;
+  if (type) {
+    return type === "text" || type === "message" || type === "output_text";
   }
-  return type === "text" || type === "message" || type === "output_text";
+  const hasTextLikeField =
+    typeof part.text === "string" ||
+    typeof part.content === "string" ||
+    typeof part.message === "string";
+  if (!hasTextLikeField) {
+    return false;
+  }
+  return !isActivityLikePart(part);
 }
 
-function isStructuredOutputFailureMessage(value?: string): boolean {
-  const normalized = (value || "").trim().toLowerCase();
+function normalizeErrorLikeValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => normalizeErrorLikeValue(entry))
+      .filter((entry) => entry.length > 0)
+      .join(" ");
+  }
+  if (value instanceof Error) {
+    return value.message || String(value);
+  }
+  if (typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    const preferred =
+      normalizeErrorLikeValue(rec.message) ||
+      normalizeErrorLikeValue(rec.error) ||
+      normalizeErrorLikeValue(rec.text) ||
+      normalizeErrorLikeValue(rec.content);
+    if (preferred) {
+      return preferred;
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function isStructuredOutputFailureMessage(value?: unknown): boolean {
+  const normalized = normalizeErrorLikeValue(value).trim().toLowerCase();
   if (!normalized) return false;
   return (
     normalized.includes("structured output error") ||
@@ -352,6 +420,34 @@ function getSubagentAccentTextStyle(id: string): CSSProperties {
 
 const SEARCH_LABELS = new Set(["grep", "search", "glob", "ripgrep", "ast-grep", "find"]);
 
+function buildSearchPattern(...values: Array<string | undefined>): string {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+
+    for (const line of value.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      lines.push(trimmed);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 // Component to extract bash output from message content
 function TerminalBlockWithOutput({
   event,
@@ -482,6 +578,7 @@ export function FileIcon({
   const [showSvgFallback, setShowSvgFallback] = useState(false);
   const iconRef = useRef<HTMLSpanElement | null>(null);
   const iconKeys = useMemo(() => getFileIconKeys(filePath), [filePath]);
+  const { themeCssVersion } = useAppState();
 
   useEffect(() => {
     setUseGenericFileIcon(!filePath);
@@ -508,7 +605,7 @@ export function FileIcon({
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [filePath, iconKeys.join("|"), useGenericFileIcon]);
+  }, [filePath, iconKeys.join("|"), useGenericFileIcon, themeCssVersion]);
 
   return (
     <span
@@ -609,13 +706,17 @@ function collectMessageIdentityCandidates(message?: Message): Set<string> {
   return candidates;
 }
 
-function normalizeComparableText(value: string): string {
-  return value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
+function normalizeComparableText(value: unknown): string {
+  return normalizeErrorLikeValue(value)
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function messageDisplaysSameErrorText(
   message: Message | undefined,
-  value: string,
+  value: unknown,
 ): boolean {
   const normalized = normalizeComparableText(value);
   if (!normalized) {
@@ -637,7 +738,7 @@ function messageDisplaysSameErrorText(
 
 function messageMatchesDisplayErrorText(
   message: Message | undefined,
-  value: string,
+  value: unknown,
 ): boolean {
   const normalized = normalizeComparableText(value);
   if (!normalized) {
@@ -715,10 +816,10 @@ function isReasoningLeakCandidate(
   if (!value.trim()) {
     return false;
   }
-  if (source !== "content" && source !== "text") {
+  if (source !== "parts" && source !== "content" && source !== "text") {
     return false;
   }
-  if (hasRenderableParts) {
+  if (source !== "parts" && hasRenderableParts) {
     return false;
   }
   const candidateNorm = normalizeComparableText(value);
@@ -1806,11 +1907,7 @@ function planFileFromMessageForComparison(message?: Message): string {
   if (typeof direct === "string" && direct.trim()) {
     return direct;
   }
-  const structured = (message as unknown as Record<string, unknown> | undefined)
-    ?.structuredOutput as Record<string, unknown> | undefined;
-  const structuredPlan = structured?.plan as Record<string, unknown> | undefined;
-  const structuredFile = structuredPlan?.file;
-  return typeof structuredFile === "string" ? structuredFile : "";
+  return "";
 }
 
 function planRenderRichness(plan?: Message["plan"]): number {
@@ -2031,12 +2128,6 @@ function structuredFileChangesFromMessage(message?: Message): StructuredFileChan
     asRecord(infoRec?.structured);
   const direct = normalizeStructuredFileChanges(structured?.fileChanges);
   if (direct.length > 0) {
-    if (config.debug.showRawResponse) {
-      console.debug("[DIFF PREVIEW] source=message/info structured", {
-        messageId: message.info?.id || message.id,
-        count: direct.length,
-      });
-    }
     return direct;
   }
 
@@ -2048,13 +2139,6 @@ function structuredFileChangesFromMessage(message?: Message): StructuredFileChan
     asRecord(rawInfoRec?.structured);
   const fromRawStructured = normalizeStructuredFileChanges(rawStructured?.fileChanges);
   if (fromRawStructured.length > 0) {
-    if (config.debug.showRawResponse) {
-      console.debug("[DIFF PREVIEW] source=rawResponse.info.structured", {
-        messageId: message.info?.id || message.id,
-        count: fromRawStructured.length,
-        rawResponseType: typeof messageRec?.rawResponse,
-      });
-    }
     return fromRawStructured;
   }
 
@@ -2072,26 +2156,10 @@ function structuredFileChangesFromMessage(message?: Message): StructuredFileChan
     const inputRec = asRecord(stateRec?.input);
     const fromToolInput = normalizeStructuredFileChanges(inputRec?.fileChanges);
     if (fromToolInput.length > 0) {
-      if (config.debug.showRawResponse) {
-        console.debug("[DIFF PREVIEW] source=rawResponse.parts[].StructuredOutput.input", {
-          messageId: message.info?.id || message.id,
-          count: fromToolInput.length,
-        });
-      }
       return fromToolInput;
     }
   }
 
-  if (config.debug.showRawResponse) {
-    console.debug("[DIFF PREVIEW] source=none", {
-      messageId: message.info?.id || message.id,
-      hasStructuredOutput: !!asRecord(messageRec?.structuredOutput),
-      hasInfoStructured: !!asRecord(infoRec?.structured),
-      rawResponseType: typeof messageRec?.rawResponse,
-      rawHasInfoStructured: !!rawStructured,
-      rawPartsCount: rawParts.length,
-    });
-  }
   return [];
 }
 
@@ -2442,14 +2510,20 @@ function subagentModelLabel(
     return model || provider;
   }
 
+  const roleLabel = deriveSubagentRole(subagent);
+  if (roleLabel) {
+    return roleLabel;
+  }
+
   // No model info available - check status to determine appropriate message
   const resolvedStatus = resolveSubagentStatus(subagent, detail);
   const isError = resolvedStatus === 'error' || resolvedStatus === 'orphaned';
   const isTerminal = resolvedStatus === 'done';
 
   if (isError || isTerminal) {
-    // For errored/orphaned/completed subagents without model info, show "Unknown"
-    return "Unknown";
+    // Prefer a neutral label over "Unknown" when the subagent is terminal but
+    // has no provider/model metadata.
+    return "Subagent";
   }
 
   // For pending/running subagents, check if they've been stuck without model info
@@ -2465,7 +2539,7 @@ function subagentModelLabel(
     // If it's been more than 5 seconds without model info, likely not coming
     // (e.g., interrupted, stalled, or model selection failed)
     if (elapsed > 5000) {
-      return "Unknown";
+      return "Subagent";
     }
   }
 
@@ -3175,21 +3249,25 @@ function buildDisplayEvents(
   for (const event of rawEvents) {
     const previous = collapsed[collapsed.length - 1];
 
-    const isDuplicate =
+    // Content-based deduplication: events with same content are duplicates
+    // regardless of status or source (stream vs final)
+    const isContentDuplicate =
       !!previous &&
       previous.kind === event.kind &&
       previous.label === event.label &&
       previous.summary === event.summary &&
-      previous.status === event.status &&
       (previous.filePath ?? "") === (event.filePath ?? "") &&
-      (previous.source ?? "") === (event.source ?? "") &&
       (previous.internal ?? false) === (event.internal ?? false);
 
-    if (!isDuplicate || !previous) {
+    if (!isContentDuplicate || !previous) {
       collapsed.push({ ...event });
       continue;
     }
 
+    // When collapsing duplicate events, prefer higher-quality metadata:
+    // - "final" source over "stream"
+    // - "done" status over "pending"
+    // - "error" status over all others
     previous.updateCount += 1;
     if (event.description) previous.description = event.description;
     if (event.detail) previous.detail = event.detail;
@@ -3197,7 +3275,21 @@ function buildDisplayEvents(
     if (event.activityDetail) previous.activityDetail = event.activityDetail;
     if (event.viewDiffFile) previous.viewDiffFile = event.viewDiffFile;
     if (event.partType) previous.partType = event.partType;
-    if (event.source) previous.source = event.source;
+
+    // Prefer "final" source over "stream"
+    if (event.source === "final" && previous.source !== "final") {
+      previous.source = event.source;
+    } else if (!previous.source && event.source) {
+      previous.source = event.source;
+    }
+
+    // Prefer terminal statuses over pending
+    if (event.status === "error") {
+      previous.status = event.status;
+    } else if (event.status === "done" && previous.status !== "error") {
+      previous.status = event.status;
+    }
+
     previous.internal = Boolean(previous.internal || event.internal);
   }
 
@@ -3550,6 +3642,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   message,
   streaming,
   isContiguous,
+  interactiveEvents,
+  messages,
+  currentSessionId,
   subagentsByParentMessageId,
   subagentDetailsById,
   availableAgents,
@@ -3558,13 +3653,15 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   message?: Message;
   streaming?: StreamingState;
   isContiguous?: boolean;
+  interactiveEvents: AppState["interactiveEvents"];
+  messages: Message[];
+  currentSessionId: AppState["currentSessionId"];
   subagentsByParentMessageId: AppState["subagentsByParentMessageId"];
   subagentDetailsById: AppState["subagentDetailsById"];
   availableAgents: AppState["availableAgents"];
   todoItems?: AppState["todoItems"];
 }) {
   const dispatch = useAppDispatch();
-  const state = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
@@ -3579,8 +3676,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
   const content = getMessageContent(message, streaming);
   const liveInteractivePrompt = useMemo(
-    () => questionPromptFromInteractiveEvents(state.interactiveEvents),
-    [state.interactiveEvents],
+    () => questionPromptFromInteractiveEvents(interactiveEvents),
+    [interactiveEvents],
   );
   const shouldUseInteractivePromptFallback =
     !!streaming?.isActive &&
@@ -3621,51 +3718,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const info = message?.info;
   const messageRec = asRecord(message);
   const infoRec = asRecord(messageRec?.info);
-  const structured =
-    asRecord(messageRec?.structuredOutput) ||
-    asRecord(messageRec?.structured) ||
-    asRecord(infoRec?.structuredOutput) ||
-    asRecord(infoRec?.structured);
+  const structured = message?.structuredOutput;
   const responseType = firstNonEmptyString(
     message?.responseType,
     typeof structured?.responseType === "string" ? structured.responseType : undefined,
   )?.toLowerCase();
-  let plan = responseType === "implementation_plan" ? message?.plan : undefined;
-  if (!plan && responseType === "implementation_plan") {
-    const structuredPlanRec = asRecord(structured?.plan);
-    if (structuredPlanRec) {
-      plan = {
-        file:
-          typeof structuredPlanRec.file === "string"
-            ? structuredPlanRec.file
-            : undefined,
-        files: Array.isArray(structuredPlanRec.files)
-          ? structuredPlanRec.files
-          : undefined,
-        content:
-          typeof structuredPlanRec.content === "string"
-            ? structuredPlanRec.content
-            : undefined,
-        title:
-          typeof structuredPlanRec.title === "string"
-            ? structuredPlanRec.title
-            : undefined,
-        intro:
-          typeof structuredPlanRec.intro === "string"
-            ? structuredPlanRec.intro
-            : undefined,
-        summary:
-          typeof structuredPlanRec.summary === "string"
-            ? structuredPlanRec.summary
-            : undefined,
-        fileCount:
-          typeof structuredPlanRec.fileCount === "number" &&
-            Number.isFinite(structuredPlanRec.fileCount)
-            ? structuredPlanRec.fileCount
-            : undefined,
-      };
-    }
-  }
+  const plan = message?.plan;
   const changeSummary = message?.changeSummary;
   // Match the same ID extraction logic as backend extractMessageId()
   // https://github.com/anthropics/opencode-vscode/blob/main/src/providers/ChatViewProvider.ts#L1988-L2000
@@ -3682,6 +3740,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   );
   const shouldShowFileChanges = useMemo(() => {
     if (!message || !messageHasOwnFileChangeEvidence(message)) {
+      return false;
+    }
+
+    // Implementation plan turns already surface their own plan card, so the
+    // aggregated diff section would just duplicate the same turn.
+    if (plan?.file) {
       return false;
     }
 
@@ -3702,14 +3766,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       return true;
     }
 
-    const ownIndex = state.messages.findIndex(
+    const ownIndex = messages.findIndex(
       (candidate) =>
         candidate === message ||
         (!!messageId && (candidate.info?.id === messageId || candidate.id === messageId)),
     );
     const ownRichness = fileChangeRenderRichness(message);
 
-    return !state.messages.some((candidate, index) => {
+    return !messages.some((candidate, index) => {
       if (candidate === message) {
         return false;
       }
@@ -3726,69 +3790,47 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       }
       return candidateRichness === ownRichness && ownIndex >= 0 && index > ownIndex;
     });
-  }, [hasOwnedChangeSummary, message, messageId, state.messages]);
-  useEffect(() => {
-    if (!message || !config.debug.showRawResponse) {
-      return;
-    }
-    const structuredCount = structuredFileChangesFromMessage(message).length;
-    console.debug("[DIFF PREVIEW] render-gate", {
-      messageId,
-      shouldShowFileChanges,
-      hasOwnEvidence: messageHasOwnFileChangeEvidence(message),
-      structuredCount,
-      editsCount: Array.isArray(message.edits) ? message.edits.length : 0,
-      stepsCount: Array.isArray(message.steps) ? message.steps.length : 0,
-      progressEventsCount: Array.isArray(message.progressEvents)
-        ? message.progressEvents.length
-        : 0,
-      hasOwnedChangeSummary,
-    });
-  }, [message, messageId, shouldShowFileChanges, hasOwnedChangeSummary]);
+  }, [hasOwnedChangeSummary, message, messageId, messages]);
   const shouldShowPlanCard = useMemo(() => {
     if (!plan?.file) {
       return !!plan;
     }
 
-    const ownIndex = state.messages.findIndex(
+    const ownIndex = messages.findIndex(
       (candidate) =>
         candidate === message ||
         (!!messageId && (candidate.info?.id === messageId || candidate.id === messageId)),
     );
-    const ownRichness = planRenderRichness(plan);
+    if (ownIndex < 0) {
+      return true;
+    }
 
-    return !state.messages.some((candidate, index) => {
-      if (candidate === message) {
-        return false;
-      }
-      const candidatePlanFile = planFileFromMessageForComparison(candidate);
-      if (!areLikelySamePlanFilePath(candidatePlanFile, plan.file)) {
-        return false;
-      }
+    const matchingPlanIndexes = messages
+      .map((candidate, index) =>
+        areLikelySamePlanFilePath(planFileFromMessageForComparison(candidate), plan.file)
+          ? index
+          : -1,
+      )
+      .filter((index) => index >= 0);
 
-      const candidatePlan =
-        candidate.plan ||
-        ((candidate as unknown as Record<string, unknown>).structuredOutput as
-          | { plan?: Message["plan"] }
-          | undefined)?.plan;
-      const candidateRichness = planRenderRichness(candidatePlan);
-      if (candidateRichness > ownRichness) {
-        return true;
-      }
-      return candidateRichness === ownRichness && ownIndex >= 0 && index < ownIndex;
-    });
-  }, [message, messageId, plan, state.messages]);
+    if (matchingPlanIndexes.length === 0) {
+      return true;
+    }
+
+    const lastMatchingPlanIndex = Math.max(...matchingPlanIndexes);
+    return ownIndex === lastMatchingPlanIndex;
+  }, [message, messageId, plan, messages]);
 
   const latestAssistantMessageId = useMemo(() => {
-    for (let index = state.messages.length - 1; index >= 0; index--) {
-      const candidate = state.messages[index];
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const candidate = messages[index];
       const role = candidate.role ?? candidate.info?.role ?? "user";
       if (role === "assistant") {
         return candidate.info?.id ?? candidate.id;
       }
     }
     return undefined;
-  }, [state.messages]);
+  }, [messages]);
   const isLatestAssistantMessage =
     !!messageId && latestAssistantMessageId === messageId;
   const [viewState, setViewState] = useState<MessageViewState>({
@@ -3839,7 +3881,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     if (!messageId) {
       return [];
     }
-    const activeSessionId = state.currentSessionId;
+    const activeSessionId = currentSessionId;
     const sessionScopedTodoItems = activeSessionId
       ? todoItems.filter((item) => item.sessionId === activeSessionId)
       : todoItems;
@@ -3855,7 +3897,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       return strict;
     }
     const assistantMessageIdentitySet = new Set<string>();
-    for (const candidate of state.messages) {
+    for (const candidate of messages) {
       const role = candidate.role ?? candidate.info?.role ?? "user";
       if (role !== "assistant") {
         continue;
@@ -3893,8 +3935,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     messageId,
     isStreamingActive,
     latestAssistantMessageId,
-    state.currentSessionId,
-    state.messages,
+    currentSessionId,
+    messages,
     isLatestAssistantMessage,
     message,
   ]);
@@ -3906,12 +3948,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     if (plan) {
       status = "Draft"; // Default
       const targetPlanFile = typeof plan.file === "string" ? plan.file : "";
-      const msgIndex = state.messages.findIndex(
+      const msgIndex = messages.findIndex(
         (m) => m === message || (messageId && (m.info?.id === messageId || m.id === messageId))
       );
 
       if (msgIndex !== -1) {
-        const matchingPlanIndexes = state.messages
+        const matchingPlanIndexes = messages
           .map((candidate, index) =>
             areLikelySamePlanFilePath(
               planFileFromMessageForComparison(candidate),
@@ -3928,7 +3970,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
         // Did user ask for a revision before this plan was generated?
         for (let i = firstMatchingPlanIndex - 1; i >= 0; i--) {
-          const m = state.messages[i];
+          const m = messages[i];
           if (m.role === "user") {
             const text = normalizedUserMessageText(m);
             if (isPlanRevisionMessageContent(text)) {
@@ -3939,8 +3981,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         }
 
         // Did user approve or request revision on this plan?
-        for (let i = firstMatchingPlanIndex + 1; i < state.messages.length; i++) {
-          const m = state.messages[i];
+        for (let i = firstMatchingPlanIndex + 1; i < messages.length; i++) {
+          const m = messages[i];
           const candidatePlanFile = planFileFromMessageForComparison(m);
           if (m.role === "assistant" && candidatePlanFile) {
             const samePlanFile = areLikelySamePlanFilePath(
@@ -3965,12 +4007,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       }
     }
     return { planStatus: status, isRevisedPlan: revised };
-  }, [plan, message, messageId, state.messages]);
+  }, [plan, message, messageId, messages]);
 
   // Merge subagents from message data and from the store lookup by parent message ID.
   // Prefer store-scoped entries so subagent cards cannot bleed into unrelated messages.
   const subagents = useMemo(() => {
-    const activeSessionId = state.currentSessionId;
+    const activeSessionId = currentSessionId;
     const isInActiveSession = (subagent: SubagentSummary): boolean => {
       if (!activeSessionId) {
         return true;
@@ -4006,7 +4048,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     const storeIds = new Set(fromStore.map((s: SubagentSummary) => s.id));
     const extra = fromMessage.filter((s) => !storeIds.has(s.id));
     return [...fromStore, ...extra];
-  }, [message, messageId, subagentsByParentMessageId, state.currentSessionId]);
+  }, [message, messageId, subagentsByParentMessageId, currentSessionId]);
   const previousSubagentCount = useRef(subagents.length);
 
   useEffect(() => {
@@ -4333,7 +4375,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   };
   const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     dispatch({ type: "SET_PROCESSING", payload: true });
-    const targetMessageIndex = state.messages.findIndex((candidate) => {
+    const targetMessageIndex = messages.findIndex((candidate) => {
       if (messageId) {
         const candidateId = candidate.info?.id ?? candidate.id;
         return candidateId === messageId;
@@ -4342,7 +4384,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     });
     if (targetMessageIndex >= 0) {
       let persistedPatchedMessage: Message | undefined;
-      const nextMessages = state.messages.map((candidate, index) => {
+      const nextMessages = messages.map((candidate, index) => {
         if (index !== targetMessageIndex) return candidate;
         const patched = patchMessageRetryState(
           candidate,
@@ -4352,10 +4394,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         return patched;
       });
       dispatch({ type: "SET_MESSAGES", payload: nextMessages });
-      if (state.currentSessionId && persistedPatchedMessage) {
+      if (currentSessionId && persistedPatchedMessage) {
         vscode.postMessage({
           type: "persistAssistantMessage",
-          sessionId: state.currentSessionId,
+          sessionId: currentSessionId,
           message: persistedPatchedMessage,
         });
       }
@@ -4564,9 +4606,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                             status={isLatestStreamingEvent && event.status === "pending" ? "running" : event.status}
                           />
                         );
-                        const fileName = event.filePath
-                          ? event.filePath.split(/[/\\]/).pop()
-                          : undefined;
                         const shouldShowDetail = viewState.showActivityDetails;
 
                         return (
@@ -4599,7 +4638,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                         </span>
                                       </div>
 
-                                      <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
+                                      <div className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
                                         {event.summary && (
                                           <div className={cn(
                                             "w-full relative transition-all duration-200",
@@ -4620,7 +4659,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                             )}
                                           </div>
                                         )}
-                                      </span>
+                                      </div>
                                     </div>
 
                                     {/* Chevron button at right end */}
@@ -4680,18 +4719,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                   )}
                                 </div>
 
-                                <span className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
+                                <div className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
                                   {event.filePath ? (
                                     SEARCH_LABELS.has(event.label) ? (
                                       <SearchBlock
-                                        pattern={
-                                          [
-                                            event.activityDetail?.query || event.summary,
-                                            event.description,
-                                          ]
-                                            .filter((value): value is string => !!value?.trim())
-                                            .join("\n")
-                                        }
+                                        pattern={buildSearchPattern(
+                                          event.activityDetail?.query || event.summary,
+                                          event.description,
+                                        )}
                                         scope={event.label}
                                         path={event.filePath}
                                       />
@@ -4705,10 +4740,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                             file: event.filePath!,
                                           })
                                         }
-                                      >
+                                        >
                                         <FileIcon filePath={event.filePath} />
                                         <span className="break-words whitespace-pre-wrap">
-                                          {fileName || event.summary}
+                                          {event.summary || event.filePath}
                                         </span>
                                         <span className="oc-refined-file-link-tooltip" role="tooltip">
                                           {event.filePath}
@@ -4744,14 +4779,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                           />
                                         ) : SEARCH_LABELS.has(event.label) ? (
                                           <SearchBlock
-                                            pattern={
-                                              [
-                                                event.activityDetail?.query || event.summary,
-                                                event.description,
-                                              ]
-                                                .filter((value): value is string => !!value?.trim())
-                                                .join("\n")
-                                            }
+                                            pattern={buildSearchPattern(
+                                              event.activityDetail?.query || event.summary,
+                                              event.description,
+                                            )}
                                             scope={event.label}
                                           />
                                         ) : (
@@ -4810,7 +4841,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                       )}
                                     </div>
                                   )}
-                                </span>
+                                </div>
 
                                 {event.diffStats &&
                                   (event.diffStats.added > 0 ||
@@ -5105,6 +5136,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
             </section>
           )}
+
         </div>
 
         {!isStreamingActive && showResponseSection && (
@@ -5235,7 +5267,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               structuredFileChanges={structuredFileChangesFromMessage(message)}
               changeSummary={changeSummary}
               messageId={messageId}
-              sessionId={state.currentSessionId}
+              sessionId={currentSessionId}
             />
           </div>
         )}
@@ -5833,7 +5865,7 @@ function FileChangesSection({
   );
 }
 
-export function AssistantMessage({
+export const AssistantMessage = memo(function AssistantMessage({
   message,
   streaming,
   isContiguous,
@@ -5843,6 +5875,9 @@ export function AssistantMessage({
   isContiguous?: boolean;
 }) {
   const {
+    interactiveEvents,
+    messages,
+    currentSessionId,
     subagentsByParentMessageId,
     subagentDetailsById,
     availableAgents,
@@ -5854,13 +5889,16 @@ export function AssistantMessage({
       message={message}
       streaming={streaming}
       isContiguous={isContiguous}
+      interactiveEvents={interactiveEvents}
+      messages={messages}
+      currentSessionId={currentSessionId}
       subagentsByParentMessageId={subagentsByParentMessageId}
       subagentDetailsById={subagentDetailsById}
       availableAgents={availableAgents}
       todoItems={todoItems}
     />
   );
-}
+});
 export function PermissionCard({ perm }: { perm: unknown }) {
   const label = typeof perm === "string" ? perm : JSON.stringify(perm);
   return (
@@ -6021,6 +6059,10 @@ export function EmptyState() {
     currentSessionId,
     messagesBySessionId,
   } = useAppState();
+  const iconUri =
+    typeof document !== "undefined"
+      ? document.getElementById("root")?.dataset.opencodeIconUri
+      : undefined;
 
   const hasCachedCurrentSessionMessages = Boolean(
     currentSessionId &&
@@ -6066,9 +6108,39 @@ export function EmptyState() {
 
   return (
     <div className="oc-empty-state">
-      <div className="oc-empty-copy">
-        <h1>OpenCode</h1>
-        <p>Ask about the workspace, plan a change, or build the next piece.</p>
+      <div className="oc-empty-brand" aria-label="OpenCode">
+        <span className="oc-empty-brand-mark" aria-hidden="true">
+          {iconUri ? (
+            <img className="oc-empty-mark-img" src={iconUri} alt="" />
+          ) : (
+            <span className="oc-empty-mark-fallback">OC</span>
+          )}
+        </span>
+        <span className="oc-empty-brand-name">OpenCode</span>
+      </div>
+
+      <div className="oc-empty-hero">
+        <div className="oc-empty-mark" aria-hidden="true">
+          <span className="oc-empty-mark-glow" />
+          {iconUri ? (
+            <img className="oc-empty-mark-img" src={iconUri} alt="" />
+          ) : (
+            <span className="oc-empty-mark-fallback">OC</span>
+          )}
+        </div>
+        <div className="oc-empty-copy">
+          <h1>Ready to build?</h1>
+          <p>
+            Turn a workspace into a plan, a patch, or a clean run at the next
+            change.
+          </p>
+        </div>
+      </div>
+
+      <div className="oc-empty-tags" aria-label="OpenCode capabilities">
+        <span>file-aware</span>
+        <span>plan-first</span>
+        <span>session-ready</span>
       </div>
 
       <div className="oc-empty-shortcuts" aria-label="Chat shortcuts">
@@ -6076,21 +6148,21 @@ export function EmptyState() {
           <span className="oc-empty-shortcut-icon" aria-hidden="true">
             <CornerDownLeft className="h-3.5 w-3.5" />
           </span>
-          <span>Send message</span>
+          <span>Ask a question or draft a change</span>
           <kbd>Enter</kbd>
         </div>
         <div className="oc-empty-shortcut">
           <span className="oc-empty-shortcut-icon" aria-hidden="true">
             <AtSign className="h-3.5 w-3.5" />
           </span>
-          <span>Mention files</span>
+          <span>Pull files into the conversation</span>
           <kbd>@</kbd>
         </div>
         <div className="oc-empty-shortcut">
           <span className="oc-empty-shortcut-icon" aria-hidden="true">
             <Terminal className="h-3.5 w-3.5" />
           </span>
-          <span>Run commands</span>
+          <span>Run workspace commands</span>
           <kbd>/</kbd>
         </div>
       </div>

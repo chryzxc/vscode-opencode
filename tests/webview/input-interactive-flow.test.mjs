@@ -16,6 +16,19 @@ test('shows stop button only while responding with empty input', () => {
   assert.match(panelComponents, /type: "stopRequest"/, 'stopRequest transport is missing');
 });
 
+test('derives stop-button visibility from abortable assistant response state', () => {
+  assert.match(
+    panelComponents,
+    /const hasCompletedAssistantReplyForLatestTurn = \(\(\) => \{/,
+    'InputWrapper should detect whether the latest assistant turn is already complete',
+  );
+  assert.match(
+    panelComponents,
+    /const isAiResponding = !!\([\s\S]*streaming\?\.isActive[\s\S]*!\s*hasCompletedAssistantReplyForLatestTurn[\s\S]*\);/,
+    'InputWrapper should only show stop for an actively abortable assistant turn',
+  );
+});
+
 test('shows send button when idle or input is non-empty', () => {
   assert.match(panelComponents, /!isAiResponding \|\| inputValue\.trim\(\)\.length > 0/, 'send button fallback guard is missing');
   assert.match(panelComponents, /<Send className="h-3 w-3" \/>/, 'send button label is missing');

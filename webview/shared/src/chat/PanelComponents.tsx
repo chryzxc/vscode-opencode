@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
@@ -531,6 +531,7 @@ export function ActiveTaskPanel() {
     compactionNotice,
     compactionBaselineStats,
     compactionDividerIndex,
+    sdkVersion,
     serverVersion,
   } = useAppState();
 
@@ -545,6 +546,8 @@ export function ActiveTaskPanel() {
     currentSessionId,
     executingQueueSessionIds,
   );
+  const runtimeSdkVersion = sdkVersion || "Loading…";
+  const runtimeTuiVersion = serverVersion || "Loading…";
   const progressListRef = useRef<HTMLDivElement>(null);
 
   const selectedModelContextLimit = useMemo(() => {
@@ -999,6 +1002,27 @@ export function ActiveTaskPanel() {
           </MiniSection>
         )}
 
+        <MiniSection title="Runtime">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+            <div className="flex items-center justify-between col-span-2">
+              <span className="text-[var(--oc-text-soft)] opacity-80">
+                OpenCode TUI
+              </span>
+              <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
+                {runtimeTuiVersion}
+              </span>
+            </div>
+            <div className="flex items-center justify-between col-span-2">
+              <span className="text-[var(--oc-text-soft)] opacity-80">
+                OpenCode SDK
+              </span>
+              <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
+                {runtimeSdkVersion}
+              </span>
+            </div>
+          </div>
+        </MiniSection>
+
         <MiniSection title="Session">
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
             <div className="flex items-center justify-between col-span-2">
@@ -1007,16 +1031,6 @@ export function ActiveTaskPanel() {
                 {currentSessionId ? currentSessionId.slice(0, 16) : "—"}
               </span>
             </div>
-            {serverVersion && (
-              <div className="flex items-center justify-between col-span-2">
-                <span className="text-[var(--oc-text-soft)] opacity-80">
-                  OpenCode Version
-                </span>
-                <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
-                  {serverVersion}
-                </span>
-              </div>
-            )}
             <div className="flex items-center justify-between">
               <span className="text-[var(--oc-text-soft)] opacity-80">
                 Messages
@@ -1103,6 +1117,7 @@ export function ModelDropdown() {
     modelSearchQuery,
     modelDropdownOpen,
     quotaData,
+    configuredProviders,
   } = useAppState();
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1131,40 +1146,48 @@ export function ModelDropdown() {
   }, [modelDropdownOpen]);
 
   const subscribedProviders = useMemo(() => {
-    const providers = (quotaData?.platforms ?? [])
-      .map((p) => {
-        const key = p.platform.toLowerCase();
+    // Show provider badges only for configured/connected providers (from SDK config.providers())
+    // If no configured providers, badges are hidden (except "All" tab which shows everything)
+    if (!configuredProviders || configuredProviders.length === 0) {
+      return [];
+    }
 
-        // Skip opencode platform in mapped providers since we have a dedicated persistent tab
-        if (key.includes("opencode")) return null;
+    // Build a set of configured provider IDs from SDK (strict matching)
+    const configuredProviderIds = new Set(
+      configuredProviders.map((id) => id.toLowerCase())
+    );
 
-        // Always prefer title when available - it contains the specific plan name
-        if (p.title) {
-          // Strip common suffixes to get the clean provider name
-          const cleanedTitle = p.title
-            .replace(" Account Quota", "")
-            .replace(" account quota", "")
-            .trim();
-          return cleanedTitle;
-        }
+    // Filter available models using strict matching on providerID
+    const providers = Array.from(
+      new Set(
+        availableModels
+          .filter((m) => {
+            // Use providerID (internal ID) for matching
+            // configuredProviders contains the IDs from SDK config.providers()
+            const providerId = m.providerID.toLowerCase();
+            // Strict match: provider ID must be exactly in configured list
+            return configuredProviderIds.has(providerId);
+          })
+          .map((m) => m.providerName ?? m.providerID)
+      )
+    )
+      .filter((name) => {
+        const key = name.toLowerCase();
+        const providerId = (availableModels.find(
+          (m) => (m.providerName ?? m.providerID) === name
+        )?.providerID ?? "").toLowerCase();
 
-        // Fallback to specific normalization for known broad providers
-        if (key === "openai") return "OpenAI";
-        if (key === "zai") return "Z.ai";
-        if (key === "zhipu") return "Zhipu AI";
-        if (key === "copilot") return "GitHub Copilot";
-        if (key === "google" || key === "google-gemini-cli") return "Google";
-
-        // Last resort: use platform name
-        return p.platform;
+        // Skip only the "opencode" provider itself (the free tier/default)
+        // Allow other providers with "opencode" in the name like "OpenCode Go"
+        return providerId !== "opencode";
       })
-      .filter((name): name is string => name !== null);
+      .sort((a, b) => a.localeCompare(b));
 
     // Always include OpenCode Free at the start
     const result = ["OpenCode Free", ...providers];
 
     return result.filter((name, index, self) => self.indexOf(name) === index);
-  }, [quotaData]);
+  }, [availableModels, configuredProviders]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, typeof availableModels>();
@@ -1273,10 +1296,11 @@ export function ModelDropdown() {
                     <button
                       key={`${model.providerID}-${model.modelID}`}
                       type="button"
-                      className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${isCurrent
-                          ? "bg-oc-accent-soft oc-tinted-badge-text"
-                          : "hover:bg-oc-panel-soft"
-                        }`}
+                      className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
+                        isCurrent
+                          ? "bg-oc-accent-soft oc-popover-item-selected"
+                          : "oc-popover-item-not-selected"
+                      }`}
                       onClick={() => {
                         dispatch({
                           type: "SET_SELECTED_MODEL",
@@ -1594,11 +1618,69 @@ export function InputWrapper() {
     executingQueueSessionIds,
   );
 
+  const hasCompletedAssistantReplyForLatestTurn = (() => {
+    if (messages.length === 0) {
+      return false;
+    }
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message.role === "assistant") {
+        const text =
+          typeof message.content === "string" ? message.content.trim() : "";
+        const structuredText =
+          typeof message.structuredOutput?.message === "string"
+            ? message.structuredOutput.message.trim()
+            : "";
+        if (text.length > 0 || structuredText.length > 0) {
+          return true;
+        }
+        continue;
+      }
+      if (message.role === "user") {
+        return false;
+      }
+    }
+    return false;
+  })();
+
   // Stop button only visible when AI is responding AND input is empty
-  // Send button icon reflects: Send icon when idle/input has value, AlertCircle when responding with input
-  const isAiResponding = isProcessing;
+  // Send button icon reflects: Send icon when idle/input has value, AlertCircle when responding with input.
+  // A session can stay "processing" because of background subagent work after
+  // the main assistant reply is already complete, so the composer should only
+  // show Stop while the foreground assistant turn is still abortable.
+  const isAiResponding = !!(
+    isProcessing &&
+    (streaming?.isActive ||
+      (!streaming && !hasCompletedAssistantReplyForLatestTurn))
+  );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaHasValue = inputValue.trim().length > 0;
+  const textareaMinRows = 2;
+  const textareaMaxRows = textareaHasValue ? 8 : 3;
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const computed = window.getComputedStyle(textarea);
+    const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
+    const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
+    const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
+    const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
+    const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
+    const chrome = paddingTop + paddingBottom + borderTop + borderBottom;
+    const minHeight = lineHeight * textareaMinRows + chrome;
+    const maxHeight = lineHeight * textareaMaxRows + chrome;
+
+    textarea.style.maxHeight = `${maxHeight}px`;
+    textarea.style.minHeight = `${minHeight}px`;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight + borderTop + borderBottom, maxHeight)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [inputValue, textareaHasValue, textareaMaxRows]);
 
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
   const [isCustomMode, setIsCustomMode] = useState(false);
@@ -1729,8 +1811,7 @@ export function InputWrapper() {
   ]);
 
   // Centralized Interactive Event Handler
-  // By design, ALL interactive choices (whether explicitly sent by the server or
-  // auto-detected via regex from the AI's markdown response) are rendered here
+  // By design, ALL interactive choices explicitly sent through structured output
   // as a popup above the chatbox. This provides a consistent, clear place for
   // user required actions (questions, confirmations, quick actions).
   //
@@ -2138,6 +2219,10 @@ export function InputWrapper() {
         eventType: data.eventType,
         text: data.text,
         questionText,
+        requestID:
+          event?.type === "question" ? event.requestID : undefined,
+        questionIndex:
+          event?.type === "question" ? event.questionIndex : undefined,
       };
     });
 
@@ -2200,6 +2285,41 @@ export function InputWrapper() {
       }),
     });
 
+    const sdkQuestionRequestIds = new Set(
+      batch
+        .map((resp) => resp.requestID)
+        .filter((requestID): requestID is string => !!requestID),
+    );
+    const canReplyToSdkQuestion =
+      sdkQuestionRequestIds.size === 1 &&
+      batch.every((resp) => typeof resp.questionIndex === "number");
+    if (canReplyToSdkQuestion) {
+      const requestID = Array.from(sdkQuestionRequestIds)[0];
+      const answers = batch
+        .slice()
+        .sort(
+          (left, right) =>
+            (left.questionIndex ?? 0) - (right.questionIndex ?? 0),
+        )
+        .map((resp) => [resp.text]);
+      logger.info("[QUESTION DEBUG] submitting SDK question reply", {
+        requestID,
+        answerCount: answers.length,
+        answers,
+      });
+      vscode.postMessage({
+        type: "questionReply",
+        requestID,
+        answers,
+        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+      });
+      setPendingAnswers({});
+      setCurrentInteractiveIndex(0);
+      setIsCustomMode(false);
+      setCustomValue("");
+      return;
+    }
+
     // Don't show processing state immediately - let extension confirm when actually processing
     // This prevents UI from showing "stuck" loading state when request is delayed
     // dispatch({ type: "SET_PROCESSING", payload: true });
@@ -2207,6 +2327,10 @@ export function InputWrapper() {
     // Send interactive answers through the exact same transport path as a
     // normal user message so provider-side lifecycle/state handling is
     // identical to chatbox submits.
+    logger.info("[QUESTION DEBUG] submitting legacy interactive reply", {
+      interactiveEventCount: batch.length,
+      displayText,
+    });
     vscode.postMessage({
       type: "sendMessage",
       ...(currentSessionId ? { sessionId: currentSessionId } : {}),
@@ -2899,7 +3023,6 @@ export function ThinkingLevelControl() {
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
   const variantDescriptions: Record<string, string> = {
-    none: "No extra reasoning",
     minimal: "Fastest response",
     low: "Light reasoning",
     medium: "Balanced reasoning",
@@ -2938,7 +3061,10 @@ export function ThinkingLevelControl() {
       : [];
 
   const displayLabel = (lvl?: string) => {
-    const current = lvl ?? localVariants[1] ?? localVariants[0];
+    const current =
+      lvl && lvl !== "none" && (!localVariants.length || localVariants.includes(lvl))
+        ? lvl
+        : localVariants[1] ?? localVariants[0];
     if (!current) return "Medium";
     return current.charAt(0).toUpperCase() + current.slice(1).toLowerCase();
   };
@@ -2990,10 +3116,11 @@ export function ThinkingLevelControl() {
               <button
                 key={level}
                 type="button"
-                className={`oc-popover-item w-full rounded-lg px-3 py-2 text-left transition-colors ${thinkingLevel === level
-                    ? "bg-oc-accent-soft oc-tinted-badge-text"
-                    : "hover:bg-oc-panel-soft"
-                  }`}
+                className={`oc-popover-item w-full rounded-lg px-3 py-2 text-left transition-colors ${
+                  thinkingLevel === level
+                    ? "bg-oc-accent-soft oc-popover-item-selected"
+                    : "oc-popover-item-not-selected"
+                }`}
                 onClick={() => setLevel(level)}
               >
                 <div className="flex items-center justify-between">
@@ -3001,7 +3128,12 @@ export function ThinkingLevelControl() {
                     {level}
                   </span>
                   {thinkingLevel === level ? (
-                    <Check className="h-3.5 w-3.5 text-oc-accent" />
+                    <span
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-oc-accent text-[color:var(--vscode-button-foreground)] shadow-sm ring-1 ring-oc-accent/30"
+                      aria-hidden="true"
+                    >
+                      <Check className="h-3 w-3" strokeWidth={3} />
+                    </span>
                   ) : null}
                 </div>
                 <div className="mt-0.5 text-[11px] oc-text-secondary">

@@ -1149,6 +1149,13 @@ body {
   animation: message-in 0.18s ease-out both;
 }
 
+@supports (content-visibility: auto) {
+  .oc-message-enter {
+    content-visibility: auto;
+    contain-intrinsic-size: 320px auto;
+  }
+}
+
 @keyframes assistant-response-in {
   from {
     opacity: 0;
@@ -1515,8 +1522,8 @@ body {
   min-height: 100%;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 28px 24px;
+  justify-content: space-between;
+  padding: 18px 24px 32px;
   text-align: center;
   color: var(--oc-text);
 }
@@ -1544,10 +1551,105 @@ body {
   max-width: 360px;
 }
 
+.oc-empty-hero {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin-top: auto;
+  margin-bottom: auto;
+}
+
+.oc-empty-brand {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  color: color-mix(in srgb, var(--oc-text) 76%, var(--oc-accent));
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.oc-empty-brand-mark {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+}
+
+.oc-empty-brand-name {
+  opacity: 0.92;
+}
+
+.oc-empty-mark {
+  display: flex;
+  width: 58px;
+  height: 58px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 84%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--oc-panel-soft) 82%, transparent),
+      color-mix(in srgb, var(--oc-bg) 82%, transparent)
+    );
+  box-shadow:
+    0 18px 40px color-mix(in srgb, black 22%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--oc-accent) 10%, transparent) inset;
+}
+
+.oc-empty-mark-glow {
+  position: absolute;
+  inset: -14px;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--oc-accent) 18%, transparent) 0%,
+    transparent 66%
+  );
+  opacity: 0.36;
+  pointer-events: none;
+}
+
+.oc-empty-mark-img {
+  position: relative;
+  z-index: 1;
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+
+.oc-empty-mark-fallback {
+  position: relative;
+  z-index: 1;
+  color: color-mix(in srgb, var(--oc-text) 78%, var(--oc-accent));
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-indent: 0.12em;
+}
+
+.oc-empty-kicker {
+  margin-bottom: 10px;
+  color: color-mix(in srgb, var(--oc-text-muted) 78%, var(--oc-accent));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
 .oc-empty-copy h1 {
   margin: 0;
-  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-accent));
-  font-size: clamp(28px, 6.5vw, 38px);
+  color: color-mix(in srgb, var(--oc-text) 82%, var(--oc-accent));
+  font-size: clamp(28px, 6.4vw, 40px);
   font-weight: 700;
   line-height: 1.05;
   letter-spacing: 0;
@@ -1555,19 +1657,41 @@ body {
 
 .oc-empty-copy p {
   margin: 10px auto 0;
-  max-width: 320px;
-  color: var(--oc-text-muted);
+  max-width: 330px;
+  color: var(--oc-text-secondary);
   font-size: 13px;
   font-weight: 500;
-  line-height: 1.55;
+  line-height: 1.6;
+}
+
+.oc-empty-tags {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.oc-empty-tags span {
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 78%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 72%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 76%, var(--oc-accent));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
 }
 
 .oc-empty-shortcuts {
   position: relative;
   display: grid;
-  width: min(100%, 330px);
+  width: min(100%, 420px);
   gap: 8px;
-  margin-top: 28px;
+  margin-top: 18px;
 }
 
 .oc-empty-shortcut {
@@ -1575,12 +1699,12 @@ body {
   grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  min-height: 38px;
-  padding: 6px 8px 6px 6px;
-  border: 1px solid color-mix(in srgb, var(--oc-border) 72%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--oc-panel-soft) 74%, transparent);
-  color: color-mix(in srgb, var(--oc-text) 78%, var(--oc-accent));
+  min-height: 36px;
+  padding: 6px 10px 6px 6px;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 68%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 70%, transparent);
+  color: color-mix(in srgb, var(--oc-text) 82%, var(--oc-accent));
   font-size: 12px;
   font-weight: 600;
   text-align: left;
@@ -1592,8 +1716,8 @@ body {
   height: 28px;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--oc-accent) 10%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--oc-accent) 12%, transparent);
   color: color-mix(in srgb, var(--oc-text) 56%, var(--oc-accent));
 }
 
@@ -1613,6 +1737,16 @@ body {
 
 .oc-empty-state-error-message {
   color: var(--oc-red);
+}
+
+@media (max-width: 720px) {
+  .oc-empty-state {
+    padding: 14px 16px 24px;
+  }
+
+  .oc-empty-shortcuts {
+    width: 100%;
+  }
 }
 
 /* ── Markdown Body ───────────────────────────────────────────────────────── */
@@ -2349,7 +2483,7 @@ body {
 }
 
 .oc-agent-option:hover {
-  background: var(--oc-panel-soft);
+  background: color-mix(in srgb, var(--oc-panel-soft) 80%, transparent);
   border-color: var(--oc-border);
 }
 
@@ -2358,10 +2492,31 @@ body {
 }
 
 .oc-agent-option-selected {
-  background: color-mix(in srgb, var(--oc-accent) 9%, var(--oc-panel-soft));
-  border-color: color-mix(in srgb, var(--oc-accent) 24%, var(--oc-border));
-  color: var(--oc-text);
+  background: color-mix(in srgb, var(--oc-accent) 15%, var(--oc-panel-soft));
+  border-color: color-mix(in srgb, var(--oc-accent) 28%, var(--oc-border));
+  color: var(--oc-accent);
   font-weight: 500;
+}
+
+/* Model/agent popover item selected state - strong contrast for visibility */
+.oc-popover-item-selected {
+  color: var(--oc-text) !important;
+  font-weight: 700;
+}
+
+.oc-popover-item-selected .text-xs {
+  color: var(--oc-text) !important;
+  font-weight: 700;
+}
+
+.oc-popover-item-selected .oc-text-secondary {
+  color: var(--oc-text) !important;
+  font-weight: 700;
+}
+
+/* Model/agent popover item hover state - visible but not overwhelming */
+.oc-popover-item-not-selected:hover {
+  background: color-mix(in srgb, var(--oc-accent) 35%, transparent) !important;
 }
 
 .oc-agent-option-top {

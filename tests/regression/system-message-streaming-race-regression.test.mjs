@@ -82,3 +82,16 @@ test("system messages are upserted immediately during streaming", () => {
     "system message handling should upsert system messages during streaming",
   );
 });
+
+test("realtime system message upsert does not materialize the active assistant snapshot into history", () => {
+  const helperMatch = messageHandlerSource.match(
+    /const upsertRealtimeSystemMessage = \(rawText: string\): void => \{[\s\S]*?\n  \};/,
+  );
+  assert.ok(helperMatch, "upsertRealtimeSystemMessage helper should exist");
+
+  assert.doesNotMatch(
+    helperMatch[0],
+    /mergeStreamingSnapshotIntoHistory/,
+    "realtime system message insertion should not merge the active assistant snapshot into messages, or the UI will render a duplicate assistant block alongside the live StreamingCard",
+  );
+});

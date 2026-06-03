@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { joinFromRoot, readAllSources, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readAllSources, readSource } from '../helpers/source-utils.mjs';
 
 const chatShellSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
@@ -27,6 +27,16 @@ test('assistant messages render spawned agents section', () => {
   assert.match(messageSource, /subagents\.length > 0/, 'assistant card should check for spawned agents');
   assert.match(messageSource, /Subagents/, 'assistant card should show a dedicated subagents section title');
   assert.match(messageSource, /openSubagentModal\(/, 'assistant subagent rows should open modal details');
+});
+
+test('subagent titles use a neutral fallback instead of Unknown for missing model metadata', () => {
+  const body = extractFunctionBody(
+    messageSource,
+    'function subagentModelLabel(',
+  );
+
+  assert.match(body, /return "Subagent";/, 'subagent rows should use a neutral fallback label');
+  assert.doesNotMatch(body, /return "Unknown";/, 'subagent rows should no longer surface Unknown as the fallback label');
 });
 
 test.skip('subagents inline list shows row details and timeline drilldown', () => {

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
 import { createMessageHandler } from "./lib/messageHandler";
@@ -127,6 +128,8 @@ function ChatContent() {
     unseenUpdateCount: 0,
   });
   const [showSkillInstaller, setShowSkillInstaller] = useState(false);
+  const [dismissedCompatibilityWarningSignature, setDismissedCompatibilityWarningSignature] =
+    useState<string | null>(null);
   const streamViewportRef = useRef(streamViewport);
   const previousIsLoadingSessionRef = useRef(state.isLoadingSession);
   const previousReceivedInitStateRef = useRef(state.receivedInitState);
@@ -440,6 +443,18 @@ function ChatContent() {
     }
     return false;
   })();
+  const compatibilityWarningSignature = state.compatibilityWarnings
+    .map((warning) => `${warning.component}:${warning.version ?? "unknown"}:${warning.status}:${warning.supportedRange}`)
+    .join("|");
+  useEffect(() => {
+    if (!compatibilityWarningSignature) {
+      setDismissedCompatibilityWarningSignature(null);
+      return;
+    }
+    setDismissedCompatibilityWarningSignature((current) =>
+      current === compatibilityWarningSignature ? current : null,
+    );
+  }, [compatibilityWarningSignature]);
 
   if (isConnecting) {
     return (
@@ -497,6 +512,7 @@ function ChatContent() {
   const hiddenMessageCount = isCompressed ? compactionDividerIndex : 0;
   const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
   const visibleMessages = state.messages.slice(visibleStartIndex);
+  const hasCompatibilityWarnings = state.compatibilityWarnings.length > 0;
 
   const jumpToLatest = () => {
     setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
@@ -555,6 +571,62 @@ function ChatContent() {
             </div>
           ) : (
             <>
+              {hasCompatibilityWarnings &&
+              dismissedCompatibilityWarningSignature !== compatibilityWarningSignature ? (
+                <div className="mb-3 px-4">
+                  <div className="rounded-xl border oc-warning-border oc-warning-bg p-3.5">
+                    <div className="mb-2 flex items-start justify-between gap-3">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-yellow">
+                        OpenCode compatibility warning
+                      </div>
+                      <button
+                        type="button"
+                        className="flex h-6 w-6 items-center justify-center rounded-md border border-oc-border-soft text-oc-text-soft transition-colors hover:bg-white/5 hover:text-oc-text"
+                        aria-label="Dismiss compatibility warning"
+                        title="Dismiss compatibility warning"
+                        onClick={() =>
+                          setDismissedCompatibilityWarningSignature(
+                            compatibilityWarningSignature,
+                          )
+                        }
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="space-y-2 text-sm leading-relaxed text-oc-text-soft opacity-90">
+                      {state.compatibilityWarnings.map((warning) => (
+                        <div
+                          key={`${warning.component}:${warning.version ?? "unknown"}:${warning.status}`}
+                          className="rounded-lg border border-oc-border-soft bg-black/10 px-3 py-2"
+                        >
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-yellow">
+                              {warning.component === "sdk"
+                                ? "OpenCode SDK"
+                                : "OpenCode TUI"}
+                            </div>
+                            <div className="rounded-full border border-oc-border-soft px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                              {warning.status}
+                            </div>
+                          </div>
+                          <div className="space-y-0.5 text-[13px] leading-relaxed">
+                            <div>
+                              Detected: {warning.version ?? "unknown"}
+                            </div>
+                            <div>
+                              Supported: {warning.supportedRange}
+                            </div>
+                            <div className="text-oc-text-soft opacity-80">
+                              {warning.message}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               {state.messages.length === 0 &&
               !state.streaming &&
               !isAiResponding ? (

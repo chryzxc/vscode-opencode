@@ -24,6 +24,26 @@ test('AssistantMessage uses content-first response and secondary activity sectio
     /data-assistant-section=["']activity["']/,
     'assistant message should expose a secondary activity section',
   );
+
+  const responseSectionIndex = messageSource.indexOf('data-assistant-section="response"');
+  const activitySectionIndex = messageSource.indexOf('data-assistant-section="activity"');
+  const todoRenderIndex = messageSource.indexOf('{shouldShowTodoInlineSummary && (');
+  const subagentRenderIndex = messageSource.indexOf('<SubagentsInlineCard');
+
+  assert.notStrictEqual(responseSectionIndex, -1, 'response section should exist');
+  assert.notStrictEqual(activitySectionIndex, -1, 'activity section should exist');
+  assert.ok(
+    responseSectionIndex < activitySectionIndex,
+    'response section should render before the secondary activity section',
+  );
+  assert.ok(
+    todoRenderIndex === -1 || responseSectionIndex < todoRenderIndex,
+    'response section should render before the inline todo summary when todos are present',
+  );
+  assert.ok(
+    subagentRenderIndex === -1 || responseSectionIndex < subagentRenderIndex,
+    'response section should render before subagent inline cards when subagents are present',
+  );
 });
 
 test('AssistantMessage exposes completed-activity expansion and metrics rail', () => {

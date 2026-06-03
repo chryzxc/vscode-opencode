@@ -105,9 +105,14 @@ test('WebView parser handles structured output appropriately', () => {
 });
 
 test('WebView parser does not infer interactive questions from plain numbered assistant text', () => {
-  assert.match(
+  assert.doesNotMatch(
     messageHandlerSource,
     /parseNumberedQuestionsFromText/,
-    'WebView should have numbered question parsing function available'
+    'WebView should not synthesize interactive questions from plain numbered assistant text',
+  );
+  assert.doesNotMatch(
+    messageHandlerSource,
+    /Text-based fallback: detect numbered question lists in plain-text message responses/,
+    'WebView should not use text-based numbered-question fallback heuristics',
   );
 });

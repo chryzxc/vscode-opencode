@@ -8,10 +8,10 @@ const panelSource = readSource(
   'PanelComponents.tsx',
 );
 
-test('InputWrapper treats active streaming as AI responding for stop/send toggle', () => {
+test('InputWrapper limits stop/send toggle to abortable assistant response state', () => {
   assert.match(
     panelSource,
-    /const isAiResponding = isProcessing/,
-    'InputWrapper should keep stop/send visibility aligned with isProcessing',
+    /const isAiResponding = !!\([\s\S]*isProcessing[\s\S]*streaming\?\.isActive[\s\S]*!\s*hasCompletedAssistantReplyForLatestTurn[\s\S]*\);/,
+    'InputWrapper should only treat active or pre-reply streaming as stop-worthy',
   );
 });

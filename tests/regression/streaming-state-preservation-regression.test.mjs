@@ -284,6 +284,23 @@ test("interactive answer append flushes visible streaming before clearing it", (
   );
 });
 
+test("store preserves insertion order when flushed assistant question and echoed user answer have no timestamps", () => {
+  const storeSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],
+    "store.ts",
+  );
+  assert.match(
+    storeSource,
+    /typeof left\.createdAt === "number"[\s\S]*typeof right\.createdAt === "number"[\s\S]*left\.message\.role === "user"[\s\S]*right\.message\.role === "assistant"[\s\S]*return -1;/s,
+    "role tie-break should only run when both messages have real timestamps",
+  );
+  assert.match(
+    storeSource,
+    /return left\.index - right\.index;/,
+    "messages without timestamps should preserve insertion order",
+  );
+});
+
 test("compaction completion preserves visible assistant streaming before clearing transient state", () => {
   assert.match(
     messageHandlerSource,
