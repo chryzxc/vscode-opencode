@@ -35,10 +35,16 @@ test('consumeEventStream accepts AsyncIterable input and normalizes each event',
 
 test('normalizeIncomingEvent handles payload, data, and nested wrappers', () => {
   const body = extractFunctionBody(source, '  private normalizeIncomingEvent(rawEvent: unknown): StreamEvent | null {');
-  assert.match(body, /const payload = this\.asRecord\(eventRecord\.payload\);/, 'normalizeIncomingEvent should inspect payload wrappers');
-  assert.match(body, /const data = this\.asRecord\(eventRecord\.data\);/, 'normalizeIncomingEvent should inspect data wrappers');
-  assert.match(body, /const nestedPayload = this\.asRecord\(payload\?\.payload\);/, 'normalizeIncomingEvent should inspect nested payload wrappers');
-  assert.match(body, /const nestedData = this\.asRecord\(payload\?\.data\);/, 'normalizeIncomingEvent should inspect nested data wrappers');
+  assert.match(
+    source,
+    /import \{ normalizeSdkStreamEvent \} from "\.\/opencodeSdkCompat";/,
+    'MessageStreamService should import shared SDK compatibility normalizer',
+  );
+  assert.match(
+    body,
+    /return normalizeSdkStreamEvent\(rawEvent\) as StreamEvent \| null;/,
+    'normalizeIncomingEvent should delegate wrapper parsing to opencodeSdkCompat',
+  );
 });
 
 test('dedupe logic exists with a short time window and recent signatures cache', () => {

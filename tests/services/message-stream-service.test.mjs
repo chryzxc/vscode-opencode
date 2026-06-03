@@ -122,23 +122,16 @@ test('MessageStreamService normalizes GlobalEvent wrappers from SDK', () => {
 
   assert.match(
     normalizeBody,
-    /const payload = this\.asRecord\(eventRecord\.payload\)/,
-    'normalizeIncomingEvent should inspect GlobalEvent payload wrappers',
+    /return normalizeSdkStreamEvent\(rawEvent\) as StreamEvent \| null;/,
+    'normalizeIncomingEvent should delegate raw SDK wrapper handling to compat helper',
   );
+});
+
+test('MessageStreamService unwraps SDK sync event wrappers into canonical stream events', () => {
   assert.match(
-    normalizeBody,
-    /const data = this\.asRecord\(eventRecord\.data\)/,
-    'normalizeIncomingEvent should inspect direct data wrappers',
-  );
-  assert.match(
-    normalizeBody,
-    /const nestedPayload = this\.asRecord\(payload\?\.payload\)/,
-    'normalizeIncomingEvent should inspect nested payload wrappers',
-  );
-  assert.match(
-    normalizeBody,
-    /const nestedData = this\.asRecord\(payload\?\.data\)/,
-    'normalizeIncomingEvent should inspect nested data wrappers',
+    messageStreamSource,
+    /import \{ normalizeSdkStreamEvent \} from "\.\/opencodeSdkCompat";/,
+    'MessageStreamService should import shared SDK compat normalization',
   );
 });
 

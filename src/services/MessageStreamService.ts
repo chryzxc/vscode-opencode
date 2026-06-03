@@ -63,6 +63,7 @@ import { OpencodeServerManager } from './OpencodeServerManager';
 import { createLogger } from '../utils/Logger';
 import { LoggingCategories } from '../utils/LoggingSchema';
 import * as vscode from "vscode";
+import { normalizeSdkStreamEvent } from "./opencodeSdkCompat";
 
 /**
  * Represents a server-sent event from the OpenCode server.
@@ -930,83 +931,11 @@ export class MessageStreamService {
    * SDK event.subscribe() may emit either:
    * - Event: { type, properties }
    * - GlobalEvent: { directory, payload: { type, properties } }
+   * - SyncEvent: { type: "sync", name: "message.part.updated.1", data }
    * Normalize both to the Event shape expected by downstream handlers.
    */
   private normalizeIncomingEvent(rawEvent: unknown): StreamEvent | null {
-    const eventRecord = this.asRecord(rawEvent);
-    if (!eventRecord) {
-      return null;
-    }
-
-    if (typeof eventRecord.type === "string") {
-      return eventRecord as StreamEvent;
-    }
-
-    const payload = this.asRecord(eventRecord.payload);
-    if (payload && typeof payload.type === "string") {
-      const normalizedFromPayload: Record<string, unknown> = { ...payload };
-      if (
-        typeof eventRecord.directory === "string" &&
-        typeof normalizedFromPayload.directory === "undefined"
-      ) {
-        normalizedFromPayload.directory = eventRecord.directory;
-      }
-      return normalizedFromPayload as StreamEvent;
-    }
-
-    const data = this.asRecord(eventRecord.data);
-    if (data && typeof data.type === "string") {
-      const normalizedFromData: Record<string, unknown> = { ...data };
-      if (
-        typeof eventRecord.directory === "string" &&
-        typeof normalizedFromData.directory === "undefined"
-      ) {
-        normalizedFromData.directory = eventRecord.directory;
-      }
-      return normalizedFromData as StreamEvent;
-    }
-
-    const nestedPayload = this.asRecord(payload?.payload);
-    if (nestedPayload && typeof nestedPayload.type === "string") {
-      const normalizedFromNestedPayload: Record<string, unknown> = {
-        ...nestedPayload,
-      };
-      if (
-        typeof eventRecord.directory === "string" &&
-        typeof normalizedFromNestedPayload.directory === "undefined"
-      ) {
-        normalizedFromNestedPayload.directory = eventRecord.directory;
-      }
-      return normalizedFromNestedPayload as StreamEvent;
-    }
-
-    const nestedData = this.asRecord(payload?.data);
-    if (nestedData && typeof nestedData.type === "string") {
-      const normalizedFromNestedData: Record<string, unknown> = {
-        ...nestedData,
-      };
-      if (
-        typeof eventRecord.directory === "string" &&
-        typeof normalizedFromNestedData.directory === "undefined"
-      ) {
-        normalizedFromNestedData.directory = eventRecord.directory;
-      }
-      return normalizedFromNestedData as StreamEvent;
-    }
-
-    if (!payload || typeof payload.type !== "string") {
-      return null;
-    }
-
-    const normalized: Record<string, unknown> = { ...payload };
-    if (
-      typeof eventRecord.directory === "string" &&
-      typeof normalized.directory === "undefined"
-    ) {
-      normalized.directory = eventRecord.directory;
-    }
-
-    return normalized as StreamEvent;
+    return normalizeSdkStreamEvent(rawEvent) as StreamEvent | null;
   }
 
   private notifyCallbacks(event: StreamEvent): void {
