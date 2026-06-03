@@ -284,6 +284,11 @@ test('StructuredOutputProcessor normalizes structured output across aliases, pla
   );
   assert.match(
     normalizeBody,
+    /if \(!validation\.valid\) \{[\s\S]*const candidatePlan = this\.asRecord\(canonicalRec\.plan\) \?\? this\.asRecord\(rec\.plan\);[\s\S]*if \(planFile && canonicalResponseType !== "implementation_plan"\) \{[\s\S]*responseType: "implementation_plan",[\s\S]*plan: \{[\s\S]*files: planFiles\.includes\(planFile\)\s*\?\s*planFiles\s*:\s*\[planFile,\s*\.\.\.planFiles\],[\s\S]*\};[\s\S]*validation = validateStructuredOutput\(canonicalRec\);/,
+    'should salvage implementation plans before falling back to message-only validation',
+  );
+  assert.match(
+    normalizeBody,
     /let validation = validateStructuredOutput\(canonicalRec\);[\s\S]*if \(!validation\.valid && messageCandidate\) \{[\s\S]*responseType: "message",[\s\S]*message: messageCandidate,[\s\S]*validation = validateStructuredOutput\(canonicalRec\);/,
     'should retry validation as a plain message when typed validation fails but text exists',
   );

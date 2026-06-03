@@ -399,7 +399,7 @@ export function validateStructuredOutput(
     }
   }
 
-  if (typeof record.question !== "undefined") {
+  if (responseType === "question" && typeof record.question !== "undefined") {
     if (!record.question || typeof record.question !== "object") {
       errors.push("question must be an object");
     } else {
@@ -407,9 +407,7 @@ export function validateStructuredOutput(
       const questionType =
         typeof questionRecord.type === "string" && questionRecord.type.trim().length > 0
           ? questionRecord.type
-          : responseType === "question"
-            ? "question"
-            : "";
+          : "question";
       if (
         typeof questionRecord.displayPrompt !== "undefined" &&
         typeof questionRecord.displayPrompt !== "string"

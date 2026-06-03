@@ -499,6 +499,32 @@ describe("StructuredOutputProcessor", () => {
       assert.equal(result.message, "nested");
     });
 
+    it("extractStructuredOutput from rawResponse JSON with nested structured plan", () => {
+      const { processor } = createProcessor();
+      const result = processor.extractStructuredOutput({
+        rawResponse: JSON.stringify({
+          info: {
+            structured: {
+              responseType: "implementation_plan",
+              message: "Plan text from raw response",
+              plan: {
+                file: "./docs/superpowers/plans/2026-06-03-ai-chat-improvement-plan.md",
+                title: "AI chat improvement plan",
+              },
+            },
+          },
+        }),
+      });
+
+      assert.ok(result, "should extract structured output from rawResponse");
+      assert.equal(result.responseType, "implementation_plan");
+      assert.ok(result.plan, "structured plan should be preserved");
+      assert.equal(
+        result.plan.file,
+        "./docs/superpowers/plans/2026-06-03-ai-chat-improvement-plan.md",
+      );
+    });
+
     it("extractStructuredOutput returns undefined for no candidates", () => {
       const { processor } = createProcessor();
       assert.equal(processor.extractStructuredOutput({ content: "plain" }), undefined);

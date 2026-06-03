@@ -21,7 +21,7 @@ test.describe('Structured Output Processor - Output Extraction', () => {
 
     assert.match(
       source,
-      /extractStructuredOutput[\s\S]*structured_output|structuredOutput/s,
+      /extractStructuredOutput[\s\S]*structured_output|structuredOutput|rawResponse/s,
       'must extract from various field names'
     );
   });
@@ -41,8 +41,18 @@ test.describe('Structured Output Processor - Output Extraction', () => {
 
     assert.match(
       source,
-      /extractStructuredOutput[\s\S]*message\.info|info\?\.structured/s,
+      /extractStructuredOutput[\s\S]*message\.info|info\?\.structured|rawResponseRec/s,
       'must check info field for structured output'
+    );
+  });
+
+  test('extractStructuredOutput reads rawResponse JSON payloads', () => {
+    const extractBody = extractFunctionBody(structuredOutputProcessorSource, 'extractStructuredOutput');
+
+    assert.match(
+      extractBody,
+      /parseRawResponseRecord\(message\.rawResponse\)|rawResponseRec\?\.structuredOutput|rawResponseInfoRec\?\.structured/,
+      'must inspect rawResponse for hydrated structured output',
     );
   });
 

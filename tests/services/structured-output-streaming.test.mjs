@@ -268,3 +268,21 @@ test('chat provider does not synthesize structured fallback errors when non-text
     'provider should preserve assistant activity turns instead of forcing synthetic fallback text',
   );
 });
+
+test("chat provider normalizes sdk assistant response through compat adapter", () => {
+  assert.match(
+    chatProviderSource,
+    /normalizeSdkAssistantMessage/,
+    "ChatViewProvider should normalize final assistant payload via SDK compat helper",
+  );
+  assert.match(
+    chatProviderSource,
+    /getSdkResponseData/,
+    "ChatViewProvider should use SDK-compatible response data accessor",
+  );
+  assert.match(
+    chatProviderSource,
+    /getSdkResponseError/,
+    "ChatViewProvider should use SDK-compatible response error accessor",
+  );
+});

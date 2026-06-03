@@ -444,6 +444,16 @@ test.describe('Structured Output Validator - Response Type Specific', () => {
     );
   });
 
+  test('validateStructuredOutput gates top-level question field validation on question responseType', () => {
+    const validateBody = extractFunctionBody(validatorSource, 'validateStructuredOutput');
+
+    assert.match(
+      validateBody,
+      /if \(responseType === "question" && typeof record\.question !== "undefined"\)/,
+      'must only validate the top-level question field for question responses'
+    );
+  });
+
   test('validateStructuredOutput validates question options', () => {
     const validateBody = extractFunctionBody(validatorSource, 'validateStructuredOutput');
 
