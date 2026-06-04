@@ -134,6 +134,42 @@ test.describe('Structured Output Processor - Normalization', () => {
     );
   });
 
+  test('normalizeStructuredOutput preserves the original raw record after normalization', () => {
+    assert.match(
+      structuredOutputProcessorSource,
+      /return this\.preserveStructuredOutputRawFields\(\s*rec,\s*sanitizedCanonicalRec,\s*\);/s,
+      'normalizeStructuredOutput should keep the original raw record attached to the normalized payload',
+    );
+    assert.match(
+      structuredOutputProcessorSource,
+      /private preserveStructuredOutputRawFields\([\s\S]*\.\.\.\(rawRecord as StructuredAssistantOutput\),[\s\S]*\.\.\.\(normalizedRecord as StructuredAssistantOutput\),[\s\S]*raw: rawRecord,[\s\S]*\};/s,
+      'preserveStructuredOutputRawFields should merge the raw and normalized records without dropping raw fields',
+    );
+    assert.match(
+      structuredOutputProcessorSource,
+      /const ignoredRawKeys = new Set\(\[[\s\S]*"raw"[\s\S]*"type"[\s\S]*"kind"/,
+      'field-drop detection should ignore the internal raw preservation field',
+    );
+  });
+
+  test('normalizeStructuredOutput salvages invalid payloads instead of always dropping them', () => {
+    assert.match(
+      structuredOutputProcessorSource,
+      /if \(!validation\.valid\)[\s\S]*const salvaged = this\.salvageStructuredOutput\(rec\);[\s\S]*return salvaged \? this\.preserveStructuredOutputRawFields\(rec, salvaged\) : undefined;/s,
+      'normalizeStructuredOutput should salvage invalid payloads before dropping them',
+    );
+    assert.match(
+      structuredOutputProcessorSource,
+      /private salvageStructuredOutput\([\s\S]*topLevelOptions[\s\S]*topLevelChoices[\s\S]*topLevelActions[\s\S]*rawInteractiveEvents/s,
+      'salvageStructuredOutput should retain question-like raw fields for invalid payloads',
+    );
+    assert.doesNotMatch(
+      structuredOutputProcessorSource,
+      /if \(!validation\.valid\)[\s\S]*this\.logger\.warn\("Structured output validation failed"/s,
+      'normalizeStructuredOutput should not emit the validation warning for every invalid payload; field-drop detection owns that warning now',
+    );
+  });
+
 });
 
 test.describe('Structured Output Processor - Error Detection', () => {

@@ -641,6 +641,369 @@ export class StructuredOutputProcessor {
     });
   }
 
+  private buildStructuredOutputLogPreview(value: unknown): {
+    type: string;
+    preview: string;
+    keys?: string[];
+    responseType?: string;
+  } {
+    const rec = this.asRecord(value);
+    const previewSource = rec ?? value;
+    let preview = "";
+    try {
+      preview = JSON.stringify(previewSource).slice(0, 1200);
+    } catch {
+      preview = String(previewSource);
+    }
+
+    return {
+      type: Array.isArray(value) ? "array" : typeof value,
+      preview,
+      keys: rec ? Object.keys(rec) : undefined,
+      responseType: rec
+        ? this.firstNonEmptyString(rec.responseType, rec.type, rec.kind, rec.category)
+        : undefined,
+      };
+  }
+
+  private hasMeaningfulStructuredValue(value: unknown): boolean {
+    if (typeof value === "string") {
+      return value.trim().length > 0;
+    }
+    if (typeof value === "number") {
+      return Number.isFinite(value);
+    }
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.length > 0;
+    }
+    if (value && typeof value === "object") {
+      return Object.keys(value as Record<string, unknown>).length > 0;
+    }
+    return false;
+  }
+
+  private getStructuredSemanticSnapshot(
+    value: unknown,
+  ): Record<string, unknown> {
+    const rec = this.asRecord(value);
+    if (!rec) {
+      return {};
+    }
+
+    const planRec = this.asRecord(rec.plan);
+    const questionRec = this.asRecord(rec.question);
+    const topLevelQuestionChoices =
+      (Array.isArray(rec.options) ? rec.options.length : 0) +
+      (Array.isArray(rec.choices) ? rec.choices.length : 0) +
+      (Array.isArray(rec.actions) ? rec.actions.length : 0);
+
+    return {
+      responseType: this.firstNonEmptyString(
+        rec.responseType,
+        rec.type,
+        rec.kind,
+        rec.category,
+      ),
+      message: this.firstNonEmptyString(rec.message, rec.content, rec.text),
+      planFile: this.firstNonEmptyString(planRec?.file),
+      planContent: this.firstNonEmptyString(planRec?.content),
+      planFiles: Array.isArray(planRec?.files) ? planRec.files.length : 0,
+      questionType: this.firstNonEmptyString(questionRec?.type),
+      questionText: this.firstNonEmptyString(questionRec?.question, rec.question),
+      questionOptions:
+        (Array.isArray(questionRec?.options) ? questionRec.options.length : 0) +
+        (Array.isArray(questionRec?.choices) ? questionRec.choices.length : 0) +
+        (Array.isArray(questionRec?.actions) ? questionRec.actions.length : 0) +
+        topLevelQuestionChoices,
+      interactiveEvents: Array.isArray(rec.interactiveEvents)
+        ? rec.interactiveEvents.length
+        : 0,
+      progressUpdates: Array.isArray(rec.progressUpdates)
+        ? rec.progressUpdates.length
+        : 0,
+      reasoning: Array.isArray(rec.reasoning) ? rec.reasoning.length : 0,
+      fileChanges: Array.isArray(rec.fileChanges) ? rec.fileChanges.length : 0,
+      subagents: Array.isArray(rec.subagents) ? rec.subagents.length : 0,
+      subagentsDeltaItems: Array.isArray(this.asRecord(rec.subagentsDelta)?.items)
+        ? (this.asRecord(rec.subagentsDelta)?.items as unknown[]).length
+        : Array.isArray(this.asRecord(rec.subagents_delta)?.items)
+          ? (this.asRecord(rec.subagents_delta)?.items as unknown[]).length
+          : 0,
+    };
+  }
+
+  private detectStructuredFieldDrops(
+    rawRecord: Record<string, unknown>,
+    processedRecord: Record<string, unknown>,
+  ): {
+    droppedSemanticFields: string[];
+    droppedTopLevelKeys: string[];
+  } {
+    const rawSnapshot = this.getStructuredSemanticSnapshot(rawRecord);
+    const processedSnapshot = this.getStructuredSemanticSnapshot(processedRecord);
+    const droppedSemanticFields = Object.keys(rawSnapshot).filter((key) => {
+      const rawValue = rawSnapshot[key];
+      const processedValue = processedSnapshot[key];
+      return (
+        this.hasMeaningfulStructuredValue(rawValue) &&
+        !this.hasMeaningfulStructuredValue(processedValue)
+      );
+    });
+
+    const ignoredRawKeys = new Set([
+      "raw",
+      "type",
+      "kind",
+      "category",
+      "content",
+      "text",
+      "options",
+      "choices",
+      "actions",
+      "allowCustomInput",
+      "multiSelect",
+    ]);
+    const droppedTopLevelKeys = Object.keys(rawRecord).filter((key) => {
+      if (ignoredRawKeys.has(key)) {
+        return false;
+      }
+      return this.hasMeaningfulStructuredValue(rawRecord[key]) && !(key in processedRecord);
+    });
+
+    return {
+      droppedSemanticFields,
+      droppedTopLevelKeys,
+    };
+  }
+
+  private warnOnStructuredFieldDrop(
+    rawRecord: Record<string, unknown>,
+    processedRecord: Record<string, unknown>,
+    context: {
+      stage: "sanitized" | "normalized" | "salvaged";
+      diagnostics?: {
+        source?: string;
+        providerID?: string;
+        modelID?: string;
+      };
+      validationErrors?: string[];
+    },
+  ): void {
+    const dropReport = this.detectStructuredFieldDrops(rawRecord, processedRecord);
+    if (
+      dropReport.droppedSemanticFields.length === 0 &&
+      dropReport.droppedTopLevelKeys.length === 0
+    ) {
+      return;
+    }
+
+    this.logger.warn("Structured output validation failed", {
+      errors: context.validationErrors?.length
+        ? context.validationErrors
+        : ["structured payload lost fields during normalization"],
+      reason: "field-drop-detected",
+      stage: context.stage,
+      source: context.diagnostics?.source,
+      providerID: context.diagnostics?.providerID,
+      modelID: context.diagnostics?.modelID,
+      droppedSemanticFields: dropReport.droppedSemanticFields,
+      droppedTopLevelKeys: dropReport.droppedTopLevelKeys,
+      inputPreview: this.buildStructuredOutputLogPreview(rawRecord).preview,
+      sanitizedPreview: this.buildStructuredOutputLogPreview(processedRecord).preview,
+      hasResponseType: typeof rawRecord.responseType !== "undefined",
+      responseTypeValue: rawRecord.responseType,
+      hasMessage: typeof rawRecord.message !== "undefined",
+      hasPlan: typeof rawRecord.plan !== "undefined",
+      hasQuestion: typeof rawRecord.question !== "undefined",
+      keys: Object.keys(rawRecord),
+    });
+  }
+
+  private logStructuredValidationFailureComparison(
+    params: {
+      rawInput: unknown;
+      sanitizedRec: Record<string, unknown>;
+      canonicalRec: Record<string, unknown>;
+      diagnostics?: {
+        source?: string;
+        providerID?: string;
+        modelID?: string;
+      };
+      candidates: Array<{ source: string; value: unknown }>;
+      validationErrors: string[];
+      responseTypeHintRaw?: string;
+      messageCandidate?: string;
+    },
+  ): void {
+    const processedSanitizedCanonical = sanitizeStructuredOutput(params.canonicalRec);
+
+    this.logger.info("Structured output validation raw candidates", {
+      source: params.diagnostics?.source,
+      providerID: params.diagnostics?.providerID,
+      modelID: params.diagnostics?.modelID,
+      validationErrors: params.validationErrors,
+      responseTypeHintRaw: params.responseTypeHintRaw,
+      messageCandidatePreview: params.messageCandidate?.slice(0, 240),
+      rawInput: this.buildStructuredOutputLogPreview(params.rawInput),
+      candidates: params.candidates
+        .map((candidate) => ({
+          source: candidate.source,
+          ...this.buildStructuredOutputLogPreview(candidate.value),
+        }))
+        .filter((candidate) => {
+          const preview = candidate.preview.trim();
+          return preview.length > 0 && preview !== "undefined" && preview !== "null";
+        }),
+    });
+
+    this.logger.info("Structured output validation processed records", {
+      source: params.diagnostics?.source,
+      providerID: params.diagnostics?.providerID,
+      modelID: params.diagnostics?.modelID,
+      validationErrors: params.validationErrors,
+      sanitizedRec: this.buildStructuredOutputLogPreview(params.sanitizedRec),
+      canonicalRec: this.buildStructuredOutputLogPreview(params.canonicalRec),
+      sanitizedCanonicalRec: this.buildStructuredOutputLogPreview(
+        processedSanitizedCanonical,
+      ),
+    });
+  }
+
+  private preserveStructuredOutputRawFields(
+    rawRecord: Record<string, unknown>,
+    normalizedRecord: Record<string, unknown>,
+  ): StructuredAssistantOutput {
+    return {
+      ...(rawRecord as StructuredAssistantOutput),
+      ...(normalizedRecord as StructuredAssistantOutput),
+      raw: rawRecord,
+    };
+  }
+
+  private salvageStructuredOutput(
+    value: unknown,
+  ): StructuredAssistantOutput | undefined {
+    const rec = this.asRecord(value);
+    if (!rec) {
+      return undefined;
+    }
+
+    const rawResponseType = this.firstNonEmptyString(
+      rec.responseType,
+      rec.type,
+      rec.kind,
+    );
+    const normalizedResponseType = rawResponseType
+      ? rawResponseType.toLowerCase() === "interactive"
+        ? "question"
+        : rawResponseType.toLowerCase() === "conversation"
+          ? "message"
+          : rawResponseType.toLowerCase()
+      : undefined;
+
+    const message =
+      this.firstNonEmptyString(rec.message, rec.content, rec.text) || undefined;
+
+    const planRec = this.asRecord(rec.plan);
+    const plan = planRec
+      ? {
+        file: this.firstNonEmptyString(planRec.file),
+        files: Array.isArray(planRec.files) ? planRec.files : undefined,
+        content: this.firstNonEmptyString(planRec.content),
+        title: this.firstNonEmptyString(planRec.title),
+        intro: this.firstNonEmptyString(planRec.intro),
+        summary: this.firstNonEmptyString(planRec.summary),
+        fileCount:
+          typeof planRec.fileCount === "number" && Number.isFinite(planRec.fileCount)
+            ? planRec.fileCount
+            : undefined,
+      }
+      : undefined;
+    const hasPlan = Boolean(
+      plan &&
+      (
+        this.firstNonEmptyString(plan.file, plan.content) ||
+        (Array.isArray(plan.files) && plan.files.length > 0)
+      ),
+    );
+
+    const questionRec = this.asRecord(rec.question);
+    const topLevelOptions = Array.isArray(rec.options) ? rec.options : undefined;
+    const topLevelChoices = Array.isArray(rec.choices) ? rec.choices : undefined;
+    const topLevelActions = Array.isArray(rec.actions) ? rec.actions : undefined;
+    const rawInteractiveEvents = Array.isArray(rec.interactiveEvents)
+      ? (rec.interactiveEvents as StructuredAssistantOutput["interactiveEvents"])
+      : undefined;
+    const hasQuestionPayload =
+      Boolean(questionRec) ||
+      Array.isArray(topLevelOptions) ||
+      Array.isArray(topLevelChoices) ||
+      Array.isArray(topLevelActions) ||
+      Array.isArray(rawInteractiveEvents);
+    const normalizedQuestion =
+      questionRec || hasQuestionPayload
+        ? {
+          ...(questionRec ?? {}),
+          ...(typeof (questionRec ?? {}).type === "undefined" ? { type: "question" } : {}),
+          ...(typeof (questionRec ?? {}).options === "undefined" && topLevelOptions
+            ? { options: topLevelOptions }
+            : {}),
+          ...(typeof (questionRec ?? {}).choices === "undefined" && topLevelChoices
+            ? { choices: topLevelChoices }
+            : {}),
+          ...(typeof (questionRec ?? {}).actions === "undefined" && topLevelActions
+            ? { actions: topLevelActions }
+            : {}),
+        }
+        : undefined;
+
+    const fileChanges = this.normalizeStructuredFileChangesForValidation(
+      rec.fileChanges,
+    );
+    const subagents = Array.isArray(rec.subagents) ? rec.subagents : undefined;
+    const subagentsDelta =
+      rec.subagentsDelta && typeof rec.subagentsDelta === "object"
+        ? rec.subagentsDelta
+        : rec.subagents_delta && typeof rec.subagents_delta === "object"
+          ? rec.subagents_delta
+          : undefined;
+
+    const effectiveResponseType =
+      normalizedResponseType ||
+      (hasPlan ? "implementation_plan" : undefined) ||
+      (hasQuestionPayload ? "question" : undefined) ||
+      (message ? "message" : undefined);
+
+    if (
+      !effectiveResponseType &&
+      !message &&
+      !hasPlan &&
+      fileChanges.length === 0 &&
+      !normalizedQuestion &&
+      !rawInteractiveEvents &&
+      !subagents &&
+      !subagentsDelta
+    ) {
+      return undefined;
+    }
+
+    return this.preserveStructuredOutputRawFields(rec, {
+      responseType: effectiveResponseType,
+      message,
+      plan: hasPlan ? plan : undefined,
+      fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
+      question:
+        normalizedQuestion as StructuredAssistantOutput["question"] | undefined,
+      interactiveEvents: rawInteractiveEvents,
+      subagents: subagents as StructuredAssistantOutput["subagents"] | undefined,
+      subagentsDelta:
+        subagentsDelta as StructuredAssistantOutput["subagentsDelta"] | undefined,
+    });
+  }
+
   /**
    * Runtime boundary for provider/model output.
    *
@@ -674,6 +1037,10 @@ export class StructuredOutputProcessor {
 
     // First-pass sanitation normalizes legacy aliases to schema field names.
     const sanitizedRec = sanitizeStructuredOutput(rec);
+    this.warnOnStructuredFieldDrop(rec, sanitizedRec, {
+      stage: "sanitized",
+      diagnostics,
+    });
 
     // Don't sanitize rec.plan separately - sanitizeStructuredOutput() is for
     // top-level structured output fields only. The plan object is already validated
@@ -854,18 +1221,34 @@ export class StructuredOutputProcessor {
       validation = validateStructuredOutput(canonicalRec);
     }
     if (!validation.valid) {
-      this.logger.warn("Structured output validation failed", {
-        errors: validation.errors,
-        source: diagnostics?.source,
-        providerID: diagnostics?.providerID,
-        modelID: diagnostics?.modelID,
+      this.logStructuredValidationFailureComparison({
+        rawInput: input,
+        sanitizedRec,
+        canonicalRec,
+        diagnostics,
+        candidates,
+        validationErrors: validation.errors,
+        responseTypeHintRaw,
+        messageCandidate,
       });
       this.recordStructuredValidationFailure(
         canonicalRec,
         validation.errors,
         diagnostics,
       );
-      return undefined;
+      const salvaged = this.salvageStructuredOutput(rec);
+      if (salvaged) {
+        this.warnOnStructuredFieldDrop(
+          rec,
+          salvaged as Record<string, unknown>,
+          {
+            stage: "salvaged",
+            diagnostics,
+            validationErrors: validation.errors,
+          },
+        );
+      }
+      return salvaged ? this.preserveStructuredOutputRawFields(rec, salvaged) : undefined;
     }
 
     const sanitizedCanonicalRec = sanitizeStructuredOutput(canonicalRec);
@@ -886,7 +1269,15 @@ export class StructuredOutputProcessor {
       return undefined;
     }
 
-    return sanitizedCanonicalRec as StructuredAssistantOutput;
+    this.warnOnStructuredFieldDrop(rec, sanitizedCanonicalRec, {
+      stage: "normalized",
+      diagnostics,
+    });
+
+    return this.preserveStructuredOutputRawFields(
+      rec,
+      sanitizedCanonicalRec,
+    );
   }
 
   /**
