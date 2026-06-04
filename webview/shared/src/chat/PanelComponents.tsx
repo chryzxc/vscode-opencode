@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  BarChart3,
   Bot,
   Brain,
   Check,
@@ -256,7 +255,7 @@ export function StickyHeader() {
   const {
     currentSessionId,
     isSessionModalOpen,
-    isQuotaPopoverOpen,
+    isExtendedPanelOpen,
     isProcessing: globalIsProcessing,
     processingSessionIds,
     streaming,
@@ -315,14 +314,21 @@ export function StickyHeader() {
         <Button
           variant="ghost"
           size="icon"
-          className="oc-quota-btn h-7 w-7 [@media(min-width:1100px)]:hidden"
-          title="Quota status"
-          aria-label="Show quota preview"
+          className="oc-extended-panel-btn h-7 w-7 [@media(min-width:1100px)]:hidden"
+          title={isExtendedPanelOpen ? "Collapse extended panel" : "Expand extended panel"}
+          aria-label={isExtendedPanelOpen ? "Collapse extended panel" : "Expand extended panel"}
           onClick={() =>
-            dispatch({ type: "SET_QUOTA_POPOVER_OPEN", payload: !isQuotaPopoverOpen })
+            dispatch({
+              type: "SET_EXTENDED_PANEL_OPEN",
+              payload: !isExtendedPanelOpen,
+            })
           }
         >
-          <BarChart3 className="h-3.5 w-3.5" />
+          {isExtendedPanelOpen ? (
+            <ChevronUp className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" />
+          )}
         </Button>
       </div>
     </div>
@@ -1072,38 +1078,127 @@ export function ActiveTaskPanel() {
 
 export function MobileRightSummary() {
   const {
-    sessionStats,
     isProcessing: globalIsProcessing,
     currentSessionId,
     processingSessionIds,
+    isExtendedPanelOpen,
   } = useAppState();
+  const dispatch = useAppDispatch();
+  const [activeTab, setActiveTab] = useState<"task" | "quota" | "integrations" | "tools">(
+    "task",
+  );
   const isProcessing = isProcessingInCurrentSession(
     globalIsProcessing,
     currentSessionId,
     processingSessionIds,
   );
 
-  return (
-    <div className="block [@media(min-width:1100px)]:hidden border-b border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs text-oc-text">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 font-medium text-xs">
-          <span className="oc-text-secondary">In</span>
-          <span className="tabular-nums text-[var(--oc-text-soft)]">
-            {sessionStats.input.toLocaleString()}
-          </span>
-          <span className="opacity-30">/</span>
-          <span className="oc-text-secondary">Out</span>
-          <span className="tabular-nums text-[var(--oc-text-soft)]">
-            {sessionStats.output.toLocaleString()}
-          </span>
-        </div>
+  useEffect(() => {
+    if (!isExtendedPanelOpen) {
+      return;
+    }
 
-        <div className="flex items-center">
-          {isProcessing ? (
-            <span className="rounded-md bg-oc-accent-soft px-2 py-0.5 text-xs font-medium text-oc-accent font-medium tracking-wider">
-              PROCESSING
-            </span>
-          ) : null}
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        dispatch({ type: "SET_EXTENDED_PANEL_OPEN", payload: false });
+      }
+    };
+
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [dispatch, isExtendedPanelOpen]);
+
+  if (!isExtendedPanelOpen) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 [@media(min-width:1100px)]:hidden">
+      <button
+        type="button"
+        className="absolute inset-0 bg-oc-bg/35"
+        aria-label="Close extended panel"
+        onClick={() => dispatch({ type: "SET_EXTENDED_PANEL_OPEN", payload: false })}
+      />
+
+      <div className="pointer-events-none absolute inset-x-2 top-[3.25rem] bottom-2 overflow-hidden rounded-xl border border-oc-border bg-oc-panel shadow-[0_18px_44px_rgba(0,0,0,0.28)]">
+        <div className="pointer-events-auto flex h-full flex-col">
+          <div className="flex items-center justify-between gap-3 border-b border-oc-border bg-[linear-gradient(180deg,var(--oc-panel)_0%,color-mix(in_srgb,var(--oc-panel)_88%,var(--oc-bg-soft)_12%)_100%)] px-3 py-2.5">
+            <div className="min-w-0">
+              <div className="truncate text-[10px] font-semibold uppercase tracking-[0.14em] oc-text-secondary">
+                Details
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              {isProcessing ? (
+                <span className="rounded-md bg-oc-accent-soft px-2 py-0.5 text-[10px] font-medium text-oc-accent tracking-wider">
+                  PROCESSING
+                </span>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                title="Collapse extended panel"
+                aria-label="Collapse extended panel"
+                onClick={() =>
+                  dispatch({ type: "SET_EXTENDED_PANEL_OPEN", payload: false })
+                }
+              >
+                <ChevronUp className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-hidden px-3 py-3">
+            <Tabs
+              value={activeTab}
+              onValueChange={(value) =>
+                setActiveTab(value as "task" | "quota" | "integrations" | "tools")
+              }
+              className="flex h-full flex-col gap-3"
+            >
+              <TabsList className="grid h-8 w-full grid-cols-4 border border-oc-border-soft bg-oc-bg-soft/70">
+                <TabsTrigger value="task" className="text-[11px]">
+                  Overview
+                </TabsTrigger>
+                <TabsTrigger value="quota" className="text-[11px]">
+                  Quota
+                </TabsTrigger>
+                <TabsTrigger value="integrations" className="text-[11px]">
+                  Integrations
+                </TabsTrigger>
+                <TabsTrigger value="tools" className="text-[11px]">
+                  Tools
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="task" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1">
+                <ActiveTaskPanel />
+              </TabsContent>
+
+              <TabsContent value="quota" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1">
+                <QuotaMonitor />
+              </TabsContent>
+
+              <TabsContent value="integrations" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1">
+                <div className="space-y-2">
+                  <McpPanel />
+                  <LspPanel />
+                </div>
+              </TabsContent>
+
+              <TabsContent value="tools" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1">
+                <div className="space-y-2">
+                  <SkillsPanel />
+                  <AgentsPanel />
+                </div>
+              </TabsContent>
+            </Tabs>
+          </div>
         </div>
       </div>
     </div>

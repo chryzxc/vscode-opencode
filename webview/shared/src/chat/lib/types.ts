@@ -699,6 +699,7 @@ export interface AppState {
   isQueueOpen: boolean;
   isSidebarOpen: boolean;
   isSessionModalOpen: boolean;
+  isExtendedPanelOpen: boolean;
   isQuotaPopoverOpen: boolean;
   sessionsList: Session[];
   processingSessionIds: string[];

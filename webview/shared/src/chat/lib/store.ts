@@ -51,6 +51,7 @@ export const initialState: AppState = {
   isQueueOpen: false,
   isSidebarOpen: false,
   isSessionModalOpen: false,
+  isExtendedPanelOpen: false,
   isQuotaPopoverOpen: false,
   sessionsList: [],
   processingSessionIds: [],
@@ -205,6 +206,7 @@ export type AppAction =
   | { type: "ADD_TO_LOCAL_QUEUE"; payload: QueueItem }
   | { type: "SET_SIDEBAR_OPEN"; payload: boolean }
   | { type: "SET_SESSION_MODAL_OPEN"; payload: boolean }
+  | { type: "SET_EXTENDED_PANEL_OPEN"; payload: boolean }
   | { type: "SET_QUOTA_POPOVER_OPEN"; payload: boolean }
   | { type: "SET_MODEL_DROPDOWN_OPEN"; payload: boolean }
   | { type: "SET_AGENT_DROPDOWN_OPEN"; payload: boolean }
@@ -2818,6 +2820,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, isSidebarOpen: action.payload };
     case "SET_SESSION_MODAL_OPEN":
       return { ...state, isSessionModalOpen: action.payload };
+    case "SET_EXTENDED_PANEL_OPEN":
+      return { ...state, isExtendedPanelOpen: action.payload };
     case "SET_QUOTA_POPOVER_OPEN":
       return { ...state, isQuotaPopoverOpen: action.payload };
     case "SET_MODEL_DROPDOWN_OPEN":

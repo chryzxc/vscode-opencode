@@ -78,26 +78,31 @@ test('StickyHeader action buttons are in correct order', () => {
     'New chat button must have "Create new session" title',
   );
 
-  // Check for BarChart3 button (quota status)
+  // Check for the mobile details toggle button.
   assert.match(
     body,
-    /oc-quota-btn/,
-    'StickyHeader must have BarChart3 button for quota status',
+    /oc-extended-panel-btn/,
+    'StickyHeader must have the mobile panel toggle button',
   );
   assert.match(
     body,
-    /Quota status/,
-    'Quota button must have "Quota status" title',
+    /Expand extended panel|Collapse extended panel/,
+    'Mobile toggle button must describe the extended panel state',
+  );
+  assert.match(
+    body,
+    /ChevronDown|ChevronUp/,
+    'Mobile toggle button must use a chevron icon for expand/collapse',
   );
 
   // Verify order by checking they appear in sequence
   const historyIndex = body.indexOf('oc-history-btn');
   const newChatIndex = body.indexOf('oc-new-chat-btn');
-  const quotaIndex = body.indexOf('oc-quota-btn');
+  const quotaIndex = body.indexOf('oc-extended-panel-btn');
 
   assert.ok(
     historyIndex < newChatIndex && newChatIndex < quotaIndex,
-    'Buttons must be in order: History, New Chat, Quota',
+    'Buttons must be in order: History, New Chat, Mobile toggle',
   );
 });
 
@@ -135,27 +140,27 @@ test('StickyHeader action buttons have correct handlers', () => {
     'New chat button must post createSession message',
   );
 
-  // Quota button should open quota popover
+  // Mobile toggle should open the extended panel.
   assert.match(
     body,
-    /oc-quota-btn[\s\S]*SET_QUOTA_POPOVER_OPEN/s,
-    'Quota button must toggle quota popover',
+    /oc-extended-panel-btn[\s\S]*SET_EXTENDED_PANEL_OPEN/s,
+    'Mobile toggle button must toggle the extended panel',
   );
 });
 
-test('ChatShell does not import or render MobileRightSummary', () => {
-  // Verify MobileRightSummary has been removed from ChatShell
-  assert.doesNotMatch(
+test('ChatShell renders the mobile summary directly under StickyHeader', () => {
+  // Verify the small-screen summary is wired into the conversation header area.
+  assert.match(
     chatShellSource,
     /MobileRightSummary/,
-    'ChatShell must not import MobileRightSummary',
+    'ChatShell should import the mobile summary component',
   );
 
-  // Verify there are no references to mobile summary rendering
-  assert.doesNotMatch(
-    chatShellSource,
-    /mobile.*summary|summary.*mobile/i,
-    'ChatShell must not render mobile summary component',
+  const chatShellBody = extractFunctionBody(chatShellSource, 'function ChatContent()');
+  assert.match(
+    chatShellBody,
+    /<StickyHeader\s*\/>[\s\S]*<MobileRightSummary\s*\/>/,
+    'ChatShell should render MobileRightSummary directly after StickyHeader',
   );
 });
 
@@ -209,7 +214,7 @@ test('StickyHeader right section contains only action buttons', () => {
   // Verify all three buttons are present
   assert.match(rightSection, /oc-history-btn/, 'Right section must have History button');
   assert.match(rightSection, /oc-new-chat-btn/, 'Right section must have New Chat button');
-  assert.match(rightSection, /oc-quota-btn/, 'Right section must have Quota button');
+  assert.match(rightSection, /oc-extended-panel-btn/, 'Right section must have extended panel button');
 
   // Verify no title in right section
   assert.doesNotMatch(
@@ -219,14 +224,14 @@ test('StickyHeader right section contains only action buttons', () => {
   );
 });
 
-test('StickyHeader quota button is hidden when extended panel is visible', () => {
+test('StickyHeader extended panel button is hidden when desktop panel is visible', () => {
   // Verify the quota button has responsive class to hide on desktop (>= 1100px)
-  // when the extended panel with QuotaMonitor is visible
+  // when the extended panel is visible.
   const body = extractFunctionBody(panelSource, 'export function StickyHeader()');
 
   // Extract the quota button section
-  const quotaButtonMatch = body.match(/oc-quota-btn[^>]*>([\s\S]*?)<\/Button>/);
-  assert.ok(quotaButtonMatch, 'Must find quota button');
+  const quotaButtonMatch = body.match(/oc-extended-panel-btn[^>]*>([\s\S]*?)<\/Button>/);
+  assert.ok(quotaButtonMatch, 'Must find extended panel button');
 
   const quotaButton = quotaButtonMatch[0];
 
@@ -236,4 +241,52 @@ test('StickyHeader quota button is hidden when extended panel is visible', () =>
     /\[@media\(min-width:1100px\)\]:hidden/,
     'Quota button must be hidden on screens >= 1100px when extended panel is visible',
   );
+  assert.match(
+    quotaButton,
+    /SET_EXTENDED_PANEL_OPEN/,
+    'Quota button should toggle the mobile extended panel instead of the quota popover',
+  );
+  assert.match(
+    quotaButton,
+    /Expand extended panel|Collapse extended panel/,
+    'Extended panel button should use expand/collapse labels',
+  );
+});
+
+test('MobileRightSummary floats as an overlay on small screens', () => {
+  // Verify the mobile summary is rendered as a floating sheet rather than in-flow content.
+  const body = extractFunctionBody(panelSource, 'export function MobileRightSummary()');
+
+  assert.match(
+    body,
+    /SET_EXTENDED_PANEL_OPEN/,
+    'Mobile summary should toggle the extended panel state',
+  );
+  assert.match(body, /fixed inset-0 z-40/, 'mobile summary should float above the chat');
+  assert.match(body, /absolute inset-0 bg-oc-bg\/35/, 'mobile summary should render a themed backdrop');
+  assert.match(body, /top-\[3\.25rem\] bottom-2/, 'mobile summary sheet should sit below the sticky header');
+  assert.match(body, /overflow-hidden rounded-xl/, 'mobile summary should render as a floating sheet');
+  assert.match(body, /bg-oc-panel shadow-\[0_18px_44px_rgba\(0,0,0,0\.28\)\]/, 'mobile summary should use the app panel surface');
+  assert.match(body, /Details/, 'mobile summary should keep the panel title at the top');
+  assert.doesNotMatch(
+    body,
+    /Quick access on small screens/,
+    'mobile summary should not include the old descriptive subtitle',
+  );
+  assert.match(body, /<Tabs[\s\S]*value=\{activeTab\}/, 'mobile summary should use tabs for navigation');
+  assert.match(body, /<TabsList[\s\S]*grid-cols-4[\s\S]*border-oc-border-soft/, 'mobile summary should render a softened four-tab strip');
+  assert.match(body, /<TabsTrigger value="task"/, 'mobile summary should include an Overview tab');
+  assert.match(body, /<TabsTrigger value="quota"/, 'mobile summary should include a Quota tab');
+  assert.match(body, /<TabsTrigger value="integrations"/, 'mobile summary should include an Integrations tab');
+  assert.match(body, /<TabsTrigger value="tools"/, 'mobile summary should include a Tools tab');
+  assert.match(body, /<TabsContent value="task"/, 'mobile summary should render task tab content');
+  assert.match(body, /<ActiveTaskPanel\s*\/>/, 'overview tab should render active task panel');
+  assert.match(body, /<TabsContent value="quota"/, 'mobile summary should render quota tab content');
+  assert.match(body, /<QuotaMonitor\s*\/>/, 'quota tab should render quota monitor');
+  assert.match(body, /<TabsContent value="integrations"/, 'mobile summary should render integrations tab content');
+  assert.match(body, /<McpPanel\s*\/>/, 'integrations tab should render MCP panel');
+  assert.match(body, /<LspPanel\s*\/>/, 'integrations tab should render LSP panel');
+  assert.match(body, /<TabsContent value="tools"/, 'mobile summary should render tools tab content');
+  assert.match(body, /<SkillsPanel\s*\/>/, 'tools tab should render skills panel');
+  assert.match(body, /<AgentsPanel\s*\/>/, 'tools tab should render agents panel');
 });

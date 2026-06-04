@@ -9,6 +9,7 @@ import vscode from "./lib/vscode";
 import {
   StickyHeader,
   HistorySidebar,
+  MobileRightSummary,
   InputWrapper,
   ActiveTaskPanel,
   QuotaMonitor,
@@ -19,7 +20,6 @@ import {
   SkillsPanel,
   SettingsPanel,
 } from "./PanelComponents";
-import { QuotaPopover } from "./QuotaPopover";
 import { StreamingCard } from "./StreamingComponents";
 import {
   AssistantMessage,
@@ -617,6 +617,9 @@ function ChatContent() {
         {/* FORBIDDEN TO REMOVE: StickyHeader (token/session stats) - core UX for token visibility */}
         <StickyHeader />
 
+        {/* Mobile-only extended panel summary and collapsible details */}
+        <MobileRightSummary />
+
         {/* Message list */}
         <div
           ref={messagesScrollRef}
@@ -842,8 +845,6 @@ function ChatContent() {
         />
       ) : null}
 
-      {/* Quota Popover */}
-      <QuotaPopover />
     </div>
   );
 }
