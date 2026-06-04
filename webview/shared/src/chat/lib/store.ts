@@ -238,6 +238,7 @@ export type AppAction =
   | { type: "SET_MODEL_SEARCH"; payload: string }
   | { type: "SET_AGENT_SEARCH"; payload: string }
   | { type: "ADD_ERROR_MESSAGE"; payload: string }
+  | { type: "REMOVE_ERROR_MESSAGE"; payload: number }
   | { type: "CLEAR_ERROR_MESSAGES" }
   | { type: "SET_QUOTA_DATA"; payload: QuotaData | null }
   | { type: "SET_QUOTA_REFRESHING"; payload: boolean }
@@ -837,6 +838,22 @@ export function extractMessageTextForCanonical(message: Message): string {
   if (!rec) {
     return "";
   }
+  const infoRec = asRecordLocal(rec.info);
+  const structured =
+    asRecordLocal(rec.structuredOutput) ||
+    asRecordLocal(rec.structured_output) ||
+    asRecordLocal(rec.structured) ||
+    asRecordLocal(infoRec?.structuredOutput) ||
+    asRecordLocal(infoRec?.structured_output) ||
+    asRecordLocal(infoRec?.structured);
+  const responseType = asStringLocal(
+    structured?.responseType,
+    rec.responseType,
+  ).toLowerCase();
+  const structuredMessage = asStringLocal(structured?.message).trim();
+  if (responseType === "message" && structuredMessage) {
+    return structuredMessage;
+  }
   const direct = asStringLocal(rec.content, rec.text);
   if (direct) {
     return direct;
@@ -977,21 +994,6 @@ function collectReasoningFingerprintsForCanonical(message: Message): Set<string>
   return fingerprints;
 }
 
-function looksLikeReasoningPlanningTextForCanonical(value: string): boolean {
-  const normalized = normalizeComparableTextLocal(value);
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized.startsWith("let me ") ||
-    normalized.startsWith("i should ") ||
-    normalized.startsWith("i need to ") ||
-    normalized.startsWith("i will ") ||
-    normalized.startsWith("the user wants ") ||
-    normalized.startsWith("the user asked ")
-  );
-}
-
 function isReasoningLeakCandidateForCanonical(
   value: string,
   message?: Message,
@@ -1024,8 +1026,7 @@ function isReasoningLeakCandidateForCanonical(
     }
   }
 
-  return reasoningFingerprints.size > 0 &&
-    looksLikeReasoningPlanningTextForCanonical(value);
+  return false;
 }
 
 function extractRenderableAssistantTextForCanonical(message: Message): string {
@@ -2938,6 +2939,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         errorMessages: [...state.errorMessages, action.payload],
+      };
+    case "REMOVE_ERROR_MESSAGE":
+      return {
+        ...state,
+        errorMessages: state.errorMessages.filter(
+          (_message, index) => index !== action.payload,
+        ),
       };
     case "CLEAR_ERROR_MESSAGES":
       return { ...state, errorMessages: [] };

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { Archive, X } from "lucide-react";
 
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
 import { createMessageHandler } from "./lib/messageHandler";
@@ -94,14 +94,24 @@ function CompactedMessagesToggle({
         className="oc-compaction-toggle"
         title={collapsed ? "Show compacted messages" : "Hide compacted messages"}
       >
-        <span className="oc-compaction-toggle-summary">{summary}</span>
-        <span className="oc-compaction-toggle-meta">
-          {compactedAt ? `Compacted ${compactedAt}` : "Session archive"}
+        <span className="oc-compaction-toggle-icon" aria-hidden="true">
+          <Archive className="h-3.5 w-3.5" />
+        </span>
+        <span className="oc-compaction-toggle-copy">
+          <span className="oc-compaction-toggle-summary">{summary}</span>
+          <span className="oc-compaction-toggle-meta">
+            {compactedAt ? `Compacted ${compactedAt}` : "Session archive"}
+          </span>
         </span>
         <span className="oc-compaction-toggle-action">{actionLabel}</span>
       </button>
     </div>
   );
+}
+
+function getToastSeverity(message: string): "warning" | "error" {
+  const normalized = message.trim().toLowerCase();
+  return normalized.includes("warning") ? "warning" : "error";
 }
 
 function SessionLoadingSpinner() {
@@ -513,6 +523,7 @@ function ChatContent() {
   const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
   const visibleMessages = state.messages.slice(visibleStartIndex);
   const hasCompatibilityWarnings = state.compatibilityWarnings.length > 0;
+  const errorToasts = state.errorMessages;
 
   const jumpToLatest = () => {
     setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
@@ -551,6 +562,53 @@ function ChatContent() {
 
   return (
     <div className="oc-shell relative flex h-screen overflow-hidden bg-oc-bg text-oc-text">
+      {errorToasts.length > 0 ? (
+        <div className="pointer-events-none absolute right-3 top-3 z-50 flex w-full max-w-sm flex-col gap-2.5">
+          {errorToasts.map((message, index) => (
+            (() => {
+              const severity = getToastSeverity(message);
+              const isWarning = severity === "warning";
+              return (
+                <div
+                  key={`${index}:${message}`}
+                  className={`pointer-events-auto overflow-hidden rounded-lg border shadow-[0_14px_36px_rgba(0,0,0,0.28)] backdrop-blur ${
+                    isWarning
+                      ? "border-yellow-500/40 bg-[rgba(64,44,18,0.92)]"
+                      : "border-red-500/40 bg-[rgba(60,18,24,0.92)]"
+                  }`}
+                >
+              <div className="flex items-start justify-between gap-2.5 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div
+                    className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${
+                      isWarning ? "text-yellow-300" : "text-red-300"
+                    }`}
+                  >
+                    {isWarning ? "Warning" : "Error"}
+                  </div>
+                  <div className="mt-1 whitespace-pre-wrap break-words text-[12.5px] leading-6 text-oc-text">
+                    {message}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-white/10 text-oc-text-soft transition-colors hover:bg-white/5 hover:text-oc-text"
+                  aria-label="Dismiss error notification"
+                  title="Dismiss error notification"
+                  onClick={() =>
+                    dispatch({ type: "REMOVE_ERROR_MESSAGE", payload: index })
+                  }
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+                </div>
+              );
+            })()
+          ))}
+        </div>
+      ) : null}
+
       {/* === LEFT: History sidebar overlay (hamburger-toggled, absolute positioned) === */}
       <HistorySidebar />
 

@@ -665,10 +665,111 @@ function messageBodyFromParts(parts?: MessagePart[]): string {
       if (!isRenderableAssistantTextPart(part)) {
         return "";
       }
-      return part.message ?? part.text ?? part.content ?? "";
+      return (part.message ?? part.text ?? part.content ?? "").trim();
     })
-    .join("")
+    .filter((partText) => partText.length > 0)
+    .join("\n\n")
     .trim();
+}
+
+function interactiveChoiceTextsFromMessage(message?: Message): string[] {
+  if (!message) {
+    return [];
+  }
+
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured =
+    asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured_output) ||
+    asRecord(messageRec?.structured) ||
+    asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured_output) ||
+    asRecord(infoRec?.structured);
+  const question = asRecord(structured?.question);
+
+  const choiceTexts: string[] = [];
+  const addChoiceText = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim();
+    if (trimmed) {
+      choiceTexts.push(trimmed);
+    }
+  };
+  const addChoiceRecord = (value: unknown) => {
+    const rec = asRecord(value);
+    if (!rec) {
+      return;
+    }
+    addChoiceText(rec.label);
+    addChoiceText(rec.value);
+    addChoiceText(rec.description);
+    addChoiceText(rec.title);
+    addChoiceText(rec.message);
+  };
+
+  const questionChoices = [
+    ...(Array.isArray(question?.options) ? question.options : []),
+    ...(Array.isArray(question?.choices) ? question.choices : []),
+    ...(Array.isArray(question?.actions) ? question.actions : []),
+  ];
+  questionChoices.forEach(addChoiceRecord);
+
+  if (Array.isArray(message.interactiveEvents)) {
+    for (const event of message.interactiveEvents) {
+      const eventRec = asRecord(event);
+      if (!eventRec) {
+        continue;
+      }
+      const eventChoices = [
+        ...(Array.isArray(eventRec.options) ? eventRec.options : []),
+        ...(Array.isArray(eventRec.choices) ? eventRec.choices : []),
+        ...(Array.isArray(eventRec.actions) ? eventRec.actions : []),
+      ];
+      eventChoices.forEach(addChoiceRecord);
+    }
+  }
+
+  return choiceTexts;
+}
+
+function looksLikeFlattenedInteractiveEcho(
+  questionPrompt: string,
+  bodyContent: string,
+  message?: Message,
+): boolean {
+  if (!questionPrompt.trim() || !bodyContent.trim()) {
+    return false;
+  }
+
+  const promptNorm = normalizeComparableText(questionPrompt);
+  const bodyNorm = normalizeComparableText(bodyContent);
+  if (!promptNorm || !bodyNorm) {
+    return false;
+  }
+
+  if (bodyNorm === promptNorm || bodyNorm.startsWith(promptNorm)) {
+    return false;
+  }
+
+  const choiceFingerprints = interactiveChoiceTextsFromMessage(message)
+    .map((text) => normalizeComparableText(text))
+    .filter((text) => text.length >= 4);
+
+  if (choiceFingerprints.length === 0) {
+    return false;
+  }
+
+  let matches = 0;
+  for (const fingerprint of choiceFingerprints) {
+    if (bodyNorm.includes(fingerprint)) {
+      matches += 1;
+    }
+  }
+
+  return matches >= 2;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -792,21 +893,6 @@ function collectReasoningFingerprints(message?: Message): Set<string> {
   return fingerprints;
 }
 
-function looksLikeReasoningPlanningText(value: string): boolean {
-  const normalized = normalizeComparableText(value);
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized.startsWith("let me ") ||
-    normalized.startsWith("i should ") ||
-    normalized.startsWith("i need to ") ||
-    normalized.startsWith("i will ") ||
-    normalized.startsWith("the user wants ") ||
-    normalized.startsWith("the user asked ")
-  );
-}
-
 function isReasoningLeakCandidate(
   value: string,
   source: "parts" | "structured" | "content" | "text" | "summary",
@@ -842,7 +928,7 @@ function isReasoningLeakCandidate(
     }
   }
 
-  return reasoningFingerprints.size > 0 && looksLikeReasoningPlanningText(value);
+  return false;
 }
 
 function isLowValueInteractiveBodyText(value: string): boolean {
@@ -1006,6 +1092,48 @@ function questionPromptFromInteractiveEvents(
   return undefined;
 }
 
+function hasQuestionLikeInteractiveContent(message?: Message): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const messageRec = asRecord(message);
+  const infoRec = asRecord(messageRec?.info);
+  const structured =
+    asRecord(messageRec?.structuredOutput) ||
+    asRecord(messageRec?.structured_output) ||
+    asRecord(messageRec?.structured) ||
+    asRecord(infoRec?.structuredOutput) ||
+    asRecord(infoRec?.structured_output) ||
+    asRecord(infoRec?.structured);
+  const questionType = firstNonEmptyString(
+    asRecord(structured?.question)?.type,
+  )?.toLowerCase();
+
+  if (
+    questionType === "question" ||
+    questionType === "confirm" ||
+    questionType === "quick_actions" ||
+    questionType === "quick-actions"
+  ) {
+    return true;
+  }
+
+  if (!Array.isArray(message.interactiveEvents)) {
+    return false;
+  }
+
+  return message.interactiveEvents.some((event) => {
+    const type = firstNonEmptyString(asRecord(event)?.type)?.toLowerCase();
+    return (
+      type === "question" ||
+      type === "confirm" ||
+      type === "quick_actions" ||
+      type === "quick-actions"
+    );
+  });
+}
+
 
 function summaryText(message?: Message): string {
   // Check both nested info and top-level properties (for persisted messages)
@@ -1078,9 +1206,6 @@ function getMessageContent(
     // fired — this happens when a blocking interactive event (e.g. question) is detected mid-stream.
     // At that point, streaming.content holds the final AI response text (e.g. "I have a few
     // questions:"). We must NOT discard it based on length — it is the correct final content.
-    // Only apply the reasoning filter while the stream is still actively flowing.
-    const streamingFinished = !streaming.isActive;
-
     if (isInReasoningPart) {
       return '';
     }
@@ -1091,16 +1216,13 @@ function getMessageContent(
 
     // CRITICAL: If reasoning events are active and streaming is in progress,
     // completely block content from going to the AI final response component.
-    // This prevents reasoning text from appearing in the main chat bubble.
     // Reasoning should only appear in the activity timeline, not in the response body.
     if (streaming.isActive && hasReasoningEvents) {
       return '';
     }
 
-    // Prevent reasoning data from leaking into the AI final response body
-    // when activity steps are still in progress. Content should only render
-    // once all steps complete, avoiding raw reasoning text appearing as
-    // final assistant output.
+    // Prevent reasoning/activity text from leaking into the assistant response
+    // while steps are still actively pending.
     if (streaming.isActive && hasPendingStreamingSteps(streaming)) {
       return '';
     }
@@ -1162,18 +1284,26 @@ function getMessageContent(
   }
   const isQuestionResponseType = responseType === "question";
   const hasInteractiveEvents = Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0;
+  const hasQuestionLikeInteractive = hasQuestionLikeInteractiveContent(message);
   if (isMessageResponseType) {
     if (structuredMessage) {
       return structuredMessage;
     }
   }
-  if (!isQuestionResponseType && !hasInteractiveEvents) {
+  if (
+    !isQuestionResponseType &&
+    !hasInteractiveEvents &&
+    !hasQuestionLikeInteractive
+  ) {
     return safeBaseContent;
   }
 
   // For explicit question turns, render only the canonical question prompt in the
   // assistant bubble (no assistantMessage/body concatenation).
   if (isQuestionResponseType) {
+    return questionPrompt;
+  }
+  if (hasQuestionLikeInteractive) {
     return questionPrompt;
   }
 
@@ -1188,6 +1318,12 @@ function getMessageContent(
   }
   if (bodyNorm.startsWith(promptNorm)) {
     return safeBaseContent;
+  }
+  if (
+    hasInteractiveEvents &&
+    looksLikeFlattenedInteractiveEcho(questionPrompt, safeBaseContent, message)
+  ) {
+    return questionPrompt;
   }
   return `${questionPrompt}\n\n${safeBaseContent}`;
 }
@@ -1309,6 +1445,15 @@ function thoughtItemsFromMessage(message?: Message): ThoughtItem[] {
 function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
   if (!streaming) {
     return [];
+  }
+  const mergedReasoning = (streaming.reasoning || "").trim();
+  if (mergedReasoning.length > 0) {
+    return [
+      {
+        key: "stream-merged-reasoning",
+        text: mergedReasoning,
+      },
+    ];
   }
   if (streaming.reasoningEvents && streaming.reasoningEvents.length > 0) {
     const fromEvents = streaming.reasoningEvents
@@ -3673,8 +3818,26 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const messageBodyRef = useRef<HTMLDivElement>(null);
   const progressTimelineRef = useRef<HTMLDivElement>(null);
   const requestedSubagentConversationRef = useRef<Set<string>>(new Set());
-
-  const content = getMessageContent(message, streaming);
+  const rawContent = getMessageContent(message, streaming);
+  const stickyStreamingContentRef = useRef<{
+    messageId: string | null;
+    content: string;
+  }>({ messageId: null, content: "" });
+  const activeStreamingMessageId =
+    streaming?.messageId || message?.info?.id || message?.id || null;
+  if (stickyStreamingContentRef.current.messageId !== activeStreamingMessageId) {
+    stickyStreamingContentRef.current = {
+      messageId: activeStreamingMessageId,
+      content: "",
+    };
+  }
+  if (streaming?.isActive && rawContent.trim().length > 0) {
+    stickyStreamingContentRef.current.content = rawContent;
+  }
+  const content =
+    streaming?.isActive && rawContent.trim().length === 0
+      ? stickyStreamingContentRef.current.content
+      : rawContent;
   const liveInteractivePrompt = useMemo(
     () => questionPromptFromInteractiveEvents(interactiveEvents),
     [interactiveEvents],
@@ -4285,10 +4448,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       };
     }
   }, [message?.rawResponse]);
-  // Render raw debug whenever payload exists. Do not gate behind stream-debug
-  // flags, otherwise streamed + hydrated sessions can silently hide rawResponse.
-  const hasRawResponseDebug = rawResponseText.trim().length > 0;
   const showRawResponseDebug = config.debug.showRawResponse;
+  const visibleRawResponseText =
+    rawResponseText.trim().length > 0
+      ? rawResponseText
+      : "(rawResponse is missing on this message)";
   const planLeadMessage = useMemo(() => {
     if (!plan) return "";
     const candidate = (
@@ -4352,7 +4516,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
-  const showResponseSection = hasVisibleResponseBody || !!plan;
+  const showResponseSection = !isAborted && (hasVisibleResponseBody || !!plan);
   const responseSectionClass = hasResponseContent
     ? "rounded-md border border-oc-border-soft bg-background p-3.5 shadow-sm"
     : "p-0 border-0 bg-transparent shadow-none";
@@ -5114,7 +5278,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                 )} */}
 
-              {showRawResponseDebug && hasRawResponseDebug && (
+              {showRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
                   className={
@@ -5129,7 +5293,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                     </div>
                   </div>
                   <pre className="max-h-[260px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
-                    {rawResponseText}
+                    {visibleRawResponseText}
                   </pre>
                 </div>
               )}

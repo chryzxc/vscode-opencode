@@ -368,7 +368,7 @@ export function HistorySidebar() {
 
       <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 pt-1">
         <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
-          <History className="h-8 w-8 text-oc-border" />
+          <History className="h-8 w-8 text-[var(--oc-text-secondary)] opacity-80" />
           <p className="text-[11px] oc-text-secondary">Session management moved</p>
           <p className="text-[10px] oc-text-secondary opacity-70">
             Use the session modal to switch, create, or manage sessions
@@ -1458,9 +1458,11 @@ export function AgentDropdown() {
               >
                 <div className="oc-agent-option-top">
                   <span className="oc-agent-option-dot" />
-                  <div className="text-xs font-medium truncate">{agent.name}</div>
+                  <div className="text-xs font-medium truncate text-[var(--oc-text)]">
+                    {agent.name}
+                  </div>
                 </div>
-                <div className="text-xs font-medium oc-text-secondary truncate mt-0.5">
+                <div className="text-xs font-medium truncate mt-0.5 text-[var(--oc-text-secondary)] opacity-95">
                   {agent.description}
                 </div>
               </button>
@@ -2307,6 +2309,14 @@ export function InputWrapper() {
         answerCount: answers.length,
         answers,
       });
+      // SDK-native question replies do not immediately round-trip through the
+      // same userMessageAppended echo path as legacy interactive submits. Clear
+      // any stale local processing/streaming state now so the previous question
+      // turn cannot leave the composer stuck in a loading posture while we wait
+      // for the server's real continuation events.
+      dispatch({ type: "SET_PROCESSING", payload: false });
+      dispatch({ type: "SET_STEERING", payload: false });
+      dispatch({ type: "SET_STREAMING", payload: null });
       vscode.postMessage({
         type: "questionReply",
         requestID,
@@ -3272,7 +3282,7 @@ export function QuotaMonitor() {
                         </span>
                         {platform.status === "error" ? (
                           <Badge
-                            variant="destructive"
+                            variant="error"
                             className="text-xs uppercase"
                           >
                             error
@@ -4118,7 +4128,7 @@ export function AgentsPanel() {
                       }}
                       aria-hidden="true"
                     />
-                    <span className="flex-1 truncate font-medium text-xs font-medium text-[var(--oc-text-soft)]">
+                    <span className="flex-1 truncate font-medium text-xs font-medium text-[var(--oc-text)]">
                       {agent.name}
                     </span>
                     {agent.mode && (
@@ -4131,7 +4141,7 @@ export function AgentsPanel() {
                     )}
                     {agent.builtIn && (
                       <span
-                        className="shrink-0 rounded px-1 py-0.5 text-[10px] text-[var(--oc-text-soft)] opacity-50"
+                        className="shrink-0 rounded px-1 py-0.5 text-[10px] text-[var(--oc-text-secondary)] opacity-75"
                         title="Built-in agent"
                       >
                         built-in
@@ -4161,7 +4171,7 @@ export function AgentsPanel() {
                   </div>
 
                   {isExpanded && hasDescription && (
-                    <div className="border-t border-oc-border px-2 pb-2 pt-1 text-[10px] text-[var(--oc-text-soft)] opacity-70 leading-relaxed">
+                    <div className="border-t border-oc-border px-2 pb-2 pt-1 text-[10px] text-[var(--oc-text-secondary)] opacity-90 leading-relaxed">
                       {agent.description}
                     </div>
                   )}

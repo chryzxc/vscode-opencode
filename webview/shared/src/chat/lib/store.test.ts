@@ -153,6 +153,31 @@ describe('isInternalTransportReminderMessage', () => {
   });
 });
 
+describe('error message reducer state', () => {
+  it('appends error toast messages', () => {
+    const nextState = appReducer(initialState, {
+      type: 'ADD_ERROR_MESSAGE',
+      payload: 'Provider list timeout',
+    });
+
+    assert.deepStrictEqual(nextState.errorMessages, ['Provider list timeout']);
+  });
+
+  it('removes a dismissed error toast by index', () => {
+    const seededState = {
+      ...initialState,
+      errorMessages: ['Could not auto-migrate plugin', 'Provider list timeout'],
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'REMOVE_ERROR_MESSAGE',
+      payload: 0,
+    });
+
+    assert.deepStrictEqual(nextState.errorMessages, ['Provider list timeout']);
+  });
+});
+
 describe('hasSystemMessagePatternInText', () => {
   it('should detect square-bracketed system messages in plain text', () => {
     const text = '[analyze-mode]';
@@ -394,6 +419,21 @@ describe('extractMessageTextForCanonical', () => {
   it('should use content if available', () => {
     const message: Message = { role: 'user', content: 'hello' };
     assert.strictEqual(extractMessageTextForCanonical(message), 'hello');
+  });
+
+  it('should prefer structured.message for explicit message response types', () => {
+    const message: Message = {
+      role: 'assistant',
+      content: 'bridge text',
+      structuredOutput: {
+        responseType: 'message',
+        message: 'final structured answer',
+      } as any,
+    };
+    assert.strictEqual(
+      extractMessageTextForCanonical(message),
+      'final structured answer',
+    );
   });
 
   it('should join parts if content is missing', () => {

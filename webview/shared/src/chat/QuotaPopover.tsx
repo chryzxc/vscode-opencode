@@ -184,7 +184,7 @@ export function QuotaPopover() {
                     {toProviderName(platform.platform, platform.title)}
                   </span>
                   {platform.status === 'error' ? (
-                    <Badge variant="destructive" className="text-xs uppercase">
+                    <Badge variant="error" className="text-xs uppercase">
                       error
                     </Badge>
                   ) : platform.status === 'warning' ? (

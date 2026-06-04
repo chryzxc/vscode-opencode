@@ -279,7 +279,8 @@ body {
 
 .oc-history-btn {
   border-radius: 6px;
-  color: var(--oc-text-muted);
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  opacity: 0.85;
   transition:
     background 0.12s ease,
     color 0.12s ease;
@@ -288,6 +289,7 @@ body {
 .oc-history-btn:hover {
   background: var(--oc-accent-soft);
   color: var(--oc-accent);
+  opacity: 1;
 }
 
 /* ── Status Chips ────────────────────────────────────────────────────────── */
@@ -4815,55 +4817,117 @@ body {
 
 .oc-compaction-toggle {
   width: min(720px, calc(100% - 1.5rem));
-  border: 1px solid color-mix(in srgb, var(--oc-border) 92%, var(--oc-accent) 8%);
-  background: color-mix(in srgb, var(--oc-panel) 96%, var(--oc-accent) 4%);
-  border-radius: 999px;
-  padding: 0.45rem 0.9rem;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 80%, var(--oc-accent) 20%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--oc-panel) 94%, var(--oc-accent) 6%) 0%,
+      color-mix(in srgb, var(--oc-panel) 98%, transparent) 100%
+    );
+  border-radius: 18px;
+  padding: 0.72rem 0.9rem;
   display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 0.7rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.85rem;
   align-items: center;
   text-align: left;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 8%, transparent) inset,
+    0 12px 28px color-mix(in srgb, black 20%, transparent);
   transition:
+    transform 140ms ease,
     border-color 140ms ease,
-    background-color 140ms ease;
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.oc-compaction-toggle::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--oc-accent) 16%, transparent) 0%,
+    transparent 42%
+  );
+  opacity: 0.65;
+  pointer-events: none;
 }
 
 .oc-compaction-toggle:hover {
-  border-color: color-mix(in srgb, var(--oc-border) 70%, var(--oc-accent) 30%);
-  background: color-mix(in srgb, var(--oc-panel) 90%, var(--oc-accent) 10%);
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--oc-border) 60%, var(--oc-accent) 40%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--oc-panel) 90%, var(--oc-accent) 10%) 0%,
+      color-mix(in srgb, var(--oc-panel) 96%, transparent) 100%
+    );
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 10%, transparent) inset,
+    0 16px 34px color-mix(in srgb, black 24%, transparent);
+}
+
+.oc-compaction-toggle > * {
+  position: relative;
+  z-index: 1;
+}
+
+.oc-compaction-toggle-icon {
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 72%, var(--oc-accent) 28%);
+  background: color-mix(in srgb, var(--oc-accent) 8%, var(--oc-panel));
+  color: color-mix(in srgb, var(--oc-text) 88%, var(--oc-accent) 12%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, white 4%, transparent) inset;
+}
+
+.oc-compaction-toggle-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.16rem;
 }
 
 .oc-compaction-toggle-summary {
-  font-size: 11px;
-  font-weight: 650;
-  color: color-mix(in srgb, var(--oc-text) 92%, var(--oc-accent));
-  letter-spacing: 0.02em;
+  font-size: 12px;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--oc-text) 94%, var(--oc-accent));
+  letter-spacing: 0.01em;
   min-width: 0;
 }
 
 .oc-compaction-toggle-meta {
   font-size: 10px;
-  color: color-mix(in srgb, var(--oc-text-soft) 86%, transparent);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
+  color: color-mix(in srgb, var(--oc-text-soft) 82%, transparent);
+  letter-spacing: 0.06em;
   white-space: nowrap;
+  text-transform: uppercase;
 }
 
 .oc-compaction-toggle-action {
   font-size: 10px;
-  font-weight: 650;
-  color: color-mix(in srgb, var(--oc-text) 82%, var(--oc-text-soft));
+  font-weight: 700;
+  color: color-mix(in srgb, var(--oc-text) 86%, var(--oc-accent));
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.11em;
   white-space: nowrap;
-  opacity: 0.88;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  padding: 0.36rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 72%, var(--oc-accent) 28%);
+  background: color-mix(in srgb, var(--oc-panel) 88%, var(--oc-accent) 12%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, white 4%, transparent) inset;
 }
 
 .oc-compaction-toggle:hover .oc-compaction-toggle-action {
-  opacity: 0.98;
+  border-color: color-mix(in srgb, var(--oc-border) 58%, var(--oc-accent) 42%);
+  background: color-mix(in srgb, var(--oc-panel) 82%, var(--oc-accent) 18%);
 }
 
 .oc-compaction-divider-wrap {
@@ -4917,14 +4981,17 @@ body {
 
 @media (max-width: 720px) {
   .oc-compaction-toggle {
-    grid-template-columns: 1fr auto;
-    gap: 0.3rem 0.7rem;
-    border-radius: 14px;
-    padding: 0.46rem 0.72rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.55rem 0.7rem;
+    border-radius: 16px;
+    padding: 0.65rem 0.72rem;
   }
 
-  .oc-compaction-toggle-summary {
+  .oc-compaction-toggle-action {
     grid-column: 1 / span 2;
+    width: fit-content;
+    justify-self: start;
+    margin-left: calc(1.85rem + 0.55rem);
   }
 }
 

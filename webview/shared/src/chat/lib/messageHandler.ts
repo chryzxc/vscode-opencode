@@ -481,30 +481,12 @@ function sanitizeReasoningChunk(value: string): string {
   return value;
 }
 
-function looksLikeReasoningPlanningText(value: string): boolean {
-  const normalized = normalizeComparableText(value);
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized.startsWith("let me ") ||
-    normalized.startsWith("i should ") ||
-    normalized.startsWith("i need to ") ||
-    normalized.startsWith("i will ") ||
-    normalized.startsWith("the user wants ") ||
-    normalized.startsWith("the user asked ")
-  );
-}
-
-function looksLikeReasoningTrace(value: string, currentContent: string): boolean {
+function containsThoughtTagReasoning(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) {
     return false;
   }
-  if (/<\s*\/?\s*thought\s*>/i.test(trimmed)) {
-    return true;
-  }
-  return !normalizeComparableText(currentContent) && looksLikeReasoningPlanningText(trimmed);
+  return /<\s*\/?\s*thought\s*>/i.test(trimmed);
 }
 
 function splitMixedReasoningFromContent(
@@ -1299,7 +1281,196 @@ type StructuredOutput = {
     parentMessageId?: string;
     items: StructuredSubagent[];
   };
+  raw?: UnknownRecord;
 };
+
+function buildStructuredOutputLogPreview(value: unknown): {
+  type: string;
+  preview: string;
+  keys?: string[];
+  responseType?: string;
+} {
+  const rec = asRecord(value);
+  const previewSource = rec ?? value;
+  let preview = "";
+  try {
+    preview = JSON.stringify(previewSource).slice(0, 1200);
+  } catch {
+    preview = String(previewSource);
+  }
+
+  return {
+    type: Array.isArray(value) ? "array" : typeof value,
+    preview,
+    keys: rec ? Object.keys(rec) : undefined,
+    responseType: rec
+      ? firstNonEmptyString(rec.responseType, rec.type, rec.kind, rec.category)
+      : undefined,
+  };
+}
+
+function hasMeaningfulStructuredValue(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  if (value && typeof value === "object") {
+    return Object.keys(value as UnknownRecord).length > 0;
+  }
+  return false;
+}
+
+function getStructuredSemanticSnapshot(value: unknown): Record<string, unknown> {
+  const rec = asRecord(value);
+  if (!rec) {
+    return {};
+  }
+
+  const planRec = asRecord(rec.plan);
+  const questionRec = asRecord(rec.question);
+  const topLevelQuestionChoices =
+    (Array.isArray(rec.options) ? rec.options.length : 0) +
+    (Array.isArray(rec.choices) ? rec.choices.length : 0) +
+    (Array.isArray(rec.actions) ? rec.actions.length : 0);
+
+  return {
+    responseType: firstNonEmptyString(rec.responseType, rec.type, rec.kind, rec.category),
+    message: firstNonEmptyString(rec.message, rec.content, rec.text),
+    planFile: firstNonEmptyString(planRec?.file),
+    planContent: firstNonEmptyString(planRec?.content),
+    planFiles: Array.isArray(planRec?.files) ? planRec.files.length : 0,
+    questionType: firstNonEmptyString(questionRec?.type),
+    questionText: firstNonEmptyString(questionRec?.question, rec.question),
+    questionOptions:
+      (Array.isArray(questionRec?.options) ? questionRec.options.length : 0) +
+      (Array.isArray(questionRec?.choices) ? questionRec.choices.length : 0) +
+      (Array.isArray(questionRec?.actions) ? questionRec.actions.length : 0) +
+      topLevelQuestionChoices,
+    interactiveEvents: Array.isArray(rec.interactiveEvents) ? rec.interactiveEvents.length : 0,
+    progressUpdates: Array.isArray(rec.progressUpdates) ? rec.progressUpdates.length : 0,
+    reasoning: Array.isArray(rec.reasoning) ? rec.reasoning.length : 0,
+    fileChanges: Array.isArray(rec.fileChanges) ? rec.fileChanges.length : 0,
+    subagents: Array.isArray(rec.subagents) ? rec.subagents.length : 0,
+    subagentsDeltaItems: Array.isArray(asRecord(rec.subagentsDelta)?.items)
+      ? (asRecord(rec.subagentsDelta)?.items as unknown[]).length
+      : Array.isArray(asRecord(rec.subagents_delta)?.items)
+        ? (asRecord(rec.subagents_delta)?.items as unknown[]).length
+        : 0,
+  };
+}
+
+function detectStructuredFieldDrops(
+  rawRecord: UnknownRecord,
+  processedRecord: UnknownRecord,
+): {
+  droppedSemanticFields: string[];
+  droppedTopLevelKeys: string[];
+} {
+  const rawSnapshot = getStructuredSemanticSnapshot(rawRecord);
+  const processedSnapshot = getStructuredSemanticSnapshot(processedRecord);
+  const droppedSemanticFields = Object.keys(rawSnapshot).filter((key) => {
+    const rawValue = rawSnapshot[key];
+    const processedValue = processedSnapshot[key];
+    return hasMeaningfulStructuredValue(rawValue) && !hasMeaningfulStructuredValue(processedValue);
+  });
+
+  const ignoredRawKeys = new Set([
+    "raw",
+    "type",
+    "kind",
+    "category",
+    "content",
+    "text",
+    "options",
+    "choices",
+    "actions",
+    "allowCustomInput",
+    "multiSelect",
+  ]);
+  const droppedTopLevelKeys = Object.keys(rawRecord).filter((key) => {
+    if (ignoredRawKeys.has(key)) {
+      return false;
+    }
+    return hasMeaningfulStructuredValue(rawRecord[key]) && !(key in processedRecord);
+  });
+
+  return {
+    droppedSemanticFields,
+    droppedTopLevelKeys,
+  };
+}
+
+function logStructuredOutputValidationFailureComparison(params: {
+  rawInput: unknown;
+  rawRecord: UnknownRecord;
+  sanitizedRecord: UnknownRecord;
+  validationErrors: string[];
+}): void {
+  webviewLogger.info("Structured output validation raw candidates", {
+    validationErrors: params.validationErrors,
+    rawInput: buildStructuredOutputLogPreview(params.rawInput),
+    rawRecord: buildStructuredOutputLogPreview(params.rawRecord),
+  });
+
+  webviewLogger.info("Structured output validation processed records", {
+    validationErrors: params.validationErrors,
+    sanitizedRecord: buildStructuredOutputLogPreview(params.sanitizedRecord),
+  });
+}
+
+function warnOnStructuredFieldDrop(
+  rawRecord: UnknownRecord,
+  processedRecord: UnknownRecord,
+  context: {
+    stage: "sanitized" | "normalized" | "salvaged";
+    validationErrors?: string[];
+  } = { stage: "normalized" },
+): void {
+  const dropReport = detectStructuredFieldDrops(rawRecord, processedRecord);
+  if (
+    dropReport.droppedSemanticFields.length === 0 &&
+    dropReport.droppedTopLevelKeys.length === 0
+  ) {
+    return;
+  }
+
+  webviewLogger.warn("Structured output validation failed", {
+    errors: context.validationErrors?.length
+      ? context.validationErrors
+      : ["structured payload lost fields during normalization"],
+    reason: "field-drop-detected",
+    stage: context.stage,
+    droppedSemanticFields: dropReport.droppedSemanticFields,
+    droppedTopLevelKeys: dropReport.droppedTopLevelKeys,
+    inputPreview: buildStructuredOutputLogPreview(rawRecord).preview,
+    sanitizedPreview: buildStructuredOutputLogPreview(processedRecord).preview,
+    hasResponseType: typeof rawRecord.responseType !== "undefined",
+    responseTypeValue: rawRecord.responseType,
+    hasMessage: typeof rawRecord.message !== "undefined",
+    hasPlan: typeof rawRecord.plan !== "undefined",
+    hasQuestion: typeof rawRecord.question !== "undefined",
+    keys: Object.keys(rawRecord),
+  });
+}
+
+function preserveStructuredOutputRawFields(
+  rawRecord: UnknownRecord,
+  normalizedRecord: StructuredOutput,
+): StructuredOutput {
+  return {
+    ...(rawRecord as StructuredOutput),
+    ...normalizedRecord,
+    raw: rawRecord,
+  };
+}
 
 function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined {
   let candidate: unknown = value;
@@ -1334,26 +1505,23 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   // remain visible. Keep this ordering unless the validator itself is redesigned to accept
   // all legacy/development aliases directly.
   const sanitizedRec = sanitizeStructuredOutput(rec);
+  warnOnStructuredFieldDrop(rec, sanitizedRec, { stage: "sanitized" });
   const validation = validateStructuredOutput(sanitizedRec);
   if (!validation.valid) {
-    // Enhanced logging for debugging model-specific validation failures
-    const inputPreview = JSON.stringify(rec).slice(0, 500);
-    const sanitizedPreview = JSON.stringify(sanitizedRec).slice(0, 500);
-    webviewLogger.warn("Structured output validation failed", {
-      errors: validation.errors,
-      inputPreview: inputPreview.length < 500 ? inputPreview : inputPreview + "...",
-      sanitizedPreview:
-        sanitizedPreview.length < 500
-          ? sanitizedPreview
-          : sanitizedPreview + "...",
-      hasResponseType: typeof rec.responseType !== 'undefined',
-      responseTypeValue: rec.responseType,
-      hasMessage: typeof rec.message !== 'undefined',
-      hasPlan: typeof rec.plan !== 'undefined',
-      hasQuestion: typeof rec.question !== 'undefined',
-      keys: Object.keys(rec),
+    logStructuredOutputValidationFailureComparison({
+      rawInput: value,
+      rawRecord: rec,
+      sanitizedRecord: sanitizedRec,
+      validationErrors: validation.errors,
     });
-    return undefined;
+    const salvaged = salvageStructuredOutput(rec);
+    if (salvaged) {
+      warnOnStructuredFieldDrop(rec, salvaged as UnknownRecord, {
+        stage: "salvaged",
+        validationErrors: validation.errors,
+      });
+    }
+    return salvaged ? preserveStructuredOutputRawFields(rec, salvaged) : undefined;
   }
   const rawResponseType =
     asString(sanitizedRec.responseType) || asString(rec.type) || asString(rec.kind) || undefined;
@@ -2029,7 +2197,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     return undefined;
   }
 
-  return {
+  const normalizedStructured = {
     responseType,
     message: messageText,
     plan: hasNormalizedPlan ? normalizedPlan : undefined,
@@ -2040,7 +2208,11 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     question: normalizedQuestion as StructuredOutput['question'] | undefined,
     subagents: subagents.length > 0 ? subagents : undefined,
     subagentsDelta
-  };
+  } satisfies StructuredOutput;
+  warnOnStructuredFieldDrop(rec, normalizedStructured as UnknownRecord, {
+    stage: "normalized",
+  });
+  return preserveStructuredOutputRawFields(rec, normalizedStructured);
 }
 
 function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
@@ -2085,6 +2257,38 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
 
   const normalizedResponseType =
     responseType || (hasPlan ? "implementation_plan" : undefined);
+
+  const questionRec = asRecord(rec.question);
+  const topLevelOptions = Array.isArray(rec.options) ? rec.options : undefined;
+  const topLevelChoices = Array.isArray(rec.choices) ? rec.choices : undefined;
+  const topLevelActions = Array.isArray(rec.actions) ? rec.actions : undefined;
+  const rawInteractiveEvents = Array.isArray(rec.interactiveEvents)
+    ? rec.interactiveEvents
+    : undefined;
+  const hasQuestionPayload =
+    !!questionRec ||
+    Array.isArray(topLevelOptions) ||
+    Array.isArray(topLevelChoices) ||
+    Array.isArray(topLevelActions) ||
+    Array.isArray(rawInteractiveEvents);
+  const normalizedQuestion =
+    questionRec || hasQuestionPayload
+      ? {
+          ...(questionRec ?? {}),
+          ...(typeof (questionRec ?? {}).type === "undefined" ? { type: "question" } : {}),
+          ...(typeof (questionRec ?? {}).options === "undefined" && topLevelOptions
+            ? { options: topLevelOptions }
+            : {}),
+          ...(typeof (questionRec ?? {}).choices === "undefined" && topLevelChoices
+            ? { choices: topLevelChoices }
+            : {}),
+          ...(typeof (questionRec ?? {}).actions === "undefined" && topLevelActions
+            ? { actions: topLevelActions }
+            : {}),
+        }
+      : undefined;
+  const effectiveResponseType =
+    normalizedResponseType || (hasQuestionPayload ? "question" : undefined);
 
   const fileChangesRaw = rec.fileChanges;
   const fileChanges = Array.isArray(fileChangesRaw)
@@ -2142,16 +2346,25 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
         .filter((item): item is StructuredFileChange => Boolean(item))
     : [];
 
-  if (!normalizedResponseType && !message && !hasPlan && fileChanges.length === 0) {
+  if (
+    !effectiveResponseType &&
+    !message &&
+    !hasPlan &&
+    fileChanges.length === 0 &&
+    !normalizedQuestion &&
+    !rawInteractiveEvents
+  ) {
     return undefined;
   }
 
-  return {
-    responseType: normalizedResponseType,
+  return preserveStructuredOutputRawFields(rec, {
+    responseType: effectiveResponseType,
     message,
     plan: hasPlan ? plan : undefined,
     fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
-  };
+    question: normalizedQuestion as StructuredOutput["question"] | undefined,
+    interactiveEvents: rawInteractiveEvents as StructuredOutput["interactiveEvents"] | undefined,
+  });
 }
 
 function normalizeStructuredOutputWithFallback(value: unknown): StructuredOutput | undefined {
@@ -2979,7 +3192,7 @@ function shouldOverrideStreamingContentWithInteractivePrompt(
     return true;
   }
 
-  if (looksLikeReasoningTrace(trimmed, "")) {
+  if (containsThoughtTagReasoning(trimmed)) {
     return true;
   }
 
@@ -3329,21 +3542,6 @@ function collectReasoningFingerprintsForHydration(message: Message): Set<string>
   return fingerprints;
 }
 
-function looksLikeReasoningPlanningTextForHydration(value: string): boolean {
-  const normalized = normalizeComparableText(value);
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized.startsWith("let me ") ||
-    normalized.startsWith("i should ") ||
-    normalized.startsWith("i need to ") ||
-    normalized.startsWith("i will ") ||
-    normalized.startsWith("the user wants ") ||
-    normalized.startsWith("the user asked ")
-  );
-}
-
 function isReasoningLeakCandidateForHydration(
   value: string,
   message?: Message,
@@ -3376,14 +3574,17 @@ function isReasoningLeakCandidateForHydration(
     }
   }
 
-  return reasoningFingerprints.size > 0 &&
-    looksLikeReasoningPlanningTextForHydration(value);
+  return false;
 }
 
 function extractRenderableAssistantTextForHydration(message: Message): string {
   const rec = asRecord(message);
   if (!rec) {
     return "";
+  }
+  const canonicalStructuredMessage = getCanonicalStructuredMessageText(message);
+  if (canonicalStructuredMessage) {
+    return canonicalStructuredMessage;
   }
 
   if (typeof rec.content === "string" && rec.content.trim()) {
@@ -3452,6 +3653,22 @@ function summaryText(info: unknown): string {
   return title || body;
 }
 
+function getCanonicalStructuredMessageText(message: Message | UnknownRecord): string {
+  const rec = asRecord(message);
+  if (!rec) {
+    return "";
+  }
+  const structured = resolveStructuredOutputFromMessageRecord(rec);
+  const responseType = firstNonEmptyString(
+    structured?.responseType,
+    asString(rec.responseType),
+  )?.toLowerCase();
+  if (responseType !== "message") {
+    return "";
+  }
+  return asString(structured?.message).trim();
+}
+
 function latestUserMessageText(state: AppState): string {
   for (let i = state.messages.length - 1; i >= 0; i -= 1) {
     const msg = state.messages[i];
@@ -3511,7 +3728,7 @@ function shouldPreferStreamingContent(
   if (splitMixedReasoningFromContent(streamingContent)) {
     return false;
   }
-  if (looksLikeReasoningTrace(streamingContent, "")) {
+  if (containsThoughtTagReasoning(streamingContent)) {
     return false;
   }
 
@@ -3764,11 +3981,14 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     }
     const textLike =
       asRichString(rec.text) || asRichString(rec.content) || asRichString(rec.delta);
-    if (
-      !textLike ||
-      !hasStreamingReasoningSignal ||
-      !looksLikeReasoningPlanningText(textLike)
-    ) {
+    if (!textLike || !hasStreamingReasoningSignal) {
+      return part;
+    }
+    const candidateNorm = normalizeComparableText(textLike);
+    const matchesKnownReasoning = detachedReasoningChunks.some(
+      (chunk) => normalizeComparableText(chunk) === candidateNorm,
+    );
+    if (!matchesKnownReasoning) {
       return part;
     }
     const detached = sanitizeReasoningChunk(textLike).trim();
@@ -3815,8 +4035,14 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     normalizedStructuredOutput?.responseType,
     asString(rec.responseType),
   )?.toLowerCase();
+  // Final SDK structured output is the canonical assistant body for explicit
+  // structured message-like turns. Text parts can contain transitional bridge
+  // text ("delivering summary directly", etc.) while the structured payload
+  // carries the actual user-facing response.
   const shouldPreferStructuredMessage =
-    provisionalResponseType === "implementation_plan" && structuredMessage.length > 0;
+    (provisionalResponseType === "implementation_plan" ||
+      provisionalResponseType === "message") &&
+    structuredMessage.length > 0;
   const hasParts = Array.isArray(parts) && parts.length > 0;
   // Structured-first rule: when provider parts exist, non-reasoning text parts
   // are authoritative for assistant body rendering.
@@ -3911,7 +4137,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
       if (streamTokens.length < 5 || reasoningTokens.length < 5) continue;
       const overlap = streamTokens.filter((t) => reasoningTokens.includes(t)).length;
       const ratio = overlap / streamTokens.length;
-      if (ratio > 0.6) return true;
+      if (ratio > 0.45) return true;
     }
     return false;
   })();
@@ -4098,7 +4324,7 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
   ).trim();
   if (
     streamingReasoningLeak &&
-    (looksLikeReasoningTrace(streamingReasoningLeak, "") || !!streamingMixed) &&
+    (containsThoughtTagReasoning(streamingReasoningLeak) || !!streamingMixed) &&
     !shouldPreferStreamingContent(content || "", streamingReasoningLeak)
   ) {
     const leakNorm = normalizeComparableText(streamingReasoningLeak);
@@ -5778,6 +6004,10 @@ function extractMessageText(message: Message): string {
   if (!rec) {
     return '';
   }
+  const canonicalStructuredMessage = getCanonicalStructuredMessageText(message);
+  if (canonicalStructuredMessage) {
+    return canonicalStructuredMessage;
+  }
 
   if (typeof rec.content === 'string' && rec.content.trim()) {
     return rec.content;
@@ -5980,12 +6210,14 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   const seenEdits = new Set<string>();
 
   let latestText = "";
+  let latestTextScore = 0;
   let latestTextPart: MessagePart | undefined;
   let latestInteractiveEvents: InteractiveEvent[] | undefined;
   let latestPlan = base.plan;
   const subagentsByMessageId = new Map<string, Message["subagents"]>();
   let latestSubagentsWithoutMessageId: Message["subagents"] | undefined;
   let latestError = asString((base as unknown as UnknownRecord).error);
+  let latestRawResponse: unknown = (base as unknown as UnknownRecord).rawResponse;
   let latestStructuredOutput = asRecord(
     (base as unknown as UnknownRecord).structuredOutput,
   );
@@ -6090,13 +6322,19 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
 
     const content = extractRenderableAssistantTextForHydration(message).trim();
     if (content.length > 0) {
-      latestText = content;
-      latestTextPart = Array.isArray(message.parts)
-        ? message.parts.find((part) => {
-            const rec = asRecord(part);
-            return !!rec && isRenderableAssistantTextPart(rec);
-          })
-        : undefined;
+      const structuredMessage = getCanonicalStructuredMessageText(message);
+      const candidateTextScore =
+        content.length + (structuredMessage ? 100000 : 0);
+      if (candidateTextScore >= latestTextScore) {
+        latestTextScore = candidateTextScore;
+        latestText = content;
+        latestTextPart = Array.isArray(message.parts)
+          ? message.parts.find((part) => {
+              const rec = asRecord(part);
+              return !!rec && isRenderableAssistantTextPart(rec);
+            })
+          : undefined;
+      }
     }
 
     if (
@@ -6118,6 +6356,13 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
     const errorText = asString((message as unknown as UnknownRecord).error);
     if (errorText) {
       latestError = errorText;
+    }
+    if (typeof message.rawResponse === "string") {
+      if (message.rawResponse.trim().length > 0) {
+        latestRawResponse = message.rawResponse;
+      }
+    } else if (typeof message.rawResponse !== "undefined") {
+      latestRawResponse = message.rawResponse;
     }
     const structured = asRecord(
       (message as unknown as UnknownRecord).structuredOutput,
@@ -6226,6 +6471,9 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   }
   if (latestStructuredOutput) {
     (base as unknown as UnknownRecord).structuredOutput = latestStructuredOutput;
+  }
+  if (typeof latestRawResponse !== "undefined") {
+    (base as unknown as UnknownRecord).rawResponse = latestRawResponse;
   }
 
   if (canonicalMessageId) {
@@ -7741,6 +7989,7 @@ function handleStreamEvent(
           questionEvents,
         );
         if (hasBlockingInteractiveEvents(questionEvents)) {
+          flushVisibleStreamingSnapshotToMessages(dispatch, getState);
           dispatch({ type: "FINISH_STREAMING" });
           dispatch({ type: "SET_PROCESSING", payload: false });
         }
@@ -7910,11 +8159,29 @@ function handleStreamEvent(
         }
       }
 
+      // Guard: parts with embedded reasoning fields (type is "text" but carries
+      // reasoning/thinking/thought data). Route the reasoning content to the
+      // reasoning pipeline so it stays out of the visible assistant body.
+      const hasEmbeddedReasoning =
+        !isReasoning &&
+        !hasExplicitReasoningOnlyChunk &&
+        reasoningChunk.trim().length > 0;
+      if (hasEmbeddedReasoning) {
+        const sanitized = sanitizeReasoningChunk(reasoningChunk);
+        if (sanitized) {
+          dispatch({
+            type: "UPDATE_STREAMING_REASONING",
+            payload: { reasoning: sanitized, append: true },
+          });
+        }
+      }
+
       const isReasoningPart =
         partType === 'reasoning' ||
         structuredKind === 'thinking' ||
         effectiveInReasoningPart ||
-        hasExplicitReasoningOnlyChunk;
+        hasExplicitReasoningOnlyChunk ||
+        hasEmbeddedReasoning;
 
       if (isReasoningPart) {
         webviewLogger.debug('Processing reasoning part - routing to stepper only', { partType, structuredKind, isInReasoningPart, reasoningLength: (reasoningChunk || textChunk || '').length });
@@ -7948,7 +8215,7 @@ function handleStreamEvent(
         if (canAppendMainContent) {
           let candidateChunk = textChunk;
 
-          const rawReasoningLike = looksLikeReasoningTrace(candidateChunk, streamingState?.content || "");
+          const rawReasoningLike = containsThoughtTagReasoning(candidateChunk);
           const mixedChunk = splitMixedReasoningFromContent(candidateChunk);
           if (rawReasoningLike && !mixedChunk) {
             const reasoningLeak = sanitizeReasoningChunk(candidateChunk);
@@ -7973,7 +8240,7 @@ function handleStreamEvent(
             candidateChunk = mixedChunk.content;
           }
 
-          if (looksLikeReasoningTrace(candidateChunk, streamingState?.content || "")) {
+          if (containsThoughtTagReasoning(candidateChunk)) {
             const reasoningLeak = sanitizeReasoningChunk(candidateChunk);
             if (reasoningLeak) {
               dispatch({
@@ -8201,6 +8468,7 @@ function handleStreamEvent(
           );
 
           if (hasBlockingInteractiveEvents(toolInteractiveEvents)) {
+            flushVisibleStreamingSnapshotToMessages(dispatch, getState);
             dispatch({ type: "FINISH_STREAMING" });
             dispatch({ type: "SET_PROCESSING", payload: false });
             break;
@@ -8257,6 +8525,7 @@ function handleStreamEvent(
       }
 
       if (hasBlockingInteractive) {
+        flushVisibleStreamingSnapshotToMessages(dispatch, getState);
         dispatch({ type: "FINISH_STREAMING" });
         dispatch({ type: "SET_PROCESSING", payload: false });
         break;
@@ -8313,6 +8582,7 @@ function handleStreamEvent(
           liveStructuredInteractiveEvents,
         );
         if (liveHasBlockingInteractive && !finish) {
+          flushVisibleStreamingSnapshotToMessages(dispatch, getState);
           dispatch({ type: "FINISH_STREAMING" });
           dispatch({ type: "SET_PROCESSING", payload: false });
           break;
@@ -8365,7 +8635,7 @@ function handleStreamEvent(
           structuredOutput.message;
         if (structuredMessage) {
           const streamingState = getState().streaming;
-          const rawReasoningLike = looksLikeReasoningTrace(structuredMessage, streamingState?.content || "");
+          const rawReasoningLike = containsThoughtTagReasoning(structuredMessage);
           const mixedMessage = splitMixedReasoningFromContent(
             structuredMessage,
           );
@@ -8389,7 +8659,7 @@ function handleStreamEvent(
                 payload: { reasoning: reasoningLeak, append: true }
               });
             }
-          } else if (looksLikeReasoningTrace(messageText, streamingState?.content || "")) {
+          } else if (containsThoughtTagReasoning(messageText)) {
             const reasoningLeak = sanitizeReasoningChunk(messageText);
             if (reasoningLeak) {
               dispatch({
@@ -8625,7 +8895,7 @@ function handleStreamEvent(
         if (!cleanedChunk) {
           break;
         }
-        if (looksLikeReasoningTrace(cleanedChunk, streamingState?.content || "")) {
+        if (containsThoughtTagReasoning(cleanedChunk)) {
           const reasoningLeak = sanitizeReasoningChunk(cleanedChunk);
           if (reasoningLeak) {
             dispatch({
@@ -8866,7 +9136,7 @@ function handleStreamEvent(
         }
       } else if (structuredKind === "message" && structuredText) {
         const streamingState = getState().streaming;
-        const rawReasoningLike = looksLikeReasoningTrace(structuredText, streamingState?.content || "");
+        const rawReasoningLike = containsThoughtTagReasoning(structuredText);
         let messageText = structuredText;
         const mixedMessage = splitMixedReasoningFromContent(messageText);
         if (mixedMessage) {
@@ -8891,7 +9161,7 @@ function handleStreamEvent(
           }
           break;
         }
-        if (looksLikeReasoningTrace(messageText, streamingState?.content || "")) {
+        if (containsThoughtTagReasoning(messageText)) {
           const reasoningLeak = sanitizeReasoningChunk(messageText);
           if (reasoningLeak) {
             dispatch({
@@ -8940,6 +9210,7 @@ function handleStreamEvent(
       }
 
       if (hasBlockingInteractive) {
+        flushVisibleStreamingSnapshotToMessages(dispatch, getState);
         dispatch({ type: "FINISH_STREAMING" });
         dispatch({ type: "SET_PROCESSING", payload: false });
         break;
@@ -9217,10 +9488,17 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     if (!text) {
       return false;
     }
-    return (
+    if (
       /(?:^|\n)\s*question\s+\d+\s*:/i.test(text) &&
       /(?:^|\n)\s*answer\s*:/i.test(text)
-    );
+    ) {
+      return true;
+    }
+    if (containsInteractiveMarker(text)) {
+      return true;
+    }
+    const pendingInteractive = latestPendingInteractiveEvents(getState().messages || []);
+    return pendingInteractive.length > 0 && text.trim().length > 0;
   };
 
   const trackActiveSubagentParentIds = (
@@ -10571,6 +10849,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           });
           break;
         }
+        case "errorToast": {
+          const toastMessage = asString(data.message);
+          if (toastMessage) {
+            dispatch({ type: "ADD_ERROR_MESSAGE", payload: toastMessage });
+          }
+          break;
+        }
         case "error": {
           const errorMsg = asString(data.message, "Unknown error");
           const stateBeforeError = getState();
@@ -10598,7 +10883,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const streamHasContent = currentStreaming &&
             currentStreaming.content &&
             currentStreaming.content.trim().length > 0 &&
-            !looksLikeReasoningTrace(currentStreaming.content, "");
+            !containsThoughtTagReasoning(currentStreaming.content);
           if (isTimeoutError && streamHasContent) {
             latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
             break;
@@ -10618,7 +10903,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const rawContent = currentStreaming.content ?? "";
             const timeoutLikeError = isLikelyInteractiveAwaitTimeout(errorMsg);
             const contentIsReasoningMonologue =
-              looksLikeReasoningTrace(rawContent, "");
+              containsThoughtTagReasoning(rawContent);
             const suppressLowSignalTimeoutFragment =
               timeoutLikeError && isLowSignalTimeoutFragment(rawContent);
             const partialMessage: Message = {
