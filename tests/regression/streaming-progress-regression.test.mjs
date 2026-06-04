@@ -141,8 +141,8 @@ test('stream content updater distinguishes deltas from snapshots', () => {
 test('stream handler reclassifies reasoning-like leaked text chunks into reasoning lane', () => {
   assert.match(
     messageHandlerSource,
-    /function looksLikeReasoningTrace\(/,
-    'message handler should define a heuristic for reasoning-like leaked stream text',
+    /function containsThoughtTagReasoning\(/,
+    'message handler should define explicit thought-tag reasoning detection',
   );
   const streamBody = extractFunctionBody(
     messageHandlerSource,
@@ -151,8 +151,8 @@ test('stream handler reclassifies reasoning-like leaked text chunks into reasoni
   
   assert.match(
     streamBody,
-    /looksLikeReasoningTrace\(.*?,.*?\)[\s\S]*UPDATE_STREAMING_REASONING/s,
-    'message.part.updated content branch should redirect reasoning-like text chunks to reasoning events',
+    /containsThoughtTagReasoning\(.*?\)[\s\S]*UPDATE_STREAMING_REASONING/s,
+    'message.part.updated content branch should redirect explicitly tagged reasoning text chunks to reasoning events',
   );
   assert.match(
     messageHandlerSource,
@@ -175,11 +175,11 @@ test('stream handler reclassifies reasoning-like leaked text chunks into reasoni
     'deferred structured-message chunks should be routed to reasoning events during streaming',
   );
   
-  // Check for regex-based thought tag detection in the heuristic function
+  // Check for regex-based thought tag detection in the explicit marker function
   assert.match(
     messageHandlerSource,
-    /function looksLikeReasoningTrace[\s\S]*?\.test\(trimmed\)/,
-    'reasoning leak heuristics should detect thinking tags via regex test',
+    /function containsThoughtTagReasoning[\s\S]*?\.test\(trimmed\)/,
+    'reasoning detection should detect thinking tags via regex test',
   );
 });
 

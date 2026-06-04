@@ -73,25 +73,55 @@ test("splitMixedReasoningFromContent detaches instruction-check reasoning leaks"
     "I am doing well. Looking at my instructions: Be concise. No flattery. No status updates. Match user's style. I need to use the StructuredOutput tool for my final response.";
   const result = splitMixedReasoningFromContent(instructionLeak);
 
-  // The current implementation doesn't detect this pattern - it returns null
-  // This test documents the current behavior
-  assert.equal(result, null, "instruction-check leak pattern not currently detected");
+  // splitMixedReasoningFromContent only handles <thought>...</thought> tags.
+  // Plain text is no longer heuristically classified as reasoning.
+  assert.equal(result, null, "instruction-check leak without <thought> tags not handled by this function");
 });
 
-test("splitMixedReasoningFromContent treats user-analysis preambles as reasoning-only", () => {
+test("shouldPreferStreamingContent preserves plain-text instruction discussion without explicit tags", () => {
+  const finalContent = "I'm doing well!";
+  const instructionLeak =
+    "I am doing well. Looking at my instructions: Be concise. No flattery. No status updates. Match user's style.";
+  assert.equal(
+    shouldPreferStreamingContent(finalContent, instructionLeak),
+    true,
+    "plain text should not be treated as reasoning without explicit SDK reasoning markers",
+  );
+});
+
+test("shouldPreferStreamingContent preserves plain-text 'looking at' preambles without explicit tags", () => {
+  const finalContent = "Here's the fix.";
+  const reasoningLeak =
+    "Looking at the codebase, I can see the issue is in the parser. Here's the fix.";
+  assert.equal(
+    shouldPreferStreamingContent(finalContent, reasoningLeak),
+    true,
+    "plain text should not be treated as reasoning based on wording alone",
+  );
+});
+
+test("shouldPreferStreamingContent preserves plain-text instruction references without explicit tags", () => {
+  const finalContent = "I'll help with that.";
+  const reasoningLeak =
+    "The instructions say to be concise and avoid flattery. I'll help with that.";
+
+  assert.equal(
+    shouldPreferStreamingContent(finalContent, reasoningLeak),
+    true,
+    "plain text should not be filtered just because it references instructions",
+  );
+});
+
+test("shouldPreferStreamingContent preserves plain-text user analysis without explicit tags", () => {
+  const finalContent = "Hey!";
   const userAnalysisLeak =
     'The user is just saying "hey" again. This is a simple greeting. I should respond briefly and directly.';
-  const result = splitMixedReasoningFromContent(userAnalysisLeak);
 
-  // The function does detect this pattern, but may split differently than expected
-  // Update test to match actual behavior
-  if (result) {
-    // Result is being split, verify it has both parts
-    assert.ok(result.content !== undefined || result.reasoning !== undefined);
-  } else {
-    // If not detected, that's also acceptable behavior
-    assert.equal(result, null);
-  }
+  assert.equal(
+    shouldPreferStreamingContent(finalContent, userAnalysisLeak),
+    true,
+    "plain text should not be classified as reasoning based on user-analysis phrasing",
+  );
 });
 
 test("splitMixedReasoningFromContent does not split clean assistant content", () => {
@@ -113,7 +143,7 @@ test("shouldPreferStreamingContent prefers richer stream snapshots unless explic
   );
 });
 
-test("shouldPreferStreamingContent rejects pure reasoning/policy traces", () => {
+test("shouldPreferStreamingContent still rejects unrelated plain-text snapshots", () => {
   const finalContent = "Hey! How can I help?";
   const reasoningLeak =
     'The user just said "hey". According to the instructions, no flattery and be concise. I should respond directly.';
@@ -121,7 +151,7 @@ test("shouldPreferStreamingContent rejects pure reasoning/policy traces", () => 
   assert.equal(
     shouldPreferStreamingContent(finalContent, reasoningLeak),
     false,
-    "policy-style reasoning traces must never override clean assistant content",
+    "unrelated plain-text snapshots should not override the final assistant answer",
   );
 });
 

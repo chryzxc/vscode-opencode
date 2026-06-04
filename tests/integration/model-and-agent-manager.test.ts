@@ -123,6 +123,7 @@ type ServerManagerStub = {
 type CreateManagerOptions = {
   selectedModel?: { providerID: string; modelID: string; providerName?: string };
   sessionSettings?: Record<string, SessionSettings>;
+  cachedModelList?: ChatModelOption[];
   client?: OpencodeClientStub;
   ensureRunning?: () => Promise<OpencodeClientStub>;
 };
@@ -136,6 +137,9 @@ function createManager(options: CreateManagerOptions = {}) {
   if (options.sessionSettings) {
     void globalState.update("sessionSettings", options.sessionSettings);
   }
+  if (options.cachedModelList) {
+    void globalState.update("cachedModelList", options.cachedModelList);
+  }
 
   const logger = createCompatibleLogger();
   const messages = captureMessages();
@@ -145,6 +149,7 @@ function createManager(options: CreateManagerOptions = {}) {
   };
   const modelCapabilitiesService = {
     getCapabilities: async () => null,
+    rememberCapabilities: () => {},
   } as unknown as ConstructorParameters<typeof ModelAndAgentManager>[2];
 
   const manager = new ModelAndAgentManager(
@@ -442,6 +447,13 @@ describe("ModelAndAgentManager", () => {
             },
           }),
         },
+        config: {
+          providers: async () => ({
+            data: {
+              providers: [{ id: "anthropic" }, { id: "openai" }],
+            },
+          }),
+        },
       });
       const { manager, messages } = createManager({
         selectedModel: {
@@ -461,6 +473,8 @@ describe("ModelAndAgentManager", () => {
           name: "Claude Sonnet",
           providerName: "Anthropic",
           contextLimit: 200000,
+          reasoning: false,
+          variants: [],
         },
         {
           providerID: "anthropic",
@@ -468,6 +482,8 @@ describe("ModelAndAgentManager", () => {
           name: "claude-haiku",
           providerName: "Anthropic",
           contextLimit: undefined,
+          reasoning: false,
+          variants: [],
         },
         {
           providerID: "openai",
@@ -475,6 +491,8 @@ describe("ModelAndAgentManager", () => {
           name: "gpt-4.1",
           providerName: "openai",
           contextLimit: undefined,
+          reasoning: false,
+          variants: [],
         },
       ]);
       assert.deepEqual(manager.getAvailableModels(), models);
@@ -486,6 +504,76 @@ describe("ModelAndAgentManager", () => {
           modelID: "claude-sonnet",
           providerName: "Anthropic",
         },
+        configuredProviders: ["anthropic", "openai"],
+      });
+    });
+
+    it("accepts alternate provider payload shapes and deduplicates repeated model ids", async () => {
+      const client = createOpencodeClientStub({
+        provider: {
+          list: async () => ({
+            data: {
+              providers: [
+                {
+                  id: "openai",
+                  name: "OpenAI",
+                  models: {
+                    "gpt-5.4": {
+                      name: "GPT-5.4",
+                      reasoning: true,
+                      variants: {
+                        high: { disabled: false },
+                        low: { disabled: false },
+                      },
+                    },
+                  },
+                },
+                {
+                  id: "openai",
+                  name: "OpenAI",
+                  models: {
+                    "gpt-5.4": {
+                      name: "GPT-5.4 duplicate",
+                    },
+                  },
+                },
+              ],
+              connected: ["openai"],
+            },
+          }),
+        },
+      });
+      const { manager, messages } = createManager({
+        selectedModel: {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          providerName: "OpenAI",
+        },
+        client,
+      });
+
+      const models = await manager.handleGetModels();
+
+      assert.deepEqual(models, [
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          name: "GPT-5.4",
+          providerName: "OpenAI",
+          contextLimit: undefined,
+          reasoning: true,
+          variants: ["high", "low"],
+        },
+      ]);
+      assert.deepEqual(messages.getLastMessage(), {
+        type: "modelsList",
+        models,
+        selectedModel: {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          providerName: "OpenAI",
+        },
+        configuredProviders: ["openai"],
       });
     });
 
@@ -533,6 +621,8 @@ describe("ModelAndAgentManager", () => {
           name: "Claude Sonnet",
           providerName: "Anthropic",
           contextLimit: undefined,
+          reasoning: false,
+          variants: [],
         },
       ];
       let requestCount = 0;
@@ -572,6 +662,60 @@ describe("ModelAndAgentManager", () => {
       assert.deepEqual(await manager.handleGetModels(), successfulModels);
       assert.deepEqual(await manager.handleGetModels(), successfulModels);
       assert.deepEqual(manager.getAvailableModels(), successfulModels);
+    });
+
+    it("persists the last successful full model list for later fallback", async () => {
+      const successfulModels: ChatModelOption[] = [
+        {
+          providerID: "anthropic",
+          modelID: "claude-sonnet",
+          name: "Claude Sonnet",
+          providerName: "Anthropic",
+          contextLimit: undefined,
+          reasoning: false,
+          variants: [],
+        },
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          name: "gpt-5.4",
+          providerName: "OpenAI",
+          contextLimit: undefined,
+          reasoning: true,
+          variants: ["high"],
+        },
+      ];
+      const client = createOpencodeClientStub({
+        provider: {
+          list: async () => ({
+            data: {
+              all: [
+                {
+                  id: "anthropic",
+                  name: "Anthropic",
+                  models: {
+                    "claude-sonnet": { name: "Claude Sonnet" },
+                  },
+                },
+                {
+                  id: "openai",
+                  name: "OpenAI",
+                  models: {
+                    "gpt-5.4": {
+                      capabilities: { reasoning: true },
+                      variants: { high: {} },
+                    },
+                  },
+                },
+              ],
+            },
+          }),
+        },
+      });
+      const { manager, globalState } = createManager({ client });
+
+      assert.deepEqual(await manager.handleGetModels(), successfulModels);
+      assert.deepEqual(globalState.get("cachedModelList"), successfulModels);
     });
 
     it("falls back immediately when provider listing times out", async () => {
@@ -617,6 +761,77 @@ describe("ModelAndAgentManager", () => {
             providerName: "OpenAI",
           },
         ]);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+      }
+    });
+
+    it("restores a persisted full model list when provider listing times out", async () => {
+      const cachedModelList: ChatModelOption[] = [
+        {
+          providerID: "anthropic",
+          modelID: "claude-sonnet",
+          name: "Claude Sonnet",
+          providerName: "Anthropic",
+          contextLimit: undefined,
+          reasoning: false,
+          variants: [],
+        },
+        {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          name: "gpt-5.4",
+          providerName: "OpenAI",
+          contextLimit: undefined,
+          reasoning: true,
+          variants: ["high"],
+        },
+      ];
+      const client = createOpencodeClientStub({
+        provider: {
+          list: async () => new Promise<never>(() => {}),
+        },
+      });
+      const { manager, messages } = createManager({
+        selectedModel: {
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          providerName: "OpenAI",
+        },
+        cachedModelList,
+        client,
+      });
+
+      const originalSetTimeout = globalThis.setTimeout;
+      function immediateSetTimeout(
+        handler: TimerHandler,
+        _timeout?: number,
+        ...arguments_: unknown[]
+      ): ReturnType<typeof setTimeout> {
+        if (typeof handler === "function") {
+          handler(...arguments_);
+        }
+
+        return originalSetTimeout(() => {}, 0);
+      }
+      const immediateSetTimeoutWithPromisify = Object.assign(immediateSetTimeout, {
+        __promisify__: originalSetTimeout.__promisify__,
+      }) as unknown as typeof setTimeout;
+      globalThis.setTimeout = immediateSetTimeoutWithPromisify;
+
+      try {
+        const models = await manager.handleGetModels();
+
+        assert.deepEqual(models, cachedModelList);
+        assert.deepEqual(messages.getLastMessage(), {
+          type: "modelsList",
+          models: cachedModelList,
+          selectedModel: {
+            providerID: "openai",
+            modelID: "gpt-5.4",
+            providerName: "OpenAI",
+          },
+        });
       } finally {
         globalThis.setTimeout = originalSetTimeout;
       }

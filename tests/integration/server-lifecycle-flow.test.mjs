@@ -249,6 +249,24 @@ test("ensureRunning resets stale client when port is unreachable", () => {
   );
 });
 
+test("ensureRunning kills stale managed server process before spawning a fresh one", () => {
+  assert.match(
+    serverManagerSource,
+    /Detected stale client connection; restarting server client/,
+    "stale-client recovery log should exist",
+  );
+  assert.match(
+    serverManagerSource,
+    /if\s*\(\s*this\.serverProcess\s*\)\s*\{[\s\S]*this\.terminateProcessTree\(\s*this\.serverProcess\s*\)/,
+    "stale-client recovery must terminate the managed server process before restart",
+  );
+  assert.match(
+    serverManagerSource,
+    /skipPersistedPortReconnect\s*=\s*true/,
+    "stale-client recovery should skip reconnecting to the previous managed port",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Port persistence across sessions
 // ---------------------------------------------------------------------------

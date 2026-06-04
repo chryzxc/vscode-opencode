@@ -8,16 +8,28 @@ const messageComponentsSource = readSource(
   "MessageComponents.tsx",
 );
 
-test("assistant raw response debug visibility is driven by payload presence, not debug flags", () => {
+test("assistant raw response debug visibility is driven by config, not payload presence or debug flags", () => {
   assert.match(
     messageComponentsSource,
-    /const\s+hasRawResponseDebug\s*=\s*rawResponseText\.trim\(\)\.length\s*>\s*0;/,
-    "raw response debug block should render whenever rawResponse text exists",
+    /const\s+showRawResponseDebug\s*=\s*config\.debug\.showRawResponse;/,
+    "raw response debug block should still be controlled by the explicit config flag",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /const\s+visibleRawResponseText\s*=\s*rawResponseText\.trim\(\)\.length\s*>\s*0[\s\S]*\(rawResponse is missing on this message\)/,
+    "raw response debug block should show a fallback message when rawResponse is missing",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /\{showRawResponseDebug && \(/,
+    "raw response debug block should render whenever the config flag is enabled",
   );
 
   assert.doesNotMatch(
     messageComponentsSource,
-    /RAW_RESPONSE_DEBUG_ENABLED\s*&&\s*rawResponseText\.trim\(\)\.length\s*>\s*0/,
-    "raw response debug visibility should not be gated by a stream-debug window flag",
+    /showRawResponseDebug\s*&&\s*hasRawResponseDebug/,
+    "raw response debug visibility should not also require a payload-presence gate",
   );
 });
