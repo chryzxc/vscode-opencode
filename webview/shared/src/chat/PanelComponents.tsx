@@ -1752,7 +1752,7 @@ export function InputWrapper() {
   );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const textareaHasValue = inputValue.trim().length > 0;
+  const textareaHasValue = inputValue.length > 0;
   const textareaMinRows = 2;
   const textareaMaxRows = textareaHasValue ? 8 : 3;
 
