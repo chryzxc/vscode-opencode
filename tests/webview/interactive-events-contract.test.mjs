@@ -203,6 +203,11 @@ test('SDK question replies use native question.reply transport', () => {
     'input popover should send SDK-native question replies when request metadata is present',
   );
   assert.match(
+    panelSource,
+    /if \(canReplyToSdkQuestion\) \{[\s\S]*SET_PROCESSING[\s\S]*payload:\s*false[\s\S]*SET_STEERING[\s\S]*payload:\s*false[\s\S]*SET_STREAMING[\s\S]*payload:\s*null[\s\S]*type:\s*"questionReply"/s,
+    'SDK question replies should clear stale local loading state before waiting for the server continuation',
+  );
+  assert.match(
     providerSource,
     /case "questionReply":[\s\S]*processingSessionIds\.add\(replySessionId\)[\s\S]*activeStreamSessionId = replySessionId[\s\S]*sendProcessingSessionsUpdate\(\)[\s\S]*client\.question\.reply\(\{[\s\S]*requestID,[\s\S]*answers,/,
     'provider should answer SDK-native questions through client.question.reply',
@@ -432,7 +437,7 @@ test('streaming assistant body renders only after trusted renderable content is 
   );
   assert.match(
     messageSource,
-    /const liveInteractivePrompt = useMemo\(\s*\(\) => questionPromptFromInteractiveEvents\(state\.interactiveEvents\)/s,
+    /const liveInteractivePrompt = useMemo\(\s*\(\) => questionPromptFromInteractiveEvents\(interactiveEvents\)/s,
     'AssistantMessage should compute live fallback prompt from structured interactiveEvents',
   );
   assert.match(
@@ -468,10 +473,17 @@ test('input wrapper leaves rendered assistant turn ownership to the host on inte
     /IMPORTANT:\s*do not append optimistic assistant or user messages here\.[\s\S]*host\/message handler owns the canonical turn transition/s,
     'interactive submit should document that host-side state owns the rendered assistant turn transition',
   );
+  const legacyReplySegmentMatch = panelSource.match(
+    /logger\.info\("\[QUESTION DEBUG\] submitting legacy interactive reply"[\s\S]*?vscode\.postMessage\(\{[\s\S]*?type:\s*"sendMessage"[\s\S]*?\}\);/s,
+  );
+  assert.ok(
+    legacyReplySegmentMatch,
+    'legacy interactive sendMessage segment should be present',
+  );
   assert.doesNotMatch(
-    panelSource,
-    /submitBatchResponses[\s\S]*type:\s*"SET_STREAMING"[\s\S]*payload:\s*null/s,
-    'interactive submit should not clear streaming locally while the rendered assistant turn is still owned by host state',
+    legacyReplySegmentMatch[0],
+    /type:\s*"SET_STREAMING"[\s\S]*payload:\s*null/s,
+    'legacy interactive sendMessage submits should not clear streaming locally while the rendered assistant turn is still owned by host state',
   );
   assert.doesNotMatch(
     panelSource,
@@ -813,7 +825,7 @@ test('substantial AI responses are preserved when questions are asked', () => {
 
   // Verify the logic flow: empty check -> reasoning check -> threshold check -> phrase checks
   const logicFlowPattern =
-    /!normalized[\s\S]*looksLikeReasoningTrace[\s\S]*trimmed\.length\s*>\s*CONTENT_THRESHOLD[\s\S]*normalized\s*===\s*['"]running question['"]/s;
+    /!normalized[\s\S]*containsThoughtTagReasoning[\s\S]*trimmed\.length\s*>\s*CONTENT_THRESHOLD[\s\S]*normalized\s*===\s*['"]running question['"]/s;
 
   assert.match(
     handlerSource,
@@ -880,11 +892,11 @@ test('content override logic prevents AI response disappearance', () => {
     'should override empty content'
   );
 
-  // 2. Reasoning-shaped content should be overridden (original behavior)
+  // 2. Explicit thought-tag content should be overridden
   assert.match(
     handlerSource,
-    /looksLikeReasoningTrace/,
-    'should check for reasoning traces'
+    /containsThoughtTagReasoning/,
+    'should check for explicit thought-tag traces'
   );
 
   // 3. NEW: Substantial content should NOT be overridden (fix for the bug)

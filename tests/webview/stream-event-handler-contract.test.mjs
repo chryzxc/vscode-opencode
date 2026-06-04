@@ -890,6 +890,14 @@ test('createMessageHandler error case dispatches FINISH_STREAMING', () => {
     );
 });
 
+test('createMessageHandler routes errorToast to ADD_ERROR_MESSAGE', () => {
+    assert.match(
+        messageHandlerSource,
+        /case\s+["']errorToast["'][\s\S]{1,220}ADD_ERROR_MESSAGE/,
+        'createMessageHandler must dispatch ADD_ERROR_MESSAGE for error toast messages',
+    );
+});
+
 test('createMessageHandler sessionsList also dispatches SET_SESSION_ID when currentSessionId present', () => {
     assert.match(
         messageHandlerSource,

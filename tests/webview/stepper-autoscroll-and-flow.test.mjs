@@ -217,18 +217,18 @@ test('search activity steps dedupe repeated query/description lines before rende
 // 4. Reasoning – thoughtItems construction
 // ---------------------------------------------------------------------------
 
-test('thoughtItemsFromStreaming derives thought items from reasoningEvents first', () => {
+test('thoughtItemsFromStreaming prefers merged streaming reasoning before per-event fallbacks', () => {
     const body = extractFunctionBody(messageComponentsSource, 'function thoughtItemsFromStreaming(');
     assert.ok(body, 'thoughtItemsFromStreaming must exist');
     assert.match(
         body,
-        /streaming\.reasoningEvents\s*&&\s*streaming\.reasoningEvents\.length > 0/,
-        'Should prefer reasoningEvents when present',
+        /const mergedReasoning = \(streaming\.reasoning \|\| ""\)\.trim\(\);[\s\S]*if \(mergedReasoning\.length > 0\)/,
+        'Should prefer the merged streaming reasoning buffer when present',
     );
     assert.match(
         body,
-        /event\.text\.trim\(\)/,
-        'Should trim reasoning event text before including it',
+        /streaming\.reasoningEvents\s*&&\s*streaming\.reasoningEvents\.length > 0/,
+        'Should still fall back to reasoningEvents when the merged buffer is empty',
     );
 });
 

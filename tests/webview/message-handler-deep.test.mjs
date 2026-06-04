@@ -89,8 +89,8 @@ test('handleStreamEvent routes lifecycle and streaming dispatch patterns', () =>
   );
   assert.match(
     source,
-    /function looksLikeReasoningPlanningText\(/,
-    'message handler should define a planning-style reasoning detector for SDK text-only reasoning chunks',
+    /function containsThoughtTagReasoning\(/,
+    'message handler should only define explicit thought-tag reasoning detection for text chunks',
   );
   assert.match(
     handleStreamEventBody,
@@ -159,6 +159,16 @@ test('normalizeStructuredOutput validates and sanitizes generated-schema payload
     'normalizeStructuredOutput should validate incoming payloads and reject invalid ones',
   );
   assert.match(normalizeStructuredOutputBody, /const sanitizedRec = sanitizeStructuredOutput\(rec\);/, 'normalizeStructuredOutput should sanitize incoming payloads before validation');
+  assert.match(
+    normalizeStructuredOutputBody,
+    /return salvaged \? preserveStructuredOutputRawFields\(rec, salvaged\) : undefined;/,
+    'normalizeStructuredOutput should keep the raw record attached when salvage succeeds',
+  );
+  assert.doesNotMatch(
+    normalizeStructuredOutputBody,
+    /webviewLogger\.warn\("Structured output validation failed"/,
+    'normalizeStructuredOutput should not unconditionally warn on every invalid payload',
+  );
   assert.match(
     normalizeStructuredOutputBody,
     /responseType[\s\S]*rawResponseType\.toLowerCase\(\) === "interactive"[\s\S]*\? "question"/,
@@ -232,6 +242,11 @@ test('normalizeMessage blends streaming snapshots with final messages and struct
   );
   assert.match(
     normalizeMessageBody,
+    /const shouldPreferStructuredMessage =[\s\S]*provisionalResponseType === "message"[\s\S]*structuredMessage\.length > 0;/,
+    'normalizeMessage should prefer canonical structured.message for final structured message turns',
+  );
+  assert.match(
+    normalizeMessageBody,
     /const preferStreamingContent = shouldPreferStreamingContent\([\s\S]*const shouldUseStreamingContent =[\s\S]*content: shouldUseStreamingContent \? streamingContent : content \|\| message\.content/,
     'normalizeMessage should prefer richer streaming content when appropriate',
   );
@@ -242,13 +257,23 @@ test('normalizeMessage blends streaming snapshots with final messages and struct
   );
   assert.match(
     normalizeMessageBody,
-    /hasStreamingReasoningSignal[\s\S]*looksLikeReasoningPlanningText\(textLike\)/,
-    'normalizeMessage should detach planning-style leaked reasoning parts when streaming reasoning evidence exists',
+    /hasStreamingReasoningSignal[\s\S]*matchesKnownReasoning/,
+    'normalizeMessage should detach only text that matches known explicit reasoning content',
   );
   assert.match(
     normalizeMessageBody,
     /if \(normalizedStructuredOutput\)[\s\S]*structuredOutput = normalizedStructuredOutput[\s\S]*toInteractiveEvents\(/,
     'normalizeMessage should preserve normalized structuredOutput and hydrate interactive events from it',
+  );
+  assert.match(
+    source,
+    /function preserveStructuredOutputRawFields\([\s\S]*\.\.\.\(rawRecord as StructuredOutput\),[\s\S]*\.\.\.normalizedRecord,[\s\S]*raw: rawRecord,[\s\S]*\};/s,
+    'normalizeStructuredOutput should preserve the original raw structured record alongside the normalized payload',
+  );
+  assert.match(
+    source,
+    /const ignoredRawKeys = new Set\(\[[\s\S]*"raw"[\s\S]*"type"[\s\S]*"kind"/,
+    'drop detection should ignore the internal raw preservation field',
   );
   assert.match(
     normalizeMessageBody,
@@ -269,6 +294,24 @@ test('normalizeMessage blends streaming snapshots with final messages and struct
     normalizeMessageBody,
     /return\s+rec\s+as\s+Message/,
     'normalizeMessage should not short-circuit by returning the raw record directly',
+  );
+});
+
+test('message handler helper extractors prefer canonical structured.message for explicit message turns', () => {
+  assert.match(
+    source,
+    /function getCanonicalStructuredMessageText\(message: Message \| UnknownRecord\): string \{[\s\S]*responseType !== "message"[\s\S]*structured\?\.message/s,
+    'message handler should expose a helper for canonical structured-message extraction',
+  );
+  assert.match(
+    source,
+    /function extractRenderableAssistantTextForHydration\(message: Message\): string \{[\s\S]*const canonicalStructuredMessage = getCanonicalStructuredMessageText\(message\);[\s\S]*if \(canonicalStructuredMessage\) \{[\s\S]*return canonicalStructuredMessage;/s,
+    'hydration text extraction should prefer canonical structured.message before top-level content',
+  );
+  assert.match(
+    source,
+    /function extractMessageText\(message: Message\): string \{[\s\S]*const canonicalStructuredMessage = getCanonicalStructuredMessageText\(message\);[\s\S]*if \(canonicalStructuredMessage\) \{[\s\S]*return canonicalStructuredMessage;/s,
+    'generic assistant text extraction should prefer canonical structured.message before top-level content',
   );
 });
 

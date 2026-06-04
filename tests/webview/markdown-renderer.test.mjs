@@ -63,6 +63,59 @@ test('Activity step file-linked content renders the full summary inline', () => 
   );
 });
 
+test('Assistant message part bodies preserve markdown block separation across text parts', () => {
+  const messageBodyFromPartsBody = extractFunctionBody(
+    messageComponentsSource,
+    'function messageBodyFromParts(',
+  );
+  assert.match(
+    messageBodyFromPartsBody,
+    /\.join\("\\n\\n"\)/,
+    'messageBodyFromParts should preserve paragraph/list separation between assistant text parts instead of concatenating them directly.',
+  );
+  assert.doesNotMatch(
+    messageBodyFromPartsBody,
+    /\.join\(""\)/,
+    'messageBodyFromParts must not glue adjacent assistant text parts together without separators.',
+  );
+});
+
+test('Interactive question rendering suppresses flattened option echo beneath the canonical prompt', () => {
+  assert.match(
+    messageComponentsSource,
+    /function looksLikeFlattenedInteractiveEcho\(/,
+    'AssistantMessage should detect flattened interactive echo text before appending it under the question prompt.',
+  );
+  assert.match(
+    messageComponentsSource,
+    /looksLikeFlattenedInteractiveEcho\(questionPrompt,\s*safeBaseContent,\s*message\)/,
+    'AssistantMessage should gate interactive prompt concatenation through the flattened-echo detector.',
+  );
+  assert.match(
+    messageComponentsSource,
+    /function hasQuestionLikeInteractiveContent\(/,
+    'AssistantMessage should recognize question-like interactive payloads even when responseType is not explicitly "question".',
+  );
+  assert.match(
+    messageComponentsSource,
+    /if \(hasQuestionLikeInteractive\) \{\s*return questionPrompt;\s*\}/,
+    'Question-like interactive turns should render only the canonical question prompt in the assistant bubble.',
+  );
+  assert.match(
+    messageComponentsSource,
+    /if \(\s*!isQuestionResponseType\s*&&\s*!hasInteractiveEvents\s*&&\s*!hasQuestionLikeInteractive\s*\)\s*\{\s*return safeBaseContent;\s*\}/,
+    'Persisted question-like turns must not bypass the question-prompt path just because interactiveEvents were not preserved on the message.',
+  );
+});
+
+test('Aborted assistant turns do not render the response markdown body', () => {
+  assert.match(
+    messageComponentsSource,
+    /const showResponseSection = !isAborted && \(hasVisibleResponseBody \|\| !!plan\);/,
+    'Interrupted assistant turns should hide the AI response section instead of rendering partial markdown content.',
+  );
+});
+
 // ── File icon injection ──────────────────────────────────────────────────────
 
 test('injectFileIcons uses VS Code theme CSS classes and SVG fallback for unrecognised extensions', () => {
