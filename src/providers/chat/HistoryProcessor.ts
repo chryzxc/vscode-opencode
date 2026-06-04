@@ -92,11 +92,50 @@ export class HistoryProcessor {
       return message;
     }
 
+    const originalBodyText = this.extractMessageBodyText(message);
+
     // Apply the extracted structured output to the message
-    return this.structuredOutputProcessor.applyStructuredOutputToMessage(
+    const structuredApplied = this.structuredOutputProcessor.applyStructuredOutputToMessage(
       message,
       structured,
     ) || message;
+
+    if (
+      isAssistantLikeRole &&
+      originalBodyText &&
+      !this.extractMessageBodyText(structuredApplied)?.trim() &&
+      !Array.isArray(structuredApplied?.parts)
+    ) {
+      this.logger.info("[HistoryProcessor] Restoring raw assistant body during hydration", {
+        messageId: this.extractHistoryMessageId(structuredApplied),
+        originalBodyPreview: originalBodyText.slice(0, 240),
+        structuredResponseType: this.firstNonEmptyString(
+          structuredApplied?.structuredOutput?.responseType,
+          structuredApplied?.responseType,
+        ),
+      });
+      return {
+        ...structuredApplied,
+        content: originalBodyText,
+        text: originalBodyText,
+        structuredOutput:
+          structuredApplied?.structuredOutput &&
+          this.firstNonEmptyString(structuredApplied.structuredOutput.responseType)
+            ? structuredApplied.structuredOutput
+            : {
+              responseType: "message",
+              message: originalBodyText,
+            },
+        parts: [
+          {
+            type: "text",
+            text: originalBodyText,
+          },
+        ],
+      };
+    }
+
+    return structuredApplied;
   }
 
   /**

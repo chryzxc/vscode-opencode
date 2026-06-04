@@ -520,6 +520,8 @@ export class ChatViewProvider
   private readonly COMMAND_CATALOG_TTL_MS = 30 * 60 * 1000;
   private readonly compactingSessions = new Set<string>();
   private readonly sessionsWithFileChangeEvidence = new Set<string>();
+  private readonly recentUiErrorToastTimestamps = new Map<string, number>();
+  private readonly UI_ERROR_TOAST_DEDUPE_WINDOW_MS = 15_000;
   private lastCompatibilityWarningSignature: string | undefined;
   private readonly installedSdkVersion = detectInstalledOpencodeSdkVersion();
 
@@ -2325,6 +2327,38 @@ export class ChatViewProvider
     };
   }
 
+  private postErrorToast(rawMessage: unknown): void {
+    const message =
+      typeof rawMessage === "string"
+        ? rawMessage.replace(/\s+/g, " ").trim()
+        : "";
+    if (!message) {
+      return;
+    }
+
+    const now = Date.now();
+    for (const [key, timestamp] of this.recentUiErrorToastTimestamps.entries()) {
+      if (now - timestamp > this.UI_ERROR_TOAST_DEDUPE_WINDOW_MS) {
+        this.recentUiErrorToastTimestamps.delete(key);
+      }
+    }
+
+    const signature = message.toLowerCase();
+    const previousTimestamp = this.recentUiErrorToastTimestamps.get(signature);
+    if (
+      typeof previousTimestamp === "number" &&
+      now - previousTimestamp < this.UI_ERROR_TOAST_DEDUPE_WINDOW_MS
+    ) {
+      return;
+    }
+
+    this.recentUiErrorToastTimestamps.set(signature, now);
+    this.view?.webview.postMessage({
+      type: "errorToast",
+      message,
+    });
+  }
+
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
@@ -2407,22 +2441,31 @@ export class ChatViewProvider
             // Fetch models so they're available in the webview on startup.
             // We await this to ensure models are loaded before sending initState.
             // Network issues are handled gracefully inside handleGetModels with fallback models.
-            const models = await this.modelAndAgentManager.handleGetModels();
-            await this.modelAndAgentManager.reconcileSelectedModelSelection(models);
+            void (async () => {
+              const models = await this.modelAndAgentManager.handleGetModels();
+              await this.modelAndAgentManager.reconcileSelectedModelSelection(
+                models,
+              );
 
-            // Sync default agent selection
-            await this.syncCLIAgents();
+              // Sync default agent selection
+              await this.syncCLIAgents();
 
-            // Fetch and send full agents list to webview
-            await this.modelAndAgentManager.handleGetAgents();
+              // Fetch and send full agents list to webview
+              await this.modelAndAgentManager.handleGetAgents();
 
-            // TEMPORARILY DISABLED: Fetch and send commands list for SkillsPanel
-            // This is loading 700+ skills and causing massive delays
-            // TODO: Re-enable after implementing proper pagination/lazy loading
-            // void this.handleGetCommands().catch((error) => {
-            //   this.logger.warn("Background commands loading failed during ready bootstrap", { err: error });
-            // });
-            this.logger.info("⚠️ [PERF] Command loading disabled temporarily (700+ skills bottleneck)");
+              // TEMPORARILY DISABLED: Fetch and send commands list for SkillsPanel
+              // This is loading 700+ skills and causing massive delays
+              // TODO: Re-enable after implementing proper pagination/lazy loading
+              // void this.handleGetCommands().catch((error) => {
+              //   this.logger.warn("Background commands loading failed during ready bootstrap", { err: error });
+              // });
+              this.logger.info("⚠️ [PERF] Command loading disabled temporarily (700+ skills bottleneck)");
+            })().catch((error) => {
+              this.logger.warn("Background model/agent bootstrap failed", {
+                error:
+                  error instanceof Error ? error.message : String(error),
+              });
+            });
 
             // Resolve the active session before sending initState so that
             // per-session settings (agent / model / thinking) are applied first.
@@ -3724,16 +3767,26 @@ export class ChatViewProvider
 
     // Subscribe to status changes
     const statusSubscription = this.serverManager.onStatusChange((status) => {
+      const serverError =
+        status === "error" ? this.serverManager.getLastError() : undefined;
       this.view?.webview.postMessage({
         type: "statusUpdate",
         status: status,
         sdkVersion: this.installedSdkVersion,
         serverVersion: this.serverManager.getVersion(),
-        serverError:
-          status === "error" ? this.serverManager.getLastError() : undefined,
+        serverError,
       });
+      if (serverError) {
+        this.postErrorToast(serverError);
+      }
       this.broadcastCompatibilityWarnings();
     });
+    const serverErrorOutputSubscription = this.serverManager.onServerErrorOutput(
+      (snippet) => {
+        this.postErrorToast(snippet);
+      },
+    );
+    this.postErrorToast(this.serverManager.getLastServerErrorOutput());
 
     // Cleanup on dispose
     webviewView.onDidDispose(() => {
@@ -3746,6 +3799,7 @@ export class ChatViewProvider
       this.sessionsListRequestVersion = 0;
       this.lastSessionsPayloadFingerprint = undefined;
       statusSubscription.dispose();
+      serverErrorOutputSubscription.dispose();
       this.quotaService.dispose();
       // Don't dispose the singleton tracker - it's shared
       this.view = undefined;

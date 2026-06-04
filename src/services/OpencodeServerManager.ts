@@ -158,8 +158,17 @@ export class OpencodeServerManager {
   /** Event emitter for status change notifications */
   private _onStatusChange = new vscode.EventEmitter<ServerStatus>();
 
+  /** Event emitter for server stderr snippets that should be surfaced in the UI */
+  private _onServerErrorOutput = new vscode.EventEmitter<string>();
+
+  /** Most recent stderr snippet emitted by the managed server */
+  private _lastServerErrorOutput: string | undefined;
+
   /** Public event stream for status changes */
   public readonly onStatusChange = this._onStatusChange.event;
+
+  /** Public event stream for server stderr snippets */
+  public readonly onServerErrorOutput = this._onServerErrorOutput.event;
 
   /**
    * Creates a new server manager instance.
@@ -464,6 +473,7 @@ export class OpencodeServerManager {
   }
 
   private async ensureRunningInternal(flow: string): Promise<OpencodeClient> {
+    let skipPersistedPortReconnect = false;
 
     // Fast path: Return existing client if already connected
     // Note: We assume the client is still valid. In the future, we might
@@ -483,7 +493,17 @@ export class OpencodeServerManager {
       log.warn("Detected stale client connection; restarting server client", {
         port: this.port,
       });
+      if (this.serverProcess) {
+        log.info("Terminating stale managed server process before restart", {
+          port: this.port,
+          pid: this.serverProcess.pid,
+        });
+        this.terminateProcessTree(this.serverProcess);
+        this.serverProcess = null;
+      }
       this.client = null;
+      skipPersistedPortReconnect = true;
+      await this.persistManagedPort(0);
       this.port = 0;
       this.setStatus("idle");
     }
@@ -532,7 +552,9 @@ export class OpencodeServerManager {
 
     // If previous extension host instance crashed, reconnect to the
     // previously managed dynamic port before spawning another server.
-    const persistedPort = this.getPersistedManagedPort();
+    const persistedPort = skipPersistedPortReconnect
+      ? 0
+      : this.getPersistedManagedPort();
     if (persistedPort > 0) {
       try {
         const reachable = await this.isPortReachable(persistedPort);
@@ -570,6 +592,8 @@ export class OpencodeServerManager {
         this.port = 0;
         await this.persistManagedPort(0);
       }
+    } else if (skipPersistedPortReconnect) {
+      log.info("Skipping persisted managed port reconnect after stale client detection");
     }
 
     // No existing server or connection failed - start a new one
@@ -678,6 +702,8 @@ export class OpencodeServerManager {
 
         if (channel === "stderr") {
           log.error("Server stderr output", { snippet });
+          this._lastServerErrorOutput = snippet;
+          this._onServerErrorOutput.fire(snippet);
         } else {
           log.debug("Server stdout output", { snippet });
         }
@@ -1049,6 +1075,10 @@ export class OpencodeServerManager {
     return this._lastError;
   }
 
+  getLastServerErrorOutput(): string | undefined {
+    return this._lastServerErrorOutput;
+  }
+
   /**
    * Finds an available network port for the server to listen on.
    *
@@ -1183,6 +1213,7 @@ export class OpencodeServerManager {
     this.port = 0;
     void this.persistManagedPort(0);
     this.setStatus("idle");
+    this._onServerErrorOutput.dispose();
     this._onStatusChange.dispose();
   }
 

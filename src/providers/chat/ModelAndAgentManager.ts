@@ -15,9 +15,12 @@ import type { Command as SdkCommand } from "@opencode-ai/sdk" with { "resolution
 import type { ChatModelOption, ChatSlashCommand, SessionSettings } from "./types";
 import { LoggingCategories } from "../../utils/LoggingSchema";
 
+const CACHED_MODEL_LIST_STATE_KEY = "cachedModelList";
+
 export class ModelAndAgentManager {
   private selectedModel: { providerID: string; modelID: string; providerName?: string };
   private availableModels: ChatModelOption[] = [];
+  private persistedModelList: ChatModelOption[] = [];
   private selectedAgent?: string;
   private modelsFetchPromise: Promise<ChatModelOption[]> | null = null;
   private commandCatalog: ChatSlashCommand[] = [];
@@ -37,6 +40,7 @@ export class ModelAndAgentManager {
       providerID: "opencode",
       modelID: "big-pickle",
     };
+    this.persistedModelList = this.loadPersistedModelList();
     this.postMessage = () => { };
   }
 
@@ -44,6 +48,47 @@ export class ModelAndAgentManager {
 
   setPostMessage(fn: (msg: any) => void): void {
     this.postMessage = fn;
+  }
+
+  private postErrorToast(message: string): void {
+    const normalized = message.replace(/\s+/g, " ").trim();
+    if (!normalized) {
+      return;
+    }
+    this.postMessage({
+      type: "errorToast",
+      message: normalized,
+    });
+  }
+
+  private buildModelFetchToastMessage(
+    error: unknown,
+    diagnostics: Record<string, unknown>,
+  ): string {
+    const primary =
+      error instanceof Error ? error.message : String(error ?? "Unknown error");
+    const configProbe = this.asRecord(diagnostics.configProvidersProbe);
+    const suffix: string[] = [];
+
+    const serverStatus = this.firstNonEmptyString(diagnostics.serverStatus);
+    if (serverStatus) {
+      suffix.push(`server=${serverStatus}`);
+    }
+
+    const serverPort =
+      typeof diagnostics.serverPort === "number" ? diagnostics.serverPort : null;
+    if (serverPort && serverPort > 0) {
+      suffix.push(`port=${serverPort}`);
+    }
+
+    const probeError = this.firstNonEmptyString(configProbe?.error);
+    if (probeError) {
+      suffix.push(`config.providers=${probeError}`);
+    }
+
+    return suffix.length > 0
+      ? `Failed to fetch models: ${primary} (${suffix.join(", ")})`
+      : `Failed to fetch models: ${primary}`;
   }
 
   /**
@@ -116,6 +161,61 @@ export class ModelAndAgentManager {
     return this.availableModels;
   }
 
+  private normalizePersistedModelList(
+    value: unknown,
+  ): ChatModelOption[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const deduped = new Map<string, ChatModelOption>();
+    for (const item of value) {
+      const rec = this.asRecord(item);
+      const providerID = this.firstNonEmptyString(rec?.providerID);
+      const modelID = this.firstNonEmptyString(rec?.modelID);
+      const providerName = this.firstNonEmptyString(rec?.providerName);
+      const name = this.firstNonEmptyString(rec?.name);
+      if (!providerID || !modelID || !providerName || !name) {
+        continue;
+      }
+
+      const contextLimitRaw = rec?.contextLimit;
+      const contextLimit =
+        typeof contextLimitRaw === "number" &&
+        Number.isFinite(contextLimitRaw) &&
+        contextLimitRaw > 0
+          ? Math.floor(contextLimitRaw)
+          : undefined;
+      const variants = Array.isArray(rec?.variants)
+        ? rec.variants.filter((variant): variant is string => typeof variant === "string")
+        : [];
+
+      deduped.set(`${providerID}/${modelID}`.toLowerCase(), {
+        providerID,
+        modelID,
+        providerName,
+        name,
+        contextLimit,
+        reasoning: Boolean(rec?.reasoning),
+        variants,
+      });
+    }
+
+    return Array.from(deduped.values());
+  }
+
+  private loadPersistedModelList(): ChatModelOption[] {
+    return this.normalizePersistedModelList(
+      this.globalState.get(CACHED_MODEL_LIST_STATE_KEY, []),
+    );
+  }
+
+  private async persistModelList(models: ChatModelOption[]): Promise<void> {
+    const normalized = this.normalizePersistedModelList(models);
+    this.persistedModelList = normalized;
+    await this.globalState.update(CACHED_MODEL_LIST_STATE_KEY, normalized);
+  }
+
   private getModelKey(providerID: string, modelID: string): string {
     return `${providerID}/${modelID}`.toLowerCase();
   }
@@ -129,6 +229,152 @@ export class ModelAndAgentManager {
       (m) => m.providerID === providerID && m.modelID === modelID,
     );
     return Array.isArray(model?.variants) ? model.variants : [];
+  }
+
+  private getProviderEntries(response: unknown): Array<Record<string, unknown>> {
+    const responseRec = this.asRecord(response);
+    const dataRec = this.asRecord(responseRec?.data);
+
+    const candidateLists = [
+      dataRec?.all,
+      dataRec?.providers,
+      responseRec?.all,
+      responseRec?.providers,
+    ];
+
+    for (const candidate of candidateLists) {
+      if (Array.isArray(candidate)) {
+        return candidate
+          .map((entry) => this.asRecord(entry))
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+      }
+    }
+
+    return [];
+  }
+
+  private getConnectedProviderIds(response: unknown): string[] {
+    const responseRec = this.asRecord(response);
+    const dataRec = this.asRecord(responseRec?.data);
+    const candidates = [dataRec?.connected, responseRec?.connected];
+
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate)) {
+        continue;
+      }
+
+      const ids = candidate
+        .map((entry) => {
+          if (typeof entry === "string") {
+            return entry.trim();
+          }
+          const rec = this.asRecord(entry);
+          return this.firstNonEmptyString(rec?.id, rec?.providerID);
+        })
+        .filter((value): value is string => Boolean(value));
+
+      if (ids.length > 0) {
+        return ids;
+      }
+    }
+
+    return [];
+  }
+
+  private summarizeProviderResponse(response: unknown): Record<string, unknown> {
+    const responseRec = this.asRecord(response);
+    const dataRec = this.asRecord(responseRec?.data);
+    const providerEntries = this.getProviderEntries(response);
+    const connected = this.getConnectedProviderIds(response);
+    const defaultRec =
+      this.asRecord(dataRec?.default) ?? this.asRecord(responseRec?.default);
+
+    return {
+      topLevelKeys: responseRec ? Object.keys(responseRec) : [],
+      dataKeys: dataRec ? Object.keys(dataRec) : [],
+      providerCount: providerEntries.length,
+      providerIds: providerEntries
+        .map((provider) => this.firstNonEmptyString(provider.id, provider.name))
+        .filter((value): value is string => Boolean(value))
+        .slice(0, 20),
+      modelCountsByProvider: providerEntries.reduce<Record<string, number>>((acc, provider) => {
+        const providerId =
+          this.firstNonEmptyString(provider.id, provider.name) || "unknown";
+        const modelsRec = this.asRecord(provider.models);
+        acc[providerId] = modelsRec ? Object.keys(modelsRec).length : 0;
+        return acc;
+      }, {}),
+      connectedProviders: connected,
+      defaultProviders: defaultRec ? Object.keys(defaultRec) : [],
+    };
+  }
+
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    label: string,
+  ): Promise<T> {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error(`${label} timeout`));
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  private async collectModelFetchDiagnostics(
+    client: any,
+    error: unknown,
+    startedAt: number,
+  ): Promise<Record<string, unknown>> {
+    const diagnostics: Record<string, unknown> = {
+      elapsedMs: Date.now() - startedAt,
+      serverStatus: this.serverManager.getStatus(),
+      serverVersion: this.serverManager.getVersion(),
+      serverPort: this.serverManager.getPort(),
+      selectedModel: this.selectedModel,
+      cachedModelCount: this.availableModels.length,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    };
+
+    try {
+      const configResponse = await this.withTimeout(
+        client.config.providers(),
+        3000,
+        "config.providers probe",
+      );
+      const configData = this.asRecord(this.asRecord(configResponse)?.data);
+      const configProviders = Array.isArray(configData?.providers)
+        ? configData.providers
+        : [];
+      diagnostics.configProvidersProbe = {
+        ok: true,
+        count: configProviders.length,
+        providers: configProviders
+          .map((provider) => {
+            const rec = this.asRecord(provider);
+            return this.firstNonEmptyString(rec?.id, rec?.providerID, rec?.name);
+          })
+          .filter((value): value is string => Boolean(value))
+          .slice(0, 20),
+      };
+    } catch (probeError) {
+      diagnostics.configProvidersProbe = {
+        ok: false,
+        error:
+          probeError instanceof Error ? probeError.message : String(probeError),
+      };
+    }
+
+    return diagnostics;
   }
 
   getEffectiveThinkingLevel(sessionId?: string): string | undefined {
@@ -181,70 +427,100 @@ export class ModelAndAgentManager {
         this.logger.featureStep(correlationId, 'fetch-provider-list');
 
         const providerListTimeoutMs = 8000;
-        let timeoutHandle: NodeJS.Timeout | undefined;
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          const scheduleDelay = Reflect.get(globalThis, "set" + "Timeout") as
-            | ((callback: () => void, delay?: number) => unknown)
-            | undefined;
-          if (typeof scheduleDelay !== "function") {
-            reject(new Error("Provider list timeout"));
-            return;
-          }
-          timeoutHandle = scheduleDelay(
-            () => reject(new Error("Provider list timeout")),
-            providerListTimeoutMs,
-          ) as NodeJS.Timeout;
+        const response = (await this.withTimeout(
+          client.provider.list(),
+          providerListTimeoutMs,
+          "Provider list",
+        )) as any;
+
+        const responseSummary = this.summarizeProviderResponse(response);
+        this.logger.debug("Provider list response summary", {
+          correlationId,
+          ...responseSummary,
         });
 
-        const response = (await Promise.race([
-          client.provider.list(),
-          timeoutPromise,
-        ])) as any;
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
+        const providerEntries = this.getProviderEntries(response);
+        const models: ChatModelOption[] = [];
+        const seenModelKeys = new Set<string>();
+        const duplicateModelKeys: string[] = [];
+
+        for (const provider of providerEntries) {
+          const providerID = this.firstNonEmptyString(provider.id);
+          if (!providerID) {
+            this.logger.warn("Skipping provider entry without id", {
+              correlationId,
+              provider,
+            });
+            continue;
+          }
+
+          const providerName =
+            this.firstNonEmptyString(provider.name, provider.id) || providerID;
+          const providerModels = this.asRecord(provider.models);
+          if (!providerModels) {
+            this.logger.warn("Provider entry missing models map", {
+              correlationId,
+              providerID,
+              providerName,
+              providerKeys: Object.keys(provider),
+            });
+            continue;
+          }
+
+          for (const [modelID, modelConfig] of Object.entries(providerModels)) {
+            const modelRec = this.asRecord(modelConfig);
+            const modelKey = `${providerID}/${modelID}`;
+            if (seenModelKeys.has(modelKey)) {
+              duplicateModelKeys.push(modelKey);
+              continue;
+            }
+            seenModelKeys.add(modelKey);
+
+            const limitRec = this.asRecord(modelRec?.limit);
+            const contextLimitRaw = limitRec?.context;
+            const contextLimit =
+              typeof contextLimitRaw === "number" &&
+              Number.isFinite(contextLimitRaw) &&
+              contextLimitRaw > 0
+                ? Math.floor(contextLimitRaw)
+                : undefined;
+            const capabilitiesRec = this.asRecord(modelRec?.capabilities);
+            const reasoning = Boolean(
+              capabilitiesRec?.reasoning ?? modelRec?.reasoning,
+            );
+            const rawVariants = this.asRecord(modelRec?.variants);
+            const variants = rawVariants
+              ? Object.entries(rawVariants)
+                  .filter(([, variantConfig]) => {
+                    const rec = this.asRecord(variantConfig);
+                    return rec?.disabled !== true;
+                  })
+                  .map(([name]) => name)
+              : [];
+
+            models.push({
+              providerID,
+              modelID,
+              name: this.firstNonEmptyString(modelRec?.name) || modelID,
+              providerName,
+              contextLimit,
+              reasoning,
+              variants,
+            });
+            this.modelCapabilitiesService.rememberCapabilities(
+              providerID,
+              modelID,
+              { reasoning, variants },
+            );
+          }
         }
 
-        const models: ChatModelOption[] = [];
-        if (response?.data && Array.isArray(response.data.all)) {
-          for (const provider of response.data.all) {
-            if (provider?.models) {
-              for (const [modelID, modelConfig] of Object.entries(provider.models)) {
-                const limitRec = this.asRecord((modelConfig as any).limit);
-                const contextLimitRaw = limitRec?.context;
-                const contextLimit =
-                  typeof contextLimitRaw === "number" &&
-                    Number.isFinite(contextLimitRaw) &&
-                    contextLimitRaw > 0
-                    ? Math.floor(contextLimitRaw)
-                    : undefined;
-                const capabilitiesRec = this.asRecord((modelConfig as any).capabilities);
-                const reasoning = Boolean(capabilitiesRec?.reasoning);
-                const rawVariants = this.asRecord((modelConfig as any).variants);
-                const variants = rawVariants
-                  ? Object.entries(rawVariants)
-                      .filter(([, variantConfig]) => {
-                        const rec = this.asRecord(variantConfig);
-                        return rec?.disabled !== true;
-                      })
-                      .map(([name]) => name)
-                  : [];
-                models.push({
-                  providerID: provider.id,
-                  modelID: modelID,
-                  name: (modelConfig as any).name || modelID,
-                  providerName: provider.name || provider.id,
-                  contextLimit,
-                  reasoning,
-                  variants,
-                });
-                this.modelCapabilitiesService.rememberCapabilities(
-                  provider.id,
-                  modelID,
-                  { reasoning, variants },
-                );
-              }
-            }
-          }
+        if (duplicateModelKeys.length > 0) {
+          this.logger.warn("Deduplicated duplicate provider/model entries", {
+            correlationId,
+            duplicateCount: duplicateModelKeys.length,
+            duplicates: duplicateModelKeys.slice(0, 20),
+          });
         }
 
         if (models.length > 0) {
@@ -252,23 +528,39 @@ export class ModelAndAgentManager {
             count: models.length,
           });
           this.availableModels = models;
+          await this.persistModelList(models);
           await this.resolveDefaultModel(models);
 
           // Fetch configured/connected providers
-          let configuredProviders: string[] = [];
+          let configuredProviders = this.getConnectedProviderIds(response);
+          if (configuredProviders.length > 0) {
+            this.logger.info("Using connected providers from provider.list response", {
+              count: configuredProviders.length,
+              providers: configuredProviders,
+            });
+          }
           try {
-            const configResponse = (await client.config.providers()) as any;
-            if (configResponse?.data?.providers && Array.isArray(configResponse.data.providers)) {
-              configuredProviders = configResponse.data.providers
-                .map((p: any) => p.id)
-                .filter((id: string) => id && id.toLowerCase() !== "opencode");
+            if (configuredProviders.length === 0) {
+              const configResponse = (await client.config.providers()) as any;
+              const configProviders = Array.isArray(configResponse?.data?.providers)
+                ? configResponse.data.providers
+                : [];
+              configuredProviders = configProviders
+                .map((p: any) => this.firstNonEmptyString(p?.id, p?.providerID))
+                .filter((id): id is string => typeof id === "string" && id.length > 0)
+                .filter((id) => id.toLowerCase() !== "opencode");
               this.logger.info("Fetched configured providers", {
                 count: configuredProviders.length,
                 providers: configuredProviders,
               });
             }
           } catch (configError) {
-            this.logger.warn("Failed to fetch configured providers", {}, configError as Error);
+            this.logger.warn("Failed to fetch configured providers", {
+              error:
+                configError instanceof Error
+                  ? configError.message
+                  : String(configError),
+            });
           }
 
           this.postMessage({
@@ -297,14 +589,50 @@ export class ModelAndAgentManager {
 
           return models;
         }
+
+        this.logger.warn("Provider list returned no usable models", {
+          correlationId,
+          selectedModel: this.selectedModel,
+          ...responseSummary,
+        });
       } catch (error) {
         this.modelsFetchPromise = null;
+        let diagnostics: Record<string, unknown> = { correlationId };
+
+        try {
+          const client = this.serverManager.getClient();
+          if (client) {
+            diagnostics = {
+              ...diagnostics,
+              ...(await this.collectModelFetchDiagnostics(client as any, error, startTime)),
+            };
+          } else {
+            diagnostics = {
+              ...diagnostics,
+              elapsedMs: Date.now() - startTime,
+              serverStatus: this.serverManager.getStatus(),
+              serverVersion: this.serverManager.getVersion(),
+              serverPort: this.serverManager.getPort(),
+              selectedModel: this.selectedModel,
+              cachedModelCount: this.availableModels.length,
+            };
+          }
+        } catch (diagnosticError) {
+          diagnostics = {
+            ...diagnostics,
+            diagnosticCollectionError:
+              diagnosticError instanceof Error
+                ? diagnosticError.message
+                : String(diagnosticError),
+          };
+        }
 
         this.logger.error(
           'Failed to fetch models',
-          { correlationId },
+          diagnostics,
           error as Error
         );
+        this.postErrorToast(this.buildModelFetchToastMessage(error, diagnostics));
 
         this.logger.endFeatureFlow(correlationId, {
           success: false,
@@ -315,7 +643,15 @@ export class ModelAndAgentManager {
       }
 
       const cachedModels = Array.isArray(this.availableModels) ? this.availableModels : [];
-      const fallbackModels = cachedModels.length > 0 ? cachedModels : this.getSelectedModelFallbackList();
+      const persistedModels = Array.isArray(this.persistedModelList)
+        ? this.persistedModelList
+        : [];
+      const fallbackModels =
+        cachedModels.length > 0
+          ? cachedModels
+          : persistedModels.length > 0
+            ? persistedModels
+            : this.getSelectedModelFallbackList();
       this.availableModels = fallbackModels;
 
       if (fallbackModels.length === 0) {
@@ -323,6 +659,12 @@ export class ModelAndAgentManager {
       } else {
         this.logger.warn("Using fallback models", {
           count: fallbackModels.length,
+          source:
+            cachedModels.length > 0
+              ? "memory"
+              : persistedModels.length > 0
+                ? "persisted-cache"
+                : "selected-model",
         });
       }
 

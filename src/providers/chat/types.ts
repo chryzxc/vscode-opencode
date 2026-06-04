@@ -215,6 +215,7 @@ export type StructuredInteractiveEvent =
 export type StructuredAssistantOutput = {
   responseType?: StructuredResponseType | string;
   message?: string;
+  raw?: Record<string, unknown>;
   /**
    * Per-file change metadata emitted by structured output.
    * Runtime normalization may coerce malformed provider payloads before validation.
