@@ -85,6 +85,21 @@ test("assistant burst coalescing keeps latest base and dedupes timeline arrays",
     /base\.rawResponse\s*=\s*latestRawResponse;/,
     "coalesceAssistantBurst should retain rawResponse for hydrated debug rendering parity",
   );
+  assert.match(
+    coalesceBody,
+    /base\.reasoningEvents\s*=\s*Array\.isArray\(base\.reasoningEvents\)/,
+    "coalesceAssistantBurst should preserve hydrated reasoning events from earlier assistant fragments",
+  );
+  assert.match(
+    coalesceBody,
+    /base\.info\s*=\s*mergeInfoRecord\(base\.info,\s*message\?\.info\);/,
+    "coalesceAssistantBurst should merge info metadata so hydrated token stats and durations survive",
+  );
+  assert.match(
+    coalesceBody,
+    /base\.variant\s*=\s*message\.variant;/,
+    "coalesceAssistantBurst should backfill the thinking variant from earlier assistant fragments",
+  );
 });
 
 test("assistant burst coalescing avoids collapsing distinct assistant replies", () => {

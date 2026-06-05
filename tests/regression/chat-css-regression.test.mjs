@@ -77,3 +77,16 @@ test('markdown-body lists must have separate rules for ul and ol (not combined)'
   const olMatch = chatCssSource.match(olRule);
   assert.ok(ulMatch && olMatch, 'Both ul and ol rules must exist');
 });
+
+test('markdown-body code blocks must include a visible copy button affordance', () => {
+  assert.match(
+    chatCssSource,
+    /\.markdown-body\s+pre\.markdown-code-block\s+\.markdown-copy-button\s*\{/,
+    'markdown code blocks must style the persistent copy button inside the pre container.',
+  );
+  assert.match(
+    chatCssSource,
+    /\.markdown-body\s+pre\s*\{\s*[^}]*padding:\s*2\.1em\s+1em\s+0\.9em;/s,
+    'markdown code blocks need extra top padding so the copy control does not overlap the first line.',
+  );
+});

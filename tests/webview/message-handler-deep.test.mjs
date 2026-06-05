@@ -7,6 +7,10 @@ const source = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'messageHandler.ts')],
   'messageHandler.ts',
 );
+const messageComponentsSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
+  'MessageComponents.tsx',
+);
 
 const handleStreamEventBody = extractFunctionBody(source, 'function handleStreamEvent(');
 const normalizeMessageBody = extractFunctionBody(
@@ -237,8 +241,8 @@ test('toInteractiveEvents maps structured events and question fallback into UI e
 test('normalizeMessage blends streaming snapshots with final messages and structured output', () => {
   assert.match(
     normalizeMessageBody,
-    /const normalizedStructuredOutput = resolveStructuredOutputFromMessageRecord\(rec\);/,
-    'normalizeMessage should normalize structured output before content selection',
+    /const normalizedStructuredOutput =[\s\S]*resolveStructuredOutputFromMessageRecord\(rec\)\s*\?\?[\s\S]*normalizeStructuredOutputWithFallback\(streaming\?\.structuredOutput\);/,
+    'normalizeMessage should normalize structured output from the final payload first, then fall back to the streaming snapshot',
   );
   assert.match(
     normalizeMessageBody,
@@ -249,6 +253,11 @@ test('normalizeMessage blends streaming snapshots with final messages and struct
     normalizeMessageBody,
     /const preferStreamingContent = shouldPreferStreamingContent\([\s\S]*const shouldUseStreamingContent =[\s\S]*content: shouldUseStreamingContent \? streamingContent : content \|\| message\.content/,
     'normalizeMessage should prefer richer streaming content when appropriate',
+  );
+  assert.match(
+    normalizeMessageBody,
+    /const hasCanonicalAssistantContent =[\s\S]*role === "assistant"[\s\S]*content\.trim\(\)\.length > 0[\s\S]*!hasCanonicalAssistantContent;/,
+    'normalizeMessage should not let streaming text overwrite a canonical finalized assistant reply',
   );
   assert.match(
     normalizeMessageBody,
@@ -264,6 +273,16 @@ test('normalizeMessage blends streaming snapshots with final messages and struct
     normalizeMessageBody,
     /if \(normalizedStructuredOutput\)[\s\S]*structuredOutput = normalizedStructuredOutput[\s\S]*toInteractiveEvents\(/,
     'normalizeMessage should preserve normalized structuredOutput and hydrate interactive events from it',
+  );
+  assert.match(
+    normalizeMessageBody,
+    /if \(\s*\(!normalized\.plan \|\| typeof normalized\.plan !== "object"\)\s*&&[\s\S]*streaming\?\.plan[\s\S]*normalized\.plan = \{[\s\S]*\.\.\.streaming\.plan/s,
+    'normalizeMessage should backfill plan metadata from the streaming snapshot when the final payload omitted it',
+  );
+  assert.match(
+    normalizeMessageBody,
+    /if \(\s*\(!Array\.isArray\(normalized\.interactiveEvents\) \|\|[\s\S]*Array\.isArray\(streaming\?\.interactiveEvents\)[\s\S]*normalized\.interactiveEvents = \[\.\.\.streaming\.interactiveEvents\]/s,
+    'normalizeMessage should backfill interactive events from the streaming snapshot when needed',
   );
   assert.match(
     source,
@@ -294,6 +313,35 @@ test('normalizeMessage blends streaming snapshots with final messages and struct
     normalizeMessageBody,
     /return\s+rec\s+as\s+Message/,
     'normalizeMessage should not short-circuit by returning the raw record directly',
+  );
+});
+
+test('progressItemsFromSteps uses stable per-step identity beyond the title fallback', () => {
+  assert.match(
+    messageComponentsSource,
+    /function progressItemsFromSteps\([\s\S]*typeof stepStreamSeq === "number"[\s\S]*`seq:\$\{stepStreamSeq\}`[\s\S]*stepFilePath[\s\S]*stepPartType[\s\S]*stepMeta/s,
+    'progressItemsFromSteps should prefer streamSeq and richer fallback fields so separate completed steps do not overwrite each other in the timeline',
+  );
+});
+
+test('buildDisplayEvents only collapses activity rows when they share the same step identity', () => {
+  assert.match(
+    messageComponentsSource,
+    /const sharesExplicitActivityIdentity =[\s\S]*event\.mergeKey === previous\.mergeKey/s,
+    'buildDisplayEvents should detect shared explicit identity for activity rows before collapsing them',
+  );
+  assert.match(
+    messageComponentsSource,
+    /\(event\.kind !== "activity" \|\| sharesExplicitActivityIdentity\)/,
+    'buildDisplayEvents should not collapse separate activity rows just because their visible text matches',
+  );
+});
+
+test('messageResponse preserves the streaming snapshot when structured-output fallback still has streamed activity', () => {
+  assert.match(
+    source,
+    /const hasStreamingSnapshotActivity =\s*hasVisibleStreamingSnapshot\(snapshotStreaming\);[\s\S]*const shouldPreserveStreamingSnapshot =[\s\S]*!plainTextFallbackFinal[\s\S]*interactiveEventsInResponse\.length > 0[\s\S]*hasStreamingSnapshotActivity/s,
+    'messageResponse should keep the finalized streaming snapshot when plain-text fallback responses still have streamed activity to preserve',
   );
 });
 

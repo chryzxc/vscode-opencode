@@ -172,9 +172,32 @@ test('question.asked stream events arm live popover state', () => {
     'question.asked should open the popover, inject visible prompt context, and finish the active stream for blocking questions',
   );
   assert.match(
+    handlerSource,
+    /eventType === "question\.asked"[\s\S]*interactiveEventsFromQuestionAskedPayload\(payload\)\.length > 0/s,
+    'renderable SDK question.asked events should count as visible assistant turn starters',
+  );
+  assert.match(
+    handlerSource,
+    /const canStartVisibleAssistantTurn =[\s\S]*streamEventCanStartVisibleAssistantTurn\(payload\);[\s\S]*!isExplicitStreamStart &&[\s\S]*!canStartVisibleAssistantTurn/s,
+    'streamEvent gating should allow renderable late-turn interactive events even after processing flips false',
+  );
+  assert.match(
     storeSource,
     /case "SET_INTERACTIVE_EVENTS": \{[\s\S]*interactiveEvents:\s*action\.payload[\s\S]*streamingBySessionId:\s*cacheStreamingForSession\(/s,
     'interactive events should also be mirrored into the live streaming snapshot so finalized question turns keep their assistant bubble before hydration',
+  );
+});
+
+test('processing-session cleanup preserves pending finalized question popovers', () => {
+  const handlerBody = extractFunctionBody(
+    handlerSource,
+    'case "sessionsListUpdate":',
+  );
+
+  assert.match(
+    handlerBody,
+    /const pendingInteractiveEvents = latestPendingInteractiveEvents\([\s\S]*stateAfterProcessingUpdate\.messages \|\| \[\][\s\S]*if \(pendingInteractiveEvents\.length > 0\) \{[\s\S]*SET_INTERACTIVE_EVENTS[\s\S]*payload:\s*pendingInteractiveEvents/s,
+    'when processing ends, the handler should restore pending assistant questions from finalized messages instead of clearing the popover',
   );
 });
 
@@ -215,12 +238,17 @@ test('SDK question replies use native question.reply transport', () => {
   assert.doesNotMatch(
     providerSource,
     /case "questionReply":[\s\S]*processingSessionIds\.delete\(message\.sessionId\)[\s\S]*sendProcessingSessionsUpdate\(\)/,
-    'question replies should not clear processing immediately after submit; the follow-up assistant turn owns that lifecycle',
+    'question replies should not use the wrong session id when clearing processing state',
+  );
+  assert.doesNotMatch(
+    providerSource,
+    /case "questionReply":[\s\S]*getSessionStatusType\(replySessionId\)/,
+    'SDK question replies should not wait on a status poll before releasing loading state',
   );
   assert.match(
     providerSource,
-    /case "questionReply":[\s\S]*await client\.question\.reply\([\s\S]*const status = await this\.getSessionStatusType\(replySessionId\)[\s\S]*status !== "busy" && status !== "retry"[\s\S]*processingSessionIds\.delete\(replySessionId\)/s,
-    'SDK question replies should release loading state when no continuation stream actually starts',
+    /case "questionReply":[\s\S]*await client\.question\.reply\([\s\S]*processingSessionIds\.delete\(replySessionId\)[\s\S]*activeStreamSessionId === replySessionId[\s\S]*sendProcessingSessionsUpdate\(\)/s,
+    'SDK question replies should release loading state immediately after the reply is submitted',
   );
 });
 
@@ -257,6 +285,19 @@ test('interactive answer submissions arm a timeout-suppression transition window
     handlerSource,
     /isLikelyInteractiveAnswerSubmissionMessage\(message\)[\s\S]*SET_INTERACTIVE_EVENTS[\s\S]*payload:\s*\[\]/s,
     'userMessageAppended interactive answer path should clear stale interactive popovers immediately',
+  );
+});
+
+test('heartbeat-only part updates do not re-arm loading during interactive answer transitions', () => {
+  const partUpdatedBody = extractFunctionBody(
+    handlerSource,
+    "case 'message.part.updated':",
+  );
+
+  assert.match(
+    partUpdatedBody,
+    /if \(!part\) \{[\s\S]*awaitingInteractiveTurnStart \|\| isHeartbeatEvent[\s\S]*suppressing processing bootstrap[\s\S]*SET_PROCESSING[\s\S]*payload: true/s,
+    'heartbeat-only no-part updates should not restart loading while waiting for the post-answer assistant turn',
   );
 });
 
@@ -607,12 +648,22 @@ test('interactive popover sendMessage path marks interactive submits to avoid ab
     /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*!payload\.avoidAbortIfProcessing[\s\S]*getEffectiveProcessingSessionIds\(\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true/s,
     'interactive force-send path should suppress abort while non-interactive force-send can still stop active work',
   );
+  assert.match(
+    schedulePromptDispatchBody,
+    /interactiveSubmit:\s*payload\.interactiveSubmit === true/s,
+    'interactive force-send path should preserve the explicit interactive submit marker through to the echoed user message',
+  );
 });
 
 test('interactive answer echo clears stale popover state without forcing local loading', () => {
   const userMessageAppendedBody = extractFunctionBody(
     handlerSource,
     'case "userMessageAppended":',
+  );
+  assert.match(
+    userMessageAppendedBody,
+    /if \(message\.interactiveSubmit === true\) \{\s*return true;\s*\}/s,
+    'interactive answer echoes should be recognized explicitly when the host marks them as interactive submits',
   );
   assert.match(
     userMessageAppendedBody,
@@ -623,6 +674,26 @@ test('interactive answer echo clears stale popover state without forcing local l
     userMessageAppendedBody,
     /if \(isInteractiveAnswerSubmission\) \{[\s\S]*type:\s*"SET_INTERACTIVE_EVENTS"[\s\S]*\}/s,
     'interactive answer echoes should clear stale popover state before loading',
+  );
+  assert.doesNotMatch(
+    userMessageAppendedBody,
+    /return pendingInteractive\.length > 0 && text\.trim\(\)\.length > 0/,
+    'new user messages should not be auto-classified as interactive answers just because an interactive prompt is pending',
+  );
+  assert.match(
+    userMessageAppendedBody,
+    /latestStreamingSnapshot\s*=\s*null/,
+    'new user messages should clear stale streaming snapshots so stop/retry cannot replay a previous question',
+  );
+  assert.match(
+    userMessageAppendedBody,
+    /const persistedAssistantMessageIds = new Set\([\s\S]*hasPersistedAssistantSnapshot[\s\S]*dispatch\(\{ type: "SET_STREAMING", payload: null \}\);/s,
+    'new user messages should drop a streaming snapshot when it already matches a persisted assistant message id',
+  );
+  assert.match(
+    userMessageAppendedBody,
+    /const hasStaleEmptyStreamingPlaceholder =[\s\S]*!hasVisibleStreamingSnapshot\(currentStreaming\)[\s\S]*dispatch\(\{ type: "SET_STREAMING", payload: null \}\);/s,
+    'new user messages should clear a stale empty streaming placeholder before starting the next turn',
   );
   assert.doesNotMatch(
     userMessageAppendedBody,
@@ -728,6 +799,19 @@ test('assistant question responses prioritize question prompt in visible message
     messageSource,
     /isLowValueInteractiveBodyText\(/,
     'assistant renderer should ignore low-value placeholder-only body text for question turns',
+  );
+});
+
+test('question normalization always prefers the canonical structured prompt over leaked draft content', () => {
+  const normalizeBody = extractFunctionBody(
+    handlerSource,
+    'export function normalizeMessage(',
+  );
+
+  assert.match(
+    normalizeBody,
+    /if \(firstNonEmptyString\(normalized\.responseType, normalizedStructuredOutput\?\.responseType\)\?\.toLowerCase\(\) === "question"\)[\s\S]*normalized\.content = structuredQuestionContent;/s,
+    'normalizeMessage should always replace question-turn content with the canonical structured prompt when one exists',
   );
 });
 

@@ -80,6 +80,26 @@ function makeFolderSvg(): string {
   );
 }
 
+function makeCopySvg(): string {
+  return (
+    '<svg aria-hidden="true" viewBox="0 0 16 16" width="12" height="12" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+    '<path d="M5 2.75h6.5a.75.75 0 0 1 .75.75V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<rect x="3.75" y="4.25" width="8.5" height="9" rx="1.25" stroke="currentColor" stroke-width="1.2"/>' +
+    '</svg>'
+  );
+}
+
+async function copyMarkdownCode(text: string): Promise<void> {
+  if (!text) return;
+
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    vscode.postMessage({ type: 'copyToClipboard', text });
+  }
+}
+
 /**
  * Injects a file-icon + clickable link for text that looks like a file path.
  * Matches: src/foo.ts, ./bar.tsx, path/to/file.py, bare filenames like foo.ts
@@ -251,6 +271,54 @@ function injectFileIcons(container: HTMLElement): void {
   });
 }
 
+function injectCodeBlockCopyButtons(container: HTMLElement): void {
+  const codeBlocks = Array.from(container.querySelectorAll<HTMLPreElement>('pre'));
+
+  for (const pre of codeBlocks) {
+    if (pre.querySelector('.markdown-copy-button')) {
+      continue;
+    }
+
+    const code = pre.querySelector('code');
+    const codeText = code?.textContent?.trimEnd() ?? pre.textContent?.trimEnd() ?? '';
+    if (!codeText) {
+      continue;
+    }
+
+    pre.classList.add('markdown-code-block');
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'markdown-copy-button';
+    button.setAttribute('aria-label', 'Copy code block');
+    button.title = 'Copy code';
+    button.innerHTML = `${makeCopySvg()}<span class="markdown-copy-button-label">Copy</span>`;
+
+    button.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      await copyMarkdownCode(codeText);
+
+      const label = button.querySelector('.markdown-copy-button-label');
+      if (!label) {
+        return;
+      }
+
+      const originalText = label.textContent || 'Copy';
+      button.dataset.copied = 'true';
+      label.textContent = 'Copied';
+
+      window.setTimeout(() => {
+        button.dataset.copied = 'false';
+        label.textContent = originalText;
+      }, 1200);
+    });
+
+    pre.insertBefore(button, pre.firstChild);
+  }
+}
+
 
 
 /**
@@ -323,6 +391,9 @@ const MarkdownRendererInner = forwardRef<HTMLDivElement, MarkdownRendererProps>(
       codeBlocks.forEach((block) => {
         hljs.highlightElement(block as HTMLElement);
       });
+
+      // Add copy controls to fenced code blocks.
+      injectCodeBlockCopyButtons(innerRef.current);
 
       // Inject file icons next to file-path-like text
       injectFileIcons(innerRef.current);

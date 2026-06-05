@@ -164,6 +164,27 @@ body.vscode-high-contrast-light {
   color: color-mix(in srgb, var(--oc-text) 96%, var(--oc-accent));
 }
 
+.oc-processing-badge {
+  background: color-mix(in srgb, var(--oc-accent) 16%, var(--oc-panel) 84%);
+  border-color: color-mix(in srgb, var(--oc-accent) 42%, var(--oc-border));
+  color: color-mix(in srgb, var(--oc-text) 94%, var(--oc-accent));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--oc-accent) 10%, transparent)
+    inset;
+}
+
+.oc-soft-progress-spinner {
+  color: color-mix(in srgb, var(--oc-accent) 68%, var(--oc-text) 32%);
+  opacity: 0.9;
+  filter: none;
+}
+
+.border-oc-accent\/24 {
+  border-color: color-mix(in srgb, var(--oc-accent) 14%, var(--oc-border))
+    !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--oc-accent) 7%, transparent)
+    inset;
+}
+
 /* ── Reset ───────────────────────────────────────────────────────────────── */
 body {
   margin: 0;
@@ -1834,7 +1855,7 @@ body {
 
 .markdown-body pre {
   margin: 0.75em 0;
-  padding: 0.9em 1em;
+  padding: 2.1em 1em 0.9em;
   border-radius: 8px;
   overflow-x: auto;
   background: var(--oc-bg-soft);
@@ -1855,6 +1876,54 @@ body {
     color-mix(in srgb, var(--oc-accent) 20%, transparent),
     transparent
   );
+}
+
+.markdown-body pre.markdown-code-block .markdown-copy-button {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 9999px;
+  border: 1px solid var(--oc-border-soft);
+  background: color-mix(in srgb, var(--oc-panel-soft) 88%, transparent);
+  color: var(--oc-text-secondary);
+  padding: 0.3rem 0.55rem;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  z-index: 1;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+
+.markdown-body pre.markdown-code-block .markdown-copy-button:hover,
+.markdown-body pre.markdown-code-block .markdown-copy-button:focus-visible {
+  background: color-mix(in srgb, var(--oc-panel) 90%, var(--oc-accent));
+  border-color: color-mix(in srgb, var(--oc-accent) 28%, var(--oc-border-soft));
+  color: var(--oc-text);
+  transform: translateY(-1px);
+}
+
+.markdown-body pre.markdown-code-block .markdown-copy-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--oc-accent) 38%, transparent);
+  outline-offset: 2px;
+}
+
+.markdown-body pre.markdown-code-block .markdown-copy-button[data-copied="true"] {
+  background: color-mix(in srgb, var(--oc-green) 16%, var(--oc-panel));
+  border-color: color-mix(in srgb, var(--oc-green) 28%, var(--oc-border-soft));
+  color: color-mix(in srgb, var(--oc-text) 88%, var(--oc-green));
+}
+
+.markdown-body pre.markdown-code-block .markdown-copy-button svg {
+  flex-shrink: 0;
 }
 
 .markdown-body pre code {

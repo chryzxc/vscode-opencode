@@ -83,28 +83,13 @@ test('Assistant message part bodies preserve markdown block separation across te
 test('Interactive question rendering suppresses flattened option echo beneath the canonical prompt', () => {
   assert.match(
     messageComponentsSource,
-    /function looksLikeFlattenedInteractiveEcho\(/,
-    'AssistantMessage should detect flattened interactive echo text before appending it under the question prompt.',
-  );
-  assert.match(
-    messageComponentsSource,
-    /looksLikeFlattenedInteractiveEcho\(questionPrompt,\s*safeBaseContent,\s*message\)/,
-    'AssistantMessage should gate interactive prompt concatenation through the flattened-echo detector.',
-  );
-  assert.match(
-    messageComponentsSource,
     /function hasQuestionLikeInteractiveContent\(/,
     'AssistantMessage should recognize question-like interactive payloads even when responseType is not explicitly "question".',
   );
   assert.match(
     messageComponentsSource,
-    /if \(hasQuestionLikeInteractive\) \{\s*return questionPrompt;\s*\}/,
-    'Question-like interactive turns should render only the canonical question prompt in the assistant bubble.',
-  );
-  assert.match(
-    messageComponentsSource,
-    /if \(\s*!isQuestionResponseType\s*&&\s*!hasInteractiveEvents\s*&&\s*!hasQuestionLikeInteractive\s*\)\s*\{\s*return safeBaseContent;\s*\}/,
-    'Persisted question-like turns must not bypass the question-prompt path just because interactiveEvents were not preserved on the message.',
+    /messageResponseType === "progress"[\s\S]*hasQuestionLikeInteractiveContent\(message\)[\s\S]*return questionPrompt;/,
+    'Live progress turns with blocking interactive questions should render the canonical question prompt instead of the reasoning draft.',
   );
 });
 
@@ -171,6 +156,35 @@ test('injectFileIcons skips PRE code blocks', () => {
     injectBody,
     /tagName\s*===\s*['"]PRE['"]/,
     'injectFileIcons must skip PRE blocks to avoid mangling code samples.',
+  );
+});
+
+test('injectCodeBlockCopyButtons adds a persistent copy control to fenced code blocks', () => {
+  const injectBody = extractFunctionBody(markdownRendererSource, 'function injectCodeBlockCopyButtons(');
+  assert.match(
+    injectBody,
+    /querySelectorAll<HTMLPreElement>\(['"]pre['"]\)/,
+    'injectCodeBlockCopyButtons should scan rendered pre blocks.',
+  );
+  assert.match(
+    injectBody,
+    /markdown-copy-button/,
+    'injectCodeBlockCopyButtons should create a dedicated copy button class.',
+  );
+  assert.match(
+    injectBody,
+    /aria-label['"]?\s*,\s*['"]Copy code block['"]/,
+    'injectCodeBlockCopyButtons should expose an accessible label for the copy button.',
+  );
+  assert.match(
+    injectBody,
+    /copyMarkdownCode\(codeText\)/,
+    'injectCodeBlockCopyButtons should copy the fenced code text through the shared clipboard helper.',
+  );
+  assert.match(
+    injectBody,
+    /pre\.insertBefore\(button,\s*pre\.firstChild\)/,
+    'injectCodeBlockCopyButtons should place the copy button inside the code block container.',
   );
 });
 

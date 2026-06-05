@@ -227,6 +227,12 @@ test('createMessageHandler handles stopRequestHandled by finalizing streaming', 
     /case\s*["']stopRequestHandled["']\s*:[\s\S]*type:\s*["']FINISH_STREAMING["']/s,
     'stopRequestHandled should finalize the streaming snapshot'
   );
+
+  assert.match(
+    createMessageHandlerBody,
+    /case\s*["']stopRequestHandled["']\s*:[\s\S]*type:\s*["']SET_INTERACTIVE_EVENTS["']\s*,\s*payload:\s*\[\]/s,
+    'stopRequestHandled should clear stale interactive events so previous questions are not replayed',
+  );
 });
 
 test('getAgentName helper provides type-safe agent name extraction', () => {

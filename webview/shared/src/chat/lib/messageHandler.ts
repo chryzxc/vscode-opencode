@@ -41,12 +41,10 @@ import {
   sanitizeStructuredOutput,
   validateStructuredOutput,
 } from "./structuredOutputValidator";
+import { config } from "../../config";
 import vscode from "./vscode";
 
-const STREAM_DEBUG_ENABLED =
-  typeof window !== "undefined" &&
-  (window as unknown as { __OPENCODE_STREAM_DEBUG__?: boolean })
-    .__OPENCODE_STREAM_DEBUG__ === true;
+const STREAM_DEBUG_ENABLED = true;
 
 // WebView Logger - sends logs to extension for centralized logging
 class WebViewLogger {
@@ -58,6 +56,10 @@ class WebViewLogger {
   }
 
   private shouldLog(level: string): boolean {
+    if (config.debug.disableLogs) {
+      return false;
+    }
+
     const levels = ['debug', 'info', 'warn', 'error'];
     return levels.indexOf(level) >= levels.indexOf(this.logLevel);
   }
@@ -127,8 +129,184 @@ const webviewLogger = new WebViewLogger();
 
 function streamDebug(...args: unknown[]): void {
   if (STREAM_DEBUG_ENABLED) {
-    webviewLogger.debug('Stream debug', { args });
+    webviewLogger.info('Stream debug', { args });
   }
+}
+
+function logLiveStructuredTurn(stage: string, data: Record<string, unknown>): void {
+  streamDebug(`[OpenCode][live-structured] ${stage}`, data);
+}
+
+function isHeartbeatEventType(eventType: string): boolean {
+  return eventType === "server.heartbeat";
+}
+
+function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unknown> {
+  const properties = asRecord(payload.properties);
+  const partRecord = asRecord(payload.part) ?? asRecord(properties?.part);
+  const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
+  const structuredRecord = asRecord(payload.structured);
+  const eventType =
+    asString(payload.type) || asString(payload.event) || asString(payload.kind) || "unknown";
+  const textLike =
+    asRichString(payload.text) ||
+    asRichString(payload.content) ||
+    asRichString(payload.delta) ||
+    asRichString(properties?.text) ||
+    asRichString(properties?.content) ||
+    asRichString(properties?.delta) ||
+    asRichString(partRecord?.text) ||
+    asRichString(partRecord?.content) ||
+    asRichString(partRecord?.delta);
+
+  return {
+    eventType,
+    role:
+      asString(payload.role) ||
+      asString(infoRecord?.role) ||
+      asString(properties?.role) ||
+      asString(partRecord?.role) ||
+      null,
+    messageId:
+      asString(payload.messageId) ||
+      asString((payload as UnknownRecord).messageID) ||
+      asString(payload.id) ||
+      asString(properties?.messageId) ||
+      asString(properties?.messageID) ||
+      asString(infoRecord?.id) ||
+      null,
+    finish:
+      typeof infoRecord?.finish === "boolean"
+        ? infoRecord.finish
+        : typeof payload.finish === "boolean"
+          ? payload.finish
+          : null,
+    structuredKind: asString(structuredRecord?.kind) || null,
+    structuredTextPreview: previewForLog(
+      asString(structuredRecord?.message) || asString(structuredRecord?.text),
+    ),
+    partType: normalizePartType(partRecord?.type),
+    textPreview: previewForLog(textLike),
+    hasStructuredOutput:
+      typeof payload.structuredOutput !== "undefined" ||
+      typeof (payload as UnknownRecord).structured_output !== "undefined" ||
+      typeof infoRecord?.structuredOutput !== "undefined" ||
+      typeof (infoRecord as UnknownRecord | null)?.structured_output !== "undefined",
+    payloadKeys: Object.keys(payload),
+    propertyKeys: properties ? Object.keys(properties) : [],
+  };
+}
+
+function previewForLog(value: unknown, max = 160): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length > max
+    ? `${normalized.slice(0, Math.max(0, max - 3))}...`
+    : normalized;
+}
+
+function summarizeStreamingForLog(streaming: StreamingState | null | undefined) {
+  if (!streaming) {
+    return null;
+  }
+  return {
+    messageId: streaming.messageId,
+    isActive: streaming.isActive,
+    responseType: streaming.responseType,
+    contentLength: asString(streaming.content).length,
+    contentPreview: previewForLog(streaming.content),
+    hasRenderableContent: streaming.hasRenderableContent === true,
+    reasoningLength: asString(streaming.reasoning).length,
+    reasoningEvents: Array.isArray(streaming.reasoningEvents)
+      ? streaming.reasoningEvents.length
+      : 0,
+    steps: Array.isArray(streaming.steps) ? streaming.steps.length : 0,
+    progressEvents: Array.isArray(streaming.progressEvents)
+      ? streaming.progressEvents.length
+      : 0,
+    edits: Array.isArray(streaming.edits) ? [...streaming.edits] : [],
+    hasPlan: !!streaming.plan,
+    hasStructuredOutput: !!streaming.structuredOutput,
+    interactiveEvents: Array.isArray(streaming.interactiveEvents)
+      ? streaming.interactiveEvents.length
+      : 0,
+  };
+}
+
+function summarizeMessageForLog(message: Message | undefined | null) {
+  if (!message) {
+    return null;
+  }
+  return {
+    id: asString(message.id) || asString(asRecord(message.info)?.id) || null,
+    role: asString(message.role) || asString(asRecord(message.info)?.role) || null,
+    responseType:
+      firstNonEmptyString(
+        asString(message.responseType),
+        asString(asRecord((message as UnknownRecord).structuredOutput)?.responseType),
+      ) || null,
+    contentLength: asString(message.content).length,
+    contentPreview: previewForLog(message.content),
+    textLength: asString(message.text).length,
+    textPreview: previewForLog(message.text),
+    parts: Array.isArray(message.parts) ? message.parts.length : 0,
+    edits: Array.isArray(message.edits)
+      ? message.edits.map((edit) => asString(asRecord(edit)?.file)).filter(Boolean)
+      : [],
+    hasPlan: !!message.plan,
+    hasStructuredOutput: !!asRecord((message as UnknownRecord).structuredOutput),
+    interactiveEvents: Array.isArray(message.interactiveEvents)
+      ? message.interactiveEvents.length
+      : 0,
+    reasoningEvents: Array.isArray(message.reasoningEvents)
+      ? message.reasoningEvents.length
+      : 0,
+    steps: Array.isArray(message.steps) ? message.steps.length : 0,
+    progressEvents: Array.isArray(message.progressEvents)
+      ? message.progressEvents.length
+      : 0,
+  };
+}
+
+function summarizeStepListForLog(
+  steps: Array<
+    | MessageStep
+    | StreamingStep
+    | (Record<string, unknown> & {
+        title?: unknown;
+        status?: unknown;
+        source?: unknown;
+        partType?: unknown;
+        id?: unknown;
+        callID?: unknown;
+      })
+  >,
+) {
+  return steps.map((step, index) => {
+    const rec = asRecord(step) ?? {};
+    return {
+      index,
+      key:
+        asString(rec.callID) ||
+        asString(rec.id) ||
+        `${asString(rec.title).trim().toLowerCase()}#${index}`,
+      title: previewForLog(asString(rec.title), 96),
+      status: asString(rec.status) || null,
+      source: asString(rec.source) || null,
+      partType: asString(rec.partType) || null,
+      filePath:
+        asString((rec as UnknownRecord).filePath) ||
+        asString((rec as UnknownRecord).content) ||
+        null,
+      hasActivityDetail: !!asRecord((rec as UnknownRecord).activityDetail),
+      hasDiffStats: !!asRecord((rec as UnknownRecord).diffStats),
+    };
+  });
 }
 
 /**
@@ -534,7 +712,7 @@ function needsBoundarySpace(previous: string, next: string): boolean {
   return /[A-Za-z0-9]/.test(prevChar) && /[A-Za-z0-9]/.test(nextChar);
 }
 
-function resolveStreamingContentUpdate(
+export function resolveStreamingContentUpdate(
   currentContent: string,
   incomingChunk: string,
   fromDelta: boolean,
@@ -545,15 +723,6 @@ function resolveStreamingContentUpdate(
 
   if (!currentContent) {
     return { content: incomingChunk, append: false };
-  }
-
-  const withBoundary =
-    fromDelta && needsBoundarySpace(currentContent, incomingChunk)
-      ? ` ${incomingChunk}`
-      : incomingChunk;
-
-  if (fromDelta) {
-    return { content: withBoundary, append: true };
   }
 
   const currentNormalized = currentContent.replace(/\r\n/g, '\n');
@@ -578,8 +747,97 @@ function resolveStreamingContentUpdate(
     return null;
   }
 
+  const overlapRemainder = findWordOverlapRemainder(
+    currentContent,
+    incomingChunk,
+  );
+  if (overlapRemainder !== null) {
+    return {
+      content: needsBoundarySpace(currentContent, overlapRemainder)
+        ? ` ${overlapRemainder}`
+        : overlapRemainder,
+      append: true,
+    };
+  }
+
+  if (fromDelta) {
+    return {
+      content: needsBoundarySpace(currentContent, incomingChunk)
+        ? ` ${incomingChunk}`
+        : incomingChunk,
+      append: true,
+    };
+  }
+
   // Non-delta updates are usually full snapshots from providers.
   return { content: incomingChunk, append: false };
+}
+
+function findWordOverlapRemainder(
+  currentContent: string,
+  incomingChunk: string,
+): string | null {
+  const currentWords = normalizeComparableText(currentContent)
+    .toLowerCase()
+    .split(" ")
+    .filter((word) => word.length > 0);
+  const incomingWords = normalizeComparableText(incomingChunk)
+    .toLowerCase()
+    .split(" ")
+    .filter((word) => word.length > 0);
+  if (currentWords.length === 0 || incomingWords.length === 0) {
+    return null;
+  }
+
+  const maxOverlap = Math.min(currentWords.length, incomingWords.length);
+  for (let overlap = maxOverlap; overlap >= 2; overlap -= 1) {
+    let matches = true;
+    for (let index = 0; index < overlap; index += 1) {
+      if (
+        currentWords[currentWords.length - overlap + index] !==
+        incomingWords[index]
+      ) {
+        matches = false;
+        break;
+      }
+    }
+    if (!matches) {
+      continue;
+    }
+
+    const remainder = skipLeadingWords(incomingChunk, overlap).trimStart();
+    if (!remainder) {
+      return null;
+    }
+    return remainder;
+  }
+
+  return null;
+}
+
+function skipLeadingWords(text: string, wordCount: number): string {
+  if (wordCount <= 0) {
+    return text;
+  }
+
+  const wordMatcher = /\S+/g;
+  let seen = 0;
+  let startIndex = text.length;
+  let match: RegExpExecArray | null;
+
+  while ((match = wordMatcher.exec(text)) !== null) {
+    seen += 1;
+    if (seen === wordCount + 1) {
+      startIndex = match.index;
+      break;
+    }
+  }
+
+  if (seen <= wordCount) {
+    return "";
+  }
+
+  return text.slice(startIndex);
 }
 
 function normalizePartType(value: unknown): string {
@@ -1149,6 +1407,7 @@ function normalizeActivitySteps(
   streaming: StreamingState | null,
   sanitizedMergedParts: MessagePart[],
 ): MessageStep[] {
+  const messageId = getMessageId(message);
   const candidates: unknown[] = [];
   if (Array.isArray(message.steps)) {
     candidates.push(
@@ -1200,10 +1459,32 @@ function normalizeActivitySteps(
     );
   });
 
+  streamDebug("[OpenCode][DEBUGGING NOW] timeline normalizeActivitySteps", {
+    messageId,
+    messageSteps: summarizeStepListForLog(
+      Array.isArray(message.steps) ? message.steps : [],
+    ),
+    messageProgressEvents: summarizeStepListForLog(
+      Array.isArray(message.progressEvents) ? message.progressEvents : [],
+    ),
+    streamingSteps: summarizeStepListForLog(
+      Array.isArray(streaming?.steps) ? streaming.steps : [],
+    ),
+    streamingProgressEvents: summarizeStepListForLog(
+      Array.isArray(streaming?.progressEvents) ? streaming.progressEvents : [],
+    ),
+    mergedSteps: summarizeStepListForLog(merged),
+  });
+
   if (merged.length > 0) {
     return merged;
   }
-  return extractActivityStepsFromParts(sanitizedMergedParts, "final");
+  const fallback = extractActivityStepsFromParts(sanitizedMergedParts, "final");
+  streamDebug("[OpenCode][DEBUGGING NOW] timeline normalizeActivitySteps fallback-from-parts", {
+    messageId,
+    fallbackSteps: summarizeStepListForLog(fallback),
+  });
+  return fallback;
 }
 
 type StructuredInteractiveEvent = {
@@ -2448,9 +2729,9 @@ function structuredOutputFromRawDebug(parsedRawDebug: ParsedRawDebug): Structure
   }
 
   const infoRec = asRecord(parsedRawDebug.info);
+  candidates.push((infoRec as UnknownRecord | null)?.structured);
   candidates.push(infoRec?.structuredOutput);
   candidates.push((infoRec as UnknownRecord | null)?.structured_output);
-  candidates.push((infoRec as UnknownRecord | null)?.structured);
 
   for (const candidate of candidates) {
     const normalized = normalizeStructuredOutputWithFallback(candidate);
@@ -2465,12 +2746,12 @@ function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): Structure
   const infoRec = asRecord(rec.info);
   const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
   const localCandidates: unknown[] = [
+    (rec as UnknownRecord).structured,
+    (infoRec as UnknownRecord | null)?.structured,
     rec.structuredOutput,
     (rec as UnknownRecord).structured_output,
-    (rec as UnknownRecord).structured,
     infoRec?.structuredOutput,
     (infoRec as UnknownRecord | null)?.structured_output,
-    (infoRec as UnknownRecord | null)?.structured,
   ];
 
   for (const candidate of localCandidates) {
@@ -3489,16 +3770,73 @@ function upsertStreamingStep(
 }
 
 function contentFromParts(parts: unknown[]): string {
-  return parts
-    .map((part) => {
-      const rec = asRecord(part);
-      if (!rec || !isRenderableAssistantTextPart(rec)) {
-        return '';
-      }
-      return asRichString(rec.text) || asRichString(rec.content) || asRichString(rec.delta);
-    })
-    .join('')
-    .trim();
+  const textSegments: string[] = [];
+  let lastNormalizedSegment = "";
+
+  for (const part of parts) {
+    const rec = asRecord(part);
+    if (!rec || !isRenderableAssistantTextPart(rec)) {
+      continue;
+    }
+
+    const text =
+      asRichString(rec.text) ||
+      asRichString(rec.content) ||
+      asRichString(rec.delta);
+    if (!text) {
+      continue;
+    }
+
+    const normalizedSegment = normalizeComparableText(text);
+    if (normalizedSegment && normalizedSegment === lastNormalizedSegment) {
+      continue;
+    }
+
+    textSegments.push(text);
+    lastNormalizedSegment = normalizedSegment;
+  }
+
+  return textSegments.join("").trim();
+}
+
+function dedupeAdjacentRenderableTextParts(
+  parts: MessagePart[],
+): MessagePart[] {
+  if (!Array.isArray(parts) || parts.length <= 1) {
+    return parts;
+  }
+
+  const deduped: MessagePart[] = [];
+  let lastNormalizedSegment = "";
+
+  for (const part of parts) {
+    const rec = asRecord(part);
+    if (!rec || !isRenderableAssistantTextPart(rec)) {
+      deduped.push(part);
+      lastNormalizedSegment = "";
+      continue;
+    }
+
+    const text =
+      asRichString(rec.text) ||
+      asRichString(rec.content) ||
+      asRichString(rec.delta);
+    if (!text) {
+      deduped.push(part);
+      lastNormalizedSegment = "";
+      continue;
+    }
+
+    const normalizedSegment = normalizeComparableText(text);
+    if (normalizedSegment && normalizedSegment === lastNormalizedSegment) {
+      continue;
+    }
+
+    deduped.push(part);
+    lastNormalizedSegment = normalizedSegment;
+  }
+
+  return deduped;
 }
 
 function collectReasoningFingerprintsForHydration(message: Message): Set<string> {
@@ -3604,6 +3942,29 @@ function extractRenderableAssistantTextForHydration(message: Message): string {
   return contentFromParts(parts);
 }
 
+function isCanonicalAssistantDisplayMessage(message: Message): boolean {
+  const rec = asRecord(message);
+  if (!rec) {
+    return false;
+  }
+
+  const structured = resolveStructuredOutputFromMessageRecord(rec);
+  const responseType = firstNonEmptyString(
+    structured?.responseType,
+    asString(rec.responseType),
+  )?.toLowerCase();
+
+  if (responseType === "question" || responseType === "implementation_plan") {
+    return true;
+  }
+
+  if (responseType !== "message") {
+    return false;
+  }
+
+  return !!getCanonicalStructuredMessageText(message);
+}
+
 function hasRenderableAssistantTextInParts(parts: unknown[]): boolean {
   return parts.some((part) => {
     const rec = asRecord(part);
@@ -3666,7 +4027,14 @@ function getCanonicalStructuredMessageText(message: Message | UnknownRecord): st
   if (responseType !== "message") {
     return "";
   }
-  return asString(structured?.message).trim();
+  const structuredMessage = asString(structured?.message).trim();
+  if (!structuredMessage) {
+    return "";
+  }
+  if (isReasoningLeakCandidateForHydration(structuredMessage, message as Message, rec.parts)) {
+    return "";
+  }
+  return structuredMessage;
 }
 
 function latestUserMessageText(state: AppState): string {
@@ -3897,7 +4265,7 @@ function sanitizeAssistantMessageEcho(message: Message, state: AppState): Messag
   return next;
 }
 
-function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined {
+export function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined {
   const rec = asRecord(message);
   if (!rec) {
     // FIX: If this is an assistant message with parts, don't return undefined
@@ -4006,6 +4374,9 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     }
     return nextPart as MessagePart;
   });
+  const normalizedParts = dedupeAdjacentRenderableTextParts(
+    normalizedPartsWithLeakFiltering as MessagePart[],
+  );
 
   const splitReasoningFromCandidate = (raw: string): string => {
     const mixed = splitMixedReasoningFromContent(raw);
@@ -4021,10 +4392,12 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
 
   // Normalize structured output early so content-source selection can rely on
   // structured responseType/message without falling back to free-form text.
-  const normalizedStructuredOutput = resolveStructuredOutputFromMessageRecord(rec);
+  const normalizedStructuredOutput =
+    resolveStructuredOutputFromMessageRecord(rec) ??
+    normalizeStructuredOutputWithFallback(streaming?.structuredOutput);
 
   const role = asString(rec.role) || asString(asRecord(rec.info)?.role);
-  const nonReasoningPartsContent = contentFromParts(normalizedPartsWithLeakFiltering).trim();
+  const nonReasoningPartsContent = contentFromParts(normalizedParts).trim();
   const contentFromTopLevel = pickBestContentCandidate([
     splitReasoningFromCandidate(asRichString(rec.content)),
     splitReasoningFromCandidate(asRichString(rec.text)),
@@ -4035,6 +4408,20 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     normalizedStructuredOutput?.responseType,
     asString(rec.responseType),
   )?.toLowerCase();
+  const structuredInteractiveEvents = toInteractiveEvents(
+    normalizedStructuredOutput,
+  );
+  const blockingStructuredInteractiveEvents = structuredInteractiveEvents.filter(
+    (event) => {
+      const type = asString((event as Record<string, unknown>)?.type).toLowerCase();
+      return (
+        type === "question" ||
+        type === "confirm" ||
+        type === "quick_actions" ||
+        type === "quick-actions"
+      );
+    },
+  );
   // Final SDK structured output is the canonical assistant body for explicit
   // structured message-like turns. Text parts can contain transitional bridge
   // text ("delivering summary directly", etc.) while the structured payload
@@ -4141,12 +4528,38 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     }
     return false;
   })();
+  const hasCanonicalAssistantContent =
+    role === "assistant" && typeof content === "string" && content.trim().length > 0;
   const shouldUseStreamingContent =
     hasRenderableStreamingContent &&
     !shouldSuppressStreamingFallbackForReasoningOnly &&
     !nonReasoningPartsContent &&
     preferStreamingContent &&
-    !streamingContentMatchesReasoning;
+    !streamingContentMatchesReasoning &&
+    !hasCanonicalAssistantContent;
+  if (streaming && role === "assistant") {
+    streamDebug("[OpenCode][DEBUGGING NOW] assistant normalization decision", {
+      messageId: sourceMessageId,
+      provisionalResponseType: provisionalResponseType ?? null,
+      contentSelectedSource,
+      finalContentLength: (content || "").length,
+      finalContentPreview: previewForLog(content),
+      streamingContentLength: streamingContent.length,
+      streamingContentPreview: previewForLog(streamingContent),
+      hasRenderableStreamingContent,
+      preferStreamingContent,
+      hasCanonicalAssistantContent,
+      shouldUseStreamingContent,
+      streamingContentMatchesReasoning,
+      shouldSuppressStreamingFallbackForReasoningOnly,
+      normalizedStructuredOutputResponseType:
+        normalizedStructuredOutput?.responseType ?? null,
+      normalizedStructuredOutputMessagePreview: previewForLog(
+        normalizedStructuredOutput?.message,
+      ),
+      streamingSummary: summarizeStreamingForLog(streaming),
+    });
+  }
   if (shouldSuppressStreamingFallbackForReasoningOnly) {
     webviewLogger.info("Suppressing streaming fallback: raw debug indicates reasoning-only final payload", {
       messageId: sourceMessageId,
@@ -4159,9 +4572,9 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     role: role || message.role || (parts.length > 0 ? 'assistant' : undefined),
     content: shouldUseStreamingContent ? streamingContent : content || message.content,
     parts: shouldUseStreamingContent
-      ? partsWithStreamingContent(normalizedPartsWithLeakFiltering as MessagePart[], streamingContent)
-      : normalizedPartsWithLeakFiltering.length > 0
-        ? (normalizedPartsWithLeakFiltering as Message['parts'])
+      ? partsWithStreamingContent(normalizedParts, streamingContent)
+      : normalizedParts.length > 0
+        ? (normalizedParts as Message['parts'])
         : message.parts
   };
 
@@ -4206,6 +4619,25 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
         normalized.interactiveEvents = structuredInteractiveEvents;
       }
     }
+  }
+
+  if (
+    (!normalized.plan || typeof normalized.plan !== "object") &&
+    streaming?.plan &&
+    typeof streaming.plan === "object"
+  ) {
+    normalized.plan = {
+      ...streaming.plan,
+    };
+  }
+
+  if (
+    (!Array.isArray(normalized.interactiveEvents) ||
+      normalized.interactiveEvents.length === 0) &&
+    Array.isArray(streaming?.interactiveEvents) &&
+    streaming.interactiveEvents.length > 0
+  ) {
+    normalized.interactiveEvents = [...streaming.interactiveEvents];
   }
 
   const rawStructuredOutputs = collectRawStructuredOutputCandidates(rec);
@@ -4390,6 +4822,15 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
       normalized.edits = fromParts;
     }
   }
+  if (
+    (!Array.isArray(normalized.edits) || normalized.edits.length === 0) &&
+    Array.isArray(streaming?.edits) &&
+    streaming.edits.length > 0
+  ) {
+    normalized.edits = Array.from(new Set(streaming.edits))
+      .filter((file) => typeof file === "string" && file.trim().length > 0)
+      .map((file) => ({ file }));
+  }
 
   // NOTE: When the AI triggers a question via a tool call (no text parts), content ends up
   // empty. Synthesize a context message from the Question tool parts so the chat bubble
@@ -4409,6 +4850,21 @@ function normalizeMessage(message: Message, streaming: StreamingState | null): M
     const synthesized = synthesizeQuestionContextMessage(structuredEvents);
     if (synthesized) {
       normalized.content = synthesized;
+    }
+  }
+
+  if (firstNonEmptyString(normalized.responseType, normalizedStructuredOutput?.responseType)?.toLowerCase() === "question") {
+    const questionRecord = asRecord(normalizedStructuredOutput?.question);
+    const structuredQuestionContent =
+      firstNonEmptyString(
+        asString(questionRecord?.question),
+        asString(questionRecord?.message),
+        asString(questionRecord?.content),
+        asString(questionRecord?.prompt),
+      ) ||
+      synthesizeQuestionContextMessage(structuredEvents);
+    if (structuredQuestionContent) {
+      normalized.content = structuredQuestionContent;
     }
   }
 
@@ -5408,6 +5864,29 @@ function mergeAssistantReplacement(existing: Message, incoming: Message): Messag
   );
   const subagents = mergeActivityArrays(existing.subagents, incoming.subagents);
 
+  streamDebug("[OpenCode][DEBUGGING NOW] timeline mergeAssistantReplacement", {
+    existingMessageId: getMessageId(existing),
+    incomingMessageId: getMessageId(incoming),
+    existingSteps: summarizeStepListForLog(
+      Array.isArray(existing.steps) ? existing.steps : [],
+    ),
+    incomingSteps: summarizeStepListForLog(
+      Array.isArray(incoming.steps) ? incoming.steps : [],
+    ),
+    mergedSteps: summarizeStepListForLog(
+      Array.isArray(steps) ? steps : [],
+    ),
+    existingProgressEvents: summarizeStepListForLog(
+      Array.isArray(existing.progressEvents) ? existing.progressEvents : [],
+    ),
+    incomingProgressEvents: summarizeStepListForLog(
+      Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+    ),
+    mergedProgressEvents: summarizeStepListForLog(
+      Array.isArray(progressEvents) ? progressEvents : [],
+    ),
+  });
+
   return {
     ...mergedBurst,
     reasoningEvents,
@@ -5426,6 +5905,16 @@ function replaceMatchingAssistantTurn(
 ): Message[] {
   const ids = new Set(candidateIds.map((id) => asString(id)).filter(Boolean));
   if (ids.size === 0) {
+    streamDebug("[OpenCode][DEBUGGING NOW] timeline replaceMatchingAssistantTurn append-no-id", {
+      incomingMessageId: getMessageId(incoming),
+      incomingSummary: summarizeMessageForLog(incoming),
+      incomingSteps: summarizeStepListForLog(
+        Array.isArray(incoming.steps) ? incoming.steps : [],
+      ),
+      incomingProgressEvents: summarizeStepListForLog(
+        Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+      ),
+    });
     return [...messages, incoming];
   }
 
@@ -5439,10 +5928,39 @@ function replaceMatchingAssistantTurn(
       continue;
     }
     const next = [...messages];
+    streamDebug("[OpenCode][DEBUGGING NOW] timeline replaceMatchingAssistantTurn match", {
+      matchedId: id,
+      candidateIds: Array.from(ids),
+      existingSummary: summarizeMessageForLog(message),
+      incomingSummary: summarizeMessageForLog(incoming),
+      existingSteps: summarizeStepListForLog(
+        Array.isArray(message.steps) ? message.steps : [],
+      ),
+      incomingSteps: summarizeStepListForLog(
+        Array.isArray(incoming.steps) ? incoming.steps : [],
+      ),
+      existingProgressEvents: summarizeStepListForLog(
+        Array.isArray(message.progressEvents) ? message.progressEvents : [],
+      ),
+      incomingProgressEvents: summarizeStepListForLog(
+        Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+      ),
+    });
     next[index] = mergeAssistantReplacement(message, incoming);
     return next;
   }
 
+  streamDebug("[OpenCode][DEBUGGING NOW] timeline replaceMatchingAssistantTurn append-no-match", {
+    candidateIds: Array.from(ids),
+    incomingMessageId: getMessageId(incoming),
+    incomingSummary: summarizeMessageForLog(incoming),
+    incomingSteps: summarizeStepListForLog(
+      Array.isArray(incoming.steps) ? incoming.steps : [],
+    ),
+    incomingProgressEvents: summarizeStepListForLog(
+      Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+    ),
+  });
   return [...messages, incoming];
 }
 
@@ -6324,7 +6842,7 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
     if (content.length > 0) {
       const structuredMessage = getCanonicalStructuredMessageText(message);
       const candidateTextScore =
-        content.length + (structuredMessage ? 100000 : 0);
+        content.length + (isCanonicalAssistantDisplayMessage(message) ? 100000 : 0);
       if (candidateTextScore >= latestTextScore) {
         latestTextScore = candidateTextScore;
         latestText = content;
@@ -6487,7 +7005,7 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   return base;
 }
 
-function coalesceAdjacentAssistantHistoryMessages(messages: Message[]): Message[] {
+export function coalesceAdjacentAssistantHistoryMessages(messages: Message[]): Message[] {
   if (!Array.isArray(messages) || messages.length <= 1) {
     return messages;
   }
@@ -6544,14 +7062,47 @@ function logRenderSnapshot(source: string, messages: Message[]): void {
     summarizeRenderMessageForDebug(message, messages.length - tail.length + index),
   );
   const last = summary[summary.length - 1];
-  webviewLogger.info("Rendering snapshot", {
+  webviewLogger.info("[PRE-RENDER] rendering snapshot", {
     source,
     messageCount: messages.length,
     last,
   });
+  webviewLogger.info("[PRE-RENDER] rendering full payload", {
+    source,
+    messageCount: messages.length,
+    messages,
+  });
   streamDebug("[OpenCode][webview] render snapshot tail", {
     source,
     items: summary,
+  });
+}
+
+function logSourceSnapshot(source: string, messages: Message[] | unknown[]): void {
+  const normalizedMessages = Array.isArray(messages) ? messages : [];
+  const tail = normalizedMessages.slice(-20);
+  const summary = tail.map((message, index) =>
+    summarizeRenderMessageForDebug(
+      message as Message,
+      normalizedMessages.length - tail.length + index,
+    ),
+  );
+  const last = summary[summary.length - 1];
+  webviewLogger.info("[SOURCE] incoming render payload", {
+    source,
+    messageCount: normalizedMessages.length,
+    last,
+  });
+}
+
+function logFullPayloadSnapshot(
+  stage: "SOURCE" | "PRE-RENDER",
+  source: string,
+  payload: Record<string, unknown>,
+): void {
+  webviewLogger.info(`[${stage}] full payload`, {
+    source,
+    payload,
   });
 }
 
@@ -7517,6 +8068,70 @@ function activityScoreFromMessages(messages: Message[]): number {
   }, 0);
 }
 
+function getHistoryTailSignature(messages: Message[]): {
+  role: "user" | "assistant" | null;
+  signature: string | null;
+} {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) {
+      continue;
+    }
+
+    const role = (
+      asString(message.role) || asString(asRecord(message.info)?.role)
+    )
+      .toLowerCase()
+      .trim();
+    if (role !== "user" && role !== "assistant") {
+      continue;
+    }
+
+    const text = normalizeComparableText(extractMessageText(message));
+    const id = getMessageId(message) || "";
+    return {
+      role: role as "user" | "assistant",
+      signature: `${role}:${id || text}`,
+    };
+  }
+
+  return {
+    role: null,
+    signature: null,
+  };
+}
+
+export function shouldPreferCachedSwitchMessages(
+  cachedMessages: Message[],
+  incomingMessages: Message[],
+): boolean {
+  if (cachedMessages.length === 0) {
+    return false;
+  }
+
+  const cachedScore = activityScoreFromMessages(cachedMessages);
+  const incomingScore = activityScoreFromMessages(incomingMessages);
+  if (cachedScore > incomingScore) {
+    return true;
+  }
+  const cachedTail = getHistoryTailSignature(cachedMessages);
+  const incomingTail = getHistoryTailSignature(incomingMessages);
+  // When switching sessions mid-turn, the server snapshot can lag behind the
+  // locally cached transcript. If the visible tail changed, keep the cached
+  // version so the user’s latest message and assistant turn do not disappear.
+  if (
+    cachedTail.signature &&
+    incomingTail.signature &&
+    cachedTail.signature !== incomingTail.signature &&
+    cachedMessages.length >= incomingMessages.length &&
+    (cachedTail.role === "user" || cachedTail.role === "assistant")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function mergeStreamingSnapshotIntoHistory(
   messages: Message[],
   streaming: StreamingState,
@@ -7689,6 +8304,7 @@ function handleStreamEvent(
 
   const isPartUpdateEvent = eventType.startsWith("message.part.");
   const normalizedEventType = isPartUpdateEvent ? "message.part.updated" : eventType;
+  const isHeartbeatEvent = isHeartbeatEventType(eventType);
   const state = getState();
   const current = state.streaming;
   const properties = asRecord(payload.properties);
@@ -7703,29 +8319,40 @@ function handleStreamEvent(
   const structuredText =
     asString(structuredRecord?.message) ||
     asString(structuredRecord?.text);
+  const fallbackStructuredOutputCandidate = (() => {
+    const responseType =
+      asString(payload.responseType) ||
+      asString(properties?.responseType) ||
+      asString(infoRecord?.responseType);
+    const message =
+      asString(payload.message) ||
+      asString(properties?.message) ||
+      asString(infoRecord?.message);
+    const plan =
+      asRecord(payload.plan) ||
+      asRecord(properties?.plan) ||
+      asRecord(infoRecord?.plan) ||
+      undefined;
+    if (!responseType && !message && !plan) {
+      return undefined;
+    }
+    return {
+      responseType,
+      message,
+      plan,
+    };
+  })();
   const structuredOutput =
+    normalizeStructuredOutputWithFallback(payload.structured) ??
     normalizeStructuredOutputWithFallback(payload.structuredOutput) ??
     normalizeStructuredOutputWithFallback((payload as UnknownRecord).structured_output) ??
+    normalizeStructuredOutputWithFallback(properties?.structured) ??
     normalizeStructuredOutputWithFallback(properties?.structuredOutput) ??
     normalizeStructuredOutputWithFallback((properties as UnknownRecord | null)?.structured_output) ??
+    normalizeStructuredOutputWithFallback(infoRecord?.structured) ??
     normalizeStructuredOutputWithFallback(infoRecord?.structuredOutput) ??
     normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured_output) ??
-    normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured) ??
-    normalizeStructuredOutputWithFallback({
-      responseType:
-        asString(payload.responseType) ||
-        asString(properties?.responseType) ||
-        asString(infoRecord?.responseType),
-      message:
-        asString(payload.message) ||
-        asString(properties?.message) ||
-        asString(infoRecord?.message),
-      plan:
-        asRecord(payload.plan) ||
-        asRecord(properties?.plan) ||
-        asRecord(infoRecord?.plan) ||
-        undefined,
-    });
+    normalizeStructuredOutputWithFallback(fallbackStructuredOutputCandidate);
   const eventSessionId =
     asString(payload.sessionId) ||
     asString(payload.sessionID) ||
@@ -7861,6 +8488,7 @@ function handleStreamEvent(
 
   if (
     !current &&
+    !isHeartbeatEvent &&
     (isExplicitStart ||
       isAssistantUpdateStart ||
       canBootstrapFromPart ||
@@ -8008,6 +8636,12 @@ function handleStreamEvent(
       const properties = asRecord(payload.properties);
       const part = asRecord(payload.part) ?? asRecord(properties?.part) ?? properties;
       if (!part) {
+        if (awaitingInteractiveTurnStart || isHeartbeatEvent) {
+          webviewLogger.debug(
+            `No part data during interactive transition/heartbeat, suppressing processing bootstrap`,
+          );
+          break;
+        }
         webviewLogger.debug(`No part data, setting processing=true`);
         dispatch({ type: 'SET_PROCESSING', payload: true });
         break;
@@ -8260,6 +8894,16 @@ function handleStreamEvent(
           const cleanedChunk = contentEmpty
             ? stripLeadingUserEcho(candidateChunk, getState())
             : candidateChunk;
+          const cleanedChunkWasUserEchoOnly = contentEmpty && !cleanedChunk;
+          if (cleanedChunkWasUserEchoOnly) {
+            streamDebug("[OpenCode][live-stream] suppressing no-op user echo part", {
+              eventType,
+              messageId,
+              partType,
+              structuredKind,
+            });
+            break;
+          }
           if (cleanedChunk) {
             const contentPatch = resolveStreamingContentUpdate(
               streamingState?.content || '',
@@ -8571,6 +9215,29 @@ function handleStreamEvent(
       const liveHasBlockingInteractive = hasBlockingInteractiveEvents(
         liveStructuredInteractiveEvents,
       );
+      logLiveStructuredTurn("message.updated", {
+        messageId,
+        eventRole: eventRole || null,
+        finish,
+        structuredKind: structuredKind || null,
+        responseType:
+          firstNonEmptyString(
+            asString(structuredOutput?.responseType),
+            asString(payload.responseType),
+            asString(properties?.responseType),
+            asString(infoRecord?.responseType),
+          ) || null,
+        structuredTextPreview: previewForLog(structuredText),
+        structuredQuestionPreview: previewForLog(
+          asString(asRecord((structuredOutput as UnknownRecord | undefined)?.question)?.question) ||
+            asString(asRecord((structuredOutput as UnknownRecord | undefined)?.question)?.message) ||
+            asString(asRecord((structuredOutput as UnknownRecord | undefined)?.question)?.content) ||
+            asString(structuredOutput?.message),
+        ),
+        currentStreaming: summarizeStreamingForLog(getState().streaming),
+        interactiveCount: liveStructuredInteractiveEvents.length,
+        interactiveKinds: liveStructuredInteractiveEvents.map((event) => event.type),
+      });
       if (liveStructuredInteractiveEvents.length > 0) {
         dispatch({
           type: "SET_INTERACTIVE_EVENTS",
@@ -8587,6 +9254,25 @@ function handleStreamEvent(
           dispatch({ type: "SET_PROCESSING", payload: false });
           break;
         }
+      }
+
+      const hasRenderableLiveStructuredUpdate =
+        !!updatedText.trim() ||
+        !!structuredText.trim() ||
+        liveStructuredInteractiveEvents.length > 0;
+      if (
+        structuredKind === "lifecycle" &&
+        !finish &&
+        !hasRenderableLiveStructuredUpdate
+      ) {
+        streamDebug("[OpenCode][live-stream] suppressing lifecycle-only message.updated", {
+          messageId,
+          eventRole: eventRole || null,
+          structuredKind,
+          finish,
+          currentStreaming: summarizeStreamingForLog(getState().streaming),
+        });
+        break;
       }
 
       if (finish && structuredOutput) {
@@ -9139,6 +9825,22 @@ function handleStreamEvent(
         const rawReasoningLike = containsThoughtTagReasoning(structuredText);
         let messageText = structuredText;
         const mixedMessage = splitMixedReasoningFromContent(messageText);
+        logLiveStructuredTurn("structured.message.before-render", {
+          messageId,
+          responseType:
+            firstNonEmptyString(
+              asString(structuredOutput?.responseType),
+              asString(payload.responseType),
+              asString(properties?.responseType),
+              asString(infoRecord?.responseType),
+            ) || null,
+          structuredKind,
+          rawReasoningLike,
+          structuredTextPreview: previewForLog(structuredText),
+          mixedReasoningPreview: previewForLog(mixedMessage?.reasoning),
+          mixedContentPreview: previewForLog(mixedMessage?.content),
+          streamingBefore: summarizeStreamingForLog(streamingState),
+        });
         if (mixedMessage) {
           const mixedReasoning = sanitizeReasoningChunk(mixedMessage.reasoning);
           if (mixedReasoning) {
@@ -9177,6 +9879,12 @@ function handleStreamEvent(
           messageText,
           false,
         );
+        logLiveStructuredTurn("structured.message.content-patch", {
+          messageId,
+          messageTextPreview: previewForLog(messageText),
+          streamingContentPreview: previewForLog(streamingState?.content),
+          contentPatch,
+        });
         if (!contentPatch) {
           break;
         }
@@ -9475,11 +10183,73 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   let terminalErrorReached = false;
   let activeSubagentParentMessageIds = new Set<string>();
   const stoppedSessionIds = new Set<string>();
+  let awaitingInteractiveTurnStart = false;
+
+  const streamEventCanStartVisibleAssistantTurn = (payload: UnknownRecord): boolean => {
+    const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
+    if (eventType === "start" || eventType === "streamStart") {
+      return true;
+    }
+    if (eventType === "question.asked") {
+      return interactiveEventsFromQuestionAskedPayload(payload).length > 0;
+    }
+
+    const properties = asRecord(payload.properties);
+    const partRecord = asRecord(properties?.part);
+    const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
+    const eventPart =
+      asRecord(payload.part) ??
+      partRecord ??
+      (eventType.startsWith("message.part.") ? asRecord(properties) : null);
+
+    if (eventType.startsWith("message.part.") && shouldBootstrapStreamingFromPart(eventPart)) {
+      return true;
+    }
+
+    const updatedText =
+      asRichString(payload.text) ||
+      asRichString(payload.content) ||
+      asRichString(properties?.text) ||
+      asRichString(properties?.content);
+    if (updatedText.trim()) {
+      return true;
+    }
+
+    const structuredRecord = asRecord(payload.structured);
+    const structuredKind = asString(structuredRecord?.kind).toLowerCase();
+    const structuredText =
+      asString(structuredRecord?.message) ||
+      asString(structuredRecord?.text);
+    if (
+      structuredText.trim() &&
+      structuredKind !== "lifecycle"
+    ) {
+      return true;
+    }
+
+    const structuredOutput =
+      normalizeStructuredOutputWithFallback(payload.structuredOutput) ??
+      normalizeStructuredOutputWithFallback((payload as UnknownRecord).structured_output) ??
+      normalizeStructuredOutputWithFallback(properties?.structuredOutput) ??
+      normalizeStructuredOutputWithFallback((properties as UnknownRecord | null)?.structured_output) ??
+      normalizeStructuredOutputWithFallback(infoRecord?.structuredOutput) ??
+      normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured_output) ??
+      normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured);
+
+    if (structuredOutput) {
+      return true;
+    }
+
+    return false;
+  };
 
   const isLikelyInteractiveAnswerSubmissionMessage = (message: Message): boolean => {
     const role = asString(message.role) || asString(asRecord(message.info)?.role);
     if (role !== "user") {
       return false;
+    }
+    if (message.interactiveSubmit === true) {
+      return true;
     }
     const text =
       asOptionalString(message.content) ||
@@ -9497,8 +10267,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     if (containsInteractiveMarker(text)) {
       return true;
     }
-    const pendingInteractive = latestPendingInteractiveEvents(getState().messages || []);
-    return pendingInteractive.length > 0 && text.trim().length > 0;
+    return false;
   };
 
   const trackActiveSubagentParentIds = (
@@ -9537,10 +10306,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
       // Set processing state BEFORE handling message types to ensure streaming state is created early.
       // Never bootstrap "in progress" UI from compaction lifecycle messages.
+      const shouldSuppressProcessingBootstrap = !!(
+        awaitingInteractiveTurnStart &&
+        asBoolean(data.processing, false) &&
+        (
+          type !== "streamEvent" ||
+          !streamEventCanStartVisibleAssistantTurn(asRecord(data.event) ?? data)
+        )
+      );
       if (
         asBoolean(data.processing, false) &&
         type !== "compactionStatus" &&
-        type !== "compactionViewState"
+        type !== "compactionViewState" &&
+        !shouldSuppressProcessingBootstrap
       ) {
         dispatch({ type: "SET_PROCESSING", payload: true });
       }
@@ -9550,6 +10328,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "init": {
           terminalErrorReached = false;
           activeSubagentParentMessageIds = new Set<string>();
+          const initSessionId =
+            asString(asRecord(data.state)?.sessionId) ||
+            asString(asRecord(data.state)?.currentSessionId) ||
+            asString(data.sessionId) ||
+            asString(data.currentSessionId) ||
+            null;
+          if (initSessionId) {
+            webviewLogger.setSession(initSessionId);
+          }
           const state = asRecord(data.state) ?? data;
           const stateBeforeInit = getState();
           const sessionId =
@@ -9825,6 +10612,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "stopRequestHandled": {
+          awaitingInteractiveTurnStart = false;
           const stoppedSessionId = firstNonEmptyString(
             asString(data.sessionId),
             asString(data.sessionID),
@@ -9924,9 +10712,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           dispatch({ type: "SET_PROCESSING", payload: false });
           dispatch({ type: "FINISH_STREAMING" });
           dispatch({ type: "SET_STREAMING", payload: null });
+          dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
           break;
         }
         case "messageResponse": {
+          awaitingInteractiveTurnStart = false;
           const msg =
             (asRecord(data.message) as Message | null) ??
             (data as unknown as Message);
@@ -10003,11 +10793,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const snapshotStreaming =
             currentStreaming ??
             (shouldDropMismatchedSnapshot ? null : latestStreamingSnapshot);
+          const hasStreamingSnapshotActivity =
+            hasVisibleStreamingSnapshot(snapshotStreaming);
           const interactiveEventsInResponse = isMessage(msg)
             ? interactiveEventsFromMessage(msg)
             : [];
           const shouldPreserveStreamingSnapshot =
-            !plainTextFallbackFinal || interactiveEventsInResponse.length > 0;
+            !plainTextFallbackFinal ||
+            interactiveEventsInResponse.length > 0 ||
+            hasStreamingSnapshotActivity;
           const terminalStatus: "done" | "error" =
             asString(msg.error) || asString(asRecord(asRecord(msg.info)?.error)?.message)
               ? "error"
@@ -10015,6 +10809,21 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const streaming = shouldPreserveStreamingSnapshot
             ? finalizeStreamingSnapshotSteps(snapshotStreaming, terminalStatus)
             : null;
+          streamDebug("[OpenCode][DEBUGGING NOW] stream messageResponse pre-normalize", {
+            responseSessionId: responseSessionId ?? null,
+            responseMessageId: responseMessageId ?? null,
+            snapshotMessageId,
+            hasOwnResponsePayload,
+            shouldDropMismatchedSnapshot,
+            plainTextFallbackFinal,
+            hasStreamingSnapshotActivity,
+            shouldPreserveStreamingSnapshot,
+            terminalStatus,
+            responseMessage: summarizeMessageForLog(msg),
+            currentStreaming: summarizeStreamingForLog(currentStreaming),
+            snapshotStreaming: summarizeStreamingForLog(snapshotStreaming),
+            finalizedStreaming: summarizeStreamingForLog(streaming),
+          });
           let normalizedMessage = isMessage(msg)
             ? normalizeMessage(msg, streaming)
             : streaming
@@ -10124,6 +10933,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               interactiveEventsFromStreamingSnapshot(snapshotStreaming),
             );
 
+            streamDebug("[OpenCode][DEBUGGING NOW] stream messageResponse post-normalize", {
+              responseMessageId: responseMessageId ?? null,
+              streamingMessageId: streamingMessageId ?? null,
+              snapshotMessageId,
+              normalizedMessage: summarizeMessageForLog(normalizedMessage),
+              sanitizedMessage: summarizeMessageForLog(sanitized),
+              snapshotStreaming: summarizeStreamingForLog(snapshotStreaming),
+            });
+
             finalMessageId =
               asString(asRecord(sanitized.info)?.id) ||
               asString(sanitized.id) ||
@@ -10186,6 +11004,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             !streamingMessageId ||
             hasOwnResponsePayload ||
             interactiveEventsInResponse.length > 0;
+          streamDebug("[OpenCode][DEBUGGING NOW] stream messageResponse completion decision", {
+            responseMessageId: responseMessageId ?? null,
+            finalMessageId,
+            streamingMessageId: streamingMessageId ?? null,
+            snapshotMessageId,
+            isMatchingStreamingMessage,
+            hasOwnResponsePayload,
+            interactiveEventsInResponse: interactiveEventsInResponse.length,
+            shouldClearStreamingAfterResponse,
+            currentStreaming: summarizeStreamingForLog(currentStreaming),
+            latestStreamingSnapshot: summarizeStreamingForLog(
+              latestStreamingSnapshot,
+            ),
+          });
 
           if (shouldClearStreamingAfterResponse) {
             if (!normalizedMessage) {
@@ -10216,6 +11048,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           try {
             terminalErrorReached = false;
             const rawMessages = asArray(data.messages, isMessage);
+            const historySessionId = asString(data.sessionId) || null;
+            if (historySessionId) {
+              webviewLogger.setSession(historySessionId);
+            }
+            logSourceSnapshot("chatHistory", rawMessages);
+            logFullPayloadSnapshot("SOURCE", "chatHistory", {
+              sessionId: historySessionId,
+              messages: rawMessages,
+              processingSessionIds: asArray(
+                data.processingSessionIds,
+                (item): item is string => typeof item === "string",
+              ),
+            });
             const normalizedMessages = rawMessages
               .map((msg) => normalizeMessage(msg, null))
               .filter((msg): msg is Message => !!msg)
@@ -10278,15 +11123,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               chatHistorySessionId &&
               currentState.currentSessionId !== chatHistorySessionId
             );
-            const incomingHistoryActivityScore =
-              activityScoreFromMessages(dedupedSystemMessages);
-            const cachedHistoryActivityScore =
-              activityScoreFromMessages(cachedMessagesForSwitch);
             const shouldUseCachedSwitchMessages = !!(
               isSessionProcessing &&
-              cachedMessagesForSwitch.length > 0 &&
-              cachedHistoryActivityScore > incomingHistoryActivityScore
+              shouldPreferCachedSwitchMessages(
+                cachedMessagesForSwitch,
+                dedupedSystemMessages,
+              )
             );
+            const incomingHistoryActivityScore =
+              activityScoreFromMessages(dedupedSystemMessages);
             const existingActiveMessages = currentState.messages ?? [];
             const existingActiveHistoryActivityScore =
               activityScoreFromMessages(existingActiveMessages);
@@ -10379,6 +11224,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               );
             }
             canonicalMessages = stabilizedHydratedMessages;
+            logFullPayloadSnapshot("PRE-RENDER", "chatHistory", {
+              sessionId: chatHistorySessionId || historySessionId,
+              messages: canonicalMessages,
+              processingSessionIds: effectiveProcessingSessionIds,
+            });
             dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages });
           } catch (error) {
             // Ensure loading state is cleared even if an error occurs
@@ -10718,12 +11568,44 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           // 4) this is an explicit stream start signal (can race ahead of state flags).
           const isExplicitStreamStart =
             streamEventType === "start" || streamEventType === "streamStart";
+          const canStartVisibleAssistantTurn =
+            streamEventCanStartVisibleAssistantTurn(payload);
+          streamDebug("[OpenCode][live-stream] inbound event", {
+            ...summarizeStreamEventForLog(payload),
+            eventSessionId: eventSessionId || null,
+            activeSessionId: activeSessionId || null,
+            isProcessing: stateBeforeStreamEvent.isProcessing,
+            hasConfirmedProcessingSession,
+            hasStreamingSnapshot: !!stateBeforeStreamEvent.streaming,
+            isExplicitStreamStart,
+            canStartVisibleAssistantTurn,
+          });
+          logFullPayloadSnapshot("SOURCE", "streamEvent", {
+            streamEventType,
+            eventSessionId: eventSessionId || null,
+            activeSessionId: activeSessionId || null,
+            payload,
+          });
+          webviewLogger.info("[SOURCE] streamEvent received", {
+            streamEventType,
+            eventSessionId: eventSessionId || null,
+            activeSessionId: activeSessionId || null,
+            ...summarizeStreamEventForLog(payload),
+          });
           if (
             !stateBeforeStreamEvent.isProcessing &&
             !hasConfirmedProcessingSession &&
             !stateBeforeStreamEvent.streaming &&
-            !isExplicitStreamStart
+            !isExplicitStreamStart &&
+            !canStartVisibleAssistantTurn
           ) {
+            streamDebug("[OpenCode][live-stream] dropped before handling", {
+              ...summarizeStreamEventForLog(payload),
+              reason: "not-processing-and-no-active-stream",
+              eventSessionId: eventSessionId || null,
+              activeSessionId: activeSessionId || null,
+              canStartVisibleAssistantTurn,
+            });
             break;
           }
           if (terminalErrorReached && (getState().isProcessing || hasConfirmedProcessingSession)) {
@@ -10806,6 +11688,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
           }
+          logFullPayloadSnapshot("PRE-RENDER", "streamEvent", {
+            streamEventType,
+            eventSessionId: eventSessionId || null,
+            activeSessionId: activeSessionId || null,
+            streaming: streamingAfter,
+            messages: getState().messages,
+          });
           if (
             streamEventType === "message.updated" ||
             streamEventType === "message.completed" ||
@@ -11086,9 +11975,26 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             stoppedSessionIds.delete(resumedSessionId);
           }
           if (message && typeof message === "object") {
+            const pendingInteractive = latestPendingInteractiveEvents(
+              getState().messages || [],
+            );
             const isInteractiveAnswerSubmission =
               isLikelyInteractiveAnswerSubmissionMessage(message);
+            if (pendingInteractive.length > 0 && !isInteractiveAnswerSubmission) {
+              // A brand-new user message should not inherit a stale interactive
+              // prompt from the previous assistant turn. If the popover was
+              // not rendered or was skipped, clear it here so the new message
+              // starts a fresh turn instead of being replayed as an answer.
+              dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
+              awaitingInteractiveTurnStart = false;
+            }
+            // A new user message starts a new turn. Never carry the previous
+            // turn's streaming snapshot forward, or stop/retry can replay a
+            // stale interactive question card.
+            latestStreamingSnapshot = null;
+            activeSubagentParentMessageIds = new Set<string>();
             if (isInteractiveAnswerSubmission) {
+              awaitingInteractiveTurnStart = true;
               // Interactive answer submit starts a brand-new assistant turn.
               // Clear stale stream snapshots so previous turn content cannot leak or
               // duplicate into the next messageResponse normalization pass.
@@ -11111,11 +12017,43 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const currentState = getState();
             const currentMessages = currentState.messages || [];
             const updatedMessages = [...currentMessages];
+            const currentStreaming = currentState.streaming;
+            const hasStaleEmptyStreamingPlaceholder =
+              !!currentStreaming &&
+              currentStreaming.isActive === true &&
+              !hasVisibleStreamingSnapshot(currentStreaming) &&
+              !currentStreaming.messageId;
+            if (hasStaleEmptyStreamingPlaceholder) {
+              // If the previous turn left behind an active but empty streaming
+              // shell, clear it now so the next send starts from a clean state
+              // instead of inheriting a perpetual loading bubble.
+              dispatch({ type: "SET_STREAMING", payload: null });
+            }
+            const persistedAssistantMessageIds = new Set(
+              currentMessages
+                .filter((candidate) => isAssistantHistoryMessage(candidate))
+                .map((candidate) =>
+                  firstNonEmptyString(
+                    asString(asRecord(candidate.info)?.id),
+                    asString(candidate.id),
+                  ),
+                )
+                .filter((id): id is string => Boolean(id)),
+            );
 
             // BUG FIX: If there is an inactive streaming message, flush it to messages
             // before appending the new user message. Otherwise, the queued user message appears
             // ABOVE the finished AI response (which would still be sitting in state.streaming).
-            const currentStreaming = currentState.streaming;
+            const currentStreamingMessageId = firstNonEmptyString(
+              asString(currentStreaming?.messageId),
+              asString(asRecord(currentStreaming as unknown as UnknownRecord)?.id),
+            );
+            const hasPersistedAssistantSnapshot =
+              !!currentStreamingMessageId &&
+              persistedAssistantMessageIds.has(currentStreamingMessageId);
+            if (hasPersistedAssistantSnapshot) {
+              dispatch({ type: "SET_STREAMING", payload: null });
+            }
             if (currentStreaming && !currentStreaming.isActive) {
               const flushedMessage = buildStreamingMessage(currentStreaming);
               updatedMessages.push(flushedMessage);
@@ -11157,6 +12095,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             activeSessionId && sessionIds.includes(activeSessionId)
           );
           if (!isActiveSessionStillProcessing) {
+            awaitingInteractiveTurnStart = false;
             if (stateAfterProcessingUpdate.isSteering) {
               dispatch({ type: "SET_STEERING", payload: false });
             }
@@ -11169,6 +12108,17 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             if (stateAfterProcessingUpdate.streaming) {
               dispatch({ type: "FINISH_STREAMING" });
               dispatch({ type: "SET_STREAMING", payload: null });
+            }
+            const pendingInteractiveEvents = latestPendingInteractiveEvents(
+              stateAfterProcessingUpdate.messages || [],
+            );
+            if (pendingInteractiveEvents.length > 0) {
+              dispatch({
+                type: "SET_INTERACTIVE_EVENTS",
+                payload: pendingInteractiveEvents,
+              });
+            } else if (stateAfterProcessingUpdate.interactiveEvents.length > 0) {
+              dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
             }
           }
           break;

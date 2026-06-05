@@ -230,13 +230,15 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
         className="oc-modal-shell relative z-50 flex w-full max-w-4xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200 max-h-[80vh]"
         role="dialog"
         aria-modal="true"
-        aria-label="Sessions"
+        aria-label="History"
       >
         {/* Header */}
         <div className="oc-modal-header flex items-center justify-between bg-oc-panel-soft/70">
           <div className="flex items-center gap-2">
-            <History className="h-4 w-4 text-oc-accent" />
-            <span className="text-sm font-semibold text-foreground">Untitled</span>
+            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-oc-border-soft bg-oc-accent-soft/70 text-oc-text-soft shadow-[0_0_0_1px_color-mix(in_srgb,var(--oc-accent)_10%,transparent)_inset]">
+              <History className="h-3.5 w-3.5" />
+            </span>
+            <span className="text-sm font-semibold text-foreground">History</span>
             {visibleSessions.length > 0 && (
               <span className="rounded-full bg-oc-border px-2 py-0.5 text-[10px] font-medium tabular-nums oc-text-secondary leading-none">
                 {visibleSessions.length}
@@ -393,14 +395,22 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                               ) : null}
                               <span
                                 className={`truncate text-sm font-medium leading-tight ${
-                                  isActive ? "text-foreground" : "oc-text-secondary"
+                                  isActive || isProcessing
+                                    ? "text-foreground"
+                                    : "oc-text-secondary"
                                 }`}
                               >
                                 {session.title || "Untitled chat"}
                               </span>
                             </div>
                             {session.createdAt ? (
-                              <div className="mt-0.5 text-[10px] oc-text-secondary tabular-nums">
+                              <div
+                                className={`mt-0.5 text-[10px] tabular-nums ${
+                                  isActive || isProcessing
+                                    ? "text-[var(--oc-text-soft)] opacity-80"
+                                    : "oc-text-secondary"
+                                }`}
+                              >
                                 <div>{relativeSessionTime(session.createdAt)}</div>
                                 <div className="opacity-75">
                                   {fullSessionDateTime(session.createdAt)}

@@ -409,6 +409,21 @@ test("handleStreamEvent message.updated dispatches SET_PROCESSING true when fini
     );
 });
 
+test("handleStreamEvent suppresses lifecycle-only message.updated no-op updates", () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
+    assert.ok(body, 'handleStreamEvent must exist');
+    assert.match(
+        body,
+        /structuredKind === ["']lifecycle["'][\s\S]*suppressing lifecycle-only message\.updated/s,
+        'message.updated should explicitly suppress lifecycle-only no-op updates',
+    );
+    assert.match(
+        body,
+        /structuredKind === ["']lifecycle["'][\s\S]*break;/s,
+        'lifecycle-only message.updated updates should break before reasserting processing',
+    );
+});
+
 // ---------------------------------------------------------------------------
 // 9. handleStreamEvent – message.part.updated: structuredOutput.progressUpdates
 // ---------------------------------------------------------------------------
@@ -437,6 +452,21 @@ test('handleStreamEvent treats message.completed and session.completed as termin
         completionCase,
         /FINISH_STREAMING[\s\S]*SET_PROCESSING[\s\S]*payload\s*:\s*false/,
         'completion event types must finalize streaming and clear processing',
+    );
+});
+
+test('handleStreamEvent suppresses no-op user echo parts from re-arming loading state', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
+    assert.ok(body, 'handleStreamEvent must exist');
+    assert.match(
+        body,
+        /suppressing no-op user echo part/,
+        'user echo only part updates should be logged as suppressed',
+    );
+    assert.match(
+        body,
+        /cleanedChunkWasUserEchoOnly[\s\S]*break;/,
+        'user echo only part updates should break before SET_PROCESSING(true)',
     );
 });
 
@@ -932,10 +962,10 @@ test('resolveStreamingContentUpdate returns append: true for deltas', () => {
     // Direct source search: find the function and verify the delta append contract
     const fnIdx = messageHandlerSource.indexOf('function resolveStreamingContentUpdate');
     assert.ok(fnIdx >= 0, 'resolveStreamingContentUpdate must exist');
-    const fnSlice = messageHandlerSource.slice(fnIdx, fnIdx + 800);
+    const fnSlice = messageHandlerSource.slice(fnIdx, fnIdx + 1600);
     assert.match(
         fnSlice,
-        /if\s*\(fromDelta\)[\s\S]{1,100}append\s*:\s*true/,
+        /if\s*\(fromDelta\)[\s\S]{1,260}append\s*:\s*true/,
         'must return append: true when fromDelta is true',
     );
 });

@@ -611,6 +611,8 @@ export interface Message {
   plainTextFallbackReason?: string;
   /** Indicates this assistant message was aborted by the user (stop button). */
   aborted?: boolean;
+  /** Marks a user echo as an interactive popover answer submission. */
+  interactiveSubmit?: boolean;
   /** Optional structured error information for display in the UI */
   displayError?: DisplayError;
 }

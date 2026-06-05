@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Message } from './types';
-import { normalizeMessage, dedupeSystemMessages } from './messageHandler';
+import {
+  normalizeMessage,
+  dedupeSystemMessages,
+  shouldPreferCachedSwitchMessages,
+  resolveStreamingContentUpdate,
+  coalesceAdjacentAssistantHistoryMessages,
+} from './messageHandler';
 
 describe('normalizeMessage - responseType handling', () => {
   it('should handle message with responseType field without throwing', () => {
@@ -137,10 +143,23 @@ describe('normalizeMessage - structuredOutput handling', () => {
     );
   });
 
-  it('should prefer streaming content over message content when structuredOutput is present', () => {
+  it('should preserve canonical final content while backfilling structuredOutput from streaming state', () => {
     const inputMessage: Message = {
       role: 'assistant',
-      content: 'Original content',
+      content: 'Canonical final content',
+    };
+
+    const streaming = {
+      messageId: 'test-msg-1',
+      content: 'Streaming draft that should not replace the final assistant reply',
+      reasoning: '',
+      reasoningEvents: [],
+      steps: [],
+      progressEvents: [],
+      edits: [],
+      isActive: false,
+      modelID: 'test-model',
+      providerID: 'test-provider',
       structuredOutput: {
         responseType: 'question',
         message: 'Test question',
@@ -158,26 +177,478 @@ describe('normalizeMessage - structuredOutput handling', () => {
       }
     };
 
+    const result = normalizeMessage(inputMessage, streaming);
+
+    assert.ok(result, 'normalizeMessage should return a message');
+    assert.strictEqual(
+      result?.content,
+      'Canonical final content',
+      'should keep the canonical finalized assistant content'
+    );
+    assert.ok(
+      (result as Record<string, unknown>).structuredOutput,
+      'structuredOutput should still be preserved when backfilled from streaming'
+    );
+  });
+
+  it('should prefer the canonical structured payload over conflicting structuredOutput reasoning payload', () => {
+    const inputMessage = {
+      id: 'msg-canonical-structured',
+      role: 'assistant',
+      content: '**Preparing for MCQ response**\n\nI see see that I that I need need to respond...',
+      structured: {
+        responseType: 'question',
+        question: {
+          type: 'question',
+          question: 'Which kind of questions would you like?',
+          displayPrompt: 'Which kind of questions would you like?',
+          options: [
+            { id: 'fun', label: 'Fun', value: 'Fun' },
+            { id: 'trivia', label: 'Trivia', value: 'Trivia' },
+          ],
+        },
+      },
+      structuredOutput: {
+        responseType: 'message',
+        message: '**Preparing for MCQ response**\n\nI see see that I that I need need to respond...',
+      },
+    } as Message & {
+      structured?: {
+        responseType?: string;
+        question?: {
+          type?: string;
+          question?: string;
+          displayPrompt?: string;
+          options?: Array<{ id?: string; label: string; value?: string }>;
+        };
+      };
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should return a message');
+    const normalizedRecord = result as Record<string, unknown>;
+    const normalizedStructured = normalizedRecord.structuredOutput as Record<string, unknown> | undefined;
+    assert.ok(normalizedStructured, 'normalized structuredOutput should exist');
+    assert.strictEqual(
+      normalizedStructured?.responseType,
+      'question',
+      'canonical structured payload should win over conflicting structuredOutput',
+    );
+    assert.ok(
+      normalizedStructured?.question && typeof normalizedStructured.question === 'object',
+      'canonical question payload should be preserved',
+    );
+    assert.strictEqual(
+      (normalizedStructured?.question as Record<string, unknown>).question,
+      'Which kind of questions would you like?',
+      'canonical question text should be preserved',
+    );
+  });
+
+  it('should keep the canonical question turn when coalescing an adjacent reasoning follow-up', () => {
+    const questionTurn: Message = normalizeMessage(
+      {
+        id: 'msg-question-turn',
+        role: 'assistant',
+        structuredOutput: {
+          responseType: 'question',
+          question: {
+            question: 'If you could instantly master one skill, which would you choose?',
+            displayPrompt: 'If you could instantly master one skill, which would you choose?',
+            options: [
+              { id: 'instrument', label: 'Play Any Instrument', value: 'Play Any Instrument' },
+              { id: 'language', label: 'Speak Every Language', value: 'Speak Every Language' },
+            ],
+          },
+        },
+        parts: [
+          {
+            type: 'text',
+            text: 'If you could instantly master one skill, which would you choose?',
+          },
+        ],
+      } as Message,
+      null,
+    ) as Message;
+
+    const reasoningFollowUp: Message = normalizeMessage(
+      {
+        id: 'evt-reasoning-follow-up',
+        role: 'assistant',
+        content:
+          '**Preparing for MCQ response**\n\nI see see that I that I need need to respond to respond quickly quickly with a tool call.',
+        structuredOutput: {
+          responseType: 'message',
+          message:
+            '**Preparing for MCQ response**\n\nI see see that I that I need need to respond to respond quickly quickly with a tool call.',
+        },
+        reasoningEvents: [
+          {
+            text:
+              '**Preparing for MCQ response**\n\nI see that I need to respond quickly with a tool call.',
+            createdAt: 1780640073646,
+          },
+        ],
+      } as Message,
+      null,
+    ) as Message;
+
+    const result = coalesceAdjacentAssistantHistoryMessages([
+      questionTurn,
+      reasoningFollowUp,
+    ]);
+
+    assert.strictEqual(result.length, 1, 'adjacent assistant burst should collapse into one message');
+    assert.strictEqual(
+      result[0]?.content,
+      'If you could instantly master one skill, which would you choose?',
+      'the canonical question turn should win over the reasoning follow-up',
+    );
+    assert.strictEqual(
+      result[0]?.responseType,
+      'question',
+      'the coalesced message should remain a question turn',
+    );
+  });
+
+  it('should keep the exact MCQ question turn instead of the following reasoning-only assistant burst', () => {
+    const questionTurn: Message = normalizeMessage(
+      {
+        id: 'msg_e9669f5b6001F5iwvqqDX5Xm7x',
+        role: 'assistant',
+        agent: 'build',
+        modelID: 'gpt-5.4',
+        providerID: 'openai',
+        time: {
+          created: 1780639987126,
+          completed: 1780640002793,
+        },
+        finish: 'tool-calls',
+        structuredOutput: {
+          responseType: 'question',
+          question: {
+            question: "Pick a question category, and I’ll ask you multiple-choice questions in that style.",
+            displayPrompt: "Pick a question category, and I’ll ask you multiple-choice questions in that style.",
+            type: 'question',
+            options: [
+              { label: 'Fun', value: 'Ask me fun multiple-choice questions.' },
+              { label: 'Personality', value: 'Ask me personality multiple-choice questions.' },
+              { label: 'Would You Rather', value: 'Ask me would-you-rather questions with choices.' },
+              { label: 'Trivia', value: 'Ask me trivia questions with choices.' },
+            ],
+          },
+        },
+        parts: [
+          {
+            snapshot: '7ab719279a4d68707a87366c6806e0286950572c',
+            type: 'text',
+            id: 'prt_e966a02950012RY7xjRWYugNb5',
+            sessionID: 'ses_16996583dffed6VXEMFd7eaZh9',
+            messageID: 'msg_e9669f5b6001F5iwvqqDX5Xm7x',
+            text: "Pick a question category, and I’ll ask you multiple-choice questions in that style.",
+          },
+        ],
+      } as Message,
+      null,
+    ) as Message;
+
+    const reasoningFollowUp: Message = normalizeMessage(
+      {
+        id: 'evt_e966b3956001Zh5RZ6n47GoiBd',
+        role: 'assistant',
+        content:
+          '**Preparing for MCQ response**\n\nI see see that I that I need need to respond to respond quickly quickly with a tool call. Since with a tool call. Since the the user has user has responded to responded to my previous my previous question question,it, it seems likely seems likely they\'ll they\'ll continue continue with with fun fun multiple multiple-choice-choice questions questions..I I think think I I’ll’ll employ employ Structured Structured Output Output once once again again to to format format the question properly the question properly..This This way way,,I I can can make make sure my sure my answer answer is is clear clear and and engaging engaging for for the the user user!Let\'s! Let\'s get get going going with with that that!!',
+        parts: [
+          {
+            type: 'text',
+            text:
+              '**Preparing for MCQ response**\n\nI see see that I that I need need to respond to respond quickly quickly with a tool call. Since with a tool call. Since the the user has user has responded to responded to my previous my previous question question,it, it seems likely seems likely they\'ll they\'ll continue continue with with fun fun multiple multiple-choice-choice questions questions..I I think think I I’ll’ll employ employ Structured Structured Output Output once once again again to to format format the question properly the question properly..This This way way,,I I can can make make sure my sure my answer answer is is clear clear and and engaging engaging for for the the user user!Let\'s! Let\'s get get going going with with that that!!',
+          },
+        ],
+        reasoningEvents: [
+          {
+            text:
+              '**Preparing for MCQ response**\n\nI see that I need to respond quickly with a tool call. Since the user has responded to my previous question, it seems likely they\'ll continue with fun multiple-choice questions. I think I’ll employ StructuredOutput once again to format the question properly. This way, I can make sure my answer is clear and engaging for the user! Let\'s get going with that!',
+            createdAt: 1780640073646,
+          },
+        ],
+        structuredOutput: {
+          responseType: 'message',
+          message:
+            '**Preparing for MCQ response**\n\nI see see that I that I need need to respond to respond quickly quickly with a tool call. Since with a tool call. Since the the user has user has responded to responded to my previous my previous question question,it, it seems likely seems likely they\'ll they\'ll continue continue with with fun fun multiple multiple-choice-choice questions questions..I I think think I I’ll’ll employ employ Structured Structured Output Output once once again again to to format format the question properly the question properly..This This way way,,I I can can make make sure my sure my answer answer is is clear clear and and engaging engaging for for the the user user!Let\'s! Let\'s get get going going with with that that!!',
+        },
+      } as Message,
+      null,
+    ) as Message;
+
+    const result = coalesceAdjacentAssistantHistoryMessages([
+      questionTurn,
+      reasoningFollowUp,
+    ]);
+
+    assert.strictEqual(result.length, 1, 'the assistant burst should collapse into one rendered turn');
+    assert.strictEqual(
+      result[0]?.content,
+      "Pick a question category, and I’ll ask you multiple-choice questions in that style.",
+      'the visible assistant body should stay on the question prompt',
+    );
+    assert.strictEqual(
+      result[0]?.responseType,
+      'question',
+      'the collapsed turn should remain a question turn',
+    );
+    assert.ok(
+      !String(result[0]?.content ?? '').includes('Preparing for MCQ response'),
+      'reasoning text should not become the visible assistant response',
+    );
+  });
+
+  it('should prefer structured question text over leaked reasoning text for question turns', () => {
+    const inputMessage: Message = {
+      id: 'msg-question-reasoning-leak',
+      role: 'assistant',
+      content: 'The user is repeating themselves. They seem to want me to ask another one.',
+      structuredOutput: {
+        responseType: 'question',
+        question: {
+          question: 'Which option should I ask the user to choose?',
+          displayPrompt: 'Running question',
+          options: [
+            { id: 'opt-a', label: 'Option A', value: 'Option A' },
+            { id: 'opt-b', label: 'Option B', value: 'Option B' },
+          ],
+        },
+        interactiveEvents: [{
+          type: 'question',
+          id: 'q-leak',
+          title: 'Question',
+          question: 'Which option should I ask the user to choose?',
+          options: [
+            { id: 'opt-a', label: 'Option A', value: 'Option A' },
+            { id: 'opt-b', label: 'Option B', value: 'Option B' },
+          ],
+          multiSelect: false,
+          allowCustomInput: false,
+        }],
+      },
+      parts: [
+        {
+          type: 'text',
+          text: 'The user is repeating themselves. They seem to want me to ask another one.',
+        },
+      ],
+    };
+
     const streaming = {
-      messageId: 'test-msg-1',
-      content: 'Streaming content',
-      reasoning: '',
-      reasoningEvents: [],
+      messageId: 'msg-question-reasoning-leak',
+      content: 'The user is repeating themselves. They seem to want me to ask another one.',
+      reasoning: 'The user is repeating themselves. They seem to want me to ask another one.',
+      reasoningEvents: [
+        {
+          text: 'The user is repeating themselves. They seem to want me to ask another one.',
+          createdAt: Date.now(),
+        },
+      ],
       steps: [],
       progressEvents: [],
       edits: [],
       isActive: false,
       modelID: 'test-model',
-      providerID: 'test-provider'
+      providerID: 'test-provider',
     };
 
     const result = normalizeMessage(inputMessage, streaming);
 
     assert.ok(result, 'normalizeMessage should return a message');
-    assert.strictEqual(result?.content, 'Streaming content', 'should prefer streaming content');
+    assert.strictEqual(
+      result?.content,
+      'Which option should I ask the user to choose?',
+      'question turns should render the structured question instead of leaked reasoning text',
+    );
     assert.ok(
       (result as Record<string, unknown>).structuredOutput,
-      'structuredOutput should still be preserved when preferring streaming content'
+      'structuredOutput should still be preserved for question turns',
+    );
+  });
+
+  it('should replace long leaked draft content with the canonical structured question prompt', () => {
+    const inputMessage: Message = {
+      id: 'msg-question-long-leak',
+      role: 'assistant',
+      content: 'The user wants me to ask them questions with choices using the question tool. Let me come up with some interesting and relevant questions to ask them about their project or about software engineering in general. Since they are in a project called climateRX-2, I could ask about that. But since they did not give me a specific topic, I will ask some general software engineering questions.',
+      structuredOutput: {
+        responseType: 'question',
+        question: {
+          question: 'What kind of project is climateRX-2?',
+          displayPrompt: 'Running question',
+          options: [
+            { id: 'opt-a', label: 'Web app', value: 'Web app' },
+            { id: 'opt-b', label: 'CLI tool', value: 'CLI tool' },
+          ],
+        },
+        interactiveEvents: [{
+          type: 'question',
+          id: 'q-long-leak',
+          title: 'Question',
+          question: 'What kind of project is climateRX-2?',
+          options: [
+            { id: 'opt-a', label: 'Web app', value: 'Web app' },
+            { id: 'opt-b', label: 'CLI tool', value: 'CLI tool' },
+          ],
+          multiSelect: false,
+          allowCustomInput: false,
+        }],
+      },
+      parts: [
+        {
+          type: 'text',
+          text: 'The user wants me to ask them questions with choices using the question tool.',
+        },
+      ],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should return a message');
+    assert.strictEqual(
+      result?.content,
+      'What kind of project is climateRX-2?',
+      'question turns should prefer the structured prompt even when the draft content is long',
+    );
+  });
+
+  it('should replace progress reasoning with the interactive question prompt during live streaming', () => {
+    const inputMessage: Message = {
+      id: 'msg-progress-interactive-question',
+      role: 'assistant',
+      content:
+        'The user answered Tony Stark, so I should continue with a fun multiple-choice question and explain my choice in the reasoning stream.',
+      structuredOutput: {
+        responseType: 'progress',
+        message:
+          'The user answered Tony Stark, so I should continue with a fun multiple-choice question and explain my choice in the reasoning stream.',
+        interactiveEvents: [
+          {
+            type: 'question',
+            id: 'q-progress',
+            title: 'Running question',
+            question: "What's the most fun way to spend a surprise free day?",
+            options: [
+              { id: 'theme-park', label: 'Theme Park', value: 'Theme Park' },
+              { id: 'beach-day', label: 'Beach Day', value: 'Beach Day' },
+              { id: 'road-trip', label: 'Road Trip', value: 'Road Trip' },
+              { id: 'video-games', label: 'Video Games', value: 'Video Games' },
+            ],
+            multiSelect: false,
+            allowCustomInput: false,
+          },
+        ],
+      },
+      parts: [
+        {
+          type: 'text',
+          text:
+            'The user answered Tony Stark, so I should continue with a fun multiple-choice question and explain my choice in the reasoning stream.',
+        },
+      ],
+    };
+
+    const streaming = {
+      messageId: 'msg-progress-interactive-question',
+      content:
+        'The user answered Tony Stark, so I should continue with a fun multiple-choice question and explain my choice in the reasoning stream.',
+      reasoning:
+        'The user answered Tony Stark, so I should continue with a fun multiple-choice question and explain my choice in the reasoning stream.',
+      reasoningEvents: [
+        {
+          text:
+            'The user answered Tony Stark, so I should continue with a fun multiple-choice question and explain my choice in the reasoning stream.',
+          createdAt: Date.now(),
+        },
+      ],
+      steps: [],
+      progressEvents: [],
+      edits: [],
+      isActive: true,
+      hasRenderableContent: true,
+      modelID: 'test-model',
+      providerID: 'test-provider',
+      structuredOutput: {
+        responseType: 'progress',
+        message:
+          'The user answered Tony Stark, so I should continue with a fun multiple-choice question and explain my choice in the reasoning stream.',
+        interactiveEvents: [
+          {
+            type: 'question',
+            id: 'q-progress',
+            title: 'Running question',
+            question: "What's the most fun way to spend a surprise free day?",
+            options: [
+              { id: 'theme-park', label: 'Theme Park', value: 'Theme Park' },
+              { id: 'beach-day', label: 'Beach Day', value: 'Beach Day' },
+              { id: 'road-trip', label: 'Road Trip', value: 'Road Trip' },
+              { id: 'video-games', label: 'Video Games', value: 'Video Games' },
+            ],
+            multiSelect: false,
+            allowCustomInput: false,
+          },
+        ],
+      },
+    };
+
+    const result = normalizeMessage(inputMessage, streaming);
+
+    assert.ok(result, 'normalizeMessage should return a message');
+    assert.strictEqual(
+      result?.content,
+      "What's the most fun way to spend a surprise free day?",
+      'progress turns with blocking interactive questions should render the canonical question prompt',
+    );
+    assert.strictEqual(
+      result?.responseType,
+      'progress',
+      'the underlying progress response type should be preserved',
+    );
+  });
+
+  it('should collapse adjacent duplicate assistant text parts during normalization', () => {
+    const inputMessage: Message = {
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'No stashes from our session.' },
+        { type: 'text', text: 'No stashes from our session.' },
+      ],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should return a message');
+    assert.strictEqual(
+      result?.content,
+      'No stashes from our session.',
+      'duplicate adjacent text parts should not be repeated in content',
+    );
+    assert.ok(
+      Array.isArray(result?.parts) && result?.parts.length === 1,
+      'duplicate adjacent text parts should be collapsed in parts',
+    );
+  });
+
+  it('should trim overlapping cumulative streaming snapshots before appending', () => {
+    const result = resolveStreamingContentUpdate(
+      'The user wants a',
+      'wants a "New feature" code question with choices.',
+      true,
+    );
+
+    assert.deepStrictEqual(
+      result,
+      {
+        content: '"New feature" code question with choices.',
+        append: true,
+      },
+      'overlapping cumulative snapshots should only append the new suffix',
     );
   });
 
@@ -316,6 +787,52 @@ describe('normalizeMessage - chatHistory regression tests', () => {
     });
   });
 
+  it('should prefer cached switch history when it contains a newer user turn', () => {
+    const cachedMessages: Message[] = [
+      {
+        id: 'msg-1',
+        role: 'user',
+        content: 'Draft the summary',
+      },
+      {
+        id: 'msg-2',
+        role: 'assistant',
+        content: 'Working on it',
+        progressEvents: [
+          { type: 'step', title: 'build', status: 'pending' },
+        ],
+      },
+      {
+        id: 'msg-3',
+        role: 'user',
+        content: 'Actually, include the timeline too',
+      },
+    ];
+
+    const incomingMessages: Message[] = [
+      {
+        id: 'msg-1',
+        role: 'user',
+        content: 'Draft the summary',
+      },
+      {
+        id: 'msg-2',
+        role: 'assistant',
+        content: 'Working on it',
+        progressEvents: [
+          { type: 'step', title: 'build', status: 'pending' },
+          { type: 'step', title: 'search', status: 'done' },
+        ],
+      },
+    ];
+
+    assert.strictEqual(
+      shouldPreferCachedSwitchMessages(cachedMessages, incomingMessages),
+      true,
+      'cached history should win when it has the newer user turn that incoming history is missing',
+    );
+  });
+
   it('should handle chatHistory messages with missing optional fields', () => {
     const minimalMessage: Message = {
       role: 'assistant',
@@ -412,7 +929,7 @@ describe('structuredOutput preservation - Integration Tests', () => {
     assert.strictEqual(interactiveEvent.options.length, 3, 'Should have 3 options');
   });
 
-  it('should preserve structuredOutput when coalescing with streaming state', () => {
+  it('should preserve structuredOutput and backfill streamed edits when coalescing with streaming state', () => {
     const baseMessage: Message = {
       id: 'msg-base',
       role: 'assistant',
@@ -441,7 +958,7 @@ describe('structuredOutput preservation - Integration Tests', () => {
       reasoningEvents: [],
       steps: [],
       progressEvents: [],
-      edits: [],
+      edits: ['src/example.ts', 'src/example.ts', 'README.md'],
       isActive: false,
       modelID: 'test-model',
       providerID: 'test-provider'
@@ -450,9 +967,9 @@ describe('structuredOutput preservation - Integration Tests', () => {
     const result = normalizeMessage(baseMessage, streaming);
 
     assert.ok(result, 'Result should exist');
-    assert.strictEqual(result?.content, 'Streaming content', 'Should prefer streaming content');
+    assert.strictEqual(result?.content, 'Base message', 'Should keep finalized assistant content');
 
-    // Critical: structuredOutput must be preserved even when preferring streaming content
+    // Critical: structuredOutput must be preserved even when final content wins
     const resultRecord = result as Record<string, unknown>;
     assert.ok(resultRecord.structuredOutput, 'structuredOutput must be preserved with streaming');
 
@@ -462,6 +979,11 @@ describe('structuredOutput preservation - Integration Tests', () => {
       (structuredOutput.interactiveEvents as Array<Record<string, unknown>>)[0].id,
       'q-base',
       'Original event ID must be preserved'
+    );
+    assert.deepStrictEqual(
+      result?.edits,
+      [{ file: 'src/example.ts' }, { file: 'README.md' }],
+      'Should backfill deduplicated streamed edits when the final payload omitted them'
     );
   });
 });

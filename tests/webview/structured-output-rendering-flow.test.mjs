@@ -22,6 +22,7 @@ const schemaSource = readSource([
 test('implementation plans route into the plan card renderer', () => {
   assert.match(messageComponents, /const plan = message\?\.plan;/, 'plan extraction should use canonical message.plan only');
   assert.doesNotMatch(messageComponents, /structuredOutputForPlanRendering|planAttachmentFromStructuredCandidate|structuredOutputCandidatesForMessage/, 'plan renderer should not rely on plan-specific fallback helpers');
+  assert.match(messageComponents, /responseType !== "implementation_plan"\s*\|\|\s*!plan/, 'plan card rendering should be gated by implementation_plan responseType');
 });
 
 test('plan cards can render from plan.file without requiring plan.content', () => {
@@ -100,6 +101,14 @@ test('implementation plan messages suppress the aggregated diff section on the s
     messageComponents,
     /if \(plan\?\.file\) \{[\s\S]*return false;[\s\S]*\}/,
     'implementation plan turns should skip the aggregated file changes section',
+  );
+});
+
+test('non-plan assistant turns do not render the implementation plan section', () => {
+  assert.match(
+    messageComponents,
+    /const showResponseSection = !isAborted && \(hasVisibleResponseBody \|\| shouldShowPlanCard\);/,
+    'response section should depend on the plan card gate instead of raw plan presence',
   );
 });
 

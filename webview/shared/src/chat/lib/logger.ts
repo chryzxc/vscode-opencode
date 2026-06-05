@@ -3,6 +3,7 @@
  * Sends logs to extension for centralized logging
  */
 
+import { config } from "../../config";
 import vscode from "./vscode";
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -11,6 +12,10 @@ class WebviewLogger {
   private logLevel: LogLevel = 'info';
 
   private shouldLog(level: LogLevel): boolean {
+    if (config.debug.disableLogs) {
+      return false;
+    }
+
     const levels: LogLevel[] = ['debug', 'info', 'warn', 'error'];
     return levels.indexOf(level) >= levels.indexOf(this.logLevel);
   }

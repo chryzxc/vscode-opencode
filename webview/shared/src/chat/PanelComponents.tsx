@@ -22,6 +22,8 @@ import {
   Search,
   Send,
   Square,
+  PanelRightClose,
+  PanelRightOpen,
   Trash2,
   WifiOff,
   Wrench,
@@ -325,9 +327,9 @@ export function StickyHeader() {
           }
         >
           {isExtendedPanelOpen ? (
-            <ChevronUp className="h-3.5 w-3.5" />
+            <PanelRightClose className="h-3.5 w-3.5" />
           ) : (
-            <ChevronDown className="h-3.5 w-3.5" />
+            <PanelRightOpen className="h-3.5 w-3.5" />
           )}
         </Button>
       </div>
@@ -471,13 +473,13 @@ function todoStatusLabel(status: TodoItem["status"]) {
 function todoPriorityTone(priority?: TodoItem["priority"]) {
   switch (priority) {
     case "high":
-      return "text-oc-red border-oc-border bg-oc-red/10";
+      return "text-oc-red border-transparent bg-oc-red/10 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-red)_14%,transparent)]";
     case "medium":
-      return "oc-quota-warning border-oc-border bg-oc-quota-warning-bg";
+      return "oc-quota-warning border-transparent bg-oc-quota-warning-bg shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-yellow)_14%,transparent)]";
     case "low":
-      return "text-[var(--oc-text-soft)] border-oc-border bg-oc-panel-soft";
+      return "text-[var(--oc-text-soft)] border-transparent bg-oc-panel-soft shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-text)_10%,transparent)]";
     default:
-      return "text-[var(--oc-text-soft)] border-oc-border bg-oc-panel-soft";
+      return "text-[var(--oc-text-soft)] border-transparent bg-oc-panel-soft shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-text)_10%,transparent)]";
   }
 }
 
@@ -1133,9 +1135,12 @@ export function MobileRightSummary() {
             </div>
             <div className="flex items-center gap-1">
               {isProcessing ? (
-                <span className="rounded-md bg-oc-accent-soft px-2 py-0.5 text-[10px] font-medium text-oc-accent tracking-wider">
+                <Badge
+                  variant="accent"
+                  className="oc-processing-badge h-5 rounded-md px-2 py-0.5 text-[10px] font-semibold tracking-[0.18em] uppercase shrink-0"
+                >
                   PROCESSING
-                </span>
+                </Badge>
               ) : null}
               <Button
                 type="button"
@@ -3539,30 +3544,30 @@ export function TodoPanel() {
   const statusTone = (status?: TodoItem["status"]) => {
     switch (status) {
       case "pending":
-        return "oc-quota-warning border-oc-border-soft bg-oc-quota-warning-bg";
+        return "oc-quota-warning border-transparent bg-oc-quota-warning-bg shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-yellow)_14%,transparent)]";
       case "in_progress":
-        return "oc-tinted-badge-text bg-oc-accent/10 border-oc-border-soft";
+        return "oc-tinted-badge-text bg-oc-accent/10 border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-accent)_14%,transparent)]";
       case "completed":
-        return "text-oc-green bg-oc-green/10 border-oc-border-soft";
+        return "text-oc-green bg-oc-green/10 border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-green)_14%,transparent)]";
       case "failed":
-        return "text-oc-red bg-oc-red/10 border-oc-border-soft";
+        return "text-oc-red bg-oc-red/10 border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-red)_14%,transparent)]";
       case "cancelled":
-        return "text-[var(--oc-text-soft)] bg-oc-panel-soft border-oc-border-soft";
+        return "text-[var(--oc-text-soft)] bg-oc-panel-soft border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-text)_10%,transparent)]";
       default:
-        return "text-[var(--oc-text-soft)] bg-oc-panel-soft border-oc-border-soft";
+        return "text-[var(--oc-text-soft)] bg-oc-panel-soft border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-text)_10%,transparent)]";
     }
   };
 
   const priorityTone = (priority?: TodoItem["priority"]) => {
     switch (priority) {
       case "high":
-        return "text-oc-red border-oc-border-soft bg-oc-red/10";
+        return "text-oc-red border-transparent bg-oc-red/10 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-red)_14%,transparent)]";
       case "medium":
-        return "oc-quota-warning border-oc-border-soft bg-oc-quota-warning-bg";
+        return "oc-quota-warning border-transparent bg-oc-quota-warning-bg shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-yellow)_14%,transparent)]";
       case "low":
-        return "text-[var(--oc-text-soft)] border-oc-border-soft bg-oc-panel-soft";
+        return "text-[var(--oc-text-soft)] border-transparent bg-oc-panel-soft shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-text)_10%,transparent)]";
       default:
-        return "";
+        return "text-[var(--oc-text-soft)] border-transparent bg-oc-panel-soft shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oc-text)_10%,transparent)]";
     }
   };
 
@@ -4049,9 +4054,6 @@ export function SkillsPanel() {
                   className="oc-panel-section bg-oc-panel-soft p-0"
                 >
                   <div className="flex items-center gap-2 p-2">
-                    <span className="font-medium text-xs font-medium text-oc-accent shrink-0">
-                      /
-                    </span>
                     <span className="flex-1 truncate font-medium text-xs font-medium text-[var(--oc-text-soft)]">
                       {skill.name}
                     </span>

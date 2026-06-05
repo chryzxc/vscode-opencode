@@ -9,9 +9,14 @@ export const config = {
   debug: {
     /**
      * Show raw response debug information in chat messages
-     * @default false
+     * @default true
      */
     showRawResponse: false,
+    /**
+     * Disable webview logger output and extension forwarding
+     * @default false
+     */
+    disableLogs: true,
   },
 } as const;
 

@@ -893,44 +893,6 @@ function collectReasoningFingerprints(message?: Message): Set<string> {
   return fingerprints;
 }
 
-function isReasoningLeakCandidate(
-  value: string,
-  source: "parts" | "structured" | "content" | "text" | "summary",
-  message?: Message,
-  hasRenderableParts?: boolean,
-): boolean {
-  if (!value.trim()) {
-    return false;
-  }
-  if (source !== "parts" && source !== "content" && source !== "text") {
-    return false;
-  }
-  if (source !== "parts" && hasRenderableParts) {
-    return false;
-  }
-  const candidateNorm = normalizeComparableText(value);
-  if (!candidateNorm) {
-    return false;
-  }
-
-  const reasoningFingerprints = collectReasoningFingerprints(message);
-  for (const reasoningNorm of reasoningFingerprints) {
-    if (!reasoningNorm) continue;
-    if (candidateNorm === reasoningNorm) {
-      return true;
-    }
-    if (
-      candidateNorm.length < 220 &&
-      (candidateNorm.includes(reasoningNorm) ||
-        reasoningNorm.includes(candidateNorm))
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 function isLowValueInteractiveBodyText(value: string): boolean {
   const normalized = normalizeComparableText(value);
   if (!normalized) {
@@ -1233,99 +1195,48 @@ function getMessageContent(
   if (!message) {
     return "";
   }
-  const messageRec = asRecord(message);
-  const infoRec = asRecord(messageRec?.info);
-  const structured =
-    asRecord(messageRec?.structuredOutput) ||
-    asRecord(messageRec?.structured_output) ||
-    asRecord(messageRec?.structured) ||
-    asRecord(infoRec?.structuredOutput) ||
-    asRecord(infoRec?.structured_output) ||
-    asRecord(infoRec?.structured);
-  const responseType = firstNonEmptyString(message?.responseType, structured?.responseType)?.toLowerCase();
   const partsBody = messageBodyFromParts(message.parts);
-  const hasParts = Array.isArray(message.parts) && message.parts.length > 0;
-  const hasRenderableParts =
-    Array.isArray(message.parts) &&
-    message.parts.some((part) => isRenderableAssistantTextPart(part));
-  const isMessageResponseType = responseType === "message";
-  const structuredMessage = firstNonEmptyString(structured?.message);
-  const candidates: Array<{
-    source: "parts" | "structured" | "content" | "text" | "summary";
-    value: string | undefined;
-  }> = hasParts
-      ? [
-        { source: "parts", value: partsBody },
-        { source: "structured", value: isMessageResponseType ? structuredMessage : "" },
-        { source: "summary", value: summaryText(message) },
-      ]
-      : [
-        { source: "parts", value: partsBody },
-        { source: "content", value: message.content },
-        { source: "text", value: message.text },
-        { source: "summary", value: summaryText(message) },
-      ];
-  const selectedCandidate = candidates.find((candidate) => {
-    if (typeof candidate.value !== "string" || candidate.value.trim().length === 0) {
-      return false;
-    }
-    return !isReasoningLeakCandidate(
-      candidate.value,
-      candidate.source,
-      message,
-      hasRenderableParts,
-    );
-  });
-  const baseContent = selectedCandidate?.value ?? "";
-  const safeBaseContent = baseContent;
+  const baseContent =
+    firstNonEmptyString(
+      message.content,
+      message.text,
+      partsBody,
+      summaryText(message),
+    ) ?? "";
   const questionPrompt = questionPromptFromMessage(message);
+  const messageResponseType = firstNonEmptyString(
+    message.responseType,
+    asString(asRecord(message)?.structuredOutput?.responseType),
+    asString(asRecord(message)?.structured?.responseType),
+  )?.toLowerCase();
   if (!questionPrompt) {
-    return safeBaseContent;
+    return baseContent;
   }
-  const isQuestionResponseType = responseType === "question";
-  const hasInteractiveEvents = Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0;
-  const hasQuestionLikeInteractive = hasQuestionLikeInteractiveContent(message);
-  if (isMessageResponseType) {
-    if (structuredMessage) {
-      return structuredMessage;
-    }
-  }
+
   if (
-    !isQuestionResponseType &&
-    !hasInteractiveEvents &&
-    !hasQuestionLikeInteractive
+    messageResponseType === "progress" &&
+    hasQuestionLikeInteractiveContent(message)
   ) {
-    return safeBaseContent;
-  }
-
-  // For explicit question turns, render only the canonical question prompt in the
-  // assistant bubble (no assistantMessage/body concatenation).
-  if (isQuestionResponseType) {
-    return questionPrompt;
-  }
-  if (hasQuestionLikeInteractive) {
     return questionPrompt;
   }
 
-  if (!safeBaseContent || isLowValueInteractiveBodyText(safeBaseContent)) {
+  if (!baseContent || isLowValueInteractiveBodyText(baseContent)) {
     return questionPrompt;
   }
 
   const promptNorm = normalizeComparableText(questionPrompt);
-  const bodyNorm = normalizeComparableText(safeBaseContent);
-  if (!promptNorm || bodyNorm === promptNorm) {
-    return questionPrompt;
-  }
-  if (bodyNorm.startsWith(promptNorm)) {
-    return safeBaseContent;
-  }
+  const bodyNorm = normalizeComparableText(baseContent);
   if (
-    hasInteractiveEvents &&
-    looksLikeFlattenedInteractiveEcho(questionPrompt, safeBaseContent, message)
+    promptNorm &&
+    bodyNorm &&
+    (bodyNorm === promptNorm ||
+      bodyNorm.includes(promptNorm) ||
+      promptNorm.includes(bodyNorm))
   ) {
     return questionPrompt;
   }
-  return `${questionPrompt}\n\n${safeBaseContent}`;
+
+  return baseContent;
 }
 
 type RawDebugParseStatus = "parsed" | "empty" | "unparseable" | "truncated";
@@ -3955,8 +3866,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     });
   }, [hasOwnedChangeSummary, message, messageId, messages]);
   const shouldShowPlanCard = useMemo(() => {
+    if (responseType !== "implementation_plan" || !plan) {
+      return false;
+    }
+
     if (!plan?.file) {
-      return !!plan;
+      return true;
     }
 
     const ownIndex = messages.findIndex(
@@ -3982,7 +3897,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
     const lastMatchingPlanIndex = Math.max(...matchingPlanIndexes);
     return ownIndex === lastMatchingPlanIndex;
-  }, [message, messageId, plan, messages]);
+  }, [message, messageId, plan, messages, responseType]);
 
   const latestAssistantMessageId = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index--) {
@@ -4484,7 +4399,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       ? visibleResolvedContent
       : planLeadMessage;
   const hasVisibleResponseBody = effectiveResponseContent.trim().length > 0;
-  const hasPrimaryResponseBody = hasVisibleResponseBody || !!plan;
+  const hasPrimaryResponseBody = hasVisibleResponseBody || shouldShowPlanCard;
   const hasResponseContent = hasVisibleResponseBody;
   const isAborted = message?.aborted === true;
   const structuredRetryError =
@@ -4516,7 +4431,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
-  const showResponseSection = !isAborted && (hasVisibleResponseBody || !!plan);
+  const showResponseSection = !isAborted && (hasVisibleResponseBody || shouldShowPlanCard);
   const responseSectionClass = hasResponseContent
     ? "rounded-md border border-oc-border-soft bg-background p-3.5 shadow-sm"
     : "p-0 border-0 bg-transparent shadow-none";

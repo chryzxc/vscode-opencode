@@ -85,6 +85,29 @@ test('error handler retains partial streaming response as a message', () => {
   assert.match(messageHandlerSource, /currentStreaming|getState/i, 'handler should access current state');
 });
 
+test('heartbeat events do not bootstrap phantom streaming while a session is only marked processing', () => {
+  const handlerBody = extractFunctionBody(
+    messageHandlerSource,
+    'function handleStreamEvent',
+  );
+
+  assert.match(
+    messageHandlerSource,
+    /function\s+isHeartbeatEventType\(eventType:\s*string\)/,
+    'messageHandler should define a heartbeat-event helper',
+  );
+  assert.match(
+    handlerBody,
+    /const\s+isHeartbeatEvent\s*=\s*isHeartbeatEventType\(eventType\)/,
+    'handleStreamEvent should classify heartbeat events explicitly',
+  );
+  assert.match(
+    handlerBody,
+    /!current\s*&&\s*!isHeartbeatEvent[\s\S]*state\.isProcessing/s,
+    'heartbeat events should be excluded from the bootstrap path that creates a streaming snapshot from processing=true alone',
+  );
+});
+
 test('timeout errors suppress low-signal stream fragments in partial error messages', () => {
   const handlerBody = extractFunctionBody(
     messageHandlerSource,
@@ -222,5 +245,28 @@ test('normalizeMessage extracts edits from patch parts when edits are missing', 
     normalizeBody,
     /normalized\.edits\s*=\s*fromParts/,
     'normalizeMessage should assign derived patch files into normalized.edits',
+  );
+});
+
+test('normalizeMessage backfills streamed edits when the final payload omits them', () => {
+  const normalizeBody = extractFunctionBody(
+    messageHandlerSource,
+    'function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined',
+  );
+
+  assert.match(
+    normalizeBody,
+    /if \(\s*\(!Array\.isArray\(normalized\.edits\) \|\| normalized\.edits\.length === 0\)\s*&&[\s\S]*Array\.isArray\(streaming\?\.edits\)[\s\S]*streaming\.edits\.length > 0/s,
+    'normalizeMessage should consider streamed edits when the final payload has none',
+  );
+  assert.match(
+    normalizeBody,
+    /Array\.from\(new Set\(streaming\.edits\)\)/,
+    'normalizeMessage should deduplicate streamed edit file paths before persisting them',
+  );
+  assert.match(
+    normalizeBody,
+    /\.map\(\(file\) => \(\{ file \}\)\)/,
+    'normalizeMessage should convert streamed edit paths into message.edits objects',
   );
 });
