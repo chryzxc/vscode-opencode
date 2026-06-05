@@ -800,7 +800,16 @@ export class StructuredOutputProcessor {
       return;
     }
 
-    this.logger.warn("Structured output validation failed", {
+    const isNormalizedStage = context.stage === "normalized";
+    const log = isNormalizedStage
+      ? this.logger.info.bind(this.logger)
+      : this.logger.warn.bind(this.logger);
+
+    log(
+      isNormalizedStage
+        ? "Structured output normalized with field mapping"
+        : "Structured output validation failed",
+      {
       errors: context.validationErrors?.length
         ? context.validationErrors
         : ["structured payload lost fields during normalization"],
@@ -819,7 +828,8 @@ export class StructuredOutputProcessor {
       hasPlan: typeof rawRecord.plan !== "undefined",
       hasQuestion: typeof rawRecord.question !== "undefined",
       keys: Object.keys(rawRecord),
-    });
+      },
+    );
   }
 
   private logStructuredValidationFailureComparison(
@@ -1222,11 +1232,15 @@ export class StructuredOutputProcessor {
     }
     if (!validation.valid) {
       this.logStructuredValidationFailureComparison({
-        rawInput: input,
+        rawInput: raw,
         sanitizedRec,
         canonicalRec,
         diagnostics,
-        candidates,
+        candidates: [
+          { source: "raw", value: raw },
+          { source: "sanitizedRec", value: sanitizedRec },
+          { source: "canonicalRec", value: canonicalRec },
+        ],
         validationErrors: validation.errors,
         responseTypeHintRaw,
         messageCandidate,
@@ -1510,6 +1524,7 @@ export class StructuredOutputProcessor {
     if (!message || !structured) return message;
 
     const updated = { ...message };
+    const fallbackMessage = this.createFallbackMessage(structured);
 
     if (structured.message && !updated.message) {
       updated.message = structured.message;
@@ -1546,6 +1561,20 @@ export class StructuredOutputProcessor {
 
     if (structured.reasoning && structured.reasoning.length > 0) {
       updated.reasoning = [...(updated.reasoning || []), ...structured.reasoning];
+    }
+
+    // Hydrated interactive/question turns should display the canonical prompt,
+    // not any leaked draft/reasoning body that a provider may have placed in
+    // content/text before the structured payload landed.
+    if (
+      structured.responseType === "question" &&
+      fallbackMessage
+    ) {
+      updated.content = fallbackMessage;
+      updated.text = fallbackMessage;
+      if (!updated.message) {
+        updated.message = fallbackMessage;
+      }
     }
 
     updated.structuredOutput = structured;

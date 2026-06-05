@@ -361,6 +361,61 @@ describe("HistoryProcessor", () => {
 
       assert.deepEqual(result, [assistant, user]);
     });
+
+    it("preserves reasoning events and token metadata when hydrating assistant bursts", () => {
+      const result = processor.mergeConsecutiveAssistantBursts([
+        {
+          id: "assistant-1",
+          role: "assistant",
+          providerID: "openai",
+          modelID: "gpt-5.4",
+          variant: "medium",
+          reasoningEvents: [{ text: "Preparing response", createdAt: 1 }],
+          info: {
+            providerID: "openai",
+            modelID: "gpt-5.4",
+            variant: "medium",
+            duration: 5.4,
+            tokens: {
+              input: 802,
+              output: 166,
+              reasoning: 30,
+              cache: { read: 11648 },
+            },
+          },
+        },
+        {
+          id: "assistant-1",
+          role: "assistant",
+          content: "Which superpower would be the most fun to have for one day?",
+          parts: [
+            {
+              type: "text",
+              text: "Which superpower would be the most fun to have for one day?",
+            },
+          ],
+        },
+      ]);
+
+      assert.equal(result.length, 1);
+      assert.equal(
+        result[0].content,
+        "Which superpower would be the most fun to have for one day?",
+      );
+      assert.deepEqual(result[0].reasoningEvents, [
+        { text: "Preparing response", createdAt: 1 },
+      ]);
+      assert.equal(result[0].providerID, "openai");
+      assert.equal(result[0].modelID, "gpt-5.4");
+      assert.equal(result[0].variant, "medium");
+      assert.deepEqual(result[0].info?.tokens, {
+        input: 802,
+        output: 166,
+        reasoning: 30,
+        cache: { read: 11648 },
+      });
+      assert.equal(result[0].info?.duration, 5.4);
+    });
   });
 
   describe("getLatestAssistantHistoryMarker", () => {

@@ -63,7 +63,7 @@ test('ChatViewProvider logs final prompt response diagnostics when non-streaming
 
   assert.match(
     sendMessageBody,
-    /this\.logPromptResponseDiagnostics\(session\.id,\s*response\.data\)/,
+    /this\.logPromptResponseDiagnostics\(session\.id,\s*responseData\)/,
     'handleSendMessage should log detailed final response diagnostics for debugging',
   );
 });
@@ -117,9 +117,22 @@ test('ChatViewProvider attempts interactive transport recovery before surfacing 
     'thrown interactive transport-failure path should also try session-history recovery before surfacing a hard error',
   );
   assert.match(
+    sendMessageBody,
+    /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*cleanupTimedOutSession\(/s,
+    'interactive transport-failure paths should invoke stop-style timeout cleanup before surfacing a hard error',
+  );
+  assert.match(
     chatProviderSource,
     /isGenericErrorMessage\(message\)/,
     'interactive transport-failure detection should include generic fetch/network failures',
+  );
+});
+
+test('ChatViewProvider records meaningful assistant stream activity for silent prompt-await detection', () => {
+  assert.match(
+    chatProviderSource,
+    /const eventSessionId = this\.extractEventSessionId\(event\);[\s\S]*this\.markMeaningfulAssistantStreamActivity\(eventSessionId,\s*event\);/s,
+    'stream subscription should flag assistant-side activity before local prompt-await timeout decides a session is hung',
   );
 });
 

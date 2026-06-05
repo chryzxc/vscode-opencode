@@ -586,6 +586,37 @@ describe("StructuredOutputProcessor", () => {
       assert.ok(result.plan, "existing plan should be preserved");
       assert.equal(result.plan.file, "./plan.md");
     });
+
+    it("rewrites question turns to the canonical structured prompt during hydration", () => {
+      const { processor } = createProcessor();
+      const result = processor.applyStructuredOutputToMessage(
+        {
+          content:
+            "Preparing for MCQ response. I need to respond quickly with a tool call.",
+          text:
+            "Preparing for MCQ response. I need to respond quickly with a tool call.",
+        },
+        {
+          responseType: "question",
+          message: "",
+          question: {
+            question:
+              "If you could instantly master one skill, which would you choose?",
+          },
+          reasoning: [
+            "The user answered the previous fun multiple-choice question, so I should continue with the next one in the same format.",
+          ],
+        } as any,
+      );
+      assert.equal(
+        result.content,
+        "If you could instantly master one skill, which would you choose?",
+      );
+      assert.equal(
+        result.text,
+        "If you could instantly master one skill, which would you choose?",
+      );
+    });
   });
 
   describe("enrichStreamEvent", () => {

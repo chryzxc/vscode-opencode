@@ -785,6 +785,7 @@ export class ChatViewProvider
       images?: any[];
       agent?: string;
       userFacingText?: string;
+      interactiveSubmit?: boolean;
       avoidAbortIfProcessing?: boolean;
       forceSendNow?: boolean;
     },
@@ -836,6 +837,9 @@ export class ChatViewProvider
         false,
         undefined,
         payload.userFacingText,
+        {
+          interactiveSubmit: payload.interactiveSubmit === true,
+        },
       );
       return;
     }
@@ -2640,6 +2644,7 @@ export class ChatViewProvider
               // Interactive popover submits should behave like a normal direct
               // user send, even if stale processing flags briefly linger from
               // the preceding question turn.
+              interactiveSubmit: isInteractiveSubmit,
               forceSendNow: isInteractiveSubmit,
               avoidAbortIfProcessing: isInteractiveSubmit,
             });
@@ -2678,10 +2683,37 @@ export class ChatViewProvider
             break;
           }
           try {
+            const displayText = answers
+              .map((entry) => entry.join(" ").trim())
+              .filter((entry) => entry.length > 0)
+              .join("\n");
             if (replySessionId) {
               this.processingSessionIds.add(replySessionId);
               this.activeStreamSessionId = replySessionId;
               this.sendProcessingSessionsUpdate();
+            }
+            if (replySessionId && displayText) {
+              const answerMessage = {
+                role: "user" as const,
+                content: displayText,
+                text: displayText,
+                interactiveSubmit: true,
+                parts: [
+                  {
+                    type: "text",
+                    text: displayText,
+                  },
+                ],
+                time: {
+                  created: Date.now(),
+                },
+              };
+              await this.sessionService.appendMessage(replySessionId, answerMessage);
+              this.view?.webview.postMessage({
+                type: "userMessageAppended",
+                message: answerMessage,
+                sessionId: replySessionId,
+              });
             }
             const client = await this.serverManager.ensureRunning();
             await client.question.reply({
@@ -2690,14 +2722,16 @@ export class ChatViewProvider
               directory: this.getWorkspaceDirectory(),
             });
             if (replySessionId) {
-              const status = await this.getSessionStatusType(replySessionId);
-              if (status !== "busy" && status !== "retry") {
-                this.processingSessionIds.delete(replySessionId);
-                if (this.activeStreamSessionId === replySessionId) {
-                  this.activeStreamSessionId = undefined;
-                }
-                this.sendProcessingSessionsUpdate();
+              // Question replies are terminal from the UI's perspective. Do not
+              // keep the session pinned in a "busy" wait state while polling for
+              // a backend status transition that some models never emit cleanly.
+              // If the model really continues streaming, the next real stream
+              // event will reassert processing state on its own.
+              this.processingSessionIds.delete(replySessionId);
+              if (this.activeStreamSessionId === replySessionId) {
+                this.activeStreamSessionId = undefined;
               }
+              this.sendProcessingSessionsUpdate();
             }
           } catch (err) {
             if (replySessionId) {
@@ -3288,11 +3322,15 @@ export class ChatViewProvider
             this.logger.warn("retryLastMessage failed: no currentSessionId");
             break;
           }
-          // Clean up any stale processing state that might be blocking the retry
-          if (this.processingSessionIds.has(retrySessionId)) {
-            this.logger.info("retryLastMessage: clearing stale processing state", { sessionId: retrySessionId });
-            this.processingSessionIds.delete(retrySessionId);
-            this.sendProcessingSessionsUpdate();
+          // Clean up via the same stop flow the user-triggered Stop button uses so
+          // retries do not inherit a half-active timed-out stream.
+          if (this.processingSessionIds.has(retrySessionId) || this.activeStreamSessionId === retrySessionId) {
+            this.logger.info("retryLastMessage: stopping stale in-flight session before retry", {
+              sessionId: retrySessionId,
+            });
+            await this.handleStopRequest(retrySessionId, {
+              skipQueueDrain: true,
+            });
           }
           const retryWithoutStructuredOutput =
             message.retryWithoutStructuredOutput === true;
@@ -4082,7 +4120,36 @@ export class ChatViewProvider
     });
   }
 
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    label: string,
+  ): Promise<T> {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error(`${label} timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  private isPromptAwaitHangError(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return normalized.includes("sdk prompt await timeout");
+  }
+
   private getTimeoutRecoveryPollDelays(failureMessage?: string): number[] {
+    if (this.isPromptAwaitHangError(this.firstNonEmptyString(failureMessage) || "")) {
+      return [500, 1000, 2000, 4000, 6000];
+    }
     const timeoutLikeFailure = this.isLikelyInteractiveAwaitTimeoutError(
       this.firstNonEmptyString(failureMessage) || "",
     );
@@ -4133,11 +4200,18 @@ export class ChatViewProvider
     failureMessage?: string,
   ): Promise<boolean> {
     const pollDelaysMs = this.getTimeoutRecoveryPollDelays(failureMessage);
+    const promptAwaitHang = this.isPromptAwaitHangError(
+      this.firstNonEmptyString(failureMessage) || "",
+    );
     const timeoutLikeFailure = this.isLikelyInteractiveAwaitTimeoutError(
       this.firstNonEmptyString(failureMessage) || "",
     );
     const startedAt = Date.now();
-    const maxWaitMs = timeoutLikeFailure ? 30 * 60 * 1000 : 60 * 1000;
+    const maxWaitMs = promptAwaitHang
+      ? 15 * 1000
+      : timeoutLikeFailure
+        ? 30 * 60 * 1000
+        : 60 * 1000;
     this.logger.info("Attempting timeout recovery from session history", {
       sessionId,
       timeoutLikeFailure,
@@ -4547,7 +4621,13 @@ export class ChatViewProvider
 
   private isLikelyInteractiveAwaitTimeoutError(message: string): boolean {
     const normalized = message.trim().toLowerCase();
-    if (!normalized || !normalized.includes("timeout")) {
+    if (!normalized) {
+      return false;
+    }
+    if (this.isPromptAwaitHangError(normalized)) {
+      return true;
+    }
+    if (!normalized.includes("timeout")) {
       return false;
     }
     return (
@@ -4914,6 +4994,46 @@ export class ChatViewProvider
     }
 
     return `${primary}\n\nDetails:\n${detailLines.join("\n")}`;
+  }
+
+  private getUserFacingSendErrorMessage(errorMessage: string): string {
+    const normalized = errorMessage.trim().toLowerCase();
+    if (!normalized) {
+      return "Something went wrong while sending the message. Please try again.";
+    }
+    if (this.isPromptAwaitHangError(normalized)) {
+      return "The model did not respond in time. Please retry.";
+    }
+    if (this.isLikelyInteractiveAwaitTimeoutError(normalized)) {
+      return "The request timed out while waiting for a response. Please retry.";
+    }
+    return errorMessage.trim();
+  }
+
+  private async cleanupTimedOutSession(
+    sessionId: string | undefined,
+    errorMessage: string,
+    options?: { suppressWebviewNotification?: boolean; skipQueueDrain?: boolean },
+  ): Promise<void> {
+    if (!sessionId || !this.isLikelyInteractiveTransportFailure(errorMessage)) {
+      return;
+    }
+
+    if (!this.processingSessionIds.has(sessionId) && this.activeStreamSessionId !== sessionId) {
+      return;
+    }
+
+    this.logger.warn("Cleaning up timed out session via stop flow", {
+      sessionId,
+      errorMessage,
+      suppressWebviewNotification: options?.suppressWebviewNotification === true,
+      skipQueueDrain: options?.skipQueueDrain === true,
+    });
+
+    await this.handleStopRequest(sessionId, {
+      suppressWebviewNotification: options?.suppressWebviewNotification,
+      skipQueueDrain: options?.skipQueueDrain ?? true,
+    });
   }
 
   private enrichStreamEvent(event: any): any {
@@ -6086,6 +6206,7 @@ export class ChatViewProvider
     retryWithoutStructuredOutput = false,
     structuredFallbackReason?: string,
     userFacingText?: string,
+    sendMeta?: { interactiveSubmit?: boolean },
   ): Promise<void> {
     // Start feature flow tracking
     const flow = log.startFeatureFlow('SendMessage', {
@@ -6216,6 +6337,7 @@ export class ChatViewProvider
           role: "user" as const,
           content: persistedUserText,
           text: persistedUserText,
+          interactiveSubmit: sendMeta?.interactiveSubmit === true,
           parts: [
             {
               type: "text",
@@ -6507,6 +6629,7 @@ export class ChatViewProvider
             );
             return;
           }
+          await this.cleanupTimedOutSession(session.id, errorMessage);
         }
 
         // Handle Session Not Found error (likely server restart)
@@ -6634,10 +6757,12 @@ export class ChatViewProvider
           ].join("\n");
         }
 
-        vscode.window.showErrorMessage(`OpenCode error: ${errorMessage}`);
+        const userFacingErrorMessage =
+          this.getUserFacingSendErrorMessage(errorMessage);
+        vscode.window.showErrorMessage(`OpenCode error: ${userFacingErrorMessage}`);
         this.view?.webview.postMessage({
           type: "error",
-          message: errorMessage,
+          message: userFacingErrorMessage,
         });
         return;
       }
@@ -6981,8 +7106,11 @@ export class ChatViewProvider
           );
           return;
         }
+        await this.cleanupTimedOutSession(drainSessionId, errorMessage);
       }
-      vscode.window.showErrorMessage(`Failed to send message: ${errorMessage}`);
+      const userFacingErrorMessage =
+        this.getUserFacingSendErrorMessage(errorMessage);
+      vscode.window.showErrorMessage(`Failed to send message: ${userFacingErrorMessage}`);
       this.logger.error("Send message exception", {
         sessionId: drainSessionId,
         errorMessage,
@@ -6992,7 +7120,7 @@ export class ChatViewProvider
       // Show error in webview too
       this.view?.webview.postMessage({
         type: "error",
-        message: errorMessage,
+        message: userFacingErrorMessage,
       });
     } finally {
       const totalDuration = Date.now() - overallStartTime;

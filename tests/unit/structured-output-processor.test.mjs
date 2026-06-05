@@ -340,6 +340,11 @@ test('StructuredOutputProcessor extracts, applies, and enriches structured paylo
     /updated\.interactiveEvents = \[[\s\S]*\.\.\.\(updated\.interactiveEvents \|\| \[]\),[\s\S]*\.\.\.structured\.interactiveEvents,[\s\S]*\];/,
     'should append interactive events',
   );
+  assert.match(
+    applyBody,
+    /if \([\s\S]*structured\.responseType === "question"[\s\S]*fallbackMessage[\s\S]*\) \{[\s\S]*updated\.content = fallbackMessage;[\s\S]*updated\.text = fallbackMessage;/,
+    'should rewrite hydrated question turns to the canonical structured prompt',
+  );
   assert.match(applyBody, /updated\.structuredOutput = structured;/, 'should attach the normalized structured output to the message');
   assert.match(applyBody, /updated\.hasStructuredOutput = true;/, 'should mark the message as carrying structured output');
 

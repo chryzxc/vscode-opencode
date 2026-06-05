@@ -40,9 +40,31 @@ test('handleSendMessage appends the user message before the prompt call', () => 
 test('promptWithStructuredOutput exists and uses client.session.prompt', () => {
   const body = extractFunctionBody(source, '  private async promptWithStructuredOutput(');
   assert.match(source, /private async promptWithStructuredOutput\(\s*client:\s*any,\s*sessionID:\s*string,\s*body:/, 'promptWithStructuredOutput should accept client, sessionId, body, and structured-output flag arguments');
-  assert.match(body, /const promise = client\.session\.prompt\(\{/, 'promptWithStructuredOutput should call client.session.prompt');
+  assert.match(body, /const promise = client\.session\.prompt\(\{/, 'promptWithStructuredOutput should call client.session.prompt directly');
   assert.match(body, /path:\s*\{\s*id:\s*sessionID\s*\}/, 'promptWithStructuredOutput should pass path.id to the SDK');
   assert.match(body, /body:\s*requestBody as SessionPromptData\["body"\]/, 'promptWithStructuredOutput should pass the body payload to the SDK');
+});
+
+test('send failures surface friendly user-facing timeout text instead of raw internal labels', () => {
+  const body = extractFunctionBody(source, '  private async handleSendMessage(');
+  assert.match(body, /const userFacingErrorMessage =[\s\S]*getUserFacingSendErrorMessage\(errorMessage\)/s, 'send error handling should map internal errors to user-facing text before showing the banner');
+  assert.match(source, /private getUserFacingSendErrorMessage\(errorMessage: string\): string/, 'provider should define a dedicated user-facing send error formatter');
+  assert.match(source, /The model did not respond in time\. Please retry\./, 'timeout hangs should be rendered as a friendly retry prompt');
+});
+
+test('timeout-like failures clean up with the same stop flow used by the Stop button', () => {
+  assert.match(source, /private async cleanupTimedOutSession\(/, 'provider should define a shared timeout cleanup helper');
+  assert.match(source, /await this\.handleStopRequest\(sessionId,\s*\{[\s\S]*skipQueueDrain:\s*options\?\.skipQueueDrain \?\? true,/s, 'timeout cleanup should route through handleStopRequest');
+
+  const body = extractFunctionBody(source, '  private async handleSendMessage(');
+  assert.match(body, /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*await this\.cleanupTimedOutSession\(session\.id,\s*errorMessage\)/s, 'response.error timeout failures should invoke stop-style cleanup');
+  assert.match(body, /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*await this\.cleanupTimedOutSession\(drainSessionId,\s*errorMessage\)/s, 'thrown timeout failures should invoke stop-style cleanup');
+});
+
+test('retryLastMessage uses stop flow instead of only clearing local processing flags', () => {
+  const retryBody = extractFunctionBody(source, '        case "retryLastMessage": {');
+  assert.match(retryBody, /await this\.handleStopRequest\(retrySessionId,\s*\{[\s\S]*skipQueueDrain:\s*true,/s, 'retry should stop stale in-flight work before resending');
+  assert.doesNotMatch(retryBody, /this\.processingSessionIds\.delete\(retrySessionId\);/, 'retry should not only clear processingSessionIds without running full stop cleanup');
 });
 
 test('handleSendMessage persists the assistant response and posts messageResponse', () => {
@@ -81,8 +103,8 @@ test('init payloads hydrate processing sessions for reloaded webviews', () => {
 
 test('send flow keeps structured-output and direct-send branches intact', () => {
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
-  assert.match(body, /if \(response\.data && capturePromptDebug\)/, 'handleSendMessage should preserve the response-data branch');
-  assert.match(body, /if \(response\.error\) \{[\s\S]*return this\.handleSendMessage\(/, 'handleSendMessage should retain the retry path for interactive transport failures');
+  assert.match(body, /if \(responseData && capturePromptDebug\)/, 'handleSendMessage should preserve the response-data branch');
+  assert.match(body, /if \(responseError\) \{[\s\S]*return this\.handleSendMessage\(/, 'handleSendMessage should retain the retry path for interactive transport failures');
   assert.doesNotMatch(body, /describe\(/, 'handleSendMessage should remain source-introspection only, not a runtime test');
 });
 

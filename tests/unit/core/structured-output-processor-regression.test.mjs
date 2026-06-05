@@ -150,6 +150,11 @@ test.describe('Structured Output Processor - Normalization', () => {
       /const ignoredRawKeys = new Set\(\[[\s\S]*"raw"[\s\S]*"type"[\s\S]*"kind"/,
       'field-drop detection should ignore the internal raw preservation field',
     );
+    assert.match(
+      structuredOutputProcessorSource,
+      /const isNormalizedStage = context\.stage === "normalized";[\s\S]*this\.logger\.info\.bind\(this\.logger\)[\s\S]*"Structured output normalized with field mapping"/s,
+      'normalized field-drop diagnostics should be informational instead of warning-level',
+    );
   });
 
   test('normalizeStructuredOutput salvages invalid payloads instead of always dropping them', () => {
@@ -162,6 +167,21 @@ test.describe('Structured Output Processor - Normalization', () => {
       structuredOutputProcessorSource,
       /private salvageStructuredOutput\([\s\S]*topLevelOptions[\s\S]*topLevelChoices[\s\S]*topLevelActions[\s\S]*rawInteractiveEvents/s,
       'salvageStructuredOutput should retain question-like raw fields for invalid payloads',
+    );
+    assert.match(
+      structuredOutputProcessorSource,
+      /rawInput:\s*raw,/,
+      'normalizeStructuredOutput should log the original raw input variable during validation failures',
+    );
+    assert.doesNotMatch(
+      structuredOutputProcessorSource,
+      /rawInput:\s*input,/, 
+      'normalizeStructuredOutput should not reference an undefined input variable in failure logs',
+    );
+    assert.match(
+      structuredOutputProcessorSource,
+      /candidates:\s*\[\s*\{[\s\S]*source:\s*"raw"/s,
+      'normalizeStructuredOutput should pass concrete comparison candidates into validation failure logging',
     );
     assert.doesNotMatch(
       structuredOutputProcessorSource,

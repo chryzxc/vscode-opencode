@@ -398,6 +398,15 @@ export class HistoryProcessor {
     if (burst.length === 1) return burst[0];
 
     const base = { ...(burst[burst.length - 1] || burst[0] || {}) };
+    const visibleBodyText = (() => {
+      for (let index = burst.length - 1; index >= 0; index -= 1) {
+        const candidate = this.extractMessageBodyText(burst[index]);
+        if (candidate && candidate.trim().length > 0) {
+          return candidate;
+        }
+      }
+      return "";
+    })();
 
     const appendUnique = (target: any[], incoming: any[]): void => {
       if (!Array.isArray(incoming) || incoming.length === 0) {
@@ -413,6 +422,75 @@ export class HistoryProcessor {
       }
     };
 
+    const mergeInfoRecord = (preferredInfo: any, fallbackInfo: any): any => {
+      const preferred =
+        preferredInfo && typeof preferredInfo === "object" ? preferredInfo : {};
+      const fallback =
+        fallbackInfo && typeof fallbackInfo === "object" ? fallbackInfo : {};
+
+      const merged: any = {
+        ...fallback,
+        ...preferred,
+      };
+
+      const preferredTokens =
+        preferred.tokens && typeof preferred.tokens === "object"
+          ? preferred.tokens
+          : undefined;
+      const fallbackTokens =
+        fallback.tokens && typeof fallback.tokens === "object"
+          ? fallback.tokens
+          : undefined;
+      if (preferredTokens || fallbackTokens) {
+        merged.tokens = {
+          ...(fallbackTokens || {}),
+          ...(preferredTokens || {}),
+          cache: {
+            ...((fallbackTokens?.cache &&
+              typeof fallbackTokens.cache === "object")
+              ? fallbackTokens.cache
+              : {}),
+            ...((preferredTokens?.cache &&
+              typeof preferredTokens.cache === "object")
+              ? preferredTokens.cache
+              : {}),
+          },
+        };
+      }
+
+      const preferredTime =
+        preferred.time && typeof preferred.time === "object"
+          ? preferred.time
+          : undefined;
+      const fallbackTime =
+        fallback.time && typeof fallback.time === "object"
+          ? fallback.time
+          : undefined;
+      if (preferredTime || fallbackTime) {
+        merged.time = {
+          ...(fallbackTime || {}),
+          ...(preferredTime || {}),
+        };
+      }
+
+      const preferredError =
+        preferred.error && typeof preferred.error === "object"
+          ? preferred.error
+          : undefined;
+      const fallbackError =
+        fallback.error && typeof fallback.error === "object"
+          ? fallback.error
+          : undefined;
+      if (preferredError || fallbackError) {
+        merged.error = {
+          ...(fallbackError || {}),
+          ...(preferredError || {}),
+        };
+      }
+
+      return merged;
+    };
+
     base.parts = Array.isArray(base.parts) ? [...base.parts] : [];
     base.subagents = Array.isArray(base.subagents) ? [...base.subagents] : [];
     base.interactiveEvents = Array.isArray(base.interactiveEvents)
@@ -421,7 +499,15 @@ export class HistoryProcessor {
     base.progressUpdates = Array.isArray(base.progressUpdates)
       ? [...base.progressUpdates]
       : [];
+    base.progressEvents = Array.isArray(base.progressEvents)
+      ? [...base.progressEvents]
+      : [];
+    base.reasoningEvents = Array.isArray(base.reasoningEvents)
+      ? [...base.reasoningEvents]
+      : [];
+    base.steps = Array.isArray(base.steps) ? [...base.steps] : [];
     base.reasoning = Array.isArray(base.reasoning) ? [...base.reasoning] : [];
+    base.info = mergeInfoRecord(base.info, undefined);
 
     let latestRawResponse: unknown = base.rawResponse;
 
@@ -442,9 +528,46 @@ export class HistoryProcessor {
         Array.isArray(message?.progressUpdates) ? message.progressUpdates : [],
       );
       appendUnique(
+        base.progressEvents,
+        Array.isArray(message?.progressEvents) ? message.progressEvents : [],
+      );
+      appendUnique(
+        base.reasoningEvents,
+        Array.isArray(message?.reasoningEvents) ? message.reasoningEvents : [],
+      );
+      appendUnique(base.steps, Array.isArray(message?.steps) ? message.steps : []);
+      appendUnique(
         base.reasoning,
         Array.isArray(message?.reasoning) ? message.reasoning : [],
       );
+      base.info = mergeInfoRecord(base.info, message?.info);
+
+      if (
+        (!base.providerID || !base.modelID) &&
+        (message?.providerID || message?.modelID)
+      ) {
+        base.providerID = base.providerID || message.providerID;
+        base.modelID = base.modelID || message.modelID;
+      }
+      if (!base.variant && message?.variant) {
+        base.variant = message.variant;
+      }
+      if (
+        (!base.timing || typeof base.timing !== "object") &&
+        message?.timing &&
+        typeof message.timing === "object"
+      ) {
+        base.timing = { ...message.timing };
+      }
+      if (
+        typeof base.duration !== "number" &&
+        typeof message?.duration === "number"
+      ) {
+        base.duration = message.duration;
+      }
+      if (!base.reasoningPayload && message?.reasoningPayload) {
+        base.reasoningPayload = message.reasoningPayload;
+      }
 
       const structured = this.structuredOutputProcessor.extractStructuredOutput(message);
       if (structured) {
@@ -456,7 +579,10 @@ export class HistoryProcessor {
     }
 
     base.rawResponse = latestRawResponse;
-    base.content = this.extractMessageBodyText(base);
+    base.content = visibleBodyText || this.extractMessageBodyText(base);
+    if (typeof base.text === "string" || visibleBodyText) {
+      base.text = visibleBodyText || this.firstNonEmptyString(base.text);
+    }
     return base;
   }
 

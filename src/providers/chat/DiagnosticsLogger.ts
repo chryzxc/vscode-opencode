@@ -118,7 +118,11 @@ export class DiagnosticsLogger {
       return;
     }
     if (shouldLogInfo) {
-      this.logger.info("Render parity stream snapshot", summary);
+      this.logger.info("[SOURCE] stream event snapshot", summary);
+      this.logger.info("[SOURCE] stream event payload", {
+        event,
+        enrichedEvent,
+      });
     }
   }
 
@@ -233,12 +237,18 @@ export class DiagnosticsLogger {
       this.summarizeRenderMessageCompact(msg, processedMessages.length - processedTail.length + i)
     );
 
-    const summaryContext: Record<string, unknown> = {
+    const rawContext: Record<string, unknown> = {
       source,
       sessionId,
       stats: `${rawMessages.length} raw → ${processedMessages.length} processed (${rawMessages.length - processedMessages.length} dropped)`,
       missing: missingProcessedIds.length > 0 ? missingProcessedIds.map(id => id.slice(-8)).join(', ') : 'none',
       rawTail: rawCompact,
+    };
+    const processedContext: Record<string, unknown> = {
+      source,
+      sessionId,
+      stats: `${rawMessages.length} raw → ${processedMessages.length} processed (${rawMessages.length - processedMessages.length} dropped)`,
+      missing: missingProcessedIds.length > 0 ? missingProcessedIds.map(id => id.slice(-8)).join(', ') : 'none',
       processedTail: processedCompact,
     };
 
@@ -249,7 +259,18 @@ export class DiagnosticsLogger {
     //   processedTailVerbose: processedSummary,
     // });
 
-    this.logger.info("History render parity", summaryContext);
+    this.logger.info("[SOURCE] history raw snapshot", rawContext);
+    this.logger.info("[PRE-RENDER] history processed snapshot", processedContext);
+    this.logger.info("[SOURCE] history raw payload", {
+      source,
+      sessionId,
+      messages: rawMessages,
+    });
+    this.logger.info("[PRE-RENDER] history processed payload", {
+      source,
+      sessionId,
+      messages: processedMessages,
+    });
 
     if (this.shouldVerboseStreamDebug()) {
       this.logger.debug("History raw tail (verbose)", {

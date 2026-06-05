@@ -51,6 +51,23 @@ export class StreamEventHandler {
   async handleStreamEvent(event: any): Promise<void> {
     if (!event) return;
 
+    this.logger.info("[SOURCE] stream event received", {
+      sessionId: this.getCurrentSessionId(),
+      eventType:
+        typeof event?.type === "string"
+          ? event.type
+          : typeof event?.event === "string"
+            ? event.event
+            : typeof event?.kind === "string"
+              ? event.kind
+              : "unknown",
+      eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
+    });
+    this.logger.info("[SOURCE] stream event full payload", {
+      sessionId: this.getCurrentSessionId(),
+      event,
+    });
+
     const enrichedEvent = this.structuredOutputProcessor.enrichStreamEvent(event);
 
     this.diagnosticsLogger.logStreamEventDiagnostics(event, enrichedEvent);
@@ -90,6 +107,21 @@ export class StreamEventHandler {
     }
 
     // Forward to webview
+    this.logger.info("[PRE-RENDER] stream event forwarded", {
+      sessionId,
+      eventType:
+        typeof enrichedEvent?.type === "string"
+          ? enrichedEvent.type
+          : typeof event?.type === "string"
+            ? event.type
+            : "unknown",
+      hasStructuredOutput: Boolean(enrichedEvent?.structuredOutput),
+      hasProperties: Boolean(enrichedEvent?.properties),
+    });
+    this.logger.info("[PRE-RENDER] stream event full payload", {
+      sessionId,
+      event: enrichedEvent || event,
+    });
     this.postMessage({
       type: "streamEvent",
       event: enrichedEvent || event,

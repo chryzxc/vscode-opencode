@@ -202,6 +202,21 @@ test.describe('History Processor - Message Merging', () => {
     );
   });
 
+  test('coalesceAssistantBurst preserves the latest visible assistant body across retries', () => {
+    const source = historyProcessorSource;
+
+    assert.match(
+      source,
+      /const visibleBodyText = \(\(\) => \{[\s\S]*this\.extractMessageBodyText\(burst\[index\]\)/s,
+      'burst coalescing should scan the full assistant burst for a visible body before picking the final content',
+    );
+    assert.match(
+      source,
+      /base\.content = visibleBodyText \|\| this\.extractMessageBodyText\(base\);/,
+      'burst coalescing should keep a visible assistant body even when the last record is empty',
+    );
+  });
+
   test('mergeMessageParts combines related parts', () => {
     const source = historyProcessorSource;
 
