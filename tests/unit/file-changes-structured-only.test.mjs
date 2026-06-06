@@ -42,6 +42,20 @@ test('AssistantMessage passes structured changeSummary into FileChangesSection',
   );
 });
 
+test('FileChangesSection keeps hooks before its empty-state return', () => {
+  const stateHookIndex = source.indexOf('const [expandedByFile, setExpandedByFile]');
+  const effectIndex = source.indexOf('useEffect(() => {');
+  const emptyReturnIndex = source.indexOf('if (fileChanges.length === 0) {');
+
+  assert.ok(stateHookIndex !== -1, 'should declare local state hooks');
+  assert.ok(effectIndex !== -1, 'should register message effect');
+  assert.ok(emptyReturnIndex !== -1, 'should keep the empty-state return guard');
+  assert.ok(
+    stateHookIndex < emptyReturnIndex && effectIndex < emptyReturnIndex,
+    'empty-state return must come after all hooks to preserve hook order',
+  );
+});
+
 test.skip('FileChangesSection does not require diff evidence for trusted changeSummary.files entries', () => {
   // This feature is not yet implemented
   assert.match(

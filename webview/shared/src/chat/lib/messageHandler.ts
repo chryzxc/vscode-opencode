@@ -6257,6 +6257,15 @@ function applyStructuredSubagentPayload(
   structuredOutput: StructuredOutput,
   messageId: string,
 ): void {
+  webviewLogger.info('[SUBAGENT-DEBUG] applyStructuredSubagentPayload called', {
+    messageId,
+    responseType: structuredOutput.responseType,
+    subagentsCount: structuredOutput.subagents?.length ?? 0,
+    subagentsDeltaItems: structuredOutput.subagentsDelta?.items?.length ?? 0,
+    subagentsDeltaParentMessageId: structuredOutput.subagentsDelta?.parentMessageId,
+    caller: new Error().stack?.split('\n')[2]?.trim() || 'unknown',
+  });
+
   if (structuredOutput.responseType === 'subagents') {
     if (!structuredOutput.subagents || structuredOutput.subagents.length === 0) {
       webviewLogger.warn('Structured subagents responseType received without subagents array');
@@ -6319,6 +6328,13 @@ function applyStructuredSubagentPayload(
   if (structuredOutput.subagentsDelta && structuredOutput.subagentsDelta.items.length > 0) {
     const targetMessageId =
       structuredOutput.subagentsDelta.parentMessageId || messageId || '';
+    webviewLogger.info('[SUBAGENT-DEBUG] processing subagentsDelta', {
+      targetMessageId,
+      itemsCount: structuredOutput.subagentsDelta.items.length,
+      firstItemId: structuredOutput.subagentsDelta.items[0]?.id,
+      firstItemStatus: structuredOutput.subagentsDelta.items[0]?.status,
+      firstItemLatestActivity: structuredOutput.subagentsDelta.items[0]?.latestActivity,
+    });
     if (!targetMessageId) {
       return;
     }
@@ -8779,6 +8795,21 @@ function handleStreamEvent(
         );
       }
 
+      if (structuredOutput?.subagents || structuredOutput?.subagentsDelta) {
+        webviewLogger.info('[SUBAGENT-DEBUG] stream message.part.updated dispatching subagents', {
+          messageId,
+          subagentsCount: structuredOutput.subagents?.length ?? 0,
+          subagentsDeltaItemCount: structuredOutput.subagentsDelta?.items?.length ?? 0,
+          responseType: structuredOutput.responseType,
+        });
+        applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId || '');
+        bindStreamingToParentMessageIdFromSubagents(
+          dispatch,
+          getState,
+          getState().subagentsByParentMessageId,
+        );
+      }
+
       const streamingState = getState().streaming;
 
       // SKIP CONTENT PROCESSING for reasoning parts, but allow all other event processing to continue
@@ -9615,7 +9646,11 @@ function handleStreamEvent(
           payload: {
             content: contentPatch.content,
             append: contentPatch.append,
-            renderable: !!streamingState?.hasRenderableContent,
+            // Mark content as renderable if we have actual non-empty content.
+            // This fixes the chicken-and-egg problem where the first chunk
+            // couldn't be marked renderable because streaming state wasn't
+            // renderable yet, while avoiding rendering empty chunks.
+            renderable: cleanedChunk.length > 0,
           },
         });
       }
@@ -9807,6 +9842,23 @@ function handleStreamEvent(
           dispatch,
           getState,
           interactiveEvents,
+        );
+        consumed = true;
+      }
+
+      if (structuredOutput?.subagents || structuredOutput?.subagentsDelta) {
+        webviewLogger.info('[SUBAGENT-DEBUG] stream default case dispatching subagents', {
+          messageId,
+          eventType: normalizedEventType,
+          subagentsCount: structuredOutput.subagents?.length ?? 0,
+          subagentsDeltaItemCount: structuredOutput.subagentsDelta?.items?.length ?? 0,
+          responseType: structuredOutput.responseType,
+        });
+        applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId || '');
+        bindStreamingToParentMessageIdFromSubagents(
+          dispatch,
+          getState,
+          getState().subagentsByParentMessageId,
         );
         consumed = true;
       }
@@ -11308,6 +11360,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "subagentSnapshot": {
+          webviewLogger.info('[SUBAGENT][REHYDRATED] subagentSnapshot received', {
+            rawSummaryKeys: Object.keys(data.summariesByParentMessageId ?? data.subagentsByParentMessageId ?? {}),
+            rawDetailKeys: Object.keys(data.detailsById ?? data.subagentDetailsById ?? {}),
+            activeSessionId: getState().currentSessionId,
+          });
           const snapshotPolicy: SubagentPresentationPolicy = {
             mode: "hydration",
             sessionProcessing: getState().processing,
@@ -11323,6 +11380,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             rawSummariesByParentMessageId,
             rawDetailsById,
           );
+          webviewLogger.info('[SUBAGENT][REHYDRATED] subagentSnapshot pre-render pull', {
+            activeSessionId,
+            payloadSessionId,
+            rawSummaryParentKeys: Object.keys(rawSummariesByParentMessageId),
+            rawDetailIds: Object.keys(rawDetailsById),
+            processing: getState().processing,
+            streamingMessageId: getState().streaming?.messageId ?? null,
+          });
           if (
             activeSessionId &&
             payloadSessionId &&
@@ -11468,6 +11533,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             rawSummariesByParentMessageId,
             rawDetailsById,
           );
+          webviewLogger.info('[SUBAGENT][EVENT STREAM] subagentUpdate pre-render pull', {
+            activeSessionId,
+            payloadSessionId,
+            rawSummaryParentKeys: Object.keys(rawSummariesByParentMessageId),
+            rawDetailIds: Object.keys(rawDetailsById),
+            processing: getState().processing,
+            streamingMessageId: getState().streaming?.messageId ?? null,
+          });
           if (
             activeSessionId &&
             payloadSessionId &&
