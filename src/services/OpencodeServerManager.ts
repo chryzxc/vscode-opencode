@@ -188,9 +188,9 @@ export class OpencodeServerManager {
     const sdkVersion = detectInstalledOpencodeSdkVersion();
     const compatibility = checkOpencodeSdkVersion(sdkVersion);
     if (compatibility.status !== "supported") {
-      log.warn("OpenCode SDK compatibility warning", compatibility);
+      log.warn("OpenCode SDK compatibility warning", { ...compatibility });
     } else {
-      log.debug("OpenCode SDK compatibility check", compatibility);
+      log.debug("OpenCode SDK compatibility check", { ...compatibility });
     }
   }
 
@@ -974,9 +974,9 @@ export class OpencodeServerManager {
           log.info(`Server version: ${this.serverVersion}`);
           const compatibility = checkOpencodeServerVersion(this.serverVersion);
           if (compatibility.status !== "supported") {
-            log.warn("OpenCode server compatibility warning", compatibility);
+            log.warn("OpenCode server compatibility warning", { ...compatibility });
           } else {
-            log.debug("OpenCode server compatibility check", compatibility);
+            log.debug("OpenCode server compatibility check", { ...compatibility });
           }
         } else if (!this.serverVersion) {
           const binaryVersion = this.probeOpencodeBinaryVersion(
@@ -987,9 +987,9 @@ export class OpencodeServerManager {
             log.info(`OpenCode CLI version: ${this.serverVersion}`);
             const compatibility = checkOpencodeServerVersion(this.serverVersion);
             if (compatibility.status !== "supported") {
-              log.warn("OpenCode server compatibility warning", compatibility);
+              log.warn("OpenCode server compatibility warning", { ...compatibility });
             } else {
-              log.debug("OpenCode server compatibility check", compatibility);
+              log.debug("OpenCode server compatibility check", { ...compatibility });
             }
           }
         }
@@ -1008,9 +1008,9 @@ export class OpencodeServerManager {
             log.info(`OpenCode CLI version: ${this.serverVersion}`);
             const compatibility = checkOpencodeServerVersion(this.serverVersion);
             if (compatibility.status !== "supported") {
-              log.warn("OpenCode server compatibility warning", compatibility);
+              log.warn("OpenCode server compatibility warning", { ...compatibility });
             } else {
-              log.debug("OpenCode server compatibility check", compatibility);
+              log.debug("OpenCode server compatibility check", { ...compatibility });
             }
           }
         }

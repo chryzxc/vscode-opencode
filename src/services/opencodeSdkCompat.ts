@@ -103,7 +103,7 @@ export function normalizeSdkStreamEvent(rawEvent: unknown): CanonicalStreamEvent
 
   for (const candidate of candidates) {
     if (candidate && typeof candidate.type === "string") {
-      const normalized = { ...candidate } as CanonicalStreamEvent;
+      const normalized = { ...candidate } as unknown as CanonicalStreamEvent;
       if (inheritedDirectory && !normalized.directory) {
         normalized.directory = inheritedDirectory;
       }

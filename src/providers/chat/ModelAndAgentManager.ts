@@ -547,8 +547,8 @@ export class ModelAndAgentManager {
                 : [];
               configuredProviders = configProviders
                 .map((p: any) => this.firstNonEmptyString(p?.id, p?.providerID))
-                .filter((id): id is string => typeof id === "string" && id.length > 0)
-                .filter((id) => id.toLowerCase() !== "opencode");
+                .filter((id: any): id is string => typeof id === "string" && id.length > 0)
+                .filter((id: string) => id.toLowerCase() !== "opencode");
               this.logger.info("Fetched configured providers", {
                 count: configuredProviders.length,
                 providers: configuredProviders,

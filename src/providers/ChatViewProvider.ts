@@ -121,6 +121,7 @@ import {
   normalizeSdkAssistantMessage,
 } from "../services/opencodeSdkCompat";
 import {
+  type CompatibilityResult,
   checkOpencodeSdkVersion,
   checkOpencodeServerVersion,
   detectInstalledOpencodeSdkVersion,
@@ -279,6 +280,7 @@ export class ChatViewProvider
    *  response is still streaming from the server. */
   private activeStreamSessionId: string | undefined;
   private currentTodoItems: unknown[] = [];
+  private compatibilityWarningsOverride: CompatibilityResult[] | null = null;
 
   private getTodoStorageKey(sessionId: string): string {
     return `opencode.session.todos.${sessionId}`;
@@ -809,9 +811,9 @@ export class ChatViewProvider
       mode,
       sessionId,
       textLength: text.length,
-      hasFiles: payload.files?.length > 0,
-      hasContexts: payload.contexts?.length > 0,
-      hasImages: payload.images?.length > 0
+      hasFiles: (payload.files?.length ?? 0) > 0,
+      hasContexts: (payload.contexts?.length ?? 0) > 0,
+      hasImages: (payload.images?.length ?? 0) > 0
     });
 
     const effectiveMode =
@@ -895,7 +897,7 @@ export class ChatViewProvider
       promptId,
       sessionId,
       effectiveMode,
-      queuePosition: this.queueManager.getQueueLength(sessionId)
+      queuePosition: this.queueManager.getQueueState().length
     });
 
     if (effectiveMode === "queue") {
@@ -2732,8 +2734,8 @@ export class ChatViewProvider
           }
           try {
             const displayText = answers
-              .map((entry) => entry.join(" ").trim())
-              .filter((entry) => entry.length > 0)
+              .map((entry: string[]) => entry.join(" ").trim())
+              .filter((entry: string) => entry.length > 0)
               .join("\n");
             if (replySessionId) {
               this.processingSessionIds.add(replySessionId);
@@ -2764,7 +2766,7 @@ export class ChatViewProvider
               });
             }
             const client = await this.serverManager.ensureRunning();
-            await client.question.reply({
+            await (client as any).question.reply({
               requestID,
               answers,
               directory: this.getWorkspaceDirectory(),
@@ -6700,6 +6702,9 @@ export class ChatViewProvider
           });
           // Re-create the session on the server
           try {
+            const localMessages = await this.sessionService.loadSessionMessages(
+              session.id,
+            );
             const newSession = await this.sessionService.createNewSession(
               session.title,
             );
@@ -6710,9 +6715,6 @@ export class ChatViewProvider
             });
 
             // Migrate local messages from old ID to new ID
-            const localMessages = await this.sessionService.loadSessionMessages(
-              session.id,
-            );
             await this.sessionService.saveSessionMessages(
               newSession.id,
               localMessages,
@@ -7856,20 +7858,8 @@ export class ChatViewProvider
     void this.refreshSdkTodosForSession(this.currentSessionId);
   }
 
-  private getCompatibilityWarnings(): Array<{
-    component: "sdk" | "server";
-    status: "untested" | "unknown";
-    version?: string;
-    supportedRange: string;
-    message: string;
-  }> {
-    const warnings: Array<{
-      component: "sdk" | "server";
-      status: "untested" | "unknown";
-      version?: string;
-      supportedRange: string;
-      message: string;
-    }> = [];
+  private getCompatibilityWarnings(): CompatibilityResult[] {
+    const warnings: CompatibilityResult[] = [];
 
     const sdkCompatibility = checkOpencodeSdkVersion(
       detectInstalledOpencodeSdkVersion(),
@@ -7890,13 +7880,7 @@ export class ChatViewProvider
   }
 
   public setCompatibilityWarningsOverride(
-    warnings: Array<{
-      component: "sdk" | "server";
-      status: "untested" | "unknown";
-      version?: string;
-      supportedRange: string;
-      message: string;
-    }> | null,
+    warnings: CompatibilityResult[] | null,
   ): void {
     this.compatibilityWarningsOverride = warnings;
     const nextWarnings = this.getCompatibilityWarnings();
