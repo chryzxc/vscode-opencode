@@ -236,7 +236,9 @@ export class MessageStreamService {
    *
    * @param serverManager - Server manager for port access
    */
-  constructor(private serverManager: OpencodeServerManager) { }
+  constructor(private serverManager: OpencodeServerManager) {
+    this.logger.info("MessageStreamService constructed");
+  }
 
   /**
    * Starts listening to server events via SSE.
@@ -295,7 +297,9 @@ export class MessageStreamService {
     const abortSignal = this.abortController.signal;
     const startTime = Date.now();
 
-    this.logger.info("Starting SDK-based SSE listener");
+    this.logger.connectionEvent("connecting", {
+      subscriberCount: this.callbacks.size,
+    });
 
     try {
       const client = await this.serverManager.ensureRunning();
@@ -403,6 +407,12 @@ export class MessageStreamService {
 
       this.logger.performance("Connection established", Date.now() - startTime, {
         endpoint: "/event",
+        subscriberCount: this.callbacks.size,
+      });
+
+      this.logger.connectionEvent("connected", {
+        endpoint: "/event",
+        durationMs: Date.now() - startTime,
       });
 
       const streamTasks: Array<Promise<void>> = [
@@ -467,17 +477,22 @@ export class MessageStreamService {
       }
     } catch (error: any) {
       if (error.name === "AbortError" || abortSignal.aborted) {
-        this.logger.info("Listening aborted");
+        this.logger.info("SSE listener aborted (normal stop or reconnect)");
         return;
       }
 
-      this.logger.error("SSE stream error", {}, error);
+      this.logger.error("SSE stream error, scheduling reconnect", {
+        subscriberCount: this.callbacks.size,
+      }, error);
       // Auto-reconnect after 5 seconds
       if (this.reconnectTimer) {
         return;
       }
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
+        this.logger.connectionEvent("reconnecting", {
+          subscriberCount: this.callbacks.size,
+        });
         if (this.callbacks.size > 0) {
           this.startListening().catch((err) => {
             this.logger.error("Auto-reconnect failed", {}, err as Error);
@@ -522,6 +537,9 @@ export class MessageStreamService {
     this.clearReconnectTimer();
     this.recentEventSignatures.clear();
     if (this.abortController) {
+      this.logger.connectionEvent("disconnected", {
+        subscriberCount: this.callbacks.size,
+      });
       this.abortController.abort();
       this.abortController = null;
     }
@@ -700,17 +718,24 @@ export class MessageStreamService {
   subscribe(callback: StreamCallback): () => void {
     this.callbacks.add(callback);
 
-    // Start listening if this is the first subscriber
+    this.logger.connectionEvent("subscribed", {
+      subscriberCount: this.callbacks.size,
+    });
+
     if (this.callbacks.size === 1) {
+      this.logger.info("First subscriber joined, starting SSE connection");
       this.startListening().catch((error) => this.logger.error("Failed to start listening", {}, error as Error));
     }
 
-    // Return unsubscribe function
     return () => {
       this.callbacks.delete(callback);
 
-      // Stop listening if no more subscribers
+      this.logger.connectionEvent("unsubscribed", {
+        subscriberCount: this.callbacks.size,
+      });
+
       if (this.callbacks.size === 0) {
+        this.logger.info("Last subscriber left, stopping SSE connection");
         this.stopListening();
       }
     };
@@ -1124,6 +1149,9 @@ export class MessageStreamService {
    * @see stopListening for stopping connection without clearing callbacks
    */
   dispose(): void {
+    this.logger.connectionEvent("disposed", {
+      subscriberCount: this.callbacks.size,
+    });
     this.stopListening();
     this.callbacks.clear();
   }

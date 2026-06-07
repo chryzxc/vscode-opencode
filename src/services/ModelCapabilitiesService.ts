@@ -1,5 +1,6 @@
 import { createLogger } from "../utils/Logger";
-const log = createLogger("ModelCapabilitiesService");
+import { LoggingCategories } from "../utils/LoggingSchema";
+const log = createLogger(LoggingCategories.MODEL_CAPABILITIES);
 
 export interface ModelCapability {
   reasoning: boolean;

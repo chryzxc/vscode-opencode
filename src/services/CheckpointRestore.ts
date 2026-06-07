@@ -2,8 +2,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { createLogger } from "../utils/Logger";
+import { LoggingCategories } from "../utils/LoggingSchema";
 
-const log = createLogger("CheckpointRestore");
+const log = createLogger(LoggingCategories.CHECKPOINT_RESTORE);
 
 export type CheckpointPayload = {
   sessions?: unknown[];

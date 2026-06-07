@@ -134,7 +134,7 @@ async function writeStorage(snapshot: DailyUsageSnapshot): Promise<void> {
     await ensureStorageDir();
     await fs.writeFile(STORAGE_PATH, JSON.stringify(snapshot, null, 2), "utf8");
   } catch (error) {
-    const logger = createLogger(LoggingCategories.EXTENSION);
+    const logger = createLogger(LoggingCategories.TOKEN_TRACKER);
     logger.error("Failed to write storage", { snapshot }, error as Error);
   }
 }
@@ -150,7 +150,7 @@ export class GeminiTokenUsageTracker extends EventEmitter {
   private currentUsage: Record<string, ModelTokenUsage> = {};
   private currentDate: string;
   private isDisposed = false;
-  private logger = createLogger(LoggingCategories.EXTENSION);
+  private logger = createLogger(LoggingCategories.TOKEN_TRACKER);
   private saveTimer: NodeJS.Timeout | null = null;
   private pendingSave = false;
 

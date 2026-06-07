@@ -322,7 +322,7 @@ export class QuotaService extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private isDisposed = false;
   private _cachedData: QuotaData | null = null;
-  private logger = createLogger(LoggingCategories.EXTENSION);
+  private logger = createLogger(LoggingCategories.QUOTA_SERVICE);
 
   constructor() {
     super();

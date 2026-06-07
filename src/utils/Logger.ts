@@ -644,13 +644,27 @@ class Logger {
    */
   sessionEvent(
     category: string,
-    event: "create" | "load" | "switch" | "delete" | "persist" | "rename",
+    event: "create" | "load" | "switch" | "delete" | "persist" | "rename" | "restore" | "merge",
     sessionId: string,
     context?: Record<string, unknown>,
   ): void {
     this.info(category, `Session ${event}`, {
       ...context,
       sessionId,
+    });
+  }
+
+  /**
+   * Logs a connection/stream lifecycle event with state transition.
+   */
+  connectionEvent(
+    category: string,
+    event: "connecting" | "connected" | "disconnected" | "reconnecting" | "subscribed" | "unsubscribed" | "disposed",
+    context?: Record<string, unknown>,
+  ): void {
+    this.info(category, `Connection ${event}`, {
+      ...context,
+      connectionEvent: event,
     });
   }
 
@@ -739,8 +753,10 @@ export function createLogger(category: string) {
       logger.tokenUsage(category, providerId, inputTokens, outputTokens, context),
     serverEvent: (event: "start" | "stop" | "restart" | "error" | "connect" | "disconnect", context?: Record<string, unknown>) =>
       logger.serverEvent(category, event, context),
-    sessionEvent: (event: "create" | "load" | "switch" | "delete" | "persist" | "rename", sessionId: string, context?: Record<string, unknown>) =>
+    sessionEvent: (event: "create" | "load" | "switch" | "delete" | "persist" | "rename" | "restore" | "merge", sessionId: string, context?: Record<string, unknown>) =>
       logger.sessionEvent(category, event, sessionId, context),
+    connectionEvent: (event: "connecting" | "connected" | "disconnected" | "reconnecting" | "subscribed" | "unsubscribed" | "disposed", context?: Record<string, unknown>) =>
+      logger.connectionEvent(category, event, context),
 
     // New feature flow methods
     startFeatureFlow: (featureName: string, metadata?: Record<string, unknown>): string => {

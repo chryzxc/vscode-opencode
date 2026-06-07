@@ -20,6 +20,13 @@ export const LoggingCategories = {
   SERVER_MANAGER: 'ServerManager',
   UI_INTERACTION: 'UIInteraction',
   FEATURE_FLOW: 'FeatureFlow',
+  SKILL_SERVICE: 'SkillService',
+  QUOTA_SERVICE: 'QuotaService',
+  TOKEN_TRACKER: 'TokenTracker',
+  TITLE_GENERATOR: 'TitleGenerator',
+  CHECKPOINT_RESTORE: 'CheckpointRestore',
+  MODEL_CAPABILITIES: 'ModelCapabilities',
+  DIAGNOSTICS: 'Diagnostics',
 } as const;
 
 /**

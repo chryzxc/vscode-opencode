@@ -1,6 +1,7 @@
 import { createLogger } from "../utils/Logger";
+import { LoggingCategories } from "../utils/LoggingSchema";
 
-const log = createLogger("TitleGenerator");
+const log = createLogger(LoggingCategories.TITLE_GENERATOR);
 
 const MAX_TITLE_LENGTH = 60;
 const IDEAL_WORD_COUNT = 8;

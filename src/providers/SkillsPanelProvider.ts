@@ -11,7 +11,7 @@ export class SkillsPanelProvider {
 
   private _view?: vscode.WebviewView;
   private _disposables: vscode.Disposable[] = [];
-  private logger = createLogger(LoggingCategories.UI_INTERACTION);
+  private logger = createLogger(LoggingCategories.SKILL_SERVICE);
 
   constructor(
     private readonly _extensionUri: vscode.Uri,

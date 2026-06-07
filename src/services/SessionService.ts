@@ -1440,31 +1440,37 @@ export class SessionService {
    * ```
    */
   async deleteSession(sessionId: string): Promise<void> {
+    const deleteStart = Date.now();
+    const wasCurrent = this.currentSession?.id === sessionId;
+
     try {
       const client = await this.serverManager.ensureRunning();
       await client.session.delete({
         path: { id: sessionId },
       });
     } catch (error) {
-      // Log but continue with local cleanup even if server deletion fails
-      // This can happen if the session was already deleted on the server
       log.warn("Server delete failed, continuing with local cleanup", {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
 
-    if (this.currentSession?.id === sessionId) {
+    if (wasCurrent) {
       this.currentSession = null;
+      log.debug("Cleared current session (was deleted)", { sessionId });
     }
 
     this.sessionHistory = this.sessionHistory.filter((s) => s.id !== sessionId);
-    // Clear persisted messages for the deleted session.
     await this.context.workspaceState.update(
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
       undefined,
     );
     this.persistState();
+
+    log.sessionEvent("delete", sessionId, {
+      wasCurrent,
+      durationMs: Date.now() - deleteStart,
+    });
   }
 
   /**
@@ -1605,6 +1611,7 @@ export class SessionService {
    * @see loadSessionMessages for loading cached messages
    */
   async getMessages(sessionId: string): Promise<unknown[]> {
+    const fetchStart = Date.now();
     log.debug("Fetching messages for session", { sessionId });
     const localMessages = await this.loadSessionMessages(sessionId);
 
@@ -1620,9 +1627,11 @@ export class SessionService {
         const serverDuplicateSummary = summarizePotentialAssistantDuplicates(response.data);
         log.info("Fetched messages from server", {
           sessionId,
-          count: response.data.length,
+          serverCount: response.data.length,
+          localCount: localMessages.length,
           rawAssistantDuplicateGroups: serverDuplicateSummary.duplicateGroups,
           rawAssistantDuplicateMessages: serverDuplicateSummary.duplicateMessages,
+          durationMs: Date.now() - fetchStart,
         });
         const mergedMessages =
           localMessages.length > 0
@@ -1655,11 +1664,12 @@ export class SessionService {
     } catch (error) {
       log.warn("Error fetching messages from server, using local cache", {
         sessionId,
+        localCount: localMessages.length,
         error: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - fetchStart,
       });
     }
 
-    // Fallback to local storage
     log.debug("Returning local messages", {
       sessionId,
       count: localMessages.length,
@@ -1807,6 +1817,11 @@ export class SessionService {
   async appendMessage(sessionId: string, message: unknown): Promise<void> {
     const messages = await this.loadSessionMessages(sessionId);
     messages.push(message);
+    log.debug("Appending message to session", {
+      sessionId,
+      newTotal: messages.length,
+      role: (message as Record<string, unknown>)?.role,
+    });
     await this.saveSessionMessages(sessionId, messages);
   }
 
@@ -1824,8 +1839,17 @@ export class SessionService {
         messages[existingIndex],
         message,
       );
+      log.debug("Upserted existing message in session", {
+        sessionId,
+        index: existingIndex,
+        totalMessages: messages.length,
+      });
     } else {
       messages.push(message);
+      log.debug("Appended new message to session via upsert", {
+        sessionId,
+        totalMessages: messages.length,
+      });
     }
     await this.saveSessionMessages(sessionId, messages);
   }
@@ -1833,6 +1857,10 @@ export class SessionService {
   private async mergeMessagesForSessionAliases(
     aliasesByCanonicalId: Map<string, string[]>,
   ): Promise<void> {
+    log.debug("Starting session alias message merge", {
+      aliasGroupCount: aliasesByCanonicalId.size,
+    });
+
     for (const [canonicalId, aliases] of Array.from(aliasesByCanonicalId.entries())) {
       const normalizedCanonicalId = normalizeSessionId(canonicalId);
       if (!normalizedCanonicalId) {
@@ -1912,10 +1940,11 @@ export class SessionService {
   private async loadPersistedState(): Promise<void> {
     const config = vscode.workspace.getConfiguration("opencode");
     if (!config.get("persistSessions", true)) {
+      log.info("Session persistence disabled, skipping state load");
       return;
     }
 
-    // Load and normalize session list
+    const loadStart = Date.now();
     const persistedSessions = this.context.workspaceState.get<Session[]>(
       SessionService.SESSIONS_KEY,
       [],
@@ -1923,7 +1952,15 @@ export class SessionService {
     const normalizedSessions = coalesceSessionsById(persistedSessions);
     this.sessionHistory = normalizedSessions.sessions;
 
+    log.debug("Loaded persisted sessions", {
+      rawCount: persistedSessions.length,
+      normalizedCount: normalizedSessions.sessions.length,
+      hadChanges: normalizedSessions.hadChanges,
+      aliasConflicts: hasSessionAliasConflicts(normalizedSessions.aliasesByCanonicalId),
+    });
+
     if (hasSessionAliasConflicts(normalizedSessions.aliasesByCanonicalId)) {
+      log.info("Merging messages for session aliases");
       await this.mergeMessagesForSessionAliases(
         normalizedSessions.aliasesByCanonicalId,
       );
@@ -1939,6 +1976,10 @@ export class SessionService {
     const sessionId = normalizeSessionId(persistedSessionId);
 
     if (sessionId && persistedSessionId !== sessionId) {
+      log.debug("Normalized persisted session ID", {
+        original: persistedSessionId,
+        normalized: sessionId,
+      });
       await this.context.workspaceState.update(
         SessionService.SESSION_ID_KEY,
         sessionId,
@@ -1948,17 +1989,32 @@ export class SessionService {
     if (sessionId) {
       try {
         await this.switchSession(sessionId);
+        log.sessionEvent("restore", sessionId, {
+          title: this.currentSession?.title,
+          durationMs: Date.now() - loadStart,
+        });
       } catch (e) {
         log.debug("Session not found on server, keeping local stub", {
           sessionId,
         });
-        // If not on server, find in history to keep it as "active" in UI
         const stub = this.sessionHistory.find((s) => s.id === sessionId);
         if (stub) {
           this.currentSession = stub;
+          log.debug("Restored session from local history stub", {
+            sessionId,
+            title: stub.title,
+          });
         }
       }
+    } else {
+      log.debug("No persisted session ID found, will create on demand");
     }
+
+    log.info("Persisted state loaded", {
+      sessionCount: this.sessionHistory.length,
+      hasCurrentSession: Boolean(this.currentSession),
+      durationMs: Date.now() - loadStart,
+    });
   }
 
   /**
@@ -2011,5 +2067,9 @@ export class SessionService {
         this.currentSession.id,
       );
     }
+
+    log.sessionEvent("persist", this.currentSession?.id ?? "none", {
+      sessionCount: this.sessionHistory.length,
+    });
   }
 }

@@ -33,7 +33,7 @@ export class SkillManagementService {
   private _onDidChangeSkills = new vscode.EventEmitter<Map<string, SkillInfo>>();
   private _onInitialized = new vscode.EventEmitter<void>();
   private _initialized: boolean = false;
-  private logger = createLogger(LoggingCategories.UI_INTERACTION);
+  private logger = createLogger(LoggingCategories.SKILL_SERVICE);
   readonly onDidChangeSkills = this._onDidChangeSkills.event;
   readonly onInitialized = this._onInitialized.event;
 

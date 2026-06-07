@@ -22,7 +22,7 @@ export class SkillManagerService {
   private metadata?: SkillsMetadata;
   private ajv: Ajv;
   private validate: ReturnType<Ajv['compile']>;
-  private logger = createLogger(LoggingCategories.UI_INTERACTION);
+  private logger = createLogger(LoggingCategories.SKILL_SERVICE);
 
   constructor(private context: vscode.ExtensionContext) {
     this.ajv = new Ajv({ allErrors: true });
