@@ -69,6 +69,44 @@ interface LogEntry {
 }
 
 /**
+ * Console output format modes
+ */
+export enum ConsoleOutputMode {
+  /** Pretty formatted text with colors and symbols */
+  PRETTY = "pretty",
+  /** Structured JSON format for parsing */
+  JSON = "json",
+  /** Both pretty and JSON output (dual mode) */
+  HYBRID = "hybrid",
+}
+
+/**
+ * ANSI color codes for terminal output
+ */
+const ANSI_COLORS = {
+  reset: "\x1b[0m",
+  red: "\x1b[31m",
+  yellow: "\x1b[33m",
+  green: "\x1b[32m",
+  blue: "\x1b[34m",
+  gray: "\x1b[90m",
+  brightRed: "\x1b[91m",
+  brightYellow: "\x1b[93m",
+  brightGreen: "\x1b[92m",
+  brightBlue: "\x1b[94m",
+} as const;
+
+/**
+ * Log level symbols for visual scanning
+ */
+const LOG_SYMBOLS = {
+  error: "❌",
+  warn: "⚠️",
+  info: "ℹ️",
+  debug: "🔍",
+} as const;
+
+/**
  * Logger configuration options.
  */
 interface LoggerConfig {
@@ -84,6 +122,10 @@ interface LoggerConfig {
   maxFileSize: number;
   /** Maximum number of backup files to keep (default: 3) */
   maxFiles: number;
+  /** Console output format mode */
+  consoleOutputMode: ConsoleOutputMode;
+  /** Enable colored output for pretty mode */
+  enableColors: boolean;
 }
 
 /**
@@ -118,6 +160,11 @@ class Logger {
     const enableConsole = config.get<boolean>("enableConsole", true);
     let enableFile = config.get<boolean>("enableFile", false);
 
+    const consoleOutputModeStr = config.get<string>("consoleOutputMode", "pretty");
+    const consoleOutputMode = this.parseConsoleOutputMode(consoleOutputModeStr);
+    
+    const enableColors = config.get<boolean>("enableColors", true);
+
     let logDir: string;
     if (this.context) {
       logDir = path.join(this.context.globalStorageUri.fsPath, "logs");
@@ -146,6 +193,8 @@ class Logger {
       logFilePath,
       maxFileSize: config.get<number>("maxFileSize", 5 * 1024 * 1024), // 5MB
       maxFiles: config.get<number>("maxFiles", 3),
+      consoleOutputMode,
+      enableColors,
     };
   }
 
@@ -168,6 +217,21 @@ class Logger {
   }
 
   /**
+   * Parses console output mode string to ConsoleOutputMode enum.
+   */
+  private parseConsoleOutputMode(modeStr: string): ConsoleOutputMode {
+    switch (modeStr.toLowerCase()) {
+      case "json":
+        return ConsoleOutputMode.JSON;
+      case "hybrid":
+        return ConsoleOutputMode.HYBRID;
+      case "pretty":
+      default:
+        return ConsoleOutputMode.PRETTY;
+    }
+  }
+
+  /**
    * Formats a log entry as JSON string.
    */
   private formatEntry(entry: LogEntry): string {
@@ -186,41 +250,145 @@ class Logger {
 
     const formatted = this.formatEntry(entry);
 
-    // Console output (with pretty formatting for readability)
+    // Console output (with configured format mode)
     if (this.config.enableConsole) {
-      this.outputToConsole(entry);
+      this.outputToConsole(entry, formatted);
     }
 
-    // File output (buffered for performance)
+    // File output (buffered for performance, always JSON)
     if (this.config.enableFile) {
       this.logBuffer.push(formatted + "\n");
     }
   }
 
   /**
-   * Outputs to console with pretty formatting.
+   * Applies color to text if colors are enabled.
    */
-  private outputToConsole(entry: LogEntry): void {
-    const timestamp = new Date(entry.timestamp).toLocaleTimeString();
-    const prefix = `[${timestamp}] [${entry.level.toUpperCase()}] [${entry.category}]`;
-    const message = entry.message;
-    const contextStr = entry.context ? ` ${JSON.stringify(entry.context)}` : "";
-    const errorStr = entry.error ? `\n  Error: ${entry.error.message}` : "";
+  private colorize(text: string, color: keyof typeof ANSI_COLORS): string {
+    if (!this.config.enableColors) {
+      return text;
+    }
+    return `${ANSI_COLORS[color]}${text}${ANSI_COLORS.reset}`;
+  }
 
-    switch (entry.level) {
-      case "error":
-        console.error(`${prefix}${message}${contextStr}${errorStr}`);
-        break;
-      case "warn":
-        console.warn(`${prefix}${message}${contextStr}`);
-        break;
-      case "debug":
-        console.log(`${prefix}${message}${contextStr}`);
-        break;
-      case "info":
+  /**
+   * Formats a timestamp for display.
+   */
+  private formatTimestamp(timestamp: string): string {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    
+    // Use HH:MM:SS format for recent logs, include date for older logs
+    if (diffMs < 86400000) { // Less than 24 hours
+      return date.toLocaleTimeString('en-US', { 
+        hour12: false, 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit',
+        fractionalSecondDigits: 3
+      });
+    }
+    return date.toISOString();
+  }
+
+  /**
+   * Outputs to console with configurable formatting (pretty/JSON/hybrid).
+   */
+  private outputToConsole(entry: LogEntry, formattedJson: string): void {
+    const timestamp = this.formatTimestamp(entry.timestamp);
+    const level = entry.level.toUpperCase();
+    const category = entry.category;
+    const message = entry.message;
+    const context = entry.context;
+    const error = entry.error;
+
+    // In JSON or Hybrid mode, output the JSON line
+    if (this.config.consoleOutputMode === ConsoleOutputMode.JSON || 
+        this.config.consoleOutputMode === ConsoleOutputMode.HYBRID) {
+      console.log(formattedJson);
+    }
+
+    // In Pretty or Hybrid mode, output the formatted line
+    if (this.config.consoleOutputMode === ConsoleOutputMode.PRETTY || 
+        this.config.consoleOutputMode === ConsoleOutputMode.HYBRID) {
+      
+      const symbol = LOG_SYMBOLS[entry.level as keyof typeof LOG_SYMBOLS] || '';
+      const levelColor = this.getLevelColor(entry.level);
+      
+      // Build components with optional colors
+      const timestampStr = this.config.enableColors 
+        ? this.colorize(`[${timestamp}]`, 'gray')
+        : `[${timestamp}]`;
+      
+      const symbolStr = this.config.enableColors ? symbol : '';
+      const levelStr = this.config.enableColors
+        ? this.colorize(level, levelColor)
+        : level;
+      
+      const categoryStr = this.config.enableColors
+        ? this.colorize(category, 'blue')
+        : category;
+
+      const prefix = `${timestampStr} ${symbolStr} [${levelStr}] [${categoryStr}]`;
+      
+      // Format context if present
+      let contextStr = '';
+      if (context && Object.keys(context).length > 0) {
+        contextStr = this.config.enableColors
+          ? ' ' + this.colorize(JSON.stringify(context), 'gray')
+          : ' ' + JSON.stringify(context);
+      }
+
+      // Format error if present
+      let errorStr = '';
+      if (error) {
+        errorStr = this.config.enableColors
+          ? `\n  ${this.colorize('Error:', 'brightRed')} ${error.message}`
+          : `\n  Error: ${error.message}`;
+        
+        if (error.stack) {
+          const stackLines = error.stack.split('\n').slice(0, 3);
+          errorStr += this.config.enableColors
+            ? '\n  ' + this.colorize(stackLines.join('\n  '), 'gray')
+            : '\n  ' + stackLines.join('\n  ');
+        }
+      }
+
+      // Output to appropriate console method
+      const fullMessage = `${prefix} ${message}${contextStr}${errorStr}`;
+      
+      switch (entry.level) {
+        case 'error':
+          console.error(fullMessage);
+          break;
+        case 'warn':
+          console.warn(fullMessage);
+          break;
+        case 'debug':
+        case 'info':
+        default:
+          console.log(fullMessage);
+          break;
+      }
+    }
+  }
+
+  /**
+   * Gets the appropriate color for a log level.
+   */
+  private getLevelColor(level: string): keyof typeof ANSI_COLORS {
+    switch (level) {
+      case 'error':
+        return 'brightRed';
+      case 'warn':
+        return 'brightYellow';
+      case 'info':
+        return 'brightGreen';
+      case 'debug':
+        return 'brightBlue';
       default:
-        console.log(`${prefix}${message}${contextStr}`);
-        break;
+        return 'blue';
     }
   }
 
@@ -495,6 +663,8 @@ class Logger {
       minLevel: LogLevel[this.config.minLevel],
       enableConsole: this.config.enableConsole,
       enableFile: this.config.enableFile,
+      consoleOutputMode: this.config.consoleOutputMode,
+      enableColors: this.config.enableColors,
     });
   }
 

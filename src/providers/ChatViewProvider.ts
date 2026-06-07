@@ -792,13 +792,27 @@ export class ChatViewProvider
   ): Promise<void> {
     const text = typeof payload.text === "string" ? payload.text.trim() : "";
     if (!text) {
+      this.logger.debug('[MessageFlow] Empty message, skipping dispatch');
       return;
     }
 
     const sessionId = await this.resolveQueueSessionId(payload.sessionId);
     if (!sessionId) {
+      this.logger.warn('[MessageFlow] No valid session ID for message dispatch', {
+        providedSessionId: payload.sessionId,
+        currentSessionId: this.currentSessionId
+      });
       return;
     }
+
+    this.logger.debug('[MessageFlow] Prompt dispatch initiated', {
+      mode,
+      sessionId,
+      textLength: text.length,
+      hasFiles: payload.files?.length > 0,
+      hasContexts: payload.contexts?.length > 0,
+      hasImages: payload.images?.length > 0
+    });
 
     const effectiveMode =
       mode === "send-now" &&
@@ -806,6 +820,14 @@ export class ChatViewProvider
       this.getEffectiveProcessingSessionIds().includes(sessionId)
         ? "steer"
         : mode;
+
+    this.logger.debug('[MessageFlow] Mode resolution', {
+      requestedMode: mode,
+      effectiveMode,
+      sessionId,
+      isProcessing: this.getEffectiveProcessingSessionIds().includes(sessionId),
+      forceSendNow: payload.forceSendNow
+    });
 
     // Interactive answer submits are real user turns. The previous question
     // turn should already be finalized when the blocking question event is
@@ -817,6 +839,10 @@ export class ChatViewProvider
       !payload.avoidAbortIfProcessing &&
       this.getEffectiveProcessingSessionIds().includes(sessionId)
     ) {
+      this.logger.debug('[MessageFlow] Aborting active request before new message', {
+        sessionId,
+        avoidAbortIfProcessing: payload.avoidAbortIfProcessing
+      });
       await this.handleStopRequest(sessionId, {
         suppressWebviewNotification: true,
         skipQueueDrain: true,
@@ -826,6 +852,10 @@ export class ChatViewProvider
     // For normal sends, bypass queue persistence entirely so the queue panel
     // does not show transient "queued" items when there is no active backlog.
     if (effectiveMode === "send-now") {
+      this.logger.debug('[MessageFlow] Queue bypass - sending directly', {
+        sessionId,
+        textLength: text.length
+      });
       await this.handleSendMessage(
         text,
         payload.files,
@@ -861,7 +891,18 @@ export class ChatViewProvider
     this.queueManager.enqueuePrompt(prompt, effectiveMode !== "queue");
     this.sendQueueUpdate(sessionId);
 
+    this.logger.debug('[MessageFlow] Prompt added to queue', {
+      promptId,
+      sessionId,
+      effectiveMode,
+      queuePosition: this.queueManager.getQueueLength(sessionId)
+    });
+
     if (effectiveMode === "queue") {
+      this.logger.debug('[MessageFlow] Message queued (not executing)', {
+        sessionId,
+        promptId
+      });
       return;
     }
 
@@ -2398,14 +2439,21 @@ export class ChatViewProvider
             message.context && typeof message.context === "object"
               ? (message.context as Record<string, unknown>)
               : {};
+          
+          // Add webview source indicator to context
+          const enrichedContext = {
+            ...context,
+            source: 'webview',
+          };
+          
           if (level === "debug") {
-            this.logger.debug(logMessage, context);
+            this.logger.debug(logMessage, enrichedContext);
           } else if (level === "warn") {
-            this.logger.warn(logMessage, context);
+            this.logger.warn(logMessage, enrichedContext);
           } else if (level === "error") {
-            this.logger.error(logMessage, context);
+            this.logger.error(logMessage, enrichedContext);
           } else {
-            this.logger.info(logMessage, context);
+            this.logger.info(logMessage, enrichedContext);
           }
           break;
         }
@@ -3377,21 +3425,17 @@ export class ChatViewProvider
         }
         case "getMcpStatus": {
           this.handleGetMcpStatus().catch((err) =>
-            log.error(
-              "handleGetMcpStatus error",
-              {},
-              err instanceof Error ? err : undefined,
-            ),
+            log.error("Failed to handle MCP status request", {
+              error: err instanceof Error ? err.message : String(err),
+            }, err instanceof Error ? err : undefined),
           );
           break;
         }
         case "getLspStatus": {
           this.handleGetLspStatus().catch((err) =>
-            log.error(
-              "handleGetLspStatus error",
-              {},
-              err instanceof Error ? err : undefined,
-            ),
+            log.error("Failed to handle LSP status request", {
+              error: err instanceof Error ? err.message : String(err),
+            }, err instanceof Error ? err : undefined),
           );
           break;
         }
@@ -3410,11 +3454,9 @@ export class ChatViewProvider
               files: response.files ?? []
             });
           } catch (err) {
-            log.error(
-              "getConfigFilesList error",
-              {},
-              err instanceof Error ? err : undefined,
-            );
+            log.error("Failed to get config files list", {
+              error: err instanceof Error ? err.message : String(err),
+            }, err instanceof Error ? err : undefined);
             this.view?.webview.postMessage({
               type: 'configFilesList',
               success: false,
@@ -3454,11 +3496,10 @@ export class ChatViewProvider
               error: saveResult?.error
             });
           } catch (err) {
-            log.error(
-              "saveConfigFile error",
-              {},
-              err instanceof Error ? err : undefined,
-            );
+            log.error("Failed to save config file", {
+              filePath: message.filePath,
+              error: err instanceof Error ? err.message : String(err),
+            }, err instanceof Error ? err : undefined);
             this.view?.webview.postMessage({
               type: 'configFileSaved',
               success: false,
@@ -3469,11 +3510,17 @@ export class ChatViewProvider
         }
         case "planProceed": {
           const payload = message.payload;
+          this.logger.info('[PlanFlow] User approved plan execution', {
+            hasPayload: !!payload,
+            sessionId: this.currentSessionId
+          });
+
           await this.context.globalState.update(
             "lastPlanProceed",
             payload || null,
           );
-          this.logger.debug("planProceed received");
+
+          this.logger.debug('[PlanFlow] Plan proceed acknowledgment sent');
           this.view?.webview.postMessage({
             type: "planProceedAck",
             payload: { received: true },
@@ -6359,9 +6406,11 @@ export class ChatViewProvider
         await this.handleGetSessions();
       }
 
-      log.debug(
-        `Session ${session.id}: ${existingMessages.length} existing messages. isNew: ${isNewSession}`,
-      );
+      log.debug("Session message context loaded", {
+        sessionId: session.id,
+        existingMessageCount: existingMessages.length,
+        isNewSession,
+      });
 
       // Prepare message parts
       const parts: NonNullable<SessionPromptData["body"]>["parts"] = [
@@ -6418,7 +6467,10 @@ export class ChatViewProvider
                 },
               } as any);
             } catch (error) {
-              log.warn(`Failed to read file context: ${ctx.file}`, { error });
+              log.warn("Failed to read file context", {
+                file: ctx.file,
+                error: error instanceof Error ? error.message : String(error),
+              });
             }
           }
         }
@@ -6477,7 +6529,10 @@ export class ChatViewProvider
                 },
               });
             } catch (e) {
-              log.error(`Failed to read file ${filePath}`, { filePath }, e as Error);
+              log.error("Failed to read attached file", {
+                filePath,
+                error: e instanceof Error ? e.message : String(e),
+              }, e as Error);
             }
           }
         }
@@ -6585,7 +6640,9 @@ export class ChatViewProvider
         );
       }
 
-      log.debug(`Response received in ${duration}s`, {
+      log.debug("AI response received", {
+        sessionId: session.id,
+        durationSeconds: duration,
         hasData: Boolean(responseData),
         hasError: Boolean(responseError),
         status: response.response?.status,
@@ -6637,17 +6694,20 @@ export class ChatViewProvider
           errorMessage.toLowerCase().includes("not found") &&
           errorMessage.toLowerCase().includes("session")
         ) {
-          log.warn(
-            `Session ${session.id} not found on server. Re-creating...`,
-          );
+          log.warn("Session not found on server, attempting recovery", {
+            sessionId: session.id,
+            action: "recreating-session",
+          });
           // Re-create the session on the server
           try {
             const newSession = await this.sessionService.createNewSession(
               session.title,
             );
-            log.info(
-              `Re-created session with new ID: ${newSession.id}`,
-            );
+            log.info("Session recovered successfully", {
+              oldSessionId: session.id,
+              newSessionId: newSession.id,
+              migratedMessageCount: localMessages.length,
+            });
 
             // Migrate local messages from old ID to new ID
             const localMessages = await this.sessionService.loadSessionMessages(
@@ -6692,11 +6752,10 @@ export class ChatViewProvider
               structuredFallbackReason,
             );
           } catch (recreateError) {
-            log.error(
-              "Failed to re-create session",
-              {},
-              recreateError as Error,
-            );
+            log.error("Session recovery failed", {
+              sessionId: session.id,
+              error: recreateError instanceof Error ? recreateError.message : String(recreateError),
+            }, recreateError as Error);
           }
         }
 
@@ -7189,10 +7248,9 @@ export class ChatViewProvider
       const currentSession = await this.sessionService.getCurrentSession();
       return this.firstNonEmptyString(currentSession?.id);
     } catch (error) {
-      log.warn(
-        "Failed to resolve stop session from SessionService",
-        { error },
-      );
+      log.warn("Failed to resolve active session for stop request", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return undefined;
     }
   }
@@ -7231,7 +7289,10 @@ export class ChatViewProvider
         query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
       });
     } catch (error) {
-      log.error("Failed to stop request", {}, error as Error);
+      log.error("Failed to abort active request", {
+        sessionId: resolvedSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      }, error as Error);
     } finally {
       if (resolvedSessionId) {
         this.processingSessionIds.delete(resolvedSessionId);
@@ -7716,7 +7777,10 @@ export class ChatViewProvider
           size: data.byteLength,
         });
       } catch (error) {
-        log.error(`Failed to read image ${uri.fsPath}`, { uri: uri.fsPath }, error as Error);
+        log.error("Failed to read attached image", {
+          filePath: uri.fsPath,
+          error: error instanceof Error ? error.message : String(error),
+        }, error as Error);
       }
     }
 
@@ -7960,7 +8024,10 @@ export class ChatViewProvider
 
       log.endFeatureFlow(flow, { result: 'completed', source: results.source, resultCount: results.items.length, duration });
     } catch (error) {
-      log.error('File search failed', { query }, error as Error);
+      log.error("Failed to search files", {
+        query,
+        error: error instanceof Error ? error.message : String(error),
+      }, error as Error);
       log.endFeatureFlow(flow, { result: 'failed', error: String(error) });
       this.view?.webview.postMessage({
         type: "fileSearchResults",
@@ -7991,7 +8058,10 @@ export class ChatViewProvider
       }
 
     } catch (error) {
-      log.warn('SDK file search failed, falling back to VS Code', { query, error: String(error) });
+      log.warn("SDK file search failed, using VS Code fallback", {
+        query,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     return this.searchFilesViaVSCode(query);
@@ -8035,15 +8105,24 @@ export class ChatViewProvider
 
       const [agentResults, fileResults, resourceResults] = await Promise.all([
         this.searchAgents(client, q).catch((e) => {
-          log.warn("Agent search failed in handleMentions", { error: String(e) });
+          log.warn("Agent search failed for mentions", {
+            query: q,
+            error: e instanceof Error ? e.message : String(e),
+          });
           return [] as Array<{ type: "agent"; id: string; name: string; description?: string; color?: string }>;
         }),
         this.searchFilesForMentions(client, q).catch((e) => {
-          log.warn("File search failed in handleMentions", { error: String(e) });
+          log.warn("File search failed for mentions", {
+            query: q,
+            error: e instanceof Error ? e.message : String(e),
+          });
           return [] as Array<{ type: "file"; path: string; name: string }>;
         }),
         this.searchMcpResources(client, q).catch((e) => {
-          log.warn("Resource search failed in handleMentions", { error: String(e) });
+          log.warn("Resource search failed for mentions", {
+            query: q,
+            error: e instanceof Error ? e.message : String(e),
+          });
           return [] as Array<{ type: "resource"; uri: string; name: string; description?: string; clientName: string; mimeType?: string }>;
         }),
       ]);
@@ -8063,7 +8142,10 @@ export class ChatViewProvider
 
       log.endFeatureFlow(flow, { result: "completed", totalCount: results.length });
     } catch (error) {
-      log.error("Mentions failed", { query }, error as Error);
+      log.error("Failed to process mentions request", {
+        query,
+        error: error instanceof Error ? error.message : String(error),
+      }, error as Error);
       log.endFeatureFlow(flow, { result: "failed", error: String(error) });
       this.view?.webview.postMessage({ type: "mentionResults", results: [] });
     }
@@ -8338,17 +8420,16 @@ export class ChatViewProvider
         toolIds,
       });
 
-      log.info(
-        `MCP status sent: ${Object.keys(servers).length} server(s), ${toolIds.length} tool(s)`,
-      );
+      log.info("MCP server status sent to webview", {
+        serverCount: Object.keys(servers).length,
+        toolCount: toolIds.length,
+      });
 
       log.endFeatureFlow(flow, { result: 'completed', serverCount: Object.keys(servers).length, toolCount: toolIds.length });
     } catch (err) {
-      log.error(
-        "handleGetMcpStatus failed",
-        {},
-        err instanceof Error ? err : undefined,
-      );
+      log.error("Failed to get MCP server status", {
+        error: err instanceof Error ? err.message : String(err),
+      }, err instanceof Error ? err : undefined);
       log.endFeatureFlow(flow, { result: 'failed', error: String(err) });
     }
   }
@@ -8382,18 +8463,16 @@ export class ChatViewProvider
         servers,
       });
 
-      log.info(
-        `LSP status sent: ${servers.length} server(s)` +
-        (workspaceDir ? ` for workspace: ${workspaceDir}` : ""),
-      );
+      log.info("LSP server status sent to webview", {
+        serverCount: servers.length,
+        workspaceDir,
+      });
 
       log.endFeatureFlow(flow, { result: 'completed', serverCount: servers.length });
     } catch (err) {
-      log.error(
-        "handleGetLspStatus failed",
-        {},
-        err instanceof Error ? err : undefined,
-      );
+      log.error("Failed to get LSP server status", {
+        error: err instanceof Error ? err.message : String(err),
+      }, err instanceof Error ? err : undefined);
       log.endFeatureFlow(flow, { result: 'failed', error: String(err) });
     }
   }
@@ -8923,7 +9002,9 @@ export class ChatViewProvider
       }
       return undefined;
     } catch (error) {
-      log.error("getDiffActivityEnrichment error", {}, error as Error);
+      log.error("Failed to get diff activity enrichment", {
+        error: error instanceof Error ? error.message : String(error),
+      }, error as Error);
       return undefined;
     }
   }
@@ -9099,12 +9180,14 @@ export class ChatViewProvider
         type: "injectThemeCss",
         css: combinedCss,
       });
-      log.debug("Injected theme CSS into webview");
+      log.debug("Theme CSS injected successfully", {
+        themeId: themeData.themeId,
+        cssLength: combinedCss.length,
+      });
     } catch (error) {
-      log.error(
-        "Failed to send theme data to webview",
-        {},
-        error as Error,
+      log.error("Failed to send theme data to webview", {
+        error: error instanceof Error ? error.message : String(error),
+      }, error as Error,
       );
     }
   }

@@ -104,7 +104,12 @@ let skillManagementService: SkillManagementService;
  * 5. Add keyboard shortcut in package.json keybindings if needed
  */
 export async function activate(context: vscode.ExtensionContext) {
-  log.info("OpenCode extension activating", { version: context.extension.packageJSON.version });
+  const activationStartTime = Date.now();
+  log.info("Extension activation started", {
+    version: context.extension.packageJSON.version,
+    extensionId: context.extension.id,
+    workspaceFolderCount: vscode.workspace.workspaceFolders?.length || 0
+  });
 
   try {
     // ============================================================================

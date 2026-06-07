@@ -1663,12 +1663,9 @@ export class StructuredOutputProcessor {
       const structuredPlanFile = structuredPlanFiles[0];
 
       this.logger.debug("Structured plan data", {
-        structuredPlanRecord,
-        structuredPlanFiles,
-        structuredPlanFile,
         hasFile: !!structuredPlanRecord?.file,
-        rawStructuredPlan: structured.plan,
-        allStructuredKeys: Object.keys(structured || {}),
+        fileCount: structuredPlanFiles.length,
+        structuredKeys: Object.keys(structured || {}).length
       });
 
       // Resolve the plan filename: prefer what the agent declared in structured

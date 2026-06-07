@@ -63,10 +63,8 @@ export class StreamEventHandler {
               : "unknown",
       eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
     });
-    this.logger.info("[SOURCE] stream event full payload", {
-      sessionId: this.getCurrentSessionId(),
-      event,
-    });
+    // Removed full payload logging to reduce verbosity
+    // Event type and metadata logged above via diagnostics
 
     const enrichedEvent = this.structuredOutputProcessor.enrichStreamEvent(event);
 
@@ -118,10 +116,9 @@ export class StreamEventHandler {
       hasStructuredOutput: Boolean(enrichedEvent?.structuredOutput),
       hasProperties: Boolean(enrichedEvent?.properties),
     });
-    this.logger.info("[PRE-RENDER] stream event full payload", {
-      sessionId,
-      event: enrichedEvent || event,
-    });
+    // Removed full payload logging to reduce verbosity
+    // Event summary logged above
+
     this.postMessage({
       type: "streamEvent",
       event: enrichedEvent || event,

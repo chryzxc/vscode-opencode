@@ -2,6 +2,7 @@ import type { Dispatch } from 'react';
 
 import type { AppAction } from './store';
 import { appReducer, hasSystemMessagePatternInText } from './store';
+import logger from './logger';
 import type {
   ActivityDetail,
   ActivityDiffExcerpt,
@@ -46,95 +47,29 @@ import vscode from "./vscode";
 
 const STREAM_DEBUG_ENABLED = true;
 
-// WebView Logger - sends logs to extension for centralized logging
-class WebViewLogger {
-  private logLevel: 'debug' | 'info' | 'warn' | 'error' = 'info';
-  private sessionId: string | null = null;
+// Centralized webview logger is now imported from './logger'
 
-  setSession(sessionId: string): void {
-    this.sessionId = sessionId;
-  }
-
-  private shouldLog(level: string): boolean {
-    if (config.debug.disableLogs) {
-      return false;
-    }
-
-    const levels = ['debug', 'info', 'warn', 'error'];
-    return levels.indexOf(level) >= levels.indexOf(this.logLevel);
-  }
-
-  private sendToExtension(level: string, message: string, context?: Record<string, unknown>): void {
-    try {
-      vscode.postMessage({
-        type: 'webviewLog',
-        level,
-        message,
-        context: {
-          ...context,
-          sessionId: this.sessionId,
-          timestamp: Date.now(),
-          source: 'webview',
-        },
-      });
-    } catch (error) {
-      // Fallback to console if postMessage fails
-      switch (level) {
-        case 'debug':
-          console.debug(`[WebViewLogger] ${message}`, context);
-          break;
-        case 'info':
-          console.info(`[WebViewLogger] ${message}`, context);
-          break;
-        case 'warn':
-          console.warn(`[WebViewLogger] ${message}`, context);
-          break;
-        case 'error':
-          console.error(`[WebViewLogger] ${message}`, context);
-          break;
-      }
-    }
-  }
-
-  debug(message: string, context?: Record<string, unknown>): void {
-    if (this.shouldLog('debug')) {
-      console.debug(`[WebView] ${message}`, context);
-      this.sendToExtension('debug', message, context);
-    }
-  }
-
-  info(message: string, context?: Record<string, unknown>): void {
-    if (this.shouldLog('info')) {
-      console.info(`[WebView] ${message}`, context);
-      this.sendToExtension('info', message, context);
-    }
-  }
-
-  warn(message: string, context?: Record<string, unknown>): void {
-    if (this.shouldLog('warn')) {
-      console.warn(`[WebView] ${message}`, context);
-      this.sendToExtension('warn', message, context);
-    }
-  }
-
-  error(message: string, context?: Record<string, unknown>, error?: Error): void {
-    if (this.shouldLog('error')) {
-      console.error(`[WebView] ${message}`, context, error);
-      this.sendToExtension('error', message, { ...context, error: error?.message });
-    }
-  }
-}
-
-const webviewLogger = new WebViewLogger();
-
-function streamDebug(...args: unknown[]): void {
+/**
+ * Centralized stream debug logging - routes all stream-related debug logs
+ * through the centralized webview logger for consistent formatting and filtering.
+ * 
+ * Usage: streamDebug("descriptive-message", { contextData })
+ */
+function streamDebug(message: string, context?: Record<string, unknown>): void {
   if (STREAM_DEBUG_ENABLED) {
-    webviewLogger.info('Stream debug', { args });
+    logger.debug(message, context);
   }
 }
 
+/**
+ * Live structured output turn logging
+ * Logs structured output processing stages with consistent context.
+ */
 function logLiveStructuredTurn(stage: string, data: Record<string, unknown>): void {
-  streamDebug(`[OpenCode][live-structured] ${stage}`, data);
+  streamDebug(`Structured output processing: ${stage}`, {
+    stage,
+    ...data,
+  });
 }
 
 function isHeartbeatEventType(eventType: string): boolean {
@@ -1459,7 +1394,7 @@ function normalizeActivitySteps(
     );
   });
 
-  streamDebug("[OpenCode][DEBUGGING NOW] timeline normalizeActivitySteps", {
+  streamDebug("Timeline normalization: activity steps", {
     messageId,
     messageSteps: summarizeStepListForLog(
       Array.isArray(message.steps) ? message.steps : [],
@@ -1480,7 +1415,7 @@ function normalizeActivitySteps(
     return merged;
   }
   const fallback = extractActivityStepsFromParts(sanitizedMergedParts, "final");
-  streamDebug("[OpenCode][DEBUGGING NOW] timeline normalizeActivitySteps fallback-from-parts", {
+  streamDebug("Timeline normalization: fallback to parts extraction", {
     messageId,
     fallbackSteps: summarizeStepListForLog(fallback),
   });
@@ -1695,13 +1630,13 @@ function logStructuredOutputValidationFailureComparison(params: {
   sanitizedRecord: UnknownRecord;
   validationErrors: string[];
 }): void {
-  webviewLogger.info("Structured output validation raw candidates", {
+  logger.info("Structured output validation raw candidates", {
     validationErrors: params.validationErrors,
     rawInput: buildStructuredOutputLogPreview(params.rawInput),
     rawRecord: buildStructuredOutputLogPreview(params.rawRecord),
   });
 
-  webviewLogger.info("Structured output validation processed records", {
+  logger.info("Structured output validation processed records", {
     validationErrors: params.validationErrors,
     sanitizedRecord: buildStructuredOutputLogPreview(params.sanitizedRecord),
   });
@@ -1723,7 +1658,7 @@ function warnOnStructuredFieldDrop(
     return;
   }
 
-  webviewLogger.warn("Structured output validation failed", {
+  logger.warn("Structured output validation failed", {
     errors: context.validationErrors?.length
       ? context.validationErrors
       : ["structured payload lost fields during normalization"],
@@ -4459,7 +4394,7 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     contentFromTopLevel &&
     !content
   ) {
-    webviewLogger.info("Dropping top-level content because message parts are authoritative", {
+    logger.info("Dropping top-level content because message parts are authoritative", {
       messageId:
         asString(asRecord(rec.info)?.id) || asString((rec as UnknownRecord).id),
       topLevelContentPreview: contentFromTopLevel.slice(0, 220),
@@ -4473,7 +4408,7 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     normalizeComparableText(nonReasoningPartsContent) !==
     normalizeComparableText(contentFromTopLevel)
   ) {
-    webviewLogger.info("Content source mismatch; preferring parts content", {
+    logger.info("Content source mismatch; preferring parts content", {
       messageId:
         asString(asRecord(rec.info)?.id) || asString((rec as UnknownRecord).id),
       partsContentPreview: nonReasoningPartsContent.slice(0, 220),
@@ -4538,7 +4473,7 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     !streamingContentMatchesReasoning &&
     !hasCanonicalAssistantContent;
   if (streaming && role === "assistant") {
-    streamDebug("[OpenCode][DEBUGGING NOW] assistant normalization decision", {
+    streamDebug("Assistant message normalization decision", {
       messageId: sourceMessageId,
       provisionalResponseType: provisionalResponseType ?? null,
       contentSelectedSource,
@@ -4561,7 +4496,7 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     });
   }
   if (shouldSuppressStreamingFallbackForReasoningOnly) {
-    webviewLogger.info("Suppressing streaming fallback: raw debug indicates reasoning-only final payload", {
+    logger.info("Suppressing streaming fallback: raw debug indicates reasoning-only final payload", {
       messageId: sourceMessageId,
       responseType: provisionalResponseType ?? null,
       rawPartsCount: parsedRawDebug.parts.length,
@@ -5864,7 +5799,7 @@ function mergeAssistantReplacement(existing: Message, incoming: Message): Messag
   );
   const subagents = mergeActivityArrays(existing.subagents, incoming.subagents);
 
-  streamDebug("[OpenCode][DEBUGGING NOW] timeline mergeAssistantReplacement", {
+  streamDebug("Timeline: merging assistant replacement", {
     existingMessageId: getMessageId(existing),
     incomingMessageId: getMessageId(incoming),
     existingSteps: summarizeStepListForLog(
@@ -5905,7 +5840,7 @@ function replaceMatchingAssistantTurn(
 ): Message[] {
   const ids = new Set(candidateIds.map((id) => asString(id)).filter(Boolean));
   if (ids.size === 0) {
-    streamDebug("[OpenCode][DEBUGGING NOW] timeline replaceMatchingAssistantTurn append-no-id", {
+    streamDebug("Timeline: assistant turn append without ID", {
       incomingMessageId: getMessageId(incoming),
       incomingSummary: summarizeMessageForLog(incoming),
       incomingSteps: summarizeStepListForLog(
@@ -5928,7 +5863,7 @@ function replaceMatchingAssistantTurn(
       continue;
     }
     const next = [...messages];
-    streamDebug("[OpenCode][DEBUGGING NOW] timeline replaceMatchingAssistantTurn match", {
+    streamDebug("Timeline: assistant turn matched and replacing", {
       matchedId: id,
       candidateIds: Array.from(ids),
       existingSummary: summarizeMessageForLog(message),
@@ -5950,7 +5885,7 @@ function replaceMatchingAssistantTurn(
     return next;
   }
 
-  streamDebug("[OpenCode][DEBUGGING NOW] timeline replaceMatchingAssistantTurn append-no-match", {
+  streamDebug("Timeline: assistant turn append without match", {
     candidateIds: Array.from(ids),
     incomingMessageId: getMessageId(incoming),
     incomingSummary: summarizeMessageForLog(incoming),
@@ -6257,7 +6192,7 @@ function applyStructuredSubagentPayload(
   structuredOutput: StructuredOutput,
   messageId: string,
 ): void {
-  webviewLogger.info('[SUBAGENT-DEBUG] applyStructuredSubagentPayload called', {
+  logger.info('[SUBAGENT-DEBUG] applyStructuredSubagentPayload called', {
     messageId,
     responseType: structuredOutput.responseType,
     subagentsCount: structuredOutput.subagents?.length ?? 0,
@@ -6268,7 +6203,7 @@ function applyStructuredSubagentPayload(
 
   if (structuredOutput.responseType === 'subagents') {
     if (!structuredOutput.subagents || structuredOutput.subagents.length === 0) {
-      webviewLogger.warn('Structured subagents responseType received without subagents array');
+      logger.warn('Structured subagents responseType received without subagents array');
     }
   }
 
@@ -6328,7 +6263,7 @@ function applyStructuredSubagentPayload(
   if (structuredOutput.subagentsDelta && structuredOutput.subagentsDelta.items.length > 0) {
     const targetMessageId =
       structuredOutput.subagentsDelta.parentMessageId || messageId || '';
-    webviewLogger.info('[SUBAGENT-DEBUG] processing subagentsDelta', {
+    logger.info('[SUBAGENT-DEBUG] processing subagentsDelta', {
       targetMessageId,
       itemsCount: structuredOutput.subagentsDelta.items.length,
       firstItemId: structuredOutput.subagentsDelta.items[0]?.id,
@@ -7078,17 +7013,13 @@ function logRenderSnapshot(source: string, messages: Message[]): void {
     summarizeRenderMessageForDebug(message, messages.length - tail.length + index),
   );
   const last = summary[summary.length - 1];
-  webviewLogger.info("[PRE-RENDER] rendering snapshot", {
+  logger.info("[PRE-RENDER] rendering snapshot", {
     source,
     messageCount: messages.length,
     last,
   });
-  webviewLogger.info("[PRE-RENDER] rendering full payload", {
-    source,
-    messageCount: messages.length,
-    messages,
-  });
-  streamDebug("[OpenCode][webview] render snapshot tail", {
+  // Removed full payload logging to reduce verbosity - snapshot contains essential info
+  streamDebug("Render: snapshot tail", {
     source,
     items: summary,
   });
@@ -7104,7 +7035,7 @@ function logSourceSnapshot(source: string, messages: Message[] | unknown[]): voi
     ),
   );
   const last = summary[summary.length - 1];
-  webviewLogger.info("[SOURCE] incoming render payload", {
+  logger.info("[SOURCE] incoming render payload", {
     source,
     messageCount: normalizedMessages.length,
     last,
@@ -7116,9 +7047,13 @@ function logFullPayloadSnapshot(
   source: string,
   payload: Record<string, unknown>,
 ): void {
-  webviewLogger.info(`[${stage}] full payload`, {
+  const messages = payload.messages as unknown[];
+  const messageCount = Array.isArray(messages) ? messages.length : 0;
+
+  logger.info(`[${stage}] payload snapshot`, {
     source,
-    payload,
+    messageCount,
+    keys: Object.keys(payload).filter(k => k !== 'messages')
   });
 }
 
@@ -7870,14 +7805,14 @@ export function dedupeSystemMessages(messages: Message[]): Message[] {
 
       // Skip system messages with duplicate content
       if (seenSystemContents.has(normalizedContent)) {
-        webviewLogger.debug('[dedupeSystemMessages] Skipping duplicate system message', {
+        logger.debug('[dedupeSystemMessages] Skipping duplicate system message', {
           content: normalizedContent.substring(0, 100),
           totalSkipped: seenSystemContents.size,
         });
         continue;
       }
       seenSystemContents.add(normalizedContent);
-      webviewLogger.debug('[dedupeSystemMessages] Keeping unique system message', {
+      logger.debug('[dedupeSystemMessages] Keeping unique system message', {
         content: normalizedContent.substring(0, 100),
         index: deduped.length,
       });
@@ -7886,7 +7821,7 @@ export function dedupeSystemMessages(messages: Message[]): Message[] {
     deduped.push(message);
   }
 
-  webviewLogger.debug('[dedupeSystemMessages] Deduplication complete', {
+  logger.debug('[dedupeSystemMessages] Deduplication complete', {
     inputCount: messages.length,
     outputCount: deduped.length,
     duplicatesRemoved: messages.length - deduped.length,
@@ -7906,8 +7841,8 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
     return messages;
   }
 
-  // Always log that we're running (using console.log to ensure visibility)
-  console.log('[dedupePlanProceedMessages] Running deduplication', {
+  // Always log that we're running
+  logger.info('[Deduplication] Running plan message deduplication', {
     totalMessages: messages.length,
     timestamp: new Date().toISOString()
   });
@@ -7922,14 +7857,8 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
   });
 
   if (userMessages.length > 0) {
-    console.log('[dedupePlanProceedMessages] Processing user messages', {
-      totalUserMessages: userMessages.length,
-      messages: userMessages.map(m => ({
-        role: asString(m.role),
-        content: (asString(m.content) || '').substring(0, 50),
-        text: (asString(m.text) || '').substring(0, 50),
-        hasParts: Array.isArray(m.parts) && m.parts.length > 0,
-      }))
+    logger.debug('[Deduplication] Processing user messages', {
+      totalUserMessages: userMessages.length
     });
   }
 
@@ -7948,7 +7877,7 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
     // Check if this is a "Plan Approved" user message
     const isPlanProceed = role === 'user' && /\bproceed on this plan\./i.test(content);
 
-    console.log('[dedupePlanProceedMessages] Processing message', {
+    logger.debug('[Deduplication] Processing message', {
       role,
       contentPreview: content.substring(0, 50),
       isPlanProceed,
@@ -7962,7 +7891,7 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
       const planProceedMatch = content.match(/\bproceed on this plan\./i);
       const planProceedSignature = planProceedMatch ? planProceedMatch[0].trim().toLowerCase() : content.trim().toLowerCase().replace(/\s+/g, ' ');
 
-      console.log('[dedupePlanProceedMessages] Found Plan Approved message', {
+      logger.debug('[Deduplication] Found Plan Approved message', {
         originalContent: content.substring(0, 100),
         planProceedSignature,
         alreadySeen: seenPlanProceedMessages.has(planProceedSignature),
@@ -7972,18 +7901,24 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
 
       // Skip duplicate "Plan Approved" messages
       if (seenPlanProceedMessages.has(planProceedSignature)) {
-        console.log('[dedupePlanProceedMessages] SKIPPING duplicate Plan Approved message');
+        logger.debug('[Deduplication] Skipping duplicate Plan Approved message', {
+          signature: planProceedSignature.substring(0, 50),
+          totalSeen: seenPlanProceedMessages.size
+        });
         continue;
       }
 
       seenPlanProceedMessages.add(planProceedSignature);
-      console.log('[dedupePlanProceedMessages] KEEPING unique Plan Approved message');
+      logger.debug('[Deduplication] Keeping unique Plan Approved message', {
+        signature: planProceedSignature.substring(0, 50),
+        uniqueCount: seenPlanProceedMessages.size
+      });
     }
 
     deduped.push(message);
   }
 
-  console.log('[dedupePlanProceedMessages] Deduplication complete', {
+  logger.info('[Deduplication] Plan message deduplication complete', {
     inputCount: messages.length,
     outputCount: deduped.length,
     duplicatesRemoved: messages.length - deduped.length,
@@ -8301,7 +8236,7 @@ function handleStreamEvent(
 ): void {
   // Log every stream event for comprehensive debugging
   const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
-  webviewLogger.debug(`Handling Stream Event: ${eventType}`, {
+  logger.debug(`Handling Stream Event: ${eventType}`, {
     timestamp: new Date().toISOString(),
     eventType,
     payloadKeys: Object.keys(payload),
@@ -8314,7 +8249,7 @@ function handleStreamEvent(
   // Ignore streaming parts after a terminal error to prevent showing both
   // error banner and active streaming state simultaneously
   if (terminalErrorReached) {
-    webviewLogger.warn(`Ignoring event due to terminal error: ${eventType}`);
+    logger.warn(`Ignoring event due to terminal error: ${eventType}`);
     return;
   }
 
@@ -8609,7 +8544,7 @@ function handleStreamEvent(
   switch (normalizedEventType) {
     case 'question.asked': {
       const questionEvents = interactiveEventsFromQuestionAskedPayload(payload);
-      webviewLogger.info("[QUESTION DEBUG] question.asked received in webview", {
+      logger.info("[QUESTION DEBUG] question.asked received in webview", {
         messageId,
         questionEvents: questionEvents.map((event) => ({
           id: event.id,
@@ -8643,7 +8578,7 @@ function handleStreamEvent(
     case 'message.part.updated':
     case 'message.part.added':
     case 'message.part.created': {
-      webviewLogger.debug(`Processing part event`, {
+      logger.debug(`Processing part event`, {
         normalizedEventType,
         messageId,
         hasPart: !!asRecord(payload.part),
@@ -8653,12 +8588,12 @@ function handleStreamEvent(
       const part = asRecord(payload.part) ?? asRecord(properties?.part) ?? properties;
       if (!part) {
         if (awaitingInteractiveTurnStart || isHeartbeatEvent) {
-          webviewLogger.debug(
+          logger.debug(
             `No part data during interactive transition/heartbeat, suppressing processing bootstrap`,
           );
           break;
         }
-        webviewLogger.debug(`No part data, setting processing=true`);
+        logger.debug(`No part data, setting processing=true`);
         dispatch({ type: 'SET_PROCESSING', payload: true });
         break;
       }
@@ -8666,7 +8601,7 @@ function handleStreamEvent(
       // DEBUG: Log all part updates to see what's happening
       const currentPartType = normalizePartType(part.type);
       const currentStructuredKind = asString(payload.structuredKind) || asString(properties?.structuredKind) || '';
-      webviewLogger.debug('message.part.updated', { partType: currentPartType, structuredKind: currentStructuredKind, hasText: !!part.text, hasContent: !!part.content });
+      logger.debug('message.part.updated', { partType: currentPartType, structuredKind: currentStructuredKind, hasText: !!part.text, hasContent: !!part.content });
 
       // Track if we're processing a reasoning part sequence
       const currentStreamingState = getState().streaming;
@@ -8679,7 +8614,7 @@ function handleStreamEvent(
       // Detect start of reasoning part sequence
       const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking';
       if (isReasoning) {
-        webviewLogger.debug('Starting reasoning part sequence - will drop all content');
+        logger.debug('Starting reasoning part sequence - will drop all content');
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: true } });
       }
 
@@ -8690,7 +8625,7 @@ function handleStreamEvent(
       // to prevent the first non-reasoning part after reasoning from being misrouted.
       let effectiveInReasoningPart = isInReasoningPart;
       if (isInReasoningPart && !isReasoning) {
-        webviewLogger.debug(`Ending reasoning part sequence - current part type is ${currentPartType}`);
+        logger.debug(`Ending reasoning part sequence - current part type is ${currentPartType}`);
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: false } });
         effectiveInReasoningPart = false;
       }
@@ -8796,7 +8731,7 @@ function handleStreamEvent(
       }
 
       if (structuredOutput?.subagents || structuredOutput?.subagentsDelta) {
-        webviewLogger.info('[SUBAGENT-DEBUG] stream message.part.updated dispatching subagents', {
+        logger.info('[SUBAGENT-DEBUG] stream message.part.updated dispatching subagents', {
           messageId,
           subagentsCount: structuredOutput.subagents?.length ?? 0,
           subagentsDeltaItemCount: structuredOutput.subagentsDelta?.items?.length ?? 0,
@@ -8849,7 +8784,7 @@ function handleStreamEvent(
         hasEmbeddedReasoning;
 
       if (isReasoningPart) {
-        webviewLogger.debug('Processing reasoning part - routing to stepper only', { partType, structuredKind, isInReasoningPart, reasoningLength: (reasoningChunk || textChunk || '').length });
+        logger.debug('Processing reasoning part - routing to stepper only', { partType, structuredKind, isInReasoningPart, reasoningLength: (reasoningChunk || textChunk || '').length });
 
         // Extract reasoning content and route to stepper, NEVER to main content
         const reasoningContent = reasoningChunk || textChunk || '';
@@ -8865,8 +8800,8 @@ function handleStreamEvent(
         // to handle steps/tools/interactive events, but don't process text content
       } else {
         // Non-reasoning parts continue to normal content processing
-        webviewLogger.debug('Processing non-reasoning content', { partType, structuredKind });
-        webviewLogger.debug('Processing content', { partType, structuredKind, isInReasoningPart });
+        logger.debug('Processing non-reasoning content', { partType, structuredKind });
+        logger.debug('Processing content', { partType, structuredKind, isInReasoningPart });
 
         // Lock: only explicit assistant message text can create trusted renderable
         // body content. Progress/lifecycle/tool chunks must never seed the bubble.
@@ -8927,7 +8862,7 @@ function handleStreamEvent(
             : candidateChunk;
           const cleanedChunkWasUserEchoOnly = contentEmpty && !cleanedChunk;
           if (cleanedChunkWasUserEchoOnly) {
-            streamDebug("[OpenCode][live-stream] suppressing no-op user echo part", {
+            streamDebug("Stream: suppressing user echo part", {
               eventType,
               messageId,
               partType,
@@ -8945,7 +8880,7 @@ function handleStreamEvent(
               dispatch({ type: "SET_PROCESSING", payload: true });
               break;
             }
-            streamDebug("[OpenCode][stream] message.part.updated chunk", {
+            streamDebug("Stream: message part updated chunk", {
               messageId,
               eventType,
               partType,
@@ -9110,7 +9045,7 @@ function handleStreamEvent(
           tool.includes("request_user_input") ||
           tool.includes("request-user-input")
         ) {
-          webviewLogger.info("[QUESTION DEBUG] tool-part interactive inspection", {
+          logger.info("[QUESTION DEBUG] tool-part interactive inspection", {
             messageId,
             tool,
             title,
@@ -9229,7 +9164,7 @@ function handleStreamEvent(
       }
       // Some providers can emit final assistant updates with role mislabels.
       // Continue processing instead of dropping the update.
-      webviewLogger.debug(`Processing message.updated`, {
+      logger.debug(`Processing message.updated`, {
         messageId,
         finish: asBoolean(asRecord(payload.info)?.finish, false),
         hasInfo: !!asRecord(payload.info),
@@ -9296,7 +9231,7 @@ function handleStreamEvent(
         !finish &&
         !hasRenderableLiveStructuredUpdate
       ) {
-        streamDebug("[OpenCode][live-stream] suppressing lifecycle-only message.updated", {
+        streamDebug("Stream: suppressing lifecycle-only message update", {
           messageId,
           eventRole: eventRole || null,
           structuredKind,
@@ -9458,7 +9393,7 @@ function handleStreamEvent(
         } catch (e) {
           // Defensive: never allow malformed structured payloads to throw inside
           // the message handler — just skip and continue processing other parts.
-          webviewLogger.warn('Failed to inspect legacy todo structured payload', { error: String(e) });
+          logger.warn('Failed to inspect legacy todo structured payload', { error: String(e) });
         }
       }
 
@@ -9486,7 +9421,7 @@ function handleStreamEvent(
     }
     case 'session.error':
     case 'error': {
-      webviewLogger.debug(`Processing error event`, {
+      logger.debug(`Processing error event`, {
         normalizedEventType,
         errorMessage: asString(payload.message),
       });
@@ -9496,7 +9431,7 @@ function handleStreamEvent(
     }
     case 'start':
     case 'streamStart': {
-      webviewLogger.debug(`Processing stream start`, {
+      logger.debug(`Processing stream start`, {
         messageId,
         eventAgent: asString(infoRecord?.agent) || asString(payload.agent),
       });
@@ -9634,7 +9569,7 @@ function handleStreamEvent(
         if (!contentPatch) {
           break;
         }
-        streamDebug("[OpenCode][stream] content delta chunk", {
+        streamDebug("Stream: content delta chunk", {
           messageId,
           eventType,
           append: contentPatch.append,
@@ -9661,7 +9596,7 @@ function handleStreamEvent(
     case 'thinking': {
       const chunk =
         asString(payload.delta) || asString(payload.reasoning) || asString(payload.thinking) || asString(payload.text);
-      webviewLogger.debug(`Processing reasoning/thinking event`, {
+      logger.debug(`Processing reasoning/thinking event`, {
         normalizedEventType,
         chunkLength: chunk.length,
         preview: chunk.slice(0, 100),
@@ -9675,7 +9610,7 @@ function handleStreamEvent(
     case 'stepStart': {
       const stepTitle = asString(payload.title);
       const stepTypeRaw = asString(payload.stepType).toLowerCase();
-      webviewLogger.debug(`Processing stepStart`, {
+      logger.debug(`Processing stepStart`, {
         normalizedEventType,
         stepTitle,
         stepType: stepTypeRaw,
@@ -9702,7 +9637,7 @@ function handleStreamEvent(
       break;
     }
     case 'stepUpdate': {
-      webviewLogger.debug(`Processing stepUpdate`, {
+      logger.debug(`Processing stepUpdate`, {
         normalizedEventType,
         stepId: asString(payload.id) || asString(payload.callID),
       });
@@ -9723,7 +9658,7 @@ function handleStreamEvent(
       break;
     }
     case 'stepDone': {
-      webviewLogger.debug(`Processing stepDone`, {
+      logger.debug(`Processing stepDone`, {
         normalizedEventType,
         stepId: asString(payload.id) || asString(payload.callID),
         stepStatus: asString(payload.status),
@@ -9847,7 +9782,7 @@ function handleStreamEvent(
       }
 
       if (structuredOutput?.subagents || structuredOutput?.subagentsDelta) {
-        webviewLogger.info('[SUBAGENT-DEBUG] stream default case dispatching subagents', {
+        logger.info('[SUBAGENT-DEBUG] stream default case dispatching subagents', {
           messageId,
           eventType: normalizedEventType,
           subagentsCount: structuredOutput.subagents?.length ?? 0,
@@ -9985,7 +9920,7 @@ function handleStreamEvent(
 
   // Log completion of event handling
   const finalState = getState();
-  webviewLogger.debug(`Finished Processing: ${normalizedEventType}`, {
+  logger.debug(`Finished Processing: ${normalizedEventType}`, {
     timestamp: new Date().toISOString(),
     hasStreaming: !!finalState.streaming,
     streamingContentLength: finalState.streaming?.content?.length || 0,
@@ -10342,14 +10277,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     try {
       const data = asRecord(event.data);
       if (!data) {
-        webviewLogger.warn('Received event with no data');
+        logger.warn('Received event with no data');
         return;
       }
 
       const type = asString(data.type);
 
       // Log ALL events for comprehensive debugging
-      webviewLogger.debug(`Received Event: ${type}`, {
+      logger.debug(`Received Event: ${type}`, {
         timestamp: new Date().toISOString(),
         eventType: type,
         dataKeys: Object.keys(data),
@@ -10387,7 +10322,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             asString(data.currentSessionId) ||
             null;
           if (initSessionId) {
-            webviewLogger.setSession(initSessionId);
+            logger.setSession(initSessionId);
           }
           const state = asRecord(data.state) ?? data;
           const stateBeforeInit = getState();
@@ -10829,7 +10764,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             snapshotMessageId !== responseMessageId
           ) {
             streamDebug(
-              "[OpenCode][stream] messageResponse id mismatch; preserving latest streaming snapshot",
+              "Stream: message ID mismatch, preserving latest snapshot",
               {
                 responseMessageId,
                 snapshotMessageId,
@@ -10861,7 +10796,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const streaming = shouldPreserveStreamingSnapshot
             ? finalizeStreamingSnapshotSteps(snapshotStreaming, terminalStatus)
             : null;
-          streamDebug("[OpenCode][DEBUGGING NOW] stream messageResponse pre-normalize", {
+          streamDebug("Stream response: pre-normalization state", {
             responseSessionId: responseSessionId ?? null,
             responseMessageId: responseMessageId ?? null,
             snapshotMessageId,
@@ -10985,7 +10920,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               interactiveEventsFromStreamingSnapshot(snapshotStreaming),
             );
 
-            streamDebug("[OpenCode][DEBUGGING NOW] stream messageResponse post-normalize", {
+            streamDebug("Stream response: post-normalization state", {
               responseMessageId: responseMessageId ?? null,
               streamingMessageId: streamingMessageId ?? null,
               snapshotMessageId,
@@ -11056,7 +10991,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             !streamingMessageId ||
             hasOwnResponsePayload ||
             interactiveEventsInResponse.length > 0;
-          streamDebug("[OpenCode][DEBUGGING NOW] stream messageResponse completion decision", {
+          streamDebug("Stream response: completion decision", {
             responseMessageId: responseMessageId ?? null,
             finalMessageId,
             streamingMessageId: streamingMessageId ?? null,
@@ -11102,7 +11037,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const rawMessages = asArray(data.messages, isMessage);
             const historySessionId = asString(data.sessionId) || null;
             if (historySessionId) {
-              webviewLogger.setSession(historySessionId);
+              logger.setSession(historySessionId);
             }
             logSourceSnapshot("chatHistory", rawMessages);
             logFullPayloadSnapshot("SOURCE", "chatHistory", {
@@ -11360,7 +11295,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "subagentSnapshot": {
-          webviewLogger.info('[SUBAGENT][REHYDRATED] subagentSnapshot received', {
+          logger.info('[SUBAGENT][REHYDRATED] subagentSnapshot received', {
             rawSummaryKeys: Object.keys(data.summariesByParentMessageId ?? data.subagentsByParentMessageId ?? {}),
             rawDetailKeys: Object.keys(data.detailsById ?? data.subagentDetailsById ?? {}),
             activeSessionId: getState().currentSessionId,
@@ -11380,7 +11315,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             rawSummariesByParentMessageId,
             rawDetailsById,
           );
-          webviewLogger.info('[SUBAGENT][REHYDRATED] subagentSnapshot pre-render pull', {
+          logger.info('[SUBAGENT][REHYDRATED] subagentSnapshot pre-render pull', {
             activeSessionId,
             payloadSessionId,
             rawSummaryParentKeys: Object.keys(rawSummariesByParentMessageId),
@@ -11393,7 +11328,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             payloadSessionId &&
             payloadSessionId !== activeSessionId
           ) {
-            webviewLogger.debug(
+            logger.debug(
               "Ignoring subagentSnapshot payload for inactive session",
               {
                 activeSessionId,
@@ -11533,7 +11468,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             rawSummariesByParentMessageId,
             rawDetailsById,
           );
-          webviewLogger.info('[SUBAGENT][EVENT STREAM] subagentUpdate pre-render pull', {
+          logger.info('[SUBAGENT][EVENT STREAM] subagentUpdate pre-render pull', {
             activeSessionId,
             payloadSessionId,
             rawSummaryParentKeys: Object.keys(rawSummariesByParentMessageId),
@@ -11546,7 +11481,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             payloadSessionId &&
             payloadSessionId !== activeSessionId
           ) {
-            webviewLogger.debug(
+            logger.debug(
               "Ignoring subagentUpdate payload for inactive session",
               {
                 activeSessionId,
@@ -11643,7 +11578,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamEventType === "start" || streamEventType === "streamStart";
           const canStartVisibleAssistantTurn =
             streamEventCanStartVisibleAssistantTurn(payload);
-          streamDebug("[OpenCode][live-stream] inbound event", {
+          streamDebug("Stream: inbound event received", {
             ...summarizeStreamEventForLog(payload),
             eventSessionId: eventSessionId || null,
             activeSessionId: activeSessionId || null,
@@ -11659,7 +11594,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             activeSessionId: activeSessionId || null,
             payload,
           });
-          webviewLogger.info("[SOURCE] streamEvent received", {
+          logger.info("[SOURCE] streamEvent received", {
             streamEventType,
             eventSessionId: eventSessionId || null,
             activeSessionId: activeSessionId || null,
@@ -11672,7 +11607,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             !isExplicitStreamStart &&
             !canStartVisibleAssistantTurn
           ) {
-            streamDebug("[OpenCode][live-stream] dropped before handling", {
+            streamDebug("Stream: event dropped before handling", {
               ...summarizeStreamEventForLog(payload),
               reason: "not-processing-and-no-active-stream",
               eventSessionId: eventSessionId || null,
@@ -11703,7 +11638,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             }
           }
 
-          streamDebug("[OpenCode][webview] streamEvent received", {
+          streamDebug("Stream: event received from extension", {
             type: streamEventType,
             hasProperties: !!asRecord(payload.properties),
             hasPart: !!asRecord(asRecord(payload.properties)?.part),
@@ -11999,18 +11934,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "commandsList": {
-          webviewLogger.debug('Received commandsList message', { data });
-          webviewLogger.debug('commands data', { commands: data.commands, type: typeof data.commands, isArray: Array.isArray(data.commands) });
-
           const commands = asArray(data.commands, isSlashCommand);
-          webviewLogger.debug('Filtered commands', { commands, count: commands.length });
+          logger.debug('Commands loaded', { commandCount: commands.length });
 
           dispatch({ type: "SET_COMMANDS_LIST", payload: commands });
           break;
         }
         case "mySkills": {
-          webviewLogger.debug('Received mySkills message', { data });
           const skills = asArray(data.skills, isSkill);
+          logger.debug('Skills loaded', { skillCount: skills.length });
           dispatch({ type: "SET_SKILLS_LIST", payload: skills });
           break;
         }
@@ -12277,7 +12209,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               payload: normalizeTodoList(rawItems, sessionId || currentSessionId || undefined),
             });
           } catch (e) {
-            webviewLogger.warn("Failed to process todoSnapshot postMessage", { error: String(e) });
+            logger.warn("Failed to process todoSnapshot postMessage", { error: String(e) });
           }
           break;
         }
@@ -12327,7 +12259,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             }
           } catch (e) {
             // Defensive: do not allow a malformed postMessage to throw.
-            webviewLogger.warn("Failed to process todoUpdate postMessage", { error: String(e) });
+            logger.warn("Failed to process todoUpdate postMessage", { error: String(e) });
           }
           break;
         }
@@ -12353,7 +12285,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           } catch (e) {
             // Defensive: do not allow malformed postMessage to throw
-            webviewLogger.warn("Failed to process modelCapabilityUpdate postMessage", { error: String(e) });
+            logger.warn("Failed to process modelCapabilityUpdate postMessage", { error: String(e) });
           }
           break;
         }
@@ -12449,7 +12381,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
       }
     } catch (error) {
-      webviewLogger.error('Error processing message', {
+      logger.error('Error processing message', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         eventType: asString((event.data as { type?: unknown })?.type),

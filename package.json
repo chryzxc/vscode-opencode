@@ -204,6 +204,21 @@
           "default": 3,
           "description": "Number of backup log files to keep"
         },
+        "opencode.logging.consoleOutputMode": {
+          "type": "string",
+          "enum": [
+            "pretty",
+            "json",
+            "hybrid"
+          ],
+          "default": "pretty",
+          "description": "Console output format: pretty (colored text), json (structured), or hybrid (both)"
+        },
+        "opencode.logging.enableColors": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable ANSI colors for console output (pretty mode only)"
+        },
         "opencode.autoCompact": {
           "type": "boolean",
           "default": true,
@@ -265,7 +280,8 @@
     "analyze-logs:summary": "npx tsx scripts/analyze-logs.ts logs/opencode.log --summary",
     "analyze-logs:flows": "npx tsx scripts/analyze-logs.ts logs/opencode.log --flows",
     "analyze-logs:errors": "npx tsx scripts/analyze-logs.ts logs/opencode.log --errors",
-    "analyze-logs:perf": "npx tsx scripts/analyze-logs.ts logs/opencode.log --performance"
+    "analyze-logs:perf": "npx tsx scripts/analyze-logs.ts logs/opencode.log --performance",
+    "test:logger": "npx tsx scripts/test-logger.ts"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",

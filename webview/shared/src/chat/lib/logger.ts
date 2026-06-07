@@ -10,6 +10,11 @@ type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 class WebviewLogger {
   private logLevel: LogLevel = 'info';
+  private sessionId: string | null = null;
+
+  setSession(sessionId: string): void {
+    this.sessionId = sessionId;
+  }
 
   private shouldLog(level: LogLevel): boolean {
     if (config.debug.disableLogs) {
@@ -25,19 +30,20 @@ class WebviewLogger {
       return;
     }
 
-    // Log to browser console
+    // Log to browser console with consistent prefix
+    const prefix = `[WebView][${level.toUpperCase()}]`;
     switch (level) {
       case 'debug':
-        console.debug(`[WebView] ${message}`, context);
+        console.debug(prefix, message, context);
         break;
       case 'info':
-        console.info(`[WebView] ${message}`, context);
+        console.info(prefix, message, context);
         break;
       case 'warn':
-        console.warn(`[WebView] ${message}`, context);
+        console.warn(prefix, message, context);
         break;
       case 'error':
-        console.error(`[WebView] ${message}`, context);
+        console.error(prefix, message, context);
         break;
     }
 
@@ -49,8 +55,9 @@ class WebviewLogger {
         message,
         context: {
           ...context,
+          sessionId: this.sessionId,
           timestamp: Date.now(),
-          source: 'webview-react',
+          source: 'webview',
         },
       });
     } catch (error) {

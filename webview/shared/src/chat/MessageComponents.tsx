@@ -45,6 +45,7 @@ import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 import { DiffStats } from "./DiffStats";
 import { asString } from "./lib/messageHandler";
+import logger from "./lib/logger";
 
 import type {
   ActivityDetail,
@@ -2620,7 +2621,7 @@ function SubagentsInlineCard({
   setShowAllSubagents: (next: boolean) => void;
   openSubagentModal: (subagentId: string) => void;
 }) {
-  console.log('[SUBAGENT][REHYDRATED] SubagentsInlineCard render', {
+  logger.debug('[Subagent] SubagentsInlineCard render', {
     subagentCount: subagents.length,
     subagentIds: subagents.map(s => s.id),
     subagentStatuses: subagents.map(s => s.status),
@@ -4126,7 +4127,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       return subagent.parentMessageId === messageId;
     });
 
-    console.debug('[SUBAGENT][REHYDRATED] AssistantMessage subagent pull before render', {
+    logger.debug('[Subagent] AssistantMessage subagent data before merge', {
       messageId,
       activeSessionId,
       storeKeys: Object.keys(subagentsByParentMessageId),
@@ -4137,7 +4138,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       streaming: !!streaming,
     });
 
-    console.log('[SUBAGENT][REHYDRATED] AssistantMessage subagents useMemo', {
+    logger.debug('[Subagent] AssistantMessage subagents merged in useMemo', {
       messageId,
       activeSessionId,
       storeKeys: Object.keys(subagentsByParentMessageId),

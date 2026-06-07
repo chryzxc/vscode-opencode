@@ -119,10 +119,7 @@ export class DiagnosticsLogger {
     }
     if (shouldLogInfo) {
       this.logger.info("[SOURCE] stream event snapshot", summary);
-      this.logger.info("[SOURCE] stream event payload", {
-        event,
-        enrichedEvent,
-      });
+      // Removed full payload logging to reduce verbosity
     }
   }
 
@@ -261,16 +258,7 @@ export class DiagnosticsLogger {
 
     this.logger.info("[SOURCE] history raw snapshot", rawContext);
     this.logger.info("[PRE-RENDER] history processed snapshot", processedContext);
-    this.logger.info("[SOURCE] history raw payload", {
-      source,
-      sessionId,
-      messages: rawMessages,
-    });
-    this.logger.info("[PRE-RENDER] history processed payload", {
-      source,
-      sessionId,
-      messages: processedMessages,
-    });
+    // Removed full payload logging to reduce verbosity - snapshots contain essential info
 
     if (this.shouldVerboseStreamDebug()) {
       this.logger.debug("History raw tail (verbose)", {
@@ -559,10 +547,10 @@ export class DiagnosticsLogger {
     };
     this.promptDebugBySession.set(sessionId, requestRecord);
 
-    this.logger.info("AI DEBUG request payload", {
+    this.logger.info("AI DEBUG request initiated", {
       sessionId,
       useStructuredOutput,
-      prompt: requestRecord.prompt,
+      promptLength: typeof requestRecord.prompt === 'object' ? JSON.stringify(requestRecord.prompt).length : String(requestRecord.prompt).length
     });
     this.logger.debug("AI DEBUG request payload", {
       sessionId,
