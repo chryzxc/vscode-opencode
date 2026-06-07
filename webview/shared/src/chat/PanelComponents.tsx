@@ -1801,16 +1801,7 @@ export function InputWrapper() {
   const suggestionsContainerRef = useRef<HTMLDivElement>(null);
 
   const filteredCommands = useMemo(() => {
-    logger.debug('filteredCommands: useMemo called', {
-      slashTrigger,
-      availableCommandsCount: availableCommands.length,
-      availableSkillsCount: availableSkills.length,
-      availableCommandsNames: availableCommands.map(c => c.name),
-      availableSkillsNames: availableSkills.map(s => s.name)
-    });
-
     if (!slashTrigger) {
-      logger.debug('filteredCommands: No slash trigger, returning empty array');
       return [] as SlashCommand[];
     }
 
@@ -1837,14 +1828,7 @@ export function InputWrapper() {
       ).values(),
     );
 
-    logger.debug('filteredCommands: Filtering commands', {
-      query,
-      baseCount: dedupedSlashItems.length,
-      baseNames: dedupedSlashItems.map(c => c.name)
-    });
-
     if (!query) {
-      logger.debug('filteredCommands: No query, returning all commands', { count: dedupedSlashItems.length });
       return dedupedSlashItems;
     }
 
@@ -1853,23 +1837,11 @@ export function InputWrapper() {
       return name.includes(query);
     });
 
-    logger.debug('filteredCommands: Filtered result', {
-      filteredCount: filtered.length,
-      filteredNames: filtered.map(c => c.name)
-    });
-
     return filtered;
   }, [slashTrigger, availableCommands, availableSkills]);
 
   useEffect(() => {
-    logger.debug('slashCommand useEffect: Trigger check', {
-      hasSlashTrigger: !!slashTrigger,
-      commandsLoaded,
-      alreadyRequested: commandsRequestedRef.current
-    });
-
     if (slashTrigger && !commandsLoaded && !commandsRequestedRef.current) {
-      logger.debug('slashCommand useEffect: Requesting commands');
       commandsRequestedRef.current = true;
       vscode.postMessage({ type: "getCommands" });
     }
@@ -2437,10 +2409,6 @@ export function InputWrapper() {
     // Send interactive answers through the exact same transport path as a
     // normal user message so provider-side lifecycle/state handling is
     // identical to chatbox submits.
-    logger.info("[QUESTION DEBUG] submitting legacy interactive reply", {
-      interactiveEventCount: batch.length,
-      displayText,
-    });
     vscode.postMessage({
       type: "sendMessage",
       ...(currentSessionId ? { sessionId: currentSessionId } : {}),
@@ -3951,31 +3919,14 @@ export function SkillsPanel() {
 
   const hasSkills = availableSkills.length > 0;
 
-  // Debug logging to track state changes
-  useEffect(() => {
-    logger.debug('SkillsPanel: State updated', {
-      availableSkillsCount: availableSkills.length,
-      serverStatus,
-      hasSkills,
-      skillNames: availableSkills.map(s => s.name)
-    });
-  }, [availableSkills, serverStatus, hasSkills]);
-
   // Load skills on mount if server is ready
   useEffect(() => {
-    logger.debug('SkillsPanel: useEffect triggered', {
-      serverStatus,
-      shouldFetch: serverStatus === "running"
-    });
-
     if (serverStatus === "running") {
-      logger.debug('SkillsPanel: Sending getMySkills message');
       vscode.postMessage({ type: "getMySkills" });
     }
   }, [serverStatus]);
 
   function handleRefresh() {
-    logger.debug('SkillsPanel: Manual refresh triggered');
     setIsRefreshing(true);
     dispatch({ type: "SET_SKILLS_LIST", payload: [] });
     vscode.postMessage({ type: "getMySkills" });

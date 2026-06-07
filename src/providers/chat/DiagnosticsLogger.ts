@@ -94,9 +94,6 @@ export class DiagnosticsLogger {
     };
 
     if (eventType === "server.heartbeat") {
-      if (this.shouldVerboseStreamDebug()) {
-        this.logger.debug("Stream heartbeat", summary);
-      }
       return;
     }
 
@@ -258,74 +255,17 @@ export class DiagnosticsLogger {
 
     this.logger.info("[SOURCE] history raw snapshot", rawContext);
     this.logger.info("[PRE-RENDER] history processed snapshot", processedContext);
-    // Removed full payload logging to reduce verbosity - snapshots contain essential info
-
-    if (this.shouldVerboseStreamDebug()) {
-      this.logger.debug("History raw tail (verbose)", {
-        source,
-        sessionId,
-        items: rawSummary,
-      });
-      this.logger.debug("History processed tail (verbose)", {
-        source,
-        sessionId,
-        items: processedSummary,
-      });
-    }
   }
 
   /**
-   * Log prompt response diagnostics
+   * Log prompt response diagnostics (disabled - too verbose)
    */
   logPromptResponseDiagnostics(
     sessionId: string,
     responseData: any,
   ): void {
-    if (!this.shouldVerboseStreamDebug()) {
-      return;
-    }
-
-    if (!responseData || typeof responseData !== "object") {
-      return;
-    }
-
-    const info = this.asRecord(responseData.info);
-    const messageId = this.firstNonEmptyString(info?.id, responseData.id);
-    const parts = Array.isArray(responseData.parts) ? responseData.parts : [];
-
-    this.logger.debug("Final response diagnostics", {
-      sessionId,
-      messageId,
-      partCount: parts.length,
-      partTypes: parts.map((part: any) =>
-        typeof part?.type === "string" ? part.type : "unknown",
-      ),
-      role: this.firstNonEmptyString(info?.role, responseData.role),
-      modelID: this.firstNonEmptyString(info?.modelID, responseData.modelID),
-      providerID: this.firstNonEmptyString(
-        info?.providerID,
-        responseData.providerID,
-      ),
-    });
-
-    parts.forEach((part: any, index: number) => {
-      const partRec = this.asRecord(part) || {};
-      const preview = this.firstNonEmptyString(
-        partRec.delta,
-        partRec.text,
-        partRec.content,
-        partRec.reasoning,
-        partRec.message,
-      );
-      this.logger.debug("Final response part", {
-        sessionId,
-        messageId,
-        index,
-        type: this.firstNonEmptyString(partRec.type) || "unknown",
-        preview:
-          typeof preview === "string" ? preview.slice(0, 220) : undefined,
-      });
-    });
+    // Disabled - not critical for chatflow debugging
+    return;
   }
 
   /**
@@ -492,17 +432,8 @@ export class DiagnosticsLogger {
             vscode.Uri.file(path.dirname(filePath)),
           );
           await fs.appendFile(filePath, line, "utf8");
-          if (!this.didLogRenderParityFilePath) {
-            this.didLogRenderParityFilePath = true;
-            this.logger.info("Render parity debug file active", { filePath });
-          }
         } catch (error) {
-          if (this.shouldVerboseStreamDebug()) {
-            this.logger.warn("Failed to append render parity debug log", {
-              filePath,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
+          // Silently fail for debug file operations
         }
       });
   }
@@ -523,11 +454,8 @@ export class DiagnosticsLogger {
         vscode.Uri.file(filePath),
         new TextEncoder().encode(`${JSON.stringify(snapshot, null, 2)}\n`),
       );
-      this.logger.info("AI debug snapshot written", { filePath });
     } catch (error) {
-      this.logger.warn("Failed to persist AI debug snapshot", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      // Silently fail for debug file operations
     }
   }
 
@@ -547,15 +475,6 @@ export class DiagnosticsLogger {
     };
     this.promptDebugBySession.set(sessionId, requestRecord);
 
-    this.logger.info("AI DEBUG request initiated", {
-      sessionId,
-      useStructuredOutput,
-      promptLength: typeof requestRecord.prompt === 'object' ? JSON.stringify(requestRecord.prompt).length : String(requestRecord.prompt).length
-    });
-    this.logger.debug("AI DEBUG request payload", {
-      sessionId,
-      useStructuredOutput,
-    });
     await this.persistAiDebugSnapshot({
       phase: "request",
       ...requestRecord,
@@ -589,20 +508,6 @@ export class DiagnosticsLogger {
       request: requestRecord,
       response: responseRecord,
     };
-    this.logger.info("AI DEBUG response payload", {
-      sessionId,
-      useStructuredOutput,
-      status: responseRecord.status,
-      hasData: responseRecord.hasData,
-      hasError: responseRecord.hasError,
-    });
-    this.logger.debug("AI DEBUG response payload", {
-      sessionId,
-      useStructuredOutput,
-      status: responseRecord.status,
-      hasData: responseRecord.hasData,
-      hasError: responseRecord.hasError,
-    });
     await this.persistAiDebugSnapshot(combined);
     this.promptDebugBySession.delete(sessionId);
   }

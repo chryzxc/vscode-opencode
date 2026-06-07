@@ -1036,6 +1036,9 @@ export class SessionService {
   /** Promise that resolves when initialization completes */
   private initializationPromise: Promise<void> | null = null;
 
+  /** Track last logged session ID for deduplication */
+  private lastLoggedSessionId: string | null = null;
+
   // ============================================================================
   // PERSISTENCE KEYS
   // ============================================================================
@@ -2068,8 +2071,13 @@ export class SessionService {
       );
     }
 
-    log.sessionEvent("persist", this.currentSession?.id ?? "none", {
-      sessionCount: this.sessionHistory.length,
-    });
+    const currentSessionId = this.currentSession?.id ?? "none";
+    // Only log when session ID changes to avoid duplicate logs
+    if (currentSessionId !== this.lastLoggedSessionId) {
+      log.sessionEvent("persist", currentSessionId, {
+        sessionCount: this.sessionHistory.length,
+      });
+      this.lastLoggedSessionId = currentSessionId;
+    }
   }
 }

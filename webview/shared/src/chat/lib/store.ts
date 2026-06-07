@@ -3074,13 +3074,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "UPSERT_SUBAGENT_SUMMARIES": {
-      logger.debug('[Subagent] Upserting subagent summaries to store', {
-        payloadKeys: Object.keys(action.payload),
-        payloadSummary: Object.fromEntries(
-          Object.entries(action.payload).map(([k, v]) => [k, Array.isArray(v) ? v.length : 'non-array'])
-        ),
-        existingStoreKeys: Object.keys(state.subagentsByParentMessageId),
-      });
       return {
         ...state,
         subagentsByParentMessageId: {
@@ -3090,9 +3083,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "UPSERT_SUBAGENT_DETAIL": {
-      logger.debug('[Subagent] Upserting subagent detail to store', {
-        payloadKeys: Object.keys(action.payload),
-      });
       return {
         ...state,
         subagentDetailsById: {

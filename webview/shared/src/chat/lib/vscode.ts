@@ -21,19 +21,16 @@ function getVsCodeApi() {
 
 const rawVscodeApi = getVsCodeApi();
 
-// Wrap postMessage to add logging
+// Wrap postMessage to add error logging
 const vscode = {
   postMessage: (msg: unknown) => {
-    logger.debug('Sending message to extension', {
-      type: (msg as { type?: string })?.type,
-      messageType: typeof msg,
-      hasData: msg !== null && msg !== undefined,
-    });
     try {
       rawVscodeApi.postMessage(msg);
-      logger.debug('Message sent successfully');
     } catch (error) {
-      logger.error('Error sending message', { error: String(error) });
+      logger.error('Error sending message to extension', {
+        type: (msg as { type?: string })?.type,
+        error: String(error)
+      });
       throw error;
     }
   },

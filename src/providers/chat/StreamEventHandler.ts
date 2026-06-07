@@ -51,20 +51,26 @@ export class StreamEventHandler {
   async handleStreamEvent(event: any): Promise<void> {
     if (!event) return;
 
-    this.logger.info("[SOURCE] stream event received", {
-      sessionId: this.getCurrentSessionId(),
-      eventType:
-        typeof event?.type === "string"
-          ? event.type
-          : typeof event?.event === "string"
-            ? event.event
-            : typeof event?.kind === "string"
-              ? event.kind
-              : "unknown",
-      eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
-    });
-    // Removed full payload logging to reduce verbosity
-    // Event type and metadata logged above via diagnostics
+    const eventType = typeof event?.type === "string"
+      ? event.type
+      : typeof event?.event === "string"
+        ? event.event
+        : typeof event?.kind === "string"
+          ? event.kind
+          : "unknown";
+
+    // Only log important events, not every text chunk
+    const shouldLog = !eventType.includes("message.part") ||
+                       eventType === "message.completed" ||
+                       eventType === "session.completed";
+
+    if (shouldLog) {
+      this.logger.info("[SOURCE] stream event received", {
+        sessionId: this.getCurrentSessionId(),
+        eventType,
+        eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
+      });
+    }
 
     const enrichedEvent = this.structuredOutputProcessor.enrichStreamEvent(event);
 
@@ -105,19 +111,14 @@ export class StreamEventHandler {
     }
 
     // Forward to webview
-    this.logger.info("[PRE-RENDER] stream event forwarded", {
-      sessionId,
-      eventType:
-        typeof enrichedEvent?.type === "string"
-          ? enrichedEvent.type
-          : typeof event?.type === "string"
-            ? event.type
-            : "unknown",
-      hasStructuredOutput: Boolean(enrichedEvent?.structuredOutput),
-      hasProperties: Boolean(enrichedEvent?.properties),
-    });
-    // Removed full payload logging to reduce verbosity
-    // Event summary logged above
+    if (shouldLog) {
+      this.logger.info("[PRE-RENDER] stream event forwarded", {
+        sessionId,
+        eventType,
+        hasStructuredOutput: Boolean(enrichedEvent?.structuredOutput),
+        hasProperties: Boolean(enrichedEvent?.properties),
+      });
+    }
 
     this.postMessage({
       type: "streamEvent",

@@ -2621,14 +2621,6 @@ function SubagentsInlineCard({
   setShowAllSubagents: (next: boolean) => void;
   openSubagentModal: (subagentId: string) => void;
 }) {
-  logger.debug('[Subagent] SubagentsInlineCard render', {
-    subagentCount: subagents.length,
-    subagentIds: subagents.map(s => s.id),
-    subagentStatuses: subagents.map(s => s.status),
-    subagentLatestActivities: subagents.map(s => s.latestActivity),
-    detailKeys: Object.keys(subagentDetailsById),
-    showSubagents,
-  });
   const [durationNow, setDurationNow] = useState(() => Date.now());
   const nonOrphanedSubagents = subagents.filter(
     (subagent: SubagentSummary) => subagent.status !== "orphaned",
@@ -4125,28 +4117,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         return true;
       }
       return subagent.parentMessageId === messageId;
-    });
-
-    logger.debug('[Subagent] AssistantMessage subagent data before merge', {
-      messageId,
-      activeSessionId,
-      storeKeys: Object.keys(subagentsByParentMessageId),
-      scopedStoreCount: scopedStore.length,
-      fromStoreIds: fromStore.map((subagent) => subagent.id),
-      messageSubagentIds: messageSubagents.map((subagent) => subagent.id),
-      fromMessageIds: fromMessage.map((subagent) => subagent.id),
-      streaming: !!streaming,
-    });
-
-    logger.debug('[Subagent] AssistantMessage subagents merged in useMemo', {
-      messageId,
-      activeSessionId,
-      storeKeys: Object.keys(subagentsByParentMessageId),
-      scopedStoreCount: scopedStore.length,
-      fromStoreCount: fromStore.length,
-      messageSubagentsCount: messageSubagents.length,
-      fromMessageCount: fromMessage.length,
-      streaming: !!streaming,
     });
 
     if (fromStore.length === 0) return fromMessage;

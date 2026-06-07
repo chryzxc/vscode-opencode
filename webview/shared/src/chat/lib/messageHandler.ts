@@ -47,6 +47,13 @@ import vscode from "./vscode";
 
 const STREAM_DEBUG_ENABLED = true;
 
+// Debouncing state for rendering snapshots
+let lastRenderLogTime = 0;
+const RENDER_LOG_DEBOUNCE_MS = 500;
+
+// Track seen validation warnings to avoid spam
+const seenValidationWarnings = new Set<string>();
+
 // Centralized webview logger is now imported from './logger'
 
 /**
@@ -1630,16 +1637,17 @@ function logStructuredOutputValidationFailureComparison(params: {
   sanitizedRecord: UnknownRecord;
   validationErrors: string[];
 }): void {
-  logger.info("Structured output validation raw candidates", {
-    validationErrors: params.validationErrors,
-    rawInput: buildStructuredOutputLogPreview(params.rawInput),
-    rawRecord: buildStructuredOutputLogPreview(params.rawRecord),
-  });
+  // Disabled - too verbose, logs for every text chunk
+  // logger.info("Structured output validation raw candidates", {
+  //   validationErrors: params.validationErrors,
+  //   rawInput: buildStructuredOutputLogPreview(params.rawInput),
+  //   rawRecord: buildStructuredOutputLogPreview(params.rawRecord),
+  // });
 
-  logger.info("Structured output validation processed records", {
-    validationErrors: params.validationErrors,
-    sanitizedRecord: buildStructuredOutputLogPreview(params.sanitizedRecord),
-  });
+  // logger.info("Structured output validation processed records", {
+  //   validationErrors: params.validationErrors,
+  //   sanitizedRecord: buildStructuredOutputLogPreview(params.sanitizedRecord),
+  // });
 }
 
 function warnOnStructuredFieldDrop(
@@ -1658,23 +1666,25 @@ function warnOnStructuredFieldDrop(
     return;
   }
 
-  logger.warn("Structured output validation failed", {
-    errors: context.validationErrors?.length
-      ? context.validationErrors
-      : ["structured payload lost fields during normalization"],
-    reason: "field-drop-detected",
-    stage: context.stage,
-    droppedSemanticFields: dropReport.droppedSemanticFields,
-    droppedTopLevelKeys: dropReport.droppedTopLevelKeys,
-    inputPreview: buildStructuredOutputLogPreview(rawRecord).preview,
-    sanitizedPreview: buildStructuredOutputLogPreview(processedRecord).preview,
-    hasResponseType: typeof rawRecord.responseType !== "undefined",
-    responseTypeValue: rawRecord.responseType,
-    hasMessage: typeof rawRecord.message !== "undefined",
-    hasPlan: typeof rawRecord.plan !== "undefined",
-    hasQuestion: typeof rawRecord.question !== "undefined",
-    keys: Object.keys(rawRecord),
-  });
+  // Only log for responseTypes that matter (not text chunks)
+  const responseType = rawRecord.responseType;
+  if (responseType === 'message') {
+    return; // Skip logging for regular message chunks
+  }
+
+  // Create unique key for deduplication
+  const droppedFieldsCount = dropReport.droppedSemanticFields.length + dropReport.droppedTopLevelKeys.length;
+  const validationKey = `${responseType}:${context.stage}:dropped${droppedFieldsCount}`;
+
+  // Only log if we haven't seen this specific warning before
+  if (!seenValidationWarnings.has(validationKey)) {
+    logger.warn("[STRUCTURED-OUTPUT] Validation failed - fields were dropped", {
+      responseType: rawRecord.responseType,
+      stage: context.stage,
+      droppedFields: droppedFieldsCount,
+    });
+    seenValidationWarnings.add(validationKey);
+  }
 }
 
 function preserveStructuredOutputRawFields(
@@ -7008,6 +7018,12 @@ function summarizeRenderMessageForDebug(message: Message, index: number): Record
 }
 
 function logRenderSnapshot(source: string, messages: Message[]): void {
+  const now = Date.now();
+  if (now - lastRenderLogTime < RENDER_LOG_DEBOUNCE_MS) {
+    return; // Skip logging if too soon since last render log
+  }
+  lastRenderLogTime = now;
+
   const tail = messages.slice(-20);
   const summary = tail.map((message, index) =>
     summarizeRenderMessageForDebug(message, messages.length - tail.length + index),
@@ -7017,11 +7033,6 @@ function logRenderSnapshot(source: string, messages: Message[]): void {
     source,
     messageCount: messages.length,
     last,
-  });
-  // Removed full payload logging to reduce verbosity - snapshot contains essential info
-  streamDebug("Render: snapshot tail", {
-    source,
-    items: summary,
   });
 }
 
@@ -7805,28 +7816,13 @@ export function dedupeSystemMessages(messages: Message[]): Message[] {
 
       // Skip system messages with duplicate content
       if (seenSystemContents.has(normalizedContent)) {
-        logger.debug('[dedupeSystemMessages] Skipping duplicate system message', {
-          content: normalizedContent.substring(0, 100),
-          totalSkipped: seenSystemContents.size,
-        });
         continue;
       }
       seenSystemContents.add(normalizedContent);
-      logger.debug('[dedupeSystemMessages] Keeping unique system message', {
-        content: normalizedContent.substring(0, 100),
-        index: deduped.length,
-      });
     }
 
     deduped.push(message);
   }
-
-  logger.debug('[dedupeSystemMessages] Deduplication complete', {
-    inputCount: messages.length,
-    outputCount: deduped.length,
-    duplicatesRemoved: messages.length - deduped.length,
-    systemMessageCount: seenSystemContents.size,
-  });
 
   return deduped;
 }
@@ -7841,26 +7837,8 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
     return messages;
   }
 
-  // Always log that we're running
-  logger.info('[Deduplication] Running plan message deduplication', {
-    totalMessages: messages.length,
-    timestamp: new Date().toISOString()
-  });
-
   const deduped: Message[] = [];
   const seenPlanProceedMessages = new Set<string>();
-
-  // Debug: Log all user messages to understand what we're working with
-  const userMessages = messages.filter(m => {
-    const role = asString(m.role) || asString(asRecord(m.info)?.role);
-    return role === 'user';
-  });
-
-  if (userMessages.length > 0) {
-    logger.debug('[Deduplication] Processing user messages', {
-      totalUserMessages: userMessages.length
-    });
-  }
 
   for (const message of messages) {
     const role = asString(message.role) || asString(asRecord(message.info)?.role);
@@ -7877,13 +7855,6 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
     // Check if this is a "Plan Approved" user message
     const isPlanProceed = role === 'user' && /\bproceed on this plan\./i.test(content);
 
-    logger.debug('[Deduplication] Processing message', {
-      role,
-      contentPreview: content.substring(0, 50),
-      isPlanProceed,
-      contentLength: content.length
-    });
-
     if (isPlanProceed) {
       // Extract only the "Plan approved" portion for deduplication
       // This handles cases where messages have additional content beyond "proceed on this plan."
@@ -7891,40 +7862,16 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
       const planProceedMatch = content.match(/\bproceed on this plan\./i);
       const planProceedSignature = planProceedMatch ? planProceedMatch[0].trim().toLowerCase() : content.trim().toLowerCase().replace(/\s+/g, ' ');
 
-      logger.debug('[Deduplication] Found Plan Approved message', {
-        originalContent: content.substring(0, 100),
-        planProceedSignature,
-        alreadySeen: seenPlanProceedMessages.has(planProceedSignature),
-        seenCount: seenPlanProceedMessages.size,
-        contentLength: content.length
-      });
-
       // Skip duplicate "Plan Approved" messages
       if (seenPlanProceedMessages.has(planProceedSignature)) {
-        logger.debug('[Deduplication] Skipping duplicate Plan Approved message', {
-          signature: planProceedSignature.substring(0, 50),
-          totalSeen: seenPlanProceedMessages.size
-        });
         continue;
       }
 
       seenPlanProceedMessages.add(planProceedSignature);
-      logger.debug('[Deduplication] Keeping unique Plan Approved message', {
-        signature: planProceedSignature.substring(0, 50),
-        uniqueCount: seenPlanProceedMessages.size
-      });
     }
 
     deduped.push(message);
   }
-
-  logger.info('[Deduplication] Plan message deduplication complete', {
-    inputCount: messages.length,
-    outputCount: deduped.length,
-    duplicatesRemoved: messages.length - deduped.length,
-    planProceedMessageCount: seenPlanProceedMessages.size,
-    finalMessageCount: deduped.length
-  });
 
   return deduped;
 }
@@ -11588,18 +11535,21 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             isExplicitStreamStart,
             canStartVisibleAssistantTurn,
           });
-          logFullPayloadSnapshot("SOURCE", "streamEvent", {
-            streamEventType,
-            eventSessionId: eventSessionId || null,
-            activeSessionId: activeSessionId || null,
-            payload,
-          });
-          logger.info("[SOURCE] streamEvent received", {
-            streamEventType,
-            eventSessionId: eventSessionId || null,
-            activeSessionId: activeSessionId || null,
-            ...summarizeStreamEventForLog(payload),
-          });
+
+          // Only log important events, not every text chunk
+          const shouldLogStreamEvent = !streamEventType.includes("message.part") ||
+                                      streamEventType === "message.completed" ||
+                                      streamEventType === "session.completed";
+
+          if (shouldLogStreamEvent) {
+            logFullPayloadSnapshot("SOURCE", "streamEvent", {
+              streamEventType,
+              eventSessionId: eventSessionId || null,
+              activeSessionId: activeSessionId || null,
+              payload,
+            });
+          }
+
           if (
             !stateBeforeStreamEvent.isProcessing &&
             !hasConfirmedProcessingSession &&
@@ -11696,13 +11646,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
           }
-          logFullPayloadSnapshot("PRE-RENDER", "streamEvent", {
-            streamEventType,
-            eventSessionId: eventSessionId || null,
-            activeSessionId: activeSessionId || null,
-            streaming: streamingAfter,
-            messages: getState().messages,
-          });
+
+
           if (
             streamEventType === "message.updated" ||
             streamEventType === "message.completed" ||
