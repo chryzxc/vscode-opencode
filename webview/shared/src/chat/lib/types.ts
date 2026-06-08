@@ -223,6 +223,9 @@ export interface StreamingState {
   reasoningEvents: ReasoningEvent[];
   steps: StreamingStep[];
   progressEvents: StreamingStep[];
+  /** Explicit assistant completion signal from the live message payload. */
+  hasAssistantFinishSignal?: boolean;
+  hasTerminalStepSignal?: boolean;
   edits: string[];
   isActive: boolean;
   usage?: { total: number; duration?: number };
@@ -714,6 +717,10 @@ export interface AppState {
   loadingSessionTitle: string | null;
   /** ID of the session being loaded (null if not loading) */
   loadingSessionId: string | null;
+  /** True while the current assistant turn is still in flight, even if the live stream briefly drops out. */
+  assistantTurnPending: boolean;
+  /** Message ID for the assistant turn that is still in flight. */
+  assistantTurnMessageId: string | null;
   streaming: StreamingState | null;
   /** Last known streaming snapshot by session, used when returning to active sessions. */
   streamingBySessionId?: Record<string, StreamingState>;
@@ -756,6 +763,7 @@ export interface AppState {
   selectedSubagentId: string | null;
   subagentsPanelOpen: boolean;
   interactiveEvents: InteractiveEvent[];
+  dismissedInteractiveEventKeys: Set<string>;
   mcpServers: McpServerInfo[];
   lspServers: LspServerInfo[];
   contextUsagePct?: number; // 0–100, context window usage from tokens.input / contextLimit

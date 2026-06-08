@@ -53,7 +53,9 @@ test('message routing sends user and system roles to dedicated components', () =
 
 test('permission responses render PermissionCard and assistants use AssistantMessage', () => {
   assert.match(chatContentBody, /else if \(\(msg as Record<string, unknown>\)\.type === "permission"\) \{[\s\S]*<PermissionCard perm=\{msg\} \/>/s, 'permission messages should render PermissionCard');
-  assert.match(chatContentBody, /<AssistantMessage message=\{msg\} isContiguous=\{isContiguous\} \/>/, 'assistant messages should render AssistantMessage');
+  assert.match(chatContentBody, /const pendingAssistantTurnMessageId =[\s\S]*state\.assistantTurnMessageId\s*\?\?\s*null/s, 'ChatShell should track the pending assistant turn message id');
+  assert.match(chatContentBody, /const isLiveStreamingAssistantTurn =[\s\S]*state\.assistantTurnPending[\s\S]*pendingAssistantTurnMessageId === messageId/s, 'ChatShell should identify the live assistant turn by either active stream or pending turn state');
+  assert.match(chatContentBody, /if \(isLiveStreamingAssistantTurn\) \{[\s\S]*messageNode = null;[\s\S]*\} else \{[\s\S]*<AssistantMessage message=\{msg\} isContiguous=\{isContiguous\} \/>/s, 'ChatShell should skip the in-flight assistant turn in the message list and let the live streaming card own it');
 });
 
 test('thinking bubble appears while AI is responding before assistant text arrives', () => {
@@ -78,7 +80,7 @@ test('streaming card is rendered at the bottom of the message list', () => {
   assert.match(
     chatContentBody,
     /<StreamingCard[\s\S]*isContiguous=\{[\s\S]*\}/s,
-    'streaming card should always be rendered in the message list footer',
+    'streaming card should still be rendered at the bottom of the message list',
   );
 });
 

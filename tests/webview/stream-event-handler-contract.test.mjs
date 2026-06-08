@@ -132,6 +132,17 @@ test('normalizePartType maps stepfinish/step_finish to "step-finish"', () => {
     assert.match(body, /return\s+["']step-finish["']/, 'must return "step-finish"');
 });
 
+test('normalizePartType maps stepstop/step_stop to "step-stop"', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function normalizePartType');
+    assert.ok(body, 'normalizePartType must exist');
+    assert.match(
+        body,
+        /raw\s*===\s*["']stepstop["'][\s\S]{1,60}raw\s*===\s*["']step_stop["']/,
+        'must handle stepstop and step_stop aliases',
+    );
+    assert.match(body, /return\s+["']step-stop["']/, 'must return "step-stop"');
+});
+
 test('normalizePartType maps toolcall/tool_call/tool-call to "tool"', () => {
     const body = extractFunctionBody(messageHandlerSource, 'function normalizePartType');
     assert.ok(body, 'normalizePartType must exist');
@@ -414,7 +425,7 @@ test("handleStreamEvent suppresses lifecycle-only message.updated no-op updates"
     assert.ok(body, 'handleStreamEvent must exist');
     assert.match(
         body,
-        /structuredKind === ["']lifecycle["'][\s\S]*suppressing lifecycle-only message\.updated/s,
+        /structuredKind === ["']lifecycle["'][\s\S]*suppressing lifecycle-only message update/s,
         'message.updated should explicitly suppress lifecycle-only no-op updates',
     );
     assert.match(
@@ -458,9 +469,8 @@ test('handleStreamEvent treats message.completed and session.completed as termin
 test('handleStreamEvent suppresses no-op user echo parts from re-arming loading state', () => {
     const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
     assert.ok(body, 'handleStreamEvent must exist');
-    assert.match(
-        body,
-        /suppressing no-op user echo part/,
+    assert.ok(
+        messageHandlerSource.includes('Stream: suppressing user echo part'),
         'user echo only part updates should be logged as suppressed',
     );
     assert.match(

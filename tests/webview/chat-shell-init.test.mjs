@@ -112,7 +112,7 @@ test('chat shell renders EmptyState only when the timeline is actually empty', (
 
   assert.match(
     contentBody,
-    /state\.messages\.length === 0[\s\S]*!state\.streaming[\s\S]*!isAiResponding[\s\S]*<EmptyState\s*\/>/s,
+    /state\.messages\.length === 0[\s\S]*!state\.streaming[\s\S]*!isAiResponding[\s\S]*<EmptyState\s/s,
     'EmptyState should render only when there are no real messages and no active stream',
   );
 });

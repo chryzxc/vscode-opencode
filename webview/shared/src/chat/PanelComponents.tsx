@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   AlertCircle,
   AlertTriangle,
@@ -250,6 +251,45 @@ function isQuickInputInteractiveEvent(event: InteractiveEvent): boolean {
     event.type === "question" ||
     event.type === "quick_actions" ||
     event.type === "confirm"
+  );
+}
+
+function getInteractiveEventDismissalKeys(event: InteractiveEvent): string[] {
+  const keys = new Set<string>();
+  const id = typeof event.id === "string" ? event.id.trim() : "";
+  if (id) {
+    keys.add(`id:${id}`);
+  }
+
+  const prompt =
+    event.type === "question" || event.type === "confirm"
+      ? event.question
+      : event.type === "quick_actions"
+        ? event.title
+        : event.type === "message"
+          ? event.message
+          : event.title;
+  const normalizedPrompt = (prompt || "").trim().toLowerCase();
+  if (normalizedPrompt) {
+    keys.add(`fallback:${event.type}:${normalizedPrompt}`);
+  }
+
+  return [...keys];
+}
+
+function filterDismissedInteractiveEvents(
+  events: InteractiveEvent[],
+  dismissedInteractiveEventKeys: Set<string>,
+): InteractiveEvent[] {
+  if (!Array.isArray(events) || events.length === 0 || dismissedInteractiveEventKeys.size === 0) {
+    return events;
+  }
+
+  return events.filter(
+    (event) =>
+      !getInteractiveEventDismissalKeys(event).some((key) =>
+        dismissedInteractiveEventKeys.has(key),
+      ),
   );
 }
 
@@ -1221,15 +1261,25 @@ export function ModelDropdown() {
   } = useAppState();
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const [selectedTab, setSelectedTab] = useState("All");
+  const [popoverStyle, setPopoverStyle] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+    placement: "top" | "bottom";
+  } | null>(null);
 
   // Close on outside click
   useEffect(() => {
     if (!modelDropdownOpen) return;
     const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
       if (
         containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
+        !containerRef.current.contains(target) &&
+        !(popoverRef.current && popoverRef.current.contains(target))
       ) {
         dispatch({ type: "SET_MODEL_DROPDOWN_OPEN", payload: false });
       }
@@ -1243,6 +1293,61 @@ export function ModelDropdown() {
     if (!modelDropdownOpen) {
       setSelectedTab("All");
     }
+  }, [modelDropdownOpen]);
+
+  useLayoutEffect(() => {
+    if (!modelDropdownOpen) {
+      return;
+    }
+
+    const updatePopoverBounds = () => {
+      const container = containerRef.current;
+      const popover = popoverRef.current;
+      if (!container) {
+        return;
+      }
+
+      const rect = container.getBoundingClientRect();
+      const viewportPadding = 12;
+      const gap = 8;
+      const popoverWidth = 288;
+      const left = Math.max(
+        viewportPadding,
+        Math.min(rect.left, window.innerWidth - popoverWidth - viewportPadding),
+      );
+      const availableAbove = Math.max(0, rect.top - viewportPadding);
+      const availableBelow = Math.max(0, window.innerHeight - rect.bottom - viewportPadding);
+      const measuredHeight = popover?.scrollHeight ?? 320;
+      const desiredHeight = Math.min(Math.max(measuredHeight, 180), 420);
+      const topCanFit = availableAbove >= desiredHeight + gap;
+      const bottomCanFit = availableBelow >= desiredHeight + gap;
+      const placement =
+        topCanFit && !bottomCanFit ? "top" : bottomCanFit && !topCanFit ? "bottom" : availableAbove >= availableBelow ? "top" : "bottom";
+      const availableHeight =
+        placement === "top"
+          ? Math.max(180, availableAbove - gap)
+          : Math.max(180, availableBelow - gap);
+      const maxHeight = Math.min(desiredHeight, availableHeight);
+      const top =
+        placement === "top"
+          ? Math.max(viewportPadding, rect.top - gap - maxHeight)
+          : Math.min(window.innerHeight - viewportPadding - maxHeight, rect.bottom + gap);
+
+      setPopoverStyle({
+        top,
+        left,
+        width: Math.min(popoverWidth, window.innerWidth - viewportPadding * 2),
+        maxHeight,
+        placement,
+      });
+    };
+
+    updatePopoverBounds();
+    window.addEventListener("resize", updatePopoverBounds);
+
+    return () => {
+      window.removeEventListener("resize", updatePopoverBounds);
+    };
   }, [modelDropdownOpen]);
 
   const subscribedProviders = useMemo(() => {
@@ -1354,100 +1459,114 @@ export function ModelDropdown() {
         />
       </Button>
       {modelDropdownOpen && (
-        <div className="oc-popover absolute bottom-full left-0 z-30 mb-1.5 w-72 rounded-xl border border-oc-border bg-oc-panel shadow-xl overflow-hidden">
-          <div className="px-3 pt-3 pb-2 space-y-2">
-            <input
-              value={modelSearchQuery}
-              onChange={(e) =>
-                dispatch({ type: "SET_MODEL_SEARCH", payload: e.target.value })
-              }
-              placeholder="Search models..."
-              className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium outline-none focus:border-oc-accent transition-colors"
-            />
-            {subscribedProviders.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {["All", ...subscribedProviders].map((tab) => (
-                  <button
-                    key={tab}
-                    type="button"
-                    onClick={() => setSelectedTab(tab)}
-                    className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${selectedTab === tab
-                        ? "bg-oc-accent text-white"
-                        : "bg-oc-bg-soft oc-text-secondary hover:bg-oc-panel-soft hover:text-oc-text"
-                      }`}
-                  >
-                    {tab}
-                  </button>
+        createPortal(
+          popoverStyle ? (
+            <div
+              ref={popoverRef}
+              className="oc-popover fixed z-[120] overflow-hidden rounded-xl border border-oc-border bg-oc-panel shadow-xl flex flex-col"
+              style={{
+                top: `${popoverStyle.top}px`,
+                left: `${popoverStyle.left}px`,
+                width: `${popoverStyle.width}px`,
+                maxHeight: `${popoverStyle.maxHeight}px`,
+              }}
+            >
+              <div className="px-3 pt-3 pb-2 space-y-2">
+                <input
+                  value={modelSearchQuery}
+                  onChange={(e) =>
+                    dispatch({ type: "SET_MODEL_SEARCH", payload: e.target.value })
+                  }
+                  placeholder="Search models..."
+                  className="oc-popover-search w-full rounded-lg border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium outline-none focus:border-oc-accent transition-colors"
+                />
+                {subscribedProviders.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {["All", ...subscribedProviders].map((tab) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setSelectedTab(tab)}
+                        className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-wide transition-colors ${selectedTab === tab
+                            ? "bg-oc-accent text-white"
+                            : "bg-oc-bg-soft oc-text-secondary hover:bg-oc-panel-soft hover:text-oc-text"
+                          }`}
+                      >
+                        {tab}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto px-1.5 pb-1.5">
+                {[...grouped.entries()].map(([provider, models]) => (
+                  <div key={provider} className="mb-1">
+                    <div className="px-2.5 py-1 text-xs font-semibold uppercase tracking-widest oc-text-secondary opacity-60">
+                      {provider}
+                    </div>
+                    {models.map((model) => {
+                      const isCurrent =
+                        selectedModel?.providerID === model.providerID &&
+                        selectedModel?.modelID === model.modelID;
+                      return (
+                        <button
+                          key={`${model.providerID}-${model.modelID}`}
+                          type="button"
+                          className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
+                            isCurrent
+                              ? "bg-oc-accent-soft oc-popover-item-selected"
+                              : "oc-popover-item-not-selected"
+                          }`}
+                          onClick={() => {
+                            dispatch({
+                              type: "SET_SELECTED_MODEL",
+                              payload: {
+                                providerID: model.providerID,
+                                modelID: model.modelID,
+                              },
+                            });
+                            dispatch({
+                              type: "SET_MODEL_DROPDOWN_OPEN",
+                              payload: false,
+                            });
+                            vscode.postMessage({
+                              type: "selectModel",
+                              model: {
+                                providerID: model.providerID,
+                                modelID: model.modelID,
+                                providerName: model.providerName,
+                              },
+                            });
+                          }}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium truncate">
+                              {model.name}
+                            </span>
+                            {isCurrent && (
+                              <span className="text-xs font-medium text-oc-accent shrink-0">
+                                active
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs font-medium oc-text-secondary truncate mt-0.5">
+                            {model.modelID}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 ))}
+                {grouped.size === 0 && (
+                  <div className="px-2.5 py-4 text-center text-xs oc-text-secondary font-medium italic">
+                    No models found
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-          <div className="max-h-56 overflow-y-auto px-1.5 pb-1.5">
-            {[...grouped.entries()].map(([provider, models]) => (
-              <div key={provider} className="mb-1">
-                <div className="px-2.5 py-1 text-xs font-semibold uppercase tracking-widest oc-text-secondary opacity-60">
-                  {provider}
-                </div>
-                {models.map((model) => {
-                  const isCurrent =
-                    selectedModel?.providerID === model.providerID &&
-                    selectedModel?.modelID === model.modelID;
-                  return (
-                    <button
-                      key={`${model.providerID}-${model.modelID}`}
-                      type="button"
-                      className={`oc-popover-item w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
-                        isCurrent
-                          ? "bg-oc-accent-soft oc-popover-item-selected"
-                          : "oc-popover-item-not-selected"
-                      }`}
-                      onClick={() => {
-                        dispatch({
-                          type: "SET_SELECTED_MODEL",
-                          payload: {
-                            providerID: model.providerID,
-                            modelID: model.modelID,
-                          },
-                        });
-                        dispatch({
-                          type: "SET_MODEL_DROPDOWN_OPEN",
-                          payload: false,
-                        });
-                        vscode.postMessage({
-                          type: "selectModel",
-                          model: {
-                            providerID: model.providerID,
-                            modelID: model.modelID,
-                            providerName: model.providerName,
-                          },
-                        });
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-medium truncate">
-                          {model.name}
-                        </span>
-                        {isCurrent && (
-                          <span className="text-xs font-medium text-oc-accent shrink-0">
-                            active
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs font-medium oc-text-secondary truncate mt-0.5">
-                        {model.modelID}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-            {grouped.size === 0 && (
-              <div className="px-2.5 py-4 text-center text-xs oc-text-secondary font-medium italic">
-                No models found
-              </div>
-            )}
-          </div>
-        </div>
+            </div>
+          ) : null,
+          document.body,
+        )
       )}
     </div>
   );
@@ -1704,6 +1823,7 @@ export function InputWrapper() {
     commandsLoaded,
     attachments = [],
     interactiveEvents,
+    dismissedInteractiveEventKeys,
     contextUsagePct,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -1799,6 +1919,58 @@ export function InputWrapper() {
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const commandsRequestedRef = useRef(false);
   const suggestionsContainerRef = useRef<HTMLDivElement>(null);
+  const composerInteractiveEvents = useMemo(() => {
+    if (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) {
+      return filterDismissedInteractiveEvents(
+        interactiveEvents,
+        dismissedInteractiveEventKeys,
+      );
+    }
+
+    if (
+      streaming &&
+      Array.isArray(streaming.interactiveEvents) &&
+      streaming.interactiveEvents.length > 0
+    ) {
+      return filterDismissedInteractiveEvents(
+        streaming.interactiveEvents,
+        dismissedInteractiveEventKeys,
+      );
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      const role = (candidate.role ?? candidate.info?.role ?? "").toLowerCase();
+      if (role !== "assistant") {
+        continue;
+      }
+
+      if (
+        Array.isArray(candidate.interactiveEvents) &&
+        candidate.interactiveEvents.length > 0
+      ) {
+        return filterDismissedInteractiveEvents(
+          candidate.interactiveEvents,
+          dismissedInteractiveEventKeys,
+        );
+      }
+
+      const structured = candidate.structuredOutput ?? candidate.structured ?? (candidate.info as Record<string, unknown> | undefined)?.structuredOutput ?? (candidate.info as Record<string, unknown> | undefined)?.structured;
+      const structuredInteractiveEvents = structured &&
+        typeof structured === "object" &&
+        Array.isArray((structured as { interactiveEvents?: InteractiveEvent[] }).interactiveEvents)
+          ? ((structured as { interactiveEvents?: InteractiveEvent[] }).interactiveEvents as InteractiveEvent[])
+          : [];
+      if (structuredInteractiveEvents.length > 0) {
+        return filterDismissedInteractiveEvents(
+          structuredInteractiveEvents,
+          dismissedInteractiveEventKeys,
+        );
+      }
+    }
+
+    return [];
+  }, [interactiveEvents, streaming, messages, dismissedInteractiveEventKeys]);
 
   const filteredCommands = useMemo(() => {
     if (!slashTrigger) {
@@ -1891,7 +2063,7 @@ export function InputWrapper() {
   //
   // Even if the AI types the question in the chat bubble, we show the popup
   // here to make the call-to-action obvious and clickable.
-  const displayInteractiveEvents = interactiveEvents.filter(
+  const displayInteractiveEvents = composerInteractiveEvents.filter(
     isQuickInputInteractiveEvent,
   );
   const interactiveEventCount = displayInteractiveEvents.length;
@@ -1935,6 +2107,7 @@ export function InputWrapper() {
   const activeInteractiveEvent =
     displayInteractiveEvents[currentInteractiveIndex];
   const event = activeInteractiveEvent;
+  const showInteractivePopover = displayInteractiveEvents.length > 0;
   const currentInteractiveAnswered = Boolean(
     event?.id && pendingAnswers[event.id]?.text.trim(),
   );
@@ -2332,31 +2505,16 @@ export function InputWrapper() {
 
     // Dismiss all events that were part of this batch immediately to prevent stale popover UI.
     // Be defensive: some legacy/hydrated events may have missing/unstable IDs.
-    const respondedEventIds = new Set(batch.map((resp) => String(resp.eventId)));
-    const normalize = (value: string | undefined) => (value || "").trim().toLowerCase();
+    batch.forEach(({ eventId }) => {
+      dispatch({
+        type: "DISMISS_INTERACTIVE_EVENT",
+        payload: eventId,
+      });
+    });
+
     dispatch({
       type: "SET_INTERACTIVE_EVENTS",
-      payload: interactiveEvents.filter((item) => {
-        const itemId = String((item as { id?: string }).id ?? "");
-        if (itemId && respondedEventIds.has(itemId)) {
-          return false;
-        }
-        const itemPrompt =
-          item.type === "question" || item.type === "confirm"
-            ? item.question
-            : item.type === "quick_actions"
-              ? item.title || "Select an action"
-              : item.type === "message"
-                ? item.message || item.title || "Acknowledge"
-                : item.title || "";
-        const itemPromptNorm = normalize(itemPrompt);
-        const matchedByContent = batch.some(
-          (resp) =>
-            normalize(resp.eventType) === normalize(item.type) &&
-            normalize(resp.questionText) === itemPromptNorm,
-        );
-        return !matchedByContent;
-      }),
+      payload: interactiveEvents,
     });
 
     const sdkQuestionRequestIds = new Set(
@@ -2445,7 +2603,7 @@ export function InputWrapper() {
       <div
         className="oc-input-area"
       >
-        <QueueContainer />
+        {!showInteractivePopover && <QueueContainer />}
          {event && (
            <div className="mb-2 rounded-lg border border-oc-border-soft bg-[var(--oc-panel-soft)] px-3 py-2">
              <div className="mb-2 border-b border-oc-border-soft pb-1.5">
@@ -2705,12 +2863,30 @@ export function InputWrapper() {
                   ) : null}
                 </>
               )}
+
+              <div className="mt-3 rounded-lg border border-oc-border-soft bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.18em] oc-text-secondary">
+                      Current model
+                    </div>
+                    <div className="mt-0.5 text-[11px] leading-snug text-[var(--oc-text-soft)]">
+                      Pick the model for this answer before you submit.
+                    </div>
+                  </div>
+                  <div className="shrink-0">
+                    <ModelDropdown />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}
 
-        {/* Context chips */}
-        {(selectedFiles.length > 0 || selectedContexts.length > 0) && (
+        {!showInteractivePopover && (
+          <>
+            {/* Context chips */}
+            {(selectedFiles.length > 0 || selectedContexts.length > 0) && (
           <div className="oc-context-chips flex flex-wrap gap-1.5 mb-2">
             {selectedFiles.map((file) => (
               <div key={file} className="oc-chip">
@@ -2761,10 +2937,10 @@ export function InputWrapper() {
               );
             })}
           </div>
-        )}
+            )}
 
-        {/* Attachment chips */}
-        {attachments && attachments.length > 0 && (
+            {/* Attachment chips */}
+            {attachments && attachments.length > 0 && (
           <div className="oc-context-chips">
             {attachments.map((a) => (
               <div key={a.id} className="oc-chip oc-chip-removable">
@@ -2798,10 +2974,10 @@ export function InputWrapper() {
               </div>
             ))}
           </div>
-        )}
+            )}
 
-        {/* Main input box */}
-        <div className="oc-input-box">
+            {/* Main input box */}
+            <div className="oc-input-box">
           <Textarea
             ref={textareaRef}
             value={inputValue}
@@ -2928,8 +3104,8 @@ export function InputWrapper() {
             onPaste={handlePaste}
           />
 
-          {/* Slash command suggestions */}
-          {slashTrigger && (
+              {/* Slash command suggestions */}
+              {slashTrigger && (
             <div className="oc-suggestions" ref={suggestionsContainerRef}>
               {!commandsLoaded ? (
                 <div className="px-3 py-2 text-[11px] font-medium oc-text-secondary">
@@ -2969,10 +3145,10 @@ export function InputWrapper() {
                 </div>
               )}
             </div>
-          )}
+              )}
 
-          {/* File suggestions (legacy path) */}
-          {showFileSuggestions && fileSuggestions.length > 0 && !showMentionSuggestions && (
+              {/* File suggestions (legacy path) */}
+              {showFileSuggestions && fileSuggestions.length > 0 && !showMentionSuggestions && (
             <div className="oc-suggestions" ref={suggestionsContainerRef}>
               {fileSuggestions.map((suggestion, index) => (
                 <button
@@ -2988,10 +3164,10 @@ export function InputWrapper() {
                 </button>
               ))}
             </div>
-          )}
+              )}
 
-          {/* Mention suggestions (agents + files + MCP resources) */}
-          {showMentionSuggestions && mentionSuggestions.length > 0 && (
+              {/* Mention suggestions (agents + files + MCP resources) */}
+              {showMentionSuggestions && mentionSuggestions.length > 0 && (
             <div className="oc-suggestions" ref={suggestionsContainerRef}>
               {mentionSuggestions.map((item, index) => (
                 <button
@@ -3036,10 +3212,10 @@ export function InputWrapper() {
                 </button>
               ))}
             </div>
-          )}
+              )}
 
-          {/* Bottom toolbar */}
-          <div className="oc-toolbar">
+              {/* Bottom toolbar */}
+              <div className="oc-toolbar">
             {/* Unified controls cluster */}
             <div className="oc-toolbar-center">
               <AgentDropdown />
@@ -3082,8 +3258,10 @@ export function InputWrapper() {
                 </Button>
               ) : null}
             </div>
-          </div>
-        </div>
+              </div>
+            </div>
+          </>
+        )}
         <ImagePreviewModal
           isOpen={previewAttachmentSrc !== null}
           imageSrc={previewAttachmentSrc}

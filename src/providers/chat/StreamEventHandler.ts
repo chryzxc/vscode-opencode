@@ -93,6 +93,38 @@ export class StreamEventHandler {
     // Handle subagent updates
     if (properties?.subagentsDelta || enrichedEvent?.structured?.subagentsDelta) {
       const subagentUpdate = properties?.subagentsDelta || enrichedEvent?.structured?.subagentsDelta;
+
+      // Log the raw subagent data from the stream
+      this.logger.info('[SUBAGENT][STREAM] Raw subagent data received', {
+        hasSummaries: Boolean(subagentUpdate?.summariesByParentMessageId || subagentUpdate?.subagentsByParentMessageId),
+        hasDetails: Boolean(subagentUpdate?.detailsById || subagentUpdate?.subagentDetailsById),
+        sampleData: subagentUpdate ? {
+          summariesKeys: Object.keys(subagentUpdate.summariesByParentMessageId || subagentUpdate.subagentsByParentMessageId || {}).slice(0, 2),
+          detailsKeys: Object.keys(subagentUpdate.detailsById || subagentUpdate.subagentDetailsById || {}).slice(0, 2),
+          sampleSummary: subagentUpdate?.summariesByParentMessageId?.[Object.keys(subagentUpdate.summariesByParentMessageId || {})[0]]?.[0] ||
+                       subagentUpdate?.subagentsByParentMessageId?.[Object.keys(subagentUpdate.subagentsByParentMessageId || {})[0]]?.[0],
+          sampleDetail: subagentUpdate?.detailsById?.[Object.keys(subagentUpdate.detailsById || {})[0]] ||
+                      subagentUpdate?.subagentDetailsById?.[Object.keys(subagentUpdate.subagentDetailsById || {})[0]],
+        } : null,
+      });
+
+      // Log provider/model field presence in stream data
+      if (subagentUpdate?.detailsById || subagentUpdate?.subagentDetailsById) {
+        const detailsById = subagentUpdate.detailsById || subagentUpdate.subagentDetailsById;
+        const detailIds = Object.keys(detailsById);
+        for (const detailId of detailIds.slice(0, 3)) {
+          const detail = detailsById[detailId];
+          this.logger.info('[SUBAGENT][STREAM] Detail from stream', {
+            detailId,
+            hasProviderID: Boolean(detail?.providerID),
+            hasModelID: Boolean(detail?.modelID),
+            providerID: detail?.providerID,
+            modelID: detail?.modelID,
+            allKeys: detail ? Object.keys(detail) : [],
+          });
+        }
+      }
+
       await this.subagentPersistence.persistSubagentUpdateSnapshot(
         subagentUpdate,
         this.getCurrentSessionId(),

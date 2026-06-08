@@ -384,10 +384,9 @@ test('getDuration helper provides type-safe duration extraction', () => {
 
 test('AssistantMessage uses type-safe helpers instead of type assertions', () => {
   // Check that the AssistantMessage function exists
-  assert.match(
-    messageComponentsSource,
-    /export function AssistantMessage/,
-    'AssistantMessage function should exist'
+  assert.ok(
+    messageComponentsSource.includes('AssistantMessage'),
+    'AssistantMessage export should exist'
   );
 
   // Verify helpers are used in the source
@@ -410,9 +409,12 @@ test('AssistantMessage uses type-safe helpers instead of type assertions', () =>
   );
 
   // Should NOT have unsafe type assertions (checking for common patterns)
-  const assistantMessageSection = messageComponentsSource.match(
-    /export function AssistantMessage\([\s\S]*?^}/m
-  );
+  const assistantStart = messageComponentsSource.indexOf('export const AssistantMessage');
+  const assistantEnd = messageComponentsSource.indexOf('export const PermissionCard');
+  const assistantMessageSection =
+    assistantStart >= 0 && assistantEnd > assistantStart
+      ? [messageComponentsSource.slice(assistantStart, assistantEnd)]
+      : null;
 
   assert.ok(assistantMessageSection, 'Should find AssistantMessage function');
 
@@ -436,61 +438,53 @@ test('AssistantMessage uses type-safe helpers instead of type assertions', () =>
   );
 });
 
-test('StreamingCard visibility is enhanced for early display', () => {
-  const streamingCardBody = extractFunctionBody(
-    streamingComponentsSource,
-    'export function StreamingCard('
-  );
-
-  assert.ok(streamingCardBody, 'StreamingCard function body should be extracted');
-
-  // Verify enhanced visibility conditions
+test('StreamingCard visibility stays mounted for live activity', () => {
+  // Verify enhanced visibility conditions in the full source (works with memo wrapper)
   assert.match(
-    streamingCardBody,
+    streamingComponentsSource,
     /const visible = useMemo/,
     'Should use useMemo for visibility calculation'
   );
 
   assert.match(
-    streamingCardBody,
-    /\[streaming, isProcessing, isContiguous\]/,
-    'Should use useMemo with correct dependencies including isContiguous'
+    streamingComponentsSource,
+    /\[streaming\]/,
+    'Should use useMemo with streaming-only dependencies'
   );
 
   assert.match(
-    streamingCardBody,
+    streamingComponentsSource,
     /if\s*\(\s*!streaming\s*\)/,
     'Should check streaming exists'
   );
 
-  // Check for multiple visibility conditions
-  assert.match(
-    streamingCardBody,
-    /streaming\.isActive/,
-    'Should check streaming.isActive'
+  assert.doesNotMatch(
+    streamingComponentsSource,
+    /step\.partType === "step-finish" \|\| step\.partType === "step-stop"/,
+    'StreamingCard should not gate the whole wrapper on a terminal step marker'
   );
 
   assert.match(
-    streamingCardBody,
-    /streaming\.content\.length\s*>\s*0/,
-    'Should check if content exists'
+    streamingComponentsSource,
+    /streaming\.content\.trim\(\)\.length > 0/,
+    'Should still require visible assistant content'
   );
 
   assert.match(
-    streamingCardBody,
-    /isProcessing/,
-    'Should check isProcessing flag'
+    streamingComponentsSource,
+    /streaming\.reasoning\.trim\(\)\.length > 0/,
+    'Should still allow reasoning content once terminal'
   );
 
   assert.match(
-    streamingCardBody,
-    /streaming\.messageId/,
-    'Should check for messageId'
+    streamingComponentsSource,
+    /streaming\.edits\.length > 0/,
+    'Should still allow edit metadata once terminal'
   );
 
   // Verify early return for visibility
   assert.match(
-    streamingCardBody,
+    streamingComponentsSource,
     /if\s*\(\s*!visible\s*\|\|\s*!streaming\s*\)\s*return\s*null/,
     'Should return null early if not visible or no streaming state'
   );
@@ -513,8 +507,8 @@ test('ChatViewProvider has logger with error handling', () => {
 
   assert.match(
     constructorBody,
-    /this\.logger\s*=\s*createLogger\(['"]ChatViewProvider['"]\)/,
-    'Logger should be initialized in constructor'
+    /this\.logger\s*=\s*createLogger\(LoggingCategories\.CHAT_VIEW\)/,
+    'Logger should be initialized in constructor with the CHAT_VIEW category'
   );
 
   // Verify stream event logging has error handling

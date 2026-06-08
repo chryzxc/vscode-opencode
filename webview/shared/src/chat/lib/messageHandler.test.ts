@@ -472,6 +472,29 @@ describe('normalizeMessage - structuredOutput handling', () => {
     );
   });
 
+  it('should prefer explicit assistant text parts over top-level content when parts are present', () => {
+    const inputMessage: Message = {
+      id: 'msg-part-precedence',
+      role: 'assistant',
+      content: 'Top-level flattened content that should not win',
+      parts: [
+        {
+          type: 'text',
+          text: 'Canonical assistant answer from a text part.',
+        },
+      ],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should return a message');
+    assert.strictEqual(
+      result?.content,
+      'Canonical assistant answer from a text part.',
+      'assistant text parts should win over flattened top-level content',
+    );
+  });
+
   it('should replace long leaked draft content with the canonical structured question prompt', () => {
     const inputMessage: Message = {
       id: 'msg-question-long-leak',

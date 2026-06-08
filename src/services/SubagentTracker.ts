@@ -1353,6 +1353,18 @@ export class SubagentTracker {
         this.latestParentMessageBySessionId.get(parentSessionId) ||
         `orphan-${childSessionId}`;
       detailId = `orphan:${parentSessionId}:${childSessionId}`;
+
+      // Log info object to check for provider/model fields
+      console.log('[SUBAGENT][SESSION_CREATED] Info object keys:', {
+        infoKeys: info ? Object.keys(info) : [],
+        hasProviderID: Boolean(info?.providerID),
+        hasModelID: Boolean(info?.modelID),
+        providerID: info?.providerID,
+        modelID: info?.modelID,
+        agentId: info?.agentId,
+        allInfo: info,
+      });
+
       const orphanDetail: SubagentDetail = {
         id: detailId,
         parentSessionId,
@@ -1361,6 +1373,8 @@ export class SubagentTracker {
         status: "orphaned",
         latestActivity: "Child session created",
         startedAt: asNumber(asRecord(info.time)?.created) ?? createdAt,
+        providerID: asString(info.providerID) || undefined,
+        modelID: asString(info.modelID) || undefined,
         references: [],
         thinkingEvents: [],
         conversationEvents: [],

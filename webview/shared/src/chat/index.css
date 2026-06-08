@@ -1236,6 +1236,8 @@ body {
   color: var(--oc-text);
   font-size: 13px;
   line-height: 1.55;
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 /* ── Avatar ──────────────────────────────────────────────────────────────── */

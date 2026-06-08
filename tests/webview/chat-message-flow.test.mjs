@@ -160,8 +160,13 @@ test('AssistantMessage suppresses duplicate response text when it matches displa
   );
   assert.match(
     messageSource,
-    /const\s+showResponseSection\s*=\s*hasVisibleResponseBody\s*\|\|\s*!!plan/,
-    'AssistantMessage should not render an empty response card after duplicate text is suppressed',
+    /const\s+hasReasoningLeakOverlap\s*=\s*useMemo\([\s\S]*responseBodyLikelyLeaksReasoning\(effectiveResponseContent,\s*displayEvents\)[\s\S]*\);/,
+    'AssistantMessage should derive a cheap leak guard from the displayed reasoning rows',
+  );
+  assert.match(
+    messageSource,
+    /const\s+showResponseSection\s*=\s*[\s\S]*!\s*isAborted[\s\S]*\(hasVisibleResponseBody\s*\|\|\s*shouldShowPlanCard\)[\s\S]*\(!isLiveStream\s*\|\|\s*hasAssistantFinishSignal\)[\s\S]*\(!isLiveStream\s*\|\|\s*\(!hasActiveTimelineWork[\s\S]*!hasReasoningLeakOverlap\)\)/,
+    'AssistantMessage should hide the response section while any timeline work is still pending or the rendered assistant body overlaps the reasoning leak',
   );
   assert.match(
     messageSource,
@@ -175,6 +180,19 @@ test('Assistant responses include dedicated enter transition classes', () => {
   assert.match(messageSource, /className=\{`oc-message-enter \$\{responseEnterClass\}/, 'AssistantMessage container should include response enter class');
   assert.match(chatCssSource, /\.oc-assistant-response-enter\s*\{[\s\S]*assistant-response-in/, 'chat css should define animation for completed assistant responses');
   assert.match(chatCssSource, /\.oc-assistant-streaming-enter\s*\{[\s\S]*assistant-streaming-in/, 'chat css should define animation for streaming assistant responses');
+});
+
+test('live reasoning stays out of the assistant response card while streaming', () => {
+  assert.match(
+    messageSource,
+    /const\s+thoughtItems\s*=\s*useMemo\(\s*\(\)\s*=>\s*streaming\s*\?\s*\(\s*streaming\.isActive\s*&&\s*!hasAssistantFinishSignal\s*\?\s*\[\]\s*:\s*thoughtItemsFromStreaming\(streaming\)\s*\)\s*:\s*thoughtItemsFromMessage\(message\)/s,
+    'AssistantMessage should suppress live reasoning items until the assistant finish signal exists',
+  );
+  assert.match(
+    messageSource,
+    /const\s+hasAssistantFinishSignal\s*=\s*streaming\?\.hasAssistantFinishSignal\s*===\s*true;/,
+    'AssistantMessage should read the explicit assistant-finish signal from streaming state',
+  );
 });
 
 test('assistant header is responsive on small screens for agent/model/metrics rail', () => {

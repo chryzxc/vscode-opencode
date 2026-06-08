@@ -13,9 +13,10 @@ export function isProcessingInCurrentSession(
     !Array.isArray(processingSessionIds) ||
     processingSessionIds.length === 0
   ) {
-    // If processing is global/legacy and we have no session mapping yet, do not
-    // assume this session is active.
-    return false;
+    // FIX: If processing is active but we have no session mapping yet, show loading state
+    // This prevents missing loading indicators during initial processing or when
+    // processingSessionIds hasn't been updated yet
+    return isProcessing;
   }
   return processingSessionIds.includes(currentSessionId);
 }

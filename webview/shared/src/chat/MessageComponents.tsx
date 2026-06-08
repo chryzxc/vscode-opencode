@@ -1153,6 +1153,32 @@ function hasPendingStreamingSteps(streaming: StreamingState): boolean {
   return false;
 }
 
+function stripReasoningFromContent(content: string, reasoning: string): string {
+  if (!reasoning || !content) {
+    return content;
+  }
+
+  const contentNorm = content.replace(/\s+/g, ' ').trim();
+  const reasoningNorm = reasoning.replace(/\s+/g, ' ').trim();
+
+  if (contentNorm === reasoningNorm) {
+    return '';
+  }
+
+  if (contentNorm.length > reasoningNorm.length && contentNorm.includes(reasoningNorm)) {
+    const idx = contentNorm.indexOf(reasoningNorm);
+    const before = contentNorm.slice(0, idx).trim();
+    const after = contentNorm.slice(idx + reasoningNorm.length).trim();
+    return [before, after].filter(Boolean).join(' ');
+  }
+
+  if (reasoningNorm.length > contentNorm.length && reasoningNorm.includes(contentNorm)) {
+    return '';
+  }
+
+  return content;
+}
+
 function getMessageContent(
   message?: Message,
   streaming?: StreamingState,
@@ -1177,10 +1203,10 @@ function getMessageContent(
       return '';
     }
 
-    // CRITICAL: If reasoning events are active and streaming is in progress,
-    // completely block content from going to the AI final response component.
-    // Reasoning should only appear in the activity timeline, not in the response body.
-    if (streaming.isActive && hasReasoningEvents) {
+    // CRITICAL: While reasoning is active, only suppress the body when there is
+    // no actual assistant text yet. This keeps live reasoning out of the
+    // response body while still allowing trusted assistant text to render.
+    if (streaming.isActive && hasReasoningEvents && content.trim().length === 0) {
       return '';
     }
 
@@ -1188,6 +1214,25 @@ function getMessageContent(
     // while steps are still actively pending.
     if (streaming.isActive && hasPendingStreamingSteps(streaming)) {
       return '';
+    }
+
+    const reasoningText = (streaming.reasoning || '').trim();
+    if (reasoningText.length > 0 && content.trim().length > 0) {
+      const stripped = stripReasoningFromContent(content, reasoningText);
+      if (stripped !== content) {
+        return stripped;
+      }
+    }
+    const reasoningEvents = streaming.reasoningEvents;
+    if (Array.isArray(reasoningEvents) && reasoningEvents.length > 0 && content.trim().length > 0) {
+      const eventTexts = reasoningEvents.map((e: { text?: string }) => (e.text || '').trim()).filter(Boolean);
+      if (eventTexts.length > 0) {
+        const joinedReasoning = eventTexts.join(' ');
+        const stripped = stripReasoningFromContent(content, joinedReasoning);
+        if (stripped !== content) {
+          return stripped;
+        }
+      }
     }
 
     return content;
@@ -2527,6 +2572,54 @@ type DisplayEvent = {
   updateCount: number;
 };
 
+function reasoningLeakSummariesFromDisplayEvents(
+  displayEvents: DisplayEvent[],
+): string[] {
+  if (!Array.isArray(displayEvents) || displayEvents.length === 0) {
+    return [];
+  }
+
+  const summaries: string[] = [];
+  for (const event of displayEvents) {
+    if (event.kind !== "reasoning") {
+      continue;
+    }
+    const summary = event.summary?.trim();
+    if (!summary) {
+      continue;
+    }
+    summaries.push(summary);
+  }
+  return summaries;
+}
+
+function responseBodyLikelyLeaksReasoning(
+  responseBody: string,
+  displayEvents: DisplayEvent[],
+): boolean {
+  const normalizedBody = normalizeComparableText(responseBody);
+  if (!normalizedBody) {
+    return false;
+  }
+
+  const reasoningSummaries = reasoningLeakSummariesFromDisplayEvents(displayEvents);
+  if (reasoningSummaries.length === 0) {
+    return false;
+  }
+
+  for (const summary of reasoningSummaries) {
+    const normalizedSummary = normalizeComparableText(summary);
+    if (!normalizedSummary) {
+      continue;
+    }
+    if (normalizedBody.includes(normalizedSummary)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function sourceFromThoughtKey(
   key: string,
 ): "stream" | "final" | "raw_debug" | undefined {
@@ -2556,6 +2649,16 @@ function subagentModelLabel(
   subagent: SubagentSummary,
   detail?: SubagentDetail,
 ): string {
+  console.log('[SUBAGENT][RENDER] subagentModelLabel called with data', {
+    subagentId: subagent.id,
+    providerID: subagent.providerID,
+    modelID: subagent.modelID,
+    agentId: subagent.agentId,
+    status: subagent.status,
+    hasDetail: !!detail,
+    detailProviderID: detail?.providerID,
+    detailModelID: detail?.modelID,
+  });
   const provider = subagent.providerID || detail?.providerID;
   const model = subagent.modelID || detail?.modelID;
   if (provider && model) {
@@ -2725,6 +2828,16 @@ function SubagentsInlineCard({
               const detail = subagentDetailsById[subagent.id] as
                 | SubagentDetail
                 | undefined;
+
+              console.log('[SUBAGENT][RENDER] Rendering subagent card', {
+                subagentId: subagent.id,
+                hasDetail: !!detail,
+                subagentProviderID: subagent.providerID,
+                subagentModelID: subagent.modelID,
+                detailProviderID: detail?.providerID,
+                detailModelID: detail?.modelID,
+              });
+
               const resolvedStatus = resolveSubagentStatus(subagent, detail);
               const hasTerminalStopMarker = !!(
                 detail &&
@@ -3750,6 +3863,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     streaming?.isActive && rawContent.trim().length === 0
       ? stickyStreamingContentRef.current.content
       : rawContent;
+  const hasAssistantFinishSignal =
+    streaming?.hasAssistantFinishSignal === true;
+  const hasActiveReasoningPart = streaming?.inReasoningPart === true;
+  const hasTerminalStepSignal =
+    streaming?.hasTerminalStepSignal === true;
   const liveInteractivePrompt = useMemo(
     () => questionPromptFromInteractiveEvents(interactiveEvents),
     [interactiveEvents],
@@ -3764,9 +3882,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const thoughtItems = useMemo(
     () =>
       streaming
-        ? thoughtItemsFromStreaming(streaming)
+        ? (streaming.isActive && !hasAssistantFinishSignal
+            ? []
+            : thoughtItemsFromStreaming(streaming))
         : thoughtItemsFromMessage(message),
-    [streaming, message],
+    [streaming, message, hasAssistantFinishSignal],
   );
   const progressItems = useMemo(
     () =>
@@ -3789,6 +3909,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const displayEvents = useMemo(
     () => buildDisplayEvents(timelineBlocks, message, isStreamingActive),
     [timelineBlocks, message, isStreamingActive],
+  );
+  const hasPendingReasoningDisplayEvent = useMemo(
+    () =>
+      displayEvents.some(
+        (event) => event.kind === "reasoning" && event.status === "pending",
+      ),
+    [displayEvents],
   );
   const info = message?.info;
   const messageRec = asRecord(message);
@@ -4432,7 +4559,98 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const markdownBodyClass = isLiveStreamingCard
     ? "w-full max-w-none"
     : "w-full";
-  const showResponseSection = !isAborted && (hasVisibleResponseBody || shouldShowPlanCard);
+  const isLiveStream = !!streaming?.isActive;
+  const hasReasoningLeakOverlap = useMemo(
+    () =>
+      isLiveStream &&
+      hasVisibleResponseBody &&
+      responseBodyLikelyLeaksReasoning(effectiveResponseContent, displayEvents),
+    [displayEvents, effectiveResponseContent, hasVisibleResponseBody, isLiveStream],
+  );
+  const showResponseSection =
+    !isAborted &&
+    (hasVisibleResponseBody || shouldShowPlanCard) &&
+    (!isLiveStream || hasAssistantFinishSignal) &&
+    (!isLiveStream ||
+      (!hasActiveTimelineWork &&
+        !hasActiveReasoningPart &&
+        !hasPendingReasoningDisplayEvent &&
+        !hasReasoningLeakOverlap));
+
+  const preRenderDebug = useMemo(() => {
+    if (!config.debug.showPreRenderDebug) return null;
+    const streamingContent = streaming?.content || '';
+    const streamingReasoning = streaming?.reasoning || '';
+    const reasoningEvents = streaming?.reasoningEvents || [];
+    const reasoningEventSummaries = reasoningEvents.map((e: ReasoningEvent) =>
+      typeof e?.text === 'string' ? e.text.slice(0, 120) : ''
+    );
+    const displayReasoningSummaries = displayEvents
+      .filter((e) => e.kind === 'reasoning')
+      .map((e) => (e.summary || '').slice(0, 120));
+    const streamReasoningInContent = streamingContent && streamingReasoning
+      ? streamingContent.includes(streamingReasoning) || streamingReasoning.includes(streamingContent)
+      : false;
+    const effectiveContentHasReasoning = effectiveResponseContent && streamingReasoning
+      ? effectiveResponseContent.includes(streamingReasoning) || streamingReasoning.includes(effectiveResponseContent)
+      : false;
+    return {
+      messageId: messageId || '(none)',
+      isLiveStream,
+      streaming: {
+        isActive: streaming?.isActive || false,
+        content: streamingContent.slice(0, 500),
+        contentLen: streamingContent.length,
+        reasoning: streamingReasoning.slice(0, 500),
+        reasoningLen: streamingReasoning.length,
+        reasoningEventsCount: reasoningEvents.length,
+        reasoningEventSummaries,
+        inReasoningPart: streaming?.inReasoningPart || false,
+        hasRenderableContent: streaming?.hasRenderableContent || false,
+        hasAssistantFinishSignal: String(hasAssistantFinishSignal),
+        hasTerminalStepSignal: String(hasTerminalStepSignal),
+      },
+      filtered: {
+        rawContent: rawContent.slice(0, 500),
+        rawContentLen: rawContent.length,
+        content: content.slice(0, 500),
+        contentLen: content.length,
+        effectiveResponseContent: effectiveResponseContent.slice(0, 500),
+        effectiveResponseContentLen: effectiveResponseContent.length,
+      },
+      display: {
+        displayEventsCount: displayEvents.length,
+        displayReasoningSummaries,
+        thoughtItemsCount: thoughtItems.length,
+        hasActiveTimelineWork: String(hasActiveTimelineWork),
+        hasActiveReasoningPart: String(hasActiveReasoningPart),
+        hasPendingReasoningDisplayEvent: String(hasPendingReasoningDisplayEvent),
+      },
+      leakDetection: {
+        hasReasoningLeakOverlap: String(hasReasoningLeakOverlap),
+        streamReasoningInContent: String(streamReasoningInContent),
+        effectiveContentHasReasoning: String(effectiveContentHasReasoning),
+      },
+      rendering: {
+        showResponseSection: String(showResponseSection),
+        hasVisibleResponseBody: String(hasVisibleResponseBody),
+        hasPrimaryResponseBody: String(hasPrimaryResponseBody),
+        isAborted: String(isAborted),
+      },
+    };
+  }, [
+    messageId, isLiveStream, streaming, rawContent, content,
+    effectiveResponseContent, hasAssistantFinishSignal, hasTerminalStepSignal,
+    hasActiveTimelineWork, hasActiveReasoningPart, hasPendingReasoningDisplayEvent,
+    hasReasoningLeakOverlap, showResponseSection, hasVisibleResponseBody,
+    hasPrimaryResponseBody, isAborted, displayEvents, thoughtItems,
+  ]);
+
+  useEffect(() => {
+    if (preRenderDebug) {
+      logger.info('[PRE-RENDER-DEBUG]', preRenderDebug);
+    }
+  }, [preRenderDebug]);
   const responseSectionClass = hasResponseContent
     ? "rounded-md border border-oc-border-soft bg-background p-3.5 shadow-sm"
     : "p-0 border-0 bg-transparent shadow-none";
@@ -5194,6 +5412,26 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                 )} */}
 
+              {config.debug.showPreRenderDebug && preRenderDebug && (
+                <div
+                  data-assistant-section="pre-render-debug"
+                  className={
+                    hasPrimaryResponseBody
+                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
+                      : undefined
+                  }
+                >
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                      Pre-Render Data (Debug)
+                    </div>
+                  </div>
+                  <pre className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
+                    {JSON.stringify(preRenderDebug, null, 2)}
+                  </pre>
+                </div>
+              )}
+
               {showRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
@@ -5949,21 +6187,25 @@ export const AssistantMessage = memo(function AssistantMessage({
   message,
   streaming,
   isContiguous,
+  interactiveEvents,
+  messages,
+  currentSessionId,
+  subagentsByParentMessageId,
+  subagentDetailsById,
+  availableAgents,
+  todoItems,
 }: {
   message?: Message;
   streaming?: StreamingState;
   isContiguous?: boolean;
+  interactiveEvents: AppState["interactiveEvents"];
+  messages: Message[];
+  currentSessionId: AppState["currentSessionId"];
+  subagentsByParentMessageId: AppState["subagentsByParentMessageId"];
+  subagentDetailsById: AppState["subagentDetailsById"];
+  availableAgents: AppState["availableAgents"];
+  todoItems?: AppState["todoItems"];
 }) {
-  const {
-    interactiveEvents,
-    messages,
-    currentSessionId,
-    subagentsByParentMessageId,
-    subagentDetailsById,
-    availableAgents,
-    todoItems = [],
-  } = useAppState();
-
   return (
     <AssistantMessageInner
       message={message}
@@ -5979,7 +6221,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     />
   );
 });
-export function PermissionCard({ perm }: { perm: unknown }) {
+export const PermissionCard = memo(function PermissionCard({ perm }: { perm: unknown }) {
   const label = typeof perm === "string" ? perm : JSON.stringify(perm);
   return (
     <div className="oc-message-enter mb-5 px-4">
@@ -5998,7 +6240,7 @@ export function PermissionCard({ perm }: { perm: unknown }) {
       </div>
     </div>
   );
-}
+});
 
 export function ErrorBanner({
   message,
@@ -6123,22 +6365,27 @@ export function InfoBanner({ message, error }: InfoBannerProps) {
   );
 }
 
-export function ThinkingBubble() {
+export const ThinkingBubble = memo(function ThinkingBubble() {
   return (
     <div className="mb-4 px-4">
       <ThinkingStatusTicker className="pl-1 oc-thinking-status" />
     </div>
   );
-}
+});
 
-export function EmptyState() {
-  const {
-    serverStatus,
-    serverError,
-    receivedInitState,
-    currentSessionId,
-    messagesBySessionId,
-  } = useAppState();
+export const EmptyState = memo(function EmptyState({
+  serverStatus,
+  serverError,
+  receivedInitState,
+  currentSessionId,
+  messagesBySessionId,
+}: {
+  serverStatus: AppState["serverStatus"];
+  serverError?: string;
+  receivedInitState: AppState["receivedInitState"];
+  currentSessionId: AppState["currentSessionId"];
+  messagesBySessionId: AppState["messagesBySessionId"];
+}) {
   const iconUri =
     typeof document !== "undefined"
       ? document.getElementById("root")?.dataset.opencodeIconUri
@@ -6219,7 +6466,7 @@ export function EmptyState() {
       </div>
     </div>
   );
-}
+});
 
 export function MessageStatus({
   active,

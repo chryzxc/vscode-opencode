@@ -5462,28 +5462,27 @@ export class ChatViewProvider
     if (!message) return "";
 
     let rawText = "";
-    if (typeof message.content === "string" && message.content.trim()) {
-      rawText = message.content.trim();
-    } else if (typeof message.text === "string" && message.text.trim()) {
-      rawText = message.text.trim();
-    } else if (Array.isArray(message.parts)) {
+    if (Array.isArray(message.parts)) {
       rawText = message.parts
         .map((part: any) => {
           if (!part || typeof part !== "object") return "";
-          if (
-            part.type === "reasoning" ||
-            part.type === "thinking" ||
-            part.type === "thought" ||
-            typeof part.reasoning !== "undefined" ||
-            typeof part.thought !== "undefined" ||
-            typeof part.thinking !== "undefined"
-          ) {
+          if (!this.isRenderableTextPart(part)) {
             return "";
           }
-          return (part.text || part.content || "").toString();
+          return (part.text || part.content || part.message || "").toString();
         })
         .join("")
         .trim();
+    }
+
+    if (!rawText && typeof message.structuredOutput?.message === "string") {
+      rawText = message.structuredOutput.message.trim();
+    }
+
+    if (!rawText && typeof message.content === "string" && message.content.trim()) {
+      rawText = message.content.trim();
+    } else if (!rawText && typeof message.text === "string" && message.text.trim()) {
+      rawText = message.text.trim();
     }
 
     if (this.isLikelyToolCallTranscript(rawText)) {

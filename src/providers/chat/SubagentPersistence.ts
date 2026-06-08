@@ -245,6 +245,18 @@ export class SubagentPersistence {
         normalized.timelineEvents = [];
       }
 
+      // Log what provider/model data is available
+      this.logger.info('[SUBAGENT][PERSIST] Extracting subagent from message', {
+        id,
+        hasProviderID: Boolean(normalized.providerID),
+        hasModelID: Boolean(normalized.modelID),
+        hasAgentId: Boolean(normalized.agentId),
+        providerID: normalized.providerID,
+        modelID: normalized.modelID,
+        agentId: normalized.agentId,
+        originalKeys: Object.keys(subagent),
+      });
+
       summaries.push({
         id,
         parentSessionId,

@@ -17,6 +17,12 @@ export const config = {
      * @default false
      */
     disableLogs: true,
+    /**
+     * Show pre-render debug panel showing data fed into the AI response card
+     * (helps debug reasoning leaks into response content)
+     * @default false
+     */
+    showPreRenderDebug: false,
   },
 } as const;
 

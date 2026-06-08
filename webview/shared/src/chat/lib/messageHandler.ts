@@ -793,6 +793,9 @@ function normalizePartType(value: unknown): string {
   if (raw === "stepstart" || raw === "step_start") {
     return "step-start";
   }
+  if (raw === "stepstop" || raw === "step_stop") {
+    return "step-stop";
+  }
   if (raw === "stepfinish" || raw === "step_finish") {
     return "step-finish";
   }
@@ -805,7 +808,7 @@ function normalizePartType(value: unknown): string {
 function isTerminalProgressPart(part: UnknownRecord, partType: string): boolean {
   // Terminal progress parts are activity snapshots, not proof that the model is
   // still generating. Late edit/tool completions can arrive after the final text.
-  if (partType === "step-finish") {
+  if (partType === "step-finish" || partType === "step-stop") {
     return true;
   }
   const stateObj = asRecord(part.state);
@@ -3363,6 +3366,10 @@ function matchesStreamingReasoningLeak(
     return false;
   }
 
+  if (hasDuplicateTokenPattern(contentTokens)) {
+    return true;
+  }
+
   const reasoningCandidates = [
     asString(streamingState?.reasoning),
     ...(Array.isArray(streamingState?.reasoningEvents)
@@ -3459,19 +3466,15 @@ function maybeInjectStreamingInteractiveContext(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
   events: InteractiveEvent[],
-): void {
+): string | null {
   if (!Array.isArray(events) || events.length === 0) {
-    return;
+    return null;
   }
 
   const streamingState = getState().streaming;
   const currentContent = asString(streamingState?.content);
   const hasRenderableContent = !!streamingState?.hasRenderableContent;
   const latestUserText = latestUserMessageText(getState());
-  // Lock: if we already have trusted assistant text, only replace it when the
-  // existing body is clearly low-signal (placeholder/echo/reasoning leak). If we
-  // do not have trusted text yet, always inject synthesized question context so
-  // the assistant bubble appears together with the question popover.
   if (
     hasRenderableContent &&
     !shouldOverrideStreamingContentWithInteractivePrompt(
@@ -3480,18 +3483,20 @@ function maybeInjectStreamingInteractiveContext(
       streamingState,
     )
   ) {
-    return;
+    return null;
   }
 
   const synthesized = synthesizeQuestionContextMessage(events);
   if (!synthesized) {
-    return;
+    return null;
   }
 
   dispatch({
     type: 'UPDATE_STREAMING_CONTENT',
     payload: { content: synthesized, append: false, renderable: true },
   });
+
+  return synthesized;
 }
 
 function inferredStepTitle(part: UnknownRecord): string {
@@ -3532,6 +3537,9 @@ function inferredStepTitle(part: UnknownRecord): string {
   }
   if (partType === "step-finish") {
     return "Finishing step";
+  }
+  if (partType === "step-stop") {
+    return "Stopping step";
   }
   if (partType === "patch") {
     return "Applying patch";
@@ -3865,26 +3873,65 @@ function extractRenderableAssistantTextForHydration(message: Message): string {
   if (!rec) {
     return "";
   }
+  const messageId =
+    asString(asRecord(rec.info)?.id) || asString((rec as UnknownRecord).id) || null;
+  const role = asString(rec.role) || asString(asRecord(rec.info)?.role) || null;
   const canonicalStructuredMessage = getCanonicalStructuredMessageText(message);
   if (canonicalStructuredMessage) {
+    logger.info("[MESSAGE-HANDLER-TRACE] Hydration assistant text selected from structured payload", {
+      messageId,
+      role,
+      source: "structured.message",
+      preview: previewForLog(canonicalStructuredMessage),
+      partsCount: Array.isArray(rec.parts) ? rec.parts.length : 0,
+    });
     return canonicalStructuredMessage;
   }
 
   if (typeof rec.content === "string" && rec.content.trim()) {
     const content = rec.content.trim();
-    if (!isReasoningLeakCandidateForHydration(content, message, rec.parts)) {
+    const isLeakCandidate = isReasoningLeakCandidateForHydration(content, message, rec.parts);
+    logger.info("[MESSAGE-HANDLER-TRACE] Hydration assistant text candidate from top-level content", {
+      messageId,
+      role,
+      source: "content",
+      preview: previewForLog(content),
+      length: content.length,
+      isReasoningLeakCandidate: isLeakCandidate,
+      partsCount: Array.isArray(rec.parts) ? rec.parts.length : 0,
+    });
+    if (!isLeakCandidate) {
       return content;
     }
   }
   if (typeof rec.text === "string" && rec.text.trim()) {
     const text = rec.text.trim();
-    if (!isReasoningLeakCandidateForHydration(text, message, rec.parts)) {
+    const isLeakCandidate = isReasoningLeakCandidateForHydration(text, message, rec.parts);
+    logger.info("[MESSAGE-HANDLER-TRACE] Hydration assistant text candidate from top-level text", {
+      messageId,
+      role,
+      source: "text",
+      preview: previewForLog(text),
+      length: text.length,
+      isReasoningLeakCandidate: isLeakCandidate,
+      partsCount: Array.isArray(rec.parts) ? rec.parts.length : 0,
+    });
+    if (!isLeakCandidate) {
       return text;
     }
   }
 
   const parts = Array.isArray(rec.parts) ? rec.parts : [];
-  return contentFromParts(parts);
+  const partsContent = contentFromParts(parts);
+  logger.info("[MESSAGE-HANDLER-TRACE] Hydration assistant text fallback selected from parts", {
+    messageId,
+    role,
+    source: "parts",
+    preview: previewForLog(partsContent),
+    length: partsContent.length,
+    partsCount: parts.length,
+  });
+  return partsContent;
 }
 
 function isCanonicalAssistantDisplayMessage(message: Message): boolean {
@@ -4031,7 +4078,20 @@ function comparableTokens(value: string): string[] {
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .map((token) => token.trim())
-    .filter((token) => token.length >= 3);
+    .filter((token) => token.length >= 2);
+}
+
+function hasDuplicateTokenPattern(tokens: string[]): boolean {
+  if (tokens.length < 4) {
+    return false;
+  }
+  let duplicateAdjacentCount = 0;
+  for (let i = 1; i < tokens.length; i += 1) {
+    if (tokens[i] === tokens[i - 1]) {
+      duplicateAdjacentCount += 1;
+    }
+  }
+  return duplicateAdjacentCount >= 2 && duplicateAdjacentCount / tokens.length > 0.2;
 }
 
 function shouldPreferStreamingContent(
@@ -4482,8 +4542,34 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     preferStreamingContent &&
     !streamingContentMatchesReasoning &&
     !hasCanonicalAssistantContent;
+  if (role === "assistant") {
+    logger.info("[MESSAGE-HANDLER-TRACE] Assistant message normalization candidate analysis", {
+      messageId: sourceMessageId,
+      role,
+      responseType: provisionalResponseType ?? null,
+      hasParts,
+      contentSelectedSource,
+      nonReasoningPartsContentPreview: previewForLog(nonReasoningPartsContent),
+      contentFromTopLevelPreview: previewForLog(contentFromTopLevel),
+      structuredMessagePreview: previewForLog(structuredMessage),
+      streamingContentPreview: previewForLog(streamingContent),
+      rawReasoningPreview: previewForLog(hasReasoningAfterDirect),
+      detachedReasoningPreview: previewForLog(detachedReasoningChunks.join("\n\n")),
+      hasRenderableStreamingContent,
+      preferStreamingContent,
+      hasCanonicalAssistantContent,
+      shouldUseStreamingContent,
+      streamingContentMatchesReasoning,
+      shouldSuppressStreamingFallbackForReasoningOnly,
+      normalizedStructuredOutputResponseType:
+        normalizedStructuredOutput?.responseType ?? null,
+      parsedRawDebugPartCount: parsedRawDebug.parts.length,
+      rawHasReasoning,
+      rawHasRenderableText,
+    });
+  }
   if (streaming && role === "assistant") {
-    streamDebug("Assistant message normalization decision", {
+    logger.info("[MESSAGE-HANDLER-TRACE] Assistant message normalization decision", {
       messageId: sourceMessageId,
       provisionalResponseType: provisionalResponseType ?? null,
       contentSelectedSource,
@@ -8436,6 +8522,10 @@ function handleStreamEvent(
         variant: state.thinkingLevel,
       },
     });
+    dispatch({
+      type: "SET_ASSISTANT_TURN_PENDING",
+      payload: { pending: true, messageId },
+    });
     dispatch({ type: "SET_PROCESSING", payload: true });
   }
 
@@ -8477,6 +8567,12 @@ function handleStreamEvent(
         },
       });
     }
+    if (!getState().assistantTurnPending) {
+      dispatch({
+        type: "SET_ASSISTANT_TURN_PENDING",
+        payload: { pending: true, messageId },
+      });
+    }
   }
 
   // Pattern-based system reminders must not depend on role field correctness.
@@ -8509,13 +8605,18 @@ function handleStreamEvent(
           type: "SET_INTERACTIVE_EVENTS",
           payload: questionEvents,
         });
-        maybeInjectStreamingInteractiveContext(
+        const injectedContent = maybeInjectStreamingInteractiveContext(
           dispatch,
           getState,
           questionEvents,
         );
         if (hasBlockingInteractiveEvents(questionEvents)) {
-          flushVisibleStreamingSnapshotToMessages(dispatch, getState);
+          const streamingNow = getState().streaming;
+          const streamingOverride = injectedContent && streamingNow
+            ? { ...streamingNow, content: injectedContent }
+            : null;
+          flushVisibleStreamingSnapshotToMessages(dispatch, getState, streamingOverride);
+          dispatch({ type: "FINISH_STREAMING" });
           dispatch({ type: "FINISH_STREAMING" });
           dispatch({ type: "SET_PROCESSING", payload: false });
         }
@@ -8571,10 +8672,18 @@ function handleStreamEvent(
       // isInReasoningPart is read before dispatch and may be stale; track the effective value locally
       // to prevent the first non-reasoning part after reasoning from being misrouted.
       let effectiveInReasoningPart = isInReasoningPart;
+
       if (isInReasoningPart && !isReasoning) {
         logger.debug(`Ending reasoning part sequence - current part type is ${currentPartType}`);
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: false } });
         effectiveInReasoningPart = false;
+      }
+
+      // CRITICAL FIX: When we detect a reasoning part, immediately set effectiveInReasoningPart to true
+      // This ensures the current part's processing uses the correct flag, preventing reasoning leak into main content
+      // This must happen AFTER the ending check above to avoid race conditions
+      if (isReasoning) {
+        effectiveInReasoningPart = true;
       }
 
       // Check for system message patterns early (before any content processing)
@@ -8624,6 +8733,7 @@ function handleStreamEvent(
         partType === "tool" ||
         partType === "step-start" ||
         partType === "step-finish" ||
+        partType === "step-stop" ||
         partType === "patch" ||
         partType === "subtask" ||
         partType === "agent";
@@ -8827,6 +8937,18 @@ function handleStreamEvent(
               dispatch({ type: "SET_PROCESSING", payload: true });
               break;
             }
+            const candidateContent = contentPatch.append
+              ? (streamingState?.content || '') + contentPatch.content
+              : contentPatch.content;
+            const candidateTokens = comparableTokens(candidateContent);
+            if (hasDuplicateTokenPattern(candidateTokens)) {
+              dispatch({
+                type: "UPDATE_STREAMING_REASONING",
+                payload: { reasoning: contentPatch.content, append: contentPatch.append },
+              });
+              dispatch({ type: "SET_PROCESSING", payload: true });
+              break;
+            }
             streamDebug("Stream: message part updated chunk", {
               messageId,
               eventType,
@@ -9015,17 +9137,18 @@ function handleStreamEvent(
             payload: toolInteractiveEvents,
           });
 
-          // NOTE: When the AI triggers a question via tool call (not structured JSON), no text
-          // content is generated — streaming.content is empty. Inject a synthesized context
-          // message so the chat bubble shows the question alongside the popover.
-          maybeInjectStreamingInteractiveContext(
+          const injectedContent = maybeInjectStreamingInteractiveContext(
             dispatch,
             getState,
             toolInteractiveEvents,
           );
 
           if (hasBlockingInteractiveEvents(toolInteractiveEvents)) {
-            flushVisibleStreamingSnapshotToMessages(dispatch, getState);
+            const streamingNow = getState().streaming;
+            const streamingOverride = injectedContent && streamingNow
+              ? { ...streamingNow, content: injectedContent }
+              : null;
+            flushVisibleStreamingSnapshotToMessages(dispatch, getState, streamingOverride);
             dispatch({ type: "FINISH_STREAMING" });
             dispatch({ type: "SET_PROCESSING", payload: false });
             break;
@@ -9088,10 +9211,8 @@ function handleStreamEvent(
         break;
       }
 
-      // A completed edit/tool can be the last activity timeline item. Keep the
-      // timeline update, but do not revive the loading indicator afterward.
       if (wasStreamInactiveAtPartStart && isTerminalProgressPart(part, partType)) {
-        dispatch({ type: "SET_PROCESSING", payload: false });
+        dispatch({ type: "SET_PROCESSING", payload: true });
         break;
       }
 
@@ -9156,13 +9277,17 @@ function handleStreamEvent(
           type: "SET_INTERACTIVE_EVENTS",
           payload: liveStructuredInteractiveEvents,
         });
-        maybeInjectStreamingInteractiveContext(
+        const injectedContent = maybeInjectStreamingInteractiveContext(
           dispatch,
           getState,
           liveStructuredInteractiveEvents,
         );
         if (liveHasBlockingInteractive && !finish) {
-          flushVisibleStreamingSnapshotToMessages(dispatch, getState);
+          const streamingNow = getState().streaming;
+          const streamingOverride = injectedContent && streamingNow
+            ? { ...streamingNow, content: injectedContent }
+            : null;
+          flushVisibleStreamingSnapshotToMessages(dispatch, getState, streamingOverride);
           dispatch({ type: "FINISH_STREAMING" });
           dispatch({ type: "SET_PROCESSING", payload: false });
           break;
@@ -9357,10 +9482,19 @@ function handleStreamEvent(
           terminalStatus,
         );
         if (finalized) {
-          dispatch({ type: "SET_STREAMING", payload: finalized });
+          dispatch({
+            type: "SET_STREAMING",
+            payload: {
+              ...finalized,
+              hasAssistantFinishSignal: true,
+            },
+          });
         }
+        dispatch({
+          type: "SET_ASSISTANT_TURN_PENDING",
+          payload: { pending: false, messageId: null },
+        });
         dispatch({ type: 'FINISH_STREAMING' });
-        dispatch({ type: 'SET_PROCESSING', payload: false });
       } else {
         dispatch({ type: 'SET_PROCESSING', payload: true });
       }
@@ -9371,6 +9505,10 @@ function handleStreamEvent(
       logger.debug(`Processing error event`, {
         normalizedEventType,
         errorMessage: asString(payload.message),
+      });
+      dispatch({
+        type: "SET_ASSISTANT_TURN_PENDING",
+        payload: { pending: false, messageId: null },
       });
       dispatch({ type: 'SET_PROCESSING', payload: false });
       dispatch({ type: 'FINISH_STREAMING' });
@@ -9464,14 +9602,25 @@ function handleStreamEvent(
         asString(payload.delta) || asString(payload.text) || asString(payload.content) || asString(payload.chunk);
       if (chunk) {
         const streamingState = getState().streaming;
+        const eventPartType = asString(eventPart?.type).toLowerCase();
         const skipContentChunk =
           (streamingState?.inReasoningPart ?? false) ||
           structuredKind === "thinking" ||
+          eventPartType === "reasoning" ||
           partType === "reasoning" ||
           !!asString(payload.reasoning) ||
           !!asString(payload.thinking) ||
           !!asString(payload.thought);
         if (skipContentChunk) {
+          if (eventPartType === "reasoning" || partType === "reasoning") {
+            const sanitized = sanitizeReasoningChunk(chunk);
+            if (sanitized) {
+              dispatch({
+                type: "UPDATE_STREAMING_REASONING",
+                payload: { reasoning: sanitized, append: true },
+              });
+            }
+          }
           dispatch({ type: "SET_PROCESSING", payload: true });
           break;
         }
@@ -9664,7 +9813,13 @@ function handleStreamEvent(
         terminalStatus,
       );
       if (finalized) {
-        dispatch({ type: "SET_STREAMING", payload: finalized });
+        dispatch({
+          type: "SET_STREAMING",
+          payload: {
+            ...finalized,
+            hasAssistantFinishSignal: true,
+          },
+        });
       }
       dispatch({
         type: 'FINISH_STREAMING',
@@ -9675,7 +9830,11 @@ function handleStreamEvent(
           }
         }
       });
-      dispatch({ type: 'SET_PROCESSING', payload: false });
+      // Keep isProcessing true — the authoritative terminal signal comes from either
+      // messageResponse (when the extension finishes the prompt call) or
+      // SET_PROCESSING_SESSIONS (when the backend confirms the session is no longer
+      // processing). Dispatching SET_PROCESSING(false) here causes the loading
+      // indicator to disappear while the AI is still streaming content.
       break;
     }
     default: {
@@ -10842,14 +11001,21 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 },
               );
             }
-            if (
-              !asString(asRecord(sanitized.info)?.id) &&
-              !asString(sanitized.id) &&
-              streamingMessageId
-            ) {
+            // CRITICAL FIX: Ensure ID consistency between streaming and final message
+            // This prevents the final message from having a different ID than the streaming message,
+            // which causes the UI to not update until session refresh
+            const hasExistingInfoId = !!asString(asRecord(sanitized.info)?.id);
+            const hasExistingTopLevelId = !!asString(sanitized.id);
+            const shouldUseStreamingId = !hasExistingInfoId && !hasExistingTopLevelId && streamingMessageId;
+
+            if (shouldUseStreamingId) {
               sanitized = {
                 ...sanitized,
                 id: streamingMessageId,
+                info: {
+                  ...(sanitized.info || {}),
+                  id: streamingMessageId,
+                },
               };
             }
             const preferredParentMessageId =
@@ -10880,6 +11046,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               asString(asRecord(sanitized.info)?.id) ||
               asString(sanitized.id) ||
               responseMessageId ||
+              streamingMessageId ||
               null;
             dispatch({
               type: "SET_MESSAGES",
@@ -11247,6 +11414,34 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             rawDetailKeys: Object.keys(data.detailsById ?? data.subagentDetailsById ?? {}),
             activeSessionId: getState().currentSessionId,
           });
+
+          // Log detailed subagent data structure
+          const rawSummaries = data.summariesByParentMessageId ?? data.subagentsByParentMessageId ?? {};
+          const rawDetails = data.detailsById ?? data.subagentDetailsById ?? {};
+
+          logger.info('[SUBAGENT][REHYDRATED] detailed subagent data inspection', {
+            summaryCount: Object.keys(rawSummaries).length,
+            detailsCount: Object.keys(rawDetails).length,
+            // Sample first few subagents to see actual values
+            sampleSummaries: Object.entries(rawSummaries).slice(0, 2).map(([parentId, subagents]) => ({
+              parentId,
+              subagentArray: Array.isArray(subagents) ? subagents.slice(0, 2).map(s => ({
+                id: typeof s === 'object' && s !== null ? (s as any).id : undefined,
+                agentId: typeof s === 'object' && s !== null ? (s as any).agentId : undefined,
+                agent: typeof s === 'object' && s !== null ? (s as any).agent : undefined,
+                provider: typeof s === 'object' && s !== null ? (s as any).provider ?? (s as any).providerID : undefined,
+                model: typeof s === 'object' && s !== null ? (s as any).model ?? (s as any).modelID : undefined,
+                status: typeof s === 'object' && s !== null ? (s as any).status : undefined,
+              })) : [],
+            })),
+            sampleDetails: Object.entries(rawDetails).slice(0, 2).map(([detailId, detail]) => ({
+              detailId,
+              provider: typeof detail === 'object' && detail !== null ? (detail as any).provider ?? (detail as any).providerID : undefined,
+              model: typeof detail === 'object' && detail !== null ? (detail as any).model ?? (detail as any).modelID : undefined,
+              agentId: typeof detail === 'object' && detail !== null ? (detail as any).agentId : undefined,
+            })),
+          });
+
           const snapshotPolicy: SubagentPresentationPolicy = {
             mode: "hydration",
             sessionProcessing: getState().processing,
@@ -11269,6 +11464,29 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             rawDetailIds: Object.keys(rawDetailsById),
             processing: getState().processing,
             streamingMessageId: getState().streaming?.messageId ?? null,
+          });
+
+          // Log normalized subagent data to check if provider/model info is preserved
+          logger.info('[SUBAGENT][REHYDRATED] normalized subagent data inspection', {
+            normalizedSummaryCount: Object.keys(rawSummariesByParentMessageId).length,
+            normalizedDetailsCount: Object.keys(rawDetailsById).length,
+            sampleNormalizedSummaries: Object.entries(rawSummariesByParentMessageId).slice(0, 2).map(([parentId, subagents]) => ({
+              parentId,
+              subagentCount: Array.isArray(subagents) ? subagents.length : 0,
+              sampleSubagent: Array.isArray(subagents) && subagents.length > 0 ? {
+                id: subagents[0]?.id,
+                agentId: subagents[0]?.agentId,
+                provider: subagents[0]?.provider ?? subagents[0]?.providerID,
+                model: subagents[0]?.model ?? subagents[0]?.modelID,
+                status: subagents[0]?.status,
+              } : null,
+            })),
+            sampleNormalizedDetails: Object.entries(rawDetailsById).slice(0, 2).map(([detailId, detail]) => ({
+              detailId,
+              provider: detail?.provider ?? detail?.providerID,
+              model: detail?.model ?? detail?.modelID,
+              agentId: detail?.agentId,
+            })),
           });
           if (
             activeSessionId &&
@@ -11345,6 +11563,30 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             false,
             snapshotPolicy,
           );
+
+          // Log final normalized snapshot before rendering
+          logger.info('[SUBAGENT][REHYDRATED] final normalized snapshot before render', {
+            summaryCount: Object.keys(normalizedSnapshot.summariesByParentMessageId).length,
+            detailsCount: Object.keys(normalizedSnapshot.detailsById).length,
+            sampleFinalSummaries: Object.entries(normalizedSnapshot.summariesByParentMessageId).slice(0, 2).map(([parentId, subagents]) => ({
+              parentId,
+              subagentCount: Array.isArray(subagents) ? subagents.length : 0,
+              sampleSubagent: Array.isArray(subagents) && subagents.length > 0 ? {
+                id: subagents[0]?.id,
+                agentId: subagents[0]?.agentId,
+                provider: subagents[0]?.provider ?? subagents[0]?.providerID,
+                model: subagents[0]?.model ?? subagents[0]?.modelID,
+                status: subagents[0]?.status,
+              } : null,
+            })),
+            sampleFinalDetails: Object.entries(normalizedSnapshot.detailsById).slice(0, 2).map(([detailId, detail]) => ({
+              detailId,
+              provider: detail?.provider ?? detail?.providerID,
+              model: detail?.model ?? detail?.modelID,
+              agentId: detail?.agentId,
+            })),
+          });
+
           const hasNormalizedSnapshotSubagents =
             hasSubagentSummaryEntries(
               normalizedSnapshot.summariesByParentMessageId,
@@ -11410,6 +11652,30 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const rawDetailsById = normalizeSubagentDetailMap(
             data.detailsById ?? data.subagentDetailsById,
           );
+
+          // Log detailed incoming update data
+          logger.info('[SUBAGENT][EVENT STREAM] detailed subagent update inspection', {
+            summaryCount: Object.keys(rawSummariesByParentMessageId).length,
+            detailsCount: Object.keys(rawDetailsById).length,
+            sampleSummaries: Object.entries(rawSummariesByParentMessageId).slice(0, 2).map(([parentId, subagents]) => ({
+              parentId,
+              subagentCount: Array.isArray(subagents) ? subagents.length : 0,
+              sampleSubagent: Array.isArray(subagents) && subagents.length > 0 ? {
+                id: subagents[0]?.id,
+                agentId: subagents[0]?.agentId,
+                provider: subagents[0]?.provider ?? subagents[0]?.providerID,
+                model: subagents[0]?.model ?? subagents[0]?.modelID,
+                status: subagents[0]?.status,
+              } : null,
+            })),
+            sampleDetails: Object.entries(rawDetailsById).slice(0, 2).map(([detailId, detail]) => ({
+              detailId,
+              provider: detail?.provider ?? detail?.providerID,
+              model: detail?.model ?? detail?.modelID,
+              agentId: detail?.agentId,
+            })),
+          });
+
           const activeSessionId = getState().currentSessionId;
           const payloadSessionId = getSubagentPayloadSessionId(
             rawSummariesByParentMessageId,
@@ -11445,6 +11711,32 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const summariesByParentMessageId =
             scopedUpdate.summariesByParentMessageId;
           const detailsById = scopedUpdate.detailsById;
+
+          // Log scoped data after filtering for active session
+          logger.info('[SUBAGENT][EVENT STREAM] scoped data after filtering', {
+            scopedSummaryCount: Object.keys(summariesByParentMessageId).length,
+            scopedDetailsCount: Object.keys(detailsById).length,
+            sampleScopedSummaries: Object.entries(summariesByParentMessageId).slice(0, 2).map(([parentId, subagents]) => ({
+              parentId,
+              subagentCount: Array.isArray(subagents) ? subagents.length : 0,
+              sampleSubagent: Array.isArray(subagents) && subagents.length > 0 ? {
+                id: subagents[0]?.id,
+                agentId: subagents[0]?.agentId,
+                provider: subagents[0]?.provider,
+                model: subagents[0]?.model,
+                status: subagents[0]?.status,
+                keys: subagents[0] ? Object.keys(subagents[0]) : [],
+              } : null,
+            })),
+            sampleScopedDetails: Object.entries(detailsById).slice(0, 2).map(([detailId, detail]) => ({
+              detailId,
+              provider: detail?.provider,
+              model: detail?.model,
+              agentId: detail?.agentId,
+              keys: detail ? Object.keys(detail) : [],
+            })),
+          });
+
           const hasScopedSubagents =
             hasSubagentSummaryEntries(summariesByParentMessageId) ||
             Object.keys(detailsById).length > 0;
@@ -11615,6 +11907,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 case "UPDATE_STREAMING_CONTENT":
                 case "UPDATE_STREAMING_REASONING":
                 case "SET_IN_REASONING_PART":
+                case "SET_ASSISTANT_TURN_PENDING":
                 case "ADD_STREAMING_STEP":
                 case "UPDATE_STREAMING_STEP":
                 case "ADD_STREAMING_EDIT":
@@ -11951,11 +12244,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               flushVisibleStreamingSnapshotToMessages(dispatch, getState);
               latestStreamingSnapshot = null;
               activeSubagentParentMessageIds = new Set<string>();
-              // Some providers/models can momentarily leave the prior turn in a
-              // "processing" state after question submit. Reset local processing
-              // flags here so the UI doesn't get stuck on loading text while we
-              // wait for the next turn's real stream lifecycle events.
-              dispatch({ type: "SET_PROCESSING", payload: false });
+              // Clear stale streaming so the next turn starts from a clean state,
+              // but do NOT clear isProcessing here. The extension host already
+              // sent a SET_PROCESSING_SESSIONS update with the active session
+              // marked as processing. Flipping isProcessing to false just as the
+              // next turn begins causes the UI to toggle between loading/not-loading,
+              // leaving the composer in a confusing stale-loading posture while
+              // real stream events are still being dispatched.
               dispatch({ type: "SET_STEERING", payload: false });
               dispatch({ type: "SET_STREAMING", payload: null });
               // Defensive cleanup: once an interactive answer bundle is echoed back
@@ -12024,6 +12319,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               type: "SET_MESSAGES",
               payload: updatedMessages,
             });
+            if (!isInteractiveAnswerSubmission) {
+              dispatch({ type: "CLEAR_DISMISSED_INTERACTIVE_EVENTS" });
+            }
           }
           break;
         }
@@ -12062,10 +12360,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const pendingInteractiveEvents = latestPendingInteractiveEvents(
               stateAfterProcessingUpdate.messages || [],
             );
-            if (pendingInteractiveEvents.length > 0) {
+            const streamingInteractiveEvents = stateAfterProcessingUpdate
+              .streaming?.interactiveEvents ?? [];
+            const mergedInteractiveEvents =
+              pendingInteractiveEvents.length > 0
+                ? pendingInteractiveEvents
+                : streamingInteractiveEvents;
+            if (mergedInteractiveEvents.length > 0) {
               dispatch({
                 type: "SET_INTERACTIVE_EVENTS",
-                payload: pendingInteractiveEvents,
+                payload: mergedInteractiveEvents,
               });
             } else if (stateAfterProcessingUpdate.interactiveEvents.length > 0) {
               dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });

@@ -99,6 +99,8 @@ export const initialState: AppState = {
   isLoadingSession: false,
   loadingSessionTitle: null,
   loadingSessionId: null,
+  assistantTurnPending: false,
+  assistantTurnMessageId: null,
   modelCapability: null,
   todoItems: [],
   subagentsByParentMessageId: {},
@@ -106,6 +108,7 @@ export const initialState: AppState = {
   selectedSubagentId: null,
   subagentsPanelOpen: true,
   interactiveEvents: [],
+  dismissedInteractiveEventKeys: new Set<string>(),
   mcpServers: [],
   lspServers: [],
   contextUsagePct: undefined,
@@ -155,6 +158,7 @@ export type AppAction =
   | { type: "CLEAR_MESSAGES" }
   | { type: "SET_PROCESSING"; payload: boolean }
   | { type: "SET_STEERING"; payload: boolean }
+  | { type: "SET_ASSISTANT_TURN_PENDING"; payload: { pending: boolean; messageId?: string | null } }
   | { type: "SET_SESSIONS_LIST"; payload: Session[] }
   | { type: "UPDATE_SESSION_TITLE"; payload: { sessionId: string; title: string } }
   | { type: "SET_PROCESSING_SESSIONS"; payload: string[] }
@@ -265,6 +269,7 @@ export type AppAction =
   | { type: "CLEAR_SUBAGENTS_FOR_SESSION" }
   | { type: "SET_INTERACTIVE_EVENTS"; payload: InteractiveEvent[] }
   | { type: "DISMISS_INTERACTIVE_EVENT"; payload: string }
+  | { type: "CLEAR_DISMISSED_INTERACTIVE_EVENTS" }
   | { type: "SET_MCP_SERVERS"; payload: McpServerInfo[] }
   | { type: "SET_LSP_SERVERS"; payload: LspServerInfo[] }
   | { type: "SET_SERVER_VERSION"; payload: string | undefined }
@@ -1924,6 +1929,58 @@ export function mergeStreamingReasoning(
   };
 }
 
+function getInteractiveEventKeyLocal(event: InteractiveEvent): string {
+  const id = typeof event.id === "string" ? event.id.trim() : "";
+  if (id) {
+    return `id:${id}`;
+  }
+
+  const prompt =
+    event.type === "question" || event.type === "confirm"
+      ? event.question
+      : event.type === "quick_actions"
+        ? event.title
+        : event.type === "message"
+          ? event.message
+          : event.title;
+  return `fallback:${event.type}:${(prompt || "").trim().toLowerCase()}`;
+}
+
+function getInteractiveEventKeysLocal(event: InteractiveEvent): string[] {
+  const keys = new Set<string>();
+  const id = typeof event.id === "string" ? event.id.trim() : "";
+  if (id) {
+    keys.add(`id:${id}`);
+  }
+
+  const prompt =
+    event.type === "question" || event.type === "confirm"
+      ? event.question
+      : event.type === "quick_actions"
+        ? event.title
+        : event.type === "message"
+          ? event.message
+          : event.title;
+  const normalizedPrompt = (prompt || "").trim().toLowerCase();
+  if (normalizedPrompt) {
+    keys.add(`fallback:${event.type}:${normalizedPrompt}`);
+  }
+
+  return [...keys];
+}
+
+function filterDismissedInteractiveEventsLocal(
+  events: InteractiveEvent[],
+  dismissedKeys: Set<string>,
+): InteractiveEvent[] {
+  if (!Array.isArray(events) || events.length === 0 || dismissedKeys.size === 0) {
+    return events;
+  }
+  return events.filter(
+    (event) => !getInteractiveEventKeysLocal(event).some((key) => dismissedKeys.has(key)),
+  );
+}
+
 function getQueueForSession(queue: QueueItem[] | undefined, sessionId: string): QueueItem[] {
   if (!Array.isArray(queue) || !sessionId) {
     return [];
@@ -2185,7 +2242,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           };
       const derivedInteractiveEvents =
         canonicalMessages.length > 0
-          ? pendingInteractiveEventsFromMessagesLocal(canonicalMessages)
+          ? filterDismissedInteractiveEventsLocal(
+            pendingInteractiveEventsFromMessagesLocal(canonicalMessages),
+            state.dismissedInteractiveEventKeys,
+          )
           : [];
       const hasLiveInteractiveEvents =
         Array.isArray(state.interactiveEvents) &&
@@ -2199,7 +2259,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         derivedInteractiveEvents.length === 0 &&
         hasLiveInteractiveEvents &&
         (isTurnStillActive || liveInteractiveRequiresUserResponse)
-          ? state.interactiveEvents
+          ? filterDismissedInteractiveEventsLocal(
+            state.interactiveEvents,
+            state.dismissedInteractiveEventKeys,
+          )
           : derivedInteractiveEvents;
       return {
         ...state,
@@ -2269,7 +2332,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         currentSessionId: action.payload.sessionId,
         messages: cachedMessages,
-        interactiveEvents: pendingInteractiveEventsFromMessagesLocal(cachedMessages),
+        interactiveEvents: filterDismissedInteractiveEventsLocal(
+          pendingInteractiveEventsFromMessagesLocal(cachedMessages),
+          state.dismissedInteractiveEventKeys,
+        ),
         isProcessing: isNewSessionProcessing,
         isSteering: false,
         streaming: restoredStreamingForNew,
@@ -2367,6 +2433,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, isProcessing: action.payload };
     case "SET_STEERING":
       return { ...state, isSteering: action.payload };
+    case "SET_ASSISTANT_TURN_PENDING":
+      return {
+        ...state,
+        assistantTurnPending: action.payload.pending,
+        assistantTurnMessageId:
+          action.payload.messageId ?? (action.payload.pending ? state.assistantTurnMessageId : null),
+      };
     case "SET_SESSIONS_LIST":
       if (areSessionsListsEqual(state.sessionsList, action.payload)) {
         return state;
@@ -2424,6 +2497,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           hasRenderableContent: action.payload.hasRenderableContent ?? false,
           reasoningEvents: action.payload.reasoningEvents ?? [],
           progressEvents: action.payload.progressEvents ?? [],
+          hasAssistantFinishSignal:
+            action.payload.hasAssistantFinishSignal ?? false,
+          hasTerminalStepSignal: action.payload.hasTerminalStepSignal ?? false,
+          interactiveEvents: action.payload.interactiveEvents ?? [],
         }
         : null;
       return {
@@ -2450,6 +2527,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             action.payload.streaming.hasRenderableContent ?? false,
           reasoningEvents: action.payload.streaming.reasoningEvents ?? [],
           progressEvents: action.payload.streaming.progressEvents ?? [],
+          hasAssistantFinishSignal:
+            action.payload.streaming.hasAssistantFinishSignal ?? false,
+          hasTerminalStepSignal:
+            action.payload.streaming.hasTerminalStepSignal ?? false,
+          interactiveEvents: action.payload.streaming.interactiveEvents ?? [],
         }
         : null;
       const streamingBySessionId = cacheStreamingForSession(
@@ -2487,6 +2569,20 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const content = action.payload.append
         ? `${state.streaming.content}${action.payload.content}`
         : action.payload.content;
+      if (action.payload.content && action.payload.content.length > 0) {
+        logger.info('[STORE:UPDATE_STREAMING_CONTENT]', {
+          append: action.payload.append,
+          incoming: String(action.payload.content).slice(0, 200),
+          incomingLen: String(action.payload.content).length,
+          priorContent: String(state.streaming.content).slice(0, 200),
+          priorContentLen: String(state.streaming.content).length,
+          newContent: content.slice(0, 200),
+          newContentLen: content.length,
+          renderable: !!action.payload.renderable,
+          reasoning: String(state.streaming.reasoning).slice(0, 200),
+          inReasoningPart: state.streaming.inReasoningPart,
+        });
+      }
       // Record the first moment non-empty content arrives so the timeline can order it correctly
       const contentStartSeq =
         state.streaming.contentStartSeq !== undefined
@@ -2520,12 +2616,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.streamingBySessionId,
           state.currentSessionId,
           streaming,
-        ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
         ),
       };
     }
@@ -2563,6 +2653,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           );
         }
       }
+      if (action.payload.reasoning) {
+        logger.info('[STORE:UPDATE_STREAMING_REASONING]', {
+          append: action.payload.append,
+          incoming: String(action.payload.reasoning).slice(0, 200),
+          incomingLen: String(action.payload.reasoning).length,
+          priorReasoning: String(state.streaming.reasoning).slice(0, 200),
+          newReasoning: reasoning.slice(0, 200),
+          newReasoningLen: reasoning.length,
+          chunk: chunk.slice(0, 200),
+          eventsCount: reasoningEvents.length,
+          inThoughtBlock: action.payload.inThoughtBlock,
+          inReasoningPart: action.payload.inReasoningPart,
+          streamingContent: String(state.streaming.content).slice(0, 200),
+        });
+      }
       const inThoughtBlock =
         action.payload.inThoughtBlock ?? state.streaming.inThoughtBlock;
       const inReasoningPart =
@@ -2593,12 +2698,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
-        ),
       };
     }
     case "ADD_STREAMING_STEP": {
@@ -2606,8 +2705,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         return state;
       }
       const stampedStep = { ...action.payload, streamSeq: Date.now() };
+      const hasTerminalStepSignal =
+        state.streaming.hasTerminalStepSignal ||
+        stampedStep.partType === "step-finish" ||
+        stampedStep.partType === "step-stop";
       const streaming = {
         ...state.streaming,
+        hasTerminalStepSignal,
         steps: appendWithCap(
           state.streaming.steps,
           stampedStep,
@@ -2626,12 +2730,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.streamingBySessionId,
           state.currentSessionId,
           streaming,
-        ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
         ),
       };
     }
@@ -2653,8 +2751,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       const steps = [...state.streaming.steps];
       steps[idx] = { ...steps[idx], ...action.payload.patch };
+      const updatedPartType = String(steps[idx].partType ?? "").toLowerCase();
+      const hasTerminalStepSignal =
+        state.streaming.hasTerminalStepSignal ||
+        updatedPartType === "step-finish" ||
+        updatedPartType === "step-stop";
       const streaming = {
         ...state.streaming,
+        hasTerminalStepSignal,
         steps,
         progressEvents: appendWithCap(
           state.streaming.progressEvents,
@@ -2669,12 +2773,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.streamingBySessionId,
           state.currentSessionId,
           streaming,
-        ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
         ),
       };
     }
@@ -2700,12 +2798,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.streamingBySessionId,
           state.currentSessionId,
           streaming,
-        ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
         ),
       };
     }
@@ -3106,15 +3198,19 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "SET_INTERACTIVE_EVENTS": {
+      const filteredEvents = filterDismissedInteractiveEventsLocal(
+        action.payload,
+        state.dismissedInteractiveEventKeys,
+      );
       const streaming = state.streaming
         ? {
             ...state.streaming,
-            interactiveEvents: action.payload,
+            interactiveEvents: filteredEvents,
           }
         : state.streaming;
       return {
         ...state,
-        interactiveEvents: action.payload,
+        interactiveEvents: filteredEvents,
         streaming,
         streamingBySessionId: cacheStreamingForSession(
           state.streamingBySessionId,
@@ -3130,11 +3226,47 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "DISMISS_INTERACTIVE_EVENT": {
+      const dismissedInteractiveEventKeys = new Set(state.dismissedInteractiveEventKeys);
+      const dismissedEvent = state.interactiveEvents.find((event) => event.id === action.payload);
+      const dismissedKeys = dismissedEvent
+        ? getInteractiveEventKeysLocal(dismissedEvent)
+        : [`id:${action.payload}`];
+      dismissedKeys.forEach((key) => dismissedInteractiveEventKeys.add(key));
+      const interactiveEvents = state.interactiveEvents.filter(
+        (event) =>
+          !getInteractiveEventKeysLocal(event).some((key) => dismissedInteractiveEventKeys.has(key)),
+      );
+      const streaming = state.streaming
+        ? {
+            ...state.streaming,
+            interactiveEvents,
+          }
+        : state.streaming;
       return {
         ...state,
-        interactiveEvents: state.interactiveEvents.filter(
-          (event) => event.id !== action.payload,
+        interactiveEvents,
+        dismissedInteractiveEventKeys,
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
         ),
+        messagesBySessionId: cacheVisibleStreamingMessageForSession(
+          state.messagesBySessionId,
+          state.currentSessionId,
+          streaming,
+          state.messages,
+        ),
+      };
+    }
+    case "CLEAR_DISMISSED_INTERACTIVE_EVENTS": {
+      if (state.dismissedInteractiveEventKeys.size === 0) {
+        return state;
+      }
+      return {
+        ...state,
+        dismissedInteractiveEventKeys: new Set<string>(),
       };
     }
     case "SET_MCP_SERVERS":

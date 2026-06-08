@@ -107,8 +107,8 @@ test('implementation plan messages suppress the aggregated diff section on the s
 test('non-plan assistant turns do not render the implementation plan section', () => {
   assert.match(
     messageComponents,
-    /const showResponseSection = !isAborted && \(hasVisibleResponseBody \|\| shouldShowPlanCard\);/,
-    'response section should depend on the plan card gate instead of raw plan presence',
+    /const showResponseSection =[\s\S]*!isAborted[\s\S]*\(hasVisibleResponseBody \|\| shouldShowPlanCard\)[\s\S]*\(!isLiveStream \|\| hasAssistantFinishSignal\)[\s\S]*\(!isLiveStream \|\|\s*\(!hasActiveTimelineWork[\s\S]*!hasReasoningLeakOverlap[\s\S]*\)\)/s,
+    'response section should depend on the plan card gate, assistant finish state, timeline activity, and the reasoning leak guard',
   );
 });
 

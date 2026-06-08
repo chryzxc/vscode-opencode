@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -8,8 +8,8 @@ import {
   X,
 } from 'lucide-react';
 
-import { useAppState } from './lib/store';
-import type { StreamingStep } from './lib/types';
+
+import type { StreamingState, StreamingStep } from './lib/types';
 import vscode from './lib/vscode';
 import { AssistantMessage } from './MessageComponents';
 
@@ -141,42 +141,30 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
   );
 }
 
-export function StreamingCard({ isContiguous }: { isContiguous?: boolean }) {
-  const { streaming, isProcessing } = useAppState();
+export const StreamingCard = memo(function StreamingCard({ isContiguous, streaming }: { isContiguous?: boolean; streaming: StreamingState | null }) {
+  // Show the streaming card for live assistant activity. The response body
+  // inside AssistantMessage handles the terminal step gate; this wrapper must
+  // stay mounted so the progress/activity UI remains visible.
+  const visible = useMemo(() => {
+    if (!streaming) return false;
 
-  // Show streaming card if we have actual content (not just reasoning)
-  // Reasoning-only state is handled by ThinkingBubble instead
-  const visible = useMemo(
-    () => {
-      if (!streaming) return false;
+    if (streaming.content.trim().length > 0) return true;
+    if (streaming.reasoning.trim().length > 0) return true;
+    if (streaming.edits.length > 0) return true;
+    if (
+      Array.isArray(streaming.interactiveEvents) &&
+      streaming.interactiveEvents.length > 0
+    ) {
+      return true;
+    }
+    if (streaming.steps.length > 0 || streaming.progressEvents.length > 0) return true;
 
-      // Always show if we have real content
-      if (streaming.content.length > 0) return true;
-
-      // Show if we have steps/progress events (indicates work is happening)
-      if (streaming.steps.length > 0 || streaming.progressEvents.length > 0) return true;
-
-      // Show if actively streaming (even if content is empty yet - user is waiting)
-      if (streaming.isActive) return true;
-
-      // Show if processing but no streaming state yet (about to start)
-      if (isProcessing) return true;
-
-      // Show if we have a message ID (streaming started)
-      if (streaming.messageId) return true;
-
-      // Show if contiguous with previous message
-      if (isContiguous) return true;
-
-      // Don't show just because we have reasoning - that's handled by ThinkingBubble
-      return false;
-    },
-    [streaming, isProcessing, isContiguous],
-  );
+    return false;
+  }, [streaming]);
 
   if (!visible || !streaming) return null;
 
   return <AssistantMessage streaming={streaming} isContiguous={isContiguous} />;
-}
+});
 
 

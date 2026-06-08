@@ -96,8 +96,8 @@ test('Interactive question rendering suppresses flattened option echo beneath th
 test('Aborted assistant turns do not render the response markdown body', () => {
   assert.match(
     messageComponentsSource,
-    /const showResponseSection = !isAborted && \(hasVisibleResponseBody \|\| !!plan\);/,
-    'Interrupted assistant turns should hide the AI response section instead of rendering partial markdown content.',
+    /const showResponseSection =[\s\S]*!isAborted[\s\S]*\(hasVisibleResponseBody \|\| shouldShowPlanCard\)[\s\S]*\(!isLiveStream \|\| hasAssistantFinishSignal\)[\s\S]*\(!isLiveStream \|\|\s*\(!hasActiveTimelineWork[\s\S]*!hasReasoningLeakOverlap[\s\S]*\)\)/s,
+    'Interrupted assistant turns should keep the AI response section hidden until the assistant finish signal exists and timeline work settles.',
   );
 });
 

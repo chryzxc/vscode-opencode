@@ -79,6 +79,7 @@ test('initialState defines the core webview state fields', () => {
   assert.match(initialStateBody, /sessionsList:\s*\[\]/, 'initialState should include sessionsList');
   assert.match(initialStateBody, /sessionStats:\s*\{[\s\S]*input:\s*0[\s\S]*output:\s*0[\s\S]*duration:\s*0/, 'initialState should include zeroed sessionStats');
   assert.match(initialStateBody, /interactiveEvents:\s*\[\]/, 'initialState should include interactiveEvents');
+  assert.match(initialStateBody, /dismissedInteractiveEventKeys:\s*new Set(?:<string>)?\(\)/, 'initialState should include dismissed interactive event keys');
   assert.match(initialStateBody, /subagentsByParentMessageId:\s*\{\}/, 'initialState should include subagentsByParentMessageId');
   assert.match(initialStateBody, /todoItems:\s*\[\]/, 'initialState should include todoItems');
   assert.match(initialStateBody, /mcpServers:\s*\[\]/, 'initialState should include mcpServers');
@@ -136,8 +137,9 @@ const actionContracts = [
   { type: 'UPSERT_SUBAGENT_SUMMARIES', patterns: [/subagentsByParentMessageId:\s*\{[\s\S]*\.\.\.state\.subagentsByParentMessageId[\s\S]*\.\.\.action\.payload/] },
   { type: 'UPSERT_SUBAGENT_DETAIL', patterns: [/subagentDetailsById:\s*\{[\s\S]*\.\.\.state\.subagentDetailsById[\s\S]*\.\.\.action\.payload/] },
   { type: 'SELECT_SUBAGENT', patterns: [/selectedSubagentId:\s*action\.payload/] },
-  { type: 'SET_INTERACTIVE_EVENTS', patterns: [/interactiveEvents:\s*action\.payload/] },
-  { type: 'DISMISS_INTERACTIVE_EVENT', patterns: [/interactiveEvents:[\s\S]*filter\([\s\S]*event\.id !== action\.payload/] },
+  { type: 'SET_INTERACTIVE_EVENTS', patterns: [/filterDismissedInteractiveEventsLocal\(/, /interactiveEvents:\s*filteredEvents/] },
+  { type: 'DISMISS_INTERACTIVE_EVENT', span: 10000, patterns: [/dismissedInteractiveEventKeys\s*,/, /getInteractiveEventKeysLocal\(dismissedEvent\)/, /cacheVisibleStreamingMessageForSession\(/] },
+  { type: 'CLEAR_DISMISSED_INTERACTIVE_EVENTS', patterns: [/dismissedInteractiveEventKeys:\s*new Set<string>\(\)/] },
   { type: 'SET_MCP_SERVERS', patterns: [/mcpServers:\s*action\.payload/] },
   { type: 'SET_LSP_SERVERS', patterns: [/lspServers:\s*action\.payload/] },
   { type: 'SET_OPENCODE_CONFIG', patterns: [/opencodeConfig:\s*\{[\s\S]*\.\.\.action\.payload[\s\S]*files: action\.payload\.files \|\| \[\]/] },

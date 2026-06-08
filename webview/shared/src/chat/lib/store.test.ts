@@ -276,6 +276,37 @@ describe('hasSystemMessagePatternInText', () => {
 });
 
 describe("appReducer render-stability guards", () => {
+  it("marks streaming state when a terminal step-finish event arrives", () => {
+    const streaming = {
+      messageId: "msg-1",
+      content: "",
+      reasoning: "",
+      reasoningEvents: [],
+      steps: [],
+      progressEvents: [],
+      edits: [],
+      isActive: true,
+      hasRenderableContent: false,
+      hasTerminalStepSignal: false,
+    };
+    const seededState = {
+      ...initialState,
+      streaming,
+    };
+
+    const next = appReducer(seededState, {
+      type: "ADD_STREAMING_STEP",
+      payload: {
+        title: "Finishing step",
+        type: "step",
+        status: "done",
+        partType: "step-finish",
+      } as any,
+    });
+
+    assert.strictEqual(next.streaming?.hasTerminalStepSignal, true);
+  });
+
   it("reuses state object for unchanged sessions list payload", () => {
     const sessions: Session[] = [
       { id: "s-1", title: "One", createdAt: 1 },
@@ -331,6 +362,47 @@ describe("appReducer render-stability guards", () => {
     });
 
     assert.deepStrictEqual(next.interactiveEvents, liveInteractive);
+  });
+
+  it("keeps a dismissed interactive event hidden when SET_MESSAGES replays the same assistant payload", () => {
+    const assistantMessage = {
+      role: "assistant",
+      content: "Running question",
+      interactiveEvents: [
+        {
+          type: "question" as const,
+          id: "q-dismiss-1",
+          question: "Pick one",
+          options: [
+            { label: "A", value: "A" },
+            { label: "B", value: "B" },
+          ],
+        },
+      ],
+    } as Message;
+
+    const activeState = {
+      ...initialState,
+      isProcessing: true,
+      interactiveEvents: assistantMessage.interactiveEvents ?? [],
+      messages: [{ role: "user", content: "ask me" } as Message],
+    };
+
+    const dismissed = appReducer(activeState, {
+      type: "DISMISS_INTERACTIVE_EVENT",
+      payload: "q-dismiss-1",
+    });
+    assert.strictEqual(dismissed.interactiveEvents.length, 0);
+
+    const next = appReducer(dismissed, {
+      type: "SET_MESSAGES",
+      payload: [
+        { role: "user", content: "ask me" },
+        assistantMessage,
+      ],
+    });
+
+    assert.strictEqual(next.interactiveEvents.length, 0);
   });
 
   it("switches visible messages immediately on SET_SESSION_ID", () => {

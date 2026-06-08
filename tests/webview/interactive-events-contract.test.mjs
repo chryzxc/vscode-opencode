@@ -222,17 +222,17 @@ test('final assistant normalization backfills live blocking question events when
 test('SDK question replies use native question.reply transport', () => {
   assert.match(
     panelSource,
+    /const composerInteractiveEvents = useMemo\([\s\S]*candidate\.interactiveEvents[\s\S]*structuredInteractiveEvents/s,
+    'composer should fall back to the latest assistant message interactive payload when the live state array is empty',
+  );
+  assert.match(
+    panelSource,
     /type:\s*"questionReply"[\s\S]*requestID,[\s\S]*answers,/,
     'input popover should send SDK-native question replies when request metadata is present',
   );
   assert.match(
-    panelSource,
-    /if \(canReplyToSdkQuestion\) \{[\s\S]*SET_PROCESSING[\s\S]*payload:\s*false[\s\S]*SET_STEERING[\s\S]*payload:\s*false[\s\S]*SET_STREAMING[\s\S]*payload:\s*null[\s\S]*type:\s*"questionReply"/s,
-    'SDK question replies should clear stale local loading state before waiting for the server continuation',
-  );
-  assert.match(
     providerSource,
-    /case "questionReply":[\s\S]*processingSessionIds\.add\(replySessionId\)[\s\S]*activeStreamSessionId = replySessionId[\s\S]*sendProcessingSessionsUpdate\(\)[\s\S]*client\.question\.reply\(\{[\s\S]*requestID,[\s\S]*answers,/,
+    /case "questionReply":[\s\S]*processingSessionIds\.add\(replySessionId\)[\s\S]*activeStreamSessionId = replySessionId[\s\S]*sendProcessingSessionsUpdate\(\)[\s\S]*\(client as any\)\.question\.reply\(\{[\s\S]*requestID,[\s\S]*answers,/,
     'provider should answer SDK-native questions through client.question.reply',
   );
   assert.doesNotMatch(
@@ -247,7 +247,7 @@ test('SDK question replies use native question.reply transport', () => {
   );
   assert.match(
     providerSource,
-    /case "questionReply":[\s\S]*await client\.question\.reply\([\s\S]*processingSessionIds\.delete\(replySessionId\)[\s\S]*activeStreamSessionId === replySessionId[\s\S]*sendProcessingSessionsUpdate\(\)/s,
+    /case "questionReply":[\s\S]*await \(client as any\)\.question\.reply\([\s\S]*processingSessionIds\.delete\(replySessionId\)[\s\S]*activeStreamSessionId === replySessionId[\s\S]*sendProcessingSessionsUpdate\(\)/s,
     'SDK question replies should release loading state immediately after the reply is submitted',
   );
 });
@@ -384,8 +384,8 @@ test('implementation_plan normalization preserves plan card payload and summary 
   );
   assert.match(
     messageSource,
-    /const showResponseSection = hasVisibleResponseBody \|\| !!plan;/,
-    'assistant message renderer should display response section when a plan card exists, even without body content',
+    /const showResponseSection =[\s\S]*!isAborted[\s\S]*\(hasVisibleResponseBody \|\| shouldShowPlanCard\)[\s\S]*hasAssistantFinishSignal[\s\S]*!hasActiveReasoningPart[\s\S]*!hasPendingReasoningDisplayEvent/s,
+    'assistant message renderer should display response section for plan cards and wait for the assistant finish signal and reasoning to settle',
   );
   assert.doesNotMatch(
     providerSource,
@@ -515,11 +515,11 @@ test('input wrapper leaves rendered assistant turn ownership to the host on inte
     'interactive submit should document that host-side state owns the rendered assistant turn transition',
   );
   const legacyReplySegmentMatch = panelSource.match(
-    /logger\.info\("\[QUESTION DEBUG\] submitting legacy interactive reply"[\s\S]*?vscode\.postMessage\(\{[\s\S]*?type:\s*"sendMessage"[\s\S]*?\}\);/s,
+    /logger\.info\("\[QUESTION DEBUG\] submitting SDK question reply"[\s\S]*?vscode\.postMessage\(\{[\s\S]*?type:\s*"questionReply"[\s\S]*?\}\);/s,
   );
   assert.ok(
     legacyReplySegmentMatch,
-    'legacy interactive sendMessage segment should be present',
+    'SDK question reply segment should be present',
   );
   assert.doesNotMatch(
     legacyReplySegmentMatch[0],
@@ -662,7 +662,7 @@ test('interactive answer echo clears stale popover state without forcing local l
   );
   assert.match(
     userMessageAppendedBody,
-    /if \(message\.interactiveSubmit === true\) \{\s*return true;\s*\}/s,
+    /message\.interactiveSubmit === true/,
     'interactive answer echoes should be recognized explicitly when the host marks them as interactive submits',
   );
   assert.match(
@@ -792,7 +792,7 @@ test('assistant question responses prioritize question prompt in visible message
   );
   assert.match(
     messageSource,
-    /if \(isQuestionResponseType\) \{[\s\S]*return questionPrompt;[\s\S]*\}/s,
+    /if \s*\(!baseContent \|\| isLowValueInteractiveBodyText\(baseContent\)\)\s*\{[\s\S]*return questionPrompt;[\s\S]*\}/s,
     'question responses should render only questionPrompt in the assistant bubble',
   );
   assert.match(

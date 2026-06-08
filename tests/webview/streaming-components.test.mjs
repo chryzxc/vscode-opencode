@@ -24,11 +24,29 @@ test('exports ProgressSteps with StreamingStep array prop', () => {
   );
 });
 
-test('exports StreamingCard with optional isContiguous prop', () => {
+test('exports StreamingCard as memo with isContiguous and streaming props', () => {
   assert.match(
     source,
-    /export function StreamingCard\(\{ isContiguous \}: \{ isContiguous\?: boolean \}\)/,
-    'StreamingComponents.tsx must export StreamingCard({ isContiguous }: { isContiguous?: boolean })',
+    /export const StreamingCard = memo\(function StreamingCard\(\{ isContiguous, streaming \}/,
+    'StreamingComponents.tsx must export StreamingCard as memo with isContiguous and streaming props',
+  );
+});
+
+test('StreamingCard remains mounted for live assistant activity', () => {
+  assert.match(
+    source,
+    /if \(streaming\.content\.trim\(\)\.length > 0\) return true;/,
+    'StreamingCard should still render when assistant content is streaming',
+  );
+  assert.match(
+    source,
+    /if \(streaming\.reasoning\.trim\(\)\.length > 0\) return true;/,
+    'StreamingCard should still render while reasoning is streaming',
+  );
+  assert.match(
+    source,
+    /if \(streaming\.steps\.length > 0 \|\| streaming\.progressEvents\.length > 0\) return true;/,
+    'StreamingCard should still render for live step/progress activity',
   );
 });
 

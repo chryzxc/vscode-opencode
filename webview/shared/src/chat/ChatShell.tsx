@@ -1,10 +1,11 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Archive, X } from "lucide-react";
 
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
 import { createMessageHandler } from "./lib/messageHandler";
 import { isProcessingInCurrentSession } from "./lib/sessionProcessing";
 import vscode from "./lib/vscode";
+import logger from "./lib/logger";
 
 import {
   StickyHeader,
@@ -140,6 +141,10 @@ function ChatContent() {
   const [showSkillInstaller, setShowSkillInstaller] = useState(false);
   const [dismissedCompatibilityWarningSignature, setDismissedCompatibilityWarningSignature] =
     useState<string | null>(null);
+
+  // Track loading state timing to ensure minimum display duration
+  const loadingStartTimeRef = useRef<number | null>(null);
+  const LOADING_MIN_DISPLAY_MS = 500; // Show loading state for at least 500ms so users can perceive it
   const streamViewportRef = useRef(streamViewport);
   const previousIsLoadingSessionRef = useRef(state.isLoadingSession);
   const previousReceivedInitStateRef = useRef(state.receivedInitState);
@@ -155,7 +160,7 @@ function ChatContent() {
   // overdriving layout/reflow during heavy token streams.
   const lastFollowAutoScrollAtRef = useRef(0);
 
-  const resolveAgentColor = (agentId?: string) => {
+  const resolveAgentColor = useCallback((agentId?: string) => {
     if (!agentId) return "var(--oc-accent)";
 
     const match = state.availableAgents.find(
@@ -165,7 +170,7 @@ function ChatContent() {
     );
 
     return match?.color ?? "var(--oc-accent)";
-  };
+  }, [state.availableAgents]);
 
   // Keep ref current so message handler closure always reads latest state
   useEffect(() => {
@@ -224,6 +229,9 @@ function ChatContent() {
   // Persist a lightweight session/message snapshot for fast restore across
   // sidebar/extension switches that recreate the webview.
   useEffect(() => {
+    if (state.streaming?.isActive) {
+      return;
+    }
     try {
       const nextSnapshot = {
         currentSessionId: state.currentSessionId,
@@ -236,7 +244,7 @@ function ChatContent() {
     } catch {
       // storage can fail in restricted webview scenarios; ignore gracefully
     }
-  }, [state.currentSessionId, state.messagesBySessionId]);
+  }, [state.currentSessionId, state.messagesBySessionId, state.streaming?.isActive]);
 
   useEffect(() => {
     streamViewportRef.current = streamViewport;
@@ -489,25 +497,72 @@ function ChatContent() {
   const hasAssistantText =
     !!state.streaming?.content &&
     state.streaming.content.trim().length > 0;
-  const hasStreamingCardSignal = Boolean(
+  const hasVisibleStreamingPayload = Boolean(
     state.streaming &&
-      (state.streaming.content.length > 0 ||
+      (state.streaming.content.trim().length > 0 ||
+        state.streaming.reasoning.trim().length > 0 ||
         state.streaming.steps.length > 0 ||
         state.streaming.progressEvents.length > 0 ||
-        state.streaming.isActive ||
-        state.streaming.messageId),
+        state.streaming.edits.length > 0 ||
+        (Array.isArray(state.streaming.interactiveEvents) &&
+          state.streaming.interactiveEvents.length > 0)),
   );
-
   // Show AI response loading indicator (thinking bubble) when:
   // 1. NOT switching sessions (session loading takes precedence), AND
-  // 2. AI is responding but no assistant text has arrived yet.
+  // 2. AI is responding but no renderable content has arrived yet.
+  // FIXED: Use hasRenderableContent from SDK instead of checking content length
+  const hasRenderableStreamingContent = Boolean(state.streaming?.hasRenderableContent);
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
     isAiResponding && // Must still be processing (not stopped)
     !hasCompletedAssistantReplyForLatestTurn &&
-    !hasStreamingCardSignal &&
     !state.isCompacting &&
-    !hasAssistantText;
+    !hasRenderableStreamingContent; // Use SDK's renderable flag instead of content length
+
+  // Enforce minimum display duration for loading state
+  // This ensures users can perceive the loading indicator even when content arrives quickly
+  const now = Date.now();
+  const loadingElapsedTime = loadingStartTimeRef.current ? now - loadingStartTimeRef.current : 0;
+
+  if (showAiResponseLoading && !loadingStartTimeRef.current) {
+    // Loading state just started - record the timestamp
+    loadingStartTimeRef.current = now;
+  } else if (!showAiResponseLoading && loadingStartTimeRef.current) {
+    // Loading state ended - reset the timestamp
+    loadingStartTimeRef.current = null;
+  }
+
+  // Extend the loading state display time if content arrived too quickly
+  const showExtendedLoading =
+    showAiResponseLoading || // Normal loading state
+    (loadingStartTimeRef.current && loadingElapsedTime < LOADING_MIN_DISPLAY_MS && !hasCompletedAssistantReplyForLatestTurn); // Extended for minimum duration
+
+  // DEBUG: Log loading state calculation
+  if (state.isProcessing || state.streaming?.isActive) {
+    logger.info('[LOADING_STATE]', {
+      isLoadingSession: state.isLoadingSession,
+      isProcessing: state.isProcessing,
+      currentSessionId: state.currentSessionId,
+      processingSessionIds: state.processingSessionIds,
+      isAiResponding,
+      hasCompletedAssistantReplyForLatestTurn,
+      isCompacting: state.isCompacting,
+      hasRenderableStreamingContent,
+      hasAssistantText,
+      streamingIsActive: state.streaming?.isActive,
+      streamingContentLength: state.streaming?.content?.length || 0,
+      streamingExists: !!state.streaming,
+      streamingHasRenderableContent: state.streaming?.hasRenderableContent,
+      showAiResponseLoading,
+      showExtendedLoading,
+      loadingStartTime: loadingStartTimeRef.current,
+      loadingElapsedTime,
+      LOADING_MIN_DISPLAY_MS,
+      sessionId: state.currentSessionId,
+      timestamp: now,
+      source: 'webview',
+    });
+  }
 
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
@@ -691,7 +746,12 @@ function ChatContent() {
               {state.messages.length === 0 &&
               !state.streaming &&
               !isAiResponding ? (
-                <EmptyState />
+                <EmptyState
+                  serverStatus={state.serverStatus}
+                  receivedInitState={state.receivedInitState}
+                  currentSessionId={state.currentSessionId}
+                  messagesBySessionId={state.messagesBySessionId}
+                />
               ) : null}
 
               {hasCompactedSegment ? (
@@ -727,6 +787,14 @@ function ChatContent() {
             const idx = visibleStartIndex + visibleIdx;
             const role = msg.role ?? msg.info?.role ?? "user";
             const key = getStableMessageKey(msg, idx, role);
+            const messageId = msg.info?.id ?? msg.id ?? msg.messageId ?? null;
+            const streamingMessageId = state.streaming?.messageId ?? null;
+            const isLiveStreamingAssistantTurn =
+              role === "assistant" &&
+              !!messageId &&
+              !!state.streaming?.isActive &&
+              !!streamingMessageId &&
+              streamingMessageId === messageId;
 
             const prevIdx = idx - 1;
             const prevMsg =
@@ -739,7 +807,7 @@ function ChatContent() {
               (prevMsg.info?.agent === msg.info?.agent ||
                 (!prevMsg.info?.agent && !msg.info?.agent));
 
-            let messageNode: JSX.Element;
+            let messageNode: JSX.Element | null;
             if (role === "user") {
               messageNode = <UserMessage message={msg} />;
             } else if (role === "system") {
@@ -755,9 +823,23 @@ function ChatContent() {
             } else if ((msg as Record<string, unknown>).type === "permission") {
               messageNode = <PermissionCard perm={msg} />;
             } else {
-              messageNode = (
-                <AssistantMessage message={msg} isContiguous={isContiguous} />
-              );
+              if (isLiveStreamingAssistantTurn) {
+                messageNode = null;
+              } else {
+                messageNode = (
+                  <AssistantMessage
+                    message={msg}
+                    isContiguous={isContiguous}
+                    interactiveEvents={state.interactiveEvents}
+                    messages={state.messages}
+                    currentSessionId={state.currentSessionId}
+                    subagentsByParentMessageId={state.subagentsByParentMessageId}
+                    subagentDetailsById={state.subagentDetailsById}
+                    availableAgents={state.availableAgents}
+                    todoItems={state.todoItems}
+                  />
+                );
+              }
             }
 
             return (
@@ -776,6 +858,7 @@ function ChatContent() {
 
           {/* Live streaming activity card (thinking/progress/subagents) */}
           <StreamingCard
+            streaming={state.streaming}
             isContiguous={
               visibleMessages.length > 0 &&
               visibleMessages[visibleMessages.length - 1].role === "assistant"
@@ -783,7 +866,7 @@ function ChatContent() {
           />
 
           {/* Loading status while processing before first stream payload */}
-          {showAiResponseLoading ? (
+          {showExtendedLoading ? (
             <ThinkingBubble />
           ) : null}
 

@@ -372,6 +372,9 @@ export class MessageStreamService {
       let events;
       try {
         events = await client.event.subscribe(eventSubscribeOptions);
+        for await (const event of events.stream) {
+          // this.logger.info("[EVENT STREAM]", event);
+        }
       } catch (subscribeError) {
         // if (!workspaceDirectory) {
         //   throw subscribeError;
@@ -901,12 +904,14 @@ export class MessageStreamService {
       partID: typeof part?.id === "string" ? part.id : undefined,
       partType: typeof part?.type === "string" ? part.type : undefined,
       delta:
-        (typeof part?.delta === "string" && part.delta) ||
-        (typeof properties.delta === "string" && properties.delta) ||
-        undefined,
+        (() => {
+          const raw = (typeof part?.delta === "string" && part.delta) ||
+            (typeof properties.delta === "string" && properties.delta);
+          return raw ? raw.trim() : undefined;
+        })(),
       text:
-        (typeof part?.text === "string" && part.text) ||
-        (typeof properties.text === "string" && properties.text) ||
+        (typeof part?.text === "string" && part.text.trim()) ||
+        (typeof properties.text === "string" && properties.text.trim()) ||
         undefined,
       directory:
         typeof (event as Record<string, unknown>).directory === "string"
@@ -919,7 +924,7 @@ export class MessageStreamService {
   private isDuplicateEvent(event: StreamEvent): boolean {
     const now = Date.now();
     const signature = this.getEventSignature(event);
-    const duplicateWindowMs = 350;
+    const duplicateWindowMs = 750;
     const staleEntryWindowMs = 10_000;
     const source =
       typeof (event as Record<string, unknown>).source === "string"
