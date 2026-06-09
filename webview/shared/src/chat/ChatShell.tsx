@@ -86,7 +86,7 @@ function CompactionDivider({
           <button
             type="button"
             onClick={onToggle}
-            className="oc-compaction-divider-pill oc-compaction-divider-pill-button"
+            className="oc-compaction-divider-card oc-compaction-divider-card-button"
             aria-pressed={!collapsed}
             title={collapsed ? "Show compacted messages" : "Hide compacted messages"}
             data-collapsed={collapsed ? "true" : "false"}
@@ -101,7 +101,7 @@ function CompactionDivider({
             <span className="oc-compaction-divider-action">{actionLabel}</span>
           </button>
         ) : (
-          <div className="oc-compaction-divider-pill" aria-label={meta}>
+          <div className="oc-compaction-divider-card" aria-label={meta}>
             <span className="oc-compaction-divider-icon" aria-hidden="true">
               <Archive className="h-3.5 w-3.5" />
             </span>

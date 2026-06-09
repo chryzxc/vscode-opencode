@@ -1221,9 +1221,11 @@ export class ModelAndAgentManager {
         ? capability.variants.map((v) => v.toLowerCase().trim())
         : [];
     }
-    if (variants.length === 0 || !variants.includes(normalizedLevel)) return undefined;
     // "none" means no extra reasoning — omit the variant field entirely
     if (normalizedLevel === "none") return undefined;
+    // "auto" lets the model decide the thinking level — omit the variant field
+    if (normalizedLevel === "auto") return undefined;
+    if (variants.length === 0 || !variants.includes(normalizedLevel)) return undefined;
     return normalizedLevel;
   }
 }

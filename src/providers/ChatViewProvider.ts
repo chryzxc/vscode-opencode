@@ -6700,7 +6700,9 @@ export class ChatViewProvider
         this.selectedModel.providerID,
         this.selectedModel.modelID,
       )?.reasoning ?? false;
-      const disableThinkingStructuredOutput = thinkingLevel === "none" && modelReasoning;
+      const disableThinkingStructuredOutput =
+        thinkingLevel === "auto" ||
+        (thinkingLevel === "none" && modelReasoning);
       const useStructuredOutput =
         !slashCommandInvocation &&
         !retryWithoutStructuredOutput &&
@@ -6725,7 +6727,7 @@ export class ChatViewProvider
         partTypes: parts.map((p: any) => p.type),
       });
       const promptVariant = await this.resolvePromptVariant(session.id);
-      if (thinkingLevel === "none") {
+      if (thinkingLevel === "none" || thinkingLevel === "auto") {
         (promptBody as Record<string, unknown>).variant = null;
       } else if (promptVariant) {
         (promptBody as Record<string, unknown>).variant = promptVariant;

@@ -3271,6 +3271,7 @@ export function ThinkingLevelControl() {
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
   const variantDescriptions: Record<string, string> = {
+    auto: "Let the model decide",
     minimal: "Fastest response",
     low: "Light reasoning",
     medium: "Balanced reasoning",
@@ -3303,9 +3304,13 @@ export function ThinkingLevelControl() {
     return () => document.removeEventListener("mousedown", handler);
   }, [thinkingDropdownOpen, dispatch]);
 
-  const localVariants =
+  const baseVariants =
     modelCapability && Array.isArray(modelCapability.variants)
       ? modelCapability.variants
+      : [];
+  const localVariants: ThinkingLevel[] =
+    baseVariants.length > 0
+      ? ["auto" as ThinkingLevel, ...(baseVariants as ThinkingLevel[])]
       : [];
 
   const displayLabel = (lvl?: string) => {

@@ -54,6 +54,7 @@ import type {
   Message,
   MessagePart,
   MessageStep,
+  Model,
   ReasoningEvent,
   StreamingState,
   StreamingStep,
@@ -3768,6 +3769,49 @@ function getThinkingVariant(
   return undefined;
 }
 
+function messageModelSupportsThinking(
+  message: Message | undefined,
+  streaming: StreamingState | undefined,
+  availableModels: Model[],
+): boolean {
+  let providerID: string | undefined;
+  let modelID: string | undefined;
+
+  if (streaming?.isActive) {
+    providerID = streaming.providerID;
+    modelID = streaming.modelID;
+  }
+
+  if (!providerID || !modelID) {
+    if (message?.info) {
+      const info = message.info as Record<string, unknown>;
+      const infoModel = info.model as Record<string, string> | undefined;
+      providerID = providerID ?? infoModel?.providerID ?? info.providerID as string;
+      modelID = modelID ?? infoModel?.modelID ?? info.modelID as string;
+    }
+  }
+
+  if (!providerID || !modelID) {
+    providerID = providerID ?? message?.providerID;
+    modelID = modelID ?? message?.modelID;
+  }
+
+  if (!providerID || !modelID) {
+    const msgModel = message?.model;
+    if (msgModel) {
+      providerID = providerID ?? msgModel.providerID;
+      modelID = modelID ?? msgModel.modelID;
+    }
+  }
+
+  if (!providerID || !modelID) return false;
+
+  const match = availableModels.find(
+    (m) => m.providerID === providerID && m.modelID === modelID,
+  );
+  return Boolean(match && (match.reasoning || (match.variants && match.variants.length > 0)));
+}
+
 function formatThinkingVariantLabel(variant: string): string {
   const trimmed = variant.trim();
   if (!trimmed) return "";
@@ -3798,7 +3842,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   todoItems?: AppState["todoItems"];
 }) {
   const dispatch = useAppDispatch();
-  const { assistantTurnPending } = useAppState();
+  const { assistantTurnPending, availableModels } = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
@@ -4456,6 +4500,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     return modelLabel(message ?? ({} as Message));
   }, [message, streaming]);
   const thinkingVariant = getThinkingVariant(message, streaming);
+  const showMessageThinking = useMemo(
+    () =>
+      !!thinkingVariant &&
+      messageModelSupportsThinking(message, streaming, availableModels),
+    [thinkingVariant, message, streaming, availableModels],
+  );
   const tokens = getTokenInfo(message);
   const inputTok = tokens?.input ?? 0;
   const outputTok = tokens?.output ?? 0;
@@ -4894,7 +4944,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                           </span>
                         </div>
                       )}
-                      {thinkingVariant && (
+                      {showMessageThinking && (
                         <div className="flex items-center gap-1 opacity-60">
                           <span className="text-oc-xs font-medium shrink-0">•</span>
                           <span className="oc-msg-thinking-label">
