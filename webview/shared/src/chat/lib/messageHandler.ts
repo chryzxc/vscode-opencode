@@ -2,7 +2,7 @@ import type { Dispatch } from 'react';
 
 import type { AppAction } from './store';
 import { appReducer, hasSystemMessagePatternInText } from './store';
-import logger from './logger';
+import logger, { setGlobalShowBrowserConsole } from './logger';
 import type {
   ActivityDetail,
   ActivityDiffExcerpt,
@@ -665,6 +665,24 @@ function needsBoundarySpace(previous: string, next: string): boolean {
   return /[A-Za-z0-9]/.test(prevChar) && /[A-Za-z0-9]/.test(nextChar);
 }
 
+/**
+ * Resolve a streaming content update with minimal transformation.
+ *
+ * Contract:
+ * - Returns raw data as-is. No boundary-space insertion, no word-overlap detection,
+ *   no reformatting. The caller is responsible for any presentation-level cleanup.
+ * - This prevents garbled content at tool-call boundaries where delta events from
+ *   a new AI response would otherwise be appended to stale reasoning text.
+ *
+ * Cases:
+ * 1. Empty incoming → null (no-op)
+ * 2. No current content → set raw chunk as-is
+ * 3. Same normalized content → null (no-op, deduplicate)
+ * 4. Incoming starts with current → extract remainder as delta (full-snapshot continuation)
+ * 5. Current starts with incoming → null (stale snapshot, don't regress)
+ * 6. fromDelta=true → append raw chunk directly
+ * 7. Fallback → replace with raw chunk (non-delta full snapshot)
+ */
 export function resolveStreamingContentUpdate(
   currentContent: string,
   incomingChunk: string,
@@ -690,39 +708,17 @@ export function resolveStreamingContentUpdate(
     if (!remainder) {
       return null;
     }
-    const patchedRemainder =
-      needsBoundarySpace(currentContent, remainder) ? ` ${remainder}` : remainder;
-    return { content: patchedRemainder, append: true };
+    return { content: remainder, append: true };
   }
 
   if (currentNormalized.startsWith(incomingNormalized)) {
-    // Older snapshot; ignore to avoid regressions/flicker.
     return null;
   }
 
-  const overlapRemainder = findWordOverlapRemainder(
-    currentContent,
-    incomingChunk,
-  );
-  if (overlapRemainder !== null) {
-    return {
-      content: needsBoundarySpace(currentContent, overlapRemainder)
-        ? ` ${overlapRemainder}`
-        : overlapRemainder,
-      append: true,
-    };
-  }
-
   if (fromDelta) {
-    return {
-      content: needsBoundarySpace(currentContent, incomingChunk)
-        ? ` ${incomingChunk}`
-        : incomingChunk,
-      append: true,
-    };
+    return { content: incomingChunk, append: true };
   }
 
-  // Non-delta updates are usually full snapshots from providers.
   return { content: incomingChunk, append: false };
 }
 
@@ -938,7 +934,40 @@ function looksLikeFilePath(value: string): boolean {
   if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.startsWith("file://")) {
     return true;
   }
-  return /^[\w.-]+\.[\w.-]+$/.test(trimmed);
+
+  /**
+   * IMPORTANT: Very restrictive pattern to prevent false positives.
+   *
+   * This was updated to fix a bug where text like "attachment handling in chat
+   * Search for component files with names containing 'chat', 'message', etc."
+   * was being incorrectly matched as a file path.
+   *
+   * The new pattern:
+   * 1. ONLY matches known file extensions (whitelist approach)
+   * 2. REQUIRES proper filename structure (alphanumeric start/end)
+   * 3. REJECTS text with spaces, quotes, or special characters
+   *
+   * VALID matches:
+   * - Button.tsx ✅
+   * - config.json ✅
+   * - file-name.js ✅
+   *
+   * INVALID matches (correctly rejected):
+   * - "input", "output" etc. ❌ (contains quotes, spaces, not known extension)
+   * - attachment handling in chat ❌ (spaces, no proper extension)
+   * - etc. ❌ (not a known extension)
+   */
+  const KNOWN_EXTENSIONS = [
+    'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'go', 'rs', 'c', 'cpp',
+    'h', 'hpp', 'java', 'rb', 'php', 'sh', 'bash', 'zsh', 'fish', 'json',
+    'yaml', 'yml', 'toml', 'md', 'mdx', 'css', 'scss', 'less', 'html',
+    'xml', 'svg', 'sql', 'prisma', 'lock', 'env', 'gitignore', 'dockerfile',
+    'makefile'
+  ];
+
+  // Very restrictive pattern: only known extensions, proper filename structure
+  return /^[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9]\.([a-zA-Z0-9]{2,8})$/.test(trimmed) &&
+         KNOWN_EXTENSIONS.some(ext => trimmed.toLowerCase().endsWith('.' + ext));
 }
 
 function extractFilePathCandidate(
@@ -4134,6 +4163,17 @@ function hasDuplicateTokenPattern(tokens: string[]): boolean {
   return duplicateAdjacentCount >= 2 && duplicateAdjacentCount / tokens.length > 0.2;
 }
 
+/**
+ * Decide whether the streaming-assembled content should replace the
+ * server-provided final content during message normalization.
+ *
+ * Guards (in order):
+ * 1. Reject if streaming content has <thought> tag reasoning.
+ * 2. Reject if streaming content has duplicate-token patterns (garbled output
+ *    from deltas appending across tool-call boundaries).
+ * 3-6. Length/token-overlap heuristics — prefer richer stream snapshots only
+ *    when they clearly contain the final content and aren't garbled.
+ */
 function shouldPreferStreamingContent(
   finalContent: string,
   streamingContent: string,
@@ -4142,6 +4182,10 @@ function shouldPreferStreamingContent(
     return false;
   }
   if (containsThoughtTagReasoning(streamingContent)) {
+    return false;
+  }
+  const streamTokens = comparableTokens(streamingContent);
+  if (hasDuplicateTokenPattern(streamTokens)) {
     return false;
   }
 
@@ -8348,6 +8392,31 @@ function handleStreamEvent(
   const isPartUpdateEvent = eventType.startsWith("message.part.");
   const normalizedEventType = isPartUpdateEvent ? "message.part.updated" : eventType;
   const isHeartbeatEvent = isHeartbeatEventType(eventType);
+  if (!isHeartbeatEvent && !terminalErrorReached) {
+    const capturePayload: Record<string, unknown> = { type: eventType };
+    if (payload.properties) {
+      capturePayload.properties = payload.properties;
+    }
+    if (payload.part) {
+      capturePayload.part = payload.part;
+    }
+    if (payload.info) {
+      capturePayload.info = payload.info;
+    }
+    if (payload.structured) {
+      capturePayload.structured = payload.structured;
+    }
+    if (payload.text) {
+      capturePayload.text = payload.text;
+    }
+    if (payload.id || payload.messageId || (payload as UnknownRecord).messageID) {
+      capturePayload.id = payload.id || payload.messageId || (payload as UnknownRecord).messageID;
+    }
+    if (payload.sessionId || payload.sessionID) {
+      capturePayload.sessionId = payload.sessionId || payload.sessionID;
+    }
+    dispatch({ type: "APPEND_SDK_EVENT_PAYLOAD", payload: capturePayload });
+  }
   const state = getState();
   const current = state.streaming;
   const properties = asRecord(payload.properties);
@@ -10676,6 +10745,24 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             type: "SET_SERVER_VERSION",
             payload: asString(state.serverVersion) || undefined,
           });
+          const debugConfig = asRecord(state.debugConfig);
+          if (debugConfig) {
+            const cfg = {
+              showLogger: debugConfig.showLogger !== false,
+              showBrowserConsole: debugConfig.showBrowserConsole !== false,
+              showRawResponse: debugConfig.showRawResponse !== false,
+              showPreRenderDebug: debugConfig.showPreRenderDebug !== false,
+              showSdkDebug: debugConfig.showSdkDebug !== false,
+              showCentralizedDebug: debugConfig.showCentralizedDebug !== false,
+            };
+            dispatch({
+              type: "SET_DEBUG_CONFIG",
+              payload: cfg,
+            });
+            logger.setShowLogger(cfg.showLogger);
+            logger.setShowBrowserConsole(cfg.showBrowserConsole);
+            setGlobalShowBrowserConsole(cfg.showBrowserConsole);
+          }
           dispatch({
             type: "SET_COMPATIBILITY_WARNINGS",
             payload: normalizeCompatibilityWarnings(state.compatibilityWarnings),
@@ -10700,6 +10787,27 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           }
 
+          break;
+        }
+        case "debugConfigUpdate": {
+          const cfg = asRecord(data.debugConfig);
+          if (cfg) {
+            const parsed = {
+              showLogger: cfg.showLogger !== false,
+              showBrowserConsole: cfg.showBrowserConsole !== false,
+              showRawResponse: cfg.showRawResponse !== false,
+              showPreRenderDebug: cfg.showPreRenderDebug !== false,
+              showSdkDebug: cfg.showSdkDebug !== false,
+              showCentralizedDebug: cfg.showCentralizedDebug !== false,
+            };
+            dispatch({
+              type: "SET_DEBUG_CONFIG",
+              payload: parsed,
+            });
+            logger.setShowLogger(parsed.showLogger);
+            logger.setShowBrowserConsole(parsed.showBrowserConsole);
+            setGlobalShowBrowserConsole(parsed.showBrowserConsole);
+          }
           break;
         }
         case "modelsList": {

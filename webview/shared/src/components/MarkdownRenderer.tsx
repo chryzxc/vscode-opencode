@@ -112,16 +112,100 @@ async function copyMarkdownCode(text: string): Promise<void> {
  * by the tool-event file links in AssistantMessage.
  */
 /**
+ * Check if a potential file path is actually a valid file reference.
+ * This prevents false positives like "etc." or single words with periods.
+ */
+function isValidFilePath(filePath: string): boolean {
+  // Directories are always valid if they end with /
+  if (filePath.endsWith('/')) return true;
+
+  // Must contain a dot for extension
+  const lastDotIndex = filePath.lastIndexOf('.');
+  if (lastDotIndex === -1) return false;
+
+  const extension = filePath.slice(lastDotIndex + 1).toLowerCase();
+  const fileName = filePath.slice(lastDotIndex > 0 ? 0 : filePath.lastIndexOf('/')).replace(/^.*\//, '');
+
+  // List of common English words that should not be treated as filenames
+  const commonWords = new Set([
+    'etc', 'vs', 'js', 'ts', 'py', 'go', 'rs', 'c', 'cpp', 'java', 'rb', 'php',
+    'sh', 'bash', 'zsh', 'fish', 'json', 'yaml', 'yml', 'toml', 'md', 'css', 'scss',
+    'less', 'html', 'xml', 'svg', 'sql', 'env', 'fig', 'jpg', 'png', 'gif', 'pdf',
+    'doc', 'txt', 'log', 'tmp', 'bak', 'old', 'new', 'org', 'com', 'net', 'io',
+    'app', 'lib', 'bin', 'etc', 'usr', 'var', 'opt', 'sys', 'dev', 'proc',
+    'and', 'or', 'the', 'for', 'with', 'from', 'into', 'over', 'under', 'about'
+  ]);
+
+  // If it's a single common word with extension, it's likely not a file reference
+  if (commonWords.has(fileName.toLowerCase().replace(/\.[^.]*$/, ''))) {
+    // Allow if it has path context (contains / or starts with ./)
+    if (!filePath.includes('/') && !filePath.startsWith('.')) {
+      return false;
+    }
+  }
+
+  // If no path context and short filename, be more strict
+  if (!filePath.includes('/') && fileName.length < 5) {
+    // Must be a known extension
+    const knownExtensions = new Set([
+      'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'go', 'rs', 'c', 'cpp', 'h', 'hpp',
+      'java', 'rb', 'php', 'sh', 'bash', 'zsh', 'fish', 'json', 'yaml', 'yml', 'toml',
+      'md', 'mdx', 'css', 'scss', 'less', 'html', 'xml', 'svg', 'sql', 'prisma',
+      'lock', 'env', 'gitignore', 'dockerfile', 'makefile'
+    ]);
+    if (!knownExtensions.has(extension)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * Injects a file-icon + clickable link for text that looks like a file path.
- * Matches: src/foo.ts, ./bar.tsx, path/to/file.py, bare filenames like foo.ts
  *
+ * IMPORTANT: This regex is VERY RESTRICTIVE to prevent false positives.
+ * It was updated to fix issues where normal text like "attachment handling in chat
+ * Search for component files with names containing 'chat', 'message', etc."
+ * was being incorrectly matched as a file path and rendered with a file icon.
+ *
+ * The regex now:
+ * 1. ONLY matches known file extensions (ts, js, json, etc.)
+ * 2. REQUIRES proper filename structure (must start/end with alphanumeric)
+ * 3. REJECTS text with spaces, line breaks, quotes, or special characters
+ * 4. REQUIRES file extensions to be 2-8 characters long
+ *
+ * VALID matches:
+ * - src/foo.ts ✅
+ * - ./bar.tsx ✅
+ * - path/to/file.py ✅
+ * - config.json ✅
+ *
+ * INVALID matches (correctly rejected):
+ * - "input", "bubble" etc. ❌ (contains quotes, spaces)
+ * - attachment handling in chat ❌ (spaces, line breaks)
+ * - etc. ❌ (not a known extension, too short)
+ * - Multi-line sentences ❌ (contains line breaks)
+ *
+ * Matches: src/foo.ts, ./bar.tsx, path/to/file.py, bare filenames like foo.ts
  * Uses the VS Code file icon theme CSS classes (same as FileIcon in MessageComponents.tsx).
  * Clicking a path posts { type: 'openFile', file: <path> } to VS Code.
  */
 function injectFileIcons(container: HTMLElement): void {
-  // Group 1 = optional boundary char, Group 2 = the file path (including directories ending with /)
+  // Group 1 = optional boundary char (space, quote, etc.)
+  // Group 2 = the file path (with strict validation)
+  //
+  // Pattern breakdown:
+  // 1. (^|[\s(["'`]) - Boundary: start of string or space/bracket/quote
+  // 2. (?:\.{1,2}\/)? - Optional ./ or ../ prefix
+  // 3. [a-zA-Z0-9_] - Must start with alphanumeric or underscore
+  // 4. [a-zA-Z0-9_.-]* - Middle part: alphanumeric, dots, hyphens (NOT spaces)
+  // 5. [a-zA-Z0-9] - Must end with alphanumeric (NOT dot, hyphen, etc.)
+  // 6. \. - Literal dot before extension
+  // 7. (?:ts|tsx|js|...) - ONLY known extensions (whitelist approach)
+  // 8. (?=$|[\s)"'`]) - End boundary: end of string or space/quote
   const FILE_PATH_RE =
-    /(^|[\s(["'`])((?:\.{1,2}\/)?(?:[\w.-]+\/)+[\w.-]+\.[\w]+|[\w.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|c|cpp|h|hpp|java|rb|php|sh|bash|zsh|fish|json|yaml|yml|toml|md|mdx|css|scss|less|html|xml|svg|sql|prisma|lock|env|gitignore|dockerfile|makefile)|(?:\.{1,2}\/)?(?:[\w.-]+\/)+)(?=$|[\s)"'`])/gi;
+    /(^|[\s(["'`])((?:\.{1,2}\/)?[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9](?:\/[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9])+\/[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9]\.[a-zA-Z0-9]{2,8}|(?:\.{1,2}\/)?[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9]\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|c|cpp|h|hpp|java|rb|php|sh|bash|zsh|fish|json|yaml|yml|toml|md|mdx|css|scss|less|html|xml|svg|sql|prisma|lock|env|gitignore|dockerfile|makefile)(?=$|[\s)"'`]))/gi;
 
   const walk = (node: Node) => {
     if (
@@ -146,10 +230,16 @@ function injectFileIcons(container: HTMLElement): void {
       let hadMatch = false;
 
       while ((match = FILE_PATH_RE.exec(text)) !== null) {
-        hadMatch = true;
         // match[1] = boundary char (space, quote, etc.), match[2] = file path
         const boundaryChar = match[1];
         const filePath = match[2];
+
+        // Skip if this doesn't look like a valid file path
+        if (!isValidFilePath(filePath)) {
+          continue;
+        }
+
+        hadMatch = true;
         const pathStart = match.index + boundaryChar.length;
 
         // Preserve text (and the boundary char) before the file path

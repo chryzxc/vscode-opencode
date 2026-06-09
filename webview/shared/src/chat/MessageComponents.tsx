@@ -45,7 +45,8 @@ import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 import { DiffStats } from "./DiffStats";
 import { asString } from "./lib/messageHandler";
-import logger from "./lib/logger";
+import logger, { getGlobalShowBrowserConsole } from "./lib/logger";
+import { FILE_MENTION_REGEX } from "./PanelComponents";
 
 import type {
   ActivityDetail,
@@ -169,6 +170,15 @@ function getFileExtension(path: string): string {
 // Get color for file extension
 function getFileColor(ext: string): string {
   return FILE_COLOR_MAP[ext] || "var(--oc-text-muted)";
+}
+
+// Check if a path is a URL (http/https)
+function isUrl(path: string): boolean {
+  if (!path || typeof path !== "string") {
+    return false;
+  }
+  const trimmed = path.trim().toLowerCase();
+  return trimmed.startsWith("http://") || trimmed.startsWith("https://");
 }
 
 function isReasoningPart(part: MessagePart): boolean {
@@ -1963,6 +1973,70 @@ function normalizedUserMessageText(message?: Message): string {
   return sanitizeUserContent(withoutGenericFenceEcho);
 }
 
+// Function to parse text and extract file mentions
+function parseFileMentions(text: string) {
+  if (!text) return [];
+  const parts: Array<{ type: 'text' | 'file'; content: string; filename?: string }> = [];
+  let lastIndex = 0;
+  let match;
+  FILE_MENTION_REGEX.lastIndex = 0; // Reset regex state
+
+  while ((match = FILE_MENTION_REGEX.exec(text)) !== null) {
+    // Add text before the match
+    if (match.index > lastIndex) {
+      parts.push({
+        type: 'text',
+        content: text.slice(lastIndex, match.index)
+      });
+    }
+    // Add the file mention
+    parts.push({
+      type: 'file',
+      content: match[0],
+      filename: match[1]
+    });
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push({
+      type: 'text',
+      content: text.slice(lastIndex)
+    });
+  }
+
+  return parts.length > 0 ? parts : [{ type: 'text', content: text }];
+}
+
+// Component to render text with highlighted file mentions
+function renderHighlightedText(text: string) {
+  const parts = parseFileMentions(text);
+
+  return parts.map((part, index) => {
+    const key = `${part.type}-${index}`;
+    if (part.type === 'file' && part.filename) {
+      return (
+        <span
+          key={key}
+          className="file-mention-chip"
+          onClick={() => {
+            // Open file when clicked
+            vscode.postMessage({
+              type: "openFile",
+              file: part.filename,
+            });
+          }}
+          title={`Open ${part.filename}`}
+        >
+          {part.content}
+        </span>
+      );
+    }
+    return <span key={key}>{part.content}</span>;
+  });
+}
+
 function isPlanProceedMessageContent(value: string): boolean {
   return (
     /\bproceed on this plan\.?/i.test(value) ||
@@ -2600,7 +2674,8 @@ function subagentModelLabel(
   subagent: SubagentSummary,
   detail?: SubagentDetail,
 ): string {
-  console.log('[SUBAGENT][RENDER] subagentModelLabel called with data', {
+  if (getGlobalShowBrowserConsole()) {
+    console.log('[SUBAGENT][RENDER] subagentModelLabel called with data', {
     subagentId: subagent.id,
     providerID: subagent.providerID,
     modelID: subagent.modelID,
@@ -2609,7 +2684,8 @@ function subagentModelLabel(
     hasDetail: !!detail,
     detailProviderID: detail?.providerID,
     detailModelID: detail?.modelID,
-  });
+    });
+  }
   const provider = subagent.providerID || detail?.providerID;
   const model = subagent.modelID || detail?.modelID;
   if (provider && model) {
@@ -2780,7 +2856,8 @@ function SubagentsInlineCard({
                 | SubagentDetail
                 | undefined;
 
-              console.log('===SUBAGENT_SPAWN=== [UI_RENDER] Rendering subagent card', {
+              if (getGlobalShowBrowserConsole()) {
+                console.log('===SUBAGENT_SPAWN=== [UI_RENDER] Rendering subagent card', {
                 subagentId: subagent.id,
                 hasDetail: !!detail,
                 subagentKeys: subagent ? Object.keys(subagent) : [],
@@ -2795,6 +2872,7 @@ function SubagentsInlineCard({
                 detailStatus: detail?.status,
                 subagentStatus: subagent.status,
               });
+              }
 
               const resolvedStatus = resolveSubagentStatus(subagent, detail);
               const hasTerminalStopMarker = !!(
@@ -3153,12 +3231,58 @@ function buildDisplayEvents(
     (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
   const normalizePathForMatch = (value?: string) =>
     (value || "").replace(/\\/g, "/").toLowerCase();
+  /**
+   * Extract file paths from text while avoiding false positives.
+   *
+   * IMPORTANT: This function uses a VERY RESTRICTIVE regex to prevent
+   * extracting normal text as file paths. This fixes issues where descriptive
+   * text like "attachment handling in chat\nSearch for component files with
+   * names containing 'chat', 'message', 'conversation', 'thread', 'input',
+   * 'bubble' etc." was incorrectly parsed as a file path.
+   *
+   * The regex now ONLY matches:
+   * 1. Known file extensions (whitelist: ts, js, json, etc.)
+   * 2. Proper filename structure (alphanumeric start/end)
+   * 3. Valid path separators (/ or \)
+   * 4. No spaces, quotes, or special characters in filenames
+   *
+   * VALID extractions:
+   * - "edit src/components/Button.tsx" → "src/components/Button.tsx" ✅
+   * - "read ./config.json" → "./config.json" ✅
+   * - "writing to /path/to/file.py" → "/path/to/file.py" ✅
+   *
+   * INVALID extractions (correctly rejected):
+   * - "input", "bubble" etc. → undefined ❌ (quotes, spaces, not a valid file)
+   * - "attachment handling in chat" → undefined ❌ (spaces, no extension)
+   * - "etc." → undefined ❌ (not a known extension)
+   * - Multi-line sentences → undefined ❌ (contains line breaks)
+   *
+   * @param value - Text to search for file paths
+   * @returns Extracted file path or undefined if no valid path found
+   */
   const extractFilePathFromText = (value?: string): string | undefined => {
     if (!value) return undefined;
+    // Very restrictive pattern to avoid extracting text that looks like file paths
+    // Only match actual file paths with known extensions, not arbitrary text with dots
     const match = value.match(
-      /(?:^|[\s("'`])((?:\.{1,2}\/|\/|[A-Za-z]:\\)?[\w./\\-]+\.[A-Za-z0-9]+)(?:$|[\s)"'`])/,
+      /(?:^|[\s("'`])((?:\.{1,2}\/|\/|[A-Za-z]:\\)?[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9](?:\/[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9])*\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|c|cpp|h|hpp|java|rb|php|sh|bash|zsh|fish|json|yaml|yml|toml|md|mdx|css|scss|less|html|xml|svg|sql|prisma|lock|env|gitignore|dockerfile|makefile))(?:$|[\s)"'`])/,
     );
     return match?.[1];
+  };
+
+  /**
+   * Check if a string IS a valid file path (not contains one).
+   * Unlike extractFilePathFromText which finds paths within text,
+   * this validates that the entire string is a valid file path.
+   */
+  const isValidFilePath = (value?: string): boolean => {
+    if (!value) return false;
+    // Match the entire string as a file path, not just finding one within text
+    // This prevents arbitrary text with "/" from being treated as file paths
+    const isValid = value.match(
+      /^(?:\.{1,2}\/|\/|[A-Za-z]:\\)?[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9](?:\/[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9])*\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|c|cpp|h|hpp|java|rb|php|sh|bash|zsh|fish|json|yaml|yml|toml|md|mdx|css|scss|less|html|xml|svg|sql|prisma|lock|env|gitignore|dockerfile|makefile)$/,
+    );
+    return !!isValid;
   };
 
   // Clean event labels - remove unwanted prefixes and filter out system noise
@@ -3236,7 +3360,25 @@ function buildDisplayEvents(
         filePath = message.edits[0].file;
       }
 
-      const fileName = filePath ? filePath.split(/[/\\]/).pop() : undefined;
+      // Extract filename from filePath, but validate it looks like a real filename
+      // This prevents arbitrary text like "attachment handling in chat" from being treated as a filename
+      const fileName = (() => {
+        if (!filePath) return undefined;
+        const segments = filePath.split(/[/\\]/);
+        const lastSegment = segments.pop();
+
+        // A valid filename should:
+        // 1. Have a file extension (contains a dot with extension after it)
+        // 2. Not be too long (arbitrary text segments tend to be long)
+        // 3. Not have excessive whitespace
+        // 4. Not contain special characters that suggest it's not a filename
+        const hasExtension = /\.[a-zA-Z0-9]{1,10}$/.test(lastSegment);
+        const notTooLong = lastSegment.length <= 100;
+        const notExcessiveWhitespace = (lastSegment.match(/\s/g) || []).length <= 2;
+        const looksLikeFilename = hasExtension && notTooLong && notExcessiveWhitespace;
+
+        return looksLikeFilename ? lastSegment : undefined;
+      })();
       const fallbackEdit = Array.isArray(message?.edits)
         ? filePath
           ? message.edits.find(
@@ -3533,27 +3675,13 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
             <Check className="h-3.5 w-3.5" />
             <span className="font-medium">Plan Approved</span>
           </div>
-          {fileChips.length > 0 && (
-            <div className="flex flex-wrap justify-end gap-1">
-              {fileChips.map((file) => (
-                <span
-                  key={file}
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft"
-                  title={file}
-                >
-                  <FileIcon filePath={file} className="h-3.5 w-3.5 shrink-0 opacity-85" />
-                  <span className="truncate">{file}</span>
-                </span>
-              ))}
-            </div>
-          )}
         </div>
       </div>
     );
   }
 
 
-  if (!content && fileChips.length === 0 && !hasImages) {
+  if (!content && !hasImages) {
     return null;
   }
 
@@ -3568,25 +3696,15 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
                 return (
                   <>
                     <span className="oc-readable-accent font-medium">{match[1]}</span>
-                    {match[2]}
+                    {renderHighlightedText(match[2])}
                   </>
                 );
               }
-              return content;
+              return renderHighlightedText(content);
             })()}
           </div>
-          {(fileChips.length > 0 || hasImages) && (
+          {hasImages && (
             <div className="mt-2 flex flex-wrap gap-1">
-              {fileChips.map((file) => (
-                <span
-                  key={file}
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft"
-                  title={file}
-                >
-                  <FileIcon filePath={file} className="h-3.5 w-3.5 shrink-0 opacity-85" />
-                  <span className="truncate">{file}</span>
-                </span>
-              ))}
               {(message.images ?? []).map((src: string, index: number) => (
                 <button
                   key={src}
@@ -3842,7 +3960,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   todoItems?: AppState["todoItems"];
 }) {
   const dispatch = useAppDispatch();
-  const { assistantTurnPending, availableModels } = useAppState();
+  const { assistantTurnPending, availableModels, debugConfig } = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
@@ -3855,8 +3973,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const progressTimelineRef = useRef<HTMLDivElement>(null);
   const requestedSubagentConversationRef = useRef<Set<string>>(new Set());
 
-  const rawInputDebug = useMemo(() => {
-    if (!config.debug.showPreRenderDebug) return null;
+  const centralizedDebugData = useMemo(() => {
+    if (!debugConfig.showCentralizedDebug) return null;
     const safeReplacer = () => {
       const seen = new WeakSet();
       return (key: string, value: unknown) => {
@@ -3870,15 +3988,36 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         return value;
       };
     };
+    const sdkPayloads = streaming?.rawSdkEventPayloads ?? [];
+    const raw = message?.rawResponse;
+    let rawResponseValue: unknown = raw;
+    if (typeof raw === "string") {
+      try { rawResponseValue = JSON.parse(raw); }
+      catch { rawResponseValue = raw; }
+    }
     return {
+      streamEventPayloads: sdkPayloads.length > 0 ? sdkPayloads : undefined,
+      rawResponse: rawResponseValue,
       message: JSON.parse(JSON.stringify(message, safeReplacer())),
       streaming: JSON.parse(JSON.stringify(streaming, safeReplacer())),
-      interactiveEvents: JSON.parse(JSON.stringify(interactiveEvents, safeReplacer())),
-      todoItems: JSON.parse(JSON.stringify(todoItems, safeReplacer())),
-      subagentsByParentMessageId: JSON.parse(JSON.stringify(subagentsByParentMessageId, safeReplacer())),
-      subagentDetailsById: JSON.parse(JSON.stringify(subagentDetailsById, safeReplacer())),
     };
-  }, [message, streaming, interactiveEvents, todoItems, subagentsByParentMessageId, subagentDetailsById]);
+  }, [message, streaming, debugConfig.showCentralizedDebug]);
+
+  const sdkDebugData = useMemo(() => {
+    if (!debugConfig.showSdkDebug) return null;
+    const sdkPayloads = streaming?.rawSdkEventPayloads ?? [];
+    const raw = message?.rawResponse;
+    let rawResponseValue: unknown = raw;
+    if (typeof raw === "string") {
+      try { rawResponseValue = JSON.parse(raw); }
+      catch { rawResponseValue = raw; }
+    }
+    return {
+      streamEventPayloads: sdkPayloads.length > 0 ? sdkPayloads : undefined,
+      rawResponse: rawResponseValue,
+      payloadCount: sdkPayloads.length,
+    };
+  }, [streaming, message, debugConfig.showSdkDebug]);
 
   const rawContent = getMessageContent(message, streaming);
   const stickyStreamingContentRef = useRef<{
@@ -4315,14 +4454,16 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     };
     const scopedStore = messageId ? (subagentsByParentMessageId?.[messageId] ?? []) : [];
 
-    console.log('===SUBAGENT_SPAWN=== [MEMO] Subagent lookup', {
-      messageId,
-      activeSessionId,
-      hasStoreData: Boolean(subagentsByParentMessageId),
-      storeKeys: subagentsByParentMessageId ? Object.keys(subagentsByParentMessageId) : [],
-      scopedStoreCount: scopedStore.length,
-      messageSubagentCount: Array.isArray(message?.subagents) ? message.subagents.length : 0,
-    });
+    if (getGlobalShowBrowserConsole()) {
+      console.log('===SUBAGENT_SPAWN=== [MEMO] Subagent lookup', {
+        messageId,
+        activeSessionId,
+        hasStoreData: Boolean(subagentsByParentMessageId),
+        storeKeys: subagentsByParentMessageId ? Object.keys(subagentsByParentMessageId) : [],
+        scopedStoreCount: scopedStore.length,
+        messageSubagentCount: Array.isArray(message?.subagents) ? message.subagents.length : 0,
+      });
+    }
 
     const fromStore = scopedStore.filter((subagent: SubagentSummary) => {
       if (!isInActiveSession(subagent)) {
@@ -4344,12 +4485,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       return subagent.parentMessageId === messageId;
     });
 
-    console.log('===SUBAGENT_SPAWN=== [MEMO] Filter results', {
-      fromStoreCount: fromStore.length,
-      fromMessageCount: fromMessage.length,
-      fromStoreIds: fromStore.map(s => s.id),
-      fromMessageIds: fromMessage.map(s => s.id),
-    });
+    if (getGlobalShowBrowserConsole()) {
+      console.log('===SUBAGENT_SPAWN=== [MEMO] Filter results', {
+        fromStoreCount: fromStore.length,
+        fromMessageCount: fromMessage.length,
+        fromStoreIds: fromStore.map(s => s.id),
+        fromMessageIds: fromMessage.map(s => s.id),
+      });
+    }
 
     if (fromStore.length === 0) return fromMessage;
     if (fromMessage.length === 0) return fromStore;
@@ -4360,10 +4503,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     const extra = fromMessage.filter((s) => !storeIds.has(s.id));
     const result = [...fromStore, ...extra];
 
-    console.log('===SUBAGENT_SPAWN=== [MEMO] Final result', {
-      resultCount: result.length,
-      resultIds: result.map(s => s.id),
-    });
+    if (getGlobalShowBrowserConsole()) {
+      console.log('===SUBAGENT_SPAWN=== [MEMO] Final result', {
+        resultCount: result.length,
+        resultIds: result.map(s => s.id),
+      });
+    }
 
     return result;
   }, [message, messageId, subagentsByParentMessageId, currentSessionId]);
@@ -4594,9 +4739,17 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         rawResponseText: "(rawResponse is missing on this message)",
       };
     }
+    let displayValue: unknown = raw;
+    if (typeof raw === "string") {
+      try {
+        displayValue = JSON.parse(raw);
+      } catch {
+        displayValue = raw;
+      }
+    }
     try {
       return {
-        rawResponseText: withCap(JSON.stringify(raw, null, 2)),
+        rawResponseText: withCap(JSON.stringify(displayValue, null, 2)),
       };
     } catch {
       return {
@@ -4604,7 +4757,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       };
     }
   }, [message?.rawResponse]);
-  const showRawResponseDebug = config.debug.showRawResponse;
+  const showRawResponseDebug = debugConfig.showRawResponse;
   const visibleRawResponseText =
     rawResponseText.trim().length > 0
       ? rawResponseText
@@ -4691,8 +4844,28 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         !hasActiveReasoningPart &&
         !hasPendingReasoningDisplayEvent));
 
+  const cardDebugData = useMemo(() => {
+    if (!debugConfig.showCentralizedDebug) return null;
+    return {
+      effectiveResponseContent: (effectiveResponseContent || "").slice(0, 500),
+      effectiveResponseContentLen: (effectiveResponseContent || "").length,
+      streamingActive: !!streaming?.isActive,
+      streamingContent: (streaming?.content || "").slice(0, 500),
+      streamingReasoning: (streaming?.reasoning || "").slice(0, 200),
+      hasRenderableContent: !!streaming?.hasRenderableContent,
+      hasAssistantFinishSignal: streaming?.hasAssistantFinishSignal,
+      hasTerminalStepSignal: streaming?.hasTerminalStepSignal,
+      showResponseBody,
+      showResponseSection,
+      hasVisibleResponseBody,
+      hasPrimaryResponseBody,
+      isLiveStream,
+      isAborted,
+    };
+  }, [effectiveResponseContent, streaming, showResponseBody, showResponseSection, hasVisibleResponseBody, hasPrimaryResponseBody, isLiveStream, isAborted, debugConfig.showCentralizedDebug]);
+
   const preRenderDebug = useMemo(() => {
-    if (!config.debug.showPreRenderDebug) return null;
+    if (!debugConfig.showPreRenderDebug) return null;
     const streamingContent = streaming?.content || '';
     const streamingReasoning = streaming?.reasoning || '';
     const reasoningEvents = streaming?.reasoningEvents || [];
@@ -4758,6 +4931,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     hasActiveTimelineWork, hasActiveReasoningPart, hasPendingReasoningDisplayEvent,
     showResponseSection, hasVisibleResponseBody,
     hasPrimaryResponseBody, isAborted, displayEvents, thoughtItems,
+    debugConfig.showPreRenderDebug,
   ]);
 
   useEffect(() => {
@@ -4881,18 +5055,33 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         )}
         ref={messageBodyRef}
       >
-        {config.debug.showPreRenderDebug && rawInputDebug && (
+        {debugConfig.showSdkDebug && sdkDebugData && (
           <div
-            data-assistant-section="raw-input-debug"
+            data-assistant-section="sdk-debug"
             className="mb-3"
           >
             <div className="mb-1.5 flex items-center justify-between gap-2">
               <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                Raw Input Data (Debug)
+                SDK Debug
               </div>
             </div>
             <pre className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
-              {JSON.stringify(rawInputDebug, null, 2)}
+              {JSON.stringify(sdkDebugData, null, 2)}
+            </pre>
+          </div>
+        )}
+        {debugConfig.showCentralizedDebug && centralizedDebugData && (
+          <div
+            data-assistant-section="centralized-debug"
+            className="mb-3"
+          >
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                Centralized Debug
+              </div>
+            </div>
+            <pre className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
+              {JSON.stringify(centralizedDebugData, null, 2)}
             </pre>
           </div>
         )}
@@ -5121,8 +5310,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                               } else {
                                 return (
                                   <div className="flex items-start justify-between gap-2 w-full">
-                                    <ExpandableStep className="flex-1 min-w-0">
-                                <div className="flex min-w-0 flex-col items-start gap-2 w-full">
+                                    <ExpandableStep className="flex-1">
+                                <div className="flex flex-col items-start gap-2 w-full min-w-0">
                                   <div className="flex items-center gap-2 flex-wrap">
                                   <span
                                     className={cn(
@@ -5149,8 +5338,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                   )}
                                 </div>
 
-                                <div className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
-                                  {event.filePath ? (
+                                <div className="flex-1 flex-col gap-1 oc-refined-event-content w-full">
+                                  {event.filePath && !isUrl(event.filePath) && !event.label.startsWith('call_') ? (
                                     SEARCH_LABELS.has(event.label) ? (
                                       <SearchBlock
                                         pattern={buildSearchPattern(
@@ -5181,8 +5370,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                       </button>
                                     )
                                   ) : (
-                                    event.summary && (
-                                      event.kind === "reasoning" ? (
+                                    <div
+                                      className={cn(
+                                        "oc-refined-event-summary",
+                                      )}
+                                    >
+                                      {event.kind === "reasoning" ? (
                                         <div className="w-full">
                                           <div
                                             className={cn(
@@ -5196,34 +5389,39 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                             />
                                           </div>
                                         </div>
-                                      ) : (
-                                        <div
-                                          className={cn(
-                                            "oc-refined-event-summary",
+                                      ) : event.label === "bash" ? (
+                                        <TerminalBlockWithOutput
+                                          event={event}
+                                          messageContent={content}
+                                        />
+                                      ) : SEARCH_LABELS.has(event.label) ? (
+                                        <SearchBlock
+                                          pattern={buildSearchPattern(
+                                            event.activityDetail?.query || event.summary,
+                                            event.description,
                                           )}
+                                          scope={event.label}
+                                        />
+                                      ) : event.filePath && isUrl(event.filePath) ? (
+                                        <a
+                                          href={event.filePath}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="oc-refined-url-link flex items-center gap-1.5 hover:underline"
                                         >
-                                        {event.label === "bash" ? (
-                                          <TerminalBlockWithOutput
-                                            event={event}
-                                            messageContent={content}
-                                          />
-                                        ) : SEARCH_LABELS.has(event.label) ? (
-                                          <SearchBlock
-                                            pattern={buildSearchPattern(
-                                              event.activityDetail?.query || event.summary,
-                                              event.description,
-                                            )}
-                                            scope={event.label}
-                                          />
-                                        ) : (
-                                          <MarkdownRenderer
-                                            content={event.summary}
-                                            className="markdown-body"
-                                          />
-                                        )}
-                                      </div>
-                                    )
-                                  ))}
+                                          <ArrowUpRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                                          <span className="break-words whitespace-pre-wrap">
+                                            {event.summary || event.filePath}
+                                          </span>
+                                        </a>
+                                      ) : (
+                                        <MarkdownRenderer
+                                          content={event.summary || event.filePath || ""}
+                                          className="markdown-body"
+                                        />
+                                      )}
+                                    </div>
+                                  )}
 
                                   {/* For non-bash events, render description separately */}
                                   {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.description && (
@@ -5307,9 +5505,9 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                                 </div>
                               </ExpandableStep>
                             </div>
-                        );
-                      }
-                    })()}
+                                );
+                              }
+                            })()}
                           </StepperItem>
                         );
                       })}
@@ -5384,6 +5582,21 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               data-assistant-section="response"
               className={responseSectionClass}
             >
+              {debugConfig.showCentralizedDebug && cardDebugData && (
+                <div
+                  data-assistant-section="card-debug"
+                  className="mb-3"
+                >
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                      Card Data (Debug)
+                    </div>
+                  </div>
+                  <pre className="max-h-[200px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
+                    {JSON.stringify(cardDebugData, null, 2)}
+                  </pre>
+                </div>
+              )}
               {showResponseBody && (
                 <div className={responseBodyClass}>
                   <MarkdownRenderer
@@ -5544,26 +5757,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                 )} */}
 
-              {config.debug.showPreRenderDebug && preRenderDebug && (
-                <div
-                  data-assistant-section="pre-render-debug"
-                  className={
-                    hasPrimaryResponseBody
-                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
-                      : undefined
-                  }
-                >
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                      Pre-Render Data (Debug)
-                    </div>
-                  </div>
-                  <pre className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
-                    {JSON.stringify(preRenderDebug, null, 2)}
-                  </pre>
-                </div>
-              )}
-
               {showRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
@@ -5580,6 +5773,26 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                   </div>
                   <pre className="max-h-[260px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
                     {visibleRawResponseText}
+                  </pre>
+                </div>
+              )}
+
+              {debugConfig.showPreRenderDebug && preRenderDebug && (
+                <div
+                  data-assistant-section="pre-render-debug"
+                  className={
+                    hasPrimaryResponseBody
+                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
+                      : undefined
+                  }
+                >
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                      Pre-Render Data (Debug)
+                    </div>
+                  </div>
+                  <pre className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
+                    {JSON.stringify(preRenderDebug, null, 2)}
                   </pre>
                 </div>
               )}
