@@ -251,9 +251,20 @@ function summarizeStepListForLog(
   });
 }
 
-/**
- * Returns the first non-empty string from the provided values, or undefined if all are empty.
- */
+function isEditLikeStep(step: MessageStep | StreamingStep): boolean {
+  const partType = asString(step.partType).toLowerCase();
+  const type = asString(step.type).toLowerCase();
+  const tool = asString(step.activityDetail?.tool).toLowerCase();
+  const kind = asString(step.activityDetail?.kind).toLowerCase();
+
+  if (partType === "patch" || type === "patch") return true;
+  if (kind === "file_edit") return true;
+  if (step.diffStats && (step.diffStats.added > 0 || step.diffStats.deleted > 0)) return true;
+  if (tool && (tool.includes("write") || tool.includes("replace") || tool.includes("edit") || tool.includes("patch"))) return true;
+
+  return false;
+}
+
 function firstNonEmptyString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) {
@@ -1339,6 +1350,19 @@ function extractActivityStepsFromParts(
       continue;
     }
 
+    if (isEditLikeStep(normalized)) {
+      logger.info("[ACTIVITY STEP][EDIT] Extracted edit step from part", {
+        title: normalized.title,
+        type: normalized.type,
+        partType: normalized.partType,
+        status: normalized.status,
+        content: normalized.content,
+        diffStats: normalized.diffStats,
+        activityDetail: normalized.activityDetail,
+        rawPartKeys: Object.keys(rec),
+      });
+    }
+
     fromParts.push(normalized);
     if (callID) {
       stepIndexByCallId.set(callID, fromParts.length - 1);
@@ -1422,6 +1446,22 @@ function normalizeActivitySteps(
   });
 
   if (merged.length > 0) {
+    const editSteps = merged.filter(isEditLikeStep);
+    if (editSteps.length > 0) {
+      logger.info("[ACTIVITY STEP][EDIT] Rehydrated edit steps", {
+        messageId,
+        editCount: editSteps.length,
+        editSteps: editSteps.map((s) => ({
+          title: s.title,
+          type: s.type,
+          partType: s.partType,
+          status: s.status,
+          content: s.content,
+          diffStats: s.diffStats,
+          activityDetail: s.activityDetail,
+        })),
+      });
+    }
     return merged;
   }
   const fallback = extractActivityStepsFromParts(sanitizedMergedParts, "final");
@@ -6389,6 +6429,8 @@ function applyStructuredSubagentPayload(
         childSessionId: subagent.childSessionId,
         agentId: subagent.agentId || subagent.agent || subagent.name || subagent.id,
         agentRole: subagent.agentRole || undefined,
+        providerID: subagent.providerID || subagent.provider || undefined,
+        modelID: subagent.modelID || subagent.model || undefined,
         status,
         latestActivity:
           subagent.latestActivity || subagent.description || subagent.name || 'Subagent update',
@@ -8128,10 +8170,18 @@ function mergeStreamingSnapshotIntoHistory(
     null;
   const candidateIds: Array<string | null | undefined> = [streamingMessageId];
 
-  // Some providers/hydration paths do not preserve a stable final assistant ID.
-  // In that case, resolve the latest same-turn assistant by content so we replace
-  // instead of appending a duplicate hydrated assistant card.
-  if (!streamingMessageId) {
+  // Providers use evt_-prefixed message IDs for lifecycle events (streaming
+  // start/finish) that can land after the authoritative msg_ message.  Without
+  // text-match fallback these evt_ entries would be appended as duplicate
+  // assistant cards and coalesce into the visible response with stale text.
+  // Expand the text-match path to cover missing IDs AND evt_-prefixed IDs so
+  // the evt_ entry replaces the existing non-evt message instead of forking
+  // the assistant run.
+  const shouldTryTextMatch =
+    !streamingMessageId ||
+    (typeof streamingMessageId === "string" && streamingMessageId.startsWith("evt_"));
+
+  if (shouldTryTextMatch) {
     const incomingText = normalizeComparableText(
       extractMessageText(streamingMessage),
     );
@@ -8157,11 +8207,21 @@ function mergeStreamingSnapshotIntoHistory(
         if (!isAssistantHistoryMessage(candidate)) {
           continue;
         }
+        const candidateId = getMessageId(candidate);
+        const isNonEvtCandidate =
+          typeof candidateId === "string" && !candidateId.startsWith("evt_");
+        // When the incoming snapshot has an evt_ ID, prefer latching onto the
+        // first non-evt assistant message (msg_), even without text matching.
+        // This prevents the evt_ entry from forking the assistant run and
+        // keeps the canonical response text surfaced by the msg_ card.
+        if (isNonEvtCandidate) {
+          candidateIds.unshift(candidateId);
+          break;
+        }
         const candidateText = normalizeComparableText(extractMessageText(candidate));
         if (!candidateText || candidateText !== incomingText) {
           continue;
         }
-        const candidateId = getMessageId(candidate);
         if (candidateId) {
           candidateIds.push(candidateId);
           break;
@@ -8257,7 +8317,6 @@ function maybeCompleteOnStepsFinished(
   const hasContent = streaming.hasRenderableContent === true;
   if (!hasContent) return false;
 
-  dispatch({ type: "SET_PROCESSING", payload: false });
   return true;
 }
 
@@ -8527,6 +8586,17 @@ function handleStreamEvent(
       payload: { pending: true, messageId },
     });
     dispatch({ type: "SET_PROCESSING", payload: true });
+    logger.info("[LOADING][HANDLER] stream bootstrap - new streaming + SET_PROCESSING(true)", {
+      messageId,
+      eventType,
+      isExplicitStart,
+      isAssistantUpdateStart,
+      canBootstrapFromPart,
+      currentSessionId: state.currentSessionId,
+      processingSessionIds: state.processingSessionIds,
+      wasProcessing: state.isProcessing,
+      hadStreaming: !!current,
+    });
   }
 
   const streamResponseType = firstNonEmptyString(
@@ -9103,6 +9173,25 @@ function handleStreamEvent(
           });
         }
 
+        const toolStepEditLike = isEditLikeStep({
+          type: "tool",
+          title,
+          partType: "tool",
+          filePath,
+          activityDetail: baseActivityDetail,
+        } as StreamingStep);
+        if (toolStepEditLike) {
+          logger.info("[ACTIVITY STEP][EDIT] Streaming tool step (edit-like)", {
+            messageId,
+            title,
+            tool,
+            filePath,
+            callID,
+            activityDetail: baseActivityDetail,
+            rawPart: part,
+          });
+        }
+
         if (filePath) {
           dispatch({ type: 'ADD_STREAMING_EDIT', payload: filePath });
         }
@@ -9176,6 +9265,11 @@ function handleStreamEvent(
 
       if (partType === 'patch') {
         const files = Array.isArray(part.files) ? part.files : [];
+        logger.info("[ACTIVITY STEP][EDIT] Streaming patch part", {
+          messageId,
+          files,
+          rawPart: part,
+        });
         files.forEach((file) => {
           const path = asString(file);
           if (path) {
@@ -9471,7 +9565,34 @@ function handleStreamEvent(
 
 
 
-      if (finish) {
+      // Lifecycle events that carry the final structured message text may not
+      // include an explicit finish signal from the server. When a lifecycle
+      // message.updated delivers renderable text, treat it as a terminal signal
+      // so the loading state transitions to complete instead of staying stuck.
+      if (finish || (structuredKind === "lifecycle" && hasRenderableLiveStructuredUpdate)) {
+        const effectiveFinish = structuredKind === "lifecycle" && !finish;
+        if (effectiveFinish) {
+          streamDebug("Stream: lifecycle event with renderable update treated as terminal", {
+            messageId,
+            structuredKind,
+            hasRenderableLiveStructuredUpdate,
+            currentStreaming: summarizeStreamingForLog(getState().streaming),
+          });
+
+          // Lifecycle events carry the final message text in structured output
+          // rather than in streaming.content. Inject it into the streaming
+          // snapshot so the flush creates a message with the correct body.
+          const streamingNow = getState().streaming;
+          if (streamingNow && structuredText) {
+            const streamingOverride: StreamingState = {
+              ...streamingNow,
+              content: structuredText,
+              structuredOutput: structuredOutput as unknown as StreamingState["structuredOutput"],
+              responseType: (structuredOutput?.responseType || "message") as StructuredResponseType,
+            };
+            flushVisibleStreamingSnapshotToMessages(dispatch, getState, streamingOverride);
+          }
+        }
         const terminalStatus: "done" | "error" =
           asString(asRecord(payload.info)?.error) ||
           asString(asRecord(properties)?.error)
@@ -9486,6 +9607,12 @@ function handleStreamEvent(
             type: "SET_STREAMING",
             payload: {
               ...finalized,
+              // Lifecycle events carry the correct final text in
+              // structured output, not streaming.content. Inject it
+              // so subsequent state reads reflect the real content.
+              ...(effectiveFinish && structuredText
+                ? { content: structuredText }
+                : {}),
               hasAssistantFinishSignal: true,
             },
           });
@@ -9494,6 +9621,7 @@ function handleStreamEvent(
           type: "SET_ASSISTANT_TURN_PENDING",
           payload: { pending: false, messageId: null },
         });
+        dispatch({ type: 'SET_PROCESSING', payload: false });
         dispatch({ type: 'FINISH_STREAMING' });
       } else {
         dispatch({ type: 'SET_PROCESSING', payload: true });
@@ -9502,10 +9630,43 @@ function handleStreamEvent(
     }
     case 'session.error':
     case 'error': {
-      logger.debug(`Processing error event`, {
-        normalizedEventType,
-        errorMessage: asString(payload.message),
-      });
+      const errorMessage = asString(payload.message) || asString(payload.error) || asString(asRecord(payload.error)?.message);
+      const errorReason = asString(payload.reason) || asString(payload.code);
+
+      // Only show user-facing errors for genuine problems, not signaling events
+      // Error events are used for various purposes - only show toasts for actual errors
+      const isGenuineError = errorMessage &&
+        errorMessage.trim().length > 0 &&
+        // Filter out signaling/completion messages
+        !errorReason?.includes("completed") &&
+        !errorReason?.includes("finished") &&
+        !errorReason?.includes("done") &&
+        // Only show if it looks like a user-facing problem
+        (errorMessage.includes("quota") ||
+         errorMessage.includes("limit") ||
+         errorMessage.includes("rate") ||
+         errorMessage.includes("429") ||
+         errorMessage.includes("quota") ||
+         errorMessage.toLowerCase().includes("error") ||
+         errorMessage.toLowerCase().includes("failed") ||
+         errorMessage.toLowerCase().includes("timeout"));
+
+      if (isGenuineError) {
+        logger.info("ERROR_FLOW: Showing genuine error to user", {
+          normalizedEventType,
+          errorMessage,
+          errorReason,
+        });
+        dispatch({ type: "ADD_ERROR_MESSAGE", payload: errorMessage });
+      } else {
+        logger.debug("Skipping error event - not user-facing", {
+          normalizedEventType,
+          errorMessage,
+          errorReason,
+        });
+      }
+
+      // Always clean up processing state
       dispatch({
         type: "SET_ASSISTANT_TURN_PENDING",
         payload: { pending: false, messageId: null },
@@ -10480,6 +10641,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               dispatch({ type: "SET_PROCESSING", payload: true });
             }
           }
+          logger.info("[LOADING][HANDLER] initState processed", {
+            sessionId,
+            processingSessionIds,
+            sessionIsProcessing: processingSessionIds.includes(sessionId ?? ""),
+            isProcessingBefore: stateBeforeInit.isProcessing,
+            streamingExistsBefore: !!stateBeforeInit.streaming,
+            hasMessagesBefore: stateBeforeInit.messages.length,
+          });
           dispatch({
             type: "SET_SERVER_STATUS",
             payload: asString(state.serverStatus, "connected"),
@@ -11993,6 +12162,61 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "error": {
           const errorMsg = asString(data.message, "Unknown error");
+
+          // Log all error messages to understand what's being received
+          logger.info("ERROR_FLOW: Backend error message received", {
+            errorMsg,
+            messageLength: errorMsg.length,
+            dataKeys: Object.keys(data),
+            sessionId: data.sessionId,
+            timestamp: new Date().toISOString(),
+          });
+
+          // Filter out spurious error messages that aren't real user-facing errors
+          // Check for generic error patterns that should be ignored
+          const genericErrorPatterns = [
+            "An error occurred while processing your request",
+            "Unknown error",
+            "error processing your request",
+            "something went wrong",
+            "there was an error",
+            "an error has occurred",
+            "unable to process",
+            "failed to process",
+          ];
+
+          const isGenericError = genericErrorPatterns.some((pattern) =>
+            errorMsg.toLowerCase().includes(pattern.toLowerCase())
+          );
+
+          const hasSpecificErrorDetails = errorMsg &&
+            (errorMsg.includes("quota") ||
+             errorMsg.includes("limit") ||
+             errorMsg.includes("rate") ||
+             errorMsg.includes("429") ||
+             errorMsg.toLowerCase().includes("network") ||
+             errorMsg.toLowerCase().includes("connection") ||
+             errorMsg.toLowerCase().includes("timeout") && !errorMsg.includes("processing"));
+
+          // Only show errors that are NOT generic AND have specific error details
+          if (!errorMsg || isGenericError || !hasSpecificErrorDetails) {
+            logger.info("ERROR_FLOW: Skipping generic backend error", {
+              errorMsg,
+              isGenericError,
+              hasSpecificErrorDetails,
+              reason: isGenericError ? "Generic error pattern" : !hasSpecificErrorDetails ? "No specific error details" : "Empty message",
+            });
+            // Still clear processing state, but don't show error to user
+            dispatch({ type: "SET_PROCESSING", payload: false });
+            dispatch({ type: "FINISH_STREAMING" });
+            dispatch({ type: "SET_STREAMING", payload: null });
+            break;
+          }
+
+          logger.info("ERROR_FLOW: Showing specific backend error to user", {
+            errorMsg,
+          });
+
           const stateBeforeError = getState();
           const currentStreaming = stateBeforeError.streaming;
           const errorSessionId = firstNonEmptyString(
@@ -12239,9 +12463,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             if (isInteractiveAnswerSubmission) {
               awaitingInteractiveTurnStart = true;
               // Interactive answer submit starts a brand-new assistant turn.
-              // Clear stale stream snapshots so previous turn content cannot leak or
-              // duplicate into the next messageResponse normalization pass.
-              flushVisibleStreamingSnapshotToMessages(dispatch, getState);
+              // Clear stale stream snapshots so previous turn content cannot leak
+              // into the next turn. Do NOT flush the streaming snapshot — it was
+              // already canonicalized by question.asked / SET_PROCESSING_SESSIONS.
+              // A second flush replaces the existing message with the raw streaming
+              // snapshot, which can lose structured output fields and clear content.
               latestStreamingSnapshot = null;
               activeSubagentParentMessageIds = new Set<string>();
               // Clear stale streaming so the next turn starts from a clean state,
@@ -12319,9 +12545,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               type: "SET_MESSAGES",
               payload: updatedMessages,
             });
-            if (!isInteractiveAnswerSubmission) {
-              dispatch({ type: "CLEAR_DISMISSED_INTERACTIVE_EVENTS" });
-            }
+            // Don't clear dismissed interactive events - they should stay dismissed
+            // If a user closed a popover, it shouldn't reappear when they send a new message
           }
           break;
         }
@@ -12347,15 +12572,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             if (stateAfterProcessingUpdate.isSteering) {
               dispatch({ type: "SET_STEERING", payload: false });
             }
-            // If the backend says the active session is no longer processing,
-            // treat any visible stream snapshot as final and persist it.
             flushVisibleStreamingSnapshotToMessages(dispatch, getState);
             if (stateAfterProcessingUpdate.isProcessing) {
               dispatch({ type: "SET_PROCESSING", payload: false });
             }
             if (stateAfterProcessingUpdate.streaming) {
               dispatch({ type: "FINISH_STREAMING" });
-              dispatch({ type: "SET_STREAMING", payload: null });
             }
             const pendingInteractiveEvents = latestPendingInteractiveEvents(
               stateAfterProcessingUpdate.messages || [],

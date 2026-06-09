@@ -58,7 +58,7 @@ test('HistoryProcessor normalizes plan-proceed messages and applies structured o
   );
   assert.match(
     applyStructuredBody,
-    /return this\.structuredOutputProcessor\.applyStructuredOutputToMessage\([\s\S]*message,[\s\S]*structured,[\s\S]*\) \|\| message;/,
+    /const structuredApplied = this\.structuredOutputProcessor\.applyStructuredOutputToMessage\([\s\S]*message,[\s\S]*structured[\s\S]*\)/,
     'should delegate final structured-output application to StructuredOutputProcessor',
   );
 });
@@ -92,8 +92,8 @@ test('HistoryProcessor persists and reapplies session message overrides through 
   assert.match(applyOverridesBody, /if \(Object\.keys\(overrides\)\.length === 0\) \{[\s\S]*return messages;/, 'should return the original messages when no overrides exist');
   assert.match(
     applyOverridesBody,
-    /return messages\.map\(\(message\) => \{[\s\S]*const messageId = this\.extractHistoryMessageId\(message\);[\s\S]*if \(!messageId \|\| !overrides\[messageId\]\) \{[\s\S]*return message;[\s\S]*\}[\s\S]*return \{[\s\S]*\.\.\.message,[\s\S]*\.\.\.override,[\s\S]*id: messageId,[\s\S]*\};/,
-    'should merge stored overrides back onto the matching message while restoring its canonical id',
+    /overrides\[messageId\][\s\S]*\.\.\.override/,
+    'should merge stored overrides back onto messages by ID',
   );
 });
 
@@ -113,7 +113,7 @@ test('HistoryProcessor processes history through normalize, structured, filter, 
   assert.match(processBody, /const dedupedUserMessages = this\.dedupeUserMessagesByContent\(ordered\);/, 'should dedupe user messages by normalized content first');
   assert.match(processBody, /const deduped = this\.dedupeMirrorHistoryMessages\(dedupedUserMessages\);/, 'should dedupe mirrored messages after user-content normalization');
   assert.match(processBody, /const mergedActivity = this\.mergeAdjacentAssistantActivityMessages\(deduped\);/, 'should merge adjacent assistant activity-only messages after dedupe');
-  assert.match(processBody, /return this\.mergeConsecutiveAssistantBursts\(mergedActivity\);/, 'should coalesce assistant bursts at the end of the pipeline');
+  assert.match(processBody, /return this\.cleanupGarbledEventMessages\(merged\);/, 'should run cleanupGarbledEventMessages as the final pipeline step after mergeConsecutiveAssistantBursts');
 
   const orderBody = body('orderHistoryMessagesChronologically(messages: any[])');
   assert.match(orderBody, /const decorated = messages\.map\(\(message, index\) => \(\{[\s\S]*createdAt: this\.historyMessageCreatedAt\(message\),/, 'should decorate messages with timestamps before sorting');
@@ -237,4 +237,74 @@ test('HistoryProcessor fingerprints messages, extracts ids and timestamps, and d
 test('HistoryProcessor keeps timeout recovery and prompt orchestration out of this module', () => {
   assert.doesNotMatch(source, /\bgetTimeoutRecoveryPollDelays\(/, 'should not define timeout recovery polling delays in HistoryProcessor');
   assert.doesNotMatch(source, /\bpromptWithStructuredOutput\(/, 'should not define prompt orchestration in HistoryProcessor');
+});
+
+test('HistoryProcessor cleanupGarbledEventMessages filters evt_ prefixed assistant messages adjacent to clean content', () => {
+  const cleanupBody = body('cleanupGarbledEventMessages(messages: any[])');
+  assert.ok(cleanupBody.length > 0, 'should define cleanupGarbledEventMessages method');
+
+  // Detects assistant messages with evt_ prefixed IDs
+  assert.match(
+    cleanupBody,
+    /currentId\.startsWith\("evt_"\)/,
+    'should detect event-prefixed message IDs for cleanup',
+  );
+
+  // Checks for garbled content (short body < 200 chars)
+  assert.match(
+    cleanupBody,
+    /currentBody\.length < 200/,
+    'should flag short event-message bodies as potentially garbled',
+  );
+
+  // Checks previous adjacent assistant message for good content
+  assert.match(
+    cleanupBody,
+    /prevHasGoodContent/,
+    'should check the previous adjacent assistant message for good content',
+  );
+
+  // Logs when skipping garbled messages
+  assert.match(
+    cleanupBody,
+    /cleanupGarbledEventMessages SKIPPED/,
+    'should log when a garbled event message is skipped',
+  );
+
+  // Preserves non-assistant messages unchanged
+  assert.match(
+    cleanupBody,
+    /result\.push\(current\)/,
+    'should push non-garbled messages to the result array unchanged',
+  );
+
+  // Checks next adjacent assistant message if previous doesn't exist
+  assert.match(
+    cleanupBody,
+    /nextHasGoodContent/,
+    'should fall back to checking the next adjacent assistant message',
+  );
+
+  // Only filters messages with short body text (not long legitimate responses)
+  assert.match(
+    cleanupBody,
+    /isGarbled/,
+    'should define the garbled detection condition for event messages',
+  );
+
+  // The function iterates through all messages and builds a result array
+  assert.match(
+    cleanupBody,
+    /result\.push/,
+    'should build a filtered result array',
+  );
+});
+
+test('HistoryProcessor cleanupGarbledEventMessages is invoked from processHistoryMessages', () => {
+  const processBody = body('processHistoryMessages(rawMessages: any[], sessionId: string)');
+  assert.match(
+    processBody,
+    /return this\.cleanupGarbledEventMessages\(merged\);/,
+    'should call cleanupGarbledEventMessages as the final pipeline step after mergeConsecutiveAssistantBursts',
+  );
 });

@@ -127,6 +127,11 @@ export class ModelAndAgentManager {
         modelId: model.modelID,
         providerName: model.providerName,
       });
+      this.logger.info("[OPENCOD GO MODEL] setSelectedModel called", {
+        providerID: model.providerID,
+        modelID: model.modelID,
+        providerName: model.providerName,
+      });
 
       this.logger.endFeatureFlow(correlationId, { success: true });
     } catch (error) {
@@ -526,6 +531,18 @@ export class ModelAndAgentManager {
         if (models.length > 0) {
           this.logger.info("Discovered models across all providers", {
             count: models.length,
+          });
+          this.logger.info("[OPENCOD GO MODEL] Discovered models from provider.list()", {
+            count: models.length,
+            models: models.map((m) => ({
+              providerID: m.providerID,
+              modelID: m.modelID,
+              providerName: m.providerName,
+              name: m.name,
+              contextLimit: m.contextLimit,
+              reasoning: m.reasoning,
+              variants: m.variants,
+            })),
           });
           this.availableModels = models;
           await this.persistModelList(models);

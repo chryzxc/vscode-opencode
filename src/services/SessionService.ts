@@ -786,6 +786,8 @@ function mergeRicherMessageFields(
   backfillArrayField("interactiveEvents");
   backfillArrayField("parts");
   backfillArrayField("subagents", true);
+  backfillArrayField("images");
+  backfillArrayField("attachments");
 
   if (!merged.plan && fallbackRec.plan) {
     merged.plan = fallbackRec.plan;

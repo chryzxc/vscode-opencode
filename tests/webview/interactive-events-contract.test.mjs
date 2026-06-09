@@ -183,7 +183,7 @@ test('question.asked stream events arm live popover state', () => {
   );
   assert.match(
     storeSource,
-    /case "SET_INTERACTIVE_EVENTS": \{[\s\S]*interactiveEvents:\s*action\.payload[\s\S]*streamingBySessionId:\s*cacheStreamingForSession\(/s,
+    /case "SET_INTERACTIVE_EVENTS": \{[\s\S]*interactiveEvents:\s*deduplicatedEvents[\s\S]*streamingBySessionId:\s*cacheStreamingForSession\(/s,
     'interactive events should also be mirrored into the live streaming snapshot so finalized question turns keep their assistant bubble before hydration',
   );
 });

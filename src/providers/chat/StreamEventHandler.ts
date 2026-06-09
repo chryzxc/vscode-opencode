@@ -62,7 +62,8 @@ export class StreamEventHandler {
     // Only log important events, not every text chunk
     const shouldLog = !eventType.includes("message.part") ||
                        eventType === "message.completed" ||
-                       eventType === "session.completed";
+                       eventType === "session.completed" ||
+                       eventType === "session.created";
 
     if (shouldLog) {
       this.logger.info("[SOURCE] stream event received", {
@@ -70,6 +71,22 @@ export class StreamEventHandler {
         eventType,
         eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
       });
+
+      // Log detailed info for session.created events to check for provider/model data
+      if (eventType === "session.created") {
+        const properties = enrichedEvent?.properties || event?.properties || {};
+        const info = properties?.info || {};
+        this.logger.info('===SUBAGENT_SPAWN=== [SESSION_CREATED] Stream event received', {
+          hasInfo: Boolean(info && typeof info === 'object'),
+          infoKeys: info ? Object.keys(info) : [],
+          hasProviderID: Boolean(info?.providerID),
+          hasModelID: Boolean(info?.modelID),
+          providerID: info?.providerID,
+          modelID: info?.modelID,
+          agentId: info?.agentId,
+          sessionId: sessionId,
+        });
+      }
     }
 
     const enrichedEvent = this.structuredOutputProcessor.enrichStreamEvent(event);
@@ -112,15 +129,20 @@ export class StreamEventHandler {
       if (subagentUpdate?.detailsById || subagentUpdate?.subagentDetailsById) {
         const detailsById = subagentUpdate.detailsById || subagentUpdate.subagentDetailsById;
         const detailIds = Object.keys(detailsById);
+        this.logger.info('===SUBAGENT_SPAWN=== [STREAM] Subagent update received', {
+          detailCount: detailIds.length,
+          detailIds: detailIds,
+        });
         for (const detailId of detailIds.slice(0, 3)) {
           const detail = detailsById[detailId];
-          this.logger.info('[SUBAGENT][STREAM] Detail from stream', {
+          this.logger.info('===SUBAGENT_SPAWN=== [STREAM] Detail data', {
             detailId,
             hasProviderID: Boolean(detail?.providerID),
             hasModelID: Boolean(detail?.modelID),
             providerID: detail?.providerID,
             modelID: detail?.modelID,
-            allKeys: detail ? Object.keys(detail) : [],
+            status: detail?.status,
+            agentId: detail?.agentId,
           });
         }
       }

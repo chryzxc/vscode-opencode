@@ -11,18 +11,18 @@ export const config = {
      * Show raw response debug information in chat messages
      * @default true
      */
-    showRawResponse: false,
+    showRawResponse: true,
     /**
      * Disable webview logger output and extension forwarding
      * @default false
      */
-    disableLogs: true,
+    disableLogs: false,
     /**
      * Show pre-render debug panel showing data fed into the AI response card
      * (helps debug reasoning leaks into response content)
      * @default false
      */
-    showPreRenderDebug: false,
+    showPreRenderDebug: true,
   },
 } as const;
 

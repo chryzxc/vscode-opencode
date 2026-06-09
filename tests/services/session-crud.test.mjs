@@ -127,6 +127,16 @@ test('session service merges server/local messages and keeps richer duplicates',
     'duplicate merge should preserve progress events from either copy',
   );
   assert.match(
+    mergeFieldsBody,
+    /backfillArrayField\("images"\)/,
+    'duplicate merge should preserve image attachments from either copy',
+  );
+  assert.match(
+    mergeFieldsBody,
+    /backfillArrayField\("attachments"\)/,
+    'duplicate merge should preserve structured attachments from either copy',
+  );
+  assert.match(
     sessionServiceSource,
     /function getAssistantContentAliasSignature\(message: unknown\): string \| undefined \{[\s\S]*getMessageRoleForSignature\(message\)[\s\S]*getMessageTextForSignature\(message\)[\s\S]*Math\.floor\(created \/ 15_000\)/,
     'assistant alias signatures should use canonical role/text extraction and a time bucket to merge local assistant snapshots with SDK history',

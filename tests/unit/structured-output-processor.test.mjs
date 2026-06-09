@@ -307,15 +307,19 @@ test('StructuredOutputProcessor normalizes structured output across aliases, pla
     /const subagentsDeltaRaw =[\s\S]*sanitizedCanonicalRec\.subagentsDelta \?\? \(rec\.subagents_delta as unknown\);[\s\S]*sanitizedCanonicalRec\.subagentsDelta = subagentsDeltaRaw;/,
     'should preserve subagentsDelta from camelCase and snake_case aliases',
   );
-  assert.match(normalizeBody, /return sanitizedCanonicalRec as StructuredAssistantOutput;/, 'should return sanitized canonical structured output');
+  assert.match(
+    source,
+    /preserveStructuredOutputRawFields\(rec,[\s\S]*sanitizedCanonicalRec/,
+    'should return sanitized canonical structured output via preserveStructuredOutputRawFields',
+  );
 });
 
 test('StructuredOutputProcessor extracts, applies, and enriches structured payloads', () => {
   const extractBody = body('extractStructuredOutput(message: any)');
   assert.match(
     extractBody,
-    /const candidates = \[[\s\S]*message\.structuredOutput,[\s\S]*message\.structured_output,[\s\S]*message\.info\?\.structuredOutput,[\s\S]*message\.info\?\.structured_output,[\s\S]*message\.info\?\.structured,[\s\S]*\];/,
-    'should inspect structured output candidates from top-level and info payloads',
+    /const candidates = \[[\s\S]*message\.structured,[\s\S]*message\.info\?\.structured,[\s\S]*rawResponseRec\?\.structured,[\s\S]*message\.structuredOutput[\s\S]*\];/,
+    'should inspect structured output candidates with message.structured first and rawResponse-based sources before message.structuredOutput',
   );
   assert.match(
     extractBody,
@@ -358,5 +362,56 @@ test('StructuredOutputProcessor extracts, applies, and enriches structured paylo
     enrichBody,
     /const normalized = this\.normalizeStructuredOutput\(structuredCandidate\);[\s\S]*enriched\.structured = normalized;[\s\S]*enriched\.structuredOutput = normalized;[\s\S]*enriched\.hasStructuredOutput = true;/,
     'should attach normalized structured payloads in canonical enriched fields',
+  );
+});
+
+test('StructuredOutputProcessor extractStructuredOutput prefers reliable sources over stale structuredOutput', () => {
+  const extractBody = body('extractStructuredOutput(message: any)');
+
+  // Checks message.structured first (from normalizeSdkAssistantMessage spread)
+  assert.match(
+    extractBody,
+    /message\.structured/,
+    'should include message.structured as the first candidate',
+  );
+
+  // Checks rawResponse-based candidates before message.structuredOutput
+  assert.match(
+    extractBody,
+    /rawResponseRec\?\.structured/,
+    'should check rawResponse-based candidates',
+  );
+
+  // message.structuredOutput is checked after rawResponse sources
+  const structOutputIdx = extractBody.indexOf('message.structuredOutput');
+  const rawResponseIdx = extractBody.indexOf('rawResponseRec');
+  assert.ok(
+    rawResponseIdx > 0 && rawResponseIdx < structOutputIdx,
+    'should check rawResponse candidates before message.structuredOutput to prefer authoritative server data over stale cached data'
+  );
+
+  // Does not include legacy structured_output in the reordered list (consolidated)
+  assert.match(
+    extractBody,
+    /message\.structured_output/,
+    'should still support legacy structured_output as a fallback',
+  );
+});
+
+test('StructuredOutputProcessor applyStructuredOutputToMessage sets content from structured.message for all response types', () => {
+  const applyBody = body('applyStructuredOutputToMessage(');
+
+  // Sets content and text from structured.message unconditionally (not just for question type)
+  assert.match(
+    applyBody,
+    /if \(structured\.message\) \{[\s\S]*updated\.message = structured\.message;[\s\S]*updated\.content = structured\.message;[\s\S]*updated\.text = structured\.message;/,
+    'should set content and text from structured.message when it exists',
+  );
+
+  // The old code only set updated.message (not content/text) without overriding
+  assert.doesNotMatch(
+    applyBody,
+    /if \(structured\.message && !updated\.message\) \{/,
+    'should not guard structured.message application with !updated.message (regression: content/text was left stale)',
   );
 });

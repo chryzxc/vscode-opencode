@@ -52,60 +52,67 @@ function formatCompactionTime(at?: number): string | undefined {
   });
 }
 
-function CompactionDivider({ at }: { at?: number }) {
+function CompactionDivider({
+  at,
+  collapsed,
+  hiddenMessageCount,
+  onToggle,
+}: {
+  at?: number;
+  collapsed?: boolean;
+  hiddenMessageCount?: number;
+  onToggle?: () => void;
+}) {
   const compactedAt = formatCompactionTime(at);
+  const isInteractive = typeof collapsed === "boolean" && typeof onToggle === "function";
+  const summary =
+    collapsed && typeof hiddenMessageCount === "number"
+      ? `${hiddenMessageCount} compacted message${hiddenMessageCount === 1 ? "" : "s"} hidden`
+      : "Compacted history";
+  const meta = collapsed
+    ? compactedAt
+      ? `Compacted ${compactedAt}`
+      : "Session archive"
+    : compactedAt
+      ? `Compacted ${compactedAt}`
+      : "Archive boundary";
+  const actionLabel = collapsed ? "Show history" : "Hide history";
+
   return (
     <div className="oc-compaction-divider-wrap -mx-4 py-2">
       <div className="oc-compaction-divider">
         <span className="oc-compaction-divider-line" />
-        <div className="oc-compaction-divider-pill">
-          <span className="oc-compaction-divider-dot" />
-          <span className="oc-compaction-divider-label">
-            {compactedAt ? `Compacted at ${compactedAt}` : "Compacted"}
-          </span>
-        </div>
+        {isInteractive ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            className="oc-compaction-divider-pill oc-compaction-divider-pill-button"
+            aria-pressed={!collapsed}
+            title={collapsed ? "Show compacted messages" : "Hide compacted messages"}
+            data-collapsed={collapsed ? "true" : "false"}
+          >
+            <span className="oc-compaction-divider-icon" aria-hidden="true">
+              <Archive className="h-3.5 w-3.5" />
+            </span>
+            <span className="oc-compaction-divider-copy">
+              <span className="oc-compaction-divider-label">{summary}</span>
+              <span className="oc-compaction-divider-meta">{meta}</span>
+            </span>
+            <span className="oc-compaction-divider-action">{actionLabel}</span>
+          </button>
+        ) : (
+          <div className="oc-compaction-divider-pill" aria-label={meta}>
+            <span className="oc-compaction-divider-icon" aria-hidden="true">
+              <Archive className="h-3.5 w-3.5" />
+            </span>
+            <span className="oc-compaction-divider-copy">
+              <span className="oc-compaction-divider-label">{summary}</span>
+              <span className="oc-compaction-divider-meta">{meta}</span>
+            </span>
+          </div>
+        )}
         <span className="oc-compaction-divider-line" />
       </div>
-    </div>
-  );
-}
-
-function CompactedMessagesToggle({
-  collapsed,
-  hiddenMessageCount,
-  at,
-  onToggle,
-}: {
-  collapsed: boolean;
-  hiddenMessageCount: number;
-  at?: number;
-  onToggle: () => void;
-}) {
-  const compactedAt = formatCompactionTime(at);
-  const summary = collapsed
-    ? `${hiddenMessageCount} compacted message${hiddenMessageCount === 1 ? "" : "s"} hidden`
-    : "Compacted history expanded";
-  const actionLabel = collapsed ? "Show history" : "Collapse history";
-
-  return (
-    <div className="oc-compaction-toggle-wrap -mx-4 py-2">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="oc-compaction-toggle"
-        title={collapsed ? "Show compacted messages" : "Hide compacted messages"}
-      >
-        <span className="oc-compaction-toggle-icon" aria-hidden="true">
-          <Archive className="h-3.5 w-3.5" />
-        </span>
-        <span className="oc-compaction-toggle-copy">
-          <span className="oc-compaction-toggle-summary">{summary}</span>
-          <span className="oc-compaction-toggle-meta">
-            {compactedAt ? `Compacted ${compactedAt}` : "Session archive"}
-          </span>
-        </span>
-        <span className="oc-compaction-toggle-action">{actionLabel}</span>
-      </button>
     </div>
   );
 }
@@ -538,8 +545,8 @@ function ChatContent() {
     (loadingStartTimeRef.current && loadingElapsedTime < LOADING_MIN_DISPLAY_MS && !hasCompletedAssistantReplyForLatestTurn); // Extended for minimum duration
 
   // DEBUG: Log loading state calculation
-  if (state.isProcessing || state.streaming?.isActive) {
-    logger.info('[LOADING_STATE]', {
+  if (state.isProcessing || state.streaming?.isActive || showExtendedLoading) {
+    logger.info('[LOADING][RENDER] Loading state calculation', {
       isLoadingSession: state.isLoadingSession,
       isProcessing: state.isProcessing,
       currentSessionId: state.currentSessionId,
@@ -555,6 +562,8 @@ function ChatContent() {
       streamingHasRenderableContent: state.streaming?.hasRenderableContent,
       showAiResponseLoading,
       showExtendedLoading,
+      willShowThinkingBubble: showExtendedLoading,
+      willShowStreamingCard: !!state.streaming && (hasRenderableStreamingContent || state.streaming?.isActive),
       loadingStartTime: loadingStartTimeRef.current,
       loadingElapsedTime,
       LOADING_MIN_DISPLAY_MS,
@@ -576,9 +585,46 @@ function ChatContent() {
   const isCompressed = hasCompactedSegment && state.compactedMessagesCollapsed;
   const hiddenMessageCount = isCompressed ? compactionDividerIndex : 0;
   const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
-  const visibleMessages = state.messages.slice(visibleStartIndex);
+  const visibleMessages = (() => {
+    const sliced = state.messages.slice(visibleStartIndex);
+    let lastUserIdx = -1;
+    for (let i = sliced.length - 1; i >= 0; i--) {
+      const role = sliced[i]?.role ?? sliced[i]?.info?.role;
+      if (role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    const hasNonEvtAssistant = sliced.slice(lastUserIdx + 1).some(
+      (m) =>
+        m?.role === "assistant" &&
+        !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
+    );
+    // Guard: strip evt_-prefixed lifecycle-standby messages from the render
+    // list only when a non-evt assistant message exists for the same turn.
+    // Without this guard the evt_ entry is the only visible assistant content
+    // and must be shown.
+    if (!hasNonEvtAssistant) {
+      return sliced;
+    }
+    return sliced.filter(
+      (m) =>
+        !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
+    );
+  })();
   const hasCompatibilityWarnings = state.compatibilityWarnings.length > 0;
   const errorToasts = state.errorMessages;
+
+  // Log error messages for debugging
+  useEffect(() => {
+    if (errorToasts.length > 0) {
+      console.log("ERROR_FLOW: Error messages in ChatShell", {
+        timestamp: new Date().toISOString(),
+        errorCount: errorToasts.length,
+        errorMessages: errorToasts,
+      });
+    }
+  }, [errorToasts]);
 
   const jumpToLatest = () => {
     setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
@@ -754,11 +800,11 @@ function ChatContent() {
                 />
               ) : null}
 
-              {hasCompactedSegment ? (
-                <CompactedMessagesToggle
+              {hasCompactedSegment && isCompressed ? (
+                <CompactionDivider
+                  at={state.lastCompactedAt}
                   collapsed={isCompressed}
                   hiddenMessageCount={hiddenMessageCount}
-                  at={state.lastCompactedAt}
                   onToggle={() => {
                     const nextCollapsed = !state.compactedMessagesCollapsed;
                     dispatch({
@@ -939,4 +985,3 @@ export default function ChatShell() {
     </AppProvider>
   );
 }
-

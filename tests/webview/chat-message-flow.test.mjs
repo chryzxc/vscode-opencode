@@ -160,13 +160,8 @@ test('AssistantMessage suppresses duplicate response text when it matches displa
   );
   assert.match(
     messageSource,
-    /const\s+hasReasoningLeakOverlap\s*=\s*useMemo\([\s\S]*responseBodyLikelyLeaksReasoning\(effectiveResponseContent,\s*displayEvents\)[\s\S]*\);/,
-    'AssistantMessage should derive a cheap leak guard from the displayed reasoning rows',
-  );
-  assert.match(
-    messageSource,
-    /const\s+showResponseSection\s*=\s*[\s\S]*!\s*isAborted[\s\S]*\(hasVisibleResponseBody\s*\|\|\s*shouldShowPlanCard\)[\s\S]*\(!isLiveStream\s*\|\|\s*hasAssistantFinishSignal\)[\s\S]*\(!isLiveStream\s*\|\|\s*\(!hasActiveTimelineWork[\s\S]*!hasReasoningLeakOverlap\)\)/,
-    'AssistantMessage should hide the response section while any timeline work is still pending or the rendered assistant body overlaps the reasoning leak',
+    /const\s+showResponseSection\s*=\s*[\s\S]*!\s*isAborted[\s\S]*\(hasVisibleResponseBody\s*\|\|\s*shouldShowPlanCard\)[\s\S]*\(!isLiveStream\s*\|\|\s*hasAssistantFinishSignal\)[\s\S]*\(!isLiveStream\s*\|\|\s*\(!hasActiveTimelineWork[\s\S]*!hasPendingReasoningDisplayEvent\)\)/,
+    'AssistantMessage should hide the response section while any timeline work is still pending',
   );
   assert.match(
     messageSource,

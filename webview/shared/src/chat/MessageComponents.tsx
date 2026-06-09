@@ -657,6 +657,45 @@ export function FileIcon({
   );
 }
 
+function formatMessageTime(timestamp?: number): string | null {
+  if (!timestamp || typeof timestamp !== "number" || !Number.isFinite(timestamp)) {
+    return null;
+  }
+  return new Date(timestamp).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function getMessageTimestamp(message?: Message): number | undefined {
+  if (!message) return undefined;
+  const rec = message as Record<string, unknown>;
+  const info = rec.info as Record<string, unknown> | undefined;
+  const infoTime = info ? (info.time as Record<string, unknown> | undefined) : undefined;
+  const messageTime = rec.time as Record<string, unknown> | undefined;
+  const numericCandidates = [
+    messageTime?.created,
+    infoTime?.created,
+    rec.created,
+    rec.createdAt,
+    info?.createdAt,
+    rec.timestamp,
+    info?.timestamp,
+  ];
+  for (const candidate of numericCandidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
+    }
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      const parsed = new Date(candidate).getTime();
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
 function messageBodyFromParts(parts?: MessagePart[]): string {
   if (!parts) {
     return "";
@@ -1143,99 +1182,25 @@ function modelLabel(message?: Message): string {
   return model ?? provider ?? "assistant";
 }
 
-function hasPendingStreamingSteps(streaming: StreamingState): boolean {
-  if (Array.isArray(streaming.steps)) {
-    return streaming.steps.some((step) => step.status === "pending");
-  }
-  if (Array.isArray(streaming.progressEvents)) {
-    return streaming.progressEvents.some((step) => step.status === "pending");
-  }
-  return false;
-}
-
-function stripReasoningFromContent(content: string, reasoning: string): string {
-  if (!reasoning || !content) {
-    return content;
-  }
-
-  const contentNorm = content.replace(/\s+/g, ' ').trim();
-  const reasoningNorm = reasoning.replace(/\s+/g, ' ').trim();
-
-  if (contentNorm === reasoningNorm) {
-    return '';
-  }
-
-  if (contentNorm.length > reasoningNorm.length && contentNorm.includes(reasoningNorm)) {
-    const idx = contentNorm.indexOf(reasoningNorm);
-    const before = contentNorm.slice(0, idx).trim();
-    const after = contentNorm.slice(idx + reasoningNorm.length).trim();
-    return [before, after].filter(Boolean).join(' ');
-  }
-
-  if (reasoningNorm.length > contentNorm.length && reasoningNorm.includes(contentNorm)) {
-    return '';
-  }
-
-  return content;
-}
-
+/**
+ * Returns the text to display in the AI response card body.
+ *
+ * *** stream.content is never used *** — it carries transitional text that
+ * leaks reasoning/planning content into the response card. The response body
+ * always derives from message fields (content / text / partsBody / summary).
+ *
+ * This is one layer of a three-layer defense against reasoning leaks:
+ *   1. Extension — StructuredOutputProcessor populates message.content from
+ *      structured fields (plan.summary / plan.intro), not from raw parts.
+ *   2. Webview — getMessageContent ignores stream.content; always uses message.
+ *   3. Webview — showResponseBody hides the markdown body during live streaming.
+ */
 function getMessageContent(
   message?: Message,
   streaming?: StreamingState,
 ): string {
   if (streaming) {
-    // Filter out reasoning content from streaming content as a safety measure
-    // This catches any reasoning that leaked through the event handler
-    const content = streaming.content || '';
-    const hasRenderableContent = streaming.hasRenderableContent === true;
-    const hasReasoningEvents = streaming.reasoningEvents && streaming.reasoningEvents.length > 0;
-    const isInReasoningPart = streaming.inReasoningPart || false;
-
-    // NOTE: When streaming is no longer active (isActive === false), FINISH_STREAMING has already
-    // fired — this happens when a blocking interactive event (e.g. question) is detected mid-stream.
-    // At that point, streaming.content holds the final AI response text (e.g. "I have a few
-    // questions:"). We must NOT discard it based on length — it is the correct final content.
-    if (isInReasoningPart) {
-      return '';
-    }
-
-    if (!hasRenderableContent) {
-      return '';
-    }
-
-    // CRITICAL: While reasoning is active, only suppress the body when there is
-    // no actual assistant text yet. This keeps live reasoning out of the
-    // response body while still allowing trusted assistant text to render.
-    if (streaming.isActive && hasReasoningEvents && content.trim().length === 0) {
-      return '';
-    }
-
-    // Prevent reasoning/activity text from leaking into the assistant response
-    // while steps are still actively pending.
-    if (streaming.isActive && hasPendingStreamingSteps(streaming)) {
-      return '';
-    }
-
-    const reasoningText = (streaming.reasoning || '').trim();
-    if (reasoningText.length > 0 && content.trim().length > 0) {
-      const stripped = stripReasoningFromContent(content, reasoningText);
-      if (stripped !== content) {
-        return stripped;
-      }
-    }
-    const reasoningEvents = streaming.reasoningEvents;
-    if (Array.isArray(reasoningEvents) && reasoningEvents.length > 0 && content.trim().length > 0) {
-      const eventTexts = reasoningEvents.map((e: { text?: string }) => (e.text || '').trim()).filter(Boolean);
-      if (eventTexts.length > 0) {
-        const joinedReasoning = eventTexts.join(' ');
-        const stripped = stripReasoningFromContent(content, joinedReasoning);
-        if (stripped !== content) {
-          return stripped;
-        }
-      }
-    }
-
-    return content;
+    if (!message) return "";
   }
 
   if (!message) {
@@ -1426,7 +1391,18 @@ function thoughtItemsFromStreaming(streaming?: StreamingState): ThoughtItem[] {
     }
   }
 
-  // Avoid showing raw streaming reasoning fallback text in the UI timeline.
+  // Fall back to streaming content as a thinking step so the activity
+  // timeline shows ongoing work even when no explicit reasoning is emitted.
+  const contentText = (streaming.content || "").trim();
+  if (contentText.length > 0) {
+    return [
+      {
+        key: "stream-content-as-thinking",
+        text: contentText,
+      },
+    ];
+  }
+
   return [];
 }
 
@@ -1485,6 +1461,28 @@ function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
   // Filter out tool wrapper events that just show "tool completed successfully"
   // These are internal system events, not actual user-facing progress
   if (type === "tool" && step.title?.toLowerCase().includes("structuredoutput")) {
+    return false;
+  }
+
+  const activityTool = (
+    ("activityDetail" in step ? (step as StreamingStep).activityDetail?.tool : undefined) ?? ""
+  ).toLowerCase();
+  const stepTitleLower = (step.title ?? "").toLowerCase();
+  const normalizedRunPrefix = stepTitleLower.replace(/^running\s+/, "");
+  if (
+    type === "tool" &&
+    step.partType?.toLowerCase() !== "step-start" &&
+    step.partType?.toLowerCase() !== "step-finish" &&
+    !hasUserFacingActivity &&
+    (
+      activityTool === "question" ||
+      activityTool === "request_user_input" ||
+      activityTool === "request-user-input" ||
+      normalizedRunPrefix === "question" ||
+      normalizedRunPrefix === "request_user_input" ||
+      normalizedRunPrefix === "request-user-input"
+    )
+  ) {
     return false;
   }
 
@@ -2572,54 +2570,6 @@ type DisplayEvent = {
   updateCount: number;
 };
 
-function reasoningLeakSummariesFromDisplayEvents(
-  displayEvents: DisplayEvent[],
-): string[] {
-  if (!Array.isArray(displayEvents) || displayEvents.length === 0) {
-    return [];
-  }
-
-  const summaries: string[] = [];
-  for (const event of displayEvents) {
-    if (event.kind !== "reasoning") {
-      continue;
-    }
-    const summary = event.summary?.trim();
-    if (!summary) {
-      continue;
-    }
-    summaries.push(summary);
-  }
-  return summaries;
-}
-
-function responseBodyLikelyLeaksReasoning(
-  responseBody: string,
-  displayEvents: DisplayEvent[],
-): boolean {
-  const normalizedBody = normalizeComparableText(responseBody);
-  if (!normalizedBody) {
-    return false;
-  }
-
-  const reasoningSummaries = reasoningLeakSummariesFromDisplayEvents(displayEvents);
-  if (reasoningSummaries.length === 0) {
-    return false;
-  }
-
-  for (const summary of reasoningSummaries) {
-    const normalizedSummary = normalizeComparableText(summary);
-    if (!normalizedSummary) {
-      continue;
-    }
-    if (normalizedBody.includes(normalizedSummary)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 function sourceFromThoughtKey(
   key: string,
 ): "stream" | "final" | "raw_debug" | undefined {
@@ -2725,13 +2675,13 @@ function SubagentsInlineCard({
   openSubagentModal: (subagentId: string) => void;
 }) {
   const [durationNow, setDurationNow] = useState(() => Date.now());
-  const nonOrphanedSubagents = subagents.filter(
-    (subagent: SubagentSummary) => subagent.status !== "orphaned",
-  );
-  const totalSubagentCount = nonOrphanedSubagents.length;
+  // Show all subagents including orphaned ones - they should be visible in the UI
+  // Orphaned subagents are newly spawned and haven't been linked to a parent session yet
+  const visibleSubagentsList = subagents;
+  const totalSubagentCount = visibleSubagentsList.length;
   const visibleSubagents = (showAllSubagents
-    ? nonOrphanedSubagents
-    : nonOrphanedSubagents.slice(0, 10));
+    ? visibleSubagentsList
+    : visibleSubagentsList.slice(0, 10));
   const hasLiveSubagentDuration = useMemo(
     () =>
       showSubagents &&
@@ -2829,13 +2779,20 @@ function SubagentsInlineCard({
                 | SubagentDetail
                 | undefined;
 
-              console.log('[SUBAGENT][RENDER] Rendering subagent card', {
+              console.log('===SUBAGENT_SPAWN=== [UI_RENDER] Rendering subagent card', {
                 subagentId: subagent.id,
                 hasDetail: !!detail,
+                subagentKeys: subagent ? Object.keys(subagent) : [],
+                detailKeys: detail ? Object.keys(detail) : [],
                 subagentProviderID: subagent.providerID,
                 subagentModelID: subagent.modelID,
+                subagentAgentId: subagent.agentId,
                 detailProviderID: detail?.providerID,
                 detailModelID: detail?.modelID,
+                detailAgentId: detail?.agentId,
+                detailErrorText: detail?.errorText,
+                detailStatus: detail?.status,
+                subagentStatus: subagent.status,
               });
 
               const resolvedStatus = resolveSubagentStatus(subagent, detail);
@@ -3189,6 +3146,7 @@ function buildDisplayEvents(
   timelineBlocks: TimelineBlock[],
   message: Message | undefined,
   isStreamingActive: boolean,
+  assistantTurnPending: boolean,
 ): DisplayEvent[] {
   const stripTrailingEllipsis = (value?: string) =>
     (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
@@ -3245,7 +3203,7 @@ function buildDisplayEvents(
           kind: "reasoning",
           label: "Reasoning",
           summary: text,
-          status: isStreamingActive && source === "stream" ? "pending" : "done",
+          status: (isStreamingActive || assistantTurnPending) && source === "stream" ? "pending" : "done",
           source,
           isImportant: false,
           updateCount: 1,
@@ -3647,7 +3605,15 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
             </div>
           )}
         </div>
-        <div className="mt-1.5 flex justify-end">
+        <div className="mt-1.5 flex items-center justify-end gap-1.5">
+          {(() => {
+            const ts = formatMessageTime(getMessageTimestamp(message));
+            return ts ? (
+              <span className="oc-text-secondary text-[10px] tabular-nums opacity-70">
+                {ts}
+              </span>
+            ) : null;
+          })()}
           <button
             type="button"
             className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
@@ -3823,15 +3789,16 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   message?: Message;
   streaming?: StreamingState;
   isContiguous?: boolean;
-  interactiveEvents: AppState["interactiveEvents"];
-  messages: Message[];
-  currentSessionId: AppState["currentSessionId"];
-  subagentsByParentMessageId: AppState["subagentsByParentMessageId"];
-  subagentDetailsById: AppState["subagentDetailsById"];
-  availableAgents: AppState["availableAgents"];
+  interactiveEvents?: AppState["interactiveEvents"];
+  messages?: Message[];
+  currentSessionId?: AppState["currentSessionId"];
+  subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
+  subagentDetailsById?: AppState["subagentDetailsById"];
+  availableAgents?: AppState["availableAgents"];
   todoItems?: AppState["todoItems"];
 }) {
   const dispatch = useAppDispatch();
+  const { assistantTurnPending } = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
@@ -3843,6 +3810,32 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const messageBodyRef = useRef<HTMLDivElement>(null);
   const progressTimelineRef = useRef<HTMLDivElement>(null);
   const requestedSubagentConversationRef = useRef<Set<string>>(new Set());
+
+  const rawInputDebug = useMemo(() => {
+    if (!config.debug.showPreRenderDebug) return null;
+    const safeReplacer = () => {
+      const seen = new WeakSet();
+      return (key: string, value: unknown) => {
+        if (value === undefined) return '(undefined)';
+        if (typeof value === 'function') return '(function)';
+        if (value instanceof Error) return { message: value.message, name: value.name };
+        if (typeof value === 'object' && value !== null) {
+          if (seen.has(value)) return '(circular)';
+          seen.add(value);
+        }
+        return value;
+      };
+    };
+    return {
+      message: JSON.parse(JSON.stringify(message, safeReplacer())),
+      streaming: JSON.parse(JSON.stringify(streaming, safeReplacer())),
+      interactiveEvents: JSON.parse(JSON.stringify(interactiveEvents, safeReplacer())),
+      todoItems: JSON.parse(JSON.stringify(todoItems, safeReplacer())),
+      subagentsByParentMessageId: JSON.parse(JSON.stringify(subagentsByParentMessageId, safeReplacer())),
+      subagentDetailsById: JSON.parse(JSON.stringify(subagentDetailsById, safeReplacer())),
+    };
+  }, [message, streaming, interactiveEvents, todoItems, subagentsByParentMessageId, subagentDetailsById]);
+
   const rawContent = getMessageContent(message, streaming);
   const stickyStreamingContentRef = useRef<{
     messageId: string | null;
@@ -3907,8 +3900,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   }, [thoughtItems, progressItems, resolvedContent, message?.parts]);
   const isStreamingActive = !!streaming?.isActive;
   const displayEvents = useMemo(
-    () => buildDisplayEvents(timelineBlocks, message, isStreamingActive),
-    [timelineBlocks, message, isStreamingActive],
+    () => buildDisplayEvents(timelineBlocks, message, isStreamingActive, assistantTurnPending),
+    [timelineBlocks, message, isStreamingActive, assistantTurnPending],
   );
   const hasPendingReasoningDisplayEvent = useMemo(
     () =>
@@ -4028,6 +4021,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   }, [message, messageId, plan, messages, responseType]);
 
   const latestAssistantMessageId = useMemo(() => {
+    if (!Array.isArray(messages)) return undefined;
     for (let index = messages.length - 1; index >= 0; index--) {
       const candidate = messages[index];
       const role = candidate.role ?? candidate.info?.role ?? "user";
@@ -4046,12 +4040,25 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     showInternalActivity: false,
     expandedReasoningSteps: new Set<string>(),
   });
+  const streamContentReasoningIdx = displayEvents.findIndex(
+    (e) => e.kind === "reasoning" && e.key.endsWith("stream-content-as-thinking") && e.status === "pending",
+  );
+  const pendingStreamReasoning =
+    streamContentReasoningIdx >= 0 ? displayEvents[streamContentReasoningIdx] : undefined;
+  const mainDisplayEvents =
+    streamContentReasoningIdx >= 0
+      ? displayEvents.filter((_, i) => i !== streamContentReasoningIdx)
+      : displayEvents;
+
   const hasCompletedCondensedActivity =
-    displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY &&
+    mainDisplayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY &&
     !viewState.showAllCompletedActivity;
-  const visibleDisplayEvents = hasCompletedCondensedActivity
-    ? displayEvents.slice(-MAX_VISIBLE_COMPLETED_ACTIVITY)
-    : displayEvents;
+  const visibleMainEvents = hasCompletedCondensedActivity
+    ? mainDisplayEvents.slice(-MAX_VISIBLE_COMPLETED_ACTIVITY)
+    : mainDisplayEvents;
+  const visibleDisplayEvents = pendingStreamReasoning
+    ? [...visibleMainEvents, pendingStreamReasoning]
+    : visibleMainEvents;
   const userFacingDisplayEvents = visibleDisplayEvents.filter((event) => {
     if (event.internal) return false;
     return true;
@@ -4059,10 +4066,22 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const internalDisplayEvents = visibleDisplayEvents.filter(
     (event) => event.internal,
   );
-  const timelineDisplayEvents =
+  let timelineDisplayEvents =
     viewState.showInternalActivity && internalDisplayEvents.length > 0
       ? visibleDisplayEvents
       : userFacingDisplayEvents;
+  // Pending reasoning derived from streaming.content (not explicit reasoning
+  // events) represents live in-progress work — push it to the end so it always
+  // appears as the latest activity step in the timeline.
+  if (pendingStreamReasoning) {
+    const pinnedIdx = timelineDisplayEvents.findIndex(
+      (e) => e.key === pendingStreamReasoning.key,
+    );
+    if (pinnedIdx >= 0 && pinnedIdx !== timelineDisplayEvents.length - 1) {
+      const [pinned] = timelineDisplayEvents.splice(pinnedIdx, 1);
+      timelineDisplayEvents = [...timelineDisplayEvents, pinned];
+    }
+  }
   const hiddenActivityEventCount = Math.max(
     0,
     displayEvents.length - visibleDisplayEvents.length,
@@ -4102,6 +4121,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     if (strict.length > 0) {
       return strict;
     }
+    // Orphan mapped todos: todos whose parentMessageId references an assistant
+    // message that no longer exists in the rendered list (e.g. compacted away
+    // or stale ID format). Show these ONLY on the latest assistant message AND
+    // only if no other assistant message already owns them via strict matching.
     const assistantMessageIdentitySet = new Set<string>();
     for (const candidate of messages) {
       const role = candidate.role ?? candidate.info?.role ?? "user";
@@ -4119,7 +4142,18 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         !assistantMessageIdentitySet.has(item.parentMessageId),
     );
     if (orphanMappedTodos.length > 0 && isLatestAssistantMessage) {
-      return orphanMappedTodos;
+      // Only claim orphan todos if no other message in the conversation
+      // strictly owns any todo. Prevents orphans from bleeding into
+      // unrelated messages when the owning message still exists but
+      // uses a different ID variant.
+      const anyStrictMatch = sessionScopedTodoItems.some(
+        (item) =>
+          !!item.parentMessageId &&
+          assistantMessageIdentitySet.has(item.parentMessageId),
+      );
+      if (!anyStrictMatch) {
+        return orphanMappedTodos;
+      }
     }
     // Live-stream safety: if todos have not been stamped with parentMessageId yet,
     // keep showing them on the currently streaming assistant message only.
@@ -4131,9 +4165,19 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       return sessionScopedTodoItems.filter((item) => !item.parentMessageId);
     }
     // Hydration safety: if snapshot todos are session-scoped but unstamped,
-    // keep them visible on the latest assistant message even after streaming.
+    // only show them on the latest assistant message when there is no active
+    // streaming (which already handles unstamped todos above). Unstamped
+    // todos are shown on the latest assistant message ONLY if no other
+    // assistant message has strict ownership of any todo in this session.
     if (!hasAnyScopedTodo && isLatestAssistantMessage) {
-      return sessionScopedTodoItems.filter((item) => !item.parentMessageId);
+      const anyStrictMatchInSession = sessionScopedTodoItems.some(
+        (item) =>
+          !!item.parentMessageId &&
+          assistantMessageIdentitySet.has(item.parentMessageId),
+      );
+      if (!anyStrictMatchInSession) {
+        return sessionScopedTodoItems.filter((item) => !item.parentMessageId);
+      }
     }
     return [];
   }, [
@@ -4225,7 +4269,17 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       }
       return subagent.parentSessionId === activeSessionId;
     };
-    const scopedStore = messageId ? (subagentsByParentMessageId[messageId] ?? []) : [];
+    const scopedStore = messageId ? (subagentsByParentMessageId?.[messageId] ?? []) : [];
+
+    console.log('===SUBAGENT_SPAWN=== [MEMO] Subagent lookup', {
+      messageId,
+      activeSessionId,
+      hasStoreData: Boolean(subagentsByParentMessageId),
+      storeKeys: subagentsByParentMessageId ? Object.keys(subagentsByParentMessageId) : [],
+      scopedStoreCount: scopedStore.length,
+      messageSubagentCount: Array.isArray(message?.subagents) ? message.subagents.length : 0,
+    });
+
     const fromStore = scopedStore.filter((subagent: SubagentSummary) => {
       if (!isInActiveSession(subagent)) {
         return false;
@@ -4246,6 +4300,13 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       return subagent.parentMessageId === messageId;
     });
 
+    console.log('===SUBAGENT_SPAWN=== [MEMO] Filter results', {
+      fromStoreCount: fromStore.length,
+      fromMessageCount: fromMessage.length,
+      fromStoreIds: fromStore.map(s => s.id),
+      fromMessageIds: fromMessage.map(s => s.id),
+    });
+
     if (fromStore.length === 0) return fromMessage;
     if (fromMessage.length === 0) return fromStore;
 
@@ -4253,7 +4314,14 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     // message-scoped entries not yet in the store snapshot.
     const storeIds = new Set(fromStore.map((s: SubagentSummary) => s.id));
     const extra = fromMessage.filter((s) => !storeIds.has(s.id));
-    return [...fromStore, ...extra];
+    const result = [...fromStore, ...extra];
+
+    console.log('===SUBAGENT_SPAWN=== [MEMO] Final result', {
+      resultCount: result.length,
+      resultIds: result.map(s => s.id),
+    });
+
+    return result;
   }, [message, messageId, subagentsByParentMessageId, currentSessionId]);
   const previousSubagentCount = useRef(subagents.length);
 
@@ -4372,7 +4440,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const agentName = getAgentName(message, streaming);
   const agentColor = useMemo(() => {
     if (!agentName || agentName === "assistant") return undefined;
-    const match = availableAgents.find(
+    const match = availableAgents?.find(
       (a) =>
         a.id === agentName || a.name.toLowerCase() === agentName.toLowerCase(),
     );
@@ -4473,12 +4541,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     const raw = message?.rawResponse;
     if (typeof raw === "undefined") {
       return {
-        rawResponseText: "",
-      };
-    }
-    if (typeof raw === "string") {
-      return {
-        rawResponseText: withCap(raw),
+        rawResponseText: "(rawResponse is missing on this message)",
       };
     }
     try {
@@ -4522,6 +4585,11 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const visibleResolvedContent = resolvedContentMatchesError
     ? ""
     : resolvedContent;
+  // For plan messages the display text comes from structured output fields
+  // (plan.intro / plan.summary), not from concatenated raw response parts.
+  // The extension-side applyStructuredOutputToMessage now populates
+  // message.content from the structured fallback, so resolvedContent already
+  // holds the correct structured text. planLeadMessage remains as a fallback.
   const effectiveResponseContent =
     visibleResolvedContent.trim().length > 0
       ? visibleResolvedContent
@@ -4560,13 +4628,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     ? "w-full max-w-none"
     : "w-full";
   const isLiveStream = !!streaming?.isActive;
-  const hasReasoningLeakOverlap = useMemo(
-    () =>
-      isLiveStream &&
-      hasVisibleResponseBody &&
-      responseBodyLikelyLeaksReasoning(effectiveResponseContent, displayEvents),
-    [displayEvents, effectiveResponseContent, hasVisibleResponseBody, isLiveStream],
-  );
+  // Hide the response markdown body during live streaming to prevent
+  // reasoning/planning text from leaking into the AI response card.
+  // The plan card and other non-text response elements remain visible.
+  const showResponseBody = hasResponseContent && !isLiveStream;
   const showResponseSection =
     !isAborted &&
     (hasVisibleResponseBody || shouldShowPlanCard) &&
@@ -4574,8 +4639,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     (!isLiveStream ||
       (!hasActiveTimelineWork &&
         !hasActiveReasoningPart &&
-        !hasPendingReasoningDisplayEvent &&
-        !hasReasoningLeakOverlap));
+        !hasPendingReasoningDisplayEvent));
 
   const preRenderDebug = useMemo(() => {
     if (!config.debug.showPreRenderDebug) return null;
@@ -4627,7 +4691,6 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         hasPendingReasoningDisplayEvent: String(hasPendingReasoningDisplayEvent),
       },
       leakDetection: {
-        hasReasoningLeakOverlap: String(hasReasoningLeakOverlap),
         streamReasoningInContent: String(streamReasoningInContent),
         effectiveContentHasReasoning: String(effectiveContentHasReasoning),
       },
@@ -4635,6 +4698,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         showResponseSection: String(showResponseSection),
         hasVisibleResponseBody: String(hasVisibleResponseBody),
         hasPrimaryResponseBody: String(hasPrimaryResponseBody),
+        showResponseBody: String(showResponseBody),
         isAborted: String(isAborted),
       },
     };
@@ -4642,7 +4706,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     messageId, isLiveStream, streaming, rawContent, content,
     effectiveResponseContent, hasAssistantFinishSignal, hasTerminalStepSignal,
     hasActiveTimelineWork, hasActiveReasoningPart, hasPendingReasoningDisplayEvent,
-    hasReasoningLeakOverlap, showResponseSection, hasVisibleResponseBody,
+    showResponseSection, hasVisibleResponseBody,
     hasPrimaryResponseBody, isAborted, displayEvents, thoughtItems,
   ]);
 
@@ -4767,6 +4831,21 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         )}
         ref={messageBodyRef}
       >
+        {config.debug.showPreRenderDebug && rawInputDebug && (
+          <div
+            data-assistant-section="raw-input-debug"
+            className="mb-3"
+          >
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                Raw Input Data (Debug)
+              </div>
+            </div>
+            <pre className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
+              {JSON.stringify(rawInputDebug, null, 2)}
+            </pre>
+          </div>
+        )}
         {!isContiguous && (
           <div className="oc-msg-header mb-2.5 flex flex-wrap items-start justify-between gap-2">
             <div className="oc-msg-header-main flex min-w-0 flex-1 items-center gap-1.5">
@@ -4899,9 +4978,12 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                         const isLast = index === timelineDisplayEvents.length - 1;
                         const isLatestStreamingEvent =
                           isStreamingActive && isLast;
+                        const showRunning =
+                          (isLatestStreamingEvent || assistantTurnPending) &&
+                          event.status === "pending";
                         const indicatorNode = (
                           <StepIndicator
-                            status={isLatestStreamingEvent && event.status === "pending" ? "running" : event.status}
+                            status={showRunning ? "running" : event.status}
                           />
                         );
                         const shouldShowDetail = viewState.showActivityDetails;
@@ -4913,7 +4995,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                             indicator={indicatorNode}
                             className={cn(
                               "oc-refined-stepper-item group",
-                              isLatestStreamingEvent
+                              showRunning
                                 ? "is-streaming"
                                 : "",
                             )}
@@ -5252,7 +5334,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               data-assistant-section="response"
               className={responseSectionClass}
             >
-              {hasResponseContent && (
+              {showResponseBody && (
                 <div className={responseBodyClass}>
                   <MarkdownRenderer
                     content={effectiveResponseContent}
@@ -5264,7 +5346,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               {shouldShowPlanCard && plan && (
                 <div
                   className={
-                    hasResponseContent
+                    showResponseBody
                       ? "oc-response-plan-separator mt-3 pt-3 border-t"
                       : undefined
                   }
@@ -5457,8 +5539,8 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
 
         </div>
 
-        {!isStreamingActive && showResponseSection && (
-          <div className="mt-2 flex justify-start">
+{!isStreamingActive && showResponseSection && (
+          <div className="mt-2 flex items-center justify-start gap-1.5">
             <button
               type="button"
               className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
@@ -5471,10 +5553,18 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 <Copy className="h-3.5 w-3.5" />
               )}
             </button>
+            {(() => {
+              const ts = formatMessageTime(getMessageTimestamp(message));
+              return ts ? (
+                <span className="oc-text-secondary text-[10px] tabular-nums opacity-70">
+                  {ts}
+                </span>
+              ) : null;
+            })()}
           </div>
         )}
 
-        {isAborted && (
+        {isAborted && !hasQuestionLikeInteractiveContent(message) && (
           <div className="mt-2 flex items-center justify-center">
             <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium tracking-wide text-amber-400">
               <div className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
@@ -6198,12 +6288,12 @@ export const AssistantMessage = memo(function AssistantMessage({
   message?: Message;
   streaming?: StreamingState;
   isContiguous?: boolean;
-  interactiveEvents: AppState["interactiveEvents"];
-  messages: Message[];
-  currentSessionId: AppState["currentSessionId"];
-  subagentsByParentMessageId: AppState["subagentsByParentMessageId"];
-  subagentDetailsById: AppState["subagentDetailsById"];
-  availableAgents: AppState["availableAgents"];
+  interactiveEvents?: AppState["interactiveEvents"];
+  messages?: Message[];
+  currentSessionId?: AppState["currentSessionId"];
+  subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
+  subagentDetailsById?: AppState["subagentDetailsById"];
+  availableAgents?: AppState["availableAgents"];
   todoItems?: AppState["todoItems"];
 }) {
   return (

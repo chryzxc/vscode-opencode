@@ -567,7 +567,7 @@ export class ChatViewProvider
     this.logger = createLogger(LoggingCategories.CHAT_VIEW);
     this.streamService = new MessageStreamService(serverManager);
     this.quotaService = new QuotaService();
-    this.subagentTracker = new SubagentTracker();
+    this.subagentTracker = new SubagentTracker(() => this.selectedModel);
     this.configFilesProvider = new ConfigFilesProvider();
     this.skillManager = new SkillManagerService(context);
     this.skillManager.initialize().catch((error) => {
@@ -597,6 +597,11 @@ export class ChatViewProvider
       this.logger.info(
         `[ChatViewProvider] Loaded persisted model: ${savedModel.modelID} (${savedModel.providerID})`,
       );
+      this.logger.info("[OPENCOD GO MODEL] Persisted model restored on startup", {
+        providerID: savedModel.providerID,
+        modelID: savedModel.modelID,
+        providerName: savedModel.providerName,
+      });
       this.selectedModel = savedModel;
     } else if (savedModel) {
       this.logger.warn(
@@ -2159,6 +2164,29 @@ export class ChatViewProvider
 
   private extractMessageId(message: any): string | undefined {
     if (!message) return undefined;
+
+    // Check for stream event properties that contain the actual message ID
+    const info = this.asRecord(message?.info) || {};
+    const properties = this.asRecord(message?.properties) || {};
+
+    // In stream events, info.id might be an event ID (evt_...), so we need to find the actual message ID
+    const possibleEventId = this.firstNonEmptyString(info?.id, message?.id);
+
+    // If this looks like an event ID, try to get the actual message ID from event properties
+    if (possibleEventId?.startsWith('evt_')) {
+      // For stream events, the message ID should be in properties.info.id or properties.messageId
+      const propertiesInfo = this.asRecord(properties?.info) || {};
+      const streamMessageId = this.firstNonEmptyString(
+        this.firstNonEmptyString(propertiesInfo?.id),
+        this.firstNonEmptyString(properties?.messageId),
+        this.firstNonEmptyString(properties?.id),
+      );
+      if (streamMessageId && (streamMessageId.startsWith('msg_') || streamMessageId.startsWith('evt_'))) {
+        return streamMessageId.startsWith('msg_') ? streamMessageId : possibleEventId;
+      }
+    }
+
+    // Standard message ID extraction
     const id =
       this.firstNonEmptyString(
         message?.id,
@@ -2170,6 +2198,43 @@ export class ChatViewProvider
         ? message.info._id
         : undefined);
     return id;
+  }
+
+  private logRawEditStepEvent(event: any, enrichedEvent?: any): void {
+    const eventRec = event as Record<string, unknown>;
+    const properties = (eventRec?.properties as Record<string, unknown>) || {};
+    const part = (properties?.part as Record<string, unknown>) || {};
+    const partType = String(part?.type || "").toLowerCase();
+    const toolName = String(part?.tool || "").toLowerCase();
+    const structured = (enrichedEvent?.structured as Record<string, unknown>) || {};
+    const fileChanges = Array.isArray(structured?.fileChanges) ? structured.fileChanges : [];
+    const editFileChanges = fileChanges.filter((change: any) =>
+      change?.kind === "file_edit" || change?.kind === "file_create" || change?.kind === "file_delete"
+    );
+    const activityDetail = part?.activityDetail as Record<string, unknown> | undefined;
+
+    const isPatch = partType === "patch";
+    const isEditTool = partType === "tool" && (
+      toolName.includes("write") || toolName.includes("replace") ||
+      toolName.includes("edit") || toolName.includes("patch")
+    );
+    const hasFileChanges = editFileChanges.length > 0;
+    const isActivityEdit = activityDetail?.kind === "file_edit";
+
+    if (!isPatch && !isEditTool && !hasFileChanges && !isActivityEdit) {
+      return;
+    }
+
+    this.logger.info("[ACTIVITY STEP][EDIT] Raw SDK event data", {
+      eventType: eventRec?.type,
+      partType,
+      toolName: part?.tool,
+      filePath: part?.filePath || (part?.state as any)?.input?.file || (part?.state as any)?.input?.path,
+      diffStats: part?.diffStats,
+      activityDetail,
+      fileChanges: editFileChanges,
+      rawPartKeys: Object.keys(part),
+    });
   }
 
   /**
@@ -2552,6 +2617,20 @@ export class ChatViewProvider
                 rawMessages,
                 messages,
               );
+              const assistantMessages = messages.filter((m: any) => {
+                const role = this.firstNonEmptyString(m?.role, m?.info?.role);
+                return role?.toLowerCase() === "assistant";
+              });
+              console.log("[CLIENT FACING] SENDING chatHistory", {
+                sessionId: currentSession.id,
+                totalMessages: messages.length,
+                assistantMessages: assistantMessages.map((m: any) => ({
+                  id: m?.id || m?.info?.id,
+                  content: String(m?.content).slice(0, 150),
+                  structOutMsg: String(m?.structuredOutput?.message).slice(0, 150),
+                  hasRawResponse: !!m?.rawResponse,
+                })),
+              });
               this.view?.webview.postMessage({
                 type: "chatHistory",
                 sessionId: currentSession.id,
@@ -2929,14 +3008,15 @@ export class ChatViewProvider
           }
           const knownModels = this.modelAndAgentManager.getAvailableModels();
           let providerName: string | undefined = incoming.providerName;
+          let resolvedMatch: ChatModelOption | undefined;
           if (!providerName) {
             // Try to resolve from discovered models if available.
-            const found = knownModels.find(
+            resolvedMatch = knownModels.find(
               (m) =>
                 m.providerID === incoming.providerID &&
                 m.modelID === incoming.modelID,
             );
-            providerName = found?.providerName || incoming.providerID;
+            providerName = resolvedMatch?.providerName || incoming.providerID;
           }
 
           this.selectedModel = {
@@ -2944,6 +3024,13 @@ export class ChatViewProvider
             modelID: incoming.modelID,
             providerName,
           };
+          this.logger.info("[OPENCOD GO MODEL] Model selected from webview", {
+            providerID: incoming.providerID,
+            modelID: incoming.modelID,
+            providerName,
+            knownModelsCount: knownModels.length,
+            resolvedFromCache: !incoming.providerName && !!resolvedMatch,
+          });
           await this.modelAndAgentManager.setSelectedModel(this.selectedModel);
 
           // Persist selection
@@ -3486,10 +3573,22 @@ export class ChatViewProvider
       const eventType = eventRec?.type || "unknown";
       const structuredRec = eventRec?.structured as Record<string, unknown> | undefined;
       const eventKind = structuredRec?.kind || "unknown";
-      this.logger.debug(`Stream event received: ${eventType} (kind: ${eventKind})`, {
-        sessionId: this.extractEventSessionId(event),
-        hasStructured: !!structuredRec,
-      });
+      const streamEventSessionId = this.extractEventSessionId(event);
+
+      if (eventType === "message.updated" || eventType === "session.error" || eventType === "error" || eventType === "session.completed") {
+        const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
+        const info = (props?.info as Record<string, unknown> | undefined) || {};
+        this.logger.info("[OPENCOD GO MODEL] Stream lifecycle event", {
+          eventType,
+          sessionId: streamEventSessionId,
+          providerID: info?.providerID,
+          modelID: info?.modelID,
+          messageId: info?.id,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+          processingSessions: Array.from(this.processingSessionIds),
+        });
+      }
       if (eventType === "session.diff") {
         const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
         const diffs = Array.isArray(props?.diff) ? (props.diff as Array<Record<string, unknown>>) : [];
@@ -3633,8 +3732,10 @@ export class ChatViewProvider
 
       this.forwardCompactionStatusFromStreamEvent(event);
 
-      // Forward events to webview
       const enrichedEvent = this.enrichStreamEvent(event);
+      this.logRawEditStepEvent(event, enrichedEvent);
+
+      // Forward events to webview
       const hasBlockingInteractive = this.hasBlockingInteractiveInStreamPayload(
         enrichedEvent || event,
       );
@@ -3688,11 +3789,19 @@ export class ChatViewProvider
         this.logger.warn("Failed to log stream event", { err: error });
       }
 
-      // Only stamp sessionId when we can be confident the event belongs to the
-      // current session.  If the event already carries a sessionId, preserve it;
-      // otherwise use activeStreamSessionId (set when the prompt was dispatched)
-      // so the webview receives a reliable session-scoped event.
       const resolvedSessionId = eventSessionId || this.activeStreamSessionId || this.currentSessionId;
+
+      // Only forward stream events that belong to the currently active session.
+      // Events from other sessions (e.g. a session that is still streaming after
+      // the user switched away) must not leak into the current webview surface.
+      if (
+        resolvedSessionId &&
+        this.currentSessionId &&
+        resolvedSessionId !== this.currentSessionId
+      ) {
+        return;
+      }
+
       this.view?.webview.postMessage({
         type: "streamEvent",
         event: { ...enrichedEvent, sessionId: resolvedSessionId },
@@ -4448,6 +4557,33 @@ export class ChatViewProvider
     return lines.join("\n");
   }
 
+  private getRequestTimeout(): number {
+    const config = vscode.workspace.getConfiguration('opencode');
+    const timeout = config.get<number>('requestTimeout', 120000);
+    if (timeout < 10000 || timeout > 600000) {
+      this.logger.warn(`Invalid requestTimeout configured: ${timeout}ms, using default 120000ms`);
+      return 120000;
+    }
+    return timeout;
+  }
+
+  private calculateTimeoutForQuery(
+    baseTimeout: number,
+    hasFiles: boolean,
+    hasContexts: boolean,
+    hasImages: boolean,
+  ): number {
+    const config = vscode.workspace.getConfiguration('opencode');
+    const multiplier = config.get<number>('complexQueryMultiplier', 1.5);
+    const complexityScore = (hasFiles ? 1 : 0) + (hasContexts ? 1 : 0) + (hasImages ? 1 : 0);
+    if (complexityScore >= 2) {
+      const adjustedTimeout = Math.floor(baseTimeout * multiplier);
+      this.logger.debug(`Using extended timeout for complex query: ${adjustedTimeout}ms (base: ${baseTimeout}ms, complexity: ${complexityScore})`);
+      return adjustedTimeout;
+    }
+    return baseTimeout;
+  }
+
   // PROMPT-OWNERSHIP: do not modify — transport-only path
   private async promptWithStructuredOutput(
     client: any,
@@ -4462,20 +4598,42 @@ export class ChatViewProvider
   ) {
     const workspaceDirectory = this.getWorkspaceDirectory();
 
+    const baseTimeout = this.getRequestTimeout();
+    const timeout = this.calculateTimeoutForQuery(
+      baseTimeout,
+      options?.hasFiles ?? false,
+      options?.hasContexts ?? false,
+      options?.hasImages ?? false,
+    );
+
     const callPrompt = (requestBody: Record<string, unknown>) => {
       const sdkStartTime = Date.now();
       this.logger.debug("Initiating SDK prompt call", {
         sessionID,
+        timeout,
         useStructuredOutput,
         hasFiles: options?.hasFiles,
         hasContexts: options?.hasContexts,
         hasImages: options?.hasImages,
+      });
+      this.logger.info("[OPENCOD GO MODEL] SDK prompt call details", {
+        sessionID,
+        model: (requestBody as any)?.model,
+        agent: (requestBody as any)?.agent,
+        partsCount: (requestBody as any)?.parts?.length,
+        partTypes: (requestBody as any)?.parts?.map((p: any) => p.type),
+        hasFiles: options?.hasFiles,
+        hasContexts: options?.hasContexts,
+        hasImages: options?.hasImages,
+        useStructuredOutput,
+        timeout,
       });
 
       const promise = client.session.prompt({
         path: { id: sessionID },
         query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
         body: requestBody as SessionPromptData["body"],
+        timeout,
       });
 
       // Add timing tracking
@@ -4486,11 +4644,25 @@ export class ChatViewProvider
           hasError: Boolean(result.error),
           hasData: Boolean(result.data),
         });
+        this.logger.info("[OPENCOD GO MODEL] SDK prompt resolved", {
+          sessionID,
+          elapsedMs: sdkDuration,
+          hasData: Boolean(result.data),
+          hasError: Boolean(result.error),
+          errorMessage: result.error instanceof Error ? result.error.message : String(result.error ?? ""),
+        });
       }).catch((error: Error) => {
         const sdkDuration = Date.now() - sdkStartTime;
         this.logger.error(`SDK prompt call failed after ${sdkDuration}ms`, {
           sessionID,
           error: error.message,
+        });
+        this.logger.error("[OPENCOD GO MODEL] SDK prompt rejected", {
+          sessionID,
+          elapsedMs: sdkDuration,
+          error: error.message,
+          errorName: error.name,
+          stack: error.stack?.substring(0, 500),
         });
       });
 
@@ -5471,7 +5643,7 @@ export class ChatViewProvider
           }
           return (part.text || part.content || part.message || "").toString();
         })
-        .join("")
+        .join(" ")
         .trim();
     }
 
@@ -5566,9 +5738,7 @@ export class ChatViewProvider
     const rawResponseRec = parseRawResponseRecord(messageLike.rawResponse);
     const rawResponseInfoRec = this.asRecord(rawResponseRec?.info);
     const candidates: Array<{ value: unknown; source: string }> = [
-      { value: messageLike.structuredOutput, source: "messageLike.structuredOutput" },
-      { value: messageLike.structured_output, source: "messageLike.structured_output" },
-      { value: messageLike.output, source: "messageLike.output" },
+      { value: messageLike.structured, source: "messageLike.structured" },
       { value: messageLike.info?.structuredOutput, source: "messageLike.info.structuredOutput" },
       { value: messageLike.info?.structured_output, source: "messageLike.info.structured_output" },
       { value: messageLike.info?.structured, source: "messageLike.info.structured" },
@@ -5577,12 +5747,12 @@ export class ChatViewProvider
       { value: messageLike.properties?.structured_output, source: "messageLike.properties.structured_output" },
       { value: messageLike.properties?.structured, source: "messageLike.properties.structured" },
       { value: messageLike.properties?.output, source: "messageLike.properties.output" },
-      { value: rawResponseRec?.structuredOutput, source: "messageLike.rawResponse.structuredOutput" },
-      { value: rawResponseRec?.structured_output, source: "messageLike.rawResponse.structured_output" },
       { value: rawResponseRec?.structured, source: "messageLike.rawResponse.structured" },
-      { value: rawResponseInfoRec?.structuredOutput, source: "messageLike.rawResponse.info.structuredOutput" },
-      { value: rawResponseInfoRec?.structured_output, source: "messageLike.rawResponse.info.structured_output" },
+      { value: rawResponseRec?.structuredOutput, source: "messageLike.rawResponse.structuredOutput" },
       { value: rawResponseInfoRec?.structured, source: "messageLike.rawResponse.info.structured" },
+      { value: rawResponseInfoRec?.structuredOutput, source: "messageLike.rawResponse.info.structuredOutput" },
+      { value: messageLike.structuredOutput, source: "messageLike.structuredOutput" },
+      { value: messageLike.output, source: "messageLike.output" },
     ];
 
     if (Array.isArray(messageLike.parts)) {
@@ -5651,6 +5821,7 @@ export class ChatViewProvider
       }
     }
 
+    let matchedSource = "none";
     for (const candidate of candidates) {
       const parsed = this.normalizeStructuredOutput(candidate.value as string, {
         source: candidate.source,
@@ -5658,9 +5829,26 @@ export class ChatViewProvider
         modelID,
       });
       if (parsed) {
+        matchedSource = candidate.source;
+        console.log("[CLIENT FACING] extractStructuredOutput MATCH", {
+          messageId: messageLike?.id || messageLike?.info?.id,
+          source: candidate.source,
+          responseType: parsed.responseType,
+          messagePreview: String(parsed.message).slice(0, 200),
+          hasRawResponse: !!messageLike?.rawResponse,
+        });
         return parsed;
       }
     }
+    console.log("[CLIENT FACING] extractStructuredOutput NO MATCH", {
+      messageId: messageLike?.id || messageLike?.info?.id,
+      checkedSources: candidates.map(c => c.source),
+      hasStructOutput: !!messageLike?.structuredOutput,
+      hasStruct: !!messageLike?.structured,
+      hasRawResponse: !!messageLike?.rawResponse,
+      structOutputMsg: String(messageLike?.structuredOutput?.message).slice(0, 200),
+      rawResponsePreview: String(messageLike?.rawResponse).slice(0, 300),
+    });
 
     const bodyText = this.extractMessageBodyText(messageLike);
     if (bodyText.startsWith("{") && bodyText.endsWith("}")) {
@@ -5862,13 +6050,21 @@ export class ChatViewProvider
       }
     }
 
-    // Preserve the default OpenCode response body whenever it exists.
-    // Only inject structured text as a fallback when body text is missing or JSON-only.
+    // Prefer the structured output message when it carries meaningful text,
+    // falling back to the raw response body only when structured output is empty.
     const messageContent =
       structured.message ||
       this.createFallbackMessage(structured);
-    const shouldUseStructuredMessage = !bodyText || hasJsonOnlyBody;
-    if (messageContent && shouldUseStructuredMessage) {
+    const hasMeaningfulStructuredMessage =
+      typeof messageContent === "string" && messageContent.trim().length > 0;
+    if (hasMeaningfulStructuredMessage) {
+      console.log("[CLIENT FACING] applyStructuredOutputToMessage SET_CONTENT", {
+        messageId: message?.id || message?.info?.id,
+        oldContent: String(message?.content).slice(0, 200),
+        newContent: String(messageContent).slice(0, 200),
+        structMessage: String(structured?.message).slice(0, 200),
+        from: "structured.message",
+      });
       next.content = messageContent;
       const parts = Array.isArray(next.parts) ? [...next.parts] : [];
       const textIndex = parts.findIndex(
@@ -6254,6 +6450,13 @@ export class ChatViewProvider
 
       drainSessionId = session.id;
       this.processingSessionIds.add(drainSessionId);
+      this.logger.info("[OPENCOD GO MODEL] Processing started (loading state ON)", {
+        sessionId: drainSessionId,
+        providerID: this.selectedModel.providerID,
+        modelID: this.selectedModel.modelID,
+        providerName: this.selectedModel.providerName,
+        processingCount: this.processingSessionIds.size,
+      });
       this.sendProcessingSessionsUpdate();
       this.currentSessionId = session.id;
       this.activeStreamSessionId = session.id;
@@ -6510,6 +6713,17 @@ export class ChatViewProvider
         agent: agent || this.selectedAgent,
         parts: parts,
       };
+      this.logger.info("[OPENCOD GO MODEL] Prompt body constructed", {
+        sessionId: session.id,
+        model: {
+          providerID: this.selectedModel.providerID,
+          modelID: this.selectedModel.modelID,
+          providerName: this.selectedModel.providerName,
+        },
+        agent: agent || this.selectedAgent,
+        partsCount: parts.length,
+        partTypes: parts.map((p: any) => p.type),
+      });
       const promptVariant = await this.resolvePromptVariant(session.id);
       if (thinkingLevel === "none") {
         (promptBody as Record<string, unknown>).variant = null;
@@ -6545,22 +6759,65 @@ export class ChatViewProvider
           slashCommandInvocation,
           agent,
         )
-        : await this.promptWithStructuredOutput(
-          client,
-          session.id,
-          promptBody,
-          useStructuredOutput,
-          {
-            hasFiles: Boolean(files?.length),
-            hasContexts: Boolean(contexts?.length),
-            hasImages: Boolean(images?.length),
-          },
-        );
+        : await (async () => {
+          this.logger.info("[OPENCOD GO MODEL] Calling SDK prompt...", {
+            sessionId: session.id,
+            providerID: this.selectedModel.providerID,
+            modelID: this.selectedModel.modelID,
+            timestamp: new Date().toISOString(),
+          });
+          const startCall = Date.now();
+          try {
+            const result = await this.promptWithStructuredOutput(
+              client,
+              session.id,
+              promptBody,
+              useStructuredOutput,
+              {
+                hasFiles: Boolean(files?.length),
+                hasContexts: Boolean(contexts?.length),
+                hasImages: Boolean(images?.length),
+              },
+            );
+            this.logger.info("[OPENCOD GO MODEL] SDK prompt call returned", {
+              sessionId: session.id,
+              providerID: this.selectedModel.providerID,
+              modelID: this.selectedModel.modelID,
+              elapsedMs: Date.now() - startCall,
+              hasData: Boolean((result as any)?.data),
+              hasError: Boolean((result as any)?.error),
+              status: (result as any)?.response?.status,
+            });
+            return result;
+          } catch (callError) {
+            this.logger.error("[OPENCOD GO MODEL] SDK prompt call threw", {
+              sessionId: session.id,
+              providerID: this.selectedModel.providerID,
+              modelID: this.selectedModel.modelID,
+              elapsedMs: Date.now() - startCall,
+              error: callError instanceof Error ? callError.message : String(callError),
+              errorName: callError instanceof Error ? callError.name : typeof callError,
+            });
+            throw callError;
+          }
+        })();
 
       const promptDuration = Date.now() - promptStartTime;
       const responseData = getSdkResponseData(response);
       const responseError = getSdkResponseError(response);
       const responseMessage = normalizeSdkAssistantMessage(response);
+      this.logger.info("ERROR_FLOW: SDK Response analysis", {
+        timestamp: new Date().toISOString(),
+        sessionId: session.id,
+        promptDuration,
+        hasData: Boolean(responseData),
+        hasError: Boolean(responseError),
+        status: response.response?.status,
+        messageId: (responseData as any)?.info?.id,
+        responseKeys: response ? Object.keys(response) : [],
+        responseDataKeys: responseData ? Object.keys(responseData) : [],
+        errorKeys: responseError ? Object.keys(responseError) : [],
+      });
       this.logger.performance("Prompt response received", promptDuration, {
         hasData: Boolean(responseData),
         hasError: Boolean(responseError),
@@ -6594,7 +6851,16 @@ export class ChatViewProvider
         const errorMessages = this.collectNormalizedErrorMessages(responseError);
         log.error("API error returned", {
           sessionId: session.id,
+          model: { providerID: this.selectedModel.providerID, modelID: this.selectedModel.modelID },
           error: responseError,
+          status: response.response?.status,
+          errorMessages,
+        });
+        this.logger.error("[OPENCOD GO MODEL] API error for model", {
+          sessionId: session.id,
+          providerID: this.selectedModel.providerID,
+          modelID: this.selectedModel.modelID,
+          providerName: this.selectedModel.providerName,
           status: response.response?.status,
           errorMessages,
         });
@@ -6756,10 +7022,18 @@ export class ChatViewProvider
 
         const userFacingErrorMessage =
           this.getUserFacingSendErrorMessage(errorMessage);
+        this.logger.info("ERROR_FLOW: Sending error event to webview", {
+          timestamp: new Date().toISOString(),
+          sessionId: session.id,
+          errorMessage: userFacingErrorMessage,
+          originalError: errorMessage,
+          status: response.response?.status,
+        });
         vscode.window.showErrorMessage(`OpenCode error: ${userFacingErrorMessage}`);
         this.view?.webview.postMessage({
           type: "error",
           message: userFacingErrorMessage,
+          sessionId: session.id,
         });
         return;
       }
@@ -6794,6 +7068,33 @@ export class ChatViewProvider
           responseMessage,
         );
         const enrichedMessage = await this.enrichMessageWithPlan(structuredMessage);
+        const safeCorrectMessageFromRawResponse = (() => {
+          if (!rawResponse) return undefined;
+          try {
+            const parsed = JSON.parse(rawResponse);
+            const msg = parsed?.info?.structured?.message;
+            return typeof msg === "string" && msg.trim() ? msg.trim() : undefined;
+          } catch { return undefined; }
+        })();
+        console.log("[CLIENT FACING] safetyNet", {
+          messageId: enrichedMessage?.id || enrichedMessage?.info?.id,
+          rawContent: String(enrichedMessage?.content).slice(0, 200),
+          rawText: String(enrichedMessage?.text).slice(0, 200),
+          structOutMessage: String(enrichedMessage?.structuredOutput?.message).slice(0, 200),
+          rawResponseCorrectMsg: safeCorrectMessageFromRawResponse?.slice(0, 200),
+          hasRawResponse: !!rawResponse,
+          structOutExists: !!enrichedMessage?.structuredOutput,
+          willFixContent: !!(safeCorrectMessageFromRawResponse && enrichedMessage?.content !== safeCorrectMessageFromRawResponse),
+        });
+        if (safeCorrectMessageFromRawResponse) {
+          enrichedMessage.content = safeCorrectMessageFromRawResponse;
+          enrichedMessage.text = safeCorrectMessageFromRawResponse;
+          if (!enrichedMessage.structuredOutput) {
+            enrichedMessage.structuredOutput = { responseType: "message", message: safeCorrectMessageFromRawResponse };
+          } else if (enrichedMessage.structuredOutput.message !== safeCorrectMessageFromRawResponse) {
+            enrichedMessage.structuredOutput = { ...enrichedMessage.structuredOutput, message: safeCorrectMessageFromRawResponse };
+          }
+        }
         const structuredFailureText = this.firstNonEmptyString(
           (enrichedMessage as any)?.error,
         );
@@ -6991,6 +7292,15 @@ export class ChatViewProvider
           rawResponse,
         };
 
+        console.log("[CLIENT FACING] SENDING_TO_WEBVIEW", {
+          messageId: debugMessage?.id || debugMessage?.info?.id,
+          content: String(debugMessage?.content).slice(0, 200),
+          text: String(debugMessage?.text).slice(0, 200),
+          structOutMsg: String(debugMessage?.structuredOutput?.message).slice(0, 200),
+          hasRawResponse: !!debugMessage?.rawResponse,
+          type: "messageResponse",
+        });
+
         // Persist canonical assistant message without raw debug payload so
         // session storage/write path stays lightweight.
         await this.sessionService.appendMessage(session.id, {
@@ -7142,6 +7452,11 @@ export class ChatViewProvider
           this.activeStreamSessionId = undefined;
         }
         this.sendProcessingSessionsUpdate();
+        this.logger.info("[OPENCOD GO MODEL] Processing ended (loading state OFF)", {
+          sessionId: drainSessionId,
+          providerID: this.selectedModel.providerID,
+          modelID: this.selectedModel.modelID,
+        });
 
         if (this.sessionsNeedingTitle?.has(drainSessionId)) {
           this.sessionsNeedingTitle.delete(drainSessionId);

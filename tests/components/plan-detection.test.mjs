@@ -172,3 +172,49 @@ test('assistant message UI renders plan buttons and core plan card affordances',
   assert.match(messageSource, /className="plan-card[^"]*"/, 'assistant message should render plan card container');
   assert.match(messageSource, /View Implementation Plan/, 'plan card must expose View Implementation Plan call-to-action');
 });
+
+test('chat provider extractMessageBodyText uses space separator between text parts', () => {
+  const joinCalls = [...chatProviderSource.matchAll(/extractMessageBodyText[\s\S]*?\.join\((["'])(.*?)\1\)/g)];
+  const emptyJoins = joinCalls.filter(m => m[2] === '');
+  const spaceJoins = joinCalls.filter(m => m[2] === ' ');
+
+  assert.ok(
+    spaceJoins.length >= 1 && emptyJoins.length === 0,
+    'extractMessageBodyText must join text parts with a space separator, not empty string. ' +
+    `Found ${spaceJoins.length} space joins and ${emptyJoins.length} empty joins.`,
+  );
+});
+
+test('effectiveResponseContent uses visibleResolvedContent first, planLeadMessage as fallback only', () => {
+  assert.match(
+    messageSource,
+    /effectiveResponseContent\s*=[\s\S]*visibleResolvedContent[\s\S]*\?\s*visibleResolvedContent[\s\S]*:\s*planLeadMessage/,
+    'effectiveResponseContent must use visibleResolvedContent when available, falling back to planLeadMessage only when empty',
+  );
+});
+
+test('response markdown body is hidden during live streaming to prevent reasoning leaks', () => {
+  assert.match(
+    messageSource,
+    /showResponseBody\s*=\s*hasResponseContent\s*&&\s*!\s*isLiveStream/,
+    'showResponseBody must be false during live streaming to prevent reasoning text from leaking into the AI response card',
+  );
+  assert.match(
+    messageSource,
+    /\{\s*showResponseBody\s*&&[\s\S]*MarkdownRenderer/,
+    'the MarkdownRenderer in the response section must be gated by showResponseBody',
+  );
+});
+
+test('getMessageContent never uses streaming.content; always derives response body from message', () => {
+  assert.match(
+    messageSource,
+    /stream\.content is never used/,
+    'getMessageContent must document that streaming.content is never used for the response card body',
+  );
+  assert.match(
+    messageSource,
+    /if\s*\(\s*streaming\s*\)\s*\{\s*if\s*\(\s*!\s*message\s*\)\s*return\s*""\s*;\s*\}/,
+    'getMessageContent must bypass streaming entirely and fall through to message content path',
+  );
+});

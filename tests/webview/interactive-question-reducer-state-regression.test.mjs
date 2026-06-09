@@ -755,9 +755,273 @@ test.skip("reducer: subagent activity with interactive questions", () => {
 // 6. Interactive events preserved across streaming updates
 // 7. Error message accumulation and clearing
 // 8. Subagent state management
-// 9. Subagent state persistence across interactive events
-// 10. Complete interactive question flow with streaming
-// 11. Subagent activity with interactive questions
+//
+
+// ============================================================================
+// TEST: Question content preserved in messages after answering
+// ============================================================================
+// Bug: After answering a question (via popover or composer), the AI response
+// card that contained the question loses its content and displays nothing.
+// Fix: The SET_MESSAGES dispatch in userMessageAppended must not clear content
+// or interactiveEvents from previously rendered assistant message cards.
+test("reducer: question message content preserved after user answer appended", () => {
+  const state = createInitialState();
+  state.currentSessionId = "ses-test";
+
+  const questionMessage = {
+    role: "assistant",
+    id: "msg-q1",
+    content: "Here is my question for you",
+    text: "Here is my question for you",
+    interactiveEvents: [
+      {
+        id: "q-0",
+        type: "question",
+        question: "What should I do?",
+        options: [
+          { id: "opt-1", label: "A", value: "a" },
+          { id: "opt-2", label: "B", value: "b" },
+        ],
+        allowCustomInput: false,
+        multiSelect: false,
+      },
+    ],
+    responseType: "question",
+  };
+
+  const userAnswer = {
+    role: "user",
+    content: "A",
+    interactiveSubmit: true,
+  };
+
+  // Step 1: Question message is in messages array
+  let s = reducer(state, { type: "SET_MESSAGES", payload: [questionMessage] });
+  assert.strictEqual(s.messages.length, 1, "question message should exist");
+  assert.strictEqual(
+    s.messages[0].content,
+    "Here is my question for you",
+    "question content should be preserved",
+  );
+
+  // Step 2: User answer appended (userMessageAppended SET_MESSAGES)
+  s = reducer(s, {
+    type: "SET_MESSAGES",
+    payload: [...s.messages, userAnswer],
+  });
+
+  // Step 3: Verify question message still has content
+  const questionMsg = s.messages.find((m) => m.id === "msg-q1");
+  assert.ok(questionMsg, "question message should still exist after append");
+  assert.notStrictEqual(
+    (questionMsg.content ?? "").trim().length,
+    0,
+    "question content must not be cleared after answering",
+  );
+  assert.strictEqual(
+    questionMsg.content,
+    "Here is my question for you",
+    "question content must remain unchanged",
+  );
+});
+
+// ============================================================================
+// TEST: Successive question events each set interactive events
+// ============================================================================
+// Bug: After answering the first question, the second question's popover
+// never appears because streaming was cleared (SET_STREAMING null) and
+// the next SET_INTERACTIVE_EVENTS dispatch fails to re-enter the popover.
+test("reducer: successive question events both set interactive events", () => {
+  const state = createInitialState();
+  state.currentSessionId = "ses-test";
+
+  // First question arrives during streaming
+  let s = reducer(state, {
+    type: "SET_STREAMING",
+    payload: {
+      messageId: "msg-1",
+      sessionId: "ses-test",
+      content: "Let me ask...",
+      isActive: true,
+    },
+  });
+
+  s = reducer(s, {
+    type: "SET_INTERACTIVE_EVENTS",
+    payload: [
+      {
+        id: "q1-0",
+        type: "question",
+        requestID: "req-1",
+        questionIndex: 0,
+        question: "First question?",
+        options: [
+          { id: "a1", label: "A", value: "a" },
+          { id: "b1", label: "B", value: "b" },
+        ],
+        allowCustomInput: false,
+        multiSelect: false,
+      },
+    ],
+  });
+
+  assert.strictEqual(
+    s.interactiveEvents.length,
+    1,
+    "first question should set interactive events",
+  );
+
+  // User answers — streaming cleared, interactive events reset
+  s = reducer(s, { type: "SET_STREAMING", payload: null });
+  s = reducer(s, { type: "SET_INTERACTIVE_EVENTS", payload: [] });
+
+  assert.strictEqual(
+    s.streaming,
+    null,
+    "streaming should be cleared after answer",
+  );
+  assert.strictEqual(
+    s.interactiveEvents.length,
+    0,
+    "interactive events should be cleared after answer",
+  );
+
+  // Second question arrives (new streaming for next turn)
+  s = reducer(s, {
+    type: "SET_STREAMING",
+    payload: {
+      messageId: "msg-2",
+      sessionId: "ses-test",
+      content: "Another question...",
+      isActive: true,
+    },
+  });
+
+  s = reducer(s, {
+    type: "SET_INTERACTIVE_EVENTS",
+    payload: [
+      {
+        id: "q2-0",
+        type: "question",
+        requestID: "req-2",
+        questionIndex: 0,
+        question: "Second question?",
+        options: [
+          { id: "c1", label: "C", value: "c" },
+          { id: "d1", label: "D", value: "d" },
+        ],
+        allowCustomInput: false,
+        multiSelect: false,
+      },
+    ],
+  });
+
+  assert.strictEqual(
+    s.interactiveEvents.length,
+    1,
+    "second question must set interactive events (popover must show)",
+  );
+  assert.strictEqual(
+    s.interactiveEvents[0].question,
+    "Second question?",
+    "second question text must be correct",
+  );
+});
+
+// ============================================================================
+// TEST: Composer send with pending questions
+// ============================================================================
+test("reducer: pending question detection triggers interactiveSubmit path", () => {
+  const state = createInitialState();
+
+  let s = reducer(state, {
+    type: "SET_INTERACTIVE_EVENTS",
+    payload: [
+      {
+        id: "q-0",
+        type: "question",
+        question: "What now?",
+        options: [
+          { id: "x", label: "X", value: "x" },
+          { id: "y", label: "Y", value: "y" },
+        ],
+        allowCustomInput: false,
+        multiSelect: false,
+      },
+    ],
+  });
+
+  const hasPending = s.interactiveEvents.length > 0;
+  assert.strictEqual(hasPending, true, "should detect pending question");
+
+  const hasQuestionType = s.interactiveEvents.some(
+    (e) => e.type === "question" || e.type === "confirm",
+  );
+  assert.strictEqual(hasQuestionType, true, "should detect question type event");
+});
+
+// ============================================================================
+// TEST: Stream events ignored for recently-aborted sessions
+// ============================================================================
+// Bug: Aborting the question tool triggers SSE events from the server. These
+// arrive asynchronously and can clear the question message content if they
+// reach the webview. Fix: provider blocks SSE forwarding for recently-aborted
+// sessions until handleSendMessage re-enables processing.
+test("reducer: interactive answer submission does not clear existing question content", () => {
+  const state = createInitialState();
+
+  // Question message with content and interactive events already in messages
+  const question = {
+    role: "assistant",
+    id: "msg-q",
+    content: "What should I do next?",
+    text: "What should I do next?",
+    interactiveEvents: [
+      {
+        id: "ev-0",
+        type: "question",
+        question: "What should I do next?",
+        options: [
+          { id: "a", label: "A", value: "a" },
+          { id: "b", label: "B", value: "b" },
+        ],
+      },
+    ],
+  };
+
+  let s = reducer(state, { type: "SET_MESSAGES", payload: [question] });
+
+  // User answers — simulates userMessageAppended flow
+  const userAnswer = { role: "user", content: "A", interactiveSubmit: true };
+
+  // Simulate: SET_STREAMING null (clears stale stream)
+  s = reducer(s, { type: "SET_STREAMING", payload: null });
+
+  // Simulate: SET_INTERACTIVE_EVENTS [] (clears root popover)
+  s = reducer(s, { type: "SET_INTERACTIVE_EVENTS", payload: [] });
+
+  // Simulate: SET_MESSAGES with user answer appended
+  s = reducer(s, {
+    type: "SET_MESSAGES",
+    payload: [question, userAnswer],
+  });
+
+  // The question message must still exist with its content intact
+  const messages = s.messages;
+  const found = messages.find((m) => m.id === "msg-q");
+  assert.ok(found, "question message must still exist after answering");
+  assert.strictEqual(
+    found.content,
+    "What should I do next?",
+    "question content must be preserved after answering",
+  );
+  assert.strictEqual(
+    found.interactiveEvents.length,
+    1,
+    "question interactiveEvents must be preserved on the message object",
+  );
+});
+
 //
 // All tests assert exact state values at each step, ensuring no
 // UI reset/flicker or false abort banners occur.

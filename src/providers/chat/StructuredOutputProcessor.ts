@@ -1470,7 +1470,7 @@ export class StructuredOutputProcessor {
           }
           return (part.text || part.content || "").toString();
         })
-        .join("")
+        .join(" ")
         .trim();
     }
 
@@ -1489,27 +1489,46 @@ export class StructuredOutputProcessor {
     const rawResponseRec = this.parseRawResponseRecord(message.rawResponse);
     const rawResponseInfoRec = this.asRecord(rawResponseRec?.info);
     const candidates = [
+      message.structured,
+      message.info?.structured,
+      message.info?.structuredOutput,
+      rawResponseRec?.structured,
+      rawResponseRec?.structuredOutput,
+      rawResponseInfoRec?.structured,
+      rawResponseInfoRec?.structuredOutput,
       message.structuredOutput,
       message.structured_output,
-      message.info?.structuredOutput,
-      message.info?.structured_output,
-      message.info?.structured,
-      rawResponseRec?.structuredOutput,
-      rawResponseRec?.structured_output,
-      rawResponseRec?.structured,
-      rawResponseInfoRec?.structuredOutput,
-      rawResponseInfoRec?.structured_output,
-      rawResponseInfoRec?.structured,
     ];
 
-    for (const candidate of candidates) {
+    let matchIdx = -1;
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
       if (candidate) {
         const normalized = this.normalizeStructuredOutput(candidate);
         if (normalized) {
+          matchIdx = i;
+          const sourceLabels = ["message.structured","info.structured","info.structuredOutput","rawResponse.structured","rawResponse.structuredOutput","rawResponseInfo.structured","rawResponseInfo.structuredOutput","message.structuredOutput","message.structured_output"];
+          console.log("[CLIENT FACING] StructOutputProcessor.extractStructuredOutput MATCH", {
+            messageId: message?.id || message?.info?.id,
+            matchIndex: i,
+            matchSource: sourceLabels[i] || `candidate-${i}`,
+            responseType: normalized.responseType,
+            messagePreview: String(normalized.message).slice(0, 200),
+            totalCandidates: candidates.length,
+          });
           return normalized;
         }
       }
     }
+    console.log("[CLIENT FACING] StructOutputProcessor.extractStructuredOutput NO MATCH", {
+      messageId: message?.id || message?.info?.id,
+      hasRawResponse: !!message?.rawResponse,
+      hasStructOutput: !!message?.structuredOutput,
+      hasStruct: !!message?.structured,
+      hasInfo: !!message?.info,
+      structOutputMsg: String(message?.structuredOutput?.message).slice(0, 200),
+      rawResponsePreview: String(message?.rawResponse).slice(0, 200),
+    });
 
     return undefined;
   }
@@ -1526,8 +1545,25 @@ export class StructuredOutputProcessor {
     const updated = { ...message };
     const fallbackMessage = this.createFallbackMessage(structured);
 
-    if (structured.message && !updated.message) {
+    if (structured.message) {
+      console.log("[CLIENT FACING] StructOutputProcessor.applyStructured SET_CONTENT", {
+        messageId: message?.id || message?.info?.id,
+        oldContent: String(message?.content).slice(0, 200),
+        structMessage: String(structured.message).slice(0, 200),
+        responseType: structured.responseType,
+      });
       updated.message = structured.message;
+      updated.content = structured.message;
+      updated.text = structured.message;
+    } else if (fallbackMessage && !updated.content) {
+      // Structured response types like implementation_plan carry display text in
+      // plan.summary/intro rather than in a top-level message field. Populate
+      // content from the fallback so the webview renders structured fields instead
+      // of concatenating raw response parts.
+      updated.content = fallbackMessage;
+      if (!updated.message) {
+        updated.message = fallbackMessage;
+      }
     }
 
     if (structured.subagents && structured.subagents.length > 0) {

@@ -163,8 +163,51 @@ function extractErrorText(value: unknown): string {
     return nestedErrorMessage;
   }
 
+  // Try even more nested fields that might contain the actual error
+  const cause = asRecord(rec.cause);
+  const causeMessage = cause ? asString(cause.message).trim() : "";
+  if (causeMessage) {
+    return causeMessage;
+  }
+
+  const response = asRecord(rec.response);
+  const responseData = response ? asRecord(response.data) : null;
+  const responseMessage = responseData ? asString(responseData.message).trim() : "";
+  if (responseMessage) {
+    return responseMessage;
+  }
+
+  const body = asRecord(rec.body);
+  const bodyMessage = body ? asString(body.message).trim() : "";
+  if (bodyMessage) {
+    return bodyMessage;
+  }
+
+  // Check other common error message fields
+  const description = asString(rec.description).trim();
+  if (description) {
+    return description;
+  }
+
+  const details = asString(rec.details).trim();
+  if (details) {
+    return details;
+  }
+
+  const reason = asString(rec.reason).trim();
+  if (reason) {
+    return reason;
+  }
+
+  // Only use error name as absolute last resort
   const name = asString(rec.name).trim();
   if (name && name.toLowerCase() !== "unknownerror") {
+    // If the name is a generic error class name, don't use it - we want the actual message
+    if (name.endsWith('Error')) {
+      // Don't return just the error class name - this is likely not helpful
+      // Return empty string to indicate we couldn't find a meaningful error message
+      return "";
+    }
     return name;
   }
 
@@ -320,6 +363,10 @@ export class SubagentTracker {
   private latestParentMessageBySessionId = new Map<string, string>();
   private childSessionToSubagentId = new Map<string, string>();
   private childSessionToParentSessionId = new Map<string, string>();
+
+  constructor(
+    private getSelectedModel: () => { providerID?: string; modelID?: string } | undefined = () => undefined,
+  ) {}
 
   resetForSession(sessionId: string | null): void {
     this.activeSessionId = sessionId;
@@ -1326,6 +1373,31 @@ export class SubagentTracker {
       return;
     }
 
+    // Log session creation with all available info
+    console.log('===SUBAGENT_SPAWN=== [SESSION_CREATED] Full info object', {
+      parentSessionId,
+      childSessionId,
+      activeSessionId: this.activeSessionId,
+      allInfoKeys: info ? Object.keys(info) : [],
+      allPropertiesKeys: properties ? Object.keys(properties) : [],
+      infoSubset: {
+        providerID: info?.providerID,
+        modelID: info?.modelID,
+        agentId: info?.agentId,
+        model: info?.model,
+        provider: info?.provider,
+        parentID: info?.parentID,
+        id: info?.id,
+      },
+      propertiesSubset: {
+        providerID: properties?.providerID,
+        modelID: properties?.modelID,
+        agentId: properties?.agentId,
+        model: properties?.model,
+        provider: properties?.provider,
+      },
+    });
+
     if (this.activeSessionId && parentSessionId !== this.activeSessionId) {
       return;
     }
@@ -1354,15 +1426,22 @@ export class SubagentTracker {
         `orphan-${childSessionId}`;
       detailId = `orphan:${parentSessionId}:${childSessionId}`;
 
-      // Log info object to check for provider/model fields
-      console.log('[SUBAGENT][SESSION_CREATED] Info object keys:', {
-        infoKeys: info ? Object.keys(info) : [],
-        hasProviderID: Boolean(info?.providerID),
-        hasModelID: Boolean(info?.modelID),
-        providerID: info?.providerID,
-        modelID: info?.modelID,
-        agentId: info?.agentId,
-        allInfo: info,
+      // Get provider/model from info object or fall back to selected model
+      const selectedModel = this.getSelectedModel();
+      const providerID = asString(info.providerID) || selectedModel?.providerID || undefined;
+      const modelID = asString(info.modelID) || selectedModel?.modelID || undefined;
+
+      console.log('===SUBAGENT_SPAWN=== [TRACKER] Creating orphan subagent', {
+        detailId,
+        parentSessionId,
+        parentMessageId,
+        childSessionId,
+        providerID,
+        modelID,
+        agentId: asString(info.agentId),
+        selectedModel,
+        infoHasProviderID: Boolean(info.providerID),
+        infoHasModelID: Boolean(info.modelID),
       });
 
       const orphanDetail: SubagentDetail = {
@@ -1373,8 +1452,8 @@ export class SubagentTracker {
         status: "orphaned",
         latestActivity: "Child session created",
         startedAt: asNumber(asRecord(info.time)?.created) ?? createdAt,
-        providerID: asString(info.providerID) || undefined,
-        modelID: asString(info.modelID) || undefined,
+        providerID,
+        modelID,
         references: [],
         thinkingEvents: [],
         conversationEvents: [],
@@ -1402,11 +1481,38 @@ export class SubagentTracker {
     if (!detail) {
       return;
     }
+
+    // Get provider/model from info object or fall back to selected model
+    const selectedModel = this.getSelectedModel();
+    const providerID = detail.providerID || asString(info.providerID) || selectedModel?.providerID || undefined;
+    const modelID = detail.modelID || asString(info.modelID) || selectedModel?.modelID || undefined;
+
+    console.log('===SUBAGENT_SPAWN=== [TRACKER] Updating existing subagent', {
+      detailId,
+      childSessionId,
+      existingProviderID: detail.providerID,
+      existingModelID: detail.modelID,
+      infoProviderID: asString(info.providerID),
+      infoModelID: asString(info.modelID),
+      selectedModel,
+      finalProviderID: providerID,
+      finalModelID: modelID,
+    });
+
     detail.childSessionId = childSessionId;
     detail.status = "running";
     detail.startedAt =
       detail.startedAt ?? asNumber(asRecord(info.time)?.created) ?? createdAt;
     detail.latestActivity = "Child session started";
+    // Extract provider/model fields from info or existing detail or selected model
+    detail.providerID = providerID;
+    detail.modelID = modelID;
+
+    console.log('===SUBAGENT_SPAWN=== [TRACKER] After update', {
+      detailId,
+      finalProviderID: detail.providerID,
+      finalModelID: detail.modelID,
+    });
     this.pushTimeline(detail, {
       key: this.makeTimelineKey(
         "session.created",
@@ -1443,7 +1549,99 @@ export class SubagentTracker {
     }
 
     const createdAt = Date.now();
-    const errorText = extractErrorText(properties.error) || "Session error";
+    const errorObj = asRecord(properties.error);
+
+    // Enhanced error extraction to get the actual message instead of error name
+    let errorText = "Session error";
+    if (errorObj) {
+      // Try to get the actual error message from different possible locations
+      const directMessage = asString(errorObj.message).trim();
+      const dataObj = asRecord(errorObj.data);
+      const dataMessage = dataObj ? asString(dataObj.message).trim() : "";
+      const innerErrorObj = asRecord(errorObj.error);
+      const innerMessage = innerErrorObj ? asString(innerErrorObj.message).trim() : "";
+
+      // Check even more nested fields that might contain the actual error
+      const causeObj = asRecord(errorObj.cause);
+      const causeMessage = causeObj ? asString(causeObj.message).trim() : "";
+
+      const responseObj = asRecord(errorObj.response);
+      const responseObjData = responseObj ? asRecord(responseObj.data) : null;
+      const responseMessage = responseObjData ? asString(responseObjData.message).trim() : "";
+
+      const bodyObj = asRecord(errorObj.body);
+      const bodyMessage = bodyObj ? asString(bodyObj.message).trim() : "";
+
+      // Check if there are details or description fields
+      const detailsMessage = asString(errorObj.details).trim();
+      const descriptionMessage = asString(errorObj.description).trim();
+
+      // Log all possible error message locations
+      const errorContext = {
+        hasDirectMessage: !!directMessage,
+        hasDataMessage: !!dataMessage,
+        hasInnerMessage: !!innerMessage,
+        hasCauseMessage: !!causeMessage,
+        hasResponseMessage: !!responseMessage,
+        hasBodyMessage: !!bodyMessage,
+        hasDetailsMessage: !!detailsMessage,
+        hasDescriptionMessage: !!descriptionMessage,
+        directMessage: directMessage.slice(0, 200),
+        dataMessage: dataMessage.slice(0, 200),
+        innerMessage: innerMessage.slice(0, 200),
+        causeMessage: causeMessage.slice(0, 200),
+        responseMessage: responseMessage.slice(0, 200),
+        bodyMessage: bodyMessage.slice(0, 200),
+        detailsMessage: detailsMessage.slice(0, 200),
+        descriptionMessage: descriptionMessage.slice(0, 200),
+        errorName: asString(errorObj.name),
+        errorCode: asString(errorObj.code),
+      };
+
+      // Log the full error extraction context
+      console.log('===SUBAGENT_SPAWN=== [ERROR_EXTRACTION] Error extraction context', {
+        sessionId,
+        detailId,
+        errorContext,
+        errorKeys: Object.keys(errorObj),
+        rawDataKeys: dataObj ? Object.keys(dataObj) : [],
+      });
+
+      // Prioritize actual error messages over error names, with expanded fallback chain
+      errorText = directMessage ||
+                  dataMessage ||
+                  responseMessage ||
+                  innerMessage ||
+                  causeMessage ||
+                  bodyMessage ||
+                  detailsMessage ||
+                  descriptionMessage ||
+                  extractErrorText(errorObj) ||
+                  "Session error";
+    }
+
+    console.log('===SUBAGENT_SPAWN=== [ERROR] Session error received', {
+      sessionId,
+      detailId,
+      errorText,
+      detailProviderID: detail.providerID,
+      detailModelID: detail.modelID,
+      hasError: Boolean(properties.error),
+      errorKeys: properties.error ? Object.keys(properties.error) : [],
+      rawError: properties.error ? JSON.stringify(properties.error).slice(0, 500) : undefined,
+    });
+
+    // If we still have a generic error, try to construct a more informative one
+    if (errorText === "Session error" || errorText.toLowerCase().includes("error")) {
+      const errorName = asString(errorObj?.name);
+      const modelID = detail.modelID || detail.providerID;
+      if (errorName && modelID) {
+        // Check if this is a model-related error
+        if (errorName.toLowerCase().includes("model") || errorName.toLowerCase().includes("provider")) {
+          errorText = `Error with model '${modelID}': ${errorName}`;
+        }
+      }
+    }
 
     detail.status = "error";
     detail.errorText = errorText;

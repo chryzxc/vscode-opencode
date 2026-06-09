@@ -199,16 +199,31 @@ export class HistoryProcessor {
   ): Promise<any[]> {
     const overrides = await this.loadSessionMessageOverrides(sessionId);
     if (Object.keys(overrides).length === 0) {
+      console.log("[CLIENT FACING] applySessionMessageOverrides NO_OVERRIDES", { sessionId, messageCount: messages.length });
       return messages;
     }
 
+    console.log("[CLIENT FACING] applySessionMessageOverrides LOADED", {
+      sessionId,
+      overrideKeys: Object.keys(overrides),
+      messageIds: messages.map(m => this.extractHistoryMessageId(m)),
+      messageCount: messages.length,
+    });
+
     return messages.map((message) => {
       const messageId = this.extractHistoryMessageId(message);
-      if (!messageId || !overrides[messageId]) {
+      const override = overrides[messageId];
+      if (!messageId || !override) {
         return message;
       }
 
-      const override = overrides[messageId];
+      console.log("[CLIENT FACING] applySessionMessageOverrides APPLIED", {
+        messageId,
+        hasRawResponseBefore: !!message?.rawResponse,
+        hasRawResponseOverride: !!override?.rawResponse,
+        contentBefore: String(message?.content).slice(0, 100),
+      });
+
       return {
         ...message,
         ...override,
@@ -256,7 +271,53 @@ export class HistoryProcessor {
     const dedupedUserMessages = this.dedupeUserMessagesByContent(ordered);
     const deduped = this.dedupeMirrorHistoryMessages(dedupedUserMessages);
     const mergedActivity = this.mergeAdjacentAssistantActivityMessages(deduped);
-    return this.mergeConsecutiveAssistantBursts(mergedActivity);
+    const merged = this.mergeConsecutiveAssistantBursts(mergedActivity);
+    return this.cleanupGarbledEventMessages(merged);
+  }
+
+  private cleanupGarbledEventMessages(messages: any[]): any[] {
+    const result: any[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const current = messages[i];
+      const currentRole = this.firstNonEmptyString(current?.role, current?.info?.role);
+      if (currentRole?.toLowerCase() !== "assistant") {
+        result.push(current);
+        continue;
+      }
+      const currentId = String(current?.id || "");
+      const currentContent = String(current?.content || "").trim();
+      const currentStructMsg = String(current?.structuredOutput?.message || "").trim();
+      const currentBody = currentContent || currentStructMsg;
+      const isGarbled = currentId.startsWith("evt_") && currentBody.length > 0 && currentBody.length < 200;
+      if (!isGarbled) {
+        result.push(current);
+        continue;
+      }
+      const prev = result.length > 0 ? result[result.length - 1] : null;
+      const prevRole = prev ? this.firstNonEmptyString(prev?.role, prev?.info?.role) : null;
+      const prevBody = String(prev?.content || "").trim();
+      const prevHasGoodContent = prevRole?.toLowerCase() === "assistant" && prevBody.length > 20 && prevBody !== currentBody;
+      if (prevHasGoodContent) {
+        console.log("[CLIENT FACING] cleanupGarbledEventMessages SKIPPED", {
+          currentId, currentBody: currentBody.slice(0, 150),
+          prevId: String(prev?.id || "").slice(0, 50), prevBody: prevBody.slice(0, 150),
+        });
+        continue;
+      }
+      const next = i + 1 < messages.length ? messages[i + 1] : null;
+      const nextRole = next ? this.firstNonEmptyString(next?.role, next?.info?.role) : null;
+      const nextBody = String(next?.content || "").trim();
+      const nextHasGoodContent = nextRole?.toLowerCase() === "assistant" && nextBody.length > 20 && nextBody !== currentBody;
+      if (nextHasGoodContent) {
+        console.log("[CLIENT FACING] cleanupGarbledEventMessages SKIPPED", {
+          currentId, currentBody: currentBody.slice(0, 150),
+          nextId: String(next?.id || "").slice(0, 50), nextBody: nextBody.slice(0, 150),
+        });
+        continue;
+      }
+      result.push(current);
+    }
+    return result;
   }
 
   private orderHistoryMessagesChronologically(messages: any[]): any[] {

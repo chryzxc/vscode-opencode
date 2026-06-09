@@ -34,7 +34,16 @@ test('handleSendMessage appends the user message before the prompt call', () => 
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
   assert.match(body, /await this\.sessionService\.appendMessage\(session\.id, userMessage\);/, 'handleSendMessage should persist the user message');
   assert.match(body, /role: "user" as const,/, 'user message should be stored with role user');
-  assert.match(body, /parts:\s*\[\s*\{\s*type: "text",\s*text: text,/, 'user message should preserve the original user text part');
+  assert.match(body, /type:\s*"text",[\s\S]*text:\s*text,/, 'user message should preserve the original user text part');
+});
+
+test('persisted user message includes file parts from contexts for rehydration survival', () => {
+  const body = extractFunctionBody(source, '  private async handleSendMessage(');
+  // The persisted user message must include file-type parts from code contexts so
+  // that file attachment chips survive session rehydration.
+  assert.match(body, /if\s*\(contexts\s*&&\s*contexts\.length\s*>\s*0\)\s*\{[\s\S]*for\s*\(.*context\b[\s\S]*type:\s*"file"/, 'persisted user message parts should include file entries from contexts');
+  assert.match(body, /filename:.*context\.file/, 'persisted file parts should carry the context filename');
+  assert.match(body, /source:\s*\{\s*path:.*context\.file/, 'persisted file parts should carry the context source path');
 });
 
 test('promptWithStructuredOutput exists and uses client.session.prompt', () => {

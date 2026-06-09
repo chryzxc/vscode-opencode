@@ -770,6 +770,295 @@ test.skip("streaming content is preserved when interrupted by interactive event"
 });
 
 // ============================================================================
+// Scenario: Successive questions after answer — second popover must show
+// ============================================================================
+// Bug: After answering the first question (abort + new prompt), the provider's
+// handleSendMessage finally block clears processingSessionIds before trailing
+// SSE events for the next question reach the webview. Tool-question events get
+// dropped by the processing gate. Fix: keep processing ON when the session
+// has a pending question tool.
+test("successive question popovers: second question event sets interactive events", () => {
+  const store = new MockStore();
+  const sessionId = "test-session-successive";
+
+  store.state.currentSessionId = sessionId;
+
+  // Simulate first question arriving (with streaming context)
+  store.dispatch({
+    type: "SET_STREAMING",
+    payload: {
+      messageId: "msg-1",
+      sessionId,
+      content: "Let me ask you something...",
+      isActive: true,
+      hasRenderableContent: true,
+    },
+  });
+
+  // First question events
+  store.dispatch({
+    type: "SET_INTERACTIVE_EVENTS",
+    payload: [
+      {
+        id: "q1-0",
+        type: "question",
+        requestID: "req-1",
+        questionIndex: 0,
+        question: "First question?",
+        options: [
+          { id: "opt-a", label: "A", value: "a" },
+          { id: "opt-b", label: "B", value: "b" },
+        ],
+        allowCustomInput: false,
+        multiSelect: false,
+      },
+    ],
+  });
+
+  assert.strictEqual(
+    store.getState().interactiveEvents.length,
+    1,
+    "First question should set interactive events",
+  );
+
+  // User answers (dismisses events, answers via popover)
+  store.dispatch({
+    type: "DISMISS_INTERACTIVE_EVENT",
+    payload: "q1-0",
+  });
+
+  store.dispatch({
+    type: "SET_INTERACTIVE_EVENTS",
+    payload: [],
+  });
+
+  // User answer appended as a message
+  const existingMessages = store.getState().messages;
+  store.dispatch({
+    type: "SET_MESSAGES",
+    payload: [
+      ...existingMessages,
+      {
+        role: "user",
+        content: "Answer A",
+        interactiveSubmit: true,
+      },
+    ],
+  });
+
+  // FINISH_STREAMING from question.asked handler
+  store.dispatch({ type: "FINISH_STREAMING" });
+
+  assert.strictEqual(
+    store.getState().interactiveEvents.length,
+    0,
+    "Interactive events should be empty after answering",
+  );
+
+  // Now simulate second question arriving during the next prompt
+  // (streaming was already cleared, so SET_STREAMING creates new state)
+  store.dispatch({
+    type: "SET_STREAMING",
+    payload: {
+      messageId: "msg-2",
+      sessionId,
+      content: "Another question coming...",
+      isActive: true,
+      hasRenderableContent: true,
+    },
+  });
+
+  // Second question events
+  store.dispatch({
+    type: "SET_INTERACTIVE_EVENTS",
+    payload: [
+      {
+        id: "q2-0",
+        type: "question",
+        requestID: "req-2",
+        questionIndex: 0,
+        question: "Second question?",
+        options: [
+          { id: "opt-c", label: "C", value: "c" },
+          { id: "opt-d", label: "D", value: "d" },
+        ],
+        allowCustomInput: false,
+        multiSelect: false,
+      },
+    ],
+  });
+
+  assert.strictEqual(
+    store.getState().interactiveEvents.length,
+    1,
+    "Second question should set interactive events (popover must show)",
+  );
+  assert.strictEqual(
+    store.getState().interactiveEvents[0].id,
+    "q2-0",
+    "Second question popover should have the second question's ID",
+  );
+  assert.strictEqual(
+    store.getState().interactiveEvents[0].question,
+    "Second question?",
+    "Second question popover should show the second question text",
+  );
+});
+
+// ============================================================================
+// Scenario: Composer send with pending questions triggers interactiveSubmit
+// ============================================================================
+test("composer send with pending question sets interactiveSubmit", () => {
+  const store = new MockStore();
+  const sessionId = "test-session-composer";
+
+  store.state.currentSessionId = sessionId;
+
+  // Set pending question
+  store.dispatch({
+    type: "SET_INTERACTIVE_EVENTS",
+    payload: [
+      {
+        id: "q-0",
+        type: "question",
+        requestID: "req-3",
+        questionIndex: 0,
+        question: "What now?",
+        options: [
+          { id: "opt-x", label: "X", value: "x" },
+          { id: "opt-y", label: "Y", value: "y" },
+        ],
+        allowCustomInput: false,
+        multiSelect: false,
+      },
+    ],
+  });
+
+  // Verify pending question exists
+  const hasPendingQuestion =
+    store.getState().interactiveEvents.length > 0 &&
+    store.getState().interactiveEvents.some(
+      (e) => e.type === "question" || e.type === "confirm",
+    );
+
+  assert.strictEqual(hasPendingQuestion, true, "Should detect pending question");
+
+  const shouldUseInteractiveSubmit = hasPendingQuestion;
+
+  assert.strictEqual(
+    shouldUseInteractiveSubmit,
+    true,
+    "Composer send with pending question should use interactiveSubmit: true",
+  );
+});
+
+/**
+ * Scenario: Question message content preserved after answer
+ *
+ * Bug: After answering a question, the AI response block that contained
+ * the question is cleared/emptied. The inactive streaming state gets merged
+ * into messages again, potentially overwriting content.
+ */
+test("question message content preserved after answering", () => {
+  const store = new MockStore();
+  const sessionId = "test-question-content-preserved";
+  const messageId = "msg-question-1";
+
+  store.state.currentSessionId = sessionId;
+
+  // -- Simulate assistant streaming a question --
+  store.dispatch({
+    type: "SET_STREAMING",
+    payload: {
+      messageId,
+      sessionId,
+      content: "Here is my question for you",
+      isActive: true,
+      hasRenderableContent: true,
+    },
+  });
+
+  // Question interactive events set during streaming
+  store.dispatch({
+    type: "SET_INTERACTIVE_EVENTS",
+    payload: [
+      {
+        id: "q-0",
+        type: "question",
+        requestID: "req-1",
+        questionIndex: 0,
+        question: "What should I do next?",
+        options: [
+          { id: "opt-1", label: "Option 1", value: "1" },
+          { id: "opt-2", label: "Option 2", value: "2" },
+        ],
+        allowCustomInput: false,
+        multiSelect: false,
+      },
+    ],
+  });
+
+  // Flush streaming snapshot to messages (simulating question.asked handler)
+  const frozenMessage = {
+    role: "assistant",
+    id: messageId,
+    content: "Here is my question for you",
+    text: "Here is my question for you",
+    interactiveEvents: store.getState().interactiveEvents,
+    responseType: "question",
+  };
+  store.dispatch({
+    type: "SET_MESSAGES",
+    payload: [frozenMessage],
+  });
+
+  // FINISH_STREAMING from question.asked handler
+  store.dispatch({ type: "FINISH_STREAMING" });
+
+  const contentBeforeAnswer = store.getState().messages[0]?.content;
+  assert.notStrictEqual(
+    contentBeforeAnswer?.trim().length ?? 0,
+    0,
+    "Question message should have content before answering",
+  );
+
+  // -- Simulate user answering (interactiveSubmit) --
+  // The userMessageAppended handler first flushes, then dispatches SET_STREAMING null
+  // But our mock FINISH_STREAMING already set streaming to null, so flush is no-op.
+  store.dispatch({ type: "FINISH_STREAMING" }); // second FINISH_STREAMING from handler
+
+  // Simulate user message being appended (what userMessageAppended does)
+  const userMessage = {
+    role: "user",
+    content: "Option 1",
+    interactiveSubmit: true,
+  };
+  const currentMessages = store.getState().messages;
+  store.dispatch({
+    type: "SET_MESSAGES",
+    payload: [...currentMessages, userMessage],
+  });
+
+  // -- Verify question message content is still intact --
+  const messagesAfter = store.getState().messages;
+  const assistantMessage = messagesAfter.find(
+    (m) => m.role === "assistant" || m.id === messageId,
+  );
+
+  assert.ok(assistantMessage, "Assistant message should still exist after answering");
+  assert.notStrictEqual(
+    (assistantMessage?.content ?? "").trim().length,
+    0,
+    "Question message content should not be cleared after answering",
+  );
+  assert.strictEqual(
+    assistantMessage?.content,
+    "Here is my question for you",
+    "Question message content should be preserved unchanged",
+  );
+});
+
+// ============================================================================
 // SUMMARY OF TEST COVERAGE
 // ============================================================================
 // This test suite covers the following regression scenarios:

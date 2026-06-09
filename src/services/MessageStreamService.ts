@@ -372,9 +372,6 @@ export class MessageStreamService {
       let events;
       try {
         events = await client.event.subscribe(eventSubscribeOptions);
-        for await (const event of events.stream) {
-          // this.logger.info("[EVENT STREAM]", event);
-        }
       } catch (subscribeError) {
         // if (!workspaceDirectory) {
         //   throw subscribeError;

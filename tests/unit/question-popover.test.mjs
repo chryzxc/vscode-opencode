@@ -227,3 +227,65 @@ test('structured message rendering uses message field only', () => {
     'messageHandler should use structuredOutput.message for final stream text',
   );
 });
+
+// ============================================================================
+// Regression: Interrupted badge hidden for question messages
+// ============================================================================
+test('interrupted badge is hidden when message has question-like content', () => {
+  const source = readSource(
+    [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
+    'MessageComponents.tsx',
+  );
+
+  assert.match(
+    source,
+    /isAborted && !hasQuestionLikeInteractiveContent\(message\) &&/,
+    'Interrupted badge must check hasQuestionLikeInteractiveContent before showing',
+  );
+});
+
+// ============================================================================
+// Regression: Abort-triggered SSE events blocked for recently-aborted sessions
+// ============================================================================
+test('recently-aborted session events are skipped in SSE handler', () => {
+  const source = readAllSources([
+    joinFromRoot('src', 'providers', 'ChatViewProvider.ts'),
+  ], 'ChatViewProvider.ts');
+
+  assert.match(
+    source,
+    /recentlyAbortedSessionIds\.has\(/,
+    'SSE handler must check recentlyAbortedSessionIds before forwarding events',
+  );
+  assert.match(
+    source,
+    /recentlyAbortedSessionIds\.add\(/,
+    'schedulePromptDispatch must add session to recentlyAbortedSessionIds after abort',
+  );
+  assert.match(
+    source,
+    /recentlyAbortedSessionIds\.delete\(/,
+    'handleSendMessage must clear recentlyAbortedSessionIds before prompt',
+  );
+});
+
+// ============================================================================
+// Regression: Question tool steps filtered from activity timeline
+// ============================================================================
+test('question tool steps are filtered from activity timeline', () => {
+  const source = readSource(
+    [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
+    'MessageComponents.tsx',
+  );
+
+  assert.match(
+    source,
+    /activityTool === "question"/,
+    'Activity timeline must filter question tool',
+  );
+  assert.match(
+    source,
+    /activityTool === "request_user_input"/,
+    'Activity timeline must filter request_user_input tool',
+  );
+});

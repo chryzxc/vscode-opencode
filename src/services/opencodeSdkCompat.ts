@@ -130,7 +130,18 @@ export function normalizeSdkAssistantMessage(value: unknown): UnknownRecord | un
   const info = asRecord(data.info);
   const parts = Array.isArray(data.parts) ? data.parts : undefined;
   if (info && parts) {
-    return { ...info, parts };
+    const result = { ...info, info, parts };
+    console.log("[CLIENT FACING] normalizeSdkAssistantMessage", {
+      hasInfo: !!info,
+      hasStructured: !!info?.structured,
+      structuredMessage: (info as any)?.structured?.message?.slice(0, 200),
+      responseType: (info as any)?.structured?.responseType,
+      partsCount: parts.length,
+      partTypes: parts.map((p: any) => p?.type),
+      hasContent: !!(info as any)?.content,
+      hasText: !!(info as any)?.text,
+    });
+    return result;
   }
   return data;
 }

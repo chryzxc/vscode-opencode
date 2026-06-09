@@ -346,6 +346,55 @@ function asStringLocal(...values: unknown[]): string {
   return "";
 }
 
+function interactiveEventContentKeyLocal(event: InteractiveEvent): string {
+  const type = asStringLocal(event.type).toLowerCase();
+  if (type === "question") {
+    const question = normalizeComparableTextLocal(asStringLocal(event.question));
+    const title = normalizeComparableTextLocal(asStringLocal(event.title));
+    const optionsKey = Array.isArray(event.options)
+      ? event.options
+          .map(
+            (opt) =>
+              normalizeComparableTextLocal(
+                asStringLocal(opt.label, opt.value, opt.description),
+              ),
+          )
+          .sort()
+          .join("|")
+      : "";
+    return [
+      "question",
+      title,
+      question,
+      optionsKey,
+      event.multiSelect ? "1" : "0",
+      event.allowCustomInput ? "1" : "0",
+    ].join("::");
+  }
+  if (type === "confirm") {
+    return [
+      "confirm",
+      normalizeComparableTextLocal(asStringLocal(event.question)),
+      normalizeComparableTextLocal(asStringLocal(event.title)),
+      normalizeComparableTextLocal(asStringLocal(event.confirmLabel)),
+      normalizeComparableTextLocal(asStringLocal(event.cancelLabel)),
+    ].join("::");
+  }
+  if (type === "quick_actions") {
+    return [
+      "quick_actions",
+      normalizeComparableTextLocal(asStringLocal(event.title)),
+    ].join("::");
+  }
+  if (type === "message") {
+    return [
+      "message",
+      normalizeComparableTextLocal(asStringLocal(event.message, event.title)),
+    ].join("::");
+  }
+  return `unknown:${asStringLocal(event.id)}`;
+}
+
 function cacheStreamingForSession(
   current: Record<string, StreamingState> | undefined,
   sessionId: string | null,
@@ -787,7 +836,13 @@ function pendingInteractiveEventsFromMessagesLocal(
     }
     const events = interactiveEventsFromLatestQuestionMessageLocal(msg);
     if (events.length > 0) {
-      return events;
+      const seenKeys = new Set<string>();
+      return events.filter((event) => {
+        const key = interactiveEventContentKeyLocal(event);
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+      });
     }
   }
 
@@ -1416,7 +1471,21 @@ function appendUniqueEntries<T>(
 }
 
 export function coalesceAssistantRunForCanonical(run: Message[]): Message {
-  const base = { ...(run[run.length - 1] || run[0]) } as Message;
+  // Lifecycle events (streaming start/finish) carry evt_-prefixed message IDs.
+  // When the same assistant turn produces both an evt_ lifecycle snapshot and a
+  // msg_ streaming snapshot, the evt_ entry may carry stale streaming text that
+  // was captured at lifecycle-start.  Use the last non-evt message as the merge
+  // base so the canonical ID and renderable text come from the authoritative
+  // msg_ snapshot — the evt_ metadata (steps, progress, structured output) is
+  // still folded in during the merge loop below.
+  const preferredIdx = run.length > 1
+    ? run.findLastIndex(
+        (m: Message) => !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
+      )
+    : -1;
+  const base = {
+    ...(preferredIdx >= 0 ? run[preferredIdx] : run[run.length - 1] || run[0]),
+  } as Message;
   const mergedParts: unknown[] = [];
   const seenPartKeys = new Set<string>();
   const mergedSteps = Array.isArray(base.steps) ? [...base.steps] : [];
@@ -1706,7 +1775,19 @@ export function canonicalizeMessagesForRender(messages: Message[]): Message[] {
     index = cursor;
   }
 
-  return canonical;
+  const hasNonEvtAssistant = canonical.some(
+    (m) =>
+      isAssistantMessageForCanonical(m) &&
+      !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
+  );
+
+  return hasNonEvtAssistant
+    ? canonical.filter(
+        (m) =>
+          !isAssistantMessageForCanonical(m) ||
+          !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
+      )
+    : canonical;
 }
 
 const MAX_STREAMING_REASONING_EVENTS = 300;
@@ -2197,6 +2278,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (areStringArraysEqual(state.processingSessionIds, action.payload)) {
         return state;
       }
+      logger.info("[LOADING][STORE] SET_PROCESSING_SESSIONS", {
+        processingSessionIds: action.payload,
+        currentSessionId: state.currentSessionId,
+        isProcessing: state.isProcessing,
+        streamingActive: state.streaming?.isActive,
+        streamingExists: !!state.streaming,
+        hasRenderableContent: state.streaming?.hasRenderableContent,
+      });
       return { ...state, processingSessionIds: action.payload };
     case "START_SESSION_LOADING":
       return {
@@ -2353,6 +2442,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "CLEAR_MESSAGES":
       return { ...state, messages: [] };
     case "SET_PROCESSING":
+      logger.info("[LOADING][STORE] SET_PROCESSING", {
+        payload: action.payload,
+        currentSessionId: state.currentSessionId,
+        processingSessionIds: state.processingSessionIds,
+        streamingActive: state.streaming?.isActive,
+        streamingExists: !!state.streaming,
+        hasRenderableContent: state.streaming?.hasRenderableContent,
+        priorIsProcessing: state.isProcessing,
+        hasMessages: state.messages.length > 0,
+        lastMessageRole: state.messages.length > 0 ? state.messages[state.messages.length - 1].role : null,
+      });
       // Question popovers are final assistant messages now, not an
       // interactive-await state. Let new user turns enter processing even when
       // a previous question popover is still visible.
@@ -2503,6 +2603,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           interactiveEvents: action.payload.interactiveEvents ?? [],
         }
         : null;
+      logger.info("[LOADING][STORE] SET_STREAMING", {
+        payloadIsNull: action.payload === null,
+        isActive: streaming?.isActive,
+        hasRenderableContent: streaming?.hasRenderableContent,
+        contentLength: streaming?.content?.length ?? null,
+        steps: streaming?.steps?.length ?? 0,
+        hasAssistantFinishSignal: streaming?.hasAssistantFinishSignal,
+        hasTerminalStepSignal: streaming?.hasTerminalStepSignal,
+        currentSessionId: state.currentSessionId,
+        isProcessing: state.isProcessing,
+      });
       return {
         ...state,
         streaming,
@@ -2593,6 +2704,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const hasRenderableContent =
         state.streaming.hasRenderableContent ||
         !!action.payload.renderable;
+      if (!state.streaming.hasRenderableContent && hasRenderableContent) {
+        logger.info("[LOADING][STORE] UPDATE_STREAMING_CONTENT hasRenderableContent became true", {
+          renderable: !!action.payload.renderable,
+          contentLength: content.length,
+          isProcessing: state.isProcessing,
+          sessionId: state.currentSessionId,
+        });
+      }
       // Stream providers sometimes resend identical snapshots/chunks.
       // If content/renderability metadata is unchanged, keep the same state
       // reference so React can skip rerendering the chat tree.
@@ -2810,6 +2929,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         isActive: false,
         usage: action.payload?.usage ?? state.streaming.usage,
       };
+      logger.info("[LOADING][STORE] FINISH_STREAMING", {
+        messageId: streaming.messageId,
+        isProcessing: state.isProcessing,
+        contentLength: streaming.content?.length ?? 0,
+        hasRenderableContent: streaming.hasRenderableContent,
+        currentSessionId: state.currentSessionId,
+        usage: streaming.usage,
+      });
       return {
         ...state,
         streaming,
@@ -3032,6 +3159,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_AGENT_SEARCH":
       return { ...state, agentSearchQuery: action.payload };
     case "ADD_ERROR_MESSAGE":
+      logger.info("ERROR_FLOW: ADD_ERROR_MESSAGE dispatched to store", {
+        timestamp: new Date().toISOString(),
+        errorMessage: action.payload,
+        currentErrorCount: state.errorMessages.length,
+        newErrorMessages: [...state.errorMessages, action.payload],
+      });
       return {
         ...state,
         errorMessages: [...state.errorMessages, action.payload],
@@ -3202,15 +3335,22 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         action.payload,
         state.dismissedInteractiveEventKeys,
       );
+      const seenKeys = new Set<string>();
+      const deduplicatedEvents = filteredEvents.filter((event) => {
+        const key = interactiveEventContentKeyLocal(event);
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+      });
       const streaming = state.streaming
         ? {
             ...state.streaming,
-            interactiveEvents: filteredEvents,
+            interactiveEvents: deduplicatedEvents,
           }
         : state.streaming;
       return {
         ...state,
-        interactiveEvents: filteredEvents,
+        interactiveEvents: deduplicatedEvents,
         streaming,
         streamingBySessionId: cacheStreamingForSession(
           state.streamingBySessionId,

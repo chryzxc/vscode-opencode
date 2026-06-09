@@ -304,6 +304,7 @@ export function StickyHeader() {
     promptQueue,
     sessionsList,
     contextUsagePct,
+    assistantTurnPending,
   } = useAppState();
   const dispatch = useAppDispatch();
   const isProcessing = isProcessingInCurrentSession(
@@ -311,6 +312,11 @@ export function StickyHeader() {
     currentSessionId,
     processingSessionIds,
   );
+  const isAiResponding =
+    isProcessing &&
+    (streaming?.isActive ||
+      assistantTurnPending ||
+      (streaming?.reasoningEvents?.length ?? 0) > 0);
 
   const currentSession = currentSessionId
     ? sessionsList.find((s) => s.id === currentSessionId)
@@ -327,6 +333,11 @@ export function StickyHeader() {
           <CircularProgress pct={contextUsagePct} size={18} strokeWidth={2.5} />
         ) : null}
         <span className="oc-title text-sm font-medium truncate">{sessionTitle}</span>
+        {isAiResponding && (
+          <span className="ml-2 shrink-0 text-[11px] font-medium text-oc-accent animate-pulse">
+            Thinking...
+          </span>
+        )}
       </div>
 
       {/* Right side: Action buttons */}
@@ -1825,15 +1836,14 @@ export function InputWrapper() {
     interactiveEvents,
     dismissedInteractiveEventKeys,
     contextUsagePct,
+    assistantTurnPending,
   } = useAppState();
   const dispatch = useAppDispatch();
-
   const isProcessing = isProcessingInCurrentSession(
     globalIsProcessing,
     currentSessionId,
     processingSessionIds,
   );
-
   const isExecutingQueue = isExecutingQueueInCurrentSession(
     globalIsExecutingQueue,
     currentSessionId,
@@ -1867,14 +1877,14 @@ export function InputWrapper() {
 
   // Stop button only visible when AI is responding AND input is empty
   // Send button icon reflects: Send icon when idle/input has value, AlertCircle when responding with input.
-  // A session can stay "processing" because of background subagent work after
-  // the main assistant reply is already complete, so the composer should only
-  // show Stop while the foreground assistant turn is still abortable.
-  const isAiResponding = !!(
+  // Centralized check: the AI is responding when the session is processing
+  // and either streaming is active, the assistant turn is still pending,
+  // or active streaming reasoning events are still flowing.
+  const isAiResponding =
     isProcessing &&
     (streaming?.isActive ||
-      (!streaming && !hasCompletedAssistantReplyForLatestTurn))
-  );
+      assistantTurnPending ||
+      (streaming?.reasoningEvents?.length ?? 0) > 0);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaHasValue = inputValue.length > 0;
@@ -2063,9 +2073,16 @@ export function InputWrapper() {
   //
   // Even if the AI types the question in the chat bubble, we show the popup
   // here to make the call-to-action obvious and clickable.
-  const displayInteractiveEvents = composerInteractiveEvents.filter(
-    isQuickInputInteractiveEvent,
-  );
+  const displayInteractiveEvents = useMemo(() => {
+    const candidates = composerInteractiveEvents.filter(isQuickInputInteractiveEvent);
+    const seen = new Set<string>();
+    return candidates.filter((event) => {
+      const key = `${event.type}::${(event.question || event.title || event.message || "").trim().toLowerCase().replace(/\s+/g, " ")}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [composerInteractiveEvents]);
   const interactiveEventCount = displayInteractiveEvents.length;
   const interactiveEventResetKey = displayInteractiveEvents
     .map((item) => {
@@ -2335,6 +2352,15 @@ export function InputWrapper() {
       return;
     }
 
+    const hasPendingQuestion =
+      interactiveEvents.length > 0 &&
+      interactiveEvents.some(
+        (e) =>
+          e.type === "question" ||
+          e.type === "confirm" ||
+          e.type === "quick_input",
+      );
+
     vscode.postMessage({
       type: "sendMessage",
       ...(sessionId ? { sessionId } : {}),
@@ -2343,6 +2369,7 @@ export function InputWrapper() {
       contexts: currentContexts,
       agent: currentAgent,
       images: currentAttachments,
+      ...(hasPendingQuestion ? { interactiveSubmit: true } : {}),
     });
 
     dispatch({
@@ -2359,6 +2386,14 @@ export function InputWrapper() {
       ],
     });
     dispatch({ type: "SET_PROCESSING", payload: true });
+    logger.info("[LOADING][INPUT] User sent message, dispatching SET_PROCESSING(true)", {
+      sessionId: sessionId || null,
+      currentSessionId,
+      processingSessionIds,
+      textLength: text.length,
+      hasPendingQuestion,
+      timestamp: Date.now(),
+    });
   };
 
   const steerPrompt = () => {
@@ -2516,49 +2551,6 @@ export function InputWrapper() {
       type: "SET_INTERACTIVE_EVENTS",
       payload: interactiveEvents,
     });
-
-    const sdkQuestionRequestIds = new Set(
-      batch
-        .map((resp) => resp.requestID)
-        .filter((requestID): requestID is string => !!requestID),
-    );
-    const canReplyToSdkQuestion =
-      sdkQuestionRequestIds.size === 1 &&
-      batch.every((resp) => typeof resp.questionIndex === "number");
-    if (canReplyToSdkQuestion) {
-      const requestID = Array.from(sdkQuestionRequestIds)[0];
-      const answers = batch
-        .slice()
-        .sort(
-          (left, right) =>
-            (left.questionIndex ?? 0) - (right.questionIndex ?? 0),
-        )
-        .map((resp) => [resp.text]);
-      logger.info("[QUESTION DEBUG] submitting SDK question reply", {
-        requestID,
-        answerCount: answers.length,
-        answers,
-      });
-      // SDK-native question replies do not immediately round-trip through the
-      // same userMessageAppended echo path as legacy interactive submits. Clear
-      // any stale local processing/streaming state now so the previous question
-      // turn cannot leave the composer stuck in a loading posture while we wait
-      // for the server's real continuation events.
-      dispatch({ type: "SET_PROCESSING", payload: false });
-      dispatch({ type: "SET_STEERING", payload: false });
-      dispatch({ type: "SET_STREAMING", payload: null });
-      vscode.postMessage({
-        type: "questionReply",
-        requestID,
-        answers,
-        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
-      });
-      setPendingAnswers({});
-      setCurrentInteractiveIndex(0);
-      setIsCustomMode(false);
-      setCustomValue("");
-      return;
-    }
 
     // Don't show processing state immediately - let extension confirm when actually processing
     // This prevents UI from showing "stuck" loading state when request is delayed

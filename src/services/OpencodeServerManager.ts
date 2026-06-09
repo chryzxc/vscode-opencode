@@ -1348,6 +1348,11 @@ export class OpencodeServerManager {
 
     try {
       const workspaceDirectory = this.getWorkspaceDirectory();
+      log.info("[OPENCOD GO MODEL] compactSession called", {
+        sessionId,
+        providerID: model.providerID,
+        modelID: model.modelID,
+      });
       const result = await this.client.session.summarize({
         path: { id: sessionId },
         body: {

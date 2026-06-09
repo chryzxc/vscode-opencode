@@ -137,7 +137,7 @@ const actionContracts = [
   { type: 'UPSERT_SUBAGENT_SUMMARIES', patterns: [/subagentsByParentMessageId:\s*\{[\s\S]*\.\.\.state\.subagentsByParentMessageId[\s\S]*\.\.\.action\.payload/] },
   { type: 'UPSERT_SUBAGENT_DETAIL', patterns: [/subagentDetailsById:\s*\{[\s\S]*\.\.\.state\.subagentDetailsById[\s\S]*\.\.\.action\.payload/] },
   { type: 'SELECT_SUBAGENT', patterns: [/selectedSubagentId:\s*action\.payload/] },
-  { type: 'SET_INTERACTIVE_EVENTS', patterns: [/filterDismissedInteractiveEventsLocal\(/, /interactiveEvents:\s*filteredEvents/] },
+  { type: 'SET_INTERACTIVE_EVENTS', patterns: [/filterDismissedInteractiveEventsLocal\(/, /interactiveEvents:\s*deduplicatedEvents/, /interactiveEventContentKeyLocal\(/] },
   { type: 'DISMISS_INTERACTIVE_EVENT', span: 10000, patterns: [/dismissedInteractiveEventKeys\s*,/, /getInteractiveEventKeysLocal\(dismissedEvent\)/, /cacheVisibleStreamingMessageForSession\(/] },
   { type: 'CLEAR_DISMISSED_INTERACTIVE_EVENTS', patterns: [/dismissedInteractiveEventKeys:\s*new Set<string>\(\)/] },
   { type: 'SET_MCP_SERVERS', patterns: [/mcpServers:\s*action\.payload/] },

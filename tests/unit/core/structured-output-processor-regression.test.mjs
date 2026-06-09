@@ -24,7 +24,8 @@ test.describe('Structured Output Processor - Output Extraction', () => {
       /extractStructuredOutput[\s\S]*structured_output|structuredOutput|rawResponse/s,
       'must extract from various field names'
     );
-  });
+});
+
 
   test('extractStructuredOutput validates message structure', () => {
     const extractBody = extractFunctionBody(structuredOutputProcessorSource, 'extractStructuredOutput');
@@ -497,6 +498,45 @@ test.describe('Structured Output Processor - Validation', () => {
       source,
       /structuredValidationFailureCounters|counters|stats/s,
       'must maintain failure statistics'
+    );
+  });
+
+});
+
+test.describe('Structured Output Processor — Content assembly and spacing', () => {
+
+  test('extractMessageBodyText joins text parts with space separator', () => {
+    const extractBody = extractFunctionBody(structuredOutputProcessorSource, 'extractMessageBodyText');
+
+    assert.match(
+      extractBody,
+      /\.join\(["'] ["']\)/,
+      'extractMessageBodyText must join text parts with a space separator, not empty string',
+    );
+  });
+
+  test('applyStructuredOutputToMessage sets content from fallback when structured has no message field', () => {
+    const applyBody = extractFunctionBody(structuredOutputProcessorSource, 'applyStructuredOutputToMessage');
+
+    assert.match(
+      applyBody,
+      /else if\s*\(\s*fallbackMessage\s*&&\s*!\s*updated\.content\s*\)\s*\{/,
+      'applyStructuredOutputToMessage must populate content from fallbackMessage when structured.message is absent',
+    );
+    assert.match(
+      applyBody,
+      /updated\.content\s*=\s*fallbackMessage;/,
+      'applyStructuredOutputToMessage must assign fallbackMessage to updated.content',
+    );
+  });
+
+  test('applyStructuredOutputToMessage preserves existing content when already set', () => {
+    const applyBody = extractFunctionBody(structuredOutputProcessorSource, 'applyStructuredOutputToMessage');
+
+    assert.match(
+      applyBody,
+      /!\s*updated\.content/,
+      'applyStructuredOutputToMessage must check !updated.content before overwriting with fallbackMessage',
     );
   });
 

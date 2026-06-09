@@ -246,7 +246,7 @@ export class SubagentPersistence {
       }
 
       // Log what provider/model data is available
-      this.logger.info('[SUBAGENT][PERSIST] Extracting subagent from message', {
+      console.log('===SUBAGENT_SPAWN=== [PERSIST] Extracting subagent from message', {
         id,
         hasProviderID: Boolean(normalized.providerID),
         hasModelID: Boolean(normalized.modelID),
@@ -255,6 +255,7 @@ export class SubagentPersistence {
         modelID: normalized.modelID,
         agentId: normalized.agentId,
         originalKeys: Object.keys(subagent),
+        originalSubagent: subagent,
       });
 
       summaries.push({

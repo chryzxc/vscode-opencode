@@ -31,3 +31,12 @@ test("compat adapter exposes safe accessors for final prompt response data", () 
   assert.match(source, /export function getSdkResponseError/);
   assert.match(source, /export function normalizeSdkAssistantMessage/);
 });
+
+test("normalizeSdkAssistantMessage preserves info as nested object for structured output extraction", () => {
+  assert.match(source, /export function normalizeSdkAssistantMessage/);
+  assert.match(
+    source,
+    /result = \{ \.\.\.info,[\s]*info,[\s]*parts[\s]*\};/,
+    'should create result object with { ...info, info, parts } preserving info for message.info?.structured access'
+  );
+});
