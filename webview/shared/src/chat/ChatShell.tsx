@@ -595,10 +595,15 @@ function ChatContent() {
         break;
       }
     }
+    const hasEvtPrefix = (m: Message): boolean => {
+      const infoId = typeof m?.info?.id === "string" ? m.info.id : "";
+      const topId = typeof m?.id === "string" ? m.id : "";
+      return infoId.startsWith("evt_") || topId.startsWith("evt_");
+    };
     const hasNonEvtAssistant = sliced.slice(lastUserIdx + 1).some(
       (m) =>
         m?.role === "assistant" &&
-        !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
+        !hasEvtPrefix(m),
     );
     // Guard: strip evt_-prefixed lifecycle-standby messages from the render
     // list only when a non-evt assistant message exists for the same turn.
@@ -607,10 +612,7 @@ function ChatContent() {
     if (!hasNonEvtAssistant) {
       return sliced;
     }
-    return sliced.filter(
-      (m) =>
-        !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
-    );
+    return sliced.filter((m) => !hasEvtPrefix(m));
   })();
   const hasCompatibilityWarnings = state.compatibilityWarnings.length > 0;
   const errorToasts = state.errorMessages;

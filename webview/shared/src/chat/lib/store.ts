@@ -1532,17 +1532,24 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   for (const message of run) {
     const messageId = getMessageIdForCanonical(message);
     if (messageId) {
-      canonicalId = messageId;
+      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
+      const currentIsNonEvt = typeof canonicalId === "string" && !canonicalId.startsWith("evt_");
+      if (!incomingIsEvt || !currentIsNonEvt) {
+        canonicalId = messageId;
+      }
     }
     const text = extractRenderableAssistantTextForCanonical(message);
     if (text) {
-      latestText = text;
-      latestTextPart = Array.isArray(message.parts)
-        ? message.parts.find((part) => {
-            const partRec = asRecordLocal(part);
-            return !!partRec && isRenderableAssistantTextPartForCanonical(partRec);
-          })
-        : undefined;
+      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
+      if (!incomingIsEvt || !latestText) {
+        latestText = text;
+        latestTextPart = Array.isArray(message.parts)
+          ? message.parts.find((part) => {
+              const partRec = asRecordLocal(part);
+              return !!partRec && isRenderableAssistantTextPartForCanonical(partRec);
+            })
+          : undefined;
+      }
     }
     if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
       latestInteractiveEvents = message.interactiveEvents;

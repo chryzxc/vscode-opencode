@@ -13,18 +13,32 @@ export const config = {
      */
     showRawResponse: false,
     /**
-     * Disable webview logger output and extension forwarding
-     * @default false
+     * Show browser console output (console.log, console.warn, etc.)
+     * When disabled, all console/terminal/browser logging output is suppressed
+     * @default true
      */
-    disableLogs: true,
+    showBrowserConsole: false,
     /**
      * Show pre-render debug panel showing data fed into the AI response card
      * (helps debug reasoning leaks into response content)
      * @default false
      */
     showPreRenderDebug: false,
+    /**
+     * Show raw SDK event payload debug panel before the AI response block
+     * (captures raw stream events during streaming, or rawResponse for completed messages)
+     * @default false
+     */
+    showSdkDebug: false,
+    /**
+     * Show interactive events debug panel inside the AI response block
+     * (displays raw interactiveEvents data used for question popovers, confirmations, etc.)
+     * @default false
+     */
+    showInteractiveEventsDebug: false,
+    showCentralizedDebug: false,
   },
-} as const;
+};
 
 /**
  * Type-safe config accessor

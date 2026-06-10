@@ -1085,3 +1085,23 @@ test('handleStreamEvent filters out non-assistant non-user roles early', () => {
         'must filter out roles that are neither assistant nor user',
     );
 });
+
+// ---------------------------------------------------------------------------
+// 26. coalesceAssistantHistoryBurst – prefers non-evt merge base
+// ---------------------------------------------------------------------------
+
+test('coalesceAssistantHistoryBurst prefers non-evt message as merge base', () => {
+    const fnIdx = messageHandlerSource.indexOf('function coalesceAssistantHistoryBurst(');
+    assert.ok(fnIdx >= 0, 'coalesceAssistantHistoryBurst must exist');
+    const fnSlice = messageHandlerSource.slice(fnIdx, fnIdx + 2000);
+    assert.match(
+        fnSlice,
+        /findLastIndex[\s\S]{1,100}getMessageId[\s\S]{1,100}startsWith\(["']evt_["']\)/,
+        'must search for the last non-evt message in the burst (using getMessageId) and use it as the merge base',
+    );
+    assert.match(
+        fnSlice,
+        /preferredIdx >= 0 \? burst\[preferredIdx\] : burst\[burst\.length - 1\]/,
+        'must fall back to the last message only when no non-evt message exists',
+    );
+});

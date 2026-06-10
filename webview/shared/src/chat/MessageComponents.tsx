@@ -4854,10 +4854,17 @@ function AssistantMessageInner({
     ? "w-full max-w-none"
     : "w-full";
   const isLiveStream = !!streaming?.isActive;
+  const isEvtLifecycleMessage = typeof messageId === "string" && messageId.startsWith("evt_");
+  const hasCanonicalMsgAlternative = isEvtLifecycleMessage && Array.isArray(messages) && messages.some(
+    (m) => {
+      const mId = m?.info?.id || m?.id;
+      return typeof mId === "string" && mId.startsWith("msg_") && m?.role === "assistant";
+    },
+  );
   // Hide the response markdown body during live streaming to prevent
   // reasoning/planning text from leaking into the AI response card.
   // The plan card and other non-text response elements remain visible.
-  const showResponseBody = hasResponseContent && !isLiveStream;
+  const showResponseBody = hasResponseContent && !isLiveStream && !hasCanonicalMsgAlternative;
   const showResponseSection =
     !isAborted &&
     (hasVisibleResponseBody || shouldShowPlanCard) &&

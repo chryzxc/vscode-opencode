@@ -6885,8 +6885,30 @@ function isTextLikePart(part: MessagePart): boolean {
   );
 }
 
+/**
+ * Coalesce an adjacent assistant-message burst into a single message.
+ *
+ * CRITICAL — evt_ vs msg_ merge base selection:
+ * `mergeAssistantReplacement` calls this with `[existing, incoming]` where
+ * the incoming message often carries an `evt_` lifecycle ID while the existing
+ * message carries the authoritative `msg_` ID.  Always prefer the last non-evt
+ * message as the merge base so that canonical fields (`content`, `text`,
+ * `structuredOutput.message`) come from the `msg_` record.  The `evt_` entry
+ * only contributes metadata (steps, reasoning events, edits, interactive
+ * events).  This prevents garbled event-fragment text from overwriting valid
+ * assistant responses while still folding in all lifecycle state.
+ *
+ * This mirrors the same pattern in `coalesceAssistantRunForCanonical` (store.ts).
+ */
 function coalesceAssistantHistoryBurst(burst: Message[]): Message {
-  const base = { ...(burst[burst.length - 1] || burst[0]) } as Message;
+  const preferredIdx = burst.length > 1
+    ? burst.findLastIndex(
+        (m) => !(typeof getMessageId(m) === "string" && getMessageId(m)?.startsWith("evt_")),
+      )
+    : -1;
+  const base = {
+    ...(preferredIdx >= 0 ? burst[preferredIdx] : burst[burst.length - 1] || burst[0]),
+  } as Message;
   const mergedParts: MessagePart[] = [];
   const seenPartFingerprints = new Set<string>();
   const seenReasoning = new Set<string>();
@@ -7002,15 +7024,21 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
 
     const messageId = getMessageId(message);
     if (messageId) {
-      canonicalMessageId = messageId;
+      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
+      const currentIsNonEvt = typeof canonicalMessageId === "string" && !canonicalMessageId.startsWith("evt_");
+      if (!incomingIsEvt || !currentIsNonEvt) {
+        canonicalMessageId = messageId;
+      }
     }
 
     const content = extractRenderableAssistantTextForHydration(message).trim();
     if (content.length > 0) {
       const structuredMessage = getCanonicalStructuredMessageText(message);
+      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
+      const currentIsNonEvt = typeof canonicalMessageId === "string" && !canonicalMessageId.startsWith("evt_");
       const candidateTextScore =
         content.length + (isCanonicalAssistantDisplayMessage(message) ? 100000 : 0);
-      if (candidateTextScore >= latestTextScore) {
+      if (candidateTextScore >= latestTextScore && (!incomingIsEvt || !currentIsNonEvt)) {
         latestTextScore = candidateTextScore;
         latestText = content;
         latestTextPart = Array.isArray(message.parts)
@@ -8429,16 +8457,16 @@ function handleStreamEvent(
   if (!isHeartbeatEvent && !terminalErrorReached) {
     const capturePayload: Record<string, unknown> = { type: eventType };
     if (payload.properties) {
-      capturePayload.properties = payload.properties;
+      capturePayload.properties = { ...payload.properties };
     }
     if (payload.part) {
-      capturePayload.part = payload.part;
+      capturePayload.part = { ...payload.part };
     }
     if (payload.info) {
-      capturePayload.info = payload.info;
+      capturePayload.info = { ...payload.info };
     }
     if (payload.structured) {
-      capturePayload.structured = payload.structured;
+      capturePayload.structured = { ...payload.structured };
     }
     if (payload.text) {
       capturePayload.text = payload.text;

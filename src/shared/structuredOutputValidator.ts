@@ -728,17 +728,7 @@ function normalizeQuestionOptions(
 export function sanitizeStructuredOutput(
   value: Record<string, unknown>,
 ): Record<string, unknown> {
-  const sanitized: Record<string, unknown> = {};
-  TOP_LEVEL_FIELDS.forEach((key) => {
-    if (typeof value[key] !== "undefined") {
-      sanitized[key] = value[key];
-    }
-  });
-  LEGACY_COMPAT_TOP_LEVEL_FIELDS.forEach((key) => {
-    if (typeof value[key] !== "undefined") {
-      sanitized[key] = value[key];
-    }
-  });
+  const sanitized: Record<string, unknown> = { ...value };
 
   // Handle malformed question structure where responseType is "question"
   // but question is a string instead of an object
