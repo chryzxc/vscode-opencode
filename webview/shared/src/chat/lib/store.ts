@@ -33,6 +33,7 @@ import type { ModelCapability } from "./types";
 export const initialState: AppState = {
   selectedFiles: [],
   selectedContexts: [],
+  fileMentionPaths: {},
   availableModels: [],
   selectedModel: null,
   modelSearchQuery: "",
@@ -177,6 +178,7 @@ export type AppAction =
   | { type: "UPDATE_STREAMING_CONTENT"; payload: StreamingContentPayload }
   | { type: "UPDATE_STREAMING_REASONING"; payload: StreamingReasoningPayload }
   | { type: "SET_IN_REASONING_PART"; payload: boolean }  // Track if we're processing a reasoning part
+  | { type: "APPEND_SDK_EVENT_PAYLOAD"; payload: unknown }
   | { type: "ADD_STREAMING_STEP"; payload: StreamingStep }
   | { type: "UPDATE_STREAMING_STEP"; payload: StreamingStepUpdatePayload }
   | { type: "ADD_STREAMING_EDIT"; payload: string }
@@ -201,6 +203,7 @@ export type AppAction =
   }
   | { type: "SET_SELECTED_FILES"; payload: string[] }
   | { type: "SET_SELECTED_CONTEXTS"; payload: ContextItem[] }
+  | { type: "SET_FILE_MENTION_PATHS"; payload: Record<string, string> }
   | {
     type: "SET_QUEUE";
     payload: { sessionId: string | null; queue: QueueItem[] };
@@ -2601,6 +2604,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             action.payload.hasAssistantFinishSignal ?? false,
           hasTerminalStepSignal: action.payload.hasTerminalStepSignal ?? false,
           interactiveEvents: action.payload.interactiveEvents ?? [],
+          rawSdkEventPayloads: action.payload.rawSdkEventPayloads ?? [],
         }
         : null;
       logger.info("[LOADING][STORE] SET_STREAMING", {
@@ -2671,6 +2675,22 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           streaming,
           state.messages,
         ),
+      };
+    }
+    case "APPEND_SDK_EVENT_PAYLOAD": {
+      if (!state.streaming) {
+        return state;
+      }
+      const existing = state.streaming.rawSdkEventPayloads ?? [];
+      if (existing.length >= 200) {
+        return state;
+      }
+      return {
+        ...state,
+        streaming: {
+          ...state.streaming,
+          rawSdkEventPayloads: [...existing, action.payload],
+        },
       };
     }
     case "UPDATE_STREAMING_CONTENT": {
@@ -2982,6 +3002,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, selectedFiles: action.payload };
     case "SET_SELECTED_CONTEXTS":
       return { ...state, selectedContexts: action.payload };
+    case "SET_FILE_MENTION_PATHS":
+      return { ...state, fileMentionPaths: action.payload };
     case "SET_QUEUE": {
       const targetSessionId = action.payload.sessionId;
       if (!targetSessionId) {

@@ -248,6 +248,11 @@
           "description": "Timeout multiplier for complex queries with multiple files or contexts (default: 1.5x)",
           "scope": "window",
           "order": 11
+        },
+        "opencode.debug.suppressConsoleOutput": {
+          "type": "boolean",
+          "default": false,
+          "description": "Suppress all extension host console output (console.log, console.warn, console.error, console.debug, console.info). Useful for silencing debug logging in terminal and browser DevTools."
         }
       }
     }

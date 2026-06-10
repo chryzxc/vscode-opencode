@@ -95,8 +95,6 @@ function CircularProgress({
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (visiblePct / 100) * circumference;
   const trackColor = "color-mix(in srgb, var(--oc-text) 30%, transparent)";
-
-  // Determine color based on pressure
   const strokeColor =
     normalizedPct > 90
       ? "var(--oc-red)"
@@ -154,6 +152,9 @@ function CircularProgress({
     </div>
   );
 }
+
+// Regex to match @filename references (shared between components)
+export const FILE_MENTION_REGEX = /@([a-zA-Z0-9_\-./\\]+[a-zA-Z0-9])/g;
 
 type SlashTrigger = {
   query: string;
@@ -1822,6 +1823,7 @@ export function InputWrapper() {
     promptQueue,
     selectedFiles,
     selectedContexts,
+    fileMentionPaths,
     selectedAgent,
     showFileSuggestions,
     fileSuggestions,
@@ -2231,24 +2233,20 @@ export function InputWrapper() {
         textareaRef.current.setSelectionRange(cursorPos, cursorPos);
       });
     } else if (result.type === "file") {
-      const contextItem: ContextItem = {
-        file: result.path,
-        lineInfo: "",
-        content: "",
-      };
-      const alreadySelected = selectedContexts.some(
-        (c) => c.file === contextItem.file && c.lineInfo === contextItem.lineInfo
-      );
-      if (!alreadySelected) {
-        dispatch({
-          type: "SET_SELECTED_CONTEXTS",
-          payload: [...selectedContexts, contextItem],
-        });
-      }
-      // For files: remove @filename from input (shows as chip above)
+      // Don't add to selectedContexts - we'll parse @filename from input instead
+      // For files: keep @filename in the input
       const before = inputValue.slice(0, mentionTrigger.replaceFrom);
       const after = inputValue.slice(mentionTrigger.replaceTo);
-      const nextValue = `${before}${after}`;
+      const displayName = result.name || result.path;
+      const mentionText = `@${displayName}`;
+      const nextValue = after.startsWith(' ')
+        ? `${before}${mentionText}${after}`
+        : `${before}${mentionText} ${after}`;
+
+      // Store the full path mapping for this filename
+      const updatedPaths = { ...fileMentionPaths };
+      updatedPaths[displayName] = result.path;
+      dispatch({ type: "SET_FILE_MENTION_PATHS", payload: updatedPaths });
 
       dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
       setMentionTrigger(null);
@@ -2257,8 +2255,9 @@ export function InputWrapper() {
 
       requestAnimationFrame(() => {
         if (!textareaRef.current) return;
+        const cursorPos = before.length + mentionText.length + 1;
         textareaRef.current.focus();
-        textareaRef.current.setSelectionRange(before.length, before.length);
+        textareaRef.current.setSelectionRange(cursorPos, cursorPos);
       });
     } else if (result.type === "resource") {
       const contextItem: ContextItem = {
@@ -2297,6 +2296,19 @@ export function InputWrapper() {
     const text = inputValue.trim();
     if (!text) return;
 
+    // Parse @filenames from the input text using shared regex
+    const fileMentions = text.match(FILE_MENTION_REGEX) || [];
+    const extractedFiles = fileMentions.map(mention => {
+      const filename = mention.slice(1); // Remove @ prefix
+      // Use the full path from the mapping if available, otherwise fall back to filename
+      const fullPath = fileMentionPaths[filename] || filename;
+      return {
+        type: "file" as const,
+        filename: fullPath, // Use full path for the SDK
+        source: { path: fullPath }
+      };
+    });
+
     // Capture values before clearing state
     const currentFiles = selectedFiles.length > 0 ? [...selectedFiles] : undefined;
     const currentContexts = selectedContexts.length > 0 ? [...selectedContexts] : undefined;
@@ -2304,10 +2316,17 @@ export function InputWrapper() {
     const currentAgent = selectedAgent || null;
     const sessionId = currentSessionId;
 
-    // Build message parts including file contexts
+    // Build message parts including file contexts from @mentions
     const messageParts: Array<{ type: string; text?: string; filename?: string; source?: { path: string } }> = [
       { type: "text", text },
     ];
+
+    // Add files from @mentions in the text
+    extractedFiles.forEach(fileRef => {
+      messageParts.push(fileRef);
+    });
+
+    // Also add any files from selectedContexts (for backwards compatibility)
     currentContexts?.forEach((context) => {
       if (!context.file.startsWith("resource:")) {
         messageParts.push({
@@ -2323,6 +2342,7 @@ export function InputWrapper() {
     dispatch({ type: "CLEAR_ATTACHMENTS" });
     dispatch({ type: "SET_SELECTED_CONTEXTS", payload: [] });
     dispatch({ type: "SET_SELECTED_FILES", payload: [] });
+    dispatch({ type: "SET_FILE_MENTION_PATHS", payload: {} }); // Clear file mention paths
     setSlashTrigger(null);
 
     if (isProcessing) {
@@ -2412,6 +2432,7 @@ export function InputWrapper() {
     });
     dispatch({ type: "SET_INPUT_VALUE", payload: "" });
     dispatch({ type: "CLEAR_ATTACHMENTS" });
+    dispatch({ type: "SET_FILE_MENTION_PATHS", payload: {} }); // Clear file mention paths
     setSlashTrigger(null);
   };
 

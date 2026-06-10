@@ -103,7 +103,53 @@ let skillManagementService: SkillManagementService;
  * 4. Update README.md with command description
  * 5. Add keyboard shortcut in package.json keybindings if needed
  */
+let originalConsoleMethods: Record<string, () => void> | null = null;
+
+function applyConsoleSuppression(suppress: boolean): void {
+  if (suppress) {
+    if (!originalConsoleMethods) {
+      originalConsoleMethods = {
+        log: console.log.bind(console),
+        warn: console.warn.bind(console),
+        error: console.error.bind(console),
+        debug: console.debug.bind(console),
+        info: console.info.bind(console),
+      };
+    }
+    const noop = () => {};
+    console.log = noop;
+    console.warn = noop;
+    console.error = noop;
+    console.debug = noop;
+    console.info = noop;
+  } else if (originalConsoleMethods) {
+    console.log = originalConsoleMethods.log;
+    console.warn = originalConsoleMethods.warn;
+    console.error = originalConsoleMethods.error;
+    console.debug = originalConsoleMethods.debug;
+    console.info = originalConsoleMethods.info;
+    originalConsoleMethods = null;
+  }
+}
+
+function setupConsoleSuppression(context: vscode.ExtensionContext): void {
+  const config = vscode.workspace.getConfiguration("opencode.debug");
+  const initialSuppress = config.get<boolean>("suppressConsoleOutput", false);
+  applyConsoleSuppression(initialSuppress);
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("opencode.debug.suppressConsoleOutput")) {
+        const suppress = vscode.workspace.getConfiguration("opencode.debug").get<boolean>("suppressConsoleOutput", false);
+        applyConsoleSuppression(suppress);
+      }
+    }),
+  );
+}
+
 export async function activate(context: vscode.ExtensionContext) {
+  setupConsoleSuppression(context);
+
   const activationStartTime = Date.now();
   log.info("Extension activation started", {
     version: context.extension.packageJSON.version,
@@ -598,6 +644,8 @@ export async function activate(context: vscode.ExtensionContext) {
  * @see OpencodeServerManager.dispose for server cleanup details
  */
 export async function deactivate(): Promise<void> {
+  applyConsoleSuppression(false);
+
   log.info("Extension deactivating");
 
   try {

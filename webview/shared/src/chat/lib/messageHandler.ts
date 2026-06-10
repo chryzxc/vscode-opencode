@@ -2,7 +2,7 @@ import type { Dispatch } from 'react';
 
 import type { AppAction } from './store';
 import { appReducer, hasSystemMessagePatternInText } from './store';
-import logger, { setGlobalShowBrowserConsole } from './logger';
+import logger from './logger';
 import type {
   ActivityDetail,
   ActivityDiffExcerpt,
@@ -10745,24 +10745,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             type: "SET_SERVER_VERSION",
             payload: asString(state.serverVersion) || undefined,
           });
-          const debugConfig = asRecord(state.debugConfig);
-          if (debugConfig) {
-            const cfg = {
-              showLogger: debugConfig.showLogger !== false,
-              showBrowserConsole: debugConfig.showBrowserConsole !== false,
-              showRawResponse: debugConfig.showRawResponse !== false,
-              showPreRenderDebug: debugConfig.showPreRenderDebug !== false,
-              showSdkDebug: debugConfig.showSdkDebug !== false,
-              showCentralizedDebug: debugConfig.showCentralizedDebug !== false,
-            };
-            dispatch({
-              type: "SET_DEBUG_CONFIG",
-              payload: cfg,
-            });
-            logger.setShowLogger(cfg.showLogger);
-            logger.setShowBrowserConsole(cfg.showBrowserConsole);
-            setGlobalShowBrowserConsole(cfg.showBrowserConsole);
-          }
           dispatch({
             type: "SET_COMPATIBILITY_WARNINGS",
             payload: normalizeCompatibilityWarnings(state.compatibilityWarnings),
@@ -10787,27 +10769,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           }
 
-          break;
-        }
-        case "debugConfigUpdate": {
-          const cfg = asRecord(data.debugConfig);
-          if (cfg) {
-            const parsed = {
-              showLogger: cfg.showLogger !== false,
-              showBrowserConsole: cfg.showBrowserConsole !== false,
-              showRawResponse: cfg.showRawResponse !== false,
-              showPreRenderDebug: cfg.showPreRenderDebug !== false,
-              showSdkDebug: cfg.showSdkDebug !== false,
-              showCentralizedDebug: cfg.showCentralizedDebug !== false,
-            };
-            dispatch({
-              type: "SET_DEBUG_CONFIG",
-              payload: parsed,
-            });
-            logger.setShowLogger(parsed.showLogger);
-            logger.setShowBrowserConsole(parsed.showBrowserConsole);
-            setGlobalShowBrowserConsole(parsed.showBrowserConsole);
-          }
           break;
         }
         case "modelsList": {

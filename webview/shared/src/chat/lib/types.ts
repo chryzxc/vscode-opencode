@@ -265,6 +265,7 @@ export interface StreamingState {
   inThoughtBlock?: boolean;
   /** Track if currently processing a reasoning part to prevent content leakage */
   inReasoningPart?: boolean;
+  rawSdkEventPayloads?: unknown[];
 }
 
 export interface MessageInfo {
@@ -684,6 +685,8 @@ export interface LspServerInfo {
 export interface AppState {
   selectedFiles: string[];
   selectedContexts: ContextItem[];
+  /** Maps @filename mentions to their full paths for SDK attachment */
+  fileMentionPaths: Record<string, string>;
   availableModels: Model[];
   /** Provider IDs that are configured/connected in OpenCode (from SDK config.providers()) */
   configuredProviders: string[];

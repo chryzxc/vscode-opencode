@@ -3936,7 +3936,7 @@ function formatThinkingVariantLabel(variant: string): string {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
 }
 
-const AssistantMessageInner = memo(function AssistantMessageInner({
+function AssistantMessageInner({
   message,
   streaming,
   isContiguous,
@@ -3960,7 +3960,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   todoItems?: AppState["todoItems"];
 }) {
   const dispatch = useAppDispatch();
-  const { assistantTurnPending, availableModels, debugConfig } = useAppState();
+  const { assistantTurnPending, availableModels } = useAppState();
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
@@ -3974,7 +3974,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
   const requestedSubagentConversationRef = useRef<Set<string>>(new Set());
 
   const centralizedDebugData = useMemo(() => {
-    if (!debugConfig.showCentralizedDebug) return null;
+    if (!config.debug.showCentralizedDebug) return null;
     const safeReplacer = () => {
       const seen = new WeakSet();
       return (key: string, value: unknown) => {
@@ -4001,10 +4001,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       message: JSON.parse(JSON.stringify(message, safeReplacer())),
       streaming: JSON.parse(JSON.stringify(streaming, safeReplacer())),
     };
-  }, [message, streaming, debugConfig.showCentralizedDebug]);
+  }, [message, streaming, config.debug.showCentralizedDebug]);
 
   const sdkDebugData = useMemo(() => {
-    if (!debugConfig.showSdkDebug) return null;
+    if (!config.debug.showSdkDebug) return null;
     const sdkPayloads = streaming?.rawSdkEventPayloads ?? [];
     const raw = message?.rawResponse;
     let rawResponseValue: unknown = raw;
@@ -4017,7 +4017,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       rawResponse: rawResponseValue,
       payloadCount: sdkPayloads.length,
     };
-  }, [streaming, message, debugConfig.showSdkDebug]);
+  }, [streaming, message, config.debug.showSdkDebug]);
 
   const rawContent = getMessageContent(message, streaming);
   const stickyStreamingContentRef = useRef<{
@@ -4757,7 +4757,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       };
     }
   }, [message?.rawResponse]);
-  const showRawResponseDebug = debugConfig.showRawResponse;
+  const showRawResponseDebug = config.debug.showRawResponse;
   const visibleRawResponseText =
     rawResponseText.trim().length > 0
       ? rawResponseText
@@ -4845,7 +4845,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         !hasPendingReasoningDisplayEvent));
 
   const cardDebugData = useMemo(() => {
-    if (!debugConfig.showCentralizedDebug) return null;
+    if (!config.debug.showCentralizedDebug) return null;
     return {
       effectiveResponseContent: (effectiveResponseContent || "").slice(0, 500),
       effectiveResponseContentLen: (effectiveResponseContent || "").length,
@@ -4862,10 +4862,10 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       isLiveStream,
       isAborted,
     };
-  }, [effectiveResponseContent, streaming, showResponseBody, showResponseSection, hasVisibleResponseBody, hasPrimaryResponseBody, isLiveStream, isAborted, debugConfig.showCentralizedDebug]);
+  }, [effectiveResponseContent, streaming, showResponseBody, showResponseSection, hasVisibleResponseBody, hasPrimaryResponseBody, isLiveStream, isAborted, config.debug.showCentralizedDebug]);
 
   const preRenderDebug = useMemo(() => {
-    if (!debugConfig.showPreRenderDebug) return null;
+    if (!config.debug.showPreRenderDebug) return null;
     const streamingContent = streaming?.content || '';
     const streamingReasoning = streaming?.reasoning || '';
     const reasoningEvents = streaming?.reasoningEvents || [];
@@ -4931,7 +4931,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
     hasActiveTimelineWork, hasActiveReasoningPart, hasPendingReasoningDisplayEvent,
     showResponseSection, hasVisibleResponseBody,
     hasPrimaryResponseBody, isAborted, displayEvents, thoughtItems,
-    debugConfig.showPreRenderDebug,
+    config.debug.showPreRenderDebug,
   ]);
 
   useEffect(() => {
@@ -5055,7 +5055,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
         )}
         ref={messageBodyRef}
       >
-        {debugConfig.showSdkDebug && sdkDebugData && (
+        {config.debug.showSdkDebug && sdkDebugData && (
           <div
             data-assistant-section="sdk-debug"
             className="mb-3"
@@ -5070,7 +5070,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
             </pre>
           </div>
         )}
-        {debugConfig.showCentralizedDebug && centralizedDebugData && (
+        {config.debug.showCentralizedDebug && centralizedDebugData && (
           <div
             data-assistant-section="centralized-debug"
             className="mb-3"
@@ -5582,7 +5582,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
               data-assistant-section="response"
               className={responseSectionClass}
             >
-              {debugConfig.showCentralizedDebug && cardDebugData && (
+              {config.debug.showCentralizedDebug && cardDebugData && (
                 <div
                   data-assistant-section="card-debug"
                   className="mb-3"
@@ -5777,7 +5777,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
                 </div>
               )}
 
-              {debugConfig.showPreRenderDebug && preRenderDebug && (
+              {config.debug.showPreRenderDebug && preRenderDebug && (
                 <div
                   data-assistant-section="pre-render-debug"
                   className={
@@ -6008,7 +6008,7 @@ const AssistantMessageInner = memo(function AssistantMessageInner({
       </div>
     </div>
   );
-});
+}
 
 function FileChangesSection({
   streamingSteps,
@@ -6536,7 +6536,7 @@ function FileChangesSection({
   );
 }
 
-export const AssistantMessage = memo(function AssistantMessage({
+export function AssistantMessage({
   message,
   streaming,
   isContiguous,
@@ -6573,7 +6573,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       todoItems={todoItems}
     />
   );
-});
+}
 export const PermissionCard = memo(function PermissionCard({ perm }: { perm: unknown }) {
   const label = typeof perm === "string" ? perm : JSON.stringify(perm);
   return (

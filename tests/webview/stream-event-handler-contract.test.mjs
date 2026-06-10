@@ -1002,8 +1002,64 @@ test('resolveStreamingContentUpdate returns null for empty incoming chunk', () =
     );
 });
 
+test('resolveStreamingContentUpdate returns null for stale snapshots', () => {
+    const fnIdx = messageHandlerSource.indexOf('function resolveStreamingContentUpdate');
+    assert.ok(fnIdx >= 0, 'resolveStreamingContentUpdate must exist');
+    const fnSlice = messageHandlerSource.slice(fnIdx, fnIdx + 1200);
+    assert.match(
+        fnSlice,
+        /currentNormalized\.startsWith\(incomingNormalized\)[\s\S]{1,60}return\s+null/,
+        'must return null when current starts with incoming (stale snapshot guard)',
+    );
+});
+
+test('resolveStreamingContentUpdate returns raw data for non-delta fallback', () => {
+    const fnIdx = messageHandlerSource.indexOf('function resolveStreamingContentUpdate');
+    assert.ok(fnIdx >= 0, 'resolveStreamingContentUpdate must exist');
+    const fnSlice = messageHandlerSource.slice(fnIdx, fnIdx + 1800);
+    assert.match(
+        fnSlice,
+        /return\s*\{[\s\S]*content:\s*incomingChunk[\s\S]*append:\s*false\s*\};?\s*$/m,
+        'must return raw incomingChunk with append:false as fallback (no transformation)',
+    );
+});
+
+test('resolveStreamingContentUpdate has no word-overlap or boundary-space logic', () => {
+    const fnIdx = messageHandlerSource.indexOf('export function resolveStreamingContentUpdate');
+    assert.ok(fnIdx >= 0, 'resolveStreamingContentUpdate must exist');
+    const fnEnd = messageHandlerSource.indexOf('function findWordOverlapRemainder', fnIdx);
+    const fnSlice = fnEnd >= 0
+        ? messageHandlerSource.slice(fnIdx, fnEnd)
+        : messageHandlerSource.slice(fnIdx, fnIdx + 2000);
+    assert.doesNotMatch(
+        fnSlice,
+        /needsBoundarySpace|findWordOverlapRemainder/,
+        'must not call needsBoundarySpace or findWordOverlapRemainder (raw-data contract)',
+    );
+});
+
 // ---------------------------------------------------------------------------
-// 24. handleStreamEvent – session ID filtering
+// 24. shouldPreferStreamingContent – duplicate-token guard
+// ---------------------------------------------------------------------------
+
+test('shouldPreferStreamingContent rejects streaming content with duplicate adjacent tokens', () => {
+    const fnIdx = messageHandlerSource.indexOf('function shouldPreferStreamingContent');
+    assert.ok(fnIdx >= 0, 'shouldPreferStreamingContent must exist');
+    const fnSlice = messageHandlerSource.slice(fnIdx, fnIdx + 800);
+    assert.match(
+        fnSlice,
+        /hasDuplicateTokenPattern\(streamTokens\)/,
+        'must reject streaming content with duplicate-token patterns (garbled output guard)',
+    );
+    assert.match(
+        fnSlice,
+        /if\s*\(hasDuplicateTokenPattern\(streamTokens\)\)[\s\S]{1,60}return\s+false/,
+        'must return false when duplicate-token pattern is detected',
+    );
+});
+
+// ---------------------------------------------------------------------------
+// 25. handleStreamEvent – session ID filtering
 // ---------------------------------------------------------------------------
 
 test('handleStreamEvent filters out events from mismatched sessions', () => {

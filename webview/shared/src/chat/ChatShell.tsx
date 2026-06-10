@@ -5,7 +5,7 @@ import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
 import { createMessageHandler } from "./lib/messageHandler";
 import { isProcessingInCurrentSession } from "./lib/sessionProcessing";
 import vscode from "./lib/vscode";
-import logger from "./lib/logger";
+import logger, { getGlobalShowBrowserConsole } from "./lib/logger";
 
 import {
   StickyHeader,
@@ -615,9 +615,8 @@ function ChatContent() {
   const hasCompatibilityWarnings = state.compatibilityWarnings.length > 0;
   const errorToasts = state.errorMessages;
 
-  // Log error messages for debugging
   useEffect(() => {
-    if (errorToasts.length > 0) {
+    if (errorToasts.length > 0 && getGlobalShowBrowserConsole()) {
       console.log("ERROR_FLOW: Error messages in ChatShell", {
         timestamp: new Date().toISOString(),
         errorCount: errorToasts.length,
@@ -956,8 +955,7 @@ function ChatContent() {
         <LspPanel />
         <SkillsPanel />
         <AgentsPanel />
-        {/* TEMPORARY: Hidden during modularization; keep SettingsPanel implementation intact for later re-enable. */}
-        {false && <SettingsPanel />}
+        <SettingsPanel />
       </aside>
 
       {/* Skill Installer Modal */}
@@ -982,6 +980,27 @@ export default function ChatShell() {
   return (
     <AppProvider>
       <ChatContent />
+      <style>{`
+        .file-mention-chip {
+          color: #60a5fa;
+          font-weight: 700;
+          cursor: pointer;
+          text-decoration: underline;
+          text-decoration-style: solid;
+          text-decoration-color: #60a5fa;
+          text-underline-offset: 2px;
+          transition: all 0.2s ease;
+        }
+
+        .file-mention-chip:hover {
+          color: #93c5fd;
+          text-decoration-color: #93c5fd;
+        }
+
+        .file-mention-chip:active {
+          color: #3b82f6;
+        }
+      `}</style>
     </AppProvider>
   );
 }

@@ -11,13 +11,24 @@ type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 class WebviewLogger {
   private logLevel: LogLevel = 'info';
   private sessionId: string | null = null;
+  private showLoggerOverride: boolean | null = null;
+  private showBrowserConsoleOverride: boolean | null = null;
 
   setSession(sessionId: string): void {
     this.sessionId = sessionId;
   }
 
+  setShowLogger(enabled: boolean): void {
+    this.showLoggerOverride = enabled;
+  }
+
+  setShowBrowserConsole(enabled: boolean): void {
+    this.showBrowserConsoleOverride = enabled;
+  }
+
   private shouldLog(level: LogLevel): boolean {
-    if (config.debug.disableLogs) {
+    const enabled = this.showLoggerOverride ?? config.debug.showLogger;
+    if (!enabled) {
       return false;
     }
 
@@ -31,20 +42,23 @@ class WebviewLogger {
     }
 
     // Log to browser console with consistent prefix
-    const prefix = `[WebView][${level.toUpperCase()}]`;
-    switch (level) {
-      case 'debug':
-        console.debug(prefix, message, context);
-        break;
-      case 'info':
-        console.info(prefix, message, context);
-        break;
-      case 'warn':
-        console.warn(prefix, message, context);
-        break;
-      case 'error':
-        console.error(prefix, message, context);
-        break;
+    const showConsole = this.showBrowserConsoleOverride ?? config.debug.showBrowserConsole;
+    if (showConsole) {
+      const prefix = `[WebView][${level.toUpperCase()}]`;
+      switch (level) {
+        case 'debug':
+          console.debug(prefix, message, context);
+          break;
+        case 'info':
+          console.info(prefix, message, context);
+          break;
+        case 'warn':
+          console.warn(prefix, message, context);
+          break;
+        case 'error':
+          console.error(prefix, message, context);
+          break;
+      }
     }
 
     // Send to extension for centralized logging
@@ -80,6 +94,10 @@ class WebviewLogger {
   error(message: string, context?: Record<string, unknown>): void {
     this.log('error', message, context);
   }
+}
+
+export function getGlobalShowBrowserConsole(): boolean {
+  return config.debug.showBrowserConsole;
 }
 
 // Singleton instance

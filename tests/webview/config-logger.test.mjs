@@ -13,31 +13,28 @@ const webviewLoggerSource = readSource(
   "logger.ts",
 );
 
-const messageHandlerSource = readSource(
-  [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],
-  "messageHandler.ts",
-);
-
-test("webview config exposes a debug flag to disable logs", () => {
+test("webview config exposes a showLogger flag to control logger output", () => {
   assert.match(
     configSource,
-    /disableLogs\s*:\s*false/,
-    "config should expose a disableLogs flag with logging enabled by default",
+    /showLogger\s*:\s*(true|false)/,
+    "config should expose a showLogger flag",
   );
 });
 
-test("webview logger respects the disableLogs config flag", () => {
+test("webview config exposes a showBrowserConsole flag to control all console output", () => {
+  assert.match(
+    configSource,
+    /showBrowserConsole\s*:\s*(true|false)/,
+    "config should expose a showBrowserConsole flag",
+  );
+});
+
+test("webview logger respects the showLogger config flag", () => {
   assert.match(
     webviewLoggerSource,
-    /config\.debug\.disableLogs/,
-    "webview logger should consult config.debug.disableLogs",
+    /config\.debug\.showLogger/,
+    "webview logger should consult config.debug.showLogger",
   );
 });
 
-test("message handler logger respects the disableLogs config flag", () => {
-  assert.match(
-    messageHandlerSource,
-    /config\.debug\.disableLogs/,
-    "message handler logger should consult config.debug.disableLogs",
-  );
-});
+// message handler uses the central WebviewLogger singleton which respects showLogger internally

@@ -11,7 +11,7 @@ const messageHandlerSource = readSource(
 
 function loadReasoningHarness(source) {
   const moduleSource = `${source}
-export { splitMixedReasoningFromContent, shouldPreferStreamingContent };`;
+export { splitMixedReasoningFromContent, shouldPreferStreamingContent, resolveStreamingContentUpdate, hasDuplicateTokenPattern, comparableTokens };`;
   const transpiled = ts.transpileModule(moduleSource, {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -44,8 +44,13 @@ export { splitMixedReasoningFromContent, shouldPreferStreamingContent };`;
   return module.exports;
 }
 
-const { splitMixedReasoningFromContent, shouldPreferStreamingContent } =
-  loadReasoningHarness(messageHandlerSource);
+const {
+  splitMixedReasoningFromContent,
+  shouldPreferStreamingContent,
+  resolveStreamingContentUpdate,
+  hasDuplicateTokenPattern,
+  comparableTokens,
+} = loadReasoningHarness(messageHandlerSource);
 
 test("splitMixedReasoningFromContent detaches leaked reasoning from normal response text", () => {
   const mixed =
@@ -165,4 +170,123 @@ test("shouldPreferStreamingContent still prefers richer clean stream snapshots",
     true,
     "clean richer stream content should still be preferred when overlap is high",
   );
+});
+
+test("shouldPreferStreamingContent rejects streaming content with duplicate adjacent tokens", () => {
+  const finalContent = "Yes. It shows a UI card.";
+  const garbledContent =
+    "The user user asked,,\"\"Can you you see this?\"?\"";
+
+  assert.equal(
+    shouldPreferStreamingContent(finalContent, garbledContent),
+    false,
+    "must reject streaming content with word-level duplicate patterns (e.g. 'user user', 'you you')",
+  );
+});
+
+test("shouldPreferStreamingContent still accepts clean rich content near duplicate threshold", () => {
+  const finalContent = "Hey!";
+  const cleanRich =
+    "The user just said hey again. This is a simple greeting. I should respond briefly and directly.";
+
+  assert.equal(
+    shouldPreferStreamingContent(finalContent, cleanRich),
+    true,
+    "clean content without adjacent duplicates should still be preferred",
+  );
+});
+
+test("resolveStreamingContentUpdate returns raw data for non-delta snapshot", () => {
+  const result = resolveStreamingContentUpdate(
+    "old content here",
+    "brand new content",
+    false,
+  );
+  assert.deepEqual(result, { content: "brand new content", append: false });
+});
+
+test("resolveStreamingContentUpdate appends raw data for delta", () => {
+  const result = resolveStreamingContentUpdate(
+    "existing content",
+    " more text",
+    true,
+  );
+  assert.deepEqual(result, { content: " more text", append: true });
+});
+
+test("resolveStreamingContentUpdate returns null for identical content", () => {
+  const result = resolveStreamingContentUpdate(
+    "same content",
+    "same content",
+    false,
+  );
+  assert.equal(result, null);
+});
+
+test("resolveStreamingContentUpdate returns null for empty incoming chunk", () => {
+  const result = resolveStreamingContentUpdate(
+    "some content",
+    "",
+    false,
+  );
+  assert.equal(result, null);
+});
+
+test("resolveStreamingContentUpdate returns null for stale snapshot", () => {
+  const result = resolveStreamingContentUpdate(
+    "newer and longer content here",
+    "newer",
+    false,
+  );
+  assert.equal(result, null);
+});
+
+test("resolveStreamingContentUpdate extracts remainder from continuation snapshot", () => {
+  const result = resolveStreamingContentUpdate(
+    "base text",
+    "base text with extra content",
+    false,
+  );
+  assert.deepEqual(
+    result,
+    { content: " with extra content", append: true },
+  );
+});
+
+test("resolveStreamingContentUpdate sets raw content when current is empty", () => {
+  const result = resolveStreamingContentUpdate(
+    "",
+    "fresh content",
+    false,
+  );
+  assert.deepEqual(result, { content: "fresh content", append: false });
+});
+
+test("resolveStreamingContentUpdate delta does not add boundary space", () => {
+  const result = resolveStreamingContentUpdate(
+    "text",
+    "more",
+    true,
+  );
+  assert.deepEqual(
+    result,
+    { content: "more", append: true },
+    "delta should append raw 'more' without prepending space",
+  );
+});
+
+test("hasDuplicateTokenPattern detects adjacent duplicate tokens", () => {
+  assert.equal(hasDuplicateTokenPattern(["the", "user", "user", "asked", "asked"]), true);
+  assert.equal(hasDuplicateTokenPattern(["the", "user", "asked"]), false);
+  assert.equal(hasDuplicateTokenPattern(["the", "the", "user", "user"]), true);
+  assert.equal(hasDuplicateTokenPattern(["a", "b", "c", "d"]), false);
+  assert.equal(hasDuplicateTokenPattern([]), false);
+  assert.equal(hasDuplicateTokenPattern(["only"]), false);
+});
+
+test("comparableTokens extracts meaningful tokens from text", () => {
+  const tokens = comparableTokens("The user said hello world!");
+  assert.ok(tokens.includes("hello"));
+  assert.ok(tokens.includes("world"));
+  assert.ok(tokens.includes("user"));
 });
