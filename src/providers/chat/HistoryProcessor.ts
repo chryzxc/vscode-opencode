@@ -199,11 +199,11 @@ export class HistoryProcessor {
   ): Promise<any[]> {
     const overrides = await this.loadSessionMessageOverrides(sessionId);
     if (Object.keys(overrides).length === 0) {
-      console.log("[CLIENT FACING] applySessionMessageOverrides NO_OVERRIDES", { sessionId, messageCount: messages.length });
+      this.logger.debug("[CLIENT FACING] applySessionMessageOverrides NO_OVERRIDES", { sessionId, messageCount: messages.length });
       return messages;
     }
 
-    console.log("[CLIENT FACING] applySessionMessageOverrides LOADED", {
+    this.logger.debug("[CLIENT FACING] applySessionMessageOverrides LOADED", {
       sessionId,
       overrideKeys: Object.keys(overrides),
       messageIds: messages.map(m => this.extractHistoryMessageId(m)),
@@ -217,7 +217,7 @@ export class HistoryProcessor {
         return message;
       }
 
-      console.log("[CLIENT FACING] applySessionMessageOverrides APPLIED", {
+      this.logger.debug("[CLIENT FACING] applySessionMessageOverrides APPLIED", {
         messageId,
         hasRawResponseBefore: !!message?.rawResponse,
         hasRawResponseOverride: !!override?.rawResponse,
@@ -298,7 +298,7 @@ export class HistoryProcessor {
       const prevBody = String(prev?.content || "").trim();
       const prevHasGoodContent = prevRole?.toLowerCase() === "assistant" && prevBody.length > 20 && prevBody !== currentBody;
       if (prevHasGoodContent) {
-        console.log("[CLIENT FACING] cleanupGarbledEventMessages SKIPPED", {
+        this.logger.debug("[CLIENT FACING] cleanupGarbledEventMessages SKIPPED", {
           currentId, currentBody: currentBody.slice(0, 150),
           prevId: String(prev?.id || "").slice(0, 50), prevBody: prevBody.slice(0, 150),
         });
@@ -309,7 +309,7 @@ export class HistoryProcessor {
       const nextBody = String(next?.content || "").trim();
       const nextHasGoodContent = nextRole?.toLowerCase() === "assistant" && nextBody.length > 20 && nextBody !== currentBody;
       if (nextHasGoodContent) {
-        console.log("[CLIENT FACING] cleanupGarbledEventMessages SKIPPED", {
+        this.logger.debug("[CLIENT FACING] cleanupGarbledEventMessages SKIPPED", {
           currentId, currentBody: currentBody.slice(0, 150),
           nextId: String(next?.id || "").slice(0, 50), nextBody: nextBody.slice(0, 150),
         });

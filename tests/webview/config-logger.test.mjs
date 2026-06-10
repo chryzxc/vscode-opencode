@@ -13,13 +13,10 @@ const webviewLoggerSource = readSource(
   "logger.ts",
 );
 
-test("webview config exposes a showLogger flag to control logger output", () => {
-  assert.match(
-    configSource,
-    /showLogger\s*:\s*(true|false)/,
-    "config should expose a showLogger flag",
-  );
-});
+const messageHandlerSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],
+  "messageHandler.ts",
+);
 
 test("webview config exposes a showBrowserConsole flag to control all console output", () => {
   assert.match(
@@ -29,12 +26,22 @@ test("webview config exposes a showBrowserConsole flag to control all console ou
   );
 });
 
-test("webview logger respects the showLogger config flag", () => {
+test("webview logger uses a local showLogger boolean (set at runtime from VS Code setting)", () => {
   assert.match(
     webviewLoggerSource,
-    /config\.debug\.showLogger/,
-    "webview logger should consult config.debug.showLogger",
+    /private showLogger: boolean = true/,
+    "webview logger should have a local showLogger field defaulting to true",
+  );
+  assert.ok(
+    webviewLoggerSource.includes("this.showLogger"),
+    "webview logger should reference this.showLogger in shouldLog",
   );
 });
 
-// message handler uses the central WebviewLogger singleton which respects showLogger internally
+test("message handler passes showLogger from initState to logger.setShowLogger", () => {
+  assert.match(
+    messageHandlerSource,
+    /logger\.setShowLogger\(/,
+    "message handler should call logger.setShowLogger with the value from initState",
+  );
+});

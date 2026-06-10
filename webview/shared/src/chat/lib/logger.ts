@@ -11,7 +11,7 @@ type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 class WebviewLogger {
   private logLevel: LogLevel = 'info';
   private sessionId: string | null = null;
-  private showLoggerOverride: boolean | null = null;
+  private showLogger: boolean = true;
   private showBrowserConsoleOverride: boolean | null = null;
 
   setSession(sessionId: string): void {
@@ -19,7 +19,7 @@ class WebviewLogger {
   }
 
   setShowLogger(enabled: boolean): void {
-    this.showLoggerOverride = enabled;
+    this.showLogger = enabled;
   }
 
   setShowBrowserConsole(enabled: boolean): void {
@@ -27,8 +27,7 @@ class WebviewLogger {
   }
 
   private shouldLog(level: LogLevel): boolean {
-    const enabled = this.showLoggerOverride ?? config.debug.showLogger;
-    if (!enabled) {
+    if (!this.showLogger) {
       return false;
     }
 

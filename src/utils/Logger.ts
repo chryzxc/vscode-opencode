@@ -112,6 +112,8 @@ const LOG_SYMBOLS = {
 interface LoggerConfig {
   /** Minimum log level to output */
   minLevel: LogLevel;
+  /** Show debug/diagnostic logging (master switch, when false only errors show) */
+  showLogger: boolean;
   /** Enable console output */
   enableConsole: boolean;
   /** Enable file output */
@@ -157,6 +159,8 @@ class Logger {
     const levelStr = config.get<string>("level", "info");
     const minLevel = this.parseLogLevel(levelStr);
 
+    const showLogger = config.get<boolean>("showLogger", true);
+
     const enableConsole = config.get<boolean>("enableConsole", true);
     let enableFile = config.get<boolean>("enableFile", false);
 
@@ -188,6 +192,7 @@ class Logger {
 
     return {
       minLevel,
+      showLogger,
       enableConsole,
       enableFile,
       logFilePath,
@@ -242,7 +247,11 @@ class Logger {
    * Outputs a log entry to configured destinations.
    */
   private output(entry: LogEntry): void {
-    // Check if we should log this level
+    // When showLogger is disabled, only output errors
+    if (!this.config.showLogger && entry.level !== "error") {
+      return;
+    }
+
     const level = this.parseLogLevel(entry.level);
     if (level > this.config.minLevel) {
       return;
@@ -675,6 +684,7 @@ class Logger {
     this.config = this.loadConfig();
     this.info("Logger", "Configuration reloaded", {
       minLevel: LogLevel[this.config.minLevel],
+      showLogger: this.config.showLogger,
       enableConsole: this.config.enableConsole,
       enableFile: this.config.enableFile,
       consoleOutputMode: this.config.consoleOutputMode,

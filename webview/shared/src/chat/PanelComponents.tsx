@@ -2577,16 +2577,28 @@ export function InputWrapper() {
     // This prevents UI from showing "stuck" loading state when request is delayed
     // dispatch({ type: "SET_PROCESSING", payload: true });
 
-    // Send interactive answers through the exact same transport path as a
-    // normal user message so provider-side lifecycle/state handling is
-    // identical to chatbox submits.
-    vscode.postMessage({
-      type: "sendMessage",
-      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
-      text: displayText,
-      agent: selectedAgent || null,
-      interactiveSubmit: true,
-    });
+    // Route question answers through questionReply and non-question events
+    // (confirm, quick_actions, message) through the normal sendMessage path.
+    const hasQuestionEvents = batch.some((resp) => resp.requestID);
+    if (hasQuestionEvents) {
+      const answers = batch.map((resp) => [resp.text]);
+      const requestID = batch.find((resp) => resp.requestID)?.requestID;
+      vscode.postMessage({
+        type: "questionReply",
+        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+        requestID,
+        answers,
+        text: displayText,
+      });
+    } else {
+      vscode.postMessage({
+        type: "sendMessage",
+        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+        text: displayText,
+        agent: selectedAgent || null,
+        interactiveSubmit: true,
+      });
+    }
 
     // Reset state immediately after sending
     setPendingAnswers({});

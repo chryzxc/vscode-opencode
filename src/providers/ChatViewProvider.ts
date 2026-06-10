@@ -493,6 +493,7 @@ export class ChatViewProvider
   private executingQueueSessionIds: Set<string> = new Set();
 
   private processingSessionIds: Set<string> = new Set();
+  private recentlyAbortedSessionIds: Set<string> = new Set();
   private get isProcessingRequest(): boolean {
     return this.getEffectiveProcessingSessionIds().length > 0;
   }
@@ -854,6 +855,7 @@ export class ChatViewProvider
         suppressWebviewNotification: true,
         skipQueueDrain: true,
       });
+      this.recentlyAbortedSessionIds.add(sessionId);
     }
 
     // For normal sends, bypass queue persistence entirely so the queue panel
@@ -919,6 +921,7 @@ export class ChatViewProvider
       }
       if (sessionId === this.currentSessionId) {
         await this.handleStopRequest(sessionId);
+        this.recentlyAbortedSessionIds.add(sessionId);
       }
       return;
     }
@@ -1360,6 +1363,7 @@ export class ChatViewProvider
         currentSessionId: this.currentSessionId,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
         compatibilityWarnings: this.getCompatibilityWarnings(),
+        showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", true),
         todoItems: [],
       });
       void this.refreshSdkTodosForSession(this.currentSessionId);
@@ -2485,6 +2489,7 @@ export class ChatViewProvider
               workspaceRoot: this.getWorkspaceDirectory(),
               currentSessionId: this.currentSessionId,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
+              showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", true),
               todoItems: [],
             });
             this.hasInitializedWebview = true;
@@ -2542,6 +2547,7 @@ export class ChatViewProvider
               currentSessionId: this.currentSessionId,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
               compatibilityWarnings: this.getCompatibilityWarnings(),
+              showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", true),
             });
             void this.refreshSdkTodosForSession(this.currentSessionId);
 
@@ -2621,7 +2627,7 @@ export class ChatViewProvider
                 const role = this.firstNonEmptyString(m?.role, m?.info?.role);
                 return role?.toLowerCase() === "assistant";
               });
-              console.log("[CLIENT FACING] SENDING chatHistory", {
+              this.logger.debug("[CLIENT FACING] SENDING chatHistory", {
                 sessionId: currentSession.id,
                 totalMessages: messages.length,
                 assistantMessages: assistantMessages.map((m: any) => ({
@@ -2784,18 +2790,12 @@ export class ChatViewProvider
               answers,
               directory: this.getWorkspaceDirectory(),
             });
-            if (replySessionId) {
-              // Question replies are terminal from the UI's perspective. Do not
-              // keep the session pinned in a "busy" wait state while polling for
-              // a backend status transition that some models never emit cleanly.
-              // If the model really continues streaming, the next real stream
-              // event will reassert processing state on its own.
-              this.processingSessionIds.delete(replySessionId);
-              if (this.activeStreamSessionId === replySessionId) {
-                this.activeStreamSessionId = undefined;
-              }
-              this.sendProcessingSessionsUpdate();
-            }
+            // Keep the session in processingSessionIds so the SSE handler
+            // continues to forward stream events from the server's response.
+            // Removing it here causes the SSE processing gate to skip
+            // continuation events, leaving the webview stuck with no loading
+            // state and no response. The stream lifecycle (messageResponse /
+            // session.completed / error) will clean up processing naturally.
           } catch (err) {
             if (replySessionId) {
               this.processingSessionIds.delete(replySessionId);
@@ -3575,7 +3575,11 @@ export class ChatViewProvider
       const eventKind = structuredRec?.kind || "unknown";
       const streamEventSessionId = this.extractEventSessionId(event);
 
-      if (eventType === "message.updated" || eventType === "session.error" || eventType === "error" || eventType === "session.completed") {
+      const isTerminalLifecycleEvent =
+        eventType === "session.completed" ||
+        eventType === "session.error" ||
+        eventType === "error";
+      if (eventType === "message.updated" || isTerminalLifecycleEvent) {
         const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
         const info = (props?.info as Record<string, unknown> | undefined) || {};
         this.logger.info("[OPENCOD GO MODEL] Stream lifecycle event", {
@@ -3584,6 +3588,7 @@ export class ChatViewProvider
           providerID: info?.providerID,
           modelID: info?.modelID,
           messageId: info?.id,
+          finish: info?.finish,
           activeStreamSessionId: this.activeStreamSessionId,
           currentSessionId: this.currentSessionId,
           processingSessions: Array.from(this.processingSessionIds),
@@ -3684,12 +3689,15 @@ export class ChatViewProvider
       // Skip forwarding events for sessions that were stopped by the user.
       // After abort() is called, in-flight stream events may still arrive from
       // the server, but we should not forward them to the webview.
+      // Also skip events for recently-aborted sessions to prevent stale question
+      // tool events from reaching the webview and causing stuck loading state.
       const shouldBypassProcessingGateForInteractiveQuestion =
         eventType === "question.asked";
       if (
         eventSessionId &&
         !shouldBypassProcessingGateForInteractiveQuestion &&
-        !this.isSessionEffectivelyProcessing(eventSessionId)
+        !this.isSessionEffectivelyProcessing(eventSessionId) &&
+        !this.recentlyAbortedSessionIds.has(eventSessionId)
       ) {
         this.logger.debug("Skipping stream event for non-processing session", {
           sessionId: eventSessionId,
@@ -3703,7 +3711,8 @@ export class ChatViewProvider
         !eventSessionId &&
         this.activeStreamSessionId &&
         !shouldBypassProcessingGateForInteractiveQuestion &&
-        !this.isSessionEffectivelyProcessing(this.activeStreamSessionId)
+        !this.isSessionEffectivelyProcessing(this.activeStreamSessionId) &&
+        !this.recentlyAbortedSessionIds.has(this.activeStreamSessionId)
       ) {
         this.logger.debug("Skipping stream event for stopped active stream session", {
           activeStreamSessionId: this.activeStreamSessionId,
@@ -3811,6 +3820,24 @@ export class ChatViewProvider
         if (this.activeStreamSessionId === resolvedSessionId) {
           this.activeStreamSessionId = undefined;
         }
+        this.sendProcessingSessionsUpdate();
+      } else if (resolvedSessionId && (
+        isTerminalLifecycleEvent || (
+          eventType === "message.updated" && (
+            (() => {
+              const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
+              const info = (props?.info as Record<string, unknown> | undefined) || {};
+              const fin = info?.finish;
+              return fin === true || (typeof fin === "string" && ["true","done","stop","complete","completed","success","finished","tool-calls","error"].includes(fin.trim().toLowerCase()));
+            })()
+          )
+        )
+      )) {
+        this.processingSessionIds.delete(resolvedSessionId);
+        if (this.activeStreamSessionId === resolvedSessionId) {
+          this.activeStreamSessionId = undefined;
+        }
+        this.recentlyAbortedSessionIds.delete(resolvedSessionId);
         this.sendProcessingSessionsUpdate();
       }
       if (this.shouldVerboseStreamDebug()) {
@@ -5830,7 +5857,7 @@ export class ChatViewProvider
       });
       if (parsed) {
         matchedSource = candidate.source;
-        console.log("[CLIENT FACING] extractStructuredOutput MATCH", {
+        this.logger.debug("[CLIENT FACING] extractStructuredOutput MATCH", {
           messageId: messageLike?.id || messageLike?.info?.id,
           source: candidate.source,
           responseType: parsed.responseType,
@@ -5840,7 +5867,7 @@ export class ChatViewProvider
         return parsed;
       }
     }
-    console.log("[CLIENT FACING] extractStructuredOutput NO MATCH", {
+    this.logger.debug("[CLIENT FACING] extractStructuredOutput NO MATCH", {
       messageId: messageLike?.id || messageLike?.info?.id,
       checkedSources: candidates.map(c => c.source),
       hasStructOutput: !!messageLike?.structuredOutput,
@@ -6058,7 +6085,7 @@ export class ChatViewProvider
     const hasMeaningfulStructuredMessage =
       typeof messageContent === "string" && messageContent.trim().length > 0;
     if (hasMeaningfulStructuredMessage) {
-      console.log("[CLIENT FACING] applyStructuredOutputToMessage SET_CONTENT", {
+      this.logger.debug("[CLIENT FACING] applyStructuredOutputToMessage SET_CONTENT", {
         messageId: message?.id || message?.info?.id,
         oldContent: String(message?.content).slice(0, 200),
         newContent: String(messageContent).slice(0, 200),
@@ -6463,6 +6490,7 @@ export class ChatViewProvider
       this.sessionsWithFileChangeEvidence.delete(session.id);
       this.subagentTracker.setActiveSession(session.id);
       // New user turns are independent from any previous question popover.
+      this.recentlyAbortedSessionIds.delete(session.id);
 
       const messagesStartTime = Date.now();
       const existingMessages = await this.sessionService.getMessages(
@@ -7078,7 +7106,7 @@ export class ChatViewProvider
             return typeof msg === "string" && msg.trim() ? msg.trim() : undefined;
           } catch { return undefined; }
         })();
-        console.log("[CLIENT FACING] safetyNet", {
+        this.logger.debug("[CLIENT FACING] safetyNet", {
           messageId: enrichedMessage?.id || enrichedMessage?.info?.id,
           rawContent: String(enrichedMessage?.content).slice(0, 200),
           rawText: String(enrichedMessage?.text).slice(0, 200),
@@ -7294,7 +7322,7 @@ export class ChatViewProvider
           rawResponse,
         };
 
-        console.log("[CLIENT FACING] SENDING_TO_WEBVIEW", {
+        this.logger.debug("[CLIENT FACING] SENDING_TO_WEBVIEW", {
           messageId: debugMessage?.id || debugMessage?.info?.id,
           content: String(debugMessage?.content).slice(0, 200),
           text: String(debugMessage?.text).slice(0, 200),
@@ -8106,6 +8134,7 @@ export class ChatViewProvider
       currentSessionId: this.currentSessionId,
       processingSessionIds: this.getEffectiveProcessingSessionIds(),
       compatibilityWarnings: this.getCompatibilityWarnings(),
+      showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", true),
       todoItems: [],
     });
     void this.refreshSdkTodosForSession(this.currentSessionId);

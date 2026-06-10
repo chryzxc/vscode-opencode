@@ -219,6 +219,11 @@
           "default": true,
           "description": "Enable ANSI colors for console output (pretty mode only)"
         },
+        "opencode.logging.showLogger": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show debug/diagnostic logging output. When disabled, only errors are shown in the console and browser logs. Setting this to false also disables webview-side debug logging."
+        },
         "opencode.autoCompact": {
           "type": "boolean",
           "default": true,

@@ -59,7 +59,7 @@ test("interactive force-send while processing does not abort the waiting questio
   );
   assert.match(
     scheduleDispatchBody,
-    /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*!payload\.avoidAbortIfProcessing[\s\S]*this\.processingSessionIds\.has\(sessionId\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true/s,
+    /mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*!payload\.avoidAbortIfProcessing[\s\S]*getEffectiveProcessingSessionIds\(\)\.includes\(sessionId\)[\s\S]*handleStopRequest\(sessionId,\s*\{[\s\S]*suppressWebviewNotification:\s*true[\s\S]*skipQueueDrain:\s*true[\s\S]*recentlyAbortedSessionIds\.add\(sessionId\)/s,
     "force-send should only abort active work when the caller did not request abort suppression",
   );
   assert.match(

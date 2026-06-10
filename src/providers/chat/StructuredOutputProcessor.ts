@@ -1508,7 +1508,7 @@ export class StructuredOutputProcessor {
         if (normalized) {
           matchIdx = i;
           const sourceLabels = ["message.structured","info.structured","info.structuredOutput","rawResponse.structured","rawResponse.structuredOutput","rawResponseInfo.structured","rawResponseInfo.structuredOutput","message.structuredOutput","message.structured_output"];
-          console.log("[CLIENT FACING] StructOutputProcessor.extractStructuredOutput MATCH", {
+          this.logger.debug("[CLIENT FACING] StructOutputProcessor.extractStructuredOutput MATCH", {
             messageId: message?.id || message?.info?.id,
             matchIndex: i,
             matchSource: sourceLabels[i] || `candidate-${i}`,
@@ -1520,7 +1520,7 @@ export class StructuredOutputProcessor {
         }
       }
     }
-    console.log("[CLIENT FACING] StructOutputProcessor.extractStructuredOutput NO MATCH", {
+    this.logger.debug("[CLIENT FACING] StructOutputProcessor.extractStructuredOutput NO MATCH", {
       messageId: message?.id || message?.info?.id,
       hasRawResponse: !!message?.rawResponse,
       hasStructOutput: !!message?.structuredOutput,
@@ -1546,7 +1546,7 @@ export class StructuredOutputProcessor {
     const fallbackMessage = this.createFallbackMessage(structured);
 
     if (structured.message) {
-      console.log("[CLIENT FACING] StructOutputProcessor.applyStructured SET_CONTENT", {
+      this.logger.debug("[CLIENT FACING] StructOutputProcessor.applyStructured SET_CONTENT", {
         messageId: message?.id || message?.info?.id,
         oldContent: String(message?.content).slice(0, 200),
         structMessage: String(structured.message).slice(0, 200),

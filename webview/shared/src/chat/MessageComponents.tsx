@@ -1240,7 +1240,7 @@ function getMessageContent(
   }
 
   if (
-    messageResponseType === "progress" &&
+    (messageResponseType === "progress" || messageResponseType === "question") &&
     hasQuestionLikeInteractiveContent(message)
   ) {
     return questionPrompt;
@@ -5871,6 +5871,39 @@ function AssistantMessageInner({
                   </div>
                   <pre className="max-h-[260px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
                     {visibleRawResponseText}
+                  </pre>
+                </div>
+              )}
+
+              {config.debug.showInteractiveEventsDebug && (
+                <div
+                  data-assistant-section="interactive-events-debug"
+                  className={
+                    hasPrimaryResponseBody
+                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
+                      : undefined
+                  }
+                >
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
+                      Interactive Events (Debug)
+                    </div>
+                  </div>
+                  <pre className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
+                    {(() => {
+                      const parts: Record<string, unknown>[] = [];
+                      if (Array.isArray(message?.interactiveEvents) && message.interactiveEvents.length > 0) {
+                        parts.push({ source: "message.interactiveEvents", data: message.interactiveEvents });
+                      }
+                      const streamEvents = streaming?.interactiveEvents;
+                      if (Array.isArray(streamEvents) && streamEvents.length > 0) {
+                        parts.push({ source: "streaming.interactiveEvents", data: streamEvents });
+                      }
+                      if (parts.length === 0) {
+                        return "(no interactive events on this message)";
+                      }
+                      return JSON.stringify(parts, null, 2);
+                    })()}
                   </pre>
                 </div>
               )}

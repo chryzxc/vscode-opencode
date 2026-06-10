@@ -10845,6 +10845,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           }
 
+          const showLogger = state.showLogger;
+          if (typeof showLogger === "boolean") {
+            logger.setShowLogger(showLogger);
+          }
+
           break;
         }
         case "modelsList": {
@@ -11644,30 +11649,23 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               messages: canonicalMessages,
               processingSessionIds: effectiveProcessingSessionIds,
             });
+
+            if (chatHistorySessionId) {
+              dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
+            }
+
             dispatch({ type: "SET_MESSAGES", payload: stabilizedHydratedMessages });
           } catch (error) {
-            // Ensure loading state is cleared even if an error occurs
             dispatch({ type: "END_SESSION_LOADING" });
-            throw error; // Re-throw to maintain existing error handling
+            throw error;
           }
 
-          // Use the just-normalized hydration snapshot directly. Reading getState()
-          // immediately after dispatch can observe stale messages in the same tick.
-          if (chatHistorySessionId) {
-            dispatch({
-              type: "CACHE_SESSION_MESSAGES",
-              payload: {
-                sessionId: chatHistorySessionId,
-                messages: canonicalMessages,
-              },
-            });
-          }
-
-          // If the backend included a sessionId (e.g. on session switch), update it BEFORE
-          // storing stats so RESET_SESSION_STATS writes under the correct key.
-          if (chatHistorySessionId) {
+          const stateAfterMessages = getState();
+          if (chatHistorySessionId && stateAfterMessages.currentSessionId !== chatHistorySessionId) {
             dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
-            // Clear todo items from the previous session so stale tasks are not shown.
+          }
+
+          if (chatHistorySessionId && stateAfterMessages.currentSessionId === chatHistorySessionId) {
             dispatch({ type: "SET_TODO_ITEMS", payload: [] });
           }
           // Session is now fully loaded - clear loading state.
@@ -12623,7 +12621,25 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               // leaving the composer in a confusing stale-loading posture while
               // real stream events are still being dispatched.
               dispatch({ type: "SET_STEERING", payload: false });
-              dispatch({ type: "SET_STREAMING", payload: null });
+              // Replace streaming with a fresh empty card so the loading
+              // indicator stays visible while the next turn starts, instead
+              // of a gap with no feedback between answer and response.
+              const questionReplyPlaceholderId = `question-reply-${Date.now()}`;
+              dispatch({
+                type: "SET_STREAMING",
+                payload: {
+                  messageId: questionReplyPlaceholderId,
+                  content: "",
+                  reasoning: "",
+                  reasoningEvents: [],
+                  steps: [],
+                  progressEvents: [],
+                  edits: [],
+                  interactiveEvents: [],
+                  isActive: true,
+                  hasRenderableContent: false,
+                },
+              });
               // Defensive cleanup: once an interactive answer bundle is echoed back
               // from the extension host, clear any stale quick-input popover state.
               // This prevents already-answered prompts from lingering in the composer.

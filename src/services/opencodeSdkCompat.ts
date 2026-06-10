@@ -1,3 +1,5 @@
+import { createLogger } from "../utils/Logger";
+
 export type UnknownRecord = Record<string, unknown>;
 
 export interface CanonicalStreamEvent {
@@ -131,7 +133,7 @@ export function normalizeSdkAssistantMessage(value: unknown): UnknownRecord | un
   const parts = Array.isArray(data.parts) ? data.parts : undefined;
   if (info && parts) {
     const result = { ...info, info, parts };
-    console.log("[CLIENT FACING] normalizeSdkAssistantMessage", {
+    createLogger("OpenCodeSdkCompat").debug("[CLIENT FACING] normalizeSdkAssistantMessage", {
       hasInfo: !!info,
       hasStructured: !!info?.structured,
       structuredMessage: (info as any)?.structured?.message?.slice(0, 200),
