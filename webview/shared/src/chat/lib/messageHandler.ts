@@ -1033,12 +1033,25 @@ function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
     kind: asOptionalString(rec.kind) as ActivityDetail["kind"] | undefined,
     summary: asOptionalString(rec.summary),
     command: asOptionalString(rec.command),
+    output: asOptionalString(rec.output),
     tool: asOptionalString(rec.tool),
     query: asOptionalString(rec.query),
     file: asOptionalString(rec.file),
     diffExcerpt: normalizeActivityDiffExcerpt(rec.diffExcerpt),
     metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
   };
+
+  // Debug logging to see what's actually in the activityDetail
+  if (activityDetail.output || activityDetail.diffExcerpt) {
+    logger.info("[DEBUG] normalizeActivityDetail created", {
+      hasOutput: !!activityDetail.output,
+      hasDiffExcerpt: !!activityDetail.diffExcerpt,
+      tool: activityDetail.tool,
+      kind: activityDetail.kind,
+      outputLength: activityDetail.output?.length || 0,
+      diffLines: activityDetail.diffExcerpt?.lines?.length || 0,
+    });
+  }
 
   if (
     !activityDetail.kind &&
@@ -1361,12 +1374,33 @@ function extractActivityStepsFromParts(
       activityDetail:
         normalizeActivityDetail(resultRec?.activityDetail) ||
         normalizeActivityDetail(rec.activityDetail) ||
-        normalizeActivityDetail({
-          kind: "tool_call",
-          tool: tool || undefined,
-          command: metaValues[0],
-          file: filePath,
-        }),
+        (() => {
+          const recMetadata = asRecord(rec.metadata);
+          const metadataPreview = asOptionalString(recMetadata?.preview);
+          const metadataTruncated = recMetadata?.truncated === true;
+          const stateOutput = asOptionalString(stateRec?.output);
+          const finalOutput = stateOutput || metadataPreview;
+
+          return normalizeActivityDetail({
+            kind: "tool_call",
+            tool: tool || undefined,
+            command: metaValues[0],
+            query: metaValues[2] || metaValues[3] || undefined,
+            file: filePath,
+            output: finalOutput,
+            diffExcerpt: (() => {
+              const diffExcerptRec = asRecord(stateRec?.diffExcerpt) || asRecord(resultRec?.diffExcerpt);
+              if (!diffExcerptRec) return undefined;
+              return {
+                header: asOptionalString(diffExcerptRec.header),
+                lines: Array.isArray(diffExcerptRec.lines) ? diffExcerptRec.lines.map(asString) : [],
+                added: typeof diffExcerptRec.added === 'number' ? diffExcerptRec.added : undefined,
+                deleted: typeof diffExcerptRec.deleted === 'number' ? diffExcerptRec.deleted : undefined,
+              };
+            })(),
+            metadata: metadataTruncated ? { truncated: true } : undefined,
+          });
+        })(),
     };
 
     if (typeof existingIndex === "number") {
@@ -9179,6 +9213,45 @@ function handleStreamEvent(
         );
         const callID = asString(part.callID) || undefined;
         const title = asString(part.title) || (tool ? `Running ${tool}...` : inferredStepTitle(part));
+
+        // Extract output from multiple possible sources
+        // 1. From state.output (tool state)
+        // 2. From metadata.preview (debug metadata)
+        const stateOutput = asOptionalString(stateObj?.output);
+        const partMetadata = asRecord(part.metadata);
+        const metadataPreview = asOptionalString(partMetadata?.preview);
+        const metadataTruncated = partMetadata?.truncated === true;
+        const finalOutput = stateOutput || metadataPreview;
+
+        const stateDiffExcerpt = asRecord(stateObj?.diffExcerpt);
+        const diffExcerpt = stateDiffExcerpt ? {
+          header: asOptionalString(stateDiffExcerpt.header),
+          lines: Array.isArray(stateDiffExcerpt.lines) ? stateDiffExcerpt.lines.map(asString) : [],
+          added: typeof stateDiffExcerpt.added === 'number' ? stateDiffExcerpt.added : undefined,
+          deleted: typeof stateDiffExcerpt.deleted === 'number' ? stateDiffExcerpt.deleted : undefined,
+        } : undefined;
+
+        // Debug logging to trace data flow
+        if ((tool === 'read' || tool === 'Read') && finalOutput) {
+          logger.info("[DEBUG] Read step output found", {
+            tool,
+            hasStateOutput: !!stateOutput,
+            hasMetadataPreview: !!metadataPreview,
+            metadataTruncated,
+            finalOutputLength: finalOutput.length,
+            outputPreview: finalOutput.slice(0, 100),
+            callID,
+          });
+        }
+        if ((tool === 'edit' || tool === 'write' || tool === 'modify') && diffExcerpt) {
+          logger.info("[DEBUG] Edit step diffExcerpt found", {
+            tool,
+            hasDiffExcerpt: !!diffExcerpt,
+            linesCount: diffExcerpt.lines?.length,
+            callID,
+          });
+        }
+
         const baseActivityDetail: ActivityDetail | undefined = normalizeActivityDetail({
           kind: "tool_call",
           tool: tool || undefined,
@@ -9186,6 +9259,9 @@ function handleStreamEvent(
           query: queryValue,
           file: filePath,
           summary: asOptionalString(part.meta),
+          output: finalOutput,
+          diffExcerpt: diffExcerpt,
+          metadata: metadataTruncated ? { truncated: true } : undefined,
         });
 
         const existing = getState().streaming?.steps.find(

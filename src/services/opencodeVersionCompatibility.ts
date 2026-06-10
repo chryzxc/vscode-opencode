@@ -100,27 +100,28 @@ export function checkOpencodeServerVersion(version: string | undefined): Compati
 }
 
 export function detectInstalledOpencodeSdkVersion(): string | undefined {
-  const roots = [__dirname, process.cwd()];
   const candidates = new Set<string>();
 
-  for (const root of roots) {
+  for (const root of [__dirname, process.cwd()]) {
     let current = root;
     for (let depth = 0; depth < 8; depth += 1) {
       candidates.add(
         path.resolve(current, "node_modules", "@opencode-ai", "sdk", "package.json"),
       );
       const parent = path.dirname(current);
-      if (parent === current) {
-        break;
-      }
+      if (parent === current) break;
       current = parent;
     }
   }
 
+  try {
+    candidates.add(require.resolve("@opencode-ai/sdk/package.json"));
+  } catch {
+    void 0;
+  }
+
   for (const packagePath of candidates) {
-    if (!fs.existsSync(packagePath)) {
-      continue;
-    }
+    if (!fs.existsSync(packagePath)) continue;
     try {
       const raw = fs.readFileSync(packagePath, "utf8");
       const pkg = JSON.parse(raw) as { version?: string };
@@ -128,7 +129,7 @@ export function detectInstalledOpencodeSdkVersion(): string | undefined {
         return pkg.version.trim();
       }
     } catch {
-      // Keep searching other candidate paths.
+      void 0;
     }
   }
 

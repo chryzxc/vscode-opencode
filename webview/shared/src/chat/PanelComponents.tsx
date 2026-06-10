@@ -606,7 +606,7 @@ export function ActiveTaskPanel() {
     currentSessionId,
     executingQueueSessionIds,
   );
-  const runtimeSdkVersion = sdkVersion || "Loading…";
+  const runtimeSdkVersion = sdkVersion || "-";
   const runtimeTuiVersion = serverVersion || "Loading…";
   const progressListRef = useRef<HTMLDivElement>(null);
 

@@ -605,6 +605,10 @@ export function FileIcon({
 
     const frame = window.requestAnimationFrame(() => {
       if (hasThemeIcon(icon)) {
+        if (useGenericFileIcon || showSvgFallback) {
+          setUseGenericFileIcon(false);
+          setShowSvgFallback(false);
+        }
         return;
       }
 
@@ -4083,7 +4087,26 @@ function AssistantMessageInner({
   }, [thoughtItems, progressItems, resolvedContent, message?.parts]);
   const isStreamingActive = !!streaming?.isActive;
   const displayEvents = useMemo(
-    () => buildDisplayEvents(timelineBlocks, message, isStreamingActive, assistantTurnPending),
+    () => {
+      const events = buildDisplayEvents(timelineBlocks, message, isStreamingActive, assistantTurnPending);
+      // Debug: Log all display events with read/edit labels
+      const readEditEvents = events.filter(e => e.label.toLowerCase() === 'read' || e.label.toLowerCase() === 'edit');
+      if (readEditEvents.length > 0) {
+        console.log('[DEBUG] DisplayEvents with read/edit labels:', {
+          count: readEditEvents.length,
+          events: readEditEvents.map(e => ({
+            label: e.label,
+            summary: e.summary,
+            hasActivityDetail: !!e.activityDetail,
+            hasOutput: !!e.activityDetail?.output,
+            outputLength: e.activityDetail?.output?.length || 0,
+            hasDiffExcerpt: !!e.activityDetail?.diffExcerpt,
+            diffLines: e.activityDetail?.diffExcerpt?.lines?.length || 0,
+          }))
+        });
+      }
+      return events;
+    },
     [timelineBlocks, message, isStreamingActive, assistantTurnPending],
   );
   const hasPendingReasoningDisplayEvent = useMemo(
@@ -5360,7 +5383,9 @@ function AssistantMessageInner({
                                           })
                                         }
                                         >
-                                        <FileIcon filePath={event.filePath} />
+                                        {event.label.toLowerCase() !== "read" && (
+                                          <FileIcon filePath={event.filePath} />
+                                        )}
                                         <span className="break-words whitespace-pre-wrap">
                                           {event.summary || event.filePath}
                                         </span>
@@ -5429,6 +5454,79 @@ function AssistantMessageInner({
                                       <MarkdownRenderer
                                         content={event.description}
                                         className="markdown-body"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {/* Show preview content for read steps */}
+                                  {(() => {
+                                    const isRead = event.label.toLowerCase() === "read";
+                                    const hasOutput = !!event.activityDetail?.output;
+                                    if (isRead) {
+                                      console.log('[DEBUG] Read step rendering', {
+                                        label: event.label,
+                                        labelLower: event.label.toLowerCase(),
+                                        isRead,
+                                        hasOutput,
+                                        activityDetail: event.activityDetail,
+                                        output: event.activityDetail?.output?.slice(0, 100),
+                                      });
+                                    }
+                                    return isRead && hasOutput;
+                                  })() && (
+
+                                    <div className="oc-refined-event-content">
+                                      <div className="rounded-md border border-oc-border-soft bg-oc-bg-soft">
+                                        <div className="flex items-center justify-between border-b border-oc-border-soft px-2.5 py-1.5">
+                                          <span className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
+                                            <FileIcon filePath={event.filePath} />
+                                            <span className="break-words whitespace-pre-wrap">
+                                              {event.summary || event.filePath || 'File Preview'}
+                                            </span>
+                                          </span>
+                                          <span className="text-[10px] text-oc-text-soft italic">
+                                            {event.activityDetail.metadata?.truncated ? 'Truncated' : 'Full content'}
+                                          </span>
+                                        </div>
+                                        <pre className="p-2.5 overflow-x-auto text-xs max-h-48 overflow-y-auto">
+                                          <code>{event.activityDetail.output}</code>
+                                        </pre>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Show diff preview for edit steps */}
+                                  {(() => {
+                                    const isEdit = event.label.toLowerCase() === "edit";
+                                    const hasDiffExcerpt = !!event.activityDetail?.diffExcerpt;
+                                    if (isEdit) {
+                                      console.log('[DEBUG] Edit step rendering', {
+                                        label: event.label,
+                                        labelLower: event.label.toLowerCase(),
+                                        isEdit,
+                                        hasDiffExcerpt,
+                                        activityDetail: event.activityDetail,
+                                        diffExcerpt: event.activityDetail?.diffExcerpt,
+                                      });
+                                    }
+                                    return isEdit && hasDiffExcerpt;
+                                  })() && (
+                                    <div className="oc-refined-event-content">
+                                      <div className="flex items-center justify-between mb-1.5">
+                                        <span className="text-[10px] font-medium uppercase tracking-wider text-oc-text-soft">
+                                          Diff Preview
+                                        </span>
+                                        {event.diffStats && (
+                                          <span className="text-[10px] text-oc-text-soft">
+                                            +{event.diffStats.added} -{event.diffStats.deleted}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <ActivityDiffExcerpt
+                                        excerpt={{
+                                          header: event.activityDetail.diffExcerpt.header,
+                                          lines: event.activityDetail.diffExcerpt.lines || []
+                                        }}
                                       />
                                     </div>
                                   )}

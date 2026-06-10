@@ -3,7 +3,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  FileText,
   Loader2,
   X,
 } from 'lucide-react';
@@ -11,15 +10,7 @@ import {
 
 import type { StreamingState, StreamingStep } from './lib/types';
 import vscode from './lib/vscode';
-import { AssistantMessage } from './MessageComponents';
-
-function extClass(path?: string): string {
-  if (!path) return 'oc-text-secondary';
-  if (path.endsWith('.ts') || path.endsWith('.tsx')) return 'text-oc-accent';
-  if (path.endsWith('.js') || path.endsWith('.jsx')) return 'text-oc-yellow';
-  if (path.endsWith('.json')) return 'text-oc-green';
-  return 'text-oc-text-soft';
-}
+import { AssistantMessage, FileIcon } from './MessageComponents';
 
 export function ProgressStep({ step }: { step: StreamingStep }) {
   const isPending = step.status === 'pending';
@@ -61,9 +52,7 @@ export function ProgressStep({ step }: { step: StreamingStep }) {
               className="inline-flex items-center gap-1 text-oc-text-soft hover:text-oc-accent hover:underline transition-colors"
               title={step.filePath}
             >
-              <FileText
-                className={`h-3.5 w-3.5 shrink-0 ${extClass(step.filePath)}`}
-              />
+              <FileIcon filePath={step.filePath} className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate font-medium">{step.title}</span>
             </button>
           ) : (
