@@ -431,7 +431,7 @@ export class ModelAndAgentManager {
 
         this.logger.featureStep(correlationId, 'fetch-provider-list');
 
-        const providerListTimeoutMs = 8000;
+        const providerListTimeoutMs = 25000;
         const response = (await this.withTimeout(
           client.provider.list(),
           providerListTimeoutMs,
