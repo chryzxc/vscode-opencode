@@ -215,6 +215,11 @@ test.describe('History Processor - Message Merging', () => {
       /base\.content = visibleBodyText \|\| this\.extractMessageBodyText\(base\);/,
       'burst coalescing should keep a visible assistant body even when the last record is empty',
     );
+    assert.match(
+      source,
+      /latestRawSdkEventPayloads|rawSdkEventPayloads/,
+      'burst coalescing should preserve rawSdkEventPayloads for rehydrated debug rendering',
+    );
   });
 
   test('mergeMessageParts combines related parts', () => {

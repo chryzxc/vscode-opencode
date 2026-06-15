@@ -12,6 +12,7 @@ import type { SubagentPersistence } from "./SubagentPersistence";
 import type { CompactionManager } from "./CompactionManager";
 import type { DiagnosticsLogger } from "./DiagnosticsLogger";
 import type { GeminiTokenUsageTracker } from "../../services/GeminiTokenUsageTracker";
+import type { SessionService } from "../../services/SessionService";
 import type { SubagentTracker } from "../../services/SubagentTracker";
 import { LoggingCategories } from "../../utils/LoggingSchema";
 
@@ -27,6 +28,7 @@ export class StreamEventHandler {
     private compactionManager: CompactionManager,
     private diagnosticsLogger: DiagnosticsLogger,
     private geminiTokenTracker: GeminiTokenUsageTracker,
+    private sessionService: SessionService,
     private subagentTracker: SubagentTracker,
     private logger: ReturnType<typeof import("../../utils/Logger").createLogger>,
   ) {
@@ -48,7 +50,7 @@ export class StreamEventHandler {
   /**
    * Handle stream event
    */
-  async handleStreamEvent(event: any): Promise<void> {
+  async handleStreamEvent(event: any, rawEvent?: unknown): Promise<void> {
     if (!event) return;
 
     const eventType = typeof event?.type === "string"
@@ -66,7 +68,7 @@ export class StreamEventHandler {
                        eventType === "session.created";
 
     if (shouldLog) {
-      this.logger.info("[SOURCE] stream event received", {
+      this.logger.debug("[SOURCE] stream event received", {
         sessionId: this.getCurrentSessionId(),
         eventType,
         eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
@@ -76,7 +78,7 @@ export class StreamEventHandler {
       if (eventType === "session.created") {
         const properties = enrichedEvent?.properties || event?.properties || {};
         const info = properties?.info || {};
-        this.logger.info('===SUBAGENT_SPAWN=== [SESSION_CREATED] Stream event received', {
+        this.logger.debug('===SUBAGENT_SPAWN=== [SESSION_CREATED] Stream event received', {
           hasInfo: Boolean(info && typeof info === 'object'),
           infoKeys: info ? Object.keys(info) : [],
           hasProviderID: Boolean(info?.providerID),
@@ -112,30 +114,22 @@ export class StreamEventHandler {
       const subagentUpdate = properties?.subagentsDelta || enrichedEvent?.structured?.subagentsDelta;
 
       // Log the raw subagent data from the stream
-      this.logger.info('[SUBAGENT][STREAM] Raw subagent data received', {
+      this.logger.debug('[SUBAGENT][STREAM] Raw subagent data received', {
         hasSummaries: Boolean(subagentUpdate?.summariesByParentMessageId || subagentUpdate?.subagentsByParentMessageId),
         hasDetails: Boolean(subagentUpdate?.detailsById || subagentUpdate?.subagentDetailsById),
-        sampleData: subagentUpdate ? {
-          summariesKeys: Object.keys(subagentUpdate.summariesByParentMessageId || subagentUpdate.subagentsByParentMessageId || {}).slice(0, 2),
-          detailsKeys: Object.keys(subagentUpdate.detailsById || subagentUpdate.subagentDetailsById || {}).slice(0, 2),
-          sampleSummary: subagentUpdate?.summariesByParentMessageId?.[Object.keys(subagentUpdate.summariesByParentMessageId || {})[0]]?.[0] ||
-                       subagentUpdate?.subagentsByParentMessageId?.[Object.keys(subagentUpdate.subagentsByParentMessageId || {})[0]]?.[0],
-          sampleDetail: subagentUpdate?.detailsById?.[Object.keys(subagentUpdate.detailsById || {})[0]] ||
-                      subagentUpdate?.subagentDetailsById?.[Object.keys(subagentUpdate.subagentDetailsById || {})[0]],
-        } : null,
       });
 
       // Log provider/model field presence in stream data
       if (subagentUpdate?.detailsById || subagentUpdate?.subagentDetailsById) {
         const detailsById = subagentUpdate.detailsById || subagentUpdate.subagentDetailsById;
         const detailIds = Object.keys(detailsById);
-        this.logger.info('===SUBAGENT_SPAWN=== [STREAM] Subagent update received', {
+        this.logger.debug('===SUBAGENT_SPAWN=== [STREAM] Subagent update received', {
           detailCount: detailIds.length,
           detailIds: detailIds,
         });
         for (const detailId of detailIds.slice(0, 3)) {
           const detail = detailsById[detailId];
-          this.logger.info('===SUBAGENT_SPAWN=== [STREAM] Detail data', {
+          this.logger.debug('===SUBAGENT_SPAWN=== [STREAM] Detail data', {
             detailId,
             hasProviderID: Boolean(detail?.providerID),
             hasModelID: Boolean(detail?.modelID),
@@ -166,7 +160,7 @@ export class StreamEventHandler {
 
     // Forward to webview
     if (shouldLog) {
-      this.logger.info("[PRE-RENDER] stream event forwarded", {
+      this.logger.debug("[PRE-RENDER] stream event forwarded", {
         sessionId,
         eventType,
         hasStructuredOutput: Boolean(enrichedEvent?.structuredOutput),
@@ -179,6 +173,13 @@ export class StreamEventHandler {
       event: enrichedEvent || event,
       sessionId,
     });
+
+    if (sessionId) {
+      void this.sessionService.appendRawSdkEventPayload(
+        sessionId,
+        rawEvent ? { ...(rawEvent as Record<string, unknown>), sessionId } : { ...event, sessionId },
+      );
+    }
   }
 
   /**
@@ -194,7 +195,7 @@ export class StreamEventHandler {
       messageId,
     });
 
-    this.logger.info( 'AI stream started', {
+    this.logger.debug( 'AI stream started', {
       correlationId,
       sessionId,
       messageId,
@@ -232,13 +233,15 @@ export class StreamEventHandler {
       });
     }
 
-    this.logger.info( 'AI stream ended', {
+    this.logger.debug( 'AI stream ended', {
       sessionId,
       messageId,
       duration,
       eventCount: this.eventCount,
       success,
     });
+
+    void this.sessionService.flushRawSdkEventPayloads(sessionId);
 
     // Reset state
     this.streamStartTime = undefined;
@@ -254,7 +257,7 @@ export class StreamEventHandler {
     messageId: string,
     structured: any,
   ): void {
-    this.logger.info( 'Structured output processed', {
+    this.logger.debug( 'Structured output processed', {
       sessionId,
       messageId,
       responseType: structured.responseType,

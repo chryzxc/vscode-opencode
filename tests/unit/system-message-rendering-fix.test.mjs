@@ -80,7 +80,7 @@ test("message ordering fix: canonicalizeMessagesForRender stabilizes hydrated hi
   );
   const canonicalizeBody = extractFunctionBody(
     webviewStoreSource,
-    "export function canonicalizeMessagesForRender(messages: Message[]): Message[] {",
+    "export function canonicalizeMessagesForRender(",
   );
 
   assert.match(

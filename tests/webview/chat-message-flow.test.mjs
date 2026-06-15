@@ -177,11 +177,11 @@ test('Assistant responses include dedicated enter transition classes', () => {
   assert.match(chatCssSource, /\.oc-assistant-streaming-enter\s*\{[\s\S]*assistant-streaming-in/, 'chat css should define animation for streaming assistant responses');
 });
 
-test('live reasoning stays out of the assistant response card while streaming', () => {
+test('live reasoning remains available to the streaming timeline while streaming', () => {
   assert.match(
     messageSource,
-    /const\s+thoughtItems\s*=\s*useMemo\(\s*\(\)\s*=>\s*streaming\s*\?\s*\(\s*streaming\.isActive\s*&&\s*!hasAssistantFinishSignal\s*\?\s*\[\]\s*:\s*thoughtItemsFromStreaming\(streaming\)\s*\)\s*:\s*thoughtItemsFromMessage\(message\)/s,
-    'AssistantMessage should suppress live reasoning items until the assistant finish signal exists',
+    /const\s+thoughtItems\s*=\s*useMemo\(\s*\(\)\s*=>\s*streaming\s*\?\s*thoughtItemsFromStreaming\(streaming\)\s*:\s*thoughtItemsFromMessage\(message\)/s,
+    'AssistantMessage should source live reasoning items directly from streaming state',
   );
   assert.match(
     messageSource,

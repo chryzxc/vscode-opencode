@@ -232,33 +232,33 @@ test('pending stream-content-as-thinking reasoning is pushed to the end of the t
 
 // ── Loading state mirrors stop button visibility ──
 
-test('InputWrapper includes assistantTurnPending in isAiResponding for stop button visibility', () => {
+test('InputWrapper derives stop-button visibility from current session processing state', () => {
   assert.match(
     panelSource,
-    /assistantTurnPending[\s\S]*isAiResponding/,
-    'InputWrapper must destructure assistantTurnPending and use it in isAiResponding',
-  );
-  assert.match(
-    panelSource,
-    /streaming\?\.isActive\s*\|\|[\s\S]*assistantTurnPending/,
-    'isAiResponding must include assistantTurnPending alongside streaming?.isActive',
+    /const isAiResponding = isProcessing;/,
+    'InputWrapper must derive isAiResponding directly from current session processing state',
   );
 });
 
-test('StickyHeader shows Thinking... loading text when session is processing', () => {
+test('StickyHeader does not render a duplicate Thinking... loading label', () => {
   assert.match(
     panelSource,
-    /isProcessing\s*&&\s*\([\s\S]*animate-pulse[\s\S]*Thinking/,
-    'StickyHeader must show a pulsing Thinking... text when isProcessing is true',
+    /<span className="oc-title text-sm font-medium truncate">\{sessionTitle\}<\/span>/,
+    'StickyHeader should keep the session title in the header',
+  );
+  assert.doesNotMatch(
+    panelSource,
+    /animate-pulse[\s\S]*Thinking\.\.\./,
+    'StickyHeader must not render a duplicate Thinking... label',
   );
 });
 
 // ── Lifecycle events with renderable text finish streaming to prevent stuck loading ──
 
-test('lifecycle message.updated with renderable structured text triggers FINISH_STREAMING', () => {
+test('lifecycle message.updated only triggers FINISH_STREAMING when the active stream is still lifecycle-owned', () => {
   assert.match(
     handlerSource,
-    /structuredKind\s*===\s*["']lifecycle["'][\s\S]*hasRenderableLiveStructuredUpdate/,
-    'FINISH_STREAMING condition must include lifecycle events with renderable structured updates',
+    /const shouldTreatLifecycleUpdateAsTerminal =[\s\S]*structuredKind === "lifecycle"[\s\S]*hasRenderableLiveStructuredUpdate[\s\S]*!finish[\s\S]*currentStreamingIsEvtLifecycle[\s\S]*currentStreamingMessageId === messageId/s,
+    'FINISH_STREAMING should only treat lifecycle updates as terminal when the active stream is still owned by that lifecycle event',
   );
 });

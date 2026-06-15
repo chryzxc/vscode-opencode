@@ -491,7 +491,7 @@ test('completed activity is condensed to MAX_VISIBLE_COMPLETED_ACTIVITY=5', () =
     );
     assert.match(
         messageComponentsSource,
-        /displayEvents\.slice\(-MAX_VISIBLE_COMPLETED_ACTIVITY\)/,
+        /mainDisplayEvents\.slice\(-MAX_VISIBLE_COMPLETED_ACTIVITY\)/,
         'Condensed view should show the last N events',
     );
 });
@@ -531,13 +531,13 @@ test('activityStatusCounts derives pending/done/error counts from userFacingDisp
 test('AssistantMessage computes displayEvents from timelineBlocks via buildDisplayEvents', () => {
     assert.match(
         messageComponentsSource,
-        /const displayEvents\s*=\s*useMemo\(\s*\(\)\s*=>\s*buildDisplayEvents\(timelineBlocks,\s*message,\s*isStreamingActive\)/,
-        'displayEvents should be derived from buildDisplayEvents(timelineBlocks, message, isStreamingActive)',
+        /const events = buildDisplayEvents\(timelineBlocks,\s*message,\s*isStreamingActive,\s*assistantTurnPending\);/,
+        'displayEvents should be derived from buildDisplayEvents(timelineBlocks, message, isStreamingActive, assistantTurnPending)',
     );
     assert.match(
         messageComponentsSource,
-        /\[timelineBlocks,\s*message,\s*isStreamingActive\]/,
-        'displayEvents memo deps should include timelineBlocks, message and isStreamingActive',
+        /\[timelineBlocks,\s*message,\s*isStreamingActive,\s*assistantTurnPending\]/,
+        'displayEvents memo deps should include timelineBlocks, message, isStreamingActive and assistantTurnPending',
     );
 });
 
@@ -697,16 +697,21 @@ test('activity display events receive an "activity" CSS class on the label span'
 // 15. File path rendering in activity steps
 // ---------------------------------------------------------------------------
 
-test('step with a filePath renders an openFile button instead of plain summary', () => {
+test('call-style and background task labels skip the file-link rendering path', () => {
     assert.match(
         messageComponentsSource,
-        /filePath|openFile|file/i,
-        'When a step has a filePath, clicking should post an openFile message',
+        /event\.filePath\s*&&\s*!isUrl\(event\.filePath\)\s*&&\s*!isCallStyleActivityLabel\(event\.label\)/,
+        'The file-link branch should exclude call-style and background task labels',
     );
     assert.match(
         messageComponentsSource,
-        /filePath|title|accessibility/i,
-        'File button should expose the full path via title for accessibility',
+        /normalized\.startsWith\(["']call_["']\)/i,
+        'Call-style labels should be detected case-insensitively',
+    );
+    assert.match(
+        messageComponentsSource,
+        /normalized\s*===\s*["']background_task["'][\s\S]*?normalized\s*===\s*["']background task["'][\s\S]*?normalized\s*===\s*["']background-task["']/i,
+        'Background task labels should be grouped with call-style labels so they do not use the file icon path',
     );
 });
 

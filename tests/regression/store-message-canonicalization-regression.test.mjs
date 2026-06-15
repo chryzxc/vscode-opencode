@@ -20,8 +20,8 @@ test("SET_MESSAGES uses centralized canonicalization before storing messages", (
 
   assert.match(
     reducerBody,
-    /const\s+canonicalMessages\s*=\s*canonicalizeMessagesForRender\(action\.payload\);/,
-    "SET_MESSAGES should canonicalize payload via centralized reducer helper",
+    /const\s+canonicalMessages\s*=\s*canonicalizeMessagesForRender\(action\.payload,\s*\{[\s\S]*preserveEvtAssistantMessages:[\s\S]*\}\);/s,
+    "SET_MESSAGES should canonicalize payload via centralized reducer helper with live evt_ preservation awareness",
   );
   assert.match(
     reducerBody,
@@ -33,7 +33,7 @@ test("SET_MESSAGES uses centralized canonicalization before storing messages", (
 test("centralized canonicalization drops internal reminders and coalesces assistant runs", () => {
   const canonicalBody = extractFunctionBody(
     storeSource,
-    "function canonicalizeMessagesForRender(messages: Message[]): Message[]",
+    "export function canonicalizeMessagesForRender(",
   );
   const reminderBody = extractFunctionBody(
     storeSource,

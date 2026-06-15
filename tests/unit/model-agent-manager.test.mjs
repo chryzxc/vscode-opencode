@@ -28,9 +28,9 @@ test('handleGetModels uses single-flight fetch, provider timeout, and fallback m
   );
 
   assert.match(handleGetModelsBody, /if \(this\.modelsFetchPromise\) \{[\s\S]*return this\.modelsFetchPromise;/, 'handleGetModels should reuse an in-flight fetch promise');
-  assert.match(handleGetModelsBody, /const providerListTimeoutMs = 8000;/, 'handleGetModels should enforce an 8 second provider list timeout');
-  assert.match(handleGetModelsBody, /Promise\.race\(\[[\s\S]*client\.provider\.list\(\),[\s\S]*timeoutPromise,[\s\S]*\]\)/, 'handleGetModels should race provider listing against the timeout promise');
-  assert.match(handleGetModelsBody, /const fallbackModels = cachedModels\.length > 0 \? cachedModels : this\.getSelectedModelFallbackList\(\);/, 'handleGetModels should fall back to cached or selected-model-derived options');
+  assert.match(handleGetModelsBody, /const providerListTimeoutMs = 60_000;/, 'handleGetModels should enforce a 60 second provider list timeout');
+  assert.match(handleGetModelsBody, /this\.withTimeout\([\s\S]*client\.provider\.list\(\)[\s\S]*providerListTimeoutMs[\s\S]*["']Provider list["'][\s\S]*\)/, 'handleGetModels should wrap provider listing in the shared timeout helper');
+  assert.match(handleGetModelsBody, /const fallbackModels =[\s\S]*cachedModels\.length > 0[\s\S]*this\.getSelectedModelFallbackList\(\)/, 'handleGetModels should fall back to cached or selected-model-derived options');
   assert.match(handleGetModelsBody, /this\.postMessage\(\{[\s\S]*type: "modelsList",[\s\S]*models: fallbackModels,[\s\S]*selectedModel: this\.selectedModel,[\s\S]*\}\);/, 'handleGetModels should publish fallback model state to the webview');
 });
 

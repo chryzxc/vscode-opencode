@@ -45,7 +45,7 @@ import {
 import { config } from "../../config";
 import vscode from "./vscode";
 
-const STREAM_DEBUG_ENABLED = true;
+const STREAM_DEBUG_ENABLED = false;
 
 // Debouncing state for rendering snapshots
 let lastRenderLogTime = 0;
@@ -3233,6 +3233,22 @@ function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
     .filter((item): item is InteractiveChoice => !!item);
 }
 
+function extractInteractivePromptText(record: UnknownRecord): string | undefined {
+  const nestedQuestion = asRecord(record.question);
+  return (
+    asString(nestedQuestion?.displayPrompt) ||
+    asString(nestedQuestion?.question) ||
+    asString(nestedQuestion?.message) ||
+    asString(nestedQuestion?.content) ||
+    asString(record.displayPrompt) ||
+    asString(record.question) ||
+    asString(record.prompt) ||
+    asString(record.message) ||
+    asString(record.content) ||
+    asString(record.text)
+  ) || undefined;
+}
+
 function normalizeToolInteractiveEvent(
   record: UnknownRecord,
   fallbackId: string,
@@ -3264,11 +3280,13 @@ function normalizeToolInteractiveEvent(
     if (actions.length === 0) {
       return undefined;
     }
+    const prompt = extractInteractivePromptText(record);
     return {
       type: "quick_actions",
       id,
-      title,
+      title: title || "Quick actions",
       actions,
+      contextMessage: prompt && prompt !== title ? prompt : undefined,
     };
   }
 
@@ -4388,6 +4406,23 @@ function sanitizeAssistantMessageEcho(message: Message, state: AppState): Messag
   return next;
 }
 
+function cloneRawSnapshot<T>(value: T): T {
+  if (typeof structuredClone === "function") {
+    try {
+      return structuredClone(value) as T;
+    } catch {
+      // Fall back to a shallow copy below.
+    }
+  }
+  if (Array.isArray(value)) {
+    return [...value] as T;
+  }
+  if (value && typeof value === "object") {
+    return { ...(value as Record<string, unknown>) } as T;
+  }
+  return value;
+}
+
 export function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined {
   const rec = asRecord(message);
   if (!rec) {
@@ -4401,6 +4436,11 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     return streaming ? buildStreamingMessage(streaming) : undefined;
   }
 
+  const rawSdkEventPayloadsSnapshot = Array.isArray(streaming?.rawSdkEventPayloads)
+    ? cloneRawSnapshot(streaming.rawSdkEventPayloads)
+    : Array.isArray(rec.rawSdkEventPayloads)
+      ? cloneRawSnapshot(rec.rawSdkEventPayloads)
+      : undefined;
   const parts = Array.isArray(rec.parts) ? rec.parts : [];
   const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
   const mergedParts = [...parts];
@@ -4726,6 +4766,9 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
         ? (normalizedParts as Message['parts'])
         : message.parts
   };
+  if (rawSdkEventPayloadsSnapshot) {
+    (normalized as Record<string, unknown>).rawSdkEventPayloads = rawSdkEventPayloadsSnapshot;
+  }
 
   const normalizedInfoRecord = asRecord(normalized.info) || {};
   const variant = firstNonEmptyString(
@@ -5346,6 +5389,9 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
       })
       .filter((entry): entry is SubagentConversationEvent => !!entry)
     : [];
+  const rawConversationEvents = Array.isArray(rec.conversationEvents)
+    ? [...rec.conversationEvents]
+    : [];
 
   const progressEvents = Array.isArray(rec.progressEvents)
     ? rec.progressEvents
@@ -5413,6 +5459,7 @@ function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
     ...summary,
     thinkingEvents,
     conversationEvents,
+    rawConversationEvents,
     progressEvents: normalizedProgressEvents,
     timelineEvents: normalizedTimelineEvents,
     tokenUsage: tokenUsageRec
@@ -5533,6 +5580,11 @@ function hydrateSubagentSummary(
     conversationEvents: Array.isArray(detail.conversationEvents)
       ? detail.conversationEvents
       : [],
+    rawConversationEvents: Array.isArray(detail.rawConversationEvents)
+      ? detail.rawConversationEvents
+      : Array.isArray(detail.conversationEvents)
+        ? detail.conversationEvents
+        : [],
     progressEvents: Array.isArray(detail.progressEvents)
       ? detail.progressEvents
       : [],
@@ -6345,6 +6397,17 @@ function mergeSubagentDetailRecord(
       event.id ||
       `${event.role || ""}:${event.kind || ""}:${event.createdAt || 0}:${event.text || ""}:${index}`,
   );
+  const rawConversationEvents = mergeUniqueSubagentEntries(
+    existing?.rawConversationEvents,
+    incoming.rawConversationEvents,
+    (event, index) => {
+      const rec = asRecord(event);
+      return (
+        asString(rec?.id) ||
+        `${asString(rec?.messageID) || asString(rec?.messageId) || ""}:${asString(rec?.partID) || asString(rec?.partId) || ""}:${asString(rec?.kind) || asString(rec?.role) || ""}:${asString(rec?.text) || asString(rec?.content) || ""}:${asNumber(rec?.createdAt)}:${index}`
+      );
+    },
+  );
   const progressEvents = normalizeSubagentProgressEventsForPresentation(
     mergeUniqueSubagentEntries(
       existing?.progressEvents,
@@ -6378,6 +6441,7 @@ function mergeSubagentDetailRecord(
     references,
     thinkingEvents,
     conversationEvents,
+    rawConversationEvents,
     progressEvents,
     timelineEvents,
   };
@@ -6885,29 +6949,9 @@ function isTextLikePart(part: MessagePart): boolean {
   );
 }
 
-/**
- * Coalesce an adjacent assistant-message burst into a single message.
- *
- * CRITICAL — evt_ vs msg_ merge base selection:
- * `mergeAssistantReplacement` calls this with `[existing, incoming]` where
- * the incoming message often carries an `evt_` lifecycle ID while the existing
- * message carries the authoritative `msg_` ID.  Always prefer the last non-evt
- * message as the merge base so that canonical fields (`content`, `text`,
- * `structuredOutput.message`) come from the `msg_` record.  The `evt_` entry
- * only contributes metadata (steps, reasoning events, edits, interactive
- * events).  This prevents garbled event-fragment text from overwriting valid
- * assistant responses while still folding in all lifecycle state.
- *
- * This mirrors the same pattern in `coalesceAssistantRunForCanonical` (store.ts).
- */
 function coalesceAssistantHistoryBurst(burst: Message[]): Message {
-  const preferredIdx = burst.length > 1
-    ? burst.findLastIndex(
-        (m) => !(typeof getMessageId(m) === "string" && getMessageId(m)?.startsWith("evt_")),
-      )
-    : -1;
   const base = {
-    ...(preferredIdx >= 0 ? burst[preferredIdx] : burst[burst.length - 1] || burst[0]),
+    ...(burst[burst.length - 1] || burst[0]),
   } as Message;
   const mergedParts: MessagePart[] = [];
   const seenPartFingerprints = new Set<string>();
@@ -6925,6 +6969,11 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   let latestSubagentsWithoutMessageId: Message["subagents"] | undefined;
   let latestError = asString((base as unknown as UnknownRecord).error);
   let latestRawResponse: unknown = (base as unknown as UnknownRecord).rawResponse;
+  let latestRawSdkEventPayloads: unknown[] | undefined = Array.isArray(
+    (base as unknown as UnknownRecord).rawSdkEventPayloads,
+  )
+    ? [...((base as unknown as UnknownRecord).rawSdkEventPayloads as unknown[])]
+    : undefined;
   let latestStructuredOutput = asRecord(
     (base as unknown as UnknownRecord).structuredOutput,
   );
@@ -7024,21 +7073,14 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
 
     const messageId = getMessageId(message);
     if (messageId) {
-      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
-      const currentIsNonEvt = typeof canonicalMessageId === "string" && !canonicalMessageId.startsWith("evt_");
-      if (!incomingIsEvt || !currentIsNonEvt) {
-        canonicalMessageId = messageId;
-      }
+      canonicalMessageId = messageId;
     }
 
     const content = extractRenderableAssistantTextForHydration(message).trim();
     if (content.length > 0) {
-      const structuredMessage = getCanonicalStructuredMessageText(message);
-      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
-      const currentIsNonEvt = typeof canonicalMessageId === "string" && !canonicalMessageId.startsWith("evt_");
       const candidateTextScore =
         content.length + (isCanonicalAssistantDisplayMessage(message) ? 100000 : 0);
-      if (candidateTextScore >= latestTextScore && (!incomingIsEvt || !currentIsNonEvt)) {
+      if (candidateTextScore >= latestTextScore) {
         latestTextScore = candidateTextScore;
         latestText = content;
         latestTextPart = Array.isArray(message.parts)
@@ -7076,6 +7118,12 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
       }
     } else if (typeof message.rawResponse !== "undefined") {
       latestRawResponse = message.rawResponse;
+    }
+    if (Array.isArray((message as unknown as UnknownRecord).rawSdkEventPayloads)) {
+      const rawSdkEventPayloads = (message as unknown as UnknownRecord).rawSdkEventPayloads as unknown[];
+      if (rawSdkEventPayloads.length > 0) {
+        latestRawSdkEventPayloads = [...rawSdkEventPayloads];
+      }
     }
     const structured = asRecord(
       (message as unknown as UnknownRecord).structuredOutput,
@@ -7188,6 +7236,9 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   if (typeof latestRawResponse !== "undefined") {
     (base as unknown as UnknownRecord).rawResponse = latestRawResponse;
   }
+  if (Array.isArray(latestRawSdkEventPayloads) && latestRawSdkEventPayloads.length > 0) {
+    (base as unknown as UnknownRecord).rawSdkEventPayloads = latestRawSdkEventPayloads;
+  }
 
   if (canonicalMessageId) {
     base.id = canonicalMessageId;
@@ -7252,39 +7303,13 @@ function summarizeRenderMessageForDebug(message: Message, index: number): Record
 }
 
 function logRenderSnapshot(source: string, messages: Message[]): void {
-  const now = Date.now();
-  if (now - lastRenderLogTime < RENDER_LOG_DEBOUNCE_MS) {
-    return; // Skip logging if too soon since last render log
-  }
-  lastRenderLogTime = now;
-
-  const tail = messages.slice(-20);
-  const summary = tail.map((message, index) =>
-    summarizeRenderMessageForDebug(message, messages.length - tail.length + index),
-  );
-  const last = summary[summary.length - 1];
-  logger.info("[PRE-RENDER] rendering snapshot", {
-    source,
-    messageCount: messages.length,
-    last,
-  });
+  void source;
+  void messages;
 }
 
 function logSourceSnapshot(source: string, messages: Message[] | unknown[]): void {
-  const normalizedMessages = Array.isArray(messages) ? messages : [];
-  const tail = normalizedMessages.slice(-20);
-  const summary = tail.map((message, index) =>
-    summarizeRenderMessageForDebug(
-      message as Message,
-      normalizedMessages.length - tail.length + index,
-    ),
-  );
-  const last = summary[summary.length - 1];
-  logger.info("[SOURCE] incoming render payload", {
-    source,
-    messageCount: normalizedMessages.length,
-    last,
-  });
+  void source;
+  void messages;
 }
 
 function logFullPayloadSnapshot(
@@ -7292,14 +7317,9 @@ function logFullPayloadSnapshot(
   source: string,
   payload: Record<string, unknown>,
 ): void {
-  const messages = payload.messages as unknown[];
-  const messageCount = Array.isArray(messages) ? messages.length : 0;
-
-  logger.info(`[${stage}] payload snapshot`, {
-    source,
-    messageCount,
-    keys: Object.keys(payload).filter(k => k !== 'messages')
-  });
+  void stage;
+  void source;
+  void payload;
 }
 
 function stripChoicePrefix(input: string): string {
@@ -8144,6 +8164,7 @@ function buildStreamingMessage(streaming: StreamingState): Message {
     edits: streaming.edits.map((file) => ({ file })),
     interactiveEvents: streaming.interactiveEvents,
     structuredOutput: streaming.structuredOutput,
+    rawSdkEventPayloads: streaming.rawSdkEventPayloads,
     info: {
       id: streaming.messageId ?? undefined,
       agent: streaming.agent,
@@ -8168,7 +8189,8 @@ function hasVisibleStreamingSnapshot(streaming: StreamingState | null | undefine
     (Array.isArray(streaming.progressEvents) && streaming.progressEvents.length > 0) ||
     (Array.isArray(streaming.steps) && streaming.steps.length > 0) ||
     (Array.isArray(streaming.edits) && streaming.edits.length > 0) ||
-    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0)
+    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0) ||
+    (Array.isArray(streaming.rawSdkEventPayloads) && streaming.rawSdkEventPayloads.length > 0)
   );
 }
 
@@ -8274,69 +8296,7 @@ function mergeStreamingSnapshotIntoHistory(
     asString(asRecord(streamingMessage.info)?.id) ||
     asString(streamingMessage.id) ||
     null;
-  const candidateIds: Array<string | null | undefined> = [streamingMessageId];
-
-  // Providers use evt_-prefixed message IDs for lifecycle events (streaming
-  // start/finish) that can land after the authoritative msg_ message.  Without
-  // text-match fallback these evt_ entries would be appended as duplicate
-  // assistant cards and coalesce into the visible response with stale text.
-  // Expand the text-match path to cover missing IDs AND evt_-prefixed IDs so
-  // the evt_ entry replaces the existing non-evt message instead of forking
-  // the assistant run.
-  const shouldTryTextMatch =
-    !streamingMessageId ||
-    (typeof streamingMessageId === "string" && streamingMessageId.startsWith("evt_"));
-
-  if (shouldTryTextMatch) {
-    const incomingText = normalizeComparableText(
-      extractMessageText(streamingMessage),
-    );
-    if (incomingText.length > 0) {
-      let lastUserIndex = -1;
-      for (let index = messages.length - 1; index >= 0; index -= 1) {
-        const message = messages[index];
-        if (!message) {
-          continue;
-        }
-        const role =
-          (asString(message.role) || asString(asRecord(message.info)?.role))
-            .toLowerCase()
-            .trim();
-        if (role === "user") {
-          lastUserIndex = index;
-          break;
-        }
-      }
-
-      for (let index = messages.length - 1; index > lastUserIndex; index -= 1) {
-        const candidate = messages[index];
-        if (!isAssistantHistoryMessage(candidate)) {
-          continue;
-        }
-        const candidateId = getMessageId(candidate);
-        const isNonEvtCandidate =
-          typeof candidateId === "string" && !candidateId.startsWith("evt_");
-        // When the incoming snapshot has an evt_ ID, prefer latching onto the
-        // first non-evt assistant message (msg_), even without text matching.
-        // This prevents the evt_ entry from forking the assistant run and
-        // keeps the canonical response text surfaced by the msg_ card.
-        if (isNonEvtCandidate) {
-          candidateIds.unshift(candidateId);
-          break;
-        }
-        const candidateText = normalizeComparableText(extractMessageText(candidate));
-        if (!candidateText || candidateText !== incomingText) {
-          continue;
-        }
-        if (candidateId) {
-          candidateIds.push(candidateId);
-          break;
-        }
-      }
-    }
-  }
-
-  return replaceMatchingAssistantTurn(messages, streamingMessage, candidateIds);
+  return replaceMatchingAssistantTurn(messages, streamingMessage, [streamingMessageId]);
 }
 
 function flushVisibleStreamingSnapshotToMessages(
@@ -8455,32 +8415,40 @@ function handleStreamEvent(
   const normalizedEventType = isPartUpdateEvent ? "message.part.updated" : eventType;
   const isHeartbeatEvent = isHeartbeatEventType(eventType);
   if (!isHeartbeatEvent && !terminalErrorReached) {
-    const capturePayload: Record<string, unknown> = { type: eventType };
-    if (payload.properties) {
-      capturePayload.properties = { ...payload.properties };
-    }
-    if (payload.part) {
-      capturePayload.part = { ...payload.part };
-    }
-    if (payload.info) {
-      capturePayload.info = { ...payload.info };
-    }
-    if (payload.structured) {
-      capturePayload.structured = { ...payload.structured };
-    }
-    if (payload.text) {
-      capturePayload.text = payload.text;
-    }
-    if (payload.id || payload.messageId || (payload as UnknownRecord).messageID) {
-      capturePayload.id = payload.id || payload.messageId || (payload as UnknownRecord).messageID;
-    }
-    if (payload.sessionId || payload.sessionID) {
-      capturePayload.sessionId = payload.sessionId || payload.sessionID;
-    }
-    dispatch({ type: "APPEND_SDK_EVENT_PAYLOAD", payload: capturePayload });
+    dispatch({
+      type: "APPEND_RAW_SDK_EVENT_PAYLOAD",
+      payload: {
+        sessionId: asString(payload.sessionId) || asString(payload.sessionID) || null,
+        event: payload,
+      },
+    });
+    dispatch({ type: "APPEND_SDK_EVENT_PAYLOAD", payload });
   }
   const state = getState();
   const current = state.streaming;
+  console.info("[TRACE][HANDLER][RAW_EVENT_INGRESS]", {
+    eventType,
+    messageId:
+      asString(payload.messageId) ||
+      asString((payload as UnknownRecord).messageID) ||
+      asString(payload.id) ||
+      asString(asRecord(payload.properties)?.messageId) ||
+      asString(asRecord(payload.properties)?.messageID) ||
+      null,
+    sessionId:
+      asString(payload.sessionId) ||
+      asString((payload as UnknownRecord).sessionID) ||
+      asString(asRecord(payload.properties)?.sessionId) ||
+      asString(asRecord(payload.properties)?.sessionID) ||
+      null,
+    streamingMessageId: current?.messageId ?? null,
+    streamingActive: !!current?.isActive,
+    streamingInteractiveCount: Array.isArray(current?.interactiveEvents)
+      ? current.interactiveEvents.length
+      : 0,
+    payloadKeys: Object.keys(payload),
+    propertyKeys: Object.keys(asRecord(payload.properties) || {}),
+  });
   const properties = asRecord(payload.properties);
   const partRecord = asRecord(properties?.part);
   const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
@@ -8986,6 +8954,24 @@ function handleStreamEvent(
           getState,
           interactiveEvents,
         );
+        logger.info("[TRACE][HANDLER][PART_INTERACTIVE_EVENTS]", {
+          eventType: normalizedEventType,
+          messageId,
+          structuredKind: currentStructuredKind || null,
+          interactiveCount: interactiveEvents.length,
+          blockingInteractive: hasBlockingInteractive,
+          streamingExists: !!getState().streaming,
+          streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
+        });
+        console.info("[TRACE][HANDLER][PART_INTERACTIVE_EVENTS]", {
+          eventType: normalizedEventType,
+          messageId,
+          structuredKind: currentStructuredKind || null,
+          interactiveCount: interactiveEvents.length,
+          blockingInteractive: hasBlockingInteractive,
+          streamingExists: !!getState().streaming,
+          streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
+        });
       }
 
       if (structuredOutput?.subagents || structuredOutput?.subagentsDelta) {
@@ -9580,6 +9566,27 @@ function handleStreamEvent(
         break;
       }
 
+      logger.info("[TRACE][HANDLER][MESSAGE_UPDATED_STATE]", {
+        messageId,
+        finish,
+        structuredKind: structuredKind || null,
+        hasRenderableLiveStructuredUpdate,
+        liveInteractiveCount: liveStructuredInteractiveEvents.length,
+        currentStreamingMessageId: getState().streaming?.messageId ?? null,
+        currentStreamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
+        streamingExists: !!getState().streaming,
+      });
+      console.info("[TRACE][HANDLER][MESSAGE_UPDATED_STATE]", {
+        messageId,
+        finish,
+        structuredKind: structuredKind || null,
+        hasRenderableLiveStructuredUpdate,
+        liveInteractiveCount: liveStructuredInteractiveEvents.length,
+        currentStreamingMessageId: getState().streaming?.messageId ?? null,
+        currentStreamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
+        streamingExists: !!getState().streaming,
+      });
+
       if (finish && structuredOutput) {
         if (structuredOutput.reasoning) {
           structuredOutput.reasoning.forEach((chunk) => {
@@ -9738,25 +9745,10 @@ function handleStreamEvent(
 
 
 
-      // Lifecycle events that carry the final structured message text may not
-      // include an explicit finish signal from the server. When a lifecycle
-      // message.updated delivers renderable text, treat it as a terminal signal
-      // so the loading state transitions to complete instead of staying stuck.
-      if (finish || (structuredKind === "lifecycle" && hasRenderableLiveStructuredUpdate)) {
-        const effectiveFinish = structuredKind === "lifecycle" && !finish;
-        if (effectiveFinish) {
-          streamDebug("Stream: lifecycle event with renderable update treated as terminal", {
-            messageId,
-            structuredKind,
-            hasRenderableLiveStructuredUpdate,
-            currentStreaming: summarizeStreamingForLog(getState().streaming),
-          });
-
-          // Lifecycle events carry the final message text in structured output
-          // rather than in streaming.content. Inject it into the streaming
-          // snapshot so the flush creates a message with the correct body.
+      if (finish) {
+        if (structuredText) {
           const streamingNow = getState().streaming;
-          if (streamingNow && structuredText) {
+          if (streamingNow) {
             const streamingOverride: StreamingState = {
               ...streamingNow,
               content: structuredText,
@@ -10218,6 +10210,24 @@ function handleStreamEvent(
           getState,
           interactiveEvents,
         );
+        logger.info("[TRACE][HANDLER][STRUCTURED_INTERACTIVE_EVENTS]", {
+          eventType: normalizedEventType,
+          messageId,
+          structuredKind: structuredKind || null,
+          interactiveCount: interactiveEvents.length,
+          blockingInteractive: hasBlockingInteractive,
+          streamingExists: !!getState().streaming,
+          streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
+        });
+        console.info("[TRACE][HANDLER][STRUCTURED_INTERACTIVE_EVENTS]", {
+          eventType: normalizedEventType,
+          messageId,
+          structuredKind: structuredKind || null,
+          interactiveCount: interactiveEvents.length,
+          blockingInteractive: hasBlockingInteractive,
+          streamingExists: !!getState().streaming,
+          streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
+        });
         consumed = true;
       }
 
@@ -11195,8 +11205,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             ),
           });
 
-          const responseMessageId =
-            asString(msg.id) || asString(asRecord(msg.info)?.id);
+          const responseMessageId = getMessageId(msg);
           const currentStateForResponse = getState();
           const currentStreaming = currentStateForResponse.streaming;
           const snapshotMessageId = latestStreamingSnapshot?.messageId || null;
@@ -11438,6 +11447,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 type: "persistAssistantMessage",
                 sessionId,
                 message: sanitized,
+                rawMessage: msg,
               });
             }
           }
@@ -11496,20 +11506,35 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           try {
             terminalErrorReached = false;
             const rawMessages = asArray(data.messages, isMessage);
+            const rawHistoryMessages = Array.isArray((data as UnknownRecord).rawMessages)
+              ? [...((data as UnknownRecord).rawMessages as unknown[])]
+              : [];
+            const rawSdkEventPayloads = Array.isArray((data as UnknownRecord).rawSdkEventPayloads)
+              ? [...((data as UnknownRecord).rawSdkEventPayloads as unknown[])]
+              : [];
             const historySessionId = asString(data.sessionId) || null;
             if (historySessionId) {
               logger.setSession(historySessionId);
             }
-            logSourceSnapshot("chatHistory", rawMessages);
-            logFullPayloadSnapshot("SOURCE", "chatHistory", {
-              sessionId: historySessionId,
-              messages: rawMessages,
-              processingSessionIds: asArray(
-                data.processingSessionIds,
-                (item): item is string => typeof item === "string",
-              ),
+            const sourceMessages =
+              rawHistoryMessages.length > 0 ? rawHistoryMessages : rawMessages;
+            dispatch({
+              type: "SET_RAW_MESSAGES",
+              payload: {
+                sessionId: historySessionId || asString(data.sessionId) || "",
+                messages: sourceMessages,
+              },
             });
-            const normalizedMessages = rawMessages
+            if (rawSdkEventPayloads.length > 0) {
+              dispatch({
+                type: "SET_RAW_SDK_EVENT_PAYLOADS",
+                payload: {
+                  sessionId: historySessionId || asString(data.sessionId) || "",
+                  events: rawSdkEventPayloads,
+                },
+              });
+            }
+            const normalizedMessages = sourceMessages
               .map((msg) => normalizeMessage(msg, null))
               .filter((msg): msg is Message => !!msg)
               .filter((msg) => isRenderableHistoryMessage(msg));
@@ -11672,12 +11697,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               );
             }
             canonicalMessages = stabilizedHydratedMessages;
-            logFullPayloadSnapshot("PRE-RENDER", "chatHistory", {
-              sessionId: chatHistorySessionId || historySessionId,
-              messages: canonicalMessages,
-              processingSessionIds: effectiveProcessingSessionIds,
-            });
-
             if (chatHistorySessionId) {
               dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
             }
@@ -12157,30 +12176,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamEventType === "start" || streamEventType === "streamStart";
           const canStartVisibleAssistantTurn =
             streamEventCanStartVisibleAssistantTurn(payload);
-          streamDebug("Stream: inbound event received", {
-            ...summarizeStreamEventForLog(payload),
-            eventSessionId: eventSessionId || null,
-            activeSessionId: activeSessionId || null,
-            isProcessing: stateBeforeStreamEvent.isProcessing,
-            hasConfirmedProcessingSession,
-            hasStreamingSnapshot: !!stateBeforeStreamEvent.streaming,
-            isExplicitStreamStart,
-            canStartVisibleAssistantTurn,
-          });
-
-          // Only log important events, not every text chunk
           const shouldLogStreamEvent = !streamEventType.includes("message.part") ||
                                       streamEventType === "message.completed" ||
                                       streamEventType === "session.completed";
-
-          if (shouldLogStreamEvent) {
-            logFullPayloadSnapshot("SOURCE", "streamEvent", {
-              streamEventType,
-              eventSessionId: eventSessionId || null,
-              activeSessionId: activeSessionId || null,
-              payload,
-            });
-          }
 
           if (
             !stateBeforeStreamEvent.isProcessing &&
@@ -12189,13 +12187,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             !isExplicitStreamStart &&
             !canStartVisibleAssistantTurn
           ) {
-            streamDebug("Stream: event dropped before handling", {
-              ...summarizeStreamEventForLog(payload),
-              reason: "not-processing-and-no-active-stream",
-              eventSessionId: eventSessionId || null,
-              activeSessionId: activeSessionId || null,
-              canStartVisibleAssistantTurn,
-            });
             break;
           }
           if (terminalErrorReached && (getState().isProcessing || hasConfirmedProcessingSession)) {
@@ -12220,13 +12211,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             }
           }
 
-          streamDebug("Stream: event received from extension", {
-            type: streamEventType,
-            hasProperties: !!asRecord(payload.properties),
-            hasPart: !!asRecord(asRecord(payload.properties)?.part),
-            structuredKind:
-              asString(asRecord(payload.structured)?.kind) || "unknown",
-          });
           if (
             eventSessionId &&
             activeSessionId &&
@@ -12244,6 +12228,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const scopedDispatch: Dispatch<AppAction> = (action) => {
               switch (action.type) {
                 case "SET_STREAMING":
+                case "APPEND_SDK_EVENT_PAYLOAD":
                 case "UPDATE_STREAMING_CONTENT":
                 case "UPDATE_STREAMING_REASONING":
                 case "SET_IN_REASONING_PART":
@@ -12280,6 +12265,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             latestStreamingSnapshot = streamingAfter;
           }
 
+          const persistSessionId =
+            eventSessionId ||
+            activeSessionId ||
+            getState().currentSessionId ||
+            null;
+          if (persistSessionId) {
+            vscode.postMessage({
+              type: "persistRawSdkEventPayload",
+              sessionId: persistSessionId,
+              event: payload,
+            });
+          }
+
 
           if (
             streamEventType === "message.updated" ||
@@ -12287,7 +12285,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamEventType === "session.completed"
           ) {
             const stateNow = getState();
-            logRenderSnapshot(`streamEvent:${streamEventType}`, stateNow.messages);
           }
           break;
         }
@@ -12684,10 +12681,21 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               !hasVisibleStreamingSnapshot(currentStreaming) &&
               !currentStreaming.messageId;
             if (hasStaleEmptyStreamingPlaceholder) {
-              // If the previous turn left behind an active but empty streaming
-              // shell, clear it now so the next send starts from a clean state
-              // instead of inheriting a perpetual loading bubble.
-              dispatch({ type: "SET_STREAMING", payload: null });
+              // Preserve the shell until the next live stream event replaces it.
+              // Clearing here can hide the assistant card before realtime payloads
+              // have a chance to populate it.
+              logger.info("[TRACE][HANDLER][PRESERVE_EMPTY_STREAMING_PLACEHOLDER]", {
+                currentSessionId: currentState.currentSessionId,
+                streamingMessageId: currentStreaming.messageId ?? null,
+                streamingActive: currentStreaming.isActive,
+                hasVisibleStreamingSnapshot: hasVisibleStreamingSnapshot(currentStreaming),
+              });
+              console.info("[TRACE][HANDLER][PRESERVE_EMPTY_STREAMING_PLACEHOLDER]", {
+                currentSessionId: currentState.currentSessionId,
+                streamingMessageId: currentStreaming.messageId ?? null,
+                streamingActive: currentStreaming.isActive,
+                hasVisibleStreamingSnapshot: hasVisibleStreamingSnapshot(currentStreaming),
+              });
             }
             const persistedAssistantMessageIds = new Set(
               currentMessages

@@ -24,11 +24,11 @@ test('exports ProgressSteps with StreamingStep array prop', () => {
   );
 });
 
-test('exports StreamingCard as memo with isContiguous and streaming props', () => {
+test('exports StreamingCard as memo with live assistant context props', () => {
   assert.match(
     source,
-    /export const StreamingCard = memo\(function StreamingCard\(\{ isContiguous, streaming \}/,
-    'StreamingComponents.tsx must export StreamingCard as memo with isContiguous and streaming props',
+    /export const StreamingCard = memo\(function StreamingCard\(\{[\s\S]*isContiguous,[\s\S]*streaming,[\s\S]*interactiveEvents,[\s\S]*messages,[\s\S]*assistantTurnMessageId,/,
+    'StreamingComponents.tsx must export StreamingCard as memo with live assistant context props',
   );
 });
 
@@ -47,6 +47,21 @@ test('StreamingCard remains mounted for live assistant activity', () => {
     source,
     /if \(streaming\.steps\.length > 0 \|\| streaming\.progressEvents\.length > 0\) return true;/,
     'StreamingCard should still render for live step/progress activity',
+  );
+  assert.match(
+    source,
+    /Array\.isArray\(interactiveEvents\) && interactiveEvents\.length > 0/,
+    'StreamingCard should stay mounted when live interactive events exist only in app state',
+  );
+  assert.match(
+    source,
+    /const liveSubagents = subagentsByParentMessageId\?\.\[streaming\.messageId\]/,
+    'StreamingCard should stay mounted when live subagent updates are keyed by the current streaming message id',
+  );
+  assert.match(
+    source,
+    /const liveAssistantMessage = useMemo\([\s\S]*assistantTurnMessageId\?\.trim\(\)[\s\S]*streaming\.messageId\?\.trim\(\)[\s\S]*return \[\.\.\.messages\]\.reverse\(\)\.find\(\(message\) => message\?\.role === "assistant"\)\;/,
+    'StreamingCard should attach the in-flight assistant message so the live render can see message-scoped activity',
   );
 });
 

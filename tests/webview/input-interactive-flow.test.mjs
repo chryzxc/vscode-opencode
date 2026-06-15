@@ -11,21 +11,21 @@ const panelComponents = readSource([
   joinFromRoot('webview/shared/src/chat/PanelComponents.tsx'),
 ], 'PanelComponents');
 
-test('shows stop button only while responding with empty input', () => {
-  assert.match(panelComponents, /isAiResponding && inputValue\.trim\(\)\.length === 0/, 'stop button guard is missing');
+test('shows stop button whenever the assistant is responding', () => {
+  assert.match(panelComponents, /{isAiResponding \? \(/, 'stop button guard is missing');
   assert.match(panelComponents, /type: "stopRequest"/, 'stopRequest transport is missing');
 });
 
-test('derives stop-button visibility from abortable assistant response state', () => {
+test('derives stop-button visibility from the same assistant response state as the loading indicator', () => {
   assert.match(
     panelComponents,
-    /const hasCompletedAssistantReplyForLatestTurn = \(\(\) => \{/,
-    'InputWrapper should detect whether the latest assistant turn is already complete',
+    /const isAiResponding = isAssistantRespondingInCurrentSession\([\s\S]*Boolean\(streaming\?\.isActive\)[\s\S]*assistantTurnPending/s,
+    'InputWrapper should derive stop visibility from the full active-assistant turn state',
   );
   assert.match(
     panelComponents,
-    /const isAiResponding = !!\([\s\S]*streaming\?\.isActive[\s\S]*!\s*hasCompletedAssistantReplyForLatestTurn[\s\S]*\);/,
-    'InputWrapper should only show stop for an actively abortable assistant turn',
+    /{isAiResponding \? \([\s\S]*oc-toolbar-action-icon-stop/,
+    'InputWrapper should render the stop button directly from isAiResponding',
   );
 });
 

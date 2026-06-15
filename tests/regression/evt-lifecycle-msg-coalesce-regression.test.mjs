@@ -69,7 +69,7 @@ test("coalesceAssistantRunForCanonical prefers non-evt messages as the merge bas
 
 // ── canonicalizeMessagesForRender post-coalesce guard ───────────────
 
-test("canonicalizeMessagesForRender strips evt_ assistant messages when a non-evt assistant exists", () => {
+test("canonicalizeMessagesForRender preserves evt_ assistant messages when live preservation is enabled", () => {
   const body = extractFunctionBody(
     storeSource,
     "export function canonicalizeMessagesForRender(",
@@ -83,29 +83,50 @@ test("canonicalizeMessagesForRender strips evt_ assistant messages when a non-ev
 
   assert.match(
     body,
-    /return hasNonEvtAssistant[\s\S]*canonical\.filter[\s\S]*!isAssistantMessageForCanonical\(m\)[\s\S]*!\(typeof m\?\.info\?\.id === "string" && m\.info\.id\.startsWith\("evt_"\)\)[\s\S]*: canonical/,
-    "when a non-evt assistant is present all evt_ assistant messages must be stripped from the canonical array",
+    /return hasNonEvtAssistant && !options\?\.preserveEvtAssistantMessages[\s\S]*canonical\.filter[\s\S]*: canonical/,
+    "canonicalizeMessagesForRender should keep evt_ assistant messages available when live preservation is enabled",
   );
 });
 
 // ── visibleMessages render guard in ChatShell ───────────────────────
 
-test("ChatShell visibleMessages guards evt_ removal with non-evt presence check", () => {
+test("ChatShell visibleMessages preserves evt_ entries while the assistant turn is still live", () => {
   assert.match(
     chatShellSource,
-    /hasNonEvtAssistant[\s\S]*sliced\.slice[\s\S]*\.some[\s\S]*!\(typeof [^\n]*\?\.info\?\.id === "string"[^\n]*\.info\.id\.startsWith\("evt_"\)\)/,
+    /const hasEvtPrefix =[\s\S]*startsWith\("evt_"\)[\s\S]*const hasNonEvtAssistant = sliced\.slice[\s\S]*!hasEvtPrefix\(m\)/,
     "visibleMessages must check whether any non-evt assistant exists in the current turn before stripping evt_ entries",
   );
 
   assert.match(
     chatShellSource,
-    /if \(!hasNonEvtAssistant\)[\s\S]*return sliced/,
-    "when only evt_ assistant messages exist they must be preserved as the visible content",
+    /const shouldPreserveEvtAssistants =[\s\S]*state\.streaming\?\.isActive \|\| state\.assistantTurnPending/,
+    "visibleMessages should preserve evt_ assistants while the turn is still active",
   );
 
   assert.match(
     chatShellSource,
-    /return sliced\.filter[\s\S]*!\(typeof [^\n]*\?\.info\?\.id === "string"[^\n]*\.info\.id\.startsWith\("evt_"\)\)/,
-    "when a non-evt assistant is present all evt_ entries must be stripped from visible messages",
+    /if \(!hasNonEvtAssistant \|\| shouldPreserveEvtAssistants\)[\s\S]*return sliced[\s\S]*return sliced\.filter\(\(m\) => !hasEvtPrefix\(m\)\);/s,
+    "evt_ entries should remain visible during live turns and only be stripped after the turn settles",
+  );
+});
+
+test("messageResponse prefers canonical assistant ids before dropping mismatched snapshots", () => {
+  assert.match(
+    messageHandlerSource,
+    /const responseMessageId = getMessageId\(msg\);/,
+    "messageResponse should prefer the canonical helper instead of trusting a top-level evt_ id",
+  );
+  assert.match(
+    messageHandlerSource,
+    /const responseIsEvtLifecycle = isEvtLifecycleMessageId\([\s\S]*const snapshotIsCanonicalAssistant =[\s\S]*const shouldDropMismatchedSnapshot =[\s\S]*!\(responseIsEvtLifecycle && snapshotIsCanonicalAssistant\);/s,
+    "messageResponse should preserve a canonical msg_ snapshot when the final payload only carries an evt_ lifecycle id",
+  );
+});
+
+test("lifecycle message.updated cannot terminate an active canonical msg_ stream", () => {
+  assert.match(
+    messageHandlerSource,
+    /const shouldTreatLifecycleUpdateAsTerminal =[\s\S]*!finish[\s\S]*\(!currentStreamingMessageId \|\|[\s\S]*currentStreamingIsEvtLifecycle[\s\S]*currentStreamingMessageId === messageId\)/s,
+    "evt_ lifecycle updates should only finish streaming when the active snapshot is still evt_-owned or matches the same message id",
   );
 });

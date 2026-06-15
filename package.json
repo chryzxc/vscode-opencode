@@ -238,10 +238,10 @@
         },
         "opencode.requestTimeout": {
           "type": "number",
-          "default": 120000,
+          "default": 60000,
           "minimum": 10000,
           "maximum": 600000,
-          "description": "Request timeout in milliseconds for API calls (default: 120s, min: 10s, max: 10min)",
+          "description": "Request timeout in milliseconds for API calls (default: 60s, min: 10s, max: 10min)",
           "scope": "window",
           "order": 10
         },
@@ -263,14 +263,14 @@
     }
   },
   "scripts": {
-    "build": "npm run structured-output:sync && npm run webview:build && npm run compile",
-    "verify": "npm run structured-output:check && npm run build && npm run lint && npm test",
+    "build": "npm run webview:build && npm run compile",
+    "verify": "npm run build && npm run lint && npm test",
     "vscode:prepublish": "npm run build",
     "compile": "node esbuild.config.cjs",
     "watch": "node esbuild.config.cjs --watch",
     "dev": "node scripts/dev-simple.mjs",
     "dev:full": "node scripts/dev-hotreload.mjs",
-    "webview:build": "npm run structured-output:sync && npm --prefix webview/shared run build",
+    "webview:build": "npm --prefix webview/shared run build",
     "webview:watch": "npm --prefix webview/shared run build -- --watch",
     "structured-output:sync": "node scripts/sync-structured-output-contract.mjs",
     "structured-output:check": "node scripts/sync-structured-output-contract.mjs --check",

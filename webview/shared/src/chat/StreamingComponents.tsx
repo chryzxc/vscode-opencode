@@ -8,9 +8,9 @@ import {
 } from 'lucide-react';
 
 
-import type { StreamingState, StreamingStep } from './lib/types';
+import type { AppState, StreamingState, StreamingStep } from './lib/types';
 import vscode from './lib/vscode';
-import { AssistantMessage, FileIcon } from './MessageComponents';
+import { AssistantResponseCard, FileIcon } from './MessageComponents';
 
 export function ProgressStep({ step }: { step: StreamingStep }) {
   const isPending = step.status === 'pending';
@@ -130,9 +130,33 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
   );
 }
 
-export const StreamingCard = memo(function StreamingCard({ isContiguous, streaming }: { isContiguous?: boolean; streaming: StreamingState | null }) {
+type StreamingCardProps = {
+  isContiguous?: boolean;
+  streaming: StreamingState | null;
+  interactiveEvents?: AppState["interactiveEvents"];
+  messages?: AppState["messages"];
+  assistantTurnMessageId?: AppState["assistantTurnMessageId"];
+  currentSessionId?: AppState["currentSessionId"];
+  subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
+  subagentDetailsById?: AppState["subagentDetailsById"];
+  availableAgents?: AppState["availableAgents"];
+  todoItems?: AppState["todoItems"];
+};
+
+export const StreamingCard = memo(function StreamingCard({
+  isContiguous,
+  streaming,
+  interactiveEvents,
+  messages,
+  assistantTurnMessageId,
+  currentSessionId,
+  subagentsByParentMessageId,
+  subagentDetailsById,
+  availableAgents,
+  todoItems,
+}: StreamingCardProps) {
   // Show the streaming card for live assistant activity. The response body
-  // inside AssistantMessage handles the terminal step gate; this wrapper must
+  // inside AssistantResponseCard handles the terminal step gate; this wrapper must
   // stay mounted so the progress/activity UI remains visible.
   const visible = useMemo(() => {
     if (!streaming) return false;
@@ -146,14 +170,38 @@ export const StreamingCard = memo(function StreamingCard({ isContiguous, streami
     ) {
       return true;
     }
+    if (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) {
+      return true;
+    }
     if (streaming.steps.length > 0 || streaming.progressEvents.length > 0) return true;
+    if (streaming.messageId) {
+      const liveSubagents = subagentsByParentMessageId?.[streaming.messageId];
+      if (Array.isArray(liveSubagents) && liveSubagents.length > 0) {
+        return true;
+      }
+    }
 
     return false;
-  }, [streaming]);
+  }, [interactiveEvents, streaming, subagentsByParentMessageId]);
 
   if (!visible || !streaming) return null;
 
-  return <AssistantMessage streaming={streaming} isContiguous={isContiguous} />;
+  return (
+    <AssistantResponseCard
+      // TEMPORARY: keep the live streaming card activity-only. The canonical
+      // assistant text is rendered by the finalized message card below.
+      message={undefined}
+      streaming={streaming}
+      isContiguous={isContiguous}
+      interactiveEvents={interactiveEvents}
+      messages={messages}
+      currentSessionId={currentSessionId}
+      subagentsByParentMessageId={subagentsByParentMessageId}
+      subagentDetailsById={subagentDetailsById}
+      availableAgents={availableAgents}
+      todoItems={todoItems}
+    />
+  );
 });
 
 

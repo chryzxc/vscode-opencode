@@ -8,10 +8,10 @@ const panelSource = readSource(
   'PanelComponents.tsx',
 );
 
-test('InputWrapper limits stop/send toggle to abortable assistant response state', () => {
+test('InputWrapper derives stop/send toggle from the active assistant response state', () => {
   assert.match(
     panelSource,
-    /const isAiResponding = !!\([\s\S]*isProcessing[\s\S]*streaming\?\.isActive[\s\S]*!\s*hasCompletedAssistantReplyForLatestTurn[\s\S]*\);/,
-    'InputWrapper should only treat active or pre-reply streaming as stop-worthy',
+    /const isAiResponding = isAssistantRespondingInCurrentSession\([\s\S]*Boolean\(streaming\?\.isActive\)[\s\S]*assistantTurnPending/s,
+    'InputWrapper should treat the full active-assistant turn state as stop-worthy',
   );
 });

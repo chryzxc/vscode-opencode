@@ -178,6 +178,38 @@ describe('error message reducer state', () => {
   });
 });
 
+describe('raw event capture', () => {
+  it('stores the exact incoming SDK payload by session id', () => {
+    const rawEvent = {
+      type: 'message.part.updated',
+      sessionId: 'ses_123',
+      payload: {
+        nested: true,
+        text: 'raw text',
+      },
+    };
+
+    const nextState = appReducer(
+      {
+        ...initialState,
+        currentSessionId: 'ses_123',
+      },
+      {
+        type: 'APPEND_RAW_SDK_EVENT_PAYLOAD',
+        payload: {
+          sessionId: 'ses_123',
+          event: rawEvent,
+        },
+      },
+    );
+
+    assert.deepStrictEqual(
+      nextState.rawSdkEventPayloadsBySessionId?.['ses_123'],
+      [rawEvent],
+    );
+  });
+});
+
 describe('hasSystemMessagePatternInText', () => {
   it('should detect square-bracketed system messages in plain text', () => {
     const text = '[analyze-mode]';
@@ -405,6 +437,35 @@ describe("appReducer render-stability guards", () => {
     assert.strictEqual(next.interactiveEvents.length, 0);
   });
 
+  it("preserves rawSdkEventPayloads when caching session streaming state", () => {
+    const payloads = [
+      { type: "message.start", id: "evt-1" },
+      { type: "message.delta", text: "hello" },
+    ];
+    const next = appReducer(initialState, {
+      type: "SET_SESSION_STREAMING",
+      payload: {
+        sessionId: "session-a",
+        streaming: {
+          isActive: true,
+          content: "hello",
+          reasoning: "",
+          reasoningEvents: [],
+          progressEvents: [],
+          steps: [],
+          edits: [],
+          interactiveEvents: [],
+          rawSdkEventPayloads: payloads,
+        } as any,
+      },
+    });
+
+    assert.deepStrictEqual(
+      next.streamingBySessionId?.["session-a"]?.rawSdkEventPayloads,
+      payloads,
+    );
+  });
+
   it("switches visible messages immediately on SET_SESSION_ID", () => {
     const stateWithSessionCache = {
       ...initialState,
@@ -516,7 +577,7 @@ describe('extractMessageTextForCanonical', () => {
         { type: 'text', text: 'world' },
       ],
     };
-    assert.strictEqual(extractMessageTextForCanonical(message), 'hello\nworld');
+    assert.strictEqual(extractMessageTextForCanonical(message), 'hello world');
   });
 
   it('should handle missing content and parts', () => {

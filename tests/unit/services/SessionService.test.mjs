@@ -348,6 +348,16 @@ test('SessionService implements message merge utilities', () => {
     /function\s+mergeRicherMessageFields\(/,
     'Should define mergeRicherMessageFields function'
   );
+  assert.match(
+    sessionServiceSource,
+    /rawSdkEventPayloads/,
+    'mergeRicherMessageFields should preserve rawSdkEventPayloads'
+  );
+  assert.match(
+    sessionServiceSource,
+    /rawResponse/,
+    'mergeRicherMessageFields should preserve rawResponse'
+  );
 });
 
 test('SessionService implements state initialization', () => {
@@ -499,6 +509,16 @@ test('SessionService implements sanitizeForPersistence', () => {
     /Object\.entries\(obj\)\.slice\(0,\s*MAX_PERSISTED_OBJECT_KEYS\)/,
     'sanitizeForPersistence should limit object keys'
   );
+  assert.match(
+    sanitizeBody,
+    /rawSdkEventPayloads/,
+    'sanitizeForPersistence should preserve rawSdkEventPayloads even when object keys are truncated'
+  );
+  assert.match(
+    sanitizeBody,
+    /rawResponse/,
+    'sanitizeForPersistence should preserve rawResponse even when object keys are truncated'
+  );
 });
 
 test('SessionService implements compaction functions for persistence', () => {
@@ -516,6 +536,11 @@ test('SessionService implements compaction functions for persistence', () => {
     sessionServiceSource,
     /function\s+compactSubagentForPersistence\(/,
     'Should define compactSubagentForPersistence'
+  );
+  assert.match(
+    sessionServiceSource,
+    /compact\.rawSdkEventPayloads\s*=\s*\(rec\.rawSdkEventPayloads as unknown\[\]\)/,
+    'compactMessageForPersistence should retain rawSdkEventPayloads'
   );
 });
 

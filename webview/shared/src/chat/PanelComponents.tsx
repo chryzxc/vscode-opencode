@@ -48,6 +48,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { useAppDispatch, useAppState } from "./lib/store";
+import { getInteractiveEventsFromRawSdkEventPayloads } from "./lib/rawResponse";
 import vscode from "./lib/vscode";
 import type {
   InteractiveEvent,
@@ -61,7 +62,12 @@ import type {
   ContextItem,
   Model,
 } from "./lib/types";
-import { isProcessingInCurrentSession } from "./lib/sessionProcessing";
+import {
+  isAssistantRespondingInCurrentSession,
+  hasActiveAssistantTurnContext,
+  hasCompletedAssistantReplyForLatestTurn,
+  isProcessingInCurrentSession,
+} from "./lib/sessionProcessing";
 
 import { FileIcon } from "./MessageComponents";
 
@@ -301,23 +307,10 @@ export function StickyHeader() {
     isExtendedPanelOpen,
     isProcessing: globalIsProcessing,
     processingSessionIds,
-    streaming,
-    promptQueue,
     sessionsList,
     contextUsagePct,
-    assistantTurnPending,
   } = useAppState();
   const dispatch = useAppDispatch();
-  const isProcessing = isProcessingInCurrentSession(
-    globalIsProcessing,
-    currentSessionId,
-    processingSessionIds,
-  );
-  const isAiResponding =
-    isProcessing &&
-    (streaming?.isActive ||
-      assistantTurnPending ||
-      (streaming?.reasoningEvents?.length ?? 0) > 0);
 
   const currentSession = currentSessionId
     ? sessionsList.find((s) => s.id === currentSessionId)
@@ -334,11 +327,6 @@ export function StickyHeader() {
           <CircularProgress pct={contextUsagePct} size={18} strokeWidth={2.5} />
         ) : null}
         <span className="oc-title text-sm font-medium truncate">{sessionTitle}</span>
-        {isAiResponding && (
-          <span className="ml-2 shrink-0 text-[11px] font-medium text-oc-accent animate-pulse">
-            Thinking...
-          </span>
-        )}
       </div>
 
       {/* Right side: Action buttons */}
@@ -1820,6 +1808,7 @@ export function InputWrapper() {
     processingSessionIds,
     executingQueueSessionIds,
     messages,
+    rawSdkEventPayloadsBySessionId,
     promptQueue,
     selectedFiles,
     selectedContexts,
@@ -1851,42 +1840,29 @@ export function InputWrapper() {
     currentSessionId,
     executingQueueSessionIds,
   );
+  const hasCompletedAssistantReply =
+    hasCompletedAssistantReplyForLatestTurn(messages);
+  const hasActiveTurnContext = hasActiveAssistantTurnContext(
+    messages,
+    Boolean(streaming?.isActive),
+    assistantTurnPending,
+  );
 
-  const hasCompletedAssistantReplyForLatestTurn = (() => {
-    if (messages.length === 0) {
-      return false;
-    }
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const message = messages[i];
-      if (message.role === "assistant") {
-        const text =
-          typeof message.content === "string" ? message.content.trim() : "";
-        const structuredText =
-          typeof message.structuredOutput?.message === "string"
-            ? message.structuredOutput.message.trim()
-            : "";
-        if (text.length > 0 || structuredText.length > 0) {
-          return true;
-        }
-        continue;
-      }
-      if (message.role === "user") {
-        return false;
-      }
-    }
-    return false;
-  })();
-
-  // Stop button only visible when AI is responding AND input is empty
-  // Send button icon reflects: Send icon when idle/input has value, AlertCircle when responding with input.
-  // Centralized check: the AI is responding when the session is processing
-  // and either streaming is active, the assistant turn is still pending,
-  // or active streaming reasoning events are still flowing.
-  const isAiResponding =
-    isProcessing &&
-    (streaming?.isActive ||
-      assistantTurnPending ||
-      (streaming?.reasoningEvents?.length ?? 0) > 0);
+  // The composer stop/send toggle must follow the same in-flight session state
+  // that drives the transcript loading bubble. If the session is still
+  // processing, the request should remain abortable even before streaming or
+  // assistant-turn markers become visible in the composer state.
+  const isAiResponding = isAssistantRespondingInCurrentSession(
+    isProcessing,
+    currentSessionId,
+    processingSessionIds,
+    Boolean(streaming?.isActive),
+    assistantTurnPending,
+    streaming?.hasAssistantFinishSignal,
+    streaming?.hasTerminalStepSignal,
+    hasCompletedAssistantReply,
+    hasActiveTurnContext,
+  );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaHasValue = inputValue.length > 0;
@@ -1931,58 +1907,18 @@ export function InputWrapper() {
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const commandsRequestedRef = useRef(false);
   const suggestionsContainerRef = useRef<HTMLDivElement>(null);
+  const centralizedRawSdkEventPayloads = useMemo(() => {
+    return currentSessionId &&
+      Array.isArray(rawSdkEventPayloadsBySessionId?.[currentSessionId])
+      ? rawSdkEventPayloadsBySessionId[currentSessionId]
+      : [];
+  }, [currentSessionId, rawSdkEventPayloadsBySessionId]);
   const composerInteractiveEvents = useMemo(() => {
-    if (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) {
-      return filterDismissedInteractiveEvents(
-        interactiveEvents,
-        dismissedInteractiveEventKeys,
-      );
-    }
-
-    if (
-      streaming &&
-      Array.isArray(streaming.interactiveEvents) &&
-      streaming.interactiveEvents.length > 0
-    ) {
-      return filterDismissedInteractiveEvents(
-        streaming.interactiveEvents,
-        dismissedInteractiveEventKeys,
-      );
-    }
-
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const candidate = messages[index];
-      const role = (candidate.role ?? candidate.info?.role ?? "").toLowerCase();
-      if (role !== "assistant") {
-        continue;
-      }
-
-      if (
-        Array.isArray(candidate.interactiveEvents) &&
-        candidate.interactiveEvents.length > 0
-      ) {
-        return filterDismissedInteractiveEvents(
-          candidate.interactiveEvents,
-          dismissedInteractiveEventKeys,
-        );
-      }
-
-      const structured = candidate.structuredOutput ?? candidate.structured ?? (candidate.info as Record<string, unknown> | undefined)?.structuredOutput ?? (candidate.info as Record<string, unknown> | undefined)?.structured;
-      const structuredInteractiveEvents = structured &&
-        typeof structured === "object" &&
-        Array.isArray((structured as { interactiveEvents?: InteractiveEvent[] }).interactiveEvents)
-          ? ((structured as { interactiveEvents?: InteractiveEvent[] }).interactiveEvents as InteractiveEvent[])
-          : [];
-      if (structuredInteractiveEvents.length > 0) {
-        return filterDismissedInteractiveEvents(
-          structuredInteractiveEvents,
-          dismissedInteractiveEventKeys,
-        );
-      }
-    }
-
-    return [];
-  }, [interactiveEvents, streaming, messages, dismissedInteractiveEventKeys]);
+    return filterDismissedInteractiveEvents(
+      getInteractiveEventsFromRawSdkEventPayloads(centralizedRawSdkEventPayloads),
+      dismissedInteractiveEventKeys,
+    );
+  }, [centralizedRawSdkEventPayloads, dismissedInteractiveEventKeys]);
 
   const filteredCommands = useMemo(() => {
     if (!slashTrigger) {
@@ -2130,17 +2066,33 @@ export function InputWrapper() {
   const currentInteractiveAnswered = Boolean(
     event?.id && pendingAnswers[event.id]?.text.trim(),
   );
+  const eventTitleText = event?.title?.trim() || "";
   const eventBodyText =
     event?.type === "quick_actions"
-      ? event.title || "Select an action"
+      ? eventTitleText || "Select an action"
       : event?.type === "message"
         ? event.message || ""
         : event?.question || "";
   const eventContextMessage = event?.contextMessage?.trim() || "";
-  const showContextMessage =
+  const normalizePopoverText = (value: string): string =>
+    value
+      .toLowerCase()
+      .replace(/[`"'()[\]{}<>]/g, " ")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const normalizedBodyText = normalizePopoverText(eventBodyText);
+  const normalizedTitleText = normalizePopoverText(eventTitleText);
+  const normalizedContextText = normalizePopoverText(eventContextMessage);
+  const hasDistinctTitle =
+    !!eventTitleText && normalizedTitleText !== normalizedBodyText;
+  const hasDistinctContextMessage =
     !!eventContextMessage &&
-    eventContextMessage.toLowerCase() !== eventBodyText.toLowerCase().trim();
-  const showPromptInHeader = !event?.title && !!eventBodyText;
+    normalizedContextText !== normalizedBodyText &&
+    normalizedContextText !== normalizedTitleText;
+  const showPromptInHeader = hasDistinctTitle;
+  const showContextMessage = hasDistinctContextMessage;
+  const showPromptInBody = !hasDistinctTitle || hasDistinctContextMessage;
 
   const capitalizeFirst = (str: string) => {
     if (!str) return str;
@@ -2392,19 +2344,9 @@ export function InputWrapper() {
       ...(hasPendingQuestion ? { interactiveSubmit: true } : {}),
     });
 
-    dispatch({
-      type: "SET_MESSAGES",
-      payload: [
-        ...messages,
-        {
-          role: "user",
-          created: Date.now(),
-          content: text,
-          parts: messageParts,
-          images: currentAttachments.map((a) => a.dataUrl),
-        },
-      ],
-    });
+    // TEMPORARY: do not optimistically render the outgoing user message.
+    // The conversation surface now waits for the centralized session tape so
+    // the UI stays aligned with the raw server-backed source of truth.
     dispatch({ type: "SET_PROCESSING", payload: true });
     logger.info("[LOADING][INPUT] User sent message, dispatching SET_PROCESSING(true)", {
       sessionId: sessionId || null,
@@ -2570,7 +2512,7 @@ export function InputWrapper() {
 
     dispatch({
       type: "SET_INTERACTIVE_EVENTS",
-      payload: interactiveEvents,
+      payload: [],
     });
 
     // Don't show processing state immediately - let extension confirm when actually processing
@@ -2635,13 +2577,13 @@ export function InputWrapper() {
                <div className="flex items-start justify-between gap-2">
                  <div className="flex min-w-0 flex-1 flex-col gap-1">
                    <div className="flex items-center gap-2">
-                     {event.title ? (
-                       <div className="text-[11px] font-semibold uppercase tracking-wider oc-text-secondary">
-                         {event.title}
-                       </div>
-                     ) : null}
-                     {displayInteractiveEvents.length > 1 && (
-                       <div className={`flex items-center gap-1.5 ${event.title ? "ml-2 border-l border-oc-border-soft pl-3" : ""}`}>
+                    {showPromptInHeader ? (
+                      <div className="text-[11px] font-semibold uppercase tracking-wider oc-text-secondary">
+                        {eventTitleText}
+                      </div>
+                    ) : null}
+                    {displayInteractiveEvents.length > 1 && (
+                      <div className={`flex items-center gap-1.5 ${showPromptInHeader ? "ml-2 border-l border-oc-border-soft pl-3" : ""}`}>
                     <button
                       type="button"
                       disabled={currentInteractiveIndex === 0}
@@ -2687,7 +2629,7 @@ export function InputWrapper() {
                       </div>
                     )}
                   </div>
-                  {showPromptInHeader ? (
+                  {showPromptInBody ? (
                     <div className="text-[12px] leading-relaxed text-[var(--oc-text-soft)]">
                       <MarkdownRenderer content={eventBodyText} />
                     </div>
@@ -2721,14 +2663,14 @@ export function InputWrapper() {
                   ))}
                 </div>
               )}
-              {(showContextMessage || !showPromptInHeader) && (
+              {(showContextMessage || showPromptInBody) && (
                 <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
                   {showContextMessage ? (
                     <div className="mb-2 rounded bg-[var(--oc-panel)] border border-[var(--oc-border-soft)] px-2.5 py-2 text-[11px] oc-text-secondary leading-relaxed">
                       <MarkdownRenderer content={eventContextMessage} />
                     </div>
                   ) : null}
-                  {!showPromptInHeader ? (
+                  {showPromptInBody && !hasDistinctContextMessage ? (
                     <MarkdownRenderer content={eventBodyText} />
                   ) : null}
                 </div>
@@ -3250,7 +3192,7 @@ export function InputWrapper() {
 
             {/* Right: action buttons */}
             <div className="oc-toolbar-right">
-              {isAiResponding && inputValue.trim().length === 0 ? (
+              {isAiResponding ? (
                 <Button
                   variant="send"
                   size="icon"

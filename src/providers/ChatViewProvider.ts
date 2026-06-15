@@ -224,6 +224,7 @@ export class ChatViewProvider
 
   /** Unsubscribe function for stream service cleanup */
   private unsubscribe?: () => void;
+  private quotaServiceListener?: vscode.Disposable;
 
   /** Service for monitoring AI platform quota usage */
   private quotaService: QuotaService;
@@ -577,7 +578,7 @@ export class ChatViewProvider
     // Use injected service or create local instance as fallback
     this.modelCapabilitiesService = modelCapabilitiesService ?? new ModelCapabilitiesService();
     this.geminiTokenTracker = GeminiTokenUsageTracker.getInstance();
-    this.quotaService.on("quotaUpdate", (data) => {
+    this.quotaServiceListener = this.quotaService.on("quotaUpdate", (data) => {
       this.view?.webview.postMessage({ type: "quotaData", data });
     });
 
@@ -729,6 +730,7 @@ export class ChatViewProvider
       this.compactionManager,
       this.diagnosticsLogger,
       this.geminiTokenTracker,
+      this.sessionService,
       this.subagentTracker,
       logger,
     );
@@ -1295,8 +1297,9 @@ export class ChatViewProvider
 
       // Step 1: Load and process messages for the new session
       const rawMessages = await this.sessionService.getMessages(sessionId);
+      const rawSessionPayloads = await this.loadSessionDebugPayloads(sessionId);
 
-      this.logger.info('[handleLoadSession] Fetched raw messages', {
+      this.logger.debug('[handleLoadSession] Fetched raw messages', {
         sessionId,
         rawCount: rawMessages?.length || 0,
         isRawMessagesArray: Array.isArray(rawMessages)
@@ -1306,7 +1309,7 @@ export class ChatViewProvider
         ? await this.processHistoryMessages(rawMessages, sessionId)
         : [];
 
-      this.logger.info('[handleLoadSession] Processed messages', {
+      this.logger.debug('[handleLoadSession] Processed messages', {
         sessionId,
         processedCount: messages.length,
         willSendToWebview: true
@@ -1337,6 +1340,8 @@ export class ChatViewProvider
         type: "chatHistory",
         sessionId: sessionId,
         messages: messages,
+        rawMessages: rawSessionPayloads.rawMessages,
+        rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
@@ -2613,34 +2618,29 @@ export class ChatViewProvider
               const rawMessages = await this.sessionService.getMessages(
                 currentSession.id,
               );
+              const rawSessionPayloads = await this.loadSessionDebugPayloads(
+                currentSession.id,
+              );
+              const rawHistoryMessages = rawSessionPayloads.rawMessages;
+              const historyMessages = rawHistoryMessages.length > 0
+                ? rawHistoryMessages
+                : rawMessages;
               const messages = await this.processHistoryMessages(
-                rawMessages,
+                historyMessages,
                 currentSession.id,
               );
               this.logHistoryRenderDiagnostics(
                 "webview.ready.current-session",
                 currentSession.id,
-                rawMessages,
+                historyMessages,
                 messages,
               );
-              const assistantMessages = messages.filter((m: any) => {
-                const role = this.firstNonEmptyString(m?.role, m?.info?.role);
-                return role?.toLowerCase() === "assistant";
-              });
-              this.logger.debug("[CLIENT FACING] SENDING chatHistory", {
-                sessionId: currentSession.id,
-                totalMessages: messages.length,
-                assistantMessages: assistantMessages.map((m: any) => ({
-                  id: m?.id || m?.info?.id,
-                  content: String(m?.content).slice(0, 150),
-                  structOutMsg: String(m?.structuredOutput?.message).slice(0, 150),
-                  hasRawResponse: !!m?.rawResponse,
-                })),
-              });
               this.view?.webview.postMessage({
                 type: "chatHistory",
                 sessionId: currentSession.id,
                 messages: messages,
+                rawMessages: rawHistoryMessages,
+                rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
                 processingSessionIds: this.getEffectiveProcessingSessionIds(),
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
@@ -2824,6 +2824,7 @@ export class ChatViewProvider
           if (!sessionId || !message.message) {
             break;
           }
+          const rawMessage = message.rawMessage;
           const persistedMessage =
             message.message && typeof message.message === "object"
               ? {
@@ -2839,6 +2840,9 @@ export class ChatViewProvider
                   this.historyMessageCreatedAt(message.message) ?? Date.now(),
               }
               : message.message;
+          if (typeof rawMessage !== "undefined") {
+            await this.sessionService.appendRawMessage(sessionId, rawMessage);
+          }
           await this.sessionService.upsertMessage(sessionId, persistedMessage);
           await this.persistSessionMessageOverride(sessionId, persistedMessage);
           const snapshotFromMessage = this.buildSubagentPayloadFromMessage(
@@ -2848,6 +2852,20 @@ export class ChatViewProvider
           if (snapshotFromMessage) {
             await this.persistSubagentLiveState(sessionId, snapshotFromMessage);
           }
+          break;
+        }
+        case "persistRawSdkEventPayload": {
+          const sessionId = this.firstNonEmptyString(
+            message.sessionId,
+            this.currentSessionId,
+          );
+          if (!sessionId || typeof message.event === "undefined") {
+            break;
+          }
+          await this.sessionService.appendRawSdkEventPayload(
+            sessionId,
+            message.event,
+          );
           break;
         }
         case "newSession":
@@ -2883,7 +2901,10 @@ export class ChatViewProvider
             // Clear webview messages
             this.view?.webview.postMessage({
               type: "chatHistory",
+              sessionId: createdSession.id,
               messages: [],
+              rawMessages: [],
+              rawSdkEventPayloads: [],
             });
             this.view?.webview.postMessage({
               type: "subagentSnapshot",
@@ -3410,6 +3431,9 @@ export class ChatViewProvider
             const rawMessages = await this.sessionService.getMessages(
               retrySessionId,
             );
+            const rawSessionPayloads = await this.loadSessionDebugPayloads(
+              retrySessionId,
+            );
             const messages = await this.processHistoryMessages(
               rawMessages,
               retrySessionId,
@@ -3424,6 +3448,8 @@ export class ChatViewProvider
               type: "chatHistory",
               sessionId: retrySessionId,
               messages: messages,
+              rawMessages: rawSessionPayloads.rawMessages,
+              rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
           } catch (err) {
@@ -3567,7 +3593,7 @@ export class ChatViewProvider
     });
 
     // Subscribe to stream events
-    this.unsubscribe = this.streamService.subscribe(async (event) => {
+    this.unsubscribe = this.streamService.subscribe(async (event, rawEvent) => {
       // Log stream events for debugging
       const eventRec = event as Record<string, unknown>;
       const eventType = eventRec?.type || "unknown";
@@ -3582,7 +3608,7 @@ export class ChatViewProvider
       if (eventType === "message.updated" || isTerminalLifecycleEvent) {
         const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
         const info = (props?.info as Record<string, unknown> | undefined) || {};
-        this.logger.info("[OPENCOD GO MODEL] Stream lifecycle event", {
+        this.logger.debug("[OPENCOD GO MODEL] Stream lifecycle event", {
           eventType,
           sessionId: streamEventSessionId,
           providerID: info?.providerID,
@@ -3811,10 +3837,51 @@ export class ChatViewProvider
         return;
       }
 
+      const properties = (eventRec?.properties as Record<string, unknown> | undefined) || {};
+      const part = (properties?.part as Record<string, unknown> | undefined) || {};
+      const info = (properties?.info as Record<string, unknown> | undefined) || {};
+      const preRenderPreview =
+        (typeof part?.delta === "string" && part.delta) ||
+        (typeof part?.text === "string" && part.text) ||
+        (typeof part?.content === "string" && part.content) ||
+        (typeof properties?.delta === "string" && properties.delta) ||
+        (typeof properties?.text === "string" && properties.text) ||
+        (typeof properties?.content === "string" && properties.content) ||
+        undefined;
+
+      this.logger.info("[CHAT-STREAMING][KEY2] Forwarding stream event to webview", {
+        eventType: event.type || "unknown",
+        sessionId: resolvedSessionId,
+        activeStreamSessionId: this.activeStreamSessionId,
+        currentSessionId: this.currentSessionId,
+        messageId:
+          typeof info?.id === "string"
+            ? info.id
+            : typeof properties?.messageId === "string"
+              ? properties.messageId
+              : typeof properties?.messageID === "string"
+                ? properties.messageID
+                : undefined,
+        partType: typeof part?.type === "string" ? part.type : undefined,
+        hasStructuredOutput: Boolean((enrichedEvent as any)?.structuredOutput),
+        preview:
+          typeof preRenderPreview === "string"
+            ? preRenderPreview.slice(0, 160)
+            : undefined,
+      });
+
       this.view?.webview.postMessage({
         type: "streamEvent",
         event: { ...enrichedEvent, sessionId: resolvedSessionId },
       });
+      if (resolvedSessionId) {
+        void this.sessionService.appendRawSdkEventPayload(
+          resolvedSessionId,
+          rawEvent
+            ? { ...(rawEvent as Record<string, unknown>), sessionId: resolvedSessionId }
+            : { ...enrichedEvent, sessionId: resolvedSessionId },
+        );
+      }
       if (hasBlockingInteractive && resolvedSessionId) {
         this.processingSessionIds.delete(resolvedSessionId);
         if (this.activeStreamSessionId === resolvedSessionId) {
@@ -4016,6 +4083,29 @@ export class ChatViewProvider
       // Return original messages as fallback
       return messages;
     }
+  }
+
+  /**
+   * Loads the raw session payloads that drive the centralized debug tape.
+   *
+   * NOTE: TO BE REMOVED when the conversation UI no longer needs separate
+   * extension-host hydration of raw event payloads.
+   */
+  private async loadSessionDebugPayloads(sessionId: string): Promise<{
+    rawMessages: unknown[];
+    rawSdkEventPayloads: unknown[];
+  }> {
+    const [rawMessages, rawSdkEventPayloads] = await Promise.all([
+      this.sessionService.loadSessionRawMessages(sessionId),
+      this.sessionService.loadSessionRawSdkEventPayloads(sessionId),
+    ]);
+
+    return {
+      rawMessages: Array.isArray(rawMessages) ? rawMessages : [],
+      rawSdkEventPayloads: Array.isArray(rawSdkEventPayloads)
+        ? rawSdkEventPayloads
+        : [],
+    };
   }
 
   private isAssistantHistoryMessage(message: any): boolean {
@@ -4319,18 +4409,11 @@ export class ChatViewProvider
     failureMessage?: string,
   ): Promise<boolean> {
     const pollDelaysMs = this.getTimeoutRecoveryPollDelays(failureMessage);
-    const promptAwaitHang = this.isPromptAwaitHangError(
-      this.firstNonEmptyString(failureMessage) || "",
-    );
     const timeoutLikeFailure = this.isLikelyInteractiveAwaitTimeoutError(
       this.firstNonEmptyString(failureMessage) || "",
     );
     const startedAt = Date.now();
-    const maxWaitMs = promptAwaitHang
-      ? 15 * 1000
-      : timeoutLikeFailure
-        ? 30 * 60 * 1000
-        : 60 * 1000;
+    const maxWaitMs = 60_000;
     this.logger.info("Attempting timeout recovery from session history", {
       sessionId,
       timeoutLikeFailure,
@@ -4363,6 +4446,9 @@ export class ChatViewProvider
             baselineAssistantMarker,
           )
         ) {
+          const rawSessionPayloads = await this.loadSessionDebugPayloads(
+            sessionId,
+          );
           const processedMessages = await this.processHistoryMessages(
             rawMessages,
             sessionId,
@@ -4377,6 +4463,8 @@ export class ChatViewProvider
             type: "chatHistory",
             sessionId,
             messages: processedMessages,
+            rawMessages: rawSessionPayloads.rawMessages,
+            rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
             processingSessionIds: this.getEffectiveProcessingSessionIds(),
           });
           this.logger.info("Timeout recovery succeeded from session history", {
@@ -4586,10 +4674,10 @@ export class ChatViewProvider
 
   private getRequestTimeout(): number {
     const config = vscode.workspace.getConfiguration('opencode');
-    const timeout = config.get<number>('requestTimeout', 120000);
+    const timeout = config.get<number>('requestTimeout', 60_000);
     if (timeout < 10000 || timeout > 600000) {
-      this.logger.warn(`Invalid requestTimeout configured: ${timeout}ms, using default 120000ms`);
-      return 120000;
+      this.logger.warn(`Invalid requestTimeout configured: ${timeout}ms, using default 60000ms`);
+      return 60_000;
     }
     return timeout;
   }
@@ -5663,6 +5751,40 @@ export class ChatViewProvider
     let rawText = "";
     if (Array.isArray(message.parts)) {
       rawText = message.parts
+        .map((part: any) => {
+          if (!part || typeof part !== "object") return "";
+          if (!this.isRenderableTextPart(part)) {
+            return "";
+          }
+          return (part.text || part.content || part.message || "").toString();
+        })
+        .join(" ")
+        .trim();
+    }
+
+    if (!rawText && message?.rawResponse) {
+      const rawResponseRec = (() => {
+        const direct = this.asRecord(message.rawResponse);
+        if (direct) {
+          return direct;
+        }
+        if (typeof message.rawResponse !== "string") {
+          return undefined;
+        }
+        const trimmed = message.rawResponse.trim();
+        if (!trimmed) {
+          return undefined;
+        }
+        try {
+          return this.asRecord(JSON.parse(trimmed));
+        } catch {
+          return undefined;
+        }
+      })();
+      const rawResponseParts = Array.isArray(rawResponseRec?.parts)
+        ? rawResponseRec.parts
+        : [];
+      rawText = rawResponseParts
         .map((part: any) => {
           if (!part || typeof part !== "object") return "";
           if (!this.isRenderableTextPart(part)) {
@@ -9386,8 +9508,13 @@ export class ChatViewProvider
       this.unsubscribe();
       this.unsubscribe = undefined;
     }
+    if (this.quotaServiceListener) {
+      this.quotaServiceListener.dispose();
+      this.quotaServiceListener = undefined;
+    }
     this.streamService.dispose();
     this.quotaService.dispose();
+    void this.sessionService.dispose();
     this.fileThemeProcessor.unsubscribe(this);
     this.isBootstrappingWebview = false;
     this.hasInitializedWebview = false;

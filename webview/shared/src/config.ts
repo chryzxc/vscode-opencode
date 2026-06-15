@@ -17,7 +17,7 @@ export const config = {
      * When disabled, all console/terminal/browser logging output is suppressed
      * @default true
      */
-    showBrowserConsole: false,
+    showBrowserConsole: true,
     /**
      * Show pre-render debug panel showing data fed into the AI response card
      * (helps debug reasoning leaks into response content)
@@ -36,7 +36,7 @@ export const config = {
      * @default false
      */
     showInteractiveEventsDebug: false,
-    showCentralizedDebug: false,
+    showCentralizedDebug: true,
   },
 };
 

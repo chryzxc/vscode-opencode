@@ -353,7 +353,7 @@ export class ModelAndAgentManager {
     try {
       const configResponse = await this.withTimeout(
         client.config.providers(),
-        3000,
+        60_000,
         "config.providers probe",
       );
       const configData = this.asRecord(this.asRecord(configResponse)?.data);
@@ -431,7 +431,7 @@ export class ModelAndAgentManager {
 
         this.logger.featureStep(correlationId, 'fetch-provider-list');
 
-        const providerListTimeoutMs = 25000;
+        const providerListTimeoutMs = 60_000;
         const response = (await this.withTimeout(
           client.provider.list(),
           providerListTimeoutMs,

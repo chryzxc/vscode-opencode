@@ -145,6 +145,24 @@ function sanitizeForPersistence(
     if (Object.keys(obj).length > entries.length) {
       result.__truncatedKeys = Object.keys(obj).length - entries.length;
     }
+    if (!Object.prototype.hasOwnProperty.call(result, "rawResponse") &&
+      Object.prototype.hasOwnProperty.call(obj, "rawResponse")) {
+      result.rawResponse = sanitizeForPersistence(
+        obj.rawResponse,
+        depth + 1,
+        seen,
+      );
+    }
+    if (
+      !Object.prototype.hasOwnProperty.call(result, "rawSdkEventPayloads") &&
+      Object.prototype.hasOwnProperty.call(obj, "rawSdkEventPayloads")
+    ) {
+      result.rawSdkEventPayloads = sanitizeForPersistence(
+        obj.rawSdkEventPayloads,
+        depth + 1,
+        seen,
+      );
+    }
     return result;
   }
 
@@ -153,7 +171,7 @@ function sanitizeForPersistence(
 
 function estimateSerializedBytes(value: unknown): number {
   try {
-    return Buffer.byteLength(JSON.stringify(value), "utf8");
+    return Buffer.RbyteLength(JSON.stringify(value), "utf8");
   } catch {
     return Number.MAX_SAFE_INTEGER;
   }
@@ -325,6 +343,14 @@ function compactMessageForPersistence(message: unknown): unknown {
     compact.parts = (rec.parts as unknown[])
       .slice(0, 16)
       .map((part) => sanitizeForPersistence(part));
+  }
+
+  if (Array.isArray(rec.rawSdkEventPayloads)) {
+    // Preserve the raw SDK event tape so rehydrated debug views can inspect
+    // the exact event payloads that drove the assistant turn.
+    compact.rawSdkEventPayloads = (rec.rawSdkEventPayloads as unknown[])
+      .slice(-200)
+      .map((item) => sanitizeForPersistence(item));
   }
 
   if (Array.isArray(rec.reasoningEvents)) {
@@ -784,6 +810,7 @@ function mergeRicherMessageFields(
   backfillArrayField("steps");
   backfillArrayField("edits");
   backfillArrayField("interactiveEvents");
+  backfillArrayField("rawSdkEventPayloads");
   backfillArrayField("parts");
   backfillArrayField("subagents", true);
   backfillArrayField("images");
@@ -794,6 +821,12 @@ function mergeRicherMessageFields(
   }
   if (!merged.structuredOutput && fallbackRec.structuredOutput) {
     merged.structuredOutput = fallbackRec.structuredOutput;
+  }
+  if (!merged.rawResponse && fallbackRec.rawResponse) {
+    merged.rawResponse = fallbackRec.rawResponse;
+  }
+  if (!merged.rawSdkEventPayloads && fallbackRec.rawSdkEventPayloads) {
+    merged.rawSdkEventPayloads = fallbackRec.rawSdkEventPayloads;
   }
   if (!merged.info && fallbackRec.info) {
     merged.info = fallbackRec.info;
@@ -1041,6 +1074,44 @@ export class SessionService {
   /** Track last logged session ID for deduplication */
   private lastLoggedSessionId: string | null = null;
 
+  /** In-memory cache of raw SDK event payloads by session for atomic appends */
+  private rawSdkEventPayloadCache = new Map<string, unknown[]>();
+
+  /** In-memory cache of raw SDK message payloads by session */
+  private rawMessageCache = new Map<string, unknown[]>();
+
+  /** Per-session debounce timer for raw SDK event payload persistence */
+  private rawSdkEventPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private cloneRawSdkEventPayload<T>(value: T): T {
+    if (typeof structuredClone === "function") {
+      try {
+        return structuredClone(value);
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+
+  private shouldPersistRawSdkEventPayload(event: unknown): boolean {
+    if (!event || typeof event !== "object") {
+      return true;
+    }
+    const record = event as Record<string, unknown>;
+    // Temporary debug alignment: keep the persisted tape on the same
+    // session-scoped shape the centralized panel shows while we test the
+    // rehydration contract.
+    return record.source !== "/global/event";
+  }
+
+  private filterPersistedRawSdkEventPayloads(events: unknown[] | undefined): unknown[] {
+    if (!Array.isArray(events) || events.length === 0) {
+      return [];
+    }
+    return events.filter((event) => this.shouldPersistRawSdkEventPayload(event));
+  }
+
   // ============================================================================
   // PERSISTENCE KEYS
   // ============================================================================
@@ -1052,6 +1123,13 @@ export class SessionService {
 
   /** Prefix for storing messages per session (appended with session ID) */
   private static readonly MESSAGES_PREFIX = "opencode.session.messages.";
+
+  /** Prefix for storing raw SDK payloads per session (appended with session ID) */
+  private static readonly RAW_MESSAGES_PREFIX = "opencode.session.raw-messages.";
+
+  /** Prefix for storing raw SDK event payloads per session (appended with session ID) */
+  private static readonly RAW_SDK_EVENT_PAYLOADS_PREFIX =
+    "opencode.session.raw-sdk-event-payloads.";
 
   /** Key for storing current session ID */
   private static readonly SESSION_ID_KEY = "opencode.currentSessionId";
@@ -1368,6 +1446,10 @@ export class SessionService {
     const flow = log.startFeatureFlow('SwitchSession', { sessionId });
 
     try {
+      const currentSessionId = this.currentSession?.id;
+      if (currentSessionId && currentSessionId !== sessionId) {
+        await this.flushRawSdkEventPayloads(currentSessionId);
+      }
       const client = await this.serverManager.ensureRunning();
       log.featureStep(flow, 'fetching_session_from_server');
 
@@ -1465,6 +1547,7 @@ export class SessionService {
       log.debug("Cleared current session (was deleted)", { sessionId });
     }
 
+    await this.flushRawSdkEventPayloads(sessionId);
     this.sessionHistory = this.sessionHistory.filter((s) => s.id !== sessionId);
     await this.context.workspaceState.update(
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
@@ -1765,6 +1848,24 @@ export class SessionService {
   }
 
   /**
+   * Saves raw SDK payloads for a specific session to local workspace storage.
+   *
+   * This intentionally preserves the original payload shape as much as possible
+   * so debug and recovery flows can inspect the untouched SDK data.
+   */
+  async saveSessionRawMessages(
+    sessionId: string,
+    messages: unknown[],
+  ): Promise<void> {
+    const persisted = Array.isArray(messages) ? [...messages] : [];
+    this.rawMessageCache.set(sessionId, persisted);
+    await this.context.workspaceState.update(
+      `${SessionService.RAW_MESSAGES_PREFIX}${sessionId}`,
+      persisted,
+    );
+  }
+
+  /**
    * Loads messages for a specific session from local storage.
    *
    * **Fallback Behavior:**
@@ -1791,6 +1892,63 @@ export class SessionService {
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
     );
     return Array.isArray(value) ? value : [];
+  }
+
+  /**
+   * Loads raw SDK payloads for a specific session from local workspace storage.
+   */
+  async loadSessionRawMessages(sessionId: string): Promise<unknown[]> {
+    const cached = this.rawMessageCache.get(sessionId);
+    if (Array.isArray(cached)) {
+      return [...cached];
+    }
+    const value = this.context.workspaceState.get<unknown[]>(
+      `${SessionService.RAW_MESSAGES_PREFIX}${sessionId}`,
+    );
+    const raw = Array.isArray(value) ? value : [];
+    this.rawMessageCache.set(sessionId, [...raw]);
+    return raw;
+  }
+
+  /**
+   * Saves raw SDK event payloads for a specific session to local workspace storage.
+   *
+   * This stores the untouched event tape so rehydrated sessions can replay the
+   * same raw stream and append future events without normalization.
+   */
+  async saveSessionRawSdkEventPayloads(
+    sessionId: string,
+    events: unknown[],
+  ): Promise<void> {
+    const persisted = this.filterPersistedRawSdkEventPayloads(events).map((event) =>
+      this.cloneRawSdkEventPayload(event),
+    );
+    this.rawSdkEventPayloadCache.set(sessionId, persisted);
+    const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.rawSdkEventPersistTimers.delete(sessionId);
+    }
+    await this.context.workspaceState.update(
+      `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
+      persisted,
+    );
+  }
+
+  /**
+   * Loads raw SDK event payloads for a specific session from local storage.
+   */
+  async loadSessionRawSdkEventPayloads(sessionId: string): Promise<unknown[]> {
+    const cached = this.rawSdkEventPayloadCache.get(sessionId);
+    if (Array.isArray(cached)) {
+      return [...cached];
+    }
+    const value = this.context.workspaceState.get<unknown[]>(
+      `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
+    );
+    const raw = this.filterPersistedRawSdkEventPayloads(Array.isArray(value) ? value : []);
+    this.rawSdkEventPayloadCache.set(sessionId, [...raw]);
+    return raw;
   }
 
   /**
@@ -1857,6 +2015,82 @@ export class SessionService {
       });
     }
     await this.saveSessionMessages(sessionId, messages);
+  }
+
+  async appendRawMessage(sessionId: string, message: unknown): Promise<void> {
+    const messages = await this.loadSessionRawMessages(sessionId);
+    messages.push(message);
+    log.debug("Appending raw message to session", {
+      sessionId,
+      newTotal: messages.length,
+      role: (message as Record<string, unknown>)?.role,
+    });
+    await this.saveSessionRawMessages(sessionId, messages);
+  }
+
+  async appendRawSdkEventPayload(sessionId: string, event: unknown): Promise<void> {
+    if (!this.shouldPersistRawSdkEventPayload(event)) {
+      return;
+    }
+    const events = await this.loadSessionRawSdkEventPayloads(sessionId);
+    const snapshot = this.cloneRawSdkEventPayload(event);
+    const eventRecord = event as Record<string, unknown>;
+    const eventId = typeof eventRecord?.id === "string" ? eventRecord.id : undefined;
+    if (eventId) {
+      const alreadyExists = events.some((existing) => {
+        const existingRecord = existing as Record<string, unknown>;
+        return typeof existingRecord?.id === "string" && existingRecord.id === eventId;
+      });
+      if (alreadyExists) {
+        return;
+      }
+    }
+    events.push(snapshot);
+    this.rawSdkEventPayloadCache.set(sessionId, events);
+
+    const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    this.rawSdkEventPersistTimers.set(
+      sessionId,
+      setTimeout(() => {
+        void this.flushRawSdkEventPayloads(sessionId);
+        this.rawSdkEventPersistTimers.delete(sessionId);
+      }, 250),
+    );
+  }
+
+  async flushRawSdkEventPayloads(sessionId: string): Promise<void> {
+    const events = this.rawSdkEventPayloadCache.get(sessionId);
+    if (!Array.isArray(events)) {
+      return;
+    }
+    const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.rawSdkEventPersistTimers.delete(sessionId);
+    }
+    await this.context.workspaceState.update(
+      `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
+      [...events],
+    );
+  }
+
+  async flushAllRawSdkEventPayloads(): Promise<void> {
+    const sessionIds = Array.from(this.rawSdkEventPayloadCache.keys());
+    for (const sessionId of sessionIds) {
+      await this.flushRawSdkEventPayloads(sessionId);
+    }
+  }
+
+  async dispose(): Promise<void> {
+    await this.flushAllRawSdkEventPayloads();
+    for (const timer of this.rawSdkEventPersistTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.rawSdkEventPersistTimers.clear();
   }
 
   private async mergeMessagesForSessionAliases(

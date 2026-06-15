@@ -222,7 +222,7 @@ export class SkillManagerService {
       const axios = (await import('axios')).default;
       onProgress?.({ stage: 'downloading', percent: 10, message: 'Downloading skill...' });
 
-      const response = await axios.get(url, { timeout: 30000 });
+      const response = await axios.get(url, { timeout: 60_000 });
       const skillData = response.data;
 
       onProgress?.({ stage: 'validating', percent: 30, message: 'Validating skill...' });

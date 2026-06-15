@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useMemo, useReducer } from 'react';
 import logger from './logger';
+import { getInteractiveEventsFromRawResponse } from "./rawResponse";
 
 import type {
   Agent,
@@ -45,6 +46,8 @@ export const initialState: AppState = {
   currentSessionId: null,
   messages: [],
   messagesBySessionId: {},
+  rawMessagesBySessionId: {},
+  rawSdkEventPayloadsBySessionId: {},
   promptQueue: [],
   queueBySessionId: {},
   isExecutingQueue: false,
@@ -148,6 +151,12 @@ export type AppAction =
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
   | { type: "SET_MESSAGES"; payload: Message[] }
+  | { type: "SET_RAW_MESSAGES"; payload: { sessionId: string; messages: unknown[] } }
+  | {
+    type: "SET_RAW_SDK_EVENT_PAYLOADS";
+    payload: { sessionId: string; events: unknown[] };
+  }
+  | { type: "APPEND_RAW_SDK_EVENT_PAYLOAD"; payload: { sessionId?: string | null; event: unknown } }
   | {
     type: "CACHE_SESSION_MESSAGES";
     payload: { sessionId: string; messages: Message[] };
@@ -431,6 +440,7 @@ function buildStreamingMessageLocal(streaming: StreamingState): Message {
     edits: streaming.edits.map((file) => ({ file })),
     interactiveEvents: streaming.interactiveEvents,
     structuredOutput: streaming.structuredOutput,
+    rawSdkEventPayloads: streaming.rawSdkEventPayloads,
     info: {
       id: streaming.messageId ?? undefined,
       agent: streaming.agent,
@@ -625,7 +635,8 @@ function hasVisibleStreamingSnapshotLocal(
     (Array.isArray(streaming.progressEvents) && streaming.progressEvents.length > 0) ||
     (Array.isArray(streaming.steps) && streaming.steps.length > 0) ||
     (Array.isArray(streaming.edits) && streaming.edits.length > 0) ||
-    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0)
+    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0) ||
+    (Array.isArray(streaming.rawSdkEventPayloads) && streaming.rawSdkEventPayloads.length > 0)
   );
 }
 
@@ -644,6 +655,7 @@ function cacheVisibleStreamingMessageForSession(
     ...(current ?? {}),
     [sessionId]: canonicalizeMessagesForRender(
       mergeStreamingSnapshotIntoMessagesLocal(existingMessages, streaming),
+      { preserveEvtAssistantMessages: true },
     ),
   };
 }
@@ -651,13 +663,21 @@ function cacheVisibleStreamingMessageForSession(
 function getStructuredRecordLocal(message: Message): Record<string, unknown> | null {
   const rec = asRecordLocal(message);
   const info = asRecordLocal(message.info);
+  const rawResponse = parseRawResponseRecordForCanonical(rec?.rawResponse);
+  const rawResponseInfo = asRecordLocal(rawResponse?.info);
   return (
     asRecordLocal(rec?.structuredOutput) ||
     asRecordLocal(rec?.structured_output) ||
     asRecordLocal(rec?.structured) ||
     asRecordLocal(info?.structuredOutput) ||
     asRecordLocal(info?.structured_output) ||
-    asRecordLocal(info?.structured)
+    asRecordLocal(info?.structured) ||
+    asRecordLocal(rawResponseInfo?.structured) ||
+    asRecordLocal(rawResponseInfo?.structuredOutput) ||
+    asRecordLocal(rawResponseInfo?.structured_output) ||
+    asRecordLocal(rawResponse?.structured) ||
+    asRecordLocal(rawResponse?.structuredOutput) ||
+    asRecordLocal(rawResponse?.structured_output)
   );
 }
 
@@ -750,6 +770,12 @@ function interactiveEventsFromLatestQuestionMessageLocal(
   const role = getMessageRoleForCanonical(message);
   if (role !== "assistant") {
     return [];
+  }
+  const rawEvents = getInteractiveEventsFromRawResponse(
+    (message as unknown as Record<string, unknown>).rawResponse,
+  );
+  if (rawEvents.length > 0) {
+    return rawEvents;
   }
   if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
     // Filter out false positive fallback interactive events from rehydrated messages
@@ -1014,8 +1040,29 @@ function contentFromRenderablePartsForCanonical(parts: unknown[]): string {
       }
       return asStringLocal(partRec.text, partRec.content, partRec.delta);
     })
-    .join("")
+    .join(" ")
     .trim();
+}
+
+function parseRawResponseRecordForCanonical(
+  rawResponse: Message["rawResponse"],
+): Record<string, unknown> | undefined {
+  const direct = asRecordLocal(rawResponse);
+  if (direct) {
+    return direct;
+  }
+  if (typeof rawResponse !== "string") {
+    return undefined;
+  }
+  const trimmed = rawResponse.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  try {
+    return asRecordLocal(JSON.parse(trimmed));
+  } catch {
+    return undefined;
+  }
 }
 
 function collectReasoningFingerprintsForCanonical(message: Message): Set<string> {
@@ -1114,7 +1161,16 @@ function extractRenderableAssistantTextForCanonical(message: Message): string {
   }
 
   const parts = Array.isArray(rec.parts) ? rec.parts : [];
-  return contentFromRenderablePartsForCanonical(parts);
+  const partsContent = contentFromRenderablePartsForCanonical(parts);
+  if (partsContent) {
+    return partsContent;
+  }
+
+  const rawResponseRec = parseRawResponseRecordForCanonical(rec.rawResponse);
+  const rawResponseParts = Array.isArray(rawResponseRec?.parts)
+    ? rawResponseRec.parts
+    : [];
+  return contentFromRenderablePartsForCanonical(rawResponseParts);
 }
 
 export function isInternalTransportReminderMessage(message: Message): boolean {
@@ -1255,16 +1311,30 @@ export function messageRichnessScoreForCanonical(message: Message): number {
 }
 
 export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
-  const preserveRawResponse = (preferred: Message, alternate: Message): Message => {
+  const preserveRawDebugFields = (preferred: Message, alternate: Message): Message => {
     const preferredRecord = preferred as unknown as Record<string, unknown>;
-    if (Object.prototype.hasOwnProperty.call(preferredRecord, "rawResponse")) {
-      return preferred;
-    }
     const alternateRecord = alternate as unknown as Record<string, unknown>;
-    if (!Object.prototype.hasOwnProperty.call(alternateRecord, "rawResponse")) {
+    const preferredRawResponse = preferredRecord.rawResponse;
+    const alternateRawResponse = alternateRecord.rawResponse;
+    const preferredRawSdkEventPayloads = Array.isArray(preferredRecord.rawSdkEventPayloads) &&
+      preferredRecord.rawSdkEventPayloads.length > 0
+      ? preferredRecord.rawSdkEventPayloads
+      : undefined;
+    const alternateRawSdkEventPayloads = Array.isArray(alternateRecord.rawSdkEventPayloads) &&
+      alternateRecord.rawSdkEventPayloads.length > 0
+      ? alternateRecord.rawSdkEventPayloads
+      : undefined;
+    if (typeof preferredRawResponse !== "undefined" && preferredRawSdkEventPayloads) {
       return preferred;
     }
-    return { ...preferred, rawResponse: alternate.rawResponse };
+    const next: Message = { ...preferred };
+    if (typeof preferredRawResponse === "undefined" && typeof alternateRawResponse !== "undefined") {
+      next.rawResponse = alternateRawResponse;
+    }
+    if (!preferredRawSdkEventPayloads && alternateRawSdkEventPayloads) {
+      next.rawSdkEventPayloads = [...alternateRawSdkEventPayloads];
+    }
+    return next;
   };
 
   const messageMetaCache = new WeakMap<
@@ -1300,7 +1370,7 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
         ? incoming
         : existing;
     const alternate = preferred === incoming ? existing : incoming;
-    return preserveRawResponse(preferred, alternate);
+    return preserveRawDebugFields(preferred, alternate);
   };
 
   const idToIndex = new Map<string, number>();
@@ -1474,20 +1544,8 @@ function appendUniqueEntries<T>(
 }
 
 export function coalesceAssistantRunForCanonical(run: Message[]): Message {
-  // Lifecycle events (streaming start/finish) carry evt_-prefixed message IDs.
-  // When the same assistant turn produces both an evt_ lifecycle snapshot and a
-  // msg_ streaming snapshot, the evt_ entry may carry stale streaming text that
-  // was captured at lifecycle-start.  Use the last non-evt message as the merge
-  // base so the canonical ID and renderable text come from the authoritative
-  // msg_ snapshot — the evt_ metadata (steps, progress, structured output) is
-  // still folded in during the merge loop below.
-  const preferredIdx = run.length > 1
-    ? run.findLastIndex(
-        (m: Message) => !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
-      )
-    : -1;
   const base = {
-    ...(preferredIdx >= 0 ? run[preferredIdx] : run[run.length - 1] || run[0]),
+    ...(run[run.length - 1] || run[0]),
   } as Message;
   const mergedParts: unknown[] = [];
   const seenPartKeys = new Set<string>();
@@ -1511,6 +1569,11 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   let latestSubagentsWithoutMessageId: Message["subagents"] | undefined;
   let latestError = asStringLocal((base as unknown as Record<string, unknown>).error);
   let latestRawResponse = (base as unknown as Record<string, unknown>).rawResponse;
+  let latestRawSdkEventPayloads: unknown[] | undefined = Array.isArray(
+    (base as unknown as Record<string, unknown>).rawSdkEventPayloads,
+  )
+    ? [...((base as unknown as Record<string, unknown>).rawSdkEventPayloads as unknown[])]
+    : undefined;
   let latestStructuredOutput = asRecordLocal(
     (base as unknown as Record<string, unknown>).structuredOutput,
   ) ?? getStructuredRecordLocal(base);
@@ -1532,24 +1595,17 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   for (const message of run) {
     const messageId = getMessageIdForCanonical(message);
     if (messageId) {
-      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
-      const currentIsNonEvt = typeof canonicalId === "string" && !canonicalId.startsWith("evt_");
-      if (!incomingIsEvt || !currentIsNonEvt) {
-        canonicalId = messageId;
-      }
+  canonicalId = messageId;
     }
     const text = extractRenderableAssistantTextForCanonical(message);
     if (text) {
-      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
-      if (!incomingIsEvt || !latestText) {
-        latestText = text;
-        latestTextPart = Array.isArray(message.parts)
-          ? message.parts.find((part) => {
-              const partRec = asRecordLocal(part);
-              return !!partRec && isRenderableAssistantTextPartForCanonical(partRec);
-            })
-          : undefined;
-      }
+      latestText = text;
+      latestTextPart = Array.isArray(message.parts)
+        ? message.parts.find((part) => {
+            const partRec = asRecordLocal(part);
+            return !!partRec && isRenderableAssistantTextPartForCanonical(partRec);
+          })
+        : undefined;
     }
     if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
       latestInteractiveEvents = message.interactiveEvents;
@@ -1570,6 +1626,12 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
       }
     } else if (typeof message.rawResponse !== "undefined") {
       latestRawResponse = message.rawResponse;
+    }
+    if (Array.isArray((message as unknown as Record<string, unknown>).rawSdkEventPayloads)) {
+      const rawSdkEventPayloads = (message as unknown as Record<string, unknown>).rawSdkEventPayloads as unknown[];
+      if (rawSdkEventPayloads.length > 0) {
+        latestRawSdkEventPayloads = [...rawSdkEventPayloads];
+      }
     }
     const errorText = asStringLocal(
       (message as unknown as Record<string, unknown>).error,
@@ -1706,6 +1768,11 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
     // "Raw Response (Debug)" to disappear after refresh/session reload.
     base.rawResponse = latestRawResponse;
   }
+  if (Array.isArray(latestRawSdkEventPayloads) && latestRawSdkEventPayloads.length > 0) {
+    (base as unknown as Record<string, unknown>).rawSdkEventPayloads = latestRawSdkEventPayloads;
+  } else {
+    delete (base as unknown as Record<string, unknown>).rawSdkEventPayloads;
+  }
   if (canonicalId) {
     base.id = canonicalId;
     const info = asRecordLocal(base.info);
@@ -1716,10 +1783,14 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   return base;
 }
 
-export function canonicalizeMessagesForRender(messages: Message[]): Message[] {
+export function canonicalizeMessagesForRender(
+  messages: Message[],
+  options?: { preserveEvtAssistantMessages?: boolean },
+): Message[] {
   if (!Array.isArray(messages) || messages.length === 0) {
     return [];
   }
+  void options;
 
   // Convert internal transport messages (like <system-reminder>) to system role
   // for consistent deduplication and rendering handling.
@@ -1785,19 +1856,7 @@ export function canonicalizeMessagesForRender(messages: Message[]): Message[] {
     index = cursor;
   }
 
-  const hasNonEvtAssistant = canonical.some(
-    (m) =>
-      isAssistantMessageForCanonical(m) &&
-      !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
-  );
-
-  return hasNonEvtAssistant
-    ? canonical.filter(
-        (m) =>
-          !isAssistantMessageForCanonical(m) ||
-          !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
-      )
-    : canonical;
+  return canonical;
 }
 
 const MAX_STREAMING_REASONING_EVENTS = 300;
@@ -2228,6 +2287,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
                 state.messages ?? [],
                 state.streaming,
               ),
+              { preserveEvtAssistantMessages: true },
             ),
           }
           : state.messagesBySessionId;
@@ -2324,7 +2384,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_AGENTS_LIST":
       return { ...state, availableAgents: action.payload };
     case "SET_MESSAGES": {
-      const canonicalMessages = canonicalizeMessagesForRender(action.payload);
+      const canonicalMessages = canonicalizeMessagesForRender(action.payload, {
+        preserveEvtAssistantMessages:
+          !!state.streaming?.isActive || state.assistantTurnPending,
+      });
       const resolvedDividerIndex = resolveCompactionDividerIndex(canonicalMessages, {
         compactionDividerIndex: state.compactionDividerIndex,
         compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
@@ -2379,6 +2442,42 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           resolvedAnchors.compactionDividerBeforeMessageId,
         compactionDividerAfterMessageId:
           resolvedAnchors.compactionDividerAfterMessageId,
+      };
+    }
+    case "SET_RAW_MESSAGES": {
+      return {
+        ...state,
+        rawMessagesBySessionId: {
+          ...(state.rawMessagesBySessionId ?? {}),
+          [action.payload.sessionId]: Array.isArray(action.payload.messages)
+            ? [...action.payload.messages]
+            : [],
+        },
+      };
+    }
+    case "SET_RAW_SDK_EVENT_PAYLOADS": {
+      return {
+        ...state,
+        rawSdkEventPayloadsBySessionId: {
+          ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+          [action.payload.sessionId]: Array.isArray(action.payload.events)
+            ? [...action.payload.events]
+            : [],
+        },
+      };
+    }
+    case "APPEND_RAW_SDK_EVENT_PAYLOAD": {
+      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      if (!sessionId) {
+        return state;
+      }
+      const existing = state.rawSdkEventPayloadsBySessionId?.[sessionId] ?? [];
+      return {
+        ...state,
+        rawSdkEventPayloadsBySessionId: {
+          ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+          [sessionId]: [...existing, action.payload.event],
+        },
       };
     }
     case "CACHE_SESSION_MESSAGES":
@@ -2654,6 +2753,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           hasTerminalStepSignal:
             action.payload.streaming.hasTerminalStepSignal ?? false,
           interactiveEvents: action.payload.streaming.interactiveEvents ?? [],
+          rawSdkEventPayloads: action.payload.streaming.rawSdkEventPayloads ?? [],
         }
         : null;
       const streamingBySessionId = cacheStreamingForSession(
@@ -3377,6 +3477,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             interactiveEvents: deduplicatedEvents,
           }
         : state.streaming;
+      logger.info("[TRACE][STORE][SET_INTERACTIVE_EVENTS]", {
+        currentSessionId: state.currentSessionId,
+        incomingCount: Array.isArray(action.payload) ? action.payload.length : 0,
+        filteredCount: filteredEvents.length,
+        deduplicatedCount: deduplicatedEvents.length,
+        dismissedCount: state.dismissedInteractiveEventKeys.size,
+        hasStreaming: !!state.streaming,
+        streamingInteractiveCount: state.streaming?.interactiveEvents?.length ?? 0,
+      });
+      console.info("[TRACE][STORE][SET_INTERACTIVE_EVENTS]", {
+        currentSessionId: state.currentSessionId,
+        incomingCount: Array.isArray(action.payload) ? action.payload.length : 0,
+        filteredCount: filteredEvents.length,
+        deduplicatedCount: deduplicatedEvents.length,
+        dismissedCount: state.dismissedInteractiveEventKeys.size,
+        hasStreaming: !!state.streaming,
+        streamingInteractiveCount: state.streaming?.interactiveEvents?.length ?? 0,
+      });
       return {
         ...state,
         interactiveEvents: deduplicatedEvents,

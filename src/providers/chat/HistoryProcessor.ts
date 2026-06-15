@@ -118,6 +118,7 @@ export class HistoryProcessor {
         ...structuredApplied,
         content: originalBodyText,
         text: originalBodyText,
+        rawSdkEventPayloads: structuredApplied?.rawSdkEventPayloads,
         structuredOutput:
           structuredApplied?.structuredOutput &&
           this.firstNonEmptyString(structuredApplied.structuredOutput.responseType)
@@ -568,6 +569,11 @@ export class HistoryProcessor {
       : [];
     base.steps = Array.isArray(base.steps) ? [...base.steps] : [];
     base.reasoning = Array.isArray(base.reasoning) ? [...base.reasoning] : [];
+    let latestRawSdkEventPayloads: unknown[] | undefined = Array.isArray(
+      base.rawSdkEventPayloads,
+    )
+      ? [...base.rawSdkEventPayloads]
+      : undefined;
     base.info = mergeInfoRecord(base.info, undefined);
 
     let latestRawResponse: unknown = base.rawResponse;
@@ -637,9 +643,20 @@ export class HistoryProcessor {
       if (message && "rawResponse" in message) {
         latestRawResponse = message.rawResponse;
       }
+      if (Array.isArray(message?.rawSdkEventPayloads)) {
+        const rawSdkEventPayloads = message.rawSdkEventPayloads as unknown[];
+        if (rawSdkEventPayloads.length > 0) {
+          latestRawSdkEventPayloads = [...rawSdkEventPayloads];
+        }
+      }
     }
 
     base.rawResponse = latestRawResponse;
+    if (Array.isArray(latestRawSdkEventPayloads) && latestRawSdkEventPayloads.length > 0) {
+      base.rawSdkEventPayloads = latestRawSdkEventPayloads;
+    } else {
+      delete base.rawSdkEventPayloads;
+    }
     base.content = visibleBodyText || this.extractMessageBodyText(base);
     if (typeof base.text === "string" || visibleBodyText) {
       base.text = visibleBodyText || this.firstNonEmptyString(base.text);

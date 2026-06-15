@@ -14,9 +14,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         chat: path.resolve(__dirname, 'src/chat/index.tsx'),
-        plan: path.resolve(__dirname, 'src/plan/index.tsx'),
-        'diff-review': path.resolve(__dirname, 'src/diff-review/index.tsx'),
-        skills: path.resolve(__dirname, 'src/skills/index.tsx'),
       },
       output: {
         entryFileNames: '[name].js',
@@ -27,8 +24,7 @@ export default defineConfig({
     minify: false,
   },
   resolve: {
-    // Keep a single React instance in the webview bundle to avoid invalid hook calls
-    // when code is imported across folders/packages during the migration.
+    // Keep a single React instance in the chat-only webview bundle to avoid invalid hook calls.
     dedupe: ['react', 'react-dom'],
     alias: {
       '@': path.resolve(__dirname, './src'),

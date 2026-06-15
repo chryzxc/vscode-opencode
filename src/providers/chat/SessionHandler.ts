@@ -157,10 +157,15 @@ export class SessionHandler {
       // This updates the service's internal state and persists it
       await this.sessionService.switchSession(sessionId);
 
-      const rawMessages = await this.sessionService.loadSessionMessages(sessionId);
-      const messages = Array.isArray(rawMessages)
-        ? await this.historyProcessor.processHistoryMessages(rawMessages, sessionId)
-        : [];
+      const rawMessages = await this.sessionService.loadSessionRawMessages(sessionId);
+      const rawSdkEventPayloads = await this.sessionService.loadSessionRawSdkEventPayloads(sessionId);
+      const fallbackMessages = rawMessages.length > 0
+        ? rawMessages
+        : await this.sessionService.loadSessionMessages(sessionId);
+      const messages = await this.historyProcessor.processHistoryMessages(
+        fallbackMessages,
+        sessionId,
+      );
 
       await this.subagentPersistence.syncSubagentSnapshotForSession(sessionId, messages);
       await this.modelAndAgentManager.applySessionSettings(sessionId);
@@ -169,6 +174,8 @@ export class SessionHandler {
         type: "chatHistory",
         sessionId,
         messages,
+        rawMessages: fallbackMessages,
+        rawSdkEventPayloads,
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
         sessionId,

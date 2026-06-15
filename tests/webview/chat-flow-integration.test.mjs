@@ -38,6 +38,11 @@ const messageComponentsSource = readSource(
   'MessageComponents.tsx',
 );
 
+const rawResponseSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'rawResponse.ts')],
+  'rawResponse.ts',
+);
+
 const chatShellSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
   'ChatShell.tsx',
@@ -157,10 +162,114 @@ test('subagent flow handles multiple concurrent subagents with deduplication', (
   // Subagent deduplication by ID
   assert.match(handlerBody, /UPSERT_SUBAGENT_SUMMARIES/, 'subagent summaries are upserted (handles deduplication)');
   assert.match(handlerBody, /UPSERT_SUBAGENT_DETAIL/, 'subagent details are upserted (handles deduplication)');
+  assert.match(
+    messageComponentsSource,
+    /dedupeSubagentsById/,
+    'assistant message rendering should normalize duplicate subagent IDs before paint',
+  );
+  assert.match(
+    messageComponentsSource,
+    /mergedById/,
+    'assistant message rendering should merge the store and message subagent views by ID',
+  );
 
   // Subagent state management
   assert.match(reducerBody, /case\s+["']UPSERT_SUBAGENT_SUMMARIES["']:/, 'reducer handles UPSERT_SUBAGENT_SUMMARIES action');
   assert.match(reducerBody, /case\s+["']UPSERT_SUBAGENT_DETAIL["']:/, 'reducer handles UPSERT_SUBAGENT_DETAIL action');
+});
+
+test('centralized debug data keeps raw event stream and raw rehydrated data separate', () => {
+  const centralizedDebugStart = messageComponentsSource.indexOf(
+    'const centralizedDebugData = useMemo<CentralizedDebugData | null>(',
+  );
+  const centralizedDebugEnd = messageComponentsSource.indexOf(
+    'const hasPendingReasoningDisplayEvent',
+    centralizedDebugStart,
+  );
+  const centralizedDebugBlock =
+    centralizedDebugStart >= 0 && centralizedDebugEnd > centralizedDebugStart
+      ? messageComponentsSource.slice(centralizedDebugStart, centralizedDebugEnd)
+      : '';
+
+  assert.match(
+    messageComponentsSource,
+    /useMemo<CentralizedDebugData \| null>\(/,
+    'the centralized debug payload should be explicitly typed',
+  );
+  assert.match(
+    centralizedDebugBlock,
+    /rawEventStream[\s\S]*rawRehydrated/,
+    'the centralized debug payload should expose both raw event stream and raw rehydrated sources',
+  );
+  assert.doesNotMatch(
+    centralizedDebugBlock,
+    /JSON\.parse|JSON\.stringify|compactDebugTimeline|dedupeDebugArray|rawStreamingSnapshot|rawActivityTimeline/,
+    'the centralized debug payload should not be compacted or include extra derived layers',
+  );
+  assert.ok(
+    messageComponentsSource.includes('CentralizedDebugData'),
+    'the centralized debug component should import the shared centralized debug type',
+  );
+  assert.match(
+    centralizedDebugBlock,
+    /rawSdkEventPayloads:[\s\S]*activityTimelineStreaming\.rawSdkEventPayloads/,
+    'the event stream source should keep its raw SDK payload tape',
+  );
+  assert.match(
+    centralizedDebugBlock,
+    /rawMessages:[\s\S]*rawMessagesBySessionId/,
+    'the rehydrated source should keep the raw session history payload',
+  );
+  assert.match(
+    messageComponentsSource,
+    /<DebugObjectView value=\{centralizedDebugData\} \/>/,
+    'the centralized debug payload should render as a nested object tree instead of a string blob',
+  );
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /data-assistant-section="centralized-debug"[\s\S]*stringifyDebugValue\(centralizedDebugData\)/,
+    'the centralized debug UI should not stringify the centralized payload',
+  );
+});
+
+test('canonical assistant text reconstruction preserves spacing between parts', () => {
+  assert.match(
+    storeSource,
+    /function\s+contentFromRenderablePartsForCanonical\(parts: unknown\[\]\): string \{[\s\S]*\.join\(" "\)[\s\S]*\.trim\(\);/,
+    'part-only assistant content should be rebuilt with spaces instead of being glued together',
+  );
+  assert.match(
+    storeSource,
+    /parseRawResponseRecordForCanonical\([\s\S]*const rawResponseParts = Array\.isArray\(rawResponseRec\?\.parts\)[\s\S]*return contentFromRenderablePartsForCanonical\(rawResponseParts\);/,
+    'assistant text reconstruction should fall back to rawResponse.parts when normal message content is missing',
+  );
+});
+
+test('response card prefers raw sdk payload before transformed message fields', () => {
+  const responseCardBlock = messageComponentsSource.match(
+    /function getMessageContent\([\s\S]*?type RawDebugParseStatus =/,
+  )?.[0];
+  assert.ok(responseCardBlock, 'response card content resolver should be present');
+  assert.match(
+    rawResponseSource,
+    /export function getFinalAssistantResponseText\([\s\S]*?const structured = asRecord\(rawInfoRec\?\.structured\);[\s\S]*?const structuredMessage = firstNonEmptyString\([\s\S]*?const partsBody = finalTextBeforeStepFinish\(/,
+    'rawResponse helper should check structured.message first and then the parts fallback',
+  );
+  assert.match(
+    responseCardBlock,
+    /const baseContent = getFinalAssistantResponseText\(rawResponse \?\? message\.rawResponse\);/,
+    'the response card should prefer the raw SDK response helper before any transformed message fields',
+  );
+  assert.doesNotMatch(
+    responseCardBlock,
+    /firstNonEmptyString\([\s\S]*message\.content|firstNonEmptyString\([\s\S]*message\.text|firstNonEmptyString\([\s\S]*summaryText\(message\)/,
+    'the response card resolver should not fall back to transformed message fields',
+  );
+  assert.doesNotMatch(
+    rawResponseSource,
+    /\brawResponse\.text\b|\brawResponse\.content\b/,
+    'the raw response helper should not use extra text/content fallbacks',
+  );
 });
 
 // ===========================================================================

@@ -311,6 +311,78 @@ export interface MessagePart {
   source?: { path?: string };
 }
 
+export interface OpenCodeRawResponsePart {
+  type?: string;
+  text?: string;
+  content?: string;
+  message?: string;
+  reason?: string;
+  snapshot?: string;
+  id?: string;
+  sessionID?: string;
+  messageID?: string;
+  time?: {
+    start?: number;
+    end?: number;
+    [key: string]: unknown;
+  };
+  state?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface OpenCodeRawResponseInfo {
+  parentID?: string;
+  role?: string;
+  mode?: string;
+  agent?: string;
+  variant?: string;
+  path?: {
+    cwd?: string;
+    root?: string;
+    [key: string]: unknown;
+  };
+  cost?: number;
+  tokens?: {
+    total?: number;
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: {
+      read?: number;
+      write?: number;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
+  modelID?: string;
+  providerID?: string;
+  time?: {
+    created?: number;
+    completed?: number;
+    start?: number;
+    end?: number;
+    [key: string]: unknown;
+  };
+  finish?: string;
+  id?: string;
+  sessionID?: string;
+  structured?: Record<string, unknown>;
+  structuredOutput?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface OpenCodeRawResponse {
+  info?: OpenCodeRawResponseInfo;
+  parts?: OpenCodeRawResponsePart[];
+  message?: string;
+  text?: string;
+  content?: string;
+  structured?: Record<string, unknown>;
+  structuredOutput?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface MessageEdit {
   file: string;
   added?: number;
@@ -336,6 +408,15 @@ export interface MessageStep {
   streamSeq?: number;
   /** File path associated with this step, used for deduplication */
   filePath?: string;
+}
+
+export interface CentralizedDebugSourceData {
+  sessionId?: string;
+  rawSdkEventPayloads?: unknown[];
+}
+
+export interface CentralizedDebugData {
+  rawEventStream?: CentralizedDebugSourceData;
 }
 
 export interface MessageChangeSummaryFile {
@@ -374,6 +455,7 @@ export interface ActivityDetail {
   kind?: "tool_call" | "file_edit" | "command" | "read" | "search" | "other";
   summary?: string;
   command?: string;
+  input?: Record<string, unknown>;
   output?: string;
   tool?: string;
   query?: string;
@@ -518,6 +600,7 @@ export interface SubagentSummary {
 export interface SubagentDetail extends SubagentSummary {
   thinkingEvents: SubagentThinkingEvent[];
   conversationEvents?: SubagentConversationEvent[];
+  rawConversationEvents?: unknown[];
   progressEvents: SubagentProgressEvent[];
   timelineEvents: SubagentTimelineEvent[];
   tokenUsage?: {
@@ -551,7 +634,8 @@ export interface Message {
   text?: string;
 
   content?: string;
-  rawResponse?: unknown;
+  rawResponse?: OpenCodeRawResponse | string;
+  rawSdkEventPayloads?: unknown[];
   reasoningPayload?: {
     events: ReasoningEvent[];
     sources?: Array<"stream" | "final" | "raw_debug">;
@@ -700,6 +784,8 @@ export interface AppState {
   currentSessionId: string | null;
   messages: Message[];
   messagesBySessionId?: Record<string, Message[]>;
+  rawMessagesBySessionId?: Record<string, unknown[]>;
+  rawSdkEventPayloadsBySessionId?: Record<string, unknown[]>;
   promptQueue: QueueItem[];
   queueBySessionId: Record<string, QueueItem[]>;
   isExecutingQueue: boolean; // Legacy global flag, to be removed or used carefully

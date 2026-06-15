@@ -6,6 +6,14 @@ import { extractFunctionBody, joinFromRoot, readAllSources, readSource } from '.
 const chatProviderSource = readAllSources([joinFromRoot('src', 'providers', 'ChatViewProvider.ts'), joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'), joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'), joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'), joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'), joinFromRoot('src', 'providers', 'chat', 'QueueManager.ts'), joinFromRoot('src', 'providers', 'chat', 'StreamEventHandler.ts'), joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'), joinFromRoot('src', 'providers', 'chat', 'SessionHandler.ts')],
   'ChatViewProvider.ts',
 );
+const messageStreamSource = readSource(
+  [joinFromRoot('src', 'services', 'MessageStreamService.ts')],
+  'MessageStreamService.ts',
+);
+const messageHandlerSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'messageHandler.ts')],
+  'messageHandler.ts',
+);
 
 test('ChatViewProvider streams events to webview progressively', () => {
   const registerHandlersBody = extractFunctionBody(
@@ -40,6 +48,40 @@ test('ChatViewProvider streams events to webview progressively', () => {
     registerHandlersBody,
     /shouldVerboseStreamDebug\(\)[\s\S]*streamEvent forwarded/,
     'ChatViewProvider should log each forwarded streamEvent for debugging',
+  );
+});
+
+test('MessageStreamService logs stream events when they are received', () => {
+  assert.match(
+    messageStreamSource,
+    /this\.logger\.info\("\[CHAT-STREAMING\]\[KEY1\] Stream event received from server"/,
+    'MessageStreamService should log each inbound stream event before filtering or dispatch',
+  );
+});
+
+test('ChatViewProvider logs stream events before posting them to the webview', () => {
+  const registerHandlersBody = extractFunctionBody(
+    chatProviderSource, 'resolveWebviewView(',
+  );
+
+  assert.match(
+    registerHandlersBody,
+    /this\.logger\.info\("\[CHAT-STREAMING\]\[KEY2\] Forwarding stream event to webview"/,
+    'ChatViewProvider should log each stream event before webview postMessage',
+  );
+});
+
+test('webview message handler logs stream events before reducer/render processing', () => {
+  const streamEventCase = messageHandlerSource.slice(
+    messageHandlerSource.indexOf('case "streamEvent"'),
+    messageHandlerSource.indexOf('case "streamEventEnrich"'),
+  );
+
+  assert.ok(streamEventCase.length > 0, 'streamEvent case must exist');
+  assert.match(
+    streamEventCase,
+    /logger\.info\("\[CHAT-STREAMING\]\[KEY3\] Applying event to reducer"/,
+    'webview message handler should log stream events before state is reduced/rendered',
   );
 });
 

@@ -105,8 +105,8 @@ test.describe('OpencodeServerManager - Server Startup', () => {
 
     assert.match(
       source,
-      /startServer[\s\S]*setTimeout.*10000|startupTimeout|timeout/s,
-      'must implement 10-second startup timeout'
+      /startServer[\s\S]*setTimeout.*60000|startupTimeout|timeout/s,
+      'must implement 60-second startup timeout'
     );
   });
 
@@ -149,8 +149,14 @@ test.describe('OpencodeServerManager - Port Management', () => {
 
     assert.match(
       source,
-      /isPortReachable[\s\S]*Socket.*connect|timeout.*800/s,
-      'must test port connectivity'
+      /const LOOPBACK_HOST = "127\.0\.0\.1"/,
+      'must define a shared loopback host constant'
+    );
+
+    assert.match(
+      source,
+      /isPortReachable[\s\S]*Socket.*connect[\s\S]*LOOPBACK_HOST/s,
+      'must test port connectivity through the shared loopback host constant'
     );
   });
 
@@ -183,8 +189,14 @@ test.describe('OpencodeServerManager - Client Connection', () => {
 
     assert.match(
       source,
-      /connectToServer[\s\S]*createOpencodeClient|baseUrl.*localhost/s,
-      'must create SDK client with server URL'
+      /connectToServer[\s\S]*createOpencodeClient/,
+      'must create SDK client with a loopback server URL'
+    );
+
+    assert.match(
+      source,
+      /baseUrl:[\s\S]*LOOPBACK_HOST/,
+      'must create SDK client with the shared loopback host constant'
     );
   });
 
@@ -417,7 +429,7 @@ test.describe('OpencodeServerManager - Error Handling', () => {
 
     assert.match(
       source,
-      /Server startup timeout|startupTimeout|10.*000/s,
+      /Server startup timeout|startupTimeout|60.*000/s,
       'must handle server startup timeout'
     );
   });

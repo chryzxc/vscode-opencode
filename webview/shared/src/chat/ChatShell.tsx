@@ -3,7 +3,12 @@ import { Archive, X } from "lucide-react";
 
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
 import { createMessageHandler } from "./lib/messageHandler";
-import { isProcessingInCurrentSession } from "./lib/sessionProcessing";
+import {
+  isAssistantRespondingInCurrentSession,
+  hasActiveAssistantTurnContext,
+  hasCompletedAssistantReplyForLatestTurn,
+  isProcessingInCurrentSession,
+} from "./lib/sessionProcessing";
 import vscode from "./lib/vscode";
 import logger, { getGlobalShowBrowserConsole } from "./lib/logger";
 
@@ -21,9 +26,10 @@ import {
   SkillsPanel,
   SettingsPanel,
 } from "./PanelComponents";
+import { CentralizedToastOverlay } from "./ToastOverlay";
 import { StreamingCard } from "./StreamingComponents";
 import {
-  AssistantMessage,
+  AssistantResponseCard,
   EmptyState,
   PermissionCard,
   SystemMessage,
@@ -430,6 +436,24 @@ function ChatContent() {
     state.currentSessionId,
     state.processingSessionIds,
   );
+  const hasCompletedAssistantReply =
+    hasCompletedAssistantReplyForLatestTurn(state.messages);
+  const hasActiveTurnContext = hasActiveAssistantTurnContext(
+    state.messages,
+    Boolean(state.streaming?.isActive),
+    state.assistantTurnPending,
+  );
+  const isAiStillResponding = isAssistantRespondingInCurrentSession(
+    state.isProcessing,
+    state.currentSessionId,
+    state.processingSessionIds,
+    Boolean(state.streaming?.isActive),
+    state.assistantTurnPending,
+    state.streaming?.hasAssistantFinishSignal,
+    state.streaming?.hasTerminalStepSignal,
+    hasCompletedAssistantReply,
+    hasActiveTurnContext,
+  );
 
   // Check if we're switching to a different session (loading conversation)
   // Uses the new isLoadingSession state which is set during session switches
@@ -445,29 +469,6 @@ function ChatContent() {
     state.messages.length > 0 || hasCachedCurrentSessionMessages;
   const isConnecting = false;
 
-  const hasCompletedAssistantReplyForLatestTurn = (() => {
-    if (state.messages.length === 0) {
-      return false;
-    }
-    for (let i = state.messages.length - 1; i >= 0; i -= 1) {
-      const message = state.messages[i];
-      if (message.role === "assistant") {
-        const text = typeof message.content === "string" ? message.content.trim() : "";
-        const structuredText =
-          typeof message.structuredOutput?.message === "string"
-            ? message.structuredOutput.message.trim()
-            : "";
-        if (text.length > 0 || structuredText.length > 0) {
-          return true;
-        }
-        continue;
-      }
-      if (message.role === "user") {
-        return false;
-      }
-    }
-    return false;
-  })();
   const compatibilityWarningSignature = state.compatibilityWarnings
     .map((warning) => `${warning.component}:${warning.version ?? "unknown"}:${warning.status}:${warning.supportedRange}`)
     .join("|");
@@ -498,9 +499,9 @@ function ChatContent() {
     );
   }
 
-  // Show AI response loading indicator until assistant text arrives. Activity
-  // streams can render tool/progress rows before text starts, so the response
-  // loading affordance should key off text presence instead of stream presence.
+  // Keep the loading bubble visible for the entire active assistant turn.
+  // Live stream payloads can arrive before the final assistant message is
+  // finalized, but the user still needs a clear "AI is responding" signal.
   const hasAssistantText =
     !!state.streaming?.content &&
     state.streaming.content.trim().length > 0;
@@ -512,19 +513,20 @@ function ChatContent() {
         state.streaming.progressEvents.length > 0 ||
         state.streaming.edits.length > 0 ||
         (Array.isArray(state.streaming.interactiveEvents) &&
-          state.streaming.interactiveEvents.length > 0)),
+          state.streaming.interactiveEvents.length > 0) ||
+        (Array.isArray(state.interactiveEvents) &&
+          state.interactiveEvents.length > 0)),
   );
   // Show AI response loading indicator (thinking bubble) when:
   // 1. NOT switching sessions (session loading takes precedence), AND
-  // 2. AI is responding but no renderable content has arrived yet.
+  // 2. AI is still responding and the assistant turn has not finalized yet.
   // FIXED: Use hasRenderableContent from SDK instead of checking content length
   const hasRenderableStreamingContent = Boolean(state.streaming?.hasRenderableContent);
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
-    isAiResponding && // Must still be processing (not stopped)
-    !hasCompletedAssistantReplyForLatestTurn &&
-    !state.isCompacting &&
-    !hasRenderableStreamingContent; // Use SDK's renderable flag instead of content length
+    isAiStillResponding && // Keep loading affordance visible while the turn is active
+    !hasCompletedAssistantReply &&
+    !state.isCompacting;
 
   // Enforce minimum display duration for loading state
   // This ensures users can perceive the loading indicator even when content arrives quickly
@@ -542,7 +544,52 @@ function ChatContent() {
   // Extend the loading state display time if content arrived too quickly
   const showExtendedLoading =
     showAiResponseLoading || // Normal loading state
-    (loadingStartTimeRef.current && loadingElapsedTime < LOADING_MIN_DISPLAY_MS && !hasCompletedAssistantReplyForLatestTurn); // Extended for minimum duration
+    (loadingStartTimeRef.current && loadingElapsedTime < LOADING_MIN_DISPLAY_MS && !hasCompletedAssistantReply); // Extended for minimum duration
+
+  useEffect(() => {
+    if (!state.streaming && state.interactiveEvents.length === 0 && !showExtendedLoading) {
+      return;
+    }
+
+    logger.info("[TRACE][RENDER][CHAT_SHELL]", {
+      sessionId: state.currentSessionId,
+      streamingActive: !!state.streaming?.isActive,
+      streamingMessageId: state.streaming?.messageId ?? null,
+      streamingContentLength: state.streaming?.content?.length ?? 0,
+      streamingReasoningLength: state.streaming?.reasoning?.length ?? 0,
+      streamingSteps: state.streaming?.steps?.length ?? 0,
+      streamingProgressEvents: state.streaming?.progressEvents?.length ?? 0,
+      streamingInteractiveEvents: state.streaming?.interactiveEvents?.length ?? 0,
+      interactiveEvents: state.interactiveEvents.length,
+      hasRenderableStreamingContent,
+      hasVisibleStreamingPayload,
+      showAiResponseLoading,
+      showExtendedLoading,
+    });
+    console.info("[TRACE][RENDER][CHAT_SHELL]", {
+      sessionId: state.currentSessionId,
+      streamingActive: !!state.streaming?.isActive,
+      streamingMessageId: state.streaming?.messageId ?? null,
+      streamingContentLength: state.streaming?.content?.length ?? 0,
+      streamingReasoningLength: state.streaming?.reasoning?.length ?? 0,
+      streamingSteps: state.streaming?.steps?.length ?? 0,
+      streamingProgressEvents: state.streaming?.progressEvents?.length ?? 0,
+      streamingInteractiveEvents: state.streaming?.interactiveEvents?.length ?? 0,
+      interactiveEvents: state.interactiveEvents.length,
+      hasRenderableStreamingContent,
+      hasVisibleStreamingPayload,
+      showAiResponseLoading,
+      showExtendedLoading,
+    });
+  }, [
+    state.currentSessionId,
+    state.streaming,
+    state.interactiveEvents.length,
+    hasRenderableStreamingContent,
+    hasVisibleStreamingPayload,
+    showAiResponseLoading,
+    showExtendedLoading,
+  ]);
 
   // DEBUG: Log loading state calculation
   if (state.isProcessing || state.streaming?.isActive || showExtendedLoading) {
@@ -552,7 +599,7 @@ function ChatContent() {
       currentSessionId: state.currentSessionId,
       processingSessionIds: state.processingSessionIds,
       isAiResponding,
-      hasCompletedAssistantReplyForLatestTurn,
+      hasCompletedAssistantReply,
       isCompacting: state.isCompacting,
       hasRenderableStreamingContent,
       hasAssistantText,
@@ -587,32 +634,7 @@ function ChatContent() {
   const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
   const visibleMessages = (() => {
     const sliced = state.messages.slice(visibleStartIndex);
-    let lastUserIdx = -1;
-    for (let i = sliced.length - 1; i >= 0; i--) {
-      const role = sliced[i]?.role ?? sliced[i]?.info?.role;
-      if (role === "user") {
-        lastUserIdx = i;
-        break;
-      }
-    }
-    const hasEvtPrefix = (m: Message): boolean => {
-      const infoId = typeof m?.info?.id === "string" ? m.info.id : "";
-      const topId = typeof m?.id === "string" ? m.id : "";
-      return infoId.startsWith("evt_") || topId.startsWith("evt_");
-    };
-    const hasNonEvtAssistant = sliced.slice(lastUserIdx + 1).some(
-      (m) =>
-        m?.role === "assistant" &&
-        !hasEvtPrefix(m),
-    );
-    // Guard: strip evt_-prefixed lifecycle-standby messages from the render
-    // list only when a non-evt assistant message exists for the same turn.
-    // Without this guard the evt_ entry is the only visible assistant content
-    // and must be shown.
-    if (!hasNonEvtAssistant) {
-      return sliced;
-    }
-    return sliced.filter((m) => !hasEvtPrefix(m));
+    return sliced;
   })();
   const hasCompatibilityWarnings = state.compatibilityWarnings.length > 0;
   const errorToasts = state.errorMessages;
@@ -710,6 +732,16 @@ function ChatContent() {
           ))}
         </div>
       ) : null}
+
+      {/* Raw centralized SDK toast events are rendered here so the UI stays driven by the same event tape. */}
+      <CentralizedToastOverlay
+        sessionId={state.currentSessionId}
+        rawSdkEventPayloads={
+          state.currentSessionId
+            ? state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId]
+            : undefined
+        }
+      />
 
       {/* === LEFT: History sidebar overlay (hamburger-toggled, absolute positioned) === */}
       <HistorySidebar />
@@ -874,7 +906,7 @@ function ChatContent() {
                 messageNode = null;
               } else {
                 messageNode = (
-                  <AssistantMessage
+                  <AssistantResponseCard
                     message={msg}
                     isContiguous={isContiguous}
                     interactiveEvents={state.interactiveEvents}
@@ -910,6 +942,14 @@ function ChatContent() {
               visibleMessages.length > 0 &&
               visibleMessages[visibleMessages.length - 1].role === "assistant"
             }
+            interactiveEvents={state.interactiveEvents}
+            messages={state.messages}
+            assistantTurnMessageId={state.assistantTurnMessageId}
+            currentSessionId={state.currentSessionId}
+            subagentsByParentMessageId={state.subagentsByParentMessageId}
+            subagentDetailsById={state.subagentDetailsById}
+            availableAgents={state.availableAgents}
+            todoItems={state.todoItems}
           />
 
           {/* Loading status while processing before first stream payload */}

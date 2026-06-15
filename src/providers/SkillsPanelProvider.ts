@@ -11,6 +11,7 @@ export class SkillsPanelProvider {
 
   private _view?: vscode.WebviewView;
   private _disposables: vscode.Disposable[] = [];
+  private _serviceListenersRegistered = false;
   private logger = createLogger(LoggingCategories.SKILL_SERVICE);
 
   constructor(
@@ -44,18 +45,7 @@ export class SkillsPanelProvider {
       this._disposables
     );
 
-    // Listen for skill changes
-    this.skillManagementService.onDidChangeSkills(() => {
-      this.logger.info('[SkillsPanel] onDidChangeSkills fired');
-      this._sendSkillsToWebview();
-    });
-
-    // Listen for initialization completion
-    // This handles the case where the webview is opened before initialization completes
-    this.skillManagementService.onInitialized(() => {
-      this.logger.info('[SkillsPanel] SkillManagementService initialized, sending skills to webview');
-      this._sendSkillsToWebview();
-    });
+    this.registerServiceListeners();
 
     // Send initial data after a short delay to ensure webview is ready
     setTimeout(() => {
@@ -183,6 +173,26 @@ export class SkillsPanelProvider {
     });
   }
 
+  private registerServiceListeners(): void {
+    if (this._serviceListenersRegistered) {
+      return;
+    }
+
+    this._serviceListenersRegistered = true;
+
+    this._disposables.push(
+      this.skillManagementService.onDidChangeSkills(() => {
+        this.logger.info('[SkillsPanel] onDidChangeSkills fired');
+        this._sendSkillsToWebview();
+      }),
+      this.skillManagementService.onInitialized(() => {
+        // Handles the case where the webview opens before initialization completes.
+        this.logger.info('[SkillsPanel] SkillManagementService initialized, sending skills to webview');
+        this._sendSkillsToWebview();
+      }),
+    );
+  }
+
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const nonce = getNonce();
 
@@ -229,6 +239,7 @@ export class SkillsPanelProvider {
 
   public dispose(): void {
     SkillsPanelProvider.currentPanel = undefined;
+    this._serviceListenersRegistered = false;
 
     while (this._disposables.length) {
       const disposable = this._disposables.pop();

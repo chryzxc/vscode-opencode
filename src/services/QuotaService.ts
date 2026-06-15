@@ -22,7 +22,7 @@ import type {
 // â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const DEFAULT_REFRESH_INTERVAL = 5 * 60 * 1000;
-const REQUEST_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 60_000;
 const USER_AGENT = "vscode-opencode-quota-monitor/1.0";
 const COPILOT_VERSION = "0.35.0";
 const COPILOT_EDITOR_VERSION = "vscode/1.107.0";

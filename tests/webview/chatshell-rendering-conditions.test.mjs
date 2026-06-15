@@ -41,7 +41,7 @@ test('session switching shows the session loading spinner', () => {
 test('empty state appears when there are no messages and no streaming activity', () => {
   assert.match(
     chatContentBody,
-    /state\.messages\.length === 0[\s\S]*!state\.streaming[\s\S]*!isAiResponding[\s\S]*<EmptyState \/>/,
+    /state\.messages\.length === 0[\s\S]*!state\.streaming[\s\S]*!isAiResponding[\s\S]*<EmptyState[\s\S]*currentSessionId=\{state\.currentSessionId\}/s,
     'empty chat should show the empty state card',
   );
 });
@@ -53,9 +53,9 @@ test('message routing sends user and system roles to dedicated components', () =
 
 test('permission responses render PermissionCard and assistants use AssistantMessage', () => {
   assert.match(chatContentBody, /else if \(\(msg as Record<string, unknown>\)\.type === "permission"\) \{[\s\S]*<PermissionCard perm=\{msg\} \/>/s, 'permission messages should render PermissionCard');
-  assert.match(chatContentBody, /const pendingAssistantTurnMessageId =[\s\S]*state\.assistantTurnMessageId\s*\?\?\s*null/s, 'ChatShell should track the pending assistant turn message id');
-  assert.match(chatContentBody, /const isLiveStreamingAssistantTurn =[\s\S]*state\.assistantTurnPending[\s\S]*pendingAssistantTurnMessageId === messageId/s, 'ChatShell should identify the live assistant turn by either active stream or pending turn state');
-  assert.match(chatContentBody, /if \(isLiveStreamingAssistantTurn\) \{[\s\S]*messageNode = null;[\s\S]*\} else \{[\s\S]*<AssistantMessage message=\{msg\} isContiguous=\{isContiguous\} \/>/s, 'ChatShell should skip the in-flight assistant turn in the message list and let the live streaming card own it');
+  assert.match(chatContentBody, /const isLiveStreamingAssistantTurn =[\s\S]*state\.streaming\?\.isActive[\s\S]*streamingMessageId === messageId/s, 'ChatShell should identify the live assistant turn from the active stream message id');
+  assert.match(chatContentBody, /<StreamingCard[\s\S]*assistantTurnMessageId=\{state\.assistantTurnMessageId\}/s, 'ChatShell should pass the assistant turn message id into the live streaming card');
+  assert.match(chatContentBody, /if \(isLiveStreamingAssistantTurn\) \{\s*messageNode = null;/s, 'ChatShell should skip the in-flight assistant turn in the message list');
 });
 
 test('thinking bubble appears while AI is responding before assistant text arrives', () => {
@@ -66,8 +66,13 @@ test('thinking bubble appears while AI is responding before assistant text arriv
   );
   assert.match(
     chatContentBody,
-    /const showAiResponseLoading =[\s\S]*isAiResponding[\s\S]*!state\.isCompacting[\s\S]*!hasAssistantText/s,
-    'thinking bubble should remain visible for activity-only streams until assistant text arrives',
+    /const isAiStillResponding = isAssistantRespondingInCurrentSession\([\s\S]*Boolean\(state\.streaming\?\.isActive\)[\s\S]*state\.assistantTurnPending/s,
+    'ChatShell should treat live stream activity and assistant-turn pending state as still responding',
+  );
+  assert.match(
+    chatContentBody,
+    /const showAiResponseLoading =[\s\S]*isAiStillResponding[\s\S]*!state\.isCompacting/s,
+    'thinking bubble should remain visible while the assistant turn is still active',
   );
   assert.match(
     chatContentBody,
@@ -79,7 +84,7 @@ test('thinking bubble appears while AI is responding before assistant text arriv
 test('streaming card is rendered at the bottom of the message list', () => {
   assert.match(
     chatContentBody,
-    /<StreamingCard[\s\S]*isContiguous=\{[\s\S]*\}/s,
+    /<StreamingCard[\s\S]*streaming=\{state\.streaming\}/s,
     'streaming card should still be rendered at the bottom of the message list',
   );
 });

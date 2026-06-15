@@ -219,7 +219,7 @@ test('QuotaService implements HTTPS request helpers', () => {
   assert.match(postBody, /resolve\(\{\s*body:\s*data,\s*statusCode:\s*res\.statusCode\s*\|\|\s*200\s*\}\)/, 'httpsPost should return HttpResponse with body and status');
 
   // Verify constants
-  assert.match(quotaServiceSource, /const\s+REQUEST_TIMEOUT_MS\s*=\s*10_000/, 'Should define 10s timeout');
+  assert.match(quotaServiceSource, /const\s+REQUEST_TIMEOUT_MS\s*=\s*60_000/, 'Should define 60s timeout');
   assert.match(quotaServiceSource, /const\s+USER_AGENT\s*=\s*"vscode-opencode-quota-monitor\/1\.0"/, 'Should define user agent');
 });
 
