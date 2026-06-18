@@ -15,6 +15,14 @@ const messageComponentsSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
   'MessageComponents.tsx',
 );
+const callOmoAgentStepSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'components', 'CallOmoAgentStep.tsx')],
+  'CallOmoAgentStep.tsx',
+);
+const messageHandlerSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'messageHandler.ts')],
+  'messageHandler.ts',
+);
 
 test('ProgressItem type includes diffStats field', () => {
   assert.match(
@@ -32,7 +40,7 @@ test('progressItemsFromSteps extracts diffStats from steps', () => {
   );
 });
 
-test('Activity filter keeps step lifecycle rows that carry user-facing details', () => {
+test('Activity filter excludes step lifecycle bookkeeping rows from the timeline', () => {
   assert.match(
     messageComponentsSource,
     /const\s+hasUserFacingActivity\s*=/,
@@ -45,8 +53,8 @@ test('Activity filter keeps step lifecycle rows that carry user-facing details',
   );
   assert.match(
     messageComponentsSource,
-    /!hasUserFacingActivity[\s\S]*normalizedPartType === "step-start"[\s\S]*normalizedPartType === "step-finish"/,
-    'Only empty step-start/step-finish bookkeeping rows should be filtered',
+    /normalizedPartType === "step-start"[\s\S]*normalizedPartType === "step-finish"/,
+    'step-start and step-finish rows should be filtered before they reach the progress timeline',
   );
 });
 
@@ -85,8 +93,8 @@ test('AssistantMessage renders diff stats when present', () => {
 test('AssistantMessage falls back to message edits diff stats for edit steps', () => {
   assert.match(
     messageComponentsSource,
-    /const\s+fallbackEdit\s*=\s*Array\.isArray\(message\?\.edits\)/,
-    'Should resolve a fallback edit record from message.edits'
+    /const\s+fallbackEdit\s*=\s*Array\.isArray\(fileChanges\)/,
+    'Should resolve a fallback edit record from fileChanges'
   );
   assert.match(
     messageComponentsSource,
@@ -189,7 +197,7 @@ test.skip('AssistantMessage subagent rows render activity and open detail modal'
 test('Raw data rendering handles typed edits', () => {
   assert.match(
     messageComponentsSource,
-    /edits\s*:\s*message\.edits\?\.map\(\(file\s*:\s*\{\s*file\s*:\s*string\s*\}\)\s*=>\s*file\.file\)/,
+    /edits\s*:\s*activityTimelineMessage\.edits\?\.map\(\(file\s*:\s*\{\s*file\s*:\s*string\s*\}\)\s*=>\s*file\.file\)/,
     'Raw data edits mapping should use explicit typing'
   );
 });
@@ -212,6 +220,67 @@ test('AssistantMessage renders activity source badges and toggles internal rows 
   );
 });
 
+test('call_omo_agent uses a dedicated activity step card with bounded markdown panels', () => {
+  assert.match(
+    callOmoAgentStepSource,
+    /call_omo_agent/,
+    'Dedicated call_omo_agent card should identify the tool by name',
+  );
+  assert.match(
+    callOmoAgentStepSource,
+    /Task ID/,
+    'Dedicated card should surface the task identifier',
+  );
+  assert.match(
+    callOmoAgentStepSource,
+    /Session ID/,
+    'Dedicated card should surface the session identifier',
+  );
+  assert.match(
+    callOmoAgentStepSource,
+    /MarkdownRenderer/,
+    'Dedicated card should use MarkdownRenderer for structured text',
+  );
+  assert.match(
+    callOmoAgentStepSource,
+    /max-h-52 overflow-y-auto/,
+    'Prompt markdown should be bounded with a max height',
+  );
+  assert.match(
+    callOmoAgentStepSource,
+    /Waiting for background_output/,
+    'Pending background calls should show a waiting hint instead of raw debug text',
+  );
+});
+
+test('call_omo_agent timeline rows use dedicated rendering and preserve session metadata', () => {
+  assert.match(
+    messageComponentsSource,
+    /event\.label\.toLowerCase\(\) === "call_omo_agent"/,
+    'Timeline should switch to the dedicated call_omo_agent renderer',
+  );
+  assert.match(
+    messageComponentsSource,
+    /<CallOmoAgentStep[\s\S]*callID=\{event\.callID\}/,
+    'Timeline should pass the tool call identifier into the dedicated card',
+  );
+  assert.match(
+    messageComponentsSource,
+    /sessionID:\s*event\.sessionID\s*\|\|\s*activityDetail\?\.sessionID/,
+    'Display events should preserve session identifiers for the activity card',
+  );
+  assert.match(
+    messageComponentsSource,
+    /startedAt:\s*event\.startedAt/,
+    'Display events should preserve start timestamps for the activity card',
+  );
+  assert.match(
+    messageHandlerSource,
+    /const\s+sessionID\s*=\s*[\s\S]*asString\(part\.sessionID\)[\s\S]*asString\(part\.sessionId\)/,
+    'Streaming tool steps should capture session IDs from the part payload',
+  );
+});
+
 test('AssistantMessage renders unified stepper reasoning rows and raw-debug parse status', () => {
   assert.match(
     messageComponentsSource,
@@ -220,8 +289,13 @@ test('AssistantMessage renders unified stepper reasoning rows and raw-debug pars
   );
   assert.match(
     messageComponentsSource,
-    /event\.kind === "activity".*"uppercase"/,
-    'Reasoning rows should keep a human label while activity labels remain uppercase',
+    /oc-refined-event-label reasoning/,
+    'Reasoning rows should keep a human label',
+  );
+  assert.match(
+    messageComponentsSource,
+    /oc-refined-event-label[\s\S]*"activity"/,
+    'Activity rows should use the activity label style',
   );
   assert.match(
     messageComponentsSource,
@@ -230,7 +304,7 @@ test('AssistantMessage renders unified stepper reasoning rows and raw-debug pars
   );
   assert.match(
     messageComponentsSource,
-    /hasRawResponseDebug/,
+    /showRawResponseDebug/,
     'Raw response visibility should be controlled',
   );
 });

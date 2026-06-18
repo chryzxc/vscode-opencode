@@ -7,6 +7,10 @@ const chatShellSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
   'ChatShell.tsx',
 );
+const messageComponentsSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
+  'MessageComponents.tsx',
+);
 const chatContentBody = extractFunctionBody(chatShellSource, 'function ChatContent()');
 
 test('isConnecting derives from init state and server status', () => {
@@ -53,7 +57,8 @@ test('message routing sends user and system roles to dedicated components', () =
 
 test('permission responses render PermissionCard and assistants use AssistantMessage', () => {
   assert.match(chatContentBody, /else if \(\(msg as Record<string, unknown>\)\.type === "permission"\) \{[\s\S]*<PermissionCard perm=\{msg\} \/>/s, 'permission messages should render PermissionCard');
-  assert.match(chatContentBody, /const isLiveStreamingAssistantTurn =[\s\S]*state\.streaming\?\.isActive[\s\S]*streamingMessageId === messageId/s, 'ChatShell should identify the live assistant turn from the active stream message id');
+  assert.match(chatContentBody, /const liveTurnMessageId =[\s\S]*state\.assistantTurnMessageId \?\? streamingMessageId/s, 'ChatShell should use the assistant turn message id when suppressing the live assistant turn');
+  assert.match(chatContentBody, /const isLiveStreamingAssistantTurn =[\s\S]*state\.streaming\?\.isActive[\s\S]*liveTurnMessageId === messageId/s, 'ChatShell should identify the live assistant turn from the active turn id');
   assert.match(chatContentBody, /<StreamingCard[\s\S]*assistantTurnMessageId=\{state\.assistantTurnMessageId\}/s, 'ChatShell should pass the assistant turn message id into the live streaming card');
   assert.match(chatContentBody, /if \(isLiveStreamingAssistantTurn\) \{\s*messageNode = null;/s, 'ChatShell should skip the in-flight assistant turn in the message list');
 });
@@ -86,6 +91,24 @@ test('streaming card is rendered at the bottom of the message list', () => {
     chatContentBody,
     /<StreamingCard[\s\S]*streaming=\{state\.streaming\}/s,
     'streaming card should still be rendered at the bottom of the message list',
+  );
+});
+
+test('live streaming assistant card stays activity-only while the final message owns the response block', () => {
+  assert.match(
+    messageComponentsSource,
+    /const isStreamingOnlyCard = isLiveStreamingCard;/,
+    'live streaming cards should opt into activity-only mode',
+  );
+  assert.match(
+    messageComponentsSource,
+    /const showResponseSection =[\s\S]*timelineDisplayEvents\.length > 0/s,
+    'activity-only streaming cards should still render the activity timeline',
+  );
+  assert.match(
+    messageComponentsSource,
+    /!isStreamingOnlyCard && showRawResponseDebug/,
+    'activity-only streaming cards should not render raw response debug content',
   );
 });
 

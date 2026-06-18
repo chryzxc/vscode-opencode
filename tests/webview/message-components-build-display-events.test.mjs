@@ -44,3 +44,23 @@ test('buildDisplayEvents adds isImportant flag for events with viewDiffFile', ()
     'Should check for viewDiffFile when determining importance'
   );
 });
+
+test('assistant turn cards scope centralized raw payloads strictly to the owning message', () => {
+  assert.match(
+    messageComponentsSource,
+    /const\s+centralizedSessionId\s*=\s*[\s\S]*currentSessionId\s*\|\|[\s\S]*sessionID/,
+    'MessageComponents should resolve a session-scoped raw payload key from the owning message'
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /rawSdkEventPayloadsBySessionId\?\.\[centralizedSessionId\]/,
+    'MessageComponents should read raw payloads from the owning session bucket'
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /sdkPayloads\.length > 0 \? sdkPayloads : undefined/,
+    'MessageComponents should keep empty payload lists scoped instead of falling back broadly'
+  );
+});

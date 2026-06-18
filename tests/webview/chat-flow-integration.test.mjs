@@ -64,7 +64,11 @@ test('complete message flow: send -> process -> stream -> receive -> display', (
   assert.match(inputBody, /type:\s*["']sendMessage["']/, 'flow starts with sendMessage event');
   assert.match(inputBody, /files:\s*currentFiles/, 'send payload includes files');
   assert.match(inputBody, /contexts:\s*currentContexts/, 'send payload includes contexts');
-  assert.match(inputBody, /role:\s*["']user["']/, 'optimistic user message is added immediately');
+  assert.match(
+    inputBody,
+    /TEMPORARY: do not optimistically render the outgoing user message/,
+    'the send flow should wait for the centralized session tape before rendering the user turn',
+  );
 
   // 2. Processing state is set
   assert.match(inputBody, /dispatch\(\s*\{\s*type:\s*["']SET_PROCESSING["']\s*,\s*payload:\s*true\s*\}\s*\)/, 'sendMessage triggers SET_PROCESSING(true)');
@@ -83,7 +87,7 @@ test('complete message flow: send -> process -> stream -> receive -> display', (
   assert.match(reducerBody, /case\s+["']FINISH_STREAMING["']:/, 'reducer handles FINISH_STREAMING action');
 
   // 6. Final message is displayed
-  assert.match(messageComponentsSource, /role\s*===\s*["']assistant["'][\s\S]*message\.content/, 'final assistant message is rendered');
+  assert.match(messageComponentsSource, /role\s*===\s*["']assistant["'][\s\S]*AssistantResponseCard/, 'final assistant message is rendered');
 });
 
 test('message flow handles concurrent sends with queue management', () => {
@@ -180,7 +184,7 @@ test('subagent flow handles multiple concurrent subagents with deduplication', (
 
 test('centralized debug data keeps raw event stream and raw rehydrated data separate', () => {
   const centralizedDebugStart = messageComponentsSource.indexOf(
-    'const centralizedDebugData = useMemo<CentralizedDebugData | null>(',
+    'const centralizedDebugData = useMemo<CentralizedDebugData>(',
   );
   const centralizedDebugEnd = messageComponentsSource.indexOf(
     'const hasPendingReasoningDisplayEvent',
@@ -193,13 +197,13 @@ test('centralized debug data keeps raw event stream and raw rehydrated data sepa
 
   assert.match(
     messageComponentsSource,
-    /useMemo<CentralizedDebugData \| null>\(/,
+    /useMemo<CentralizedDebugData>\(/,
     'the centralized debug payload should be explicitly typed',
   );
   assert.match(
     centralizedDebugBlock,
-    /rawEventStream[\s\S]*rawRehydrated/,
-    'the centralized debug payload should expose both raw event stream and raw rehydrated sources',
+    /rawEventStream/,
+    'the centralized debug payload should expose the raw event stream source',
   );
   assert.doesNotMatch(
     centralizedDebugBlock,
@@ -212,18 +216,18 @@ test('centralized debug data keeps raw event stream and raw rehydrated data sepa
   );
   assert.match(
     centralizedDebugBlock,
-    /rawSdkEventPayloads:[\s\S]*activityTimelineStreaming\.rawSdkEventPayloads/,
+    /rawSdkEventPayloads:[\s\S]*centralizedRawSdkEventPayloads/,
     'the event stream source should keep its raw SDK payload tape',
   );
   assert.match(
-    centralizedDebugBlock,
-    /rawMessages:[\s\S]*rawMessagesBySessionId/,
-    'the rehydrated source should keep the raw session history payload',
+    messageComponentsSource,
+    /hasCentralizedRawEventStream[\s\S]*<DebugObjectView value=\{centralizedDebugData\} \/>/,
+    'the centralized debug payload should render as a nested object tree when raw events exist',
   );
   assert.match(
     messageComponentsSource,
-    /<DebugObjectView value=\{centralizedDebugData\} \/>/,
-    'the centralized debug payload should render as a nested object tree instead of a string blob',
+    /hasCentralizedRawEventStream[\s\S]*<EmptyState[\s\S]*serverStatus=\{serverStatus\}[\s\S]*messagesBySessionId=\{messagesBySessionId\}/,
+    'the centralized debug panel should fall back to the existing empty state screen when no raw events are present',
   );
   assert.doesNotMatch(
     messageComponentsSource,
@@ -257,7 +261,7 @@ test('response card prefers raw sdk payload before transformed message fields', 
   );
   assert.match(
     responseCardBlock,
-    /const baseContent = getFinalAssistantResponseText\(rawResponse \?\? message\.rawResponse\);/,
+    /const baseContent = getFinalAssistantResponseTextFromRawSdkEventPayloads\([\s\S]*?rawSdkEventPayloads[\s\S]*?\);/,
     'the response card should prefer the raw SDK response helper before any transformed message fields',
   );
   assert.doesNotMatch(

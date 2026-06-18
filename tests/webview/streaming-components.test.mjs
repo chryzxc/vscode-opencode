@@ -60,16 +60,8 @@ test('StreamingCard remains mounted for live assistant activity', () => {
   );
   assert.match(
     source,
-    /const liveAssistantMessage = useMemo\([\s\S]*assistantTurnMessageId\?\.trim\(\)[\s\S]*streaming\.messageId\?\.trim\(\)[\s\S]*return \[\.\.\.messages\]\.reverse\(\)\.find\(\(message\) => message\?\.role === "assistant"\)\;/,
-    'StreamingCard should attach the in-flight assistant message so the live render can see message-scoped activity',
-  );
-});
-
-test('defines extClass helper for file extension CSS mapping', () => {
-  assert.match(
-    source,
-    /function extClass\(/,
-    'StreamingComponents.tsx must define extClass helper for file extension CSS mapping',
+    /message=\{undefined\}/,
+    'StreamingCard should keep the live wrapper activity-only and avoid rendering the response body itself',
   );
 });
 

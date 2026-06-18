@@ -7,6 +7,9 @@ import {
   shouldPreferCachedSwitchMessages,
   resolveStreamingContentUpdate,
   coalesceAdjacentAssistantHistoryMessages,
+  getCentralizedAssistantContentChunksFromRawSdkEventPayloads,
+  getCentralizedAssistantTurnCompletionIndex,
+  isAiResponseEvent,
 } from './messageHandler';
 
 describe('normalizeMessage - responseType handling', () => {
@@ -41,6 +44,37 @@ describe('normalizeMessage - responseType handling', () => {
     assert.ok(result, 'normalizeMessage should return a message');
     const resultRecord = result as Record<string, unknown>;
     assert.ok(resultRecord.responseType || resultRecord.structuredOutput, 'Should handle responseType fields');
+  });
+});
+
+describe('coalesceAdjacentAssistantHistoryMessages - rawSdkEventPayloads ordering', () => {
+  it('preserves raw event order when assistant bursts are coalesced', () => {
+    const result = coalesceAdjacentAssistantHistoryMessages([
+      {
+        role: 'assistant',
+        id: 'msg-1',
+        rawSdkEventPayloads: [
+          { id: 'evt-1', type: 'message.part.updated', properties: { time: 1 } },
+        ],
+        parts: [{ type: 'text', text: 'first' }],
+      } as Message,
+      {
+        role: 'assistant',
+        id: 'msg-1',
+        rawSdkEventPayloads: [
+          { id: 'evt-2', type: 'message.part.updated', properties: { time: 2 } },
+        ],
+        parts: [{ type: 'text', text: 'first again' }],
+      } as Message,
+    ]);
+
+    assert.strictEqual(result.length, 1);
+    assert.deepStrictEqual(
+      (result[0]?.rawSdkEventPayloads ?? []).map(
+        (event) => (event as Record<string, unknown>).id,
+      ),
+      ['evt-1', 'evt-2'],
+    );
   });
 });
 
@@ -188,6 +222,479 @@ describe('normalizeMessage - structuredOutput handling', () => {
     assert.ok(
       (result as Record<string, unknown>).structuredOutput,
       'structuredOutput should still be preserved when backfilled from streaming'
+    );
+  });
+
+  it('should render the final assistant message from the centralized StructuredOutput tool part', () => {
+    const inputMessage: Message = {
+      id: 'msg-final-centralized-response',
+      role: 'assistant',
+      rawSdkEventPayloads: [
+        {
+          id: 'evt-final-1',
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-test',
+            part: {
+              type: 'tool',
+              tool: 'StructuredOutput',
+              callID: 'call-test',
+              state: {
+                status: 'completed',
+                input: {
+                  responseType: 'message',
+                  message: 'Hey! What can I help you with today?',
+                },
+                output: 'Structured output captured successfully.',
+                metadata: {
+                  valid: true,
+                },
+                title: 'Structured Output',
+                time: {
+                  start: 1781621629855,
+                  end: 1781621629884,
+                },
+              },
+              id: 'prt-final-1',
+              sessionID: 'ses-test',
+              messageID: 'msg-final-centralized-response',
+            },
+          },
+          source: '/event',
+          sessionId: 'ses-test',
+        },
+      ],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should return a message');
+    assert.strictEqual(
+      result?.content,
+      'Hey! What can I help you with today?',
+      'the assistant body should come from the centralized StructuredOutput tool payload',
+    );
+
+    const normalizedRecord = result as Record<string, unknown>;
+    const structuredOutput = normalizedRecord.structuredOutput as Record<string, unknown> | undefined;
+    assert.ok(structuredOutput, 'structuredOutput should be reconstructed from centralized data');
+    assert.strictEqual(
+      structuredOutput?.responseType,
+      'message',
+      'structuredOutput.responseType should stay message-like',
+    );
+    assert.strictEqual(
+      structuredOutput?.message,
+      'Hey! What can I help you with today?',
+      'structuredOutput.message should come from the centralized tool input',
+    );
+  });
+
+  it('should extract the final assistant response text directly from centralized raw SDK payloads', () => {
+    const rawSdkEventPayloads = [
+      {
+        id: 'evt-final-1',
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          part: {
+            type: 'tool',
+            tool: 'StructuredOutput',
+            callID: 'call-test',
+            state: {
+              status: 'completed',
+              input: {
+                responseType: 'message',
+                message: 'Hey! What can I help you with today?',
+              },
+              output: 'Structured output captured successfully.',
+              metadata: {
+                valid: true,
+              },
+              title: 'Structured Output',
+              time: {
+                start: 1781621629855,
+                end: 1781621629884,
+              },
+            },
+            id: 'prt-final-1',
+            sessionID: 'ses-test',
+            messageID: 'msg-final-centralized-response',
+          },
+        },
+        source: '/event',
+        sessionId: 'ses-test',
+      },
+    ];
+
+    assert.strictEqual(
+      getFinalAssistantResponseTextFromRawSdkEventPayloads(rawSdkEventPayloads),
+      'Hey! What can I help you with today?',
+      'the raw centralized payload helper should surface the final assistant body',
+    );
+  });
+
+  it('should not fall back to reasoning-like text parts when no structured assistant message exists', () => {
+    const rawSdkEventPayloads = [
+      {
+        id: 'evt-reasoning-1',
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          part: {
+            type: 'reasoning',
+            text: 'The user just said "hey" - a casual greeting. I should respond concisely and offer help.',
+            messageID: 'msg-reasoning-only',
+            sessionID: 'ses-test',
+            id: 'prt-reasoning-1',
+          },
+        },
+        source: '/event',
+        sessionId: 'ses-test',
+      },
+      {
+        id: 'evt-reasoning-2',
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          part: {
+            type: 'step-finish',
+            messageID: 'msg-reasoning-only',
+            sessionID: 'ses-test',
+            id: 'prt-reasoning-2',
+          },
+        },
+        source: '/event',
+        sessionId: 'ses-test',
+      },
+    ];
+
+    assert.strictEqual(
+      getFinalAssistantResponseTextFromRawSdkEventPayloads(rawSdkEventPayloads),
+      '',
+      'reasoning or step-finish text should not be promoted into the assistant response body',
+    );
+  });
+
+  it('should extract sync-backed AI response text and classify it as an AI response event', () => {
+    const syncPayload = {
+      type: 'sync',
+      syncEvent: {
+        type: 'message.part.updated.1',
+        id: 'evt-sync-response',
+        seq: 0,
+        aggregateID: 'ses-test',
+        data: {
+          sessionID: 'ses-test',
+          part: {
+            id: 'prt-sync-response',
+            messageID: 'msg-sync-response',
+            sessionID: 'ses-test',
+            type: 'text',
+            text: 'I have a thorough picture. Let me collect the background agents\' findings to incorporate any additional detail.',
+            time: {
+              start: 1781707448968,
+              end: 1781707448987,
+            },
+          },
+          time: 1781707448987,
+        },
+      },
+      id: 'evt-sync-response',
+      source: '/global/event',
+      sessionId: 'ses-test',
+    };
+
+    assert.strictEqual(isAiResponseEvent(syncPayload), true);
+    assert.strictEqual(
+      getFinalAssistantResponseTextFromRawSdkEventPayloads([syncPayload]),
+      'I have a thorough picture. Let me collect the background agents\' findings to incorporate any additional detail.',
+    );
+  });
+
+  it('should classify wrapped payload.syncEvent text parts as AI response events', () => {
+    const payload = {
+      directory: '/Users/christian/Projects/jobfinder-bot',
+      project: '8591477d95f25cab098bd660b729730c1af8173f',
+      payload: {
+        type: 'sync',
+        syncEvent: {
+          type: 'message.part.updated.1',
+          id: 'evt-ed609ab09001zagHGrjbLN3WzD',
+          seq: 0,
+          aggregateID: 'ses-129f784e0ffeFWPpZ4BLGo0te0',
+          data: {
+            sessionID: 'ses-129f784e0ffeFWPpZ4BLGo0te0',
+            part: {
+              id: 'prt-ed609aaec001y1J3pEatSpK0Mg',
+              messageID: 'msg-ed60974ab001TQfBxGnPSZXjC7',
+              sessionID: 'ses-129f784e0ffeFWPpZ4BLGo0te0',
+              type: 'text',
+              text: '3 background agents launched. Let me read the key files directly while they work.',
+              time: {
+                start: 1781707418348,
+                end: 1781707418377,
+              },
+            },
+            time: 1781707418377,
+          },
+        },
+        id: 'evt-ed609ab09001zagHGrjbLN3WzD',
+      },
+      sessionId: 'ses-129f784e0ffeFWPpZ4BLGo0te0',
+    };
+
+    assert.strictEqual(isAiResponseEvent(payload), true);
+    assert.strictEqual(
+      getFinalAssistantResponseTextFromRawSdkEventPayloads([payload]),
+      '3 background agents launched. Let me read the key files directly while they work.',
+    );
+  });
+
+  it('should return the longest final assistant text snapshot for the latest message', () => {
+    const shortPayload = {
+      payload: {
+        type: 'sync',
+        syncEvent: {
+          data: {
+            part: {
+              messageID: 'msg-long-response',
+              type: 'text',
+              text: 'I have a complete picture.',
+            },
+          },
+        },
+      },
+    };
+    const longPayload = {
+      payload: {
+        type: 'sync',
+        syncEvent: {
+          data: {
+            part: {
+              messageID: 'msg-long-response',
+              type: 'text',
+              text: 'I have a complete picture. Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+            },
+          },
+        },
+      },
+    };
+
+    assert.strictEqual(
+      getFinalAssistantResponseTextFromRawSdkEventPayloads([shortPayload, longPayload]),
+      'I have a complete picture. Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+    );
+  });
+
+  it('should concatenate sequential text chunks for the latest assistant message', () => {
+    const firstChunk = {
+      payload: {
+        type: 'sync',
+        syncEvent: {
+          data: {
+            part: {
+              messageID: 'msg-chunked-response',
+              type: 'text',
+              text: 'I have a complete picture. ',
+            },
+          },
+        },
+      },
+    };
+    const secondChunk = {
+      payload: {
+        type: 'sync',
+        syncEvent: {
+          data: {
+            part: {
+              messageID: 'msg-chunked-response',
+              type: 'text',
+              text: 'Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+            },
+          },
+        },
+      },
+    };
+
+    assert.strictEqual(
+      getFinalAssistantResponseTextFromRawSdkEventPayloads([firstChunk, secondChunk]),
+      'I have a complete picture. Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+    );
+  });
+
+  it('should stop assistant content extraction at the first completion marker for the same turn', () => {
+    const rawSdkEventPayloads = [
+      {
+        id: 'evt-before-finish',
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          part: {
+            id: 'prt-before-finish',
+            messageID: 'msg-final-turn',
+            sessionID: 'ses-test',
+            type: 'text',
+            text: 'I have a complete picture.',
+          },
+        },
+      },
+      {
+        id: 'evt-step-finish',
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          part: {
+            id: 'prt-step-finish',
+            messageID: 'msg-final-turn',
+            sessionID: 'ses-test',
+            type: 'step-finish',
+          },
+        },
+      },
+      {
+        id: 'evt-after-finish',
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          part: {
+            id: 'prt-after-finish',
+            messageID: 'msg-final-turn',
+            sessionID: 'ses-test',
+            type: 'text',
+            text: 'Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+          },
+        },
+      },
+    ];
+
+    assert.strictEqual(
+      getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads),
+      1,
+      'the first terminal marker should define the response boundary',
+    );
+    assert.deepStrictEqual(
+      getCentralizedAssistantContentChunksFromRawSdkEventPayloads(rawSdkEventPayloads),
+      ['I have a complete picture.'],
+      'chunks after the completion marker should be ignored for the final response body',
+    );
+  });
+
+  it('should still extract sync-backed assistant text when no explicit completion marker exists', () => {
+    const syncPayload = {
+      type: 'sync',
+      syncEvent: {
+        type: 'message.part.updated.1',
+        id: 'evt-sync-response',
+        seq: 0,
+        aggregateID: 'ses-test',
+        data: {
+          sessionID: 'ses-test',
+          part: {
+            id: 'prt-sync-response',
+            messageID: 'msg-sync-response',
+            sessionID: 'ses-test',
+            type: 'text',
+            text: 'I have a thorough picture. Let me collect the background agents\' findings to incorporate any additional detail.',
+            time: {
+              start: 1781707448968,
+              end: 1781707448987,
+            },
+          },
+          time: 1781707448987,
+        },
+      },
+      id: 'evt-sync-response',
+      source: '/global/event',
+      sessionId: 'ses-test',
+    };
+
+    assert.deepStrictEqual(
+      getCentralizedAssistantContentChunksFromRawSdkEventPayloads([syncPayload]),
+      ['I have a thorough picture. Let me collect the background agents\' findings to incorporate any additional detail.'],
+      'sync-only payloads should still produce the assistant body',
+    );
+  });
+
+  it('should keep centralized assistant text as ordered chunks instead of merging them', () => {
+    const rawSdkEventPayloads = [
+      {
+        payload: {
+          type: 'sync',
+          syncEvent: {
+            data: {
+              part: {
+                type: 'text',
+                text: 'I have a complete picture. ',
+              },
+            },
+          },
+        },
+      },
+      {
+        payload: {
+          type: 'sync',
+          syncEvent: {
+            data: {
+              part: {
+                type: 'text',
+                text: 'Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+              },
+            },
+          },
+        },
+      },
+    ];
+
+    assert.deepStrictEqual(
+      getCentralizedAssistantContentChunksFromRawSdkEventPayloads(rawSdkEventPayloads),
+      [
+        'I have a complete picture.',
+        'Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+      ],
+    );
+  });
+
+  it('should prefer raw assistant text chunks over a shorter structured output message', () => {
+    const textChunk = {
+      payload: {
+        type: 'sync',
+        syncEvent: {
+          data: {
+            part: {
+              messageID: 'msg-structured-preferred',
+              type: 'text',
+              text: 'I have a complete picture. Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+            },
+          },
+        },
+      },
+    };
+    const structuredPayload = {
+      payload: {
+        type: 'sync',
+        syncEvent: {
+          data: {
+            part: {
+              type: 'tool',
+              tool: 'StructuredOutput',
+              state: {
+                input: {
+                  responseType: 'message',
+                  message: '## JobFinder Bot — Codebase Summary\n\nA **Python job-scraping & auto-apply automation tool** with a desktop GUI.',
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    assert.strictEqual(
+      getCentralizedAssistantContentChunksFromRawSdkEventPayloads([textChunk, structuredPayload]),
+      [
+        'I have a complete picture. Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+      ],
     );
   });
 

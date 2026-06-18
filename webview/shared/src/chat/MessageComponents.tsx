@@ -6,6 +6,7 @@ import {
   memo,
   type CSSProperties,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Check,
   ChevronDown,
@@ -29,6 +30,8 @@ import {
   FileCode,
   ArrowUpRight,
   Undo2,
+  CheckSquare,
+  Circle,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -40,15 +43,22 @@ import { StepIndicator } from "@/components/ui/StepIndicator";
 import { cn, formatDuration, toWorkspaceRelativePath } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
+import { CallOmoAgentStep } from "./components/activity-steps/CallOmoAgentStep";
+import { BackgroundOutputStep } from "./components/activity-steps/BackgroundOutputStep";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 import { DiffStats } from "./DiffStats";
-import { asString } from "./lib/messageHandler";
 import {
-  getFinalAssistantResponseTextFromRawSdkEventPayloads,
-  getInteractiveEventsFromRawSdkEventPayloads,
-} from "./lib/rawResponse";
+  asString,
+  getCentralizedAssistantContentChunksFromRawSdkEventPayloads,
+  getCentralizedEventPart,
+  getCentralizedAssistantTurnCompletionIndex,
+  normalizeCentralizedEventPayloads,
+  structuredOutputFromRawSdkEventPayloads,
+  isAiResponseEvent,
+} from "./lib/messageHandler";
+import { hasSystemMessagePatternInText } from "./lib/store";
 import logger, { getGlobalShowBrowserConsole } from "./lib/logger";
 import { FILE_MENTION_REGEX } from "./PanelComponents";
 
@@ -931,7 +941,13 @@ function TerminalBlockWithOutput({
     }
   }
 
-  return <TerminalBlock command={command} output={output} />;
+  return (
+    <CollapsedTerminalBlockPreview
+      title="Bash output"
+      command={command}
+      output={output}
+    />
+  );
 }
 
 const FALLBACK_ICON_COLOR = "#6e7681";
@@ -1269,7 +1285,7 @@ function collectMessageIdentityCandidates(message?: Message): Set<string> {
   const info = asRecord(message.info);
   const values = [
     message.id,
-    message.messageId,
+    (message as any).messageId,
     info?.id,
     info?.messageId,
   ];
@@ -1367,81 +1383,6 @@ function collectReasoningFingerprints(message?: Message): Set<string> {
   return fingerprints;
 }
 
-function isLowValueInteractiveBodyText(value: string): boolean {
-  const normalized = normalizeComparableText(value);
-  if (!normalized) {
-    return true;
-  }
-  return (
-    normalized === "running question" ||
-    normalized === "question" ||
-    normalized === "question for you" ||
-    normalized === "quick input" ||
-    normalized === "wants" ||
-    normalized === "want" ||
-    normalized === "wants to" ||
-    normalized === "ask" ||
-    normalized === "asks" ||
-    normalized === "asking" ||
-    normalized === "awaiting your answer" ||
-    normalized === "awaiting your response" ||
-    normalized === "waiting for your answer" ||
-    normalized === "waiting for your response"
-  );
-}
-
-function formatQuestionPromptForAssistant(
-  prompt: string,
-  kind: "question" | "confirm" | "message" | "quick_actions" = "question",
-): string {
-  const trimmed = prompt.trim();
-  if (!trimmed) {
-    return "";
-  }
-  return trimmed;
-}
-
-function questionPromptFromInteractiveEvents(
-  events?: InteractiveEvent[],
-): string | undefined {
-  if (!Array.isArray(events) || events.length === 0) {
-    return undefined;
-  }
-
-  for (const event of events) {
-    if (event.type === "question" || event.type === "confirm") {
-      const prompt = firstNonEmptyString(
-        event.contextMessage,
-        event.question,
-        event.title,
-      );
-      if (prompt) {
-        return formatQuestionPromptForAssistant(prompt, event.type);
-      }
-      continue;
-    }
-    if (event.type === "message") {
-      const prompt = firstNonEmptyString(
-        event.contextMessage,
-        event.message,
-        event.title,
-      );
-      if (prompt) {
-        return prompt;
-      }
-      continue;
-    }
-    if (event.type === "quick_actions") {
-      const prompt = firstNonEmptyString(event.contextMessage, event.title);
-      if (prompt) {
-        return formatQuestionPromptForAssistant(prompt, "quick_actions");
-      }
-    }
-  }
-
-  return undefined;
-}
-
 function hasQuestionLikeInteractiveContent(message?: Message): boolean {
   if (!message) {
     return false;
@@ -1494,11 +1435,11 @@ function rawMessagePartsFromRawSdkEventPayloads(
   const parts: MessagePart[] = [];
   for (const payload of rawSdkEventPayloads) {
     const eventRec = asRecord(payload);
-    if (!eventRec || asString(eventRec.type) !== "message.part.updated") {
+    if (!eventRec) {
       continue;
     }
-    const propertiesRec = asRecord(eventRec.properties);
-    const partRec = asRecord(propertiesRec?.part) ?? asRecord(eventRec.part);
+
+    const partRec = getCentralizedEventPart(eventRec);
     if (partRec) {
       parts.push(partRec as MessagePart);
     }
@@ -1551,55 +1492,6 @@ function modelLabel(message?: Message): string {
     | undefined;
   if (model && provider) return `${provider}/${model}`;
   return model ?? provider ?? "assistant";
-}
-
-/**
- * Returns the text to display in the AI response card body.
- *
- * *** stream.content is never used *** — it carries transitional text that
- * leaks reasoning/planning content into the response card. The response body
- * always derives from the raw SDK response helper plus prompt-aware guards.
- *
- * This is one layer of a three-layer defense against reasoning leaks:
- *   1. Extension — StructuredOutputProcessor populates message.content from
- *      structured fields (plan.summary / plan.intro), not from raw parts.
- *   2. Webview — getMessageContent ignores stream.content; always uses message.
- *   3. Webview — showResponseBody hides the markdown body during live streaming.
- */
-function getMessageContent(
-  rawSdkEventPayloads?: unknown[],
-): string {
-  const baseContent = getFinalAssistantResponseTextFromRawSdkEventPayloads(
-    rawSdkEventPayloads,
-  );
-  if (!baseContent) {
-    return "";
-  }
-
-  const questionPrompt = questionPromptFromInteractiveEvents(
-    getInteractiveEventsFromRawSdkEventPayloads(rawSdkEventPayloads),
-  );
-  if (!questionPrompt) {
-    return baseContent;
-  }
-
-  if (isLowValueInteractiveBodyText(baseContent)) {
-    return questionPrompt;
-  }
-
-  const promptNorm = normalizeComparableText(questionPrompt);
-  const bodyNorm = normalizeComparableText(baseContent);
-  if (
-    promptNorm &&
-    bodyNorm &&
-    (bodyNorm === promptNorm ||
-      bodyNorm.includes(promptNorm) ||
-      promptNorm.includes(bodyNorm))
-  ) {
-    return questionPrompt;
-  }
-
-  return baseContent;
 }
 
 type RawDebugParseStatus = "parsed" | "empty" | "unparseable" | "truncated";
@@ -1891,12 +1783,441 @@ function DebugObjectView({ value }: DebugObjectViewProps) {
   );
 }
 
-type ThoughtItem = { key: string; text: string };
+type MarkdownPreviewModalProps = {
+  isOpen: boolean;
+  title: string;
+  content: string;
+  onClose: () => void;
+};
+
+function MarkdownPreviewModal({
+  isOpen,
+  title,
+  content,
+  onClose,
+}: MarkdownPreviewModalProps) {
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-3 backdrop-blur-sm">
+      <button
+        type="button"
+        className="absolute inset-0 h-full w-full cursor-default"
+        onClick={onClose}
+        aria-label={`Close ${title} preview`}
+      />
+      <div
+        className="oc-modal-shell relative z-50 flex h-[min(92vh,900px)] min-h-0 w-full max-w-5xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <div className="oc-modal-header flex shrink-0 items-start justify-between gap-3 bg-oc-panel-soft/70 p-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold">{title}</span>
+              <span className="rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] oc-text-secondary">
+                preview
+              </span>
+            </div>
+            <div className="mt-1 text-xs oc-text-secondary">
+              Full rendered markdown content
+            </div>
+          </div>
+          <button
+            type="button"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
+            onClick={onClose}
+            aria-label="Close markdown preview"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <div className="rounded-lg border border-oc-border-soft bg-oc-bg/20 p-4">
+            <MarkdownRenderer content={content} className="markdown-body" />
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+type CollapsedMarkdownPreviewProps = {
+  title: string;
+  content: string;
+  className?: string;
+};
+
+function CollapsedMarkdownPreview({
+  title,
+  content,
+  className,
+}: CollapsedMarkdownPreviewProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const hasContent = content.trim().length > 0;
+
+  if (!hasContent) {
+    return null;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setIsOpen(true)}
+        className={cn(
+          "group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60",
+          className,
+        )}
+        aria-label={`Open ${title} preview`}
+      >
+        <div className="relative max-h-[140px] overflow-hidden p-2">
+          <div className="max-h-[140px] overflow-hidden pr-1">
+            <MarkdownRenderer content={content} className="markdown-body" />
+          </div>
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-oc-bg-soft via-oc-bg-soft/90 to-transparent" />
+        </div>
+        <div className="pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-oc-border-soft bg-oc-bg-soft/90 shadow-sm">
+          <ChevronDown className="h-3 w-3 oc-text-secondary" />
+        </div>
+      </button>
+      <MarkdownPreviewModal
+        isOpen={isOpen}
+        title={title}
+        content={content}
+        onClose={() => setIsOpen(false)}
+      />
+    </>
+  );
+}
+
+type TerminalBlockPreviewModalProps = {
+  isOpen: boolean;
+  title: string;
+  command: string;
+  output?: string;
+  onClose: () => void;
+};
+
+function TerminalBlockPreviewModal({
+  isOpen,
+  title,
+  command,
+  output,
+  onClose,
+}: TerminalBlockPreviewModalProps) {
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-3 backdrop-blur-sm">
+      <button
+        type="button"
+        className="absolute inset-0 h-full w-full cursor-default"
+        onClick={onClose}
+        aria-label={`Close ${title} preview`}
+      />
+      <div
+        className="oc-modal-shell relative z-50 flex h-[min(92vh,900px)] min-h-0 w-full max-w-5xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <div className="oc-modal-header flex shrink-0 items-start justify-between gap-3 bg-oc-panel-soft/70 p-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold">{title}</span>
+              <span className="rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] oc-text-secondary">
+                preview
+              </span>
+            </div>
+            <div className="mt-1 text-xs oc-text-secondary">
+              Full bash command and captured output
+            </div>
+          </div>
+          <button
+            type="button"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
+            onClick={onClose}
+            aria-label="Close bash preview"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <TerminalBlock command={command} output={output} className="shadow-none" />
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+type CollapsedTerminalBlockPreviewProps = {
+  title: string;
+  command: string;
+  output?: string;
+  className?: string;
+};
+
+function CollapsedTerminalBlockPreview({
+  title,
+  command,
+  output,
+  className,
+}: CollapsedTerminalBlockPreviewProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const hasCommand = command.trim().length > 0;
+  if (!hasCommand) {
+    return null;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setIsOpen(true)}
+        className={cn(
+          "group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60",
+          className,
+        )}
+        aria-label={`Open ${title} preview`}
+      >
+        <div className="relative max-h-[140px] overflow-hidden p-2">
+          <TerminalBlock command={command} output={output} className="pointer-events-none" />
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-oc-bg-soft via-oc-bg-soft/90 to-transparent" />
+        </div>
+        <div className="pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-oc-border-soft bg-oc-bg-soft/90 shadow-sm">
+          <ChevronDown className="h-3 w-3 oc-text-secondary" />
+        </div>
+      </button>
+      <TerminalBlockPreviewModal
+        isOpen={isOpen}
+        title={title}
+        command={command}
+        output={output}
+        onClose={() => setIsOpen(false)}
+      />
+    </>
+  );
+}
+
+type CollapsedSearchBlockPreviewProps = {
+  title: string;
+  pattern: string;
+  patternInHeader?: boolean;
+  scope?: string;
+  include?: string;
+  path?: string;
+  output?: string;
+  outputMode?: string;
+  headLimit?: number;
+};
+
+type SearchBlockPreviewModalProps = CollapsedSearchBlockPreviewProps & {
+  isOpen: boolean;
+  onClose: () => void;
+};
+
+function SearchBlockPreviewModal({
+  isOpen,
+  onClose,
+  title,
+  pattern,
+  patternInHeader,
+  scope,
+  include,
+  path,
+  output,
+  outputMode,
+  headLimit,
+}: SearchBlockPreviewModalProps) {
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-3 backdrop-blur-sm">
+      <button
+        type="button"
+        className="absolute inset-0 h-full w-full cursor-default"
+        onClick={onClose}
+        aria-label={`Close ${title} details`}
+      />
+      <div
+        className="oc-modal-shell relative z-50 flex h-[min(92vh,900px)] min-h-0 w-full max-w-5xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <div className="oc-modal-header flex shrink-0 items-start justify-between gap-3 bg-oc-panel-soft/70 p-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold">{title}</span>
+              <span className="rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] oc-text-secondary">
+                details
+              </span>
+            </div>
+            <div className="mt-1 text-xs oc-text-secondary">
+              Full search block and output
+            </div>
+          </div>
+          <button
+            type="button"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
+            onClick={onClose}
+            aria-label="Close search preview"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <div className="rounded-lg border border-oc-border-soft bg-oc-bg/20 p-3">
+            <SearchBlock
+              pattern={pattern}
+              patternInHeader={patternInHeader}
+              scope={scope}
+              include={include}
+              path={path}
+              output={output}
+              outputMode={outputMode}
+              headLimit={headLimit}
+            />
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function CollapsedSearchBlockPreview({
+  title,
+  pattern,
+  patternInHeader,
+  scope,
+  include,
+  path,
+  output,
+  outputMode,
+  headLimit,
+}: CollapsedSearchBlockPreviewProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const hasContent =
+    !!pattern ||
+    !!scope ||
+    !!include ||
+    !!path ||
+    !!output ||
+    !!outputMode ||
+    headLimit !== undefined;
+
+  if (!hasContent) {
+    return null;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setIsOpen(true)}
+        className="group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60"
+        aria-label={`Open ${title} details`}
+      >
+        <div className="relative max-h-[140px] overflow-hidden p-2">
+          <div className="max-h-[140px] overflow-hidden">
+            <SearchBlock
+              pattern={pattern}
+              patternInHeader={patternInHeader}
+              scope={scope}
+              include={include}
+              path={path}
+              output={output}
+              outputMode={outputMode}
+              headLimit={headLimit}
+            />
+          </div>
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-oc-bg-soft via-oc-bg-soft/90 to-transparent" />
+        </div>
+        <div className="pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-oc-border-soft bg-oc-bg-soft/90 shadow-sm">
+          <ChevronDown className="h-3 w-3 oc-text-secondary" />
+        </div>
+      </button>
+      <SearchBlockPreviewModal
+        isOpen={isOpen}
+        onClose={() => setIsOpen(false)}
+        title={title}
+        pattern={pattern}
+        patternInHeader={patternInHeader}
+        scope={scope}
+        include={include}
+        path={path}
+        output={output}
+        outputMode={outputMode}
+        headLimit={headLimit}
+      />
+    </>
+  );
+}
+
+type ThoughtItem = {
+  key: string;
+  text: string;
+  messageID?: string;
+  partID?: string;
+  streamSeq?: number;
+  source?: "stream" | "final" | "raw_debug";
+  status?: "pending" | "done" | "error";
+};
 type ProgressItem = {
   key: string;
   mergeKey: string;
   id?: string;
   callID?: string;
+  sessionID?: string;
   title: string;
   status: "pending" | "done" | "error";
   source?: "stream" | "final" | "raw_debug";
@@ -1904,16 +2225,78 @@ type ProgressItem = {
   internal?: boolean;
   meta?: string;
   filePath?: string;
+  startedAt?: number;
+  endedAt?: number;
   diffStats?: { added: number; deleted: number };
   activityDetail?: ActivityDetail;
   /** Arrival-order sequence number from StreamingStep.streamSeq or MessageStep.streamSeq */
   streamSeq?: number;
 };
 
+type CommentaryItem = {
+  id?: string;
+  text: string;
+  streamSeq?: number;
+  kind?: "commentary" | "ai_response";
+};
+
 type ThinkingBlock = { kind: "thinking"; items: ThoughtItem[] };
 type StepsBlock = { kind: "steps"; items: ProgressItem[] };
 type ContentBlock = { kind: "content"; html: string };
-type TimelineBlock = ThinkingBlock | StepsBlock | ContentBlock;
+type CommentaryBlock = { kind: "commentary"; text: string; label?: string };
+type TimelineBlock = ThinkingBlock | StepsBlock | ContentBlock | CommentaryBlock;
+
+function AssistantResponseBodyCard({
+  content,
+  parts,
+  className,
+  variant = "default",
+}: {
+  content?: string[];
+  parts?: MessagePart[];
+  className?: string;
+  variant?: "default" | "bare";
+}) {
+  const chunkSource = Array.isArray(parts) && parts.length > 0
+    ? parts.map((part) => {
+        const partRec = asRecord(part);
+        return (
+          asString(partRec?.text).trim() ||
+          asString(partRec?.content).trim() ||
+          asString(partRec?.message).trim() ||
+          asString(partRec?.delta).trim()
+        );
+      })
+    : Array.isArray(content)
+      ? content
+      : [];
+  const trimmed = chunkSource.filter((chunk) => chunk.trim().length > 0);
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  return (
+    <section
+      data-assistant-section="response"
+      className={cn(
+        variant === "bare"
+          ? "rounded-none border-0 bg-transparent p-0 shadow-none"
+          : "rounded-md border border-oc-border-soft bg-background p-2.5 shadow-sm",
+        className,
+      )}
+    >
+      <div className="flex w-full flex-col gap-2">
+        {trimmed.map((chunk, index) => (
+          <MarkdownRenderer
+            key={`${index}-${chunk.slice(0, 24)}`}
+            content={chunk}
+            className="markdown-body w-full max-w-none"
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
 
 /**
  * Extracts the Date.now() timestamp embedded in a thought-item key.
@@ -1936,6 +2319,8 @@ function thoughtItemsFromRawEventPayloads(
     return [];
   }
 
+  const completionIndex =
+    getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads);
   const items: ThoughtItem[] = [];
   const seen = new Set<string>();
   const pushUnique = (key: string, text: string) => {
@@ -1948,18 +2333,21 @@ function thoughtItemsFromRawEventPayloads(
   };
 
   for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+    if (completionIndex >= 0 && index > completionIndex) {
+      break;
+    }
     const event = asRecord(rawSdkEventPayloads[index]);
-    if (!event || String(event.type ?? "").trim() !== "message.part.updated") {
+    if (!event) {
       continue;
     }
 
     const structured = asRecord(event.structured);
-    if (String(structured?.kind ?? "").trim() !== "thinking") {
+    const part = getCentralizedEventPart(event);
+    const properties = asRecord(event.properties);
+    if (String(structured?.kind ?? "").trim() !== "thinking" && asString(part?.type).toLowerCase() !== "reasoning") {
       continue;
     }
 
-    const properties = asRecord(event.properties);
-    const part = asRecord(properties?.part);
     const text = firstNonEmptyString(
       asString(part?.text),
       asString(part?.message),
@@ -1979,10 +2367,165 @@ function thoughtItemsFromRawEventPayloads(
       (typeof properties?.time === "number" ? properties.time : undefined) ??
       (typeof event.time === "number" ? event.time : undefined) ??
       index;
-    pushUnique(`evt-${createdAt}-${index}`, text);
+    const status = typeof partTime?.end === "number" ? "done" : "pending";
+    const key = `evt-${createdAt}-${index}`;
+    const cleaned = text.trim();
+    if (cleaned) {
+      const fp = normalizeComparableText(cleaned);
+      if (fp && !seen.has(fp)) {
+        seen.add(fp);
+        items.push({
+          key,
+          text: cleaned,
+          status,
+          messageID:
+            asString(part?.messageID) ||
+            asString(part?.messageId) ||
+            asString(properties?.messageID) ||
+            asString(properties?.messageId) ||
+            asString(event.messageID) ||
+            asString(event.messageId) ||
+            undefined,
+          partID:
+            asString(part?.id) ||
+            asString(part?.partID) ||
+            asString(part?.partId) ||
+            asString(properties?.partID) ||
+            asString(properties?.partId) ||
+            asString(event.partID) ||
+            asString(event.partId) ||
+            undefined,
+        });
+      }
+    }
   }
 
   return items;
+}
+
+/**
+ * Converts the live streaming reasoning buffer into timeline items.
+ *
+ * The centralized tape deliberately drops delta chunks, so this adapter is the
+ * only place where we turn the in-flight reasoning stream into renderable
+ * timeline entries while the assistant is still responding.
+ */
+function thoughtItemsFromStreamingReasoningEvents(
+  reasoningEvents?: ReasoningEvent[],
+  isActive = false,
+): ThoughtItem[] {
+  if (!Array.isArray(reasoningEvents) || reasoningEvents.length === 0) {
+    return [];
+  }
+
+  const grouped = new Map<
+    string,
+    {
+      key: string;
+      text: string;
+      streamSeq: number;
+      status: "pending" | "done" | "error";
+      messageID?: string;
+      partID?: string;
+    }
+  >();
+
+  reasoningEvents.forEach((event, index) => {
+    const text = asString(event?.text).trim();
+    const isLatestChunk = index === reasoningEvents.length - 1;
+    const fallbackText = isLatestChunk && isActive ? "Thinking..." : "";
+    const resolvedText = text || fallbackText;
+    if (!resolvedText) {
+      return;
+    }
+
+    const createdAt =
+      typeof event?.createdAt === "number" ? event.createdAt : index;
+    const partID = asString(event?.partID).trim();
+    const messageID = asString(event?.messageID).trim();
+    const groupKey = partID || `${createdAt}:${index}`;
+    const existing = grouped.get(groupKey);
+    const nextText = existing
+      ? `${existing.text}${existing.text && resolvedText ? "\n\n" : ""}${resolvedText}`
+      : resolvedText;
+
+    grouped.set(groupKey, {
+      key: existing?.key ?? `stream-${index}-${createdAt}`,
+      text: nextText,
+      streamSeq: existing?.streamSeq ?? createdAt,
+      status: isLatestChunk && isActive ? "pending" : "done",
+      messageID: existing?.messageID ?? (messageID || undefined),
+      partID: existing?.partID ?? (partID || undefined),
+    });
+  });
+
+  return Array.from(grouped.values()).map((item) => ({
+    key: item.key,
+    text: item.text,
+    streamSeq: item.streamSeq,
+    source: "stream",
+    status: item.status,
+    messageID: item.messageID,
+    partID: item.partID,
+  }));
+}
+
+/**
+ * Merges the finalized centralized reasoning trail with the live reasoning
+ * stream.
+ *
+ * Raw centralized events always win when they share the same `partID` or
+ * `messageID`, because they represent the authoritative finalized version.
+ * Live items are kept only when the final event has not arrived yet, which
+ * preserves the streaming spinner / evolving text without duplicating the
+ * same reasoning once the turn is complete.
+ */
+function mergeThoughtItemsForTimeline(
+  finalizedItems: ThoughtItem[],
+  streamingItems: ThoughtItem[],
+): ThoughtItem[] {
+  if (finalizedItems.length === 0) {
+    return streamingItems;
+  }
+  if (streamingItems.length === 0) {
+    return finalizedItems;
+  }
+
+  const merged: ThoughtItem[] = [...finalizedItems];
+  const seen = new Set<string>();
+
+  const addKey = (item: ThoughtItem) => {
+    const normalizedText = normalizeComparableText(item.text);
+    if (item.partID) {
+      seen.add(`part:${item.partID}`);
+    }
+    if (item.messageID) {
+      seen.add(`msg:${item.messageID}`);
+    }
+    if (normalizedText) {
+      seen.add(`text:${normalizedText}`);
+    }
+  };
+
+  finalizedItems.forEach(addKey);
+
+  for (const item of streamingItems) {
+    const normalizedText = normalizeComparableText(item.text);
+    const keys = [
+      item.partID ? `part:${item.partID}` : "",
+      item.messageID ? `msg:${item.messageID}` : "",
+      normalizedText ? `text:${normalizedText}` : "",
+    ].filter(Boolean);
+
+    if (keys.some((key) => seen.has(key))) {
+      continue;
+    }
+
+    keys.forEach((key) => seen.add(key));
+    merged.push(item);
+  }
+
+  return merged;
 }
 
 function progressItemsFromRawEventPayloads(
@@ -1992,11 +2535,16 @@ function progressItemsFromRawEventPayloads(
     return [];
   }
 
+  const completionIndex =
+    getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads);
   const rawSteps: Array<MessageStep | StreamingStep> = [];
 
   for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+    if (completionIndex >= 0 && index > completionIndex) {
+      break;
+    }
     const event = asRecord(rawSdkEventPayloads[index]);
-    if (!event || String(event.type ?? "").trim() !== "message.part.updated") {
+    if (!event) {
       continue;
     }
 
@@ -2005,8 +2553,7 @@ function progressItemsFromRawEventPayloads(
       continue;
     }
 
-    const properties = asRecord(event.properties);
-    const part = asRecord(properties?.part) ?? asRecord(event.part);
+    const part = getCentralizedEventPart(event);
     if (!part) {
       continue;
     }
@@ -2014,6 +2561,7 @@ function progressItemsFromRawEventPayloads(
     const state = asRecord(part.state);
     const input = asRecord(state?.input) || asRecord(part.input) || asRecord(part.arguments);
     const metadata = asRecord(state?.metadata) || asRecord(part.metadata);
+    const stateTime = asRecord(state?.time);
     const tool = firstNonEmptyString(
       asString(part.tool),
       asString(part.name),
@@ -2035,11 +2583,24 @@ function progressItemsFromRawEventPayloads(
       asString(part.id),
       asString(part.partID),
       asString(part.partId),
-      asString(properties?.partID),
-      asString(properties?.partId),
       asString(event.id),
     );
     const callID = firstNonEmptyString(asString(part.callID), asString(part.callId));
+    const sessionID = firstNonEmptyString(
+      asString(event.sessionID),
+      asString(event.sessionId),
+      asString(part.sessionID),
+      asString(part.sessionId),
+    );
+    const startedAt = firstNonEmptyString(
+      asString(stateTime?.start),
+      asString(stateTime?.created),
+      asString(event.time),
+    );
+    const endedAt = firstNonEmptyString(
+      asString(stateTime?.end),
+      asString(stateTime?.completed),
+    );
     const filePath = firstNonEmptyString(
       asString(input?.filePath),
       asString(input?.path),
@@ -2056,6 +2617,11 @@ function progressItemsFromRawEventPayloads(
       asString(event.text),
       asString(event.message),
     );
+
+    if (partType === "text") {
+      continue;
+    }
+
     const preview = firstNonEmptyString(asString(metadata?.preview));
 
     const compactMetadata: Record<string, string | number | boolean> = {};
@@ -2093,6 +2659,7 @@ function progressItemsFromRawEventPayloads(
     rawSteps.push({
       id,
       callID,
+      sessionID,
       title,
       type: tool ? "tool" : "step",
       status,
@@ -2101,6 +2668,8 @@ function progressItemsFromRawEventPayloads(
       internal: Boolean(part.internal),
       meta: preview || undefined,
       filePath,
+      startedAt: startedAt ? Number(startedAt) : undefined,
+      endedAt: endedAt ? Number(endedAt) : undefined,
       streamSeq: index,
       activityDetail: {
         kind: tool === "read" ? "read" : tool === "question" ? "other" : "tool_call",
@@ -2109,7 +2678,10 @@ function progressItemsFromRawEventPayloads(
         file: filePath,
         input: input ?? undefined,
         output: output || undefined,
+        // Store the display title (e.g., relative path) from state.title for read steps
+        title: asString(part.title) || undefined,
         metadata: Object.keys(compactMetadata).length > 0 ? compactMetadata : undefined,
+        sessionID,
       },
     });
   }
@@ -2223,6 +2795,18 @@ function progressItemsFromSteps(
         "callID" in step && typeof step.callID === "string"
           ? step.callID
           : undefined;
+      const stepSessionId =
+        "sessionID" in step && typeof step.sessionID === "string"
+          ? step.sessionID
+          : undefined;
+      const stepStartedAt =
+        "startedAt" in step && typeof step.startedAt === "number"
+          ? step.startedAt
+          : undefined;
+      const stepEndedAt =
+        "endedAt" in step && typeof step.endedAt === "number"
+          ? step.endedAt
+          : undefined;
       const mergeKey = stepCallId
         ? `call:${stepCallId}`
         : stepId
@@ -2256,6 +2840,9 @@ function progressItemsFromSteps(
         if (stepFilePath) existing.filePath = stepFilePath;
         if (!existing.id && stepId) existing.id = stepId;
         if (!existing.callID && stepCallId) existing.callID = stepCallId;
+        if (!existing.sessionID && stepSessionId) existing.sessionID = stepSessionId;
+        if (!existing.startedAt && stepStartedAt) existing.startedAt = stepStartedAt;
+        if (!existing.endedAt && stepEndedAt) existing.endedAt = stepEndedAt;
         if (!existing.source && stepSource) existing.source = stepSource;
         if (!existing.partType && stepPartType) existing.partType = stepPartType;
         existing.internal = Boolean(existing.internal || stepInternal);
@@ -2273,6 +2860,7 @@ function progressItemsFromSteps(
           mergeKey,
           id: stepId,
           callID: stepCallId,
+          sessionID: stepSessionId,
           title,
           status,
           source: stepSource,
@@ -2280,6 +2868,8 @@ function progressItemsFromSteps(
           internal: stepInternal,
           meta,
           filePath: stepFilePath,
+          startedAt: stepStartedAt,
+          endedAt: stepEndedAt,
           diffStats:
             "diffStats" in step
               ? (step.diffStats as { added: number; deleted: number })
@@ -2409,6 +2999,8 @@ function progressItemsFromRawResponseParts(
         file: filePath,
         input: inputRec ?? undefined,
         output: output || undefined,
+        // Store the display title (e.g., relative path) from state.title for read steps
+        title: firstNonEmptyString(asString(stateRec?.title), asString(partRec.title)) || undefined,
         metadata: Object.keys(compactMetadata).length > 0 ? compactMetadata : undefined,
       },
       streamSeq: index,
@@ -2444,6 +3036,9 @@ function progressItemsFromCentralizedData(
     if (item.filePath) existing.filePath = item.filePath;
     if (item.id && !existing.id) existing.id = item.id;
     if (item.callID && !existing.callID) existing.callID = item.callID;
+    if (item.sessionID && !existing.sessionID) existing.sessionID = item.sessionID;
+    if (item.startedAt && !existing.startedAt) existing.startedAt = item.startedAt;
+    if (item.endedAt && !existing.endedAt) existing.endedAt = item.endedAt;
     if (item.source && !existing.source) existing.source = item.source;
     if (item.partType && !existing.partType) existing.partType = item.partType;
     existing.internal = Boolean(existing.internal || item.internal);
@@ -2458,6 +3053,62 @@ function progressItemsFromCentralizedData(
     }
   }
   return items;
+}
+
+function commentaryItemsFromRawEventPayloads(
+  rawSdkEventPayloads?: unknown[],
+): CommentaryItem[] {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return [];
+  }
+  const completionIndex =
+    getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads);
+  const rawItems: CommentaryItem[] = [];
+
+  for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+    if (completionIndex >= 0 && index > completionIndex) {
+      break;
+    }
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) continue;
+
+    const properties = asRecord(event.properties);
+    const part = asRecord(properties?.part) ?? asRecord(event.part);
+    const syncEvent = asRecord(event.syncEvent);
+    const syncData = asRecord(syncEvent?.data);
+    const syncPart = asRecord(syncData?.part);
+    const payloadRecord = asRecord(event.payload);
+    const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+    const payloadSyncData = asRecord(payloadSyncEvent?.data);
+    const payloadSyncPart = asRecord(payloadSyncData?.part);
+    const aiResponseLike = isAiResponseEvent(event);
+    const sourcePart = syncPart ?? payloadSyncPart ?? part;
+    if (!sourcePart) continue;
+    if (!aiResponseLike) continue;
+
+    const stateRec = asRecord(sourcePart.state);
+    const text = asString(sourcePart.text) || asString(sourcePart.content) || asString(sourcePart.message) || asString(stateRec?.output) || asString(sourcePart.output);
+    if (!text) continue;
+
+    const id = firstNonEmptyString(
+      asString(sourcePart.id),
+      asString(sourcePart.partID),
+      asString(sourcePart.partId),
+      asString(event.id),
+    );
+
+    rawItems.push({
+      id,
+      text,
+      streamSeq: index,
+      kind: aiResponseLike ? "ai_response" : "commentary",
+    });
+  }
+
+  // Keep each commentary chunk in sequence. The centralized tape already
+  // represents the authoritative order, so collapsing repeated ids here would
+  // hide later AI-response chunks that belong in the same assistant turn.
+  return rawItems;
 }
 
 function formatTodoStatus(status: TodoItem["status"]): string {
@@ -2566,7 +3217,7 @@ function TodoInlineSummary({
     >
       <button
         type="button"
-        className="flex w-full items-center justify-between gap-2 border-b border-oc-border-soft px-2.5 py-2 text-left hover:bg-oc-panel"
+        className="flex w-full items-center justify-between gap-2 border-b border-oc-border-soft px-2.5 py-1.5 text-left hover:bg-oc-panel"
         onClick={() => setShowTodoChecklist(!showTodoChecklist)}
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -2589,19 +3240,19 @@ function TodoInlineSummary({
       </button>
       {showTodoChecklist && (
         <div
-          className="max-h-[320px] space-y-1.5 overflow-y-auto p-2.5"
+          className="max-h-[280px] space-y-1 overflow-y-auto p-2"
           style={{ scrollPaddingBottom: "0.5rem" }}
         >
           <div className="text-[10px] uppercase tracking-wider oc-text-secondary">
             {inProgressCount} in progress
-            {latest ? ` · Latest: "${truncateTodoLabel(latest.text)}"` : ""}
+            {latest ? ` · Latest: "${truncateTodoLabel(latest.content ?? latest.text ?? "")}"` : ""}
           </div>
-          {sorted.map((todo) => {
+          {sorted.map((todo, index) => {
             const isDone = todo.status === "completed";
             return (
               <div
-                key={todo.id}
-                className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-bg-soft px-2 py-1.5 text-xs"
+                key={todo.id ?? `todo-${index}`}
+                className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-bg-soft px-2 py-1 text-xs"
               >
                 <span className="mt-0.5 shrink-0">
                   {todo.status === "completed" ? (
@@ -2625,9 +3276,9 @@ function TodoInlineSummary({
                         : "text-oc-text-soft",
                     )}
                   >
-                    {todo.description ?? todo.text ?? "Untitled task"}
+                    {todo.description ?? todo.content ?? todo.text ?? "Untitled task"}
                   </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
                     <span
                       className={cn(
                         "rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
@@ -2654,6 +3305,48 @@ function TodoInlineSummary({
         </div>
       )}
     </section>
+  );
+}
+
+function TodoWriteStep({ event }: { event: DisplayEvent }) {
+  const [showTodoChecklist, setShowTodoChecklist] = useState(true);
+
+  let todos: any[] = [];
+  try {
+    const parsedOutput = event.activityDetail?.output ? JSON.parse(event.activityDetail.output) : null;
+    const parsedInputTodos = event.activityDetail?.input?.todos;
+    
+    if (Array.isArray(parsedOutput)) {
+      todos = parsedOutput;
+    } else if (Array.isArray(parsedInputTodos)) {
+      todos = parsedInputTodos;
+    } else if (parsedOutput?.todos && Array.isArray(parsedOutput.todos)) {
+      todos = parsedOutput.todos;
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  if (todos.length === 0) {
+    if (event.status === "pending") {
+      return (
+        <div className="oc-refined-event-content flex items-center gap-2 py-2 px-3 rounded-md border border-oc-border-soft bg-oc-bg-soft text-xs text-oc-text-soft">
+          <ThinkingStatusTicker className="oc-thinking-status" />
+          <span>Generating checklist...</span>
+        </div>
+      );
+    }
+    return null;
+  }
+
+  return (
+    <div className="oc-refined-event-content">
+      <TodoInlineSummary
+        todoItems={todos}
+        showTodoChecklist={showTodoChecklist}
+        setShowTodoChecklist={setShowTodoChecklist}
+      />
+    </div>
   );
 }
 
@@ -2783,7 +3476,60 @@ function normalizedUserMessageText(message?: Message): string {
   );
   const withoutGenericFenceEcho =
     stripGenericHydratedAttachmentFence(withoutAttachmentEcho);
-  return sanitizeUserContent(withoutGenericFenceEcho);
+  return splitInjectedSystemPromptFromUserText(withoutGenericFenceEcho).userText;
+}
+
+function splitInjectedSystemPromptFromUserText(raw: string): {
+  systemText?: string;
+  userText: string;
+} {
+  const sanitized = sanitizeUserContent(raw);
+  if (!sanitized) {
+    return { userText: "" };
+  }
+
+  const separatorMatch = sanitized.match(/(?:\r?\n)---(?:\r?\n)+/);
+  if (!separatorMatch) {
+    return { userText: sanitized };
+  }
+
+  const separatorIndex = sanitized.indexOf(separatorMatch[0]);
+  if (separatorIndex <= 0) {
+    return { userText: sanitized };
+  }
+
+  const systemText = sanitized.slice(0, separatorIndex).trim();
+  const userText = sanitized.slice(separatorIndex + separatorMatch[0].length).trim();
+  if (!systemText || !userText || !hasSystemMessagePatternInText(systemText)) {
+    return { userText: sanitized };
+  }
+
+  return { systemText, userText };
+}
+
+function isDeltaCentralizedEventPayload(payload: unknown): boolean {
+  const rec = asRecord(payload);
+  if (!rec) {
+    return false;
+  }
+
+  const eventType = `${asString(rec.type)} ${asString(rec.event)} ${asString(rec.kind)}`.toLowerCase();
+  if (eventType.includes("delta")) {
+    return true;
+  }
+
+  const properties = asRecord(rec.properties);
+  const syncEvent = asRecord(rec.syncEvent);
+  const syncData = asRecord(syncEvent?.data);
+  const part = asRecord(properties?.part) ?? asRecord(rec.part) ?? asRecord(syncData?.part);
+
+  return Boolean(
+    asString(properties?.delta).trim() ||
+      asString(rec.delta).trim() ||
+      asString(syncData?.delta).trim() ||
+      asString(part?.delta).trim() ||
+      asString(part?.text).trim() && eventType.includes("message.part.delta"),
+  );
 }
 
 // Function to parse text and extract file mentions
@@ -2828,7 +3574,7 @@ function renderHighlightedText(text: string) {
 
   return parts.map((part, index) => {
     const key = `${part.type}-${index}`;
-    if (part.type === 'file' && part.filename) {
+    if (part.type === 'file' && 'filename' in part && part.filename) {
       return (
         <span
           key={key}
@@ -2837,10 +3583,10 @@ function renderHighlightedText(text: string) {
             // Open file when clicked
             vscode.postMessage({
               type: "openFile",
-              file: part.filename,
+              file: (part as any).filename,
             });
           }}
-          title={`Open ${part.filename}`}
+          title={`Open ${(part as any).filename}`}
         >
           {part.content}
         </span>
@@ -2890,34 +3636,7 @@ function areLikelySamePlanFilePath(a: unknown, b: unknown): boolean {
   return left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
 }
 
-function planFileFromMessageForComparison(message?: Message): string {
-  const direct = message?.plan?.file;
-  if (typeof direct === "string" && direct.trim()) {
-    return direct;
-  }
-  return "";
-}
 
-function planRenderRichness(plan?: Message["plan"]): number {
-  if (!plan) {
-    return 0;
-  }
-  let score = 0;
-  if (typeof plan.file === "string" && plan.file.trim()) {
-    score += plan.file.includes("/") || plan.file.includes("\\") ? 20 : 10;
-    score += Math.min(plan.file.length, 120);
-  }
-  if (typeof plan.title === "string" && plan.title.trim()) {
-    score += Math.min(plan.title.length, 80);
-  }
-  if (typeof plan.summary === "string" && plan.summary.trim()) {
-    score += 20;
-  }
-  if (typeof plan.content === "string" && plan.content.trim()) {
-    score += 30;
-  }
-  return score;
-}
 
 function normalizeFileChangePathForComparison(value: unknown): string {
   if (typeof value !== "string") {
@@ -2943,40 +3662,7 @@ function areLikelySameFileChangePath(a: string, b: string): boolean {
   return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
 }
 
-function fileChangePathsFromMessage(message?: Message): Set<string> {
-  const files = new Set<string>();
-  if (!message) {
-    return files;
-  }
 
-  if (Array.isArray(message.edits)) {
-    for (const edit of message.edits) {
-      const normalized = normalizeFileChangePathForComparison(edit?.file);
-      if (normalized) {
-        files.add(normalized);
-      }
-    }
-  }
-
-  const summaryFiles = Array.isArray(message.changeSummary?.files)
-    ? message.changeSummary.files
-    : [];
-  for (const file of summaryFiles) {
-    const normalized = normalizeFileChangePathForComparison(file?.file);
-    if (normalized) {
-      files.add(normalized);
-    }
-  }
-
-  for (const item of structuredFileChangesFromMessage(message)) {
-    const normalized = normalizeFileChangePathForComparison(item.file);
-    if (normalized) {
-      files.add(normalized);
-    }
-  }
-
-  return files;
-}
 
 function isFileChangeSubset(small: Set<string>, large: Set<string>): boolean {
   if (small.size === 0 || large.size === 0 || small.size > large.size) {
@@ -2997,245 +3683,6 @@ function isFileChangeSubset(small: Set<string>, large: Set<string>): boolean {
   return true;
 }
 
-function fileChangeRenderRichness(message?: Message): number {
-  if (!message) {
-    return 0;
-  }
-  const files = fileChangePathsFromMessage(message);
-  const summaryFiles = message.changeSummary?.files ?? [];
-  const statsScore =
-    typeof message.changeSummary?.added === "number" ||
-      typeof message.changeSummary?.deleted === "number"
-      ? 20
-      : 0;
-  const perFileStats = summaryFiles.filter(
-    (file) =>
-      typeof file?.added === "number" ||
-      typeof file?.deleted === "number" ||
-      Array.isArray(file?.diffExcerpt?.lines),
-  ).length;
-  return files.size * 10 + summaryFiles.length * 4 + perFileStats * 3 + statsScore;
-}
-
-function normalizeStructuredFileChanges(
-  value: unknown,
-): StructuredFileChange[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((item) => {
-      const rec = asRecord(item);
-      if (!rec) return null;
-      const file = asString(rec.file).trim();
-      if (!file) return null;
-      const diffStatsRec = asRecord(rec.diffStats);
-      const diffExcerptRec = asRecord(rec.diffExcerpt);
-      const kind = asString(rec.kind).trim();
-      const normalizedKind =
-        kind === "file_edit" ||
-        kind === "file_create" ||
-        kind === "file_delete" ||
-        kind === "file_move" ||
-        kind === "other"
-          ? kind
-          : undefined;
-      return {
-        file,
-        kind: normalizedKind,
-        diffStats: diffStatsRec
-          ? {
-              added:
-                typeof diffStatsRec.added === "number"
-                  ? diffStatsRec.added
-                  : undefined,
-              deleted:
-                typeof diffStatsRec.deleted === "number"
-                  ? diffStatsRec.deleted
-                  : undefined,
-            }
-          : undefined,
-        diffExcerpt: diffExcerptRec
-          ? {
-              header:
-                typeof diffExcerptRec.header === "string"
-                  ? diffExcerptRec.header
-                  : undefined,
-              lines: Array.isArray(diffExcerptRec.lines)
-                ? diffExcerptRec.lines.filter(
-                    (line): line is string => typeof line === "string",
-                  )
-                : undefined,
-              added:
-                typeof diffExcerptRec.added === "number"
-                  ? diffExcerptRec.added
-                  : undefined,
-              deleted:
-                typeof diffExcerptRec.deleted === "number"
-                  ? diffExcerptRec.deleted
-                  : undefined,
-            }
-          : undefined,
-      } satisfies StructuredFileChange;
-    })
-    .filter((item): item is StructuredFileChange => item !== null);
-}
-
-function structuredFileChangesFromMessage(message?: Message): StructuredFileChange[] {
-  if (!message) {
-    return [];
-  }
-  const parseRawResponseRecord = (raw: unknown): Record<string, unknown> | null => {
-    const rec = asRecord(raw);
-    if (rec) {
-      return rec;
-    }
-    if (typeof raw !== "string") {
-      return null;
-    }
-    const text = raw.trim();
-    if (!text) {
-      return null;
-    }
-    const truncMatch = text.match(/\.\.\.<truncated\s+\d+\s+chars>\s*$/i);
-    const candidate = truncMatch ? text.slice(0, truncMatch.index).trim() : text;
-    try {
-      return asRecord(JSON.parse(candidate));
-    } catch {
-      return null;
-    }
-  };
-  const messageRec = asRecord(message);
-  const infoRec = asRecord(messageRec?.info);
-  const structured =
-    asRecord(messageRec?.structuredOutput) ||
-    asRecord(messageRec?.structured_output) ||
-    asRecord(messageRec?.structured) ||
-    asRecord(infoRec?.structuredOutput) ||
-    asRecord(infoRec?.structured_output) ||
-    asRecord(infoRec?.structured);
-  const direct = normalizeStructuredFileChanges(structured?.fileChanges);
-  if (direct.length > 0) {
-    return direct;
-  }
-
-  const rawResponseRec = parseRawResponseRecord(messageRec?.rawResponse);
-  const rawInfoRec = asRecord(rawResponseRec?.info);
-  const rawStructured =
-    asRecord(rawInfoRec?.structuredOutput) ||
-    asRecord(rawInfoRec?.structured_output) ||
-    asRecord(rawInfoRec?.structured);
-  const fromRawStructured = normalizeStructuredFileChanges(rawStructured?.fileChanges);
-  if (fromRawStructured.length > 0) {
-    return fromRawStructured;
-  }
-
-  const rawParts = Array.isArray(rawResponseRec?.parts) ? rawResponseRec.parts : [];
-  for (const part of rawParts) {
-    const partRec = asRecord(part);
-    if (!partRec) {
-      continue;
-    }
-    const toolName = asString(partRec.tool).toLowerCase();
-    if (toolName !== "structuredoutput" && toolName !== "structured_output") {
-      continue;
-    }
-    const stateRec = asRecord(partRec.state);
-    const inputRec = asRecord(stateRec?.input);
-    const fromToolInput = normalizeStructuredFileChanges(inputRec?.fileChanges);
-    if (fromToolInput.length > 0) {
-      return fromToolInput;
-    }
-  }
-
-  return [];
-}
-
-function messageHasOwnFileChangeEvidence(message?: Message): boolean {
-  if (!message) {
-    return false;
-  }
-
-  if (Array.isArray(message.edits) && message.edits.length > 0) {
-    return true;
-  }
-
-  if (structuredFileChangesFromMessage(message).length > 0) {
-    return true;
-  }
-
-  const hasDiffStats = (value: unknown): boolean => {
-    const rec = asRecord(value);
-    return Boolean(
-      rec &&
-      (typeof rec.added === "number" ||
-        typeof rec.deleted === "number" ||
-        typeof rec.additions === "number" ||
-        typeof rec.deletions === "number"),
-    );
-  };
-
-  const hasActivityEvidence = (value: unknown): boolean => {
-    const rec = asRecord(value);
-    if (!rec) {
-      return false;
-    }
-    const activityDetail = asRecord(rec.activityDetail);
-    const tool = firstNonEmptyString(
-      rec.tool,
-      rec.name,
-      activityDetail?.tool,
-    )?.toLowerCase();
-    return Boolean(
-      firstNonEmptyString(rec.file, rec.filePath, rec.path, activityDetail?.file) ||
-      hasDiffStats(rec.diffStats) ||
-      hasDiffStats(activityDetail?.diffStats) ||
-      asRecord(activityDetail?.diffExcerpt) ||
-      firstNonEmptyString(rec.type, rec.partType)?.toLowerCase() === "patch" ||
-      tool?.includes("write") ||
-      tool?.includes("edit") ||
-      tool?.includes("replace"),
-    );
-  };
-
-  return [message.steps, message.progressEvents, message.parts].some(
-    (items) => Array.isArray(items) && items.some(hasActivityEvidence),
-  );
-}
-
-function messageOwnsChangeSummary(
-  message: Message | undefined,
-  messageId: string | undefined,
-  changeSummary: Message["changeSummary"],
-): boolean {
-  if (
-    !message ||
-    !changeSummary ||
-    !Array.isArray(changeSummary.files) ||
-    changeSummary.files.length === 0
-  ) {
-    return false;
-  }
-
-  const summaryMessageId =
-    typeof changeSummary.messageId === "string"
-      ? changeSummary.messageId.trim()
-      : "";
-  if (!summaryMessageId) {
-    return false;
-  }
-
-  const info = message.info;
-  const ownerIds = [
-    messageId,
-    message.id,
-    message.messageId,
-    info?.id,
-    info?.messageId,
-  ].filter((id): id is string => typeof id === "string" && id.trim().length > 0);
-
-  return ownerIds.some((id) => id.trim() === summaryMessageId);
-}
 
 /**
  * LEGACY NORMALIZATION LAYER.
@@ -3252,6 +3699,7 @@ function messageOwnsChangeSummary(
 function buildTimeline(
   thoughtItems: ThoughtItem[],
   progressItems: ProgressItem[],
+  commentaryItems: CommentaryItem[],
   html: string,
   /** Only used for the parts-based fallback path; null during streaming */
   messageParts?: MessagePart[],
@@ -3261,11 +3709,13 @@ function buildTimeline(
     (t) => seqFromThoughtKey(t.key) > 0,
   );
   const hasTimedSteps = progressItems.some((p) => p.streamSeq != null);
+  const hasTimedCommentary = commentaryItems.some((c) => c.streamSeq != null);
 
-  if (hasTimedThoughts || hasTimedSteps || progressItems.length > 0) {
+  if (hasTimedThoughts || hasTimedSteps || progressItems.length > 0 || hasTimedCommentary || commentaryItems.length > 0) {
     type RawEntry =
       | { seq: number; kind: "thinking"; item: ThoughtItem }
       | { seq: number; kind: "step"; item: ProgressItem }
+      | { seq: number; kind: "commentary"; item: CommentaryItem }
       | { seq: number; kind: "content" };
 
     const entries: RawEntry[] = [];
@@ -3278,7 +3728,7 @@ function buildTimeline(
       });
     }
 
-    for (const item of progressItems) {
+  for (const item of progressItems) {
       entries.push({
         kind: "step",
         item,
@@ -3291,7 +3741,18 @@ function buildTimeline(
       });
     }
 
-    if (html) {
+    for (const item of commentaryItems) {
+      // Commentary chunks now render only in the response body section.
+      // Keeping them out of the activity timeline prevents duplicate final
+      // response cards when the same assistant text is present in both places.
+      continue;
+    }
+
+    // When we already have AI-response commentary chunks, the raw response
+    // text should be rendered from those chunks in order. Adding the merged
+    // `html` block here would collapse the same response into one final card
+    // and hide later activity that belongs after it.
+    if (html && commentaryItems.length === 0) {
       entries.push({ kind: "content", seq: Number.MAX_SAFE_INTEGER });
     }
 
@@ -3413,27 +3874,24 @@ function buildMessageTimeline(
   return buildTimeline(
     thoughtItemsFromRawEventPayloads(centralizedRawSdkEventPayloads),
     progressItemsFromCentralizedData(
-      centralizedRawSdkEventPayloads,
-      message?.rawResponse,
+      centralizedRawSdkEventPayloads
     ),
+    commentaryItemsFromRawEventPayloads(centralizedRawSdkEventPayloads),
     html,
     message?.parts,
   );
 }
 
-const MAX_VISIBLE_COMPLETED_ACTIVITY = 5;
-
 type MessageViewState = {
   showActivityDetails: boolean;
   showThinkingDetails: boolean;
-  showAllCompletedActivity: boolean;
   showInternalActivity: boolean;
   expandedReasoningSteps: Set<string>; // Track individual reasoning step expansion
 };
 
 type DisplayEvent = {
   key: string;
-  kind: "activity" | "reasoning";
+  kind: "activity" | "reasoning" | "commentary";
   label: string;
   summary: string;
   description?: string;
@@ -3443,6 +3901,10 @@ type DisplayEvent = {
   partType?: string;
   internal?: boolean;
   filePath?: string;
+  callID?: string;
+  sessionID?: string;
+  startedAt?: number;
+  endedAt?: number;
   diffStats?: { added: number; deleted: number };
   activityDetail?: ActivityDetail;
   viewDiffFile?: string;
@@ -3499,7 +3961,7 @@ function subagentModelLabel(
 
   // If we have partial info, show it
   if (model || provider) {
-    return model || provider;
+    return (model || provider) as string;
   }
 
   const roleLabel = deriveSubagentRole(subagent);
@@ -3568,7 +4030,7 @@ function SubagentsInlineCard({
     () =>
       showSubagents &&
       visibleSubagents.some((subagent) => {
-        const detail = subagentDetailsById[subagent.id] as
+        const detail = subagentDetailsById?.[subagent.id] as
           | SubagentDetail
           | undefined;
         const status = resolveSubagentStatus(subagent, detail);
@@ -3594,7 +4056,7 @@ function SubagentsInlineCard({
 
   const resolvedStatusCounts = visibleSubagents.reduce(
     (acc, subagent) => {
-      const detail = subagentDetailsById[subagent.id] as SubagentDetail | undefined;
+      const detail = subagentDetailsById?.[subagent.id] as SubagentDetail | undefined;
       const status = resolveSubagentStatus(subagent, detail);
       if (status === "running") acc.running += 1;
       else if (status === "done") acc.done += 1;
@@ -3607,7 +4069,7 @@ function SubagentsInlineCard({
   return (
     <div
       data-assistant-section="subagents-inline-card"
-      className="oc-subagents-panel mt-3 mb-3 overflow-hidden rounded-md border bg-oc-panel-soft"
+      className="oc-subagents-panel mt-2.5 mb-2.5 overflow-hidden rounded-md border bg-oc-panel-soft"
     >
       <button
         type="button"
@@ -3651,13 +4113,13 @@ function SubagentsInlineCard({
       </button>
 
       {showSubagents && (
-        <div className="space-y-2 p-2.5">
+        <div className="space-y-1.5 p-2">
           <div
-            className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1 pb-2"
+            className="max-h-[260px] space-y-1 overflow-y-auto pr-1 pb-1.5"
             style={{ scrollPaddingBottom: "0.5rem" }}
           >
             {visibleSubagents.map((subagent: SubagentSummary) => {
-              const detail = subagentDetailsById[subagent.id] as
+              const detail = subagentDetailsById?.[subagent.id] as
                 | SubagentDetail
                 | undefined;
 
@@ -3736,7 +4198,7 @@ function SubagentsInlineCard({
                   key={subagent.id}
                   type="button"
                   className={cn(
-                    "oc-subagent-row w-full rounded-md border bg-oc-bg-soft px-2 py-1.5 text-left transition-colors",
+                    "oc-subagent-row w-full rounded-md border bg-oc-bg-soft px-2 py-1 text-left transition-colors",
                     "hover:bg-oc-panel",
                   )}
                   style={cardStyle}
@@ -3761,23 +4223,23 @@ function SubagentsInlineCard({
                       {formatDuration(durationMs)}
                     </span>
                   </div>
-                  <div className="mt-1 flex min-w-0 items-center gap-1.5">
-                    <span className="text-[10px] font-medium oc-text-secondary">
+                  <div className="mt-0.5 flex min-w-0 items-center gap-1">
+                    <span className="text-[9px] font-medium oc-text-secondary">
                       {statusText}
                     </span>
                     {agentRole ? (
-                      <span className="rounded border border-oc-border-soft px-1 py-0 text-[9px] font-medium uppercase tracking-wide oc-text-secondary">
+                      <span className="rounded border border-oc-border-soft px-1 py-0 text-[8px] font-medium uppercase tracking-wide oc-text-secondary">
                         {agentRole}
                       </span>
                     ) : null}
                     {backgroundTaskId ? (
-                      <span className="rounded border border-oc-border-soft px-1 py-0 text-[9px] font-medium uppercase tracking-wide oc-text-secondary">
+                      <span className="rounded border border-oc-border-soft px-1 py-0 text-[8px] font-medium uppercase tracking-wide oc-text-secondary">
                         {backgroundTaskId}
                       </span>
                     ) : null}
                   </div>
                   {shouldShowActivity ? (
-                    <div className="mt-0.5 min-h-[14px] font-medium text-[10px] oc-text-secondary">
+                    <div className="mt-0.5 min-h-[12px] font-medium text-[9px] oc-text-secondary">
                       <FadeSwapText
                         text={loadingHint || activityText}
                         className="block truncate"
@@ -4033,7 +4495,7 @@ function parseTimelineStepTitle(rawTitle: string): {
 // removed when the centralized raw event tape becomes the sole render source.
 function buildDisplayEvents(
   timelineBlocks: TimelineBlock[],
-  message: Message | undefined,
+  fileChanges: StructuredFileChange[] | undefined,
   isStreamingActive: boolean,
   assistantTurnPending: boolean,
 ): DisplayEvent[] {
@@ -4138,12 +4600,27 @@ function buildDisplayEvents(
           kind: "reasoning",
           label: "Reasoning",
           summary: text,
-          status: (isStreamingActive || assistantTurnPending) && source === "stream" ? "pending" : "done",
+          status: item.status || ((isStreamingActive || assistantTurnPending) && source === "stream" ? "pending" : "done"),
           source,
           isImportant: false,
           updateCount: 1,
         });
       }
+      continue;
+    }
+
+    if (block.kind === "commentary") {
+      const text = (block.text || "").trim();
+      if (!text) continue;
+      rawEvents.push({
+        key: `commentary-${rawEvents.length}`,
+        kind: "commentary",
+        label: block.label ?? "Commentary",
+        summary: text,
+        status: "done",
+        isImportant: false,
+        updateCount: 1,
+      });
       continue;
     }
 
@@ -4165,9 +4642,9 @@ function buildDisplayEvents(
       if (
         !filePath &&
         /edit|writ|modif|updat|patch/i.test(rawTitle) &&
-        message?.edits?.length
+        fileChanges?.length
       ) {
-        filePath = message.edits[0].file;
+        filePath = fileChanges[0].file;
       }
 
       // Extract filename from filePath, but validate it looks like a real filename
@@ -4182,29 +4659,29 @@ function buildDisplayEvents(
         // 2. Not be too long (arbitrary text segments tend to be long)
         // 3. Not have excessive whitespace
         // 4. Not contain special characters that suggest it's not a filename
-        const hasExtension = /\.[a-zA-Z0-9]{1,10}$/.test(lastSegment);
-        const notTooLong = lastSegment.length <= 100;
-        const notExcessiveWhitespace = (lastSegment.match(/\s/g) || []).length <= 2;
+        const hasExtension = /\.[a-zA-Z0-9]{1,10}$/.test(lastSegment || "");
+        const notTooLong = (lastSegment || "").length <= 100;
+        const notExcessiveWhitespace = ((lastSegment || "").match(/\s/g) || []).length <= 2;
         const looksLikeFilename = hasExtension && notTooLong && notExcessiveWhitespace;
 
         return looksLikeFilename ? lastSegment : undefined;
       })();
-      const fallbackEdit = Array.isArray(message?.edits)
+      const fallbackEdit = Array.isArray(fileChanges)
         ? filePath
-          ? message.edits.find(
+          ? fileChanges.find(
             (edit) =>
               normalizePathForMatch(edit?.file) ===
               normalizePathForMatch(filePath),
           )
-          : message.edits[0]
+          : fileChanges[0]
         : undefined;
       const fallbackDiffStats =
-        fallbackEdit &&
-          (typeof fallbackEdit.added === "number" ||
-            typeof fallbackEdit.deleted === "number")
+        fallbackEdit && fallbackEdit.diffStats &&
+          (typeof fallbackEdit.diffStats.added === "number" ||
+            typeof fallbackEdit.diffStats.deleted === "number")
           ? {
-            added: Math.max(0, Number(fallbackEdit.added) || 0),
-            deleted: Math.max(0, Number(fallbackEdit.deleted) || 0),
+            added: Math.max(0, Number(fallbackEdit.diffStats.added) || 0),
+            deleted: Math.max(0, Number(fallbackEdit.diffStats.deleted) || 0),
           }
           : undefined;
       const detailDiffStats =
@@ -4237,18 +4714,26 @@ function buildDisplayEvents(
         normalizedBaseSummary === "step" && fallbackSummaryFromActivity
           ? fallbackSummaryFromActivity
           : baseSummary;
+      // Filter out metaText if it is a duplicate of the filePath or summary to avoid displaying it in the code block
+      const cleanedMetaText =
+        metaText &&
+        metaText !== filePath &&
+        metaText !== summary
+          ? metaText
+          : undefined;
+
       const description =
         filePath || parsed.summary || activityDetail?.summary
-          ? metaText || activityDetail?.command || activityDetail?.query
-          : metaText && metaText !== summary
-            ? metaText
+          ? cleanedMetaText || activityDetail?.command || activityDetail?.query
+          : cleanedMetaText && cleanedMetaText !== summary
+            ? cleanedMetaText
             : undefined;
       const detail =
         filePath && fileName && filePath !== fileName ? filePath : undefined;
       const viewDiffFile =
         event.status === "done" &&
           (diffStats || /edit|writ|modif|updat|patch/i.test(rawTitle))
-          ? filePath || message?.edits?.[0]?.file
+          ? filePath || fileChanges?.[0]?.file
           : undefined;
       const metadataFirstLabel =
         stripTrailingEllipsis(
@@ -4271,7 +4756,7 @@ function buildDisplayEvents(
           normalizedDescription !== "starting step" &&
           normalizedDescription !== "finishing step";
         if (hasMeaningfulDescription) {
-          summary = description;
+          summary = description || "";
         } else {
           // Drop low-signal TOOL_CALL placeholders when they have no useful detail.
           continue;
@@ -4313,6 +4798,10 @@ function buildDisplayEvents(
         partType,
         internal,
         filePath,
+        callID: event.callID,
+        sessionID: event.sessionID || activityDetail?.sessionID,
+        startedAt: event.startedAt,
+        endedAt: event.endedAt,
         diffStats,
         activityDetail,
         viewDiffFile,
@@ -4359,10 +4848,10 @@ export const SystemMessage = memo(function SystemMessage({
   accentColor?: string;
 }) {
   return (
-    <div className="oc-message-enter mb-6 px-4">
+    <div className="oc-message-enter mb-4">
       <div className="opacity-90 transition-opacity hover:opacity-100">
         <div
-          className="rounded-r-md border-l pr-2"
+          className="mx-auto max-w-full rounded-r-md border-l pr-2"
           style={{
             borderLeftColor: accentColor,
             backgroundColor: `color-mix(in srgb, ${accentColor} 4%, transparent)`,
@@ -4385,7 +4874,17 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
   const userMessageRef = useRef<HTMLDivElement>(null);
   const rawUserText =
     message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
-  const content = normalizedUserMessageText(message);
+  const splitContent = useMemo(() => {
+    const withoutAttachmentEcho = stripHydratedAttachmentEcho(
+      typeof rawUserText === "string" ? rawUserText : "",
+      message,
+    );
+    const withoutGenericFenceEcho =
+      stripGenericHydratedAttachmentFence(withoutAttachmentEcho);
+    return splitInjectedSystemPromptFromUserText(withoutGenericFenceEcho);
+  }, [message, rawUserText]);
+  const content = splitContent.userText;
+  const injectedSystemText = splitContent.systemText;
   const explicitFileChips = (message?.parts ?? [])
     .filter(isExplicitFileAttachmentPart)
     .map((part) => part.filename ?? part.source?.path)
@@ -4433,7 +4932,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
 
   if (isPlanProceedMessageContent(content)) {
     return (
-      <div className="oc-message-enter mb-5 px-4 flex justify-end">
+    <div className="oc-message-enter mb-3.5 px-4 flex justify-end">
         <div className="flex w-fit max-w-[78%] flex-col items-end gap-2">
           <div className="oc-plan-approved-badge flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-oc-xs">
             <Check className="h-3.5 w-3.5" />
@@ -4445,72 +4944,79 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
   }
 
 
-  if (!content && !hasImages) {
+  if (!content && !hasImages && !injectedSystemText) {
     return null;
   }
 
   return (
-    <div className="oc-message-enter mb-5 flex items-end justify-end gap-2.5 px-4">
-      <div className="w-fit max-w-[78%]">
-        <div className="oc-msg-user" ref={userMessageRef}>
-          <div className="whitespace-pre-wrap text-xs leading-relaxed">
-            {content && (() => {
-              const match = content.match(/^(\/[a-zA-Z0-9_-]+)(.*)$/s);
-              if (match) {
-                return (
-                  <>
-                    <span className="oc-readable-accent font-medium">{match[1]}</span>
-                    {renderHighlightedText(match[2])}
-                  </>
-                );
-              }
-              return renderHighlightedText(content);
-            })()}
-          </div>
-          {hasImages && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {(message.images ?? []).map((src: string, index: number) => (
-                <button
-                  key={src}
-                  type="button"
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft transition-colors hover:bg-oc-bg-soft"
-                  onClick={() => setPreviewImageSrc(src)}
-                  title="Preview image attachment"
-                >
-                  <img
-                    src={src}
-                    alt={`attachment image ${index + 1}`}
-                    className="h-3.5 w-3.5 rounded-sm border border-oc-border-soft object-cover shrink-0"
-                  />
-                  <span className="truncate">image-{index + 1}</span>
-                </button>
-              ))}
+      <div className="oc-message-enter mb-3.5 flex flex-col gap-1.5 px-4">
+      {(content || hasImages) ? (
+        <div className="flex items-end justify-end gap-1.5">
+          <div className="w-fit max-w-[78%]">
+            <div className="oc-msg-user" ref={userMessageRef}>
+              <div className="whitespace-pre-wrap text-xs leading-relaxed">
+                {content && (() => {
+                  const match = content.match(/^(\/[a-zA-Z0-9_-]+)(.*)$/s);
+                  if (match) {
+                    return (
+                      <>
+                        <span className="oc-readable-accent font-medium">{match[1]}</span>
+                        {renderHighlightedText(match[2])}
+                      </>
+                    );
+                  }
+                  return renderHighlightedText(content);
+                })()}
+              </div>
+              {hasImages && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {(message.images ?? []).map((src: string, index: number) => (
+                    <button
+                      key={src}
+                      type="button"
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft transition-colors hover:bg-oc-bg-soft"
+                      onClick={() => setPreviewImageSrc(src)}
+                      title="Preview image attachment"
+                    >
+                      <img
+                        src={src}
+                        alt={`attachment image ${index + 1}`}
+                        className="h-3.5 w-3.5 rounded-sm border border-oc-border-soft object-cover shrink-0"
+                      />
+                      <span className="truncate">image-{index + 1}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+            <div className="mt-1 flex items-center justify-end gap-1.5">
+              {(() => {
+                const ts = formatMessageTime(getMessageTimestamp(message));
+                return ts ? (
+                  <span className="oc-text-secondary text-[10px] tabular-nums opacity-70">
+                    {ts}
+                  </span>
+                ) : null;
+              })()}
+              <button
+                type="button"
+                className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
+                onClick={handleCopy}
+                title="Copy message"
+              >
+                {copied ? (
+                  <Check className="h-3.5 w-3.5 text-oc-green" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+              </button>
+            </div>
+          </div>
         </div>
-        <div className="mt-1.5 flex items-center justify-end gap-1.5">
-          {(() => {
-            const ts = formatMessageTime(getMessageTimestamp(message));
-            return ts ? (
-              <span className="oc-text-secondary text-[10px] tabular-nums opacity-70">
-                {ts}
-              </span>
-            ) : null;
-          })()}
-          <button
-            type="button"
-            className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
-            onClick={handleCopy}
-            title="Copy message"
-          >
-            {copied ? (
-              <Check className="h-3.5 w-3.5 text-oc-green" />
-            ) : (
-              <Copy className="h-3.5 w-3.5" />
-            )}
-          </button>
-        </div>
-      </div>
+      ) : null}
+      {injectedSystemText ? (
+        <SystemMessage content={injectedSystemText} />
+      ) : null}
       <ImagePreviewModal
         isOpen={previewImageSrc !== null}
         imageSrc={previewImageSrc}
@@ -4728,6 +5234,68 @@ function formatThinkingVariantLabel(variant: string): string {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
 }
 
+type AssistantTurnMetadata = {
+  agent?: string;
+  modelID?: string;
+  providerID?: string;
+  variant?: string;
+};
+
+function getAssistantTurnMetadataFromCentralizedEvents(
+  rawSdkEventPayloads: unknown[] | undefined,
+): AssistantTurnMetadata {
+  const metadata: AssistantTurnMetadata = {};
+
+  if (!Array.isArray(rawSdkEventPayloads)) {
+    return metadata;
+  }
+
+  for (const payload of rawSdkEventPayloads) {
+    const record = asRecord(payload);
+    if (!record) continue;
+
+    const payloadType = asString(record.type);
+    const syncEvent = asRecord(record.syncEvent);
+    const syncType = asString(syncEvent?.type);
+    const normalizedType = syncType || payloadType;
+    const properties = asRecord(record.properties);
+    const syncData = asRecord(syncEvent?.data);
+
+    if (
+      normalizedType === "session.next.agent.switched" ||
+      normalizedType === "session.next.agent.switched.1"
+    ) {
+      const agent =
+        asString(properties?.agent) ||
+        asString(syncData?.agent);
+      if (agent) {
+        metadata.agent = agent;
+      }
+      continue;
+    }
+
+    if (
+      normalizedType === "session.next.model.switched" ||
+      normalizedType === "session.next.model.switched.1"
+    ) {
+      const model =
+        asRecord(properties?.model) ||
+        asRecord(syncData?.model);
+      const modelID =
+        asString(model?.modelID) ||
+        asString(model?.id);
+      const providerID = asString(model?.providerID);
+      const variant = asString(model?.variant);
+
+      if (modelID) metadata.modelID = modelID;
+      if (providerID) metadata.providerID = providerID;
+      if (variant) metadata.variant = variant;
+    }
+  }
+
+  return metadata;
+}
+
 function AssistantResponseCardInner({
   message,
   streaming,
@@ -4735,6 +5303,7 @@ function AssistantResponseCardInner({
   interactiveEvents,
   messages,
   currentSessionId,
+  hideFileChangesSection,
   subagentsByParentMessageId,
   subagentDetailsById,
   availableAgents,
@@ -4746,6 +5315,7 @@ function AssistantResponseCardInner({
   interactiveEvents?: AppState["interactiveEvents"];
   messages?: Message[];
   currentSessionId?: AppState["currentSessionId"];
+  hideFileChangesSection?: boolean;
   subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
   subagentDetailsById?: AppState["subagentDetailsById"];
   availableAgents?: AppState["availableAgents"];
@@ -4796,17 +5366,52 @@ function AssistantResponseCardInner({
     asString(centralizedMessageRec?.sessionId) ||
     null;
   const centralizedRawSdkEventPayloads = useMemo(() => {
-    return centralizedSessionId &&
+    const allPayloads = centralizedSessionId &&
       Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId])
       ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
       : [];
-  }, [centralizedSessionId, rawSdkEventPayloadsBySessionId]);
+    
+    const targetMessageId = message?.info?.id || message?.id;
+    if (!targetMessageId) return allPayloads;
+
+    return allPayloads.filter((payload) => {
+      const rec = asRecord(payload);
+      if (!rec) return false;
+      const props = asRecord(rec.properties);
+      const info = asRecord(props?.info);
+      const part = asRecord(props?.part) || asRecord(rec?.part);
+      const msgId = asString(info?.id) || asString(part?.messageID) || asString(part?.messageId);
+      if (msgId) return msgId === targetMessageId;
+      return true;
+    });
+  }, [centralizedSessionId, rawSdkEventPayloadsBySessionId, message?.info?.id, message?.id]);
+  const turnMetadata = useMemo(
+    () =>
+      getAssistantTurnMetadataFromCentralizedEvents(
+        centralizedRawSdkEventPayloads,
+      ),
+    [centralizedRawSdkEventPayloads],
+  );
+  // Normalize the centralized tape once at the boundary so downstream helpers
+  // only see a single event shape, regardless of whether the original entry was
+  // stored as `properties.part` or `payload.syncEvent.data.part`.
+  const normalizedCentralizedRawSdkEventPayloads = useMemo(
+    () => normalizeCentralizedEventPayloads(centralizedRawSdkEventPayloads),
+    [centralizedRawSdkEventPayloads],
+  );
   const activityTimelineRawEventParts = useMemo(() => {
-    return rawMessagePartsFromRawSdkEventPayloads(centralizedRawSdkEventPayloads);
-  }, [centralizedRawSdkEventPayloads]);
+    return rawMessagePartsFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads);
+  }, [normalizedCentralizedRawSdkEventPayloads]);
   const cardMessage = activityTimelineMessage;
   const cardStreaming = activityTimelineStreaming;
-  const rawContent = getMessageContent(centralizedRawSdkEventPayloads);
+  const rawContentChunks = useMemo(
+    () =>
+      getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
+        normalizedCentralizedRawSdkEventPayloads,
+      ),
+    [normalizedCentralizedRawSdkEventPayloads],
+  );
+  const rawContent = rawContentChunks.join("");
   const stickyStreamingContentRef = useRef<{
     messageId: string | null;
     content: string;
@@ -4831,33 +5436,40 @@ function AssistantResponseCardInner({
   const hasActiveReasoningPart = cardStreaming?.inReasoningPart === true;
   const hasTerminalStepSignal =
     cardStreaming?.hasTerminalStepSignal === true;
-  const liveInteractivePrompt = useMemo(
-    () =>
-      questionPromptFromInteractiveEvents(
-        getInteractiveEventsFromRawSdkEventPayloads(
-          centralizedRawSdkEventPayloads,
-        ),
-      ),
-    [centralizedRawSdkEventPayloads],
+  const resolvedContentChunks =
+    rawContentChunks.length > 0
+      ? rawContentChunks
+      : content.trim().length > 0
+        ? [content]
+        : [];
+  const resolvedContent = resolvedContentChunks.join("");
+  const finalizedThoughtItems = useMemo(
+    () => thoughtItemsFromRawEventPayloads(normalizedCentralizedRawSdkEventPayloads),
+    [normalizedCentralizedRawSdkEventPayloads],
   );
-  const shouldUseInteractivePromptFallback =
-    !!cardStreaming?.isActive &&
-    content.trim().length === 0 &&
-    !!liveInteractivePrompt;
-  const resolvedContent = shouldUseInteractivePromptFallback
-    ? (liveInteractivePrompt ?? "")
-    : content;
+  const liveThoughtItems = useMemo(
+    () =>
+      thoughtItemsFromStreamingReasoningEvents(
+        cardStreaming?.reasoningEvents,
+        cardStreaming?.isActive === true,
+      ),
+    [cardStreaming?.reasoningEvents, cardStreaming?.isActive],
+  );
   const thoughtItems = useMemo(
-    () => {
-      return thoughtItemsFromRawEventPayloads(centralizedRawSdkEventPayloads);
-    },
-    [centralizedRawSdkEventPayloads],
+    () => mergeThoughtItemsForTimeline(finalizedThoughtItems, liveThoughtItems),
+    [finalizedThoughtItems, liveThoughtItems],
   );
   const progressItems = useMemo(
     () => {
-      return progressItemsFromCentralizedData(centralizedRawSdkEventPayloads);
+      return progressItemsFromCentralizedData(normalizedCentralizedRawSdkEventPayloads);
     },
-    [centralizedRawSdkEventPayloads],
+    [normalizedCentralizedRawSdkEventPayloads],
+  );
+  const commentaryItems = useMemo(
+    () => {
+      return commentaryItemsFromRawEventPayloads(normalizedCentralizedRawSdkEventPayloads);
+    },
+    [normalizedCentralizedRawSdkEventPayloads],
   );
 
   /** Unified chronological list of timeline blocks to render. */
@@ -4865,14 +5477,24 @@ function AssistantResponseCardInner({
     return buildTimeline(
       thoughtItems,
       progressItems,
-      resolvedContent,
+      commentaryItems,
+      resolvedContentChunks.join(""),
       activityTimelineRawEventParts as MessagePart[],
-    );
-  }, [thoughtItems, progressItems, resolvedContent, activityTimelineRawEventParts]);
+  );
+  }, [thoughtItems, progressItems, commentaryItems, resolvedContentChunks, activityTimelineRawEventParts]);
   const isStreamingActive = !!activityTimelineStreaming?.isActive;
+  
+  const structured = useMemo(
+    () => structuredOutputFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads),
+    [normalizedCentralizedRawSdkEventPayloads]
+  );
+  const responseType = structured?.responseType?.toLowerCase();
+  const plan = structured?.plan;
+  const fileChanges = structured?.fileChanges;
+  
   const displayEvents = useMemo(
     () => {
-      const events = buildDisplayEvents(timelineBlocks, activityTimelineMessage, isStreamingActive, assistantTurnPending);
+      const events = buildDisplayEvents(timelineBlocks, fileChanges, isStreamingActive, assistantTurnPending);
       // Debug: Log all display events with read/edit labels
       const readEditEvents = events.filter(e => e.label.toLowerCase() === 'read' || e.label.toLowerCase() === 'edit');
       if (readEditEvents.length > 0) {
@@ -4924,81 +5546,84 @@ function AssistantResponseCardInner({
       ),
     [displayEvents],
   );
+  // Extract fields from info records of the activity message
   const info = activityTimelineMessage?.info;
   const messageRec = asRecord(activityTimelineMessage);
   const infoRec = asRecord(messageRec?.info);
-  const structured = activityTimelineMessage?.structuredOutput;
-  const responseType = firstNonEmptyString(
-    activityTimelineMessage?.responseType,
-    typeof structured?.responseType === "string" ? structured.responseType : undefined,
-  )?.toLowerCase();
-  const plan = activityTimelineMessage?.plan;
-  const changeSummary = activityTimelineMessage?.changeSummary;
+  // Redundant declarations of structured, responseType, plan, and fileChanges have been removed to avoid esbuild compile failures.
+
   // Match the same ID extraction logic as backend extractMessageId()
   // https://github.com/anthropics/opencode-vscode/blob/main/src/providers/ChatViewProvider.ts#L1988-L2000
   const messageId =
     info?.id ||
     activityTimelineMessage?.id ||
-    activityTimelineMessage?.messageId ||
-    info?.messageId ||
+    (activityTimelineMessage as any)?.messageId ||
+    (info as any)?.messageId ||
     activityTimelineStreaming?.messageId;
-  const hasOwnedChangeSummary = messageOwnsChangeSummary(
-    activityTimelineMessage,
-    messageId,
-    changeSummary,
-  );
-  const shouldShowFileChanges = useMemo(() => {
-    if (!activityTimelineMessage || !messageHasOwnFileChangeEvidence(activityTimelineMessage)) {
-      return false;
-    }
 
+  const shouldShowFileChanges = useMemo(() => {
     // Implementation plan turns already surface their own plan card, so the
     // aggregated diff section would just duplicate the same turn.
     if (plan?.file) {
       return false;
     }
 
-    const ownFiles = fileChangePathsFromMessage(activityTimelineMessage);
-
-    // If summary ownership metadata is missing, keep local evidence visible.
-    // This avoids dropping the file-change card when providers omit
-    // message-scoped diff summary payloads.
-    if (!hasOwnedChangeSummary) {
-      return (
-        ownFiles.size > 0 ||
-        progressItems.length > 0
-      );
+    if (!Array.isArray(fileChanges) || fileChanges.length === 0) {
+      return false;
     }
+
+    const ownFiles = new Set(
+      fileChanges.map(c => normalizeFileChangePathForComparison(c.file)).filter((f): f is string => !!f)
+    );
 
     if (ownFiles.size === 0) {
       return true;
     }
 
-    const ownIndex = messages.findIndex(
+    const ownIndex = (messages || []).findIndex(
       (candidate) =>
         candidate === message ||
         (!!messageId && (candidate.info?.id === messageId || candidate.id === messageId)),
     );
-    const ownRichness = fileChangeRenderRichness(activityTimelineMessage);
+    
+    // Evaluate our richness using the structured data
+    let ownRichness = 1;
+    if (fileChanges.some(c => c.diffExcerpt?.lines?.length)) {
+      ownRichness += 2;
+    }
 
-    return !messages.some((candidate, index) => {
+    return !(messages || []).some((candidate, index) => {
       if (candidate === message) {
         return false;
       }
-      const candidateFiles = fileChangePathsFromMessage(candidate);
-      if (candidateFiles.size === 0) {
+      
+      const candidateStructured = structuredOutputFromRawSdkEventPayloads(candidate.rawSdkEventPayloads);
+      const candidateChanges = candidateStructured?.fileChanges;
+      
+      if (!Array.isArray(candidateChanges) || candidateChanges.length === 0) {
         return false;
       }
+      
+      const candidateFiles = new Set(
+        candidateChanges.map(c => normalizeFileChangePathForComparison(c.file)).filter((f): f is string => !!f)
+      );
+      
       if (!isFileChangeSubset(ownFiles, candidateFiles)) {
         return false;
       }
-      const candidateRichness = fileChangeRenderRichness(candidate);
+      
+      let candidateRichness = 1;
+      if (candidateChanges.some(c => c.diffExcerpt?.lines?.length)) {
+        candidateRichness += 2;
+      }
+      
       if (candidateRichness > ownRichness) {
         return true;
       }
       return candidateRichness === ownRichness && ownIndex >= 0 && index > ownIndex;
     });
-  }, [hasOwnedChangeSummary, activityTimelineMessage, messageId, messages, progressItems]);
+  }, [fileChanges, plan?.file, messageId, messages, message]);
+
   const shouldShowPlanCard = useMemo(() => {
     if (responseType !== "implementation_plan" || !plan) {
       return false;
@@ -5008,7 +5633,7 @@ function AssistantResponseCardInner({
       return true;
     }
 
-    const ownIndex = messages.findIndex(
+    const ownIndex = (messages || []).findIndex(
       (candidate) =>
         candidate === message ||
         (!!messageId && (candidate.info?.id === messageId || candidate.id === messageId)),
@@ -5017,12 +5642,12 @@ function AssistantResponseCardInner({
       return true;
     }
 
-    const matchingPlanIndexes = messages
-      .map((candidate, index) =>
-        areLikelySamePlanFilePath(planFileFromMessageForComparison(candidate), plan.file)
-          ? index
-          : -1,
-      )
+    const matchingPlanIndexes = (messages || [])
+      .map((candidate, index) => {
+        const candidateStructured = structuredOutputFromRawSdkEventPayloads(candidate.rawSdkEventPayloads);
+        const candidatePlanFile = candidateStructured?.plan?.file || "";
+        return areLikelySamePlanFilePath(candidatePlanFile, plan.file) ? index : -1;
+      })
       .filter((index) => index >= 0);
 
     if (matchingPlanIndexes.length === 0) {
@@ -5031,12 +5656,12 @@ function AssistantResponseCardInner({
 
     const lastMatchingPlanIndex = Math.max(...matchingPlanIndexes);
     return ownIndex === lastMatchingPlanIndex;
-  }, [message, messageId, plan, messages, responseType]);
+  }, [responseType, plan, messageId, messages, message]);
 
   const latestAssistantMessageId = useMemo(() => {
     if (!Array.isArray(messages)) return undefined;
-    for (let index = messages.length - 1; index >= 0; index--) {
-      const candidate = messages[index];
+    for (let index = (messages || []).length - 1; index >= 0; index--) {
+      const candidate = (messages || [])[index];
       const role = candidate.role ?? candidate.info?.role ?? "user";
       if (role === "assistant") {
         return candidate.info?.id ?? candidate.id;
@@ -5049,29 +5674,13 @@ function AssistantResponseCardInner({
   const [viewState, setViewState] = useState<MessageViewState>({
     showActivityDetails: false,
     showThinkingDetails: false,
-    showAllCompletedActivity: false,
     showInternalActivity: false,
     expandedReasoningSteps: new Set<string>(),
   });
-  const streamContentReasoningIdx = displayEvents.findIndex(
-    (e) => e.kind === "reasoning" && e.key.endsWith("stream-content-as-thinking") && e.status === "pending",
-  );
-  const pendingStreamReasoning =
-    streamContentReasoningIdx >= 0 ? displayEvents[streamContentReasoningIdx] : undefined;
-  const mainDisplayEvents =
-    streamContentReasoningIdx >= 0
-      ? displayEvents.filter((_, i) => i !== streamContentReasoningIdx)
-      : displayEvents;
-
-  const hasCompletedCondensedActivity =
-    mainDisplayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY &&
-    !viewState.showAllCompletedActivity;
-  const visibleMainEvents = hasCompletedCondensedActivity
-    ? mainDisplayEvents.slice(-MAX_VISIBLE_COMPLETED_ACTIVITY)
-    : mainDisplayEvents;
-  const visibleDisplayEvents = pendingStreamReasoning
-    ? [...visibleMainEvents, pendingStreamReasoning]
-    : visibleMainEvents;
+  // The centralized event tape is the source of truth for ordering. Do not
+  // pin streaming-only reasoning blocks or other migration artifacts to the
+  // end of the timeline, because that can duplicate or reorder the final turn.
+  const visibleDisplayEvents = displayEvents;
   const userFacingDisplayEvents = visibleDisplayEvents.filter((event) => {
     if (event.internal) return false;
     return true;
@@ -5083,24 +5692,28 @@ function AssistantResponseCardInner({
     viewState.showInternalActivity && internalDisplayEvents.length > 0
       ? visibleDisplayEvents
       : userFacingDisplayEvents;
-  // TEMPORARY MIGRATION BEHAVIOR:
-  // Pending reasoning derived from streaming.content is still pinned to the end
-  // so the current UI stays usable while we transition away from this
-  // normalization layer. Remove this once the raw centralized sequence is the
-  // sole source of render order.
-  if (pendingStreamReasoning) {
-    const pinnedIdx = timelineDisplayEvents.findIndex(
-      (e) => e.key === pendingStreamReasoning.key,
-    );
-    if (pinnedIdx >= 0 && pinnedIdx !== timelineDisplayEvents.length - 1) {
-      const [pinned] = timelineDisplayEvents.splice(pinnedIdx, 1);
-      timelineDisplayEvents = [...timelineDisplayEvents, pinned];
+
+  const timelineDisplayEventGroups = useMemo(() => {
+    const groups: Array<{ type: "activity", events: DisplayEvent[] } | { type: "commentary", event: DisplayEvent }> = [];
+    let currentActivity: DisplayEvent[] = [];
+
+    for (const event of timelineDisplayEvents) {
+      if (event.kind === "commentary") {
+        if (currentActivity.length > 0) {
+          groups.push({ type: "activity", events: currentActivity });
+          currentActivity = [];
+        }
+        groups.push({ type: "commentary", event });
+      } else {
+        currentActivity.push(event);
+      }
     }
-  }
-  const hiddenActivityEventCount = Math.max(
-    0,
-    displayEvents.length - visibleDisplayEvents.length,
-  );
+    if (currentActivity.length > 0) {
+      groups.push({ type: "activity", events: currentActivity });
+    }
+    return groups;
+  }, [timelineDisplayEvents]);
+
   const activityStatusCounts = useMemo(
     () =>
       userFacingDisplayEvents.reduce(
@@ -5141,7 +5754,7 @@ function AssistantResponseCardInner({
     // or stale ID format). Show these ONLY on the latest assistant message AND
     // only if no other assistant message already owns them via strict matching.
     const assistantMessageIdentitySet = new Set<string>();
-    for (const candidate of messages) {
+    for (const candidate of messages || []) {
       const role = candidate.role ?? candidate.info?.role ?? "user";
       if (role !== "assistant") {
         continue;
@@ -5213,20 +5826,17 @@ function AssistantResponseCardInner({
     if (plan) {
       status = "Draft"; // Default
       const targetPlanFile = typeof plan.file === "string" ? plan.file : "";
-      const msgIndex = messages.findIndex(
-        (m) => m === message || (messageId && (m.info?.id === messageId || m.id === messageId))
+      const msgIndex = (messages || []).findIndex(
+        (m: any) => m === message || (messageId && (m.info?.id === messageId || m.id === messageId))
       );
 
       if (msgIndex !== -1) {
-        const matchingPlanIndexes = messages
-          .map((candidate, index) =>
-            areLikelySamePlanFilePath(
-              planFileFromMessageForComparison(candidate),
-              targetPlanFile,
-            )
-              ? index
-              : -1,
-          )
+        const matchingPlanIndexes = (messages || [])
+          .map((candidate, index) => {
+            const candidateStructured = structuredOutputFromRawSdkEventPayloads(candidate.rawSdkEventPayloads);
+            const candidatePlanFile = candidateStructured?.plan?.file || "";
+            return areLikelySamePlanFilePath(candidatePlanFile, targetPlanFile) ? index : -1;
+          })
           .filter((index) => index >= 0);
         const firstMatchingPlanIndex =
           matchingPlanIndexes.length > 0 ? Math.min(...matchingPlanIndexes) : msgIndex;
@@ -5235,7 +5845,7 @@ function AssistantResponseCardInner({
 
         // Did user ask for a revision before this plan was generated?
         for (let i = firstMatchingPlanIndex - 1; i >= 0; i--) {
-          const m = messages[i];
+          const m = (messages || [])[i];
           if (m.role === "user") {
             const text = normalizedUserMessageText(m);
             if (isPlanRevisionMessageContent(text)) {
@@ -5246,9 +5856,10 @@ function AssistantResponseCardInner({
         }
 
         // Did user approve or request revision on this plan?
-        for (let i = firstMatchingPlanIndex + 1; i < messages.length; i++) {
-          const m = messages[i];
-          const candidatePlanFile = planFileFromMessageForComparison(m);
+        for (let i = firstMatchingPlanIndex + 1; i < (messages || []).length; i++) {
+          const m = (messages || [])[i];
+          const candidateStructured = structuredOutputFromRawSdkEventPayloads(m.rawSdkEventPayloads);
+          const candidatePlanFile = candidateStructured?.plan?.file || "";
           if (m.role === "assistant" && candidatePlanFile) {
             const samePlanFile = areLikelySamePlanFilePath(
               candidatePlanFile,
@@ -5389,7 +6000,7 @@ function AssistantResponseCardInner({
       return;
     }
     const detail =
-      (subagentDetailsById[selected.id] as SubagentDetail | undefined) ||
+      (subagentDetailsById?.[selected.id] as SubagentDetail | undefined) ||
       (selected as SubagentDetail);
     const childSessionId = detail.childSessionId || selected.childSessionId;
     const parentSessionId = detail.parentSessionId || selected.parentSessionId;
@@ -5428,7 +6039,7 @@ function AssistantResponseCardInner({
       return;
     }
     const detail =
-      (subagentDetailsById[selected.id] as SubagentDetail | undefined) ||
+      (subagentDetailsById?.[selected.id] as SubagentDetail | undefined) ||
       (selected as SubagentDetail);
     const childSessionId = detail.childSessionId || selected.childSessionId;
     const parentSessionId = detail.parentSessionId || selected.parentSessionId;
@@ -5481,7 +6092,7 @@ function AssistantResponseCardInner({
     !message && !!streaming?.isActive && !hasStreamingActivity;
 
   // Use type-safe helpers instead of type assertions
-  const agentName = getAgentName(message, streaming);
+  const agentName = turnMetadata.agent || getAgentName(message, streaming);
   const agentColor = useMemo(() => {
     if (!agentName || agentName === "assistant") return undefined;
     const match = availableAgents?.find(
@@ -5491,15 +6102,25 @@ function AssistantResponseCardInner({
     return match?.color ?? undefined;
   }, [agentName, availableAgents]);
   const modelName = useMemo(() => {
+    if (turnMetadata.modelID && turnMetadata.providerID) {
+      return `${turnMetadata.modelID}/${turnMetadata.providerID}`;
+    }
+    if (turnMetadata.modelID) {
+      return turnMetadata.modelID;
+    }
+    if (turnMetadata.providerID) {
+      return turnMetadata.providerID;
+    }
     if (streaming?.isActive) {
       if (streaming.model?.name) return streaming.model.name;
-      if (streaming.providerID && streaming.modelID)
-        return `${streaming.providerID}/${streaming.modelID}`;
+      if (streaming.modelID && streaming.providerID)
+        return `${streaming.modelID}/${streaming.providerID}`;
       if (streaming.modelID) return streaming.modelID;
     }
     return modelLabel(message ?? ({} as Message));
-  }, [message, streaming]);
-  const thinkingVariant = getThinkingVariant(message, streaming);
+  }, [message, streaming, turnMetadata.modelID, turnMetadata.providerID]);
+  const thinkingVariant =
+    turnMetadata.variant || getThinkingVariant(message, streaming);
   const showMessageThinking = useMemo(
     () =>
       !!thinkingVariant &&
@@ -5609,7 +6230,6 @@ function AssistantResponseCardInner({
     if (!plan) return "";
     const candidate = (
       firstNonEmptyString(
-        cardMessage?.message,
         typeof structured?.message === "string" ? structured.message : undefined,
         plan.intro,
         plan.summary,
@@ -5619,18 +6239,39 @@ function AssistantResponseCardInner({
       return candidate;
     }
     return "I created an implementation plan. Here are the key steps and the plan file.";
-  }, [cardMessage?.message, structured?.message, plan]);
+  }, [structured?.message, plan]);
+  const structuredResponseMessage =
+    typeof structured?.message === "string" ? structured.message.trim() : "";
+  const responseBodyRawSdkEventPayloads = useMemo(
+    () =>
+      normalizedCentralizedRawSdkEventPayloads.filter(
+        (payload) => !isDeltaCentralizedEventPayload(payload),
+      ),
+    [normalizedCentralizedRawSdkEventPayloads],
+  );
+  const responseBodyChunks = useMemo(() => {
+    // The response body must render the final assistant answer exactly once.
+    // Centralized fixtures can surface the same answer through both the
+    // structured message field and raw text chunks, so the extractor and the
+    // body renderer intentionally stay narrow here.
+    if (structuredResponseMessage.length > 0) {
+      return [structuredResponseMessage];
+    }
+    return getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
+      responseBodyRawSdkEventPayloads,
+    );
+  }, [structuredResponseMessage, responseBodyRawSdkEventPayloads]);
   const hasThinkingEvents = useMemo(
     () => displayEvents.some((event) => event.kind === "reasoning"),
     [displayEvents],
   );
   const resolvedContentMatchesError = messageDisplaysSameErrorText(
     cardMessage,
-    resolvedContent,
+    responseBodyChunks.join("\n\n"),
   );
   const visibleResolvedContent = resolvedContentMatchesError
     ? ""
-    : resolvedContent;
+    : responseBodyChunks.join("\n\n");
   // For plan messages the display text comes from structured output fields
   // (plan.intro / plan.summary), not from concatenated raw response parts.
   // The extension-side applyStructuredOutputToMessage now populates
@@ -5640,7 +6281,9 @@ function AssistantResponseCardInner({
     visibleResolvedContent.trim().length > 0
       ? visibleResolvedContent
       : planLeadMessage;
-  const hasVisibleResponseBody = effectiveResponseContent.trim().length > 0;
+  const hasVisibleResponseBody = responseBodyChunks.some(
+    (chunk) => chunk.trim().length > 0,
+  );
   const hasPrimaryResponseBody = hasVisibleResponseBody || shouldShowPlanCard;
   const hasResponseContent = hasVisibleResponseBody;
   const isAborted = cardMessage?.aborted === true;
@@ -5667,21 +6310,16 @@ function AssistantResponseCardInner({
       .join("\n")
     : "";
   const isLiveStreamingCard = !cardMessage && !!streaming?.isActive;
-  const responseBodyClass = isLiveStreamingCard
-    ? "w-full"
-    : "w-full";
-  const markdownBodyClass = isLiveStreamingCard
-    ? "w-full max-w-none"
-    : "w-full";
   const isLiveStream = !!streaming?.isActive;
-  // Hide the response markdown body during live streaming to prevent
-  // reasoning/planning text from leaking into the AI response card.
-  // The plan card and other non-text response elements remain visible.
-  const showResponseBody = hasResponseContent && !isLiveStream;
+  // Centralized data is the source of truth for what belongs in the final
+  // assistant response. If the response text is present, render it directly
+  // instead of hiding it behind a live-stream flag.
+  const showResponseBody = !isLiveStreamingCard && hasVisibleResponseBody;
   const showResponseSection =
+    !isLiveStreamingCard &&
     !isAborted &&
-    (hasVisibleResponseBody ||
-      shouldShowPlanCard ||
+    (shouldShowPlanCard ||
+      hasVisibleResponseBody ||
       (isLiveStream &&
         (hasStreamingActivity ||
           displayEvents.length > 0 ||
@@ -5841,7 +6479,7 @@ function AssistantResponseCardInner({
     }
   }, [preRenderDebug]);
   const responseSectionClass = hasResponseContent
-    ? "rounded-md border border-oc-border-soft bg-background p-3.5 shadow-sm"
+    ? "rounded-md border border-oc-border-soft bg-background p-2.5 shadow-sm"
     : "p-0 border-0 bg-transparent shadow-none";
   const handleCopy = async () => {
     const textToCopy = resolvedContent?.trim() ?? "";
@@ -5879,7 +6517,7 @@ function AssistantResponseCardInner({
   };
   const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     dispatch({ type: "SET_PROCESSING", payload: true });
-    const targetMessageIndex = messages.findIndex((candidate) => {
+    const targetMessageIndex = (messages || []).findIndex((candidate) => {
       if (messageId) {
         const candidateId = candidate.info?.id ?? candidate.id;
         return candidateId === messageId;
@@ -5888,7 +6526,7 @@ function AssistantResponseCardInner({
     });
     if (targetMessageIndex >= 0) {
       let persistedPatchedMessage: Message | undefined;
-      const nextMessages = messages.map((candidate, index) => {
+      const nextMessages = (messages || []).map((candidate, index) => {
         if (index !== targetMessageIndex) return candidate;
         const patched = patchMessageRetryState(
           candidate,
@@ -5966,7 +6604,7 @@ function AssistantResponseCardInner({
     <div
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
-      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-4 mt-[-12px]" : "mb-5"} px-4`}
+      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-[-8px]" : "mb-3.5"} px-4`}
     >
       <div
         className={cn(
@@ -6003,48 +6641,9 @@ function AssistantResponseCardInner({
             </div>
           </div>
         )}
-        {config.debug.showCentralizedDebug && (
-          <div
-            data-assistant-section="centralized-debug"
-            className="mb-3"
-          >
-            <div className="mb-1.5 flex items-center justify-between gap-2">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                Centralized Debug
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-oc-panel-soft/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                  <span
-                    className={cn(
-                      "h-1.5 w-1.5 rounded-full",
-                      isCentralizedDebugLive ? "bg-oc-green" : "bg-oc-text-soft/40",
-                    )}
-                  />
-                  {isCentralizedDebugLive ? "Live" : "Static"}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => copyDebugObject("centralized", centralizedDebugData)}
-                  className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-oc-panel-soft/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft transition-colors hover:border-oc-border hover:bg-oc-panel-soft/70 hover:text-oc-text"
-                  title="Copy centralized debug object"
-                >
-                  {copiedDebugPanel === "centralized" ? (
-                    <Check className="h-3 w-3" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                  <span>{copiedDebugPanel === "centralized" ? "Copied" : "Copy"}</span>
-                </button>
-              </div>
-            </div>
-            {/* Keep this as an object literal view so the centralized payload stays readable. */}
-            <div className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft break-words font-medium">
-              <DebugObjectView value={centralizedDebugData} />
-            </div>
-          </div>
-        )}
+
         {!isContiguous && (
-          <div className="oc-msg-header mb-2.5 flex flex-wrap items-start justify-between gap-2">
+          <div className="oc-msg-header mb-2 flex flex-wrap items-start justify-between gap-1.5">
             <div className="oc-msg-header-main flex min-w-0 flex-1 items-center gap-1.5">
               {showStreamingLoading ? (
                 <ThinkingStatusTicker className="oc-thinking-status" />
@@ -6095,7 +6694,7 @@ function AssistantResponseCardInner({
                         <div className="flex items-center gap-1 opacity-60">
                           <span className="text-oc-xs font-medium shrink-0">•</span>
                           <span className="oc-msg-thinking-label">
-                            Think {formatThinkingVariantLabel(thinkingVariant)}
+                            Think {formatThinkingVariantLabel(thinkingVariant || "")}
                           </span>
                         </div>
                       )}
@@ -6157,22 +6756,33 @@ function AssistantResponseCardInner({
           </div>
         )}
 
-        <div className="space-y-3">
+        <div className="space-y-2">
           {(displayEvents.length > 0 ||
             showThinkingPlaceholder) && (
-              <section data-assistant-section="activity">
-                {timelineDisplayEvents.length > 0 && (
-                  <>
+              <section data-assistant-section="activity" className="space-y-2">
+                {timelineDisplayEventGroups.map((group, groupIdx) => {
+                  if (group.type === "commentary") {
+                    return (
+                      <div key={`commentary-${groupIdx}`} className="px-1 mb-2 mt-1">
+                        <AssistantResponseBodyCard
+                          content={[group.event.summary]}
+                          className="oc-response-commentary-block"
+                        />
+                      </div>
+                    );
+                  }
+                  
+                  if (group.events.length === 0) return null;
+
+                  return (
                     <Stepper
-                      className={cn(
-                        "oc-refined-stepper",
-                        viewState.showAllCompletedActivity && "max-h-[400px] overflow-y-auto",
-                      )}
-                      ref={progressTimelineRef}
-                      autoScrollToBottom={isStreamingActive}
+                      key={`stepper-${groupIdx}`}
+                      className="oc-refined-stepper"
+                      ref={groupIdx === timelineDisplayEventGroups.length - 1 ? progressTimelineRef : undefined}
+                      autoScrollToBottom={isStreamingActive && groupIdx === timelineDisplayEventGroups.length - 1}
                     >
-                      {timelineDisplayEvents.map((event, index) => {
-                        const isLast = index === timelineDisplayEvents.length - 1;
+                      {group.events.map((event, index) => {
+                        const isLast = groupIdx === timelineDisplayEventGroups.length - 1 && index === group.events.length - 1;
                         const isLatestStreamingEvent =
                           isStreamingActive && isLast;
                         const showRunning =
@@ -6184,6 +6794,7 @@ function AssistantResponseCardInner({
                           />
                         );
                         const shouldShowDetail = viewState.showActivityDetails;
+                        const isGlobSearch = event.label.toLowerCase() === "glob";
 
                         return (
                           <StepperItem
@@ -6266,30 +6877,49 @@ function AssistantResponseCardInner({
                                   </div>
                                 );
                               } else {
-                                return (
+                                  return (
                                   <div className="flex items-start justify-between gap-2 w-full">
                                     <ExpandableStep className="flex-1">
+                                {event.label.toLowerCase() === "call_omo_agent" ? (
+                                  <CallOmoAgentStep
+                                    callID={event.callID}
+                                    sessionID={event.sessionID}
+                                    startedAt={event.startedAt}
+                                    endedAt={event.endedAt}
+                                    status={event.status}
+                                    source={event.source}
+                                    activityDetail={event.activityDetail}
+                                  />
+                                ) : event.label.toLowerCase() === "background_output" ? (
+                                  <BackgroundOutputStep
+                                    callID={event.callID}
+                                    sessionID={event.sessionID}
+                                    startedAt={event.startedAt}
+                                    endedAt={event.endedAt}
+                                    status={event.status}
+                                    source={event.source}
+                                    activityDetail={event.activityDetail}
+                                  />
+                                ) : (
                                 <div className="flex flex-col items-start gap-2 w-full min-w-0">
                                   <div className="flex items-center gap-2 flex-wrap">
                                   <span
                                     className={cn(
                                       "oc-refined-event-label",
-                                      event.kind === "reasoning" && "reasoning",
-                                      // event.kind === "activity" && "uppercase"
-                                      event.kind === "activity" && "activity",
+                                      "activity",
                                     )}
                                     data-operation={event.label.toLowerCase()}
                                   >
                                     {event.label}
                                   </span>
-                                  {event.kind === "activity" && event.source && event.source !== "stream" && event.source !== "final" && (
+                                  {event.source && event.source !== "stream" && event.source !== "final" && (
                                     <span className="oc-refined-meta-badge">
                                       {event.source === "raw_debug"
                                         ? "raw"
                                         : event.source}
                                     </span>
                                   )}
-                                  {event.kind === "activity" && event.internal && (
+                                  {event.internal && (
                                     <span className="oc-refined-meta-badge">
                                       internal
                                     </span>
@@ -6297,153 +6927,187 @@ function AssistantResponseCardInner({
                                 </div>
 
                                 <div className="flex-1 flex-col gap-1 oc-refined-event-content w-full">
-                                  {event.filePath && !isUrl(event.filePath) && !isCallStyleActivityLabel(event.label) ? (
-                                    SEARCH_LABELS.has(event.label) ? (
-                                      <SearchBlock
-                                        pattern={buildSearchPattern(
-                                          event.activityDetail?.query || event.summary,
-                                          event.description,
-                                        )}
-                                        scope={event.label}
-                                        path={event.filePath}
-                                      />
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        className="oc-refined-file-link oc-refined-file-link-with-tooltip"
-                                        onClick={() =>
-                                          vscode.postMessage({
-                                            type: "openFile",
-                                            file: event.filePath!,
-                                          })
-                                        }
-                                        >
-                                        {event.label.toLowerCase() !== "read" && (
-                                          <FileIcon filePath={event.filePath} />
-                                        )}
-                                        <span className="break-words whitespace-pre-wrap">
-                                          {event.summary || event.filePath}
-                                        </span>
-                                        <span className="oc-refined-file-link-tooltip" role="tooltip">
-                                          {event.filePath}
-                                        </span>
-                                      </button>
-                                    )
-                                  ) : (
-                                    <div
-                                      className={cn(
-                                        "oc-refined-event-summary",
-                                      )}
-                                    >
-                                      {event.kind === "reasoning" ? (
-                                        <div className="w-full">
-                                          <div
-                                            className={cn(
-                                              "oc-refined-event-summary text-left w-full",
-                                              !viewState.expandedReasoningSteps.has(event.key) && "line-clamp-2",
-                                            )}
-                                          >
-                                            <MarkdownRenderer
-                                              content={event.summary}
-                                              className="markdown-body"
-                                            />
-                                          </div>
-                                        </div>
-                                      ) : event.label === "bash" ? (
-                                        <TerminalBlockWithOutput
-                                          event={event}
-                                          messageContent={content}
-                                        />
-                                      ) : SEARCH_LABELS.has(event.label) ? (
-                                        <SearchBlock
-                                          pattern={buildSearchPattern(
-                                            event.activityDetail?.query || event.summary,
-                                            event.description,
+                                  {/* For read and todowrite events, skip the generic summary block here — they have their own custom UI below.
+                                      For all other events, render the file link or summary as usual. */}
+                                  {event.label.toLowerCase() !== "read" && event.label.toLowerCase() !== "todowrite" && (
+                                    event.filePath && !isUrl(event.filePath) && !isCallStyleActivityLabel(event.label) ? (
+                                     SEARCH_LABELS.has(event.label) ? (
+                                        <div className={cn(
+                                          "flex flex-col gap-1.5",
+                                          isGlobSearch && "max-h-64 overflow-y-auto",
+                                        )}>
+                                          {isGlobSearch && event.filePath && (
+                                            <div className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
+                                              <FileIcon filePath={event.filePath} />
+                                              <span className="break-words whitespace-pre-wrap">
+                                                {event.filePath}
+                                              </span>
+                                            </div>
                                           )}
-                                          scope={event.label}
-                                        />
-                                      ) : event.filePath && isUrl(event.filePath) ? (
-                                        <a
-                                          href={event.filePath}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="oc-refined-url-link flex items-center gap-1.5 hover:underline"
-                                        >
-                                          <ArrowUpRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                                          <SearchBlock
+                                            pattern={buildSearchPattern(
+                                              // For glob: use input.pattern (e.g. "**/package.json") instead of
+                                              // event.summary which is the path and would duplicate the header
+                                              isGlobSearch
+                                                ? (event.activityDetail?.input?.pattern as string)
+                                                : (event.activityDetail?.query || event.summary),
+                                              event.description,
+                                            )}
+                                            patternInHeader={isGlobSearch}
+                                            scope={event.label}
+                                            path={isGlobSearch ? undefined : event.filePath}
+                                            include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
+                                            outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
+                                            headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
+                                            output={event.activityDetail?.output}
+                                          />
+                                        </div>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          className="oc-refined-file-link oc-refined-file-link-with-tooltip"
+                                          onClick={() =>
+                                            vscode.postMessage({
+                                              type: "openFile",
+                                              file: event.filePath!,
+                                            })
+                                          }
+                                          >
+                                          <FileIcon filePath={event.filePath} />
                                           <span className="break-words whitespace-pre-wrap">
                                             {event.summary || event.filePath}
                                           </span>
-                                        </a>
-                                      ) : (
-                                        <MarkdownRenderer
-                                          content={event.summary || event.filePath || ""}
-                                          className="markdown-body"
-                                        />
-                                      )}
-                                    </div>
+                                          <span className="oc-refined-file-link-tooltip" role="tooltip">
+                                            {event.filePath}
+                                          </span>
+                                        </button>
+                                      )
+                                    ) : (
+                                      <div
+                                        className={cn(
+                                          "oc-refined-event-summary",
+                                        )}
+                                      >
+                                        {event.label === "bash" ? (
+                                          <TerminalBlockWithOutput
+                                            event={event}
+                                            messageContent={content}
+                                          />
+                                        ) : SEARCH_LABELS.has(event.label) ? (
+                                          <div className="flex flex-col gap-1.5">
+                                            {isGlobSearch && event.filePath && (
+                                              <div className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
+                                                <FileIcon filePath={event.filePath} />
+                                                <span className="break-words whitespace-pre-wrap">
+                                                  {event.filePath}
+                                                </span>
+                                              </div>
+                                            )}
+                                            {isGlobSearch ? (
+                                              <CollapsedSearchBlockPreview
+                                                title={event.label}
+                                                pattern={buildSearchPattern(
+                                                  // For glob: use input.pattern (e.g. "**/package.json") instead of
+                                                  // event.summary which is the path and would duplicate the header
+                                                  event.activityDetail?.input?.pattern as string,
+                                                  event.description,
+                                                )}
+                                                patternInHeader={true}
+                                                scope={event.label}
+                                                path={undefined}
+                                                include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
+                                                outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
+                                                headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
+                                                output={event.activityDetail?.output}
+                                              />
+                                            ) : (
+                                              <SearchBlock
+                                                pattern={buildSearchPattern(
+                                                  event.activityDetail?.query || event.summary,
+                                                  event.description,
+                                                )}
+                                                scope={event.label}
+                                                path={event.filePath}
+                                                include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
+                                                outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
+                                                headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
+                                                output={event.activityDetail?.output}
+                                              />
+                                            )}
+                                          </div>
+                                        ) : event.filePath && isUrl(event.filePath) ? (
+                                          <a
+                                            href={event.filePath}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="oc-refined-url-link flex items-center gap-1.5 hover:underline"
+                                          >
+                                            <ArrowUpRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                                            <span className="break-words whitespace-pre-wrap">
+                                              {event.summary || event.filePath}
+                                            </span>
+                                          </a>
+                                        ) : (
+                                          <CollapsedMarkdownPreview
+                                            title={event.label}
+                                            content={event.summary || event.filePath || ""}
+                                          />
+                                        )}
+                                      </div>
+                                    )
                                   )}
 
-                                  {/* For non-bash events, render description separately */}
-                                  {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.description && (
+
+                                  {/* For non-bash, non-todowrite, non-read events, render description separately.
+                                      Read events suppress the description since the preview card shows content. */}
+                                  {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.label.toLowerCase() !== "todowrite" && event.label.toLowerCase() !== "read" && event.description && (
                                     <div className="oc-refined-event-content">
-                                      <MarkdownRenderer
+                                      <CollapsedMarkdownPreview
+                                        title={`${event.label} description`}
                                         content={event.description}
-                                        className="markdown-body"
                                       />
                                     </div>
                                   )}
 
-                                  {/* Show preview content for read steps */}
+                                  {/* Show preview content for read steps — render metadata.preview as markdown with syntax highlighting */}
                                   {(() => {
                                     const isRead = event.label.toLowerCase() === "read";
-                                    const hasOutput = !!event.activityDetail?.output;
-                                    if (isRead) {
-                                      console.log('[DEBUG] Read step rendering', {
-                                        label: event.label,
-                                        labelLower: event.label.toLowerCase(),
-                                        isRead,
-                                        hasOutput,
-                                        activityDetail: event.activityDetail,
-                                        output: event.activityDetail?.output?.slice(0, 100),
-                                      });
-                                    }
-                                    return isRead && hasOutput;
-                                  })() && (
-
-                                    <div className="oc-refined-event-content">
-                                      <div className="rounded-md border border-oc-border-soft bg-oc-bg-soft">
-                                        <div className="flex items-center justify-between border-b border-oc-border-soft px-2.5 py-1.5">
-                                          <span className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
+                                    // Use the metadata preview string (clean file content preview) if available
+                                    const preview = event.activityDetail?.metadata?.preview as string | undefined;
+                                    return isRead && !!preview;
+                                  })() && (() => {
+                                    const preview = event.activityDetail?.metadata?.preview as string;
+                                    const previewTitle = event.activityDetail?.title || event.summary || event.filePath || "File Preview";
+                                    return (
+                                      <div className="oc-refined-event-content oc-read-preview min-w-0">
+                                        <div className="mb-1 flex items-center gap-2 text-xs text-oc-text-soft">
+                                          <span className="flex items-center gap-1.5 font-medium">
                                             <FileIcon filePath={event.filePath} />
                                             <span className="break-words whitespace-pre-wrap">
-                                              {event.summary || event.filePath || 'File Preview'}
+                                              {previewTitle}
                                             </span>
                                           </span>
-                                          <span className="text-[10px] text-oc-text-soft italic">
-                                            {event.activityDetail.metadata?.truncated ? 'Truncated' : 'Full content'}
-                                          </span>
                                         </div>
-                                        <pre className="p-2.5 overflow-x-auto text-xs max-h-48 overflow-y-auto">
-                                          <code>{event.activityDetail.output}</code>
-                                        </pre>
+                                        <CollapsedMarkdownPreview
+                                          title={previewTitle}
+                                          content={preview}
+                                        />
                                       </div>
-                                    </div>
-                                  )}
+                                    );
+                                  })()}
+
+
+                                  {/* Show checklist for todowrite steps */}
+                                  {(() => {
+                                    const isTodoWrite = event.label.toLowerCase() === "todowrite";
+                                    if (!isTodoWrite) return null;
+                                    return <TodoWriteStep event={event} />;
+                                  })()}
 
                                   {/* Show diff preview for edit steps */}
                                   {(() => {
                                     const isEdit = event.label.toLowerCase() === "edit";
                                     const hasDiffExcerpt = !!event.activityDetail?.diffExcerpt;
-                                    if (isEdit) {
-                                      console.log('[DEBUG] Edit step rendering', {
-                                        label: event.label,
-                                        labelLower: event.label.toLowerCase(),
-                                        isEdit,
-                                        hasDiffExcerpt,
-                                        activityDetail: event.activityDetail,
-                                        diffExcerpt: event.activityDetail?.diffExcerpt,
-                                      });
-                                    }
                                     return isEdit && hasDiffExcerpt;
                                   })() && (
                                     <div className="oc-refined-event-content">
@@ -6459,8 +7123,8 @@ function AssistantResponseCardInner({
                                       </div>
                                       <ActivityDiffExcerpt
                                         excerpt={{
-                                          header: event.activityDetail.diffExcerpt.header,
-                                          lines: event.activityDetail.diffExcerpt.lines || []
+                                          header: event.activityDetail?.diffExcerpt?.header,
+                                          lines: event.activityDetail?.diffExcerpt?.lines || []
                                         }}
                                       />
                                     </div>
@@ -6474,9 +7138,9 @@ function AssistantResponseCardInner({
 
                                   {shouldShowDetail && event.detail && (
                                     <div className="oc-refined-event-content">
-                                      <MarkdownRenderer
+                                      <CollapsedMarkdownPreview
+                                        title={`${event.label} details`}
                                         content={event.detail}
-                                        className="markdown-body"
                                       />
                                     </div>
                                   )}
@@ -6536,6 +7200,7 @@ function AssistantResponseCardInner({
                                   </button>
                                 )}
                                 </div>
+                                )}
                               </ExpandableStep>
                             </div>
                                 );
@@ -6545,6 +7210,8 @@ function AssistantResponseCardInner({
                         );
                       })}
                     </Stepper>
+                  );
+                })}
 
                     {showThinkingPlaceholder && !hasThinkingEvents && timelineDisplayEvents.length === 0 && (
                       <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
@@ -6569,32 +7236,12 @@ function AssistantResponseCardInner({
                       </Stepper>
                     )}
 
-                    {displayEvents.length > MAX_VISIBLE_COMPLETED_ACTIVITY && (
-                      <button
-                        type="button"
-                        className="mt-4 rounded-full border border-oc-border px-2.5 py-0.5 text-left font-medium text-[10px] oc-text-secondary transition-colors hover:bg-oc-panel hover:text-oc-text-soft"
-                        onClick={() =>
-                          setViewState((prev) => ({
-                            ...prev,
-                            showAllCompletedActivity: !prev.showAllCompletedActivity,
-                          }))
-                        }
-                      >
-                        {viewState.showAllCompletedActivity
-                          ? "Show less"
-                          : `Show more (${hiddenActivityEventCount})`}
-                      </button>
-                    )}
-
-                  </>
-                )}
-
               </section>
             )}
 
           <SubagentsInlineCard
             subagents={subagents}
-            subagentDetailsById={subagentDetailsById}
+            subagentDetailsById={subagentDetailsById || {}}
             showSubagents={showSubagents}
             setShowSubagents={setShowSubagents}
             showAllSubagents={showAllSubagents}
@@ -6615,15 +7262,6 @@ function AssistantResponseCardInner({
               data-assistant-section="response"
               className={responseSectionClass}
             >
-              {showResponseBody && (
-                <div className={responseBodyClass}>
-                  <MarkdownRenderer
-                    content={effectiveResponseContent}
-                    className={markdownBodyClass}
-                  />
-                </div>
-              )}
-
               {shouldShowPlanCard && plan && (
                 <div
                   className={
@@ -6683,104 +7321,25 @@ function AssistantResponseCardInner({
                 </div>
               )}
 
-              {/* CHANGE SUMMARY SECTION - TEMPORARILY DISABLED
-              
-              User reported that diff previews were showing inside the AI response card
-              above the Raw Response (Debug) section. This changeSummary section
-              (lines 3027-3102) displays file change statistics like "5 files changed +15 -3"
-              with a list of modified files. This appears to be what the user was seeing.
-              
-              The File Changes section (lines 3362-3397) at the bottom now shows actual
-              diff previews with CompactDiffPreview, so this summary section is redundant.
-              
-              TODO: Verify with user that this is the correct section to remove.
-              */}
-              {/* {changeSummary &&
-                Array.isArray(changeSummary.files) &&
-                changeSummary.files.length > 0 && (
-                  <div
-                    className={
-                      hasResponseContent || !!plan
-                        ? "mt-3 pt-3 border-t border-oc-border-soft/30"
-                        : undefined
-                    }
-                  >
-                    <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/50">
-                      <div className="flex items-center justify-between gap-2 px-3 py-2">
-                        <div className="text-sm font-medium text-oc-text-soft">
-                          {changeSummary.filesChanged} file
-                          {changeSummary.filesChanged === 1 ? "" : "s"} changed
-                          {(changeSummary.added > 0 || changeSummary.deleted > 0) && (
-                            <span className="ml-2 text-xs font-medium">
-                              {changeSummary.added > 0 && (
-                                <span className="text-oc-green">+{changeSummary.added}</span>
-                              )}
-                              {changeSummary.added > 0 && changeSummary.deleted > 0 ? " " : ""}
-                              {changeSummary.deleted > 0 && (
-                                <span className="text-oc-red">-{changeSummary.deleted}</span>
-                              )}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            className="rounded border border-oc-border-soft px-2 py-0.5 text-xs oc-text-secondary hover:text-oc-text-soft"
-                            onClick={() =>
-                              vscode.postMessage({
-                                type: "undoMessageChanges",
-                                messageId: changeSummary.messageId || messageId,
-                              })
-                            }
-                          >
-                            Undo
-                          </button>
-                          <button
-                            type="button"
-                            className="rounded border border-oc-border-soft px-2 py-0.5 text-xs oc-text-secondary hover:text-oc-text-soft"
-                            onClick={() =>
-                              vscode.postMessage({
-                                type: "reviewMessageChanges",
-                                files: changeSummary.files.map((file) => file.file),
-                              })
-                            }
-                          >
-                            Review
-                          </button>
-                        </div>
-                      </div>
-                      <div className="border-t border-oc-border-soft/50">
-                        {changeSummary.files.slice(0, 12).map((file) => (
-                          <button
-                            key={file.file}
-                            type="button"
-                            className="flex w-full items-center justify-between px-3 py-1.5 text-left text-xs hover:bg-oc-panel-soft"
-                            onClick={() =>
-                              vscode.postMessage({
-                                type: "openDiff",
-                                file: file.file,
-                              })
-                            }
-                          >
-                            <span className="truncate text-oc-text-soft">{file.file}</span>
-                            <span className="ml-2 shrink-0 font-medium">
-                              {file.added > 0 && <span className="text-oc-green">+{file.added}</span>}
-                              {file.added > 0 && file.deleted > 0 ? " " : ""}
-                              {file.deleted > 0 && <span className="text-oc-red">-{file.deleted}</span>}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )} */}
+              {showResponseBody && !shouldShowPlanCard && (
+                <div className="mt-1.5 space-y-1.5">
+                  {responseBodyChunks.map((chunk, index) => (
+                    <AssistantResponseBodyCard
+                      key={`${messageId || "assistant"}-response-${index}`}
+                      content={[chunk]}
+                      className="oc-response-body-block"
+                      variant="bare"
+                    />
+                  ))}
+                </div>
+              )}
 
               {showRawResponseDebug && (
                 <div
                   data-assistant-section="raw-response-debug"
                   className={
                     hasPrimaryResponseBody
-                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
+                      ? "mt-1.5 pt-1.5 border-t border-oc-border-soft/30"
                       : undefined
                   }
                 >
@@ -6800,7 +7359,7 @@ function AssistantResponseCardInner({
                   data-assistant-section="interactive-events-debug"
                   className={
                     hasPrimaryResponseBody
-                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
+                      ? "mt-1.5 pt-1.5 border-t border-oc-border-soft/30"
                       : undefined
                   }
                 >
@@ -6833,7 +7392,7 @@ function AssistantResponseCardInner({
                   data-assistant-section="pre-render-debug"
                   className={
                     hasPrimaryResponseBody
-                      ? "mt-3 pt-3 border-t border-oc-border-soft/30"
+                      ? "mt-1.5 pt-1.5 border-t border-oc-border-soft/30"
                       : undefined
                   }
                 >
@@ -6854,7 +7413,7 @@ function AssistantResponseCardInner({
         </div>
 
 {!isStreamingActive && showResponseSection && (
-          <div className="mt-2 flex items-center justify-start gap-1.5">
+          <div className="mt-1 flex items-center justify-start gap-1.5">
             <button
               type="button"
               className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
@@ -6949,7 +7508,7 @@ function AssistantResponseCardInner({
             if (!selected) return null;
 
             const detailData =
-              (subagentDetailsById[selected.id] as
+              (subagentDetailsById?.[selected.id] as
                 | SubagentDetail
                 | undefined) ||
               ({
@@ -6978,14 +7537,10 @@ function AssistantResponseCardInner({
 
         {/* File Changes - aggregated diffs at the bottom */}
         {/* Only show for the specific message that has file changes, not for every message */}
-        {shouldShowFileChanges && (
+        {!hideFileChangesSection && shouldShowFileChanges && (
           <div className="mt-4">
             <FileChangesSection
-              streamingSteps={progressItems}
-              timelineEvents={progressItems}
-              messageEdits={activityTimelineMessage?.edits || []}
-              structuredFileChanges={structuredFileChangesFromMessage(activityTimelineMessage ?? message)}
-              changeSummary={changeSummary}
+              structuredFileChanges={fileChanges || []}
               messageId={messageId}
               sessionId={currentSessionId}
             />
@@ -7059,55 +7614,49 @@ function AssistantResponseCardInner({
   );
 }
 
-function FileChangesSection({
-  streamingSteps,
-  timelineEvents,
-  messageEdits,
+function parseSessionDiffPatch(patch?: string): { header?: string; lines: string[] } {
+  if (typeof patch !== "string" || patch.trim().length === 0) {
+    return { lines: [] };
+  }
+
+  const lines = patch
+    .split(/\r?\n/)
+    .filter((line) => typeof line === "string" && line.trim().length > 0);
+  const headerIndex = lines.findIndex((line) => line.startsWith("@@"));
+  if (headerIndex < 0) {
+    return { lines };
+  }
+
+  return {
+    header: lines[headerIndex],
+    lines: lines.slice(headerIndex + 1),
+  };
+}
+
+export const FileChangesSection = memo(function FileChangesSection({
   structuredFileChanges,
-  changeSummary,
   messageId,
   sessionId,
+  centralizedDiffEvent,
 }: {
-  streamingSteps: Array<{
-    filePath?: string;
-    title?: string;
-    activityDetail?: {
-      file?: string;
-      diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number };
-    };
-    diffStats?: { added: number; deleted: number };
-  }>;
-  timelineEvents: Array<{
-    filePath?: string;
-    summary?: string;
-    description?: string;
-    activityDetail?: {
-      file?: string;
-      diffExcerpt?: { header?: string; lines: string[]; added?: number; deleted?: number };
-    };
-    diffStats?: { added: number; deleted: number };
-  }>;
-  messageEdits: Array<{ file: string; added?: number; deleted?: number }>;
   structuredFileChanges: StructuredFileChange[];
-  changeSummary?: Message["changeSummary"];
   messageId?: string | null;
   sessionId?: string | null;
+  centralizedDiffEvent?: {
+    id?: string;
+    sessionId?: string;
+    createdAt?: number;
+    files: Array<{
+      file: string;
+      patch?: string;
+      additions?: number;
+      deletions?: number;
+      status?: string;
+    }>;
+  };
 }) {
   type DiffExcerpt = { header?: string; lines?: string[]; added?: number; deleted?: number };
   type FileChange = { file: string; added: number; deleted: number; diffExcerpt?: DiffExcerpt };
-  type IndexedFileChange = FileChange & { sourcePriority: number };
-
-  const isLikelyFilePath = (value: string): boolean => {
-    const v = value.trim();
-    if (!v) return false;
-    if (v.includes("\n")) return false;
-    if (/\s/.test(v)) return false;
-    if (!/^[A-Za-z0-9._/\-\\]+$/.test(v)) return false;
-    if (/[\\/]/.test(v)) return true;
-    if (/^\*?[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+$/.test(v)) return true;
-    if (/^\*\s+[A-Za-z0-9._-]+[\\/][^ ]+/.test(v)) return true;
-    return false;
-  };
 
   const compactDisplayDir = (dir: string): string => {
     const normalized = dir.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -7117,251 +7666,57 @@ function FileChangesSection({
     return `.../${parts.slice(-3).join("/")}`;
   };
 
-  const basenameFromPath = (value: string) => {
-    const normalized = value.replace(/\\/g, "/").trim();
-    const parts = normalized.split("/");
-    return (parts[parts.length - 1] || normalized).toLowerCase();
-  };
-
-  const normalizePath = (value: string) => {
-    const normalized = value.replace(/\\/g, "/").trim();
-    const lower = normalized.toLowerCase();
-
-    const hiddenSisyphusMarker = "/.sisyphus/";
-    const hiddenIdx = lower.indexOf(hiddenSisyphusMarker);
-    if (hiddenIdx >= 0) {
-      return `sisyphus/${lower.slice(hiddenIdx + hiddenSisyphusMarker.length)}`;
-    }
-
-    const plainSisyphusMarker = "/sisyphus/";
-    const plainIdx = lower.indexOf(plainSisyphusMarker);
-    if (plainIdx >= 0) {
-      return lower.slice(plainIdx + 1);
-    }
-
-    if (lower.startsWith(".sisyphus/")) {
-      return `sisyphus/${lower.slice(".sisyphus/".length)}`;
-    }
-
-    return lower;
-  };
-
   const fileChanges = useMemo<FileChange[]>(() => {
-    const byFile = new Map<string, IndexedFileChange>();
-
-    const upsert = (
-      filePath: string | undefined,
-      added: number | undefined,
-      deleted: number | undefined,
-      sourcePriority: number,
-      diffExcerpt?: DiffExcerpt,
-    ) => {
-      const file = (filePath || "").trim();
-      if (!file) return;
-      if (!isLikelyFilePath(file)) return;
-
-      const normalizedPath = normalizePath(file);
-      const hasSeparator = normalizedPath.includes("/");
-      const basename = basenameFromPath(normalizedPath);
-
-      let key = normalizedPath;
-      if (!hasSeparator) {
-        const matches = Array.from(byFile.keys()).filter(
-          (candidate) => candidate.includes("/") && basenameFromPath(candidate) === basename,
-        );
-        if (matches.length === 1) {
-          key = matches[0];
-        }
-      } else if (byFile.has(basename) && !byFile.has(normalizedPath)) {
-        const basenameEntry = byFile.get(basename);
-        if (basenameEntry) {
-          byFile.set(normalizedPath, basenameEntry);
-          byFile.delete(basename);
-        }
-      }
-      const resolvedAdded = Math.max(
-        0,
-        typeof added === "number" ? added : typeof diffExcerpt?.added === "number" ? diffExcerpt.added : 0,
-      );
-      const resolvedDeleted = Math.max(
-        0,
-        typeof deleted === "number"
-          ? deleted
-          : typeof diffExcerpt?.deleted === "number"
-            ? diffExcerpt.deleted
-            : 0,
-      );
-      const hasExcerptLines =
-        Array.isArray(diffExcerpt?.lines) &&
-        diffExcerpt.lines.some((line) => typeof line === "string" && line.trim().length > 0);
-      const hasStructuredChangeEvidence =
-        resolvedAdded > 0 || resolvedDeleted > 0 || hasExcerptLines;
-      if (!hasStructuredChangeEvidence) {
-        return;
-      }
-
-      const existing = byFile.get(key);
-      if (!existing) {
-        byFile.set(key, {
-          file,
-          added: resolvedAdded,
-          deleted: resolvedDeleted,
-          diffExcerpt,
-          sourcePriority,
-        });
-        return;
-      }
-
-      const existingLooksLikePath = /[\\/]/.test(existing.file);
-      const incomingLooksLikePath = /[\\/]/.test(file);
-
-      const shouldReplaceStats = sourcePriority >= existing.sourcePriority;
-      const nextExcerptLines = Array.isArray(diffExcerpt?.lines) ? diffExcerpt.lines.length : 0;
-      const existingExcerptLines = Array.isArray(existing.diffExcerpt?.lines)
-        ? existing.diffExcerpt.lines.length
-        : 0;
-
-      existing.file = incomingLooksLikePath && !existingLooksLikePath
-        ? file
-        : existing.file.length >= file.length
-          ? existing.file
-          : file;
-      if (shouldReplaceStats) {
-        existing.added = resolvedAdded;
-        existing.deleted = resolvedDeleted;
-        existing.sourcePriority = sourcePriority;
-      } else {
-        existing.added = Math.max(existing.added, resolvedAdded);
-        existing.deleted = Math.max(existing.deleted, resolvedDeleted);
-      }
-      if (nextExcerptLines > existingExcerptLines) {
-        existing.diffExcerpt = diffExcerpt;
-      }
-    };
-
-    for (const step of streamingSteps) {
-      const hasConcreteChangeEvidence =
-        Boolean(step.diffStats) ||
-        Boolean(step.activityDetail?.diffExcerpt) ||
-        Boolean(step.activityDetail?.file);
-      if (!hasConcreteChangeEvidence) {
-        continue;
-      }
-      upsert(
-        step.filePath || step.activityDetail?.file,
-        step.diffStats?.added,
-        step.diffStats?.deleted,
-        1,
-        step.activityDetail?.diffExcerpt,
-      );
-    }
-
-    for (const event of timelineEvents) {
-      const hasConcreteChangeEvidence =
-        Boolean(event.diffStats) ||
-        Boolean(event.activityDetail?.diffExcerpt) ||
-        Boolean(event.activityDetail?.file);
-      if (!hasConcreteChangeEvidence) {
-        continue;
-      }
-      upsert(
-        event.filePath || event.activityDetail?.file,
-        event.diffStats?.added,
-        event.diffStats?.deleted,
-        1,
-        event.activityDetail?.diffExcerpt,
-      );
-    }
-
-    for (const edit of messageEdits) {
-      upsert(edit.file, edit.added, edit.deleted, 2);
-    }
-
-    for (const item of structuredFileChanges) {
-      const excerptLines = Array.isArray(item.diffExcerpt?.lines)
-        ? item.diffExcerpt.lines.filter(
-            (line): line is string => typeof line === "string" && line.trim().length > 0,
-          )
-        : [];
-      upsert(
-        item.file,
-        item.diffStats?.added,
-        item.diffStats?.deleted,
-        3,
-        {
-          ...item.diffExcerpt,
-          lines: excerptLines,
-        },
-      );
-    }
-
-    if (changeSummary && Array.isArray(changeSummary.files)) {
-      for (const summaryFile of changeSummary.files) {
-        if (!isLikelyFilePath(summaryFile.file)) {
-          continue;
-        }
-        upsert(summaryFile.file, summaryFile.added, summaryFile.deleted, 4);
-      }
-    }
-
-    return Array.from(byFile.values())
-      .map((item) => ({
-        file: item.file,
-        added: item.added,
-        deleted: item.deleted,
-        diffExcerpt: item.diffExcerpt,
-      }))
+    if (Array.isArray(structuredFileChanges) && structuredFileChanges.length > 0) {
+      return structuredFileChanges
+      .map((item) => {
+        const excerptLines = Array.isArray(item.diffExcerpt?.lines)
+          ? item.diffExcerpt.lines.filter(
+              (line): line is string => typeof line === "string" && line.trim().length > 0,
+            )
+          : [];
+        return {
+          file: item.file,
+          added: Math.max(0, item.diffStats?.added || 0),
+          deleted: Math.max(0, item.diffStats?.deleted || 0),
+          diffExcerpt: item.diffExcerpt
+            ? {
+                ...item.diffExcerpt,
+                lines: excerptLines,
+              }
+            : undefined,
+        };
+      })
       .sort((a, b) => a.file.localeCompare(b.file));
-  }, [streamingSteps, timelineEvents, messageEdits, structuredFileChanges, changeSummary]);
-
-  const filesChanged = changeSummary?.filesChanged ?? fileChanges.length;
-  const totalAdded =
-    typeof changeSummary?.added === "number"
-      ? Math.max(0, changeSummary.added)
-      : fileChanges.reduce((sum, file) => sum + file.added, 0);
-  const totalDeleted =
-    typeof changeSummary?.deleted === "number"
-      ? Math.max(0, changeSummary.deleted)
-      : fileChanges.reduce((sum, file) => sum + file.deleted, 0);
-
-  const visibleChanges = useMemo(() => {
-    const ordered: Array<{
-      file: string;
-      added: number;
-      deleted: number;
-      diffExcerpt?: DiffExcerpt;
-    }> = [];
-    const seen = new Set<string>();
-
-    if (changeSummary && Array.isArray(changeSummary.files)) {
-      for (const summaryFile of changeSummary.files) {
-        if (!isLikelyFilePath(summaryFile.file)) {
-          continue;
-        }
-        const key = normalizePath(summaryFile.file);
-        if (seen.has(key)) continue;
-        const matched = fileChanges.find((file) => normalizePath(file.file) === key);
-        ordered.push({
-          file: summaryFile.file,
-          added: Math.max(0, summaryFile.added || 0),
-          deleted: Math.max(0, summaryFile.deleted || 0),
-          diffExcerpt: matched?.diffExcerpt || summaryFile.diffExcerpt,
-        });
-        seen.add(key);
-      }
     }
 
-    for (const change of fileChanges) {
-      const key = normalizePath(change.file);
-      if (seen.has(key)) continue;
-      ordered.push(change);
-      seen.add(key);
+    if (
+      centralizedDiffEvent &&
+      Array.isArray(centralizedDiffEvent.files) &&
+      centralizedDiffEvent.files.length > 0
+    ) {
+      return centralizedDiffEvent.files
+        .map((item) => ({
+          file: item.file,
+          added: Math.max(0, Number(item.additions) || 0),
+          deleted: Math.max(0, Number(item.deletions) || 0),
+          diffExcerpt: item.patch
+            ? parseSessionDiffPatch(item.patch)
+            : undefined,
+        }))
+        .sort((a, b) => a.file.localeCompare(b.file));
     }
 
-    return ordered.slice(0, 12);
-  }, [changeSummary, fileChanges]);
+    return [];
+  }, [structuredFileChanges, centralizedDiffEvent]);
 
-  const undoMessageId = firstNonEmptyString(changeSummary?.messageId, messageId);
+  const filesChanged = fileChanges.length;
+  const totalAdded = fileChanges.reduce((sum, file) => sum + file.added, 0);
+  const totalDeleted = fileChanges.reduce((sum, file) => sum + file.deleted, 0);
+
+  const visibleChanges = fileChanges.slice(0, 12);
+
+  const undoMessageId = messageId;
 
   const handleUndo = () => {
     if (!undoMessageId) {
@@ -7381,6 +7736,7 @@ function FileChangesSection({
     });
   };
   const [expandedByFile, setExpandedByFile] = useState<Record<string, boolean>>({});
+  const normalizePath = normalizeFileChangePathForComparison;
   const [fetchedPreviewByFile, setFetchedPreviewByFile] = useState<
     Record<string, { header?: string; lines: string[] }>
   >({});
@@ -7451,44 +7807,44 @@ function FileChangesSection({
   }
 
   return (
-    <div className="rounded-lg border border-oc-border-soft bg-oc-bg overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2 text-sm text-oc-text">
-          <FileCode className="h-3.5 w-3.5 shrink-0 oc-readable-accent" />
-          <span className="font-medium text-oc-text-soft">
+    <div className="mx-4 overflow-hidden rounded-lg border border-oc-border-soft bg-oc-panel">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
+        <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-oc-text">
+          <FileCode className="h-3 w-3 shrink-0 oc-readable-accent" />
+          <span className="font-medium tracking-[0.01em] text-oc-text-soft">
             {filesChanged} {filesChanged === 1 ? "file" : "files"} changed
           </span>
           {(totalAdded > 0 || totalDeleted > 0) && (
             <DiffStats added={totalAdded} deleted={totalDeleted} />
           )}
         </div>
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
             onClick={handleUndo}
             disabled={!undoMessageId}
-            className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs oc-text-secondary transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
+            className="inline-flex items-center gap-1 rounded-md border border-oc-border-soft bg-white/[0.025] px-1.5 py-0.5 text-[10px] oc-text-secondary transition-colors hover:border-oc-border hover:bg-white/[0.05] hover:text-oc-text-soft"
             title={
               undoMessageId
                 ? "Undo changes from this assistant message"
                 : "Undo unavailable: no message identifier for this change set"
             }
           >
-            <Undo2 className="h-3 w-3" />
+            <Undo2 className="h-2.5 w-2.5" />
             Undo
           </button>
           <button
             type="button"
             onClick={handleReview}
-            className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-white/[0.03] px-2 py-1 text-xs oc-text-secondary transition-colors hover:border-oc-border hover:bg-white/[0.06] hover:text-oc-text-soft"
+            className="inline-flex items-center gap-1 rounded-md border border-oc-border-soft bg-white/[0.025] px-1.5 py-0.5 text-[10px] oc-text-secondary transition-colors hover:border-oc-border hover:bg-white/[0.05] hover:text-oc-text-soft"
           >
-            <ArrowUpRight className="h-3 w-3" />
+            <ArrowUpRight className="h-2.5 w-2.5" />
             Review
           </button>
         </div>
       </div>
       <div className="border-t border-oc-border-soft">
-        <div className="space-y-0.5 p-1.5">
+        <div className="space-y-0.5 p-1">
           {visibleChanges.map((fileChange) => {
             const fetchedPreview = fetchedPreviewByFile[normalizePath(fileChange.file)];
             const previewExcerpt = fetchedPreview
@@ -7509,12 +7865,12 @@ function FileChangesSection({
             return (
               <div
                 key={normalizePath(fileChange.file)}
-                className="rounded border border-oc-border-soft overflow-hidden transition-colors hover:border-oc-border"
+                className="overflow-hidden rounded-md border border-oc-border-soft transition-colors hover:border-oc-border"
               >
-                <div className="flex items-center justify-between px-2.5 py-1.5 hover:bg-white/[0.025] transition-colors">
+                <div className="flex items-center justify-between px-2.5 py-0.5 hover:bg-white/[0.02] transition-colors">
                   <button
                     type="button"
-                    className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
                     onClick={() =>
                       vscode.postMessage({
                         type: "openDiff",
@@ -7532,21 +7888,21 @@ function FileChangesSection({
                       className="shrink-0 text-oc-text-soft hover:text-oc-text transition-colors"
                     >
                       {isExpanded ? (
-                        <ChevronDown className="h-3 w-3" />
+                        <ChevronDown className="h-2.5 w-2.5" />
                       ) : (
-                        <ChevronRight className="h-3 w-3" />
+                        <ChevronRight className="h-2.5 w-2.5" />
                       )}
                     </button>
-                    <FileText className="h-3 w-3 shrink-0 text-oc-text-soft" />
-                    <span className="text-[11px] font-medium text-oc-text truncate">{filename}</span>
+                    <FileText className="h-2.5 w-2.5 shrink-0 text-oc-text-soft" />
+                    <span className="truncate text-[10px] font-medium text-oc-text">{filename}</span>
                     {compactDirname && (
-                      <span className="text-[10px] font-medium text-oc-text-soft truncate hidden sm:inline">
+                      <span className="hidden truncate text-[9px] font-medium text-oc-text-soft sm:inline">
                         {compactDirname}
                       </span>
                     )}
                   </button>
 
-                  <div className="flex items-center gap-1.5 flex-shrink-0 font-medium text-[11px]">
+                  <div className="flex flex-shrink-0 items-center gap-1.5 text-[11px] font-medium">
                     {fileChange.added > 0 && (
                       <span className="text-oc-green">+{fileChange.added}</span>
                     )}
@@ -7566,7 +7922,7 @@ function FileChangesSection({
                     />
                   </div>
                 ) : isExpanded && !hasPreview ? (
-                  <div className="border-t border-oc-border-soft px-2.5 py-2 text-xs text-oc-text-soft italic">
+                  <div className="border-t border-oc-border-soft px-2.5 py-1.5 text-[11px] text-oc-text-soft italic">
                     Diff preview unavailable for this file in the current payload.
                   </div>
                 ) : null}
@@ -7577,13 +7933,13 @@ function FileChangesSection({
       </div>
 
       {fileChanges.length > visibleChanges.length ? (
-        <div className="border-t border-oc-border-soft px-3 py-1.5 text-[11px] text-oc-text-soft text-center">
+        <div className="border-t border-oc-border-soft px-3 py-1 text-[10px] text-oc-text-soft text-center">
           Showing {visibleChanges.length} of {fileChanges.length} changed files
         </div>
       ) : null}
     </div>
   );
-}
+});
 
 export function AssistantResponseCard({
   message,
@@ -7596,6 +7952,7 @@ export function AssistantResponseCard({
   subagentDetailsById,
   availableAgents,
   todoItems,
+  hideFileChangesSection,
 }: {
   message?: Message;
   streaming?: StreamingState;
@@ -7603,6 +7960,7 @@ export function AssistantResponseCard({
   interactiveEvents?: AppState["interactiveEvents"];
   messages?: Message[];
   currentSessionId?: AppState["currentSessionId"];
+  hideFileChangesSection?: boolean;
   subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
   subagentDetailsById?: AppState["subagentDetailsById"];
   availableAgents?: AppState["availableAgents"];
@@ -7616,6 +7974,7 @@ export function AssistantResponseCard({
       interactiveEvents={interactiveEvents}
       messages={messages}
       currentSessionId={currentSessionId}
+      hideFileChangesSection={hideFileChangesSection}
       subagentsByParentMessageId={subagentsByParentMessageId}
       subagentDetailsById={subagentDetailsById}
       availableAgents={availableAgents}
@@ -7626,8 +7985,8 @@ export function AssistantResponseCard({
 export const PermissionCard = memo(function PermissionCard({ perm }: { perm: unknown }) {
   const label = typeof perm === "string" ? perm : JSON.stringify(perm);
   return (
-    <div className="oc-message-enter mb-5 px-4">
-      <div className="rounded-xl border oc-warning-border oc-warning-bg p-3.5">
+    <div className="oc-message-enter mb-3.5 px-4">
+      <div className="rounded-xl border oc-warning-border oc-warning-bg p-3">
         <div className="mb-1.5 flex items-center gap-2">
           <div className="h-4 w-4 rounded-sm bg-[rgba(210,153,34,0.2)] flex items-center justify-center">
             <span className="text-oc-2xs">⚠️</span>
@@ -7662,8 +8021,8 @@ export function ErrorBanner({
 
   return (
     <div className="mb-2">
-      <div className="oc-error flex flex-col gap-2">
-        <div className="flex items-center gap-2">
+      <div className="oc-error flex flex-col gap-1.5">
+        <div className="flex items-center gap-1.5">
           <span className="oc-error-icon">
             <AlertCircle className="h-3 w-3 shrink-0 text-[#fca5a5]" />
           </span>
@@ -7892,3 +8251,46 @@ export function MessageStatus({
     </div>
   );
 }
+
+export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
+  const [copiedDebugPanel, setCopiedDebugPanel] = useState<"centralized" | null>(null);
+  const {
+    currentSessionId,
+    errorMessages,
+    messagesBySessionId,
+    rawSdkEventPayloadsBySessionId,
+    receivedInitState,
+    serverStatus,
+    showLogger,
+  } = useAppState();
+
+  const centralizedSessionId = currentSessionId;
+  const rawSdkEventPayloads = centralizedSessionId && Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId]) 
+    ? rawSdkEventPayloadsBySessionId[centralizedSessionId] 
+    : [];
+    
+  if (process.env.NODE_ENV !== 'development' && !window.location.search.includes('debug=true') && !showLogger) {
+    return null;
+  }
+
+  return (
+    <div className="mx-4 my-2 rounded-md border border-oc-border bg-oc-panel overflow-hidden text-[10px] font-mono">
+      <div className="flex items-center justify-between bg-oc-panel-hover px-2 py-1 border-b border-oc-border">
+        <span className="font-semibold text-oc-text">Centralized Data (Debug)</span>
+        <button 
+          onClick={() => {
+            navigator.clipboard.writeText(JSON.stringify({ rawEventStream: { sessionId: centralizedSessionId, rawSdkEventPayloads } }, null, 2));
+            setCopiedDebugPanel("centralized");
+            setTimeout(() => setCopiedDebugPanel(null), 2000);
+          }}
+          className="text-oc-text-muted hover:text-oc-text"
+        >
+          {copiedDebugPanel ? "Copied!" : "Copy"}
+        </button>
+      </div>
+      <div className="p-2 max-h-48 overflow-y-auto text-oc-text-muted">
+        <pre>{JSON.stringify({ rawEventStream: { sessionId: centralizedSessionId, rawSdkEventPayloads } }, null, 2)}</pre>
+      </div>
+    </div>
+  );
+});

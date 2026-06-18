@@ -187,6 +187,7 @@ export interface QueueItem {
 export interface StreamingStep {
   id?: string;
   callID?: string;
+  sessionID?: string;
   title: string;
   type: "step" | "tool" | "reasoning";
   status: "pending" | "done" | "error";
@@ -195,6 +196,8 @@ export interface StreamingStep {
   internal?: boolean;
   meta?: string;
   filePath?: string;
+  startedAt?: number;
+  endedAt?: number;
   startTime?: number;
   /** Monotonic sequence stamp (Date.now()) set by the store when the step first arrives. */
   streamSeq?: number;
@@ -207,11 +210,14 @@ export interface StreamingStep {
   };
   diffStats?: { added: number; deleted: number };
   activityDetail?: ActivityDetail;
+  showLogger?: boolean;
 }
 
 export interface ReasoningEvent {
   text: string;
   createdAt: number;
+  partID?: string;
+  messageID?: string;
 }
 
 export interface StreamingState {
@@ -259,6 +265,39 @@ export interface StreamingState {
       summary?: string;
       fileCount?: number;
     };
+    question?: {
+      type?: "question" | "confirm" | "quick_actions";
+      id?: string;
+      title?: string;
+      question?: string;
+      text?: string;
+      message?: string;
+      content?: string;
+      displayPrompt?: string;
+      assistantPrompt?: string;
+      allowCustomInput?: boolean;
+      multiSelect?: boolean;
+      options?: InteractiveChoice[];
+      choices?: InteractiveChoice[];
+      actions?: InteractiveChoice[];
+      confirmLabel?: string;
+      cancelLabel?: string;
+      dismissLabel?: string;
+    };
+    progressUpdates?: Array<{
+      title?: string;
+      status?: "pending" | "done" | "error";
+      kind?: "tool_call" | "file_edit" | "command" | "read" | "search" | "other";
+      command?: string;
+      output?: string;
+      file?: string;
+      diffStats?: {
+        added?: number;
+        deleted?: number;
+      };
+      diffExcerpt?: ActivityDiffExcerpt;
+    }>;
+    interactiveEvents?: InteractiveEvent[];
   };
   interactiveEvents?: InteractiveEvent[];
   rawStructuredOutputs?: unknown[];
@@ -316,6 +355,9 @@ export interface OpenCodeRawResponsePart {
   text?: string;
   content?: string;
   message?: string;
+  reasoning?: string;
+  thought?: string;
+  thinking?: string;
   reason?: string;
   snapshot?: string;
   id?: string;
@@ -444,6 +486,21 @@ export interface MessageChangeSummary {
   files: MessageChangeSummaryFile[];
 }
 
+export interface CentralizedSessionDiffFile {
+  file: string;
+  patch?: string;
+  additions?: number;
+  deletions?: number;
+  status?: string;
+}
+
+export interface CentralizedSessionDiffEvent {
+  id?: string;
+  sessionId?: string;
+  createdAt?: number;
+  files: CentralizedSessionDiffFile[];
+}
+
 export interface ActivityDiffExcerpt {
   header?: string;
   lines?: string[];
@@ -457,11 +514,16 @@ export interface ActivityDetail {
   command?: string;
   input?: Record<string, unknown>;
   output?: string;
+  backgroundTaskId?: string;
+  backgroundOutput?: string;
   tool?: string;
   query?: string;
   file?: string;
+  /** Display title for read steps (e.g., relative path like "desktop/renderer/package.json") */
+  title?: string;
   diffExcerpt?: ActivityDiffExcerpt;
   metadata?: Record<string, string | number | boolean>;
+  sessionID?: string;
 }
 
 export interface InteractiveChoice {
@@ -899,10 +961,11 @@ export interface ModelCapability {
 }
 
 export interface TodoItem {
-  id: string;
-  text: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'failed';
-  sessionId: string;
+  id?: string;
+  text?: string;
+  content?: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'failed' | string;
+  sessionId?: string;
   parentMessageId?: string;
   // optional human-friendly description used by the UI
   description?: string;

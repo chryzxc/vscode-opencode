@@ -1,5 +1,106 @@
-import { getFinalAssistantResponseText } from "./rawResponse";
-import type { Message } from "./types";
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
+export function latestAssistantMessageIdFromCentralizedTape(
+  rawSdkEventPayloads?: unknown[],
+): string | null {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return null;
+  }
+
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const part = asRecord(properties?.part) ?? asRecord(event.part);
+
+    if (
+      asString(event.type).trim() === "message.updated" &&
+      asString(info?.role).trim().toLowerCase() === "assistant"
+    ) {
+      const assistantId = firstNonEmptyString(info?.id, info?.messageID, info?.messageId);
+      if (assistantId) {
+        return assistantId;
+      }
+    }
+
+    if (asString(part?.type).trim().toLowerCase() === "step-finish") {
+      const assistantId = firstNonEmptyString(part?.messageID, part?.messageId);
+      if (assistantId) {
+        return assistantId;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function hasCompletedAssistantReplyInCentralizedTape(
+  rawSdkEventPayloads?: unknown[],
+): boolean {
+  const latestAssistantMessageId =
+    latestAssistantMessageIdFromCentralizedTape(rawSdkEventPayloads);
+  if (!latestAssistantMessageId || !Array.isArray(rawSdkEventPayloads)) {
+    return false;
+  }
+
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const part = asRecord(properties?.part) ?? asRecord(event.part);
+
+    if (
+      asString(event.type).trim() === "message.updated" &&
+      firstNonEmptyString(info?.id, info?.messageID, info?.messageId) ===
+        latestAssistantMessageId
+    ) {
+      const finish = asString(info?.finish).trim();
+      if (finish) {
+        return true;
+      }
+    }
+
+    if (
+      asString(event.type).trim() === "message.part.updated" &&
+      asString(part?.type).trim().toLowerCase() === "step-finish" &&
+      firstNonEmptyString(part?.messageID, part?.messageId) ===
+        latestAssistantMessageId
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 export function isProcessingInCurrentSession(
   isProcessing: boolean,
@@ -25,47 +126,9 @@ export function isProcessingInCurrentSession(
 }
 
 export function hasCompletedAssistantReplyForLatestTurn(
-  messages: Message[],
+  rawSdkEventPayloads?: unknown[],
 ): boolean {
-  if (!Array.isArray(messages) || messages.length === 0) {
-    return false;
-  }
-
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    const role = String(message?.role ?? message?.info?.role ?? "").toLowerCase();
-
-    if (role === "assistant") {
-      // Prefer the raw assistant tape when deciding whether the latest turn is
-      // finished. This keeps the UI aligned with the source-of-truth payload
-      // instead of relying on a stale processing flag.
-      const rawAssistantText = getFinalAssistantResponseText(message.rawResponse);
-      const structuredText =
-        typeof message.structuredOutput?.message === "string"
-          ? message.structuredOutput.message.trim()
-          : "";
-      const content =
-        typeof message.content === "string" ? message.content.trim() : "";
-      return Boolean(rawAssistantText || structuredText || content);
-    }
-
-    if (role === "user") {
-      return false;
-    }
-  }
-
-  return false;
-}
-
-export function hasActiveAssistantTurnContext(
-  messages: Message[],
-  isStreamingActive: boolean,
-  assistantTurnPending: boolean,
-): boolean {
-  if (isStreamingActive || assistantTurnPending) {
-    return true;
-  }
-  return Array.isArray(messages) && messages.length > 0;
+  return hasCompletedAssistantReplyInCentralizedTape(rawSdkEventPayloads);
 }
 
 export function isAssistantRespondingInCurrentSession(
@@ -74,24 +137,14 @@ export function isAssistantRespondingInCurrentSession(
   processingSessionIds: string[],
   isStreamingActive: boolean,
   assistantTurnPending: boolean,
-  hasAssistantFinishSignal?: boolean,
-  hasTerminalStepSignal?: boolean,
-  hasCompletedAssistantReplyForLatestTurn?: boolean,
-  hasActiveTurnContext?: boolean,
+  hasCompletedAssistantReply?: boolean,
 ): boolean {
-  // Keep the composer stop button and the transcript loading affordance tied to
-  // the same "AI is still active" signal. The transport can briefly lose the
-  // processing flag while stream activity is still flowing, so we treat either
-  // live streaming or a pending assistant turn as still responding.
-  if (!hasActiveTurnContext) {
+  if (hasCompletedAssistantReply) {
     return false;
   }
-
-  if (hasAssistantFinishSignal || hasTerminalStepSignal || hasCompletedAssistantReplyForLatestTurn) {
-    return false;
-  }
-
-  const isProcessingOrStreaming = isProcessingInCurrentSession(isProcessing, currentSessionId, processingSessionIds) || isStreamingActive;
-
-  return isProcessingOrStreaming || assistantTurnPending;
+  return (
+    isProcessingInCurrentSession(isProcessing, currentSessionId, processingSessionIds) ||
+    isStreamingActive ||
+    assistantTurnPending
+  );
 }

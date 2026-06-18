@@ -49,6 +49,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { useAppDispatch, useAppState } from "./lib/store";
 import { getInteractiveEventsFromRawSdkEventPayloads } from "./lib/rawResponse";
+import { normalizeCentralizedEventPayloads } from "./lib/messageHandler";
 import vscode from "./lib/vscode";
 import type {
   InteractiveEvent,
@@ -64,7 +65,6 @@ import type {
 } from "./lib/types";
 import {
   isAssistantRespondingInCurrentSession,
-  hasActiveAssistantTurnContext,
   hasCompletedAssistantReplyForLatestTurn,
   isProcessingInCurrentSession,
 } from "./lib/sessionProcessing";
@@ -806,7 +806,7 @@ export function ActiveTaskPanel() {
                             : "text-[var(--oc-text-soft)]"
                           }`}
                       >
-                        {todo.description ?? todo.text ?? "Untitled task"}
+                        {todo.description ?? todo.content ?? todo.text ?? "Untitled task"}
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         <span className="rounded border border-oc-border bg-oc-panel-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--oc-text-soft)]">
@@ -1840,12 +1840,13 @@ export function InputWrapper() {
     currentSessionId,
     executingQueueSessionIds,
   );
-  const hasCompletedAssistantReply =
-    hasCompletedAssistantReplyForLatestTurn(messages);
-  const hasActiveTurnContext = hasActiveAssistantTurnContext(
-    messages,
-    Boolean(streaming?.isActive),
-    assistantTurnPending,
+  const centralizedSessionRawSdkEventPayloads =
+    currentSessionId &&
+    Array.isArray(rawSdkEventPayloadsBySessionId?.[currentSessionId])
+      ? rawSdkEventPayloadsBySessionId[currentSessionId]
+      : [];
+  const hasCompletedAssistantReply = hasCompletedAssistantReplyForLatestTurn(
+    centralizedSessionRawSdkEventPayloads,
   );
 
   // The composer stop/send toggle must follow the same in-flight session state
@@ -1858,10 +1859,7 @@ export function InputWrapper() {
     processingSessionIds,
     Boolean(streaming?.isActive),
     assistantTurnPending,
-    streaming?.hasAssistantFinishSignal,
-    streaming?.hasTerminalStepSignal,
     hasCompletedAssistantReply,
-    hasActiveTurnContext,
   );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1913,12 +1911,18 @@ export function InputWrapper() {
       ? rawSdkEventPayloadsBySessionId[currentSessionId]
       : [];
   }, [currentSessionId, rawSdkEventPayloadsBySessionId]);
+  // Normalize the centralized tape once here so the interactive-events panel
+  // also reads from the same canonical event shape as the conversation view.
+  const normalizedCentralizedRawSdkEventPayloads = useMemo(
+    () => normalizeCentralizedEventPayloads(centralizedRawSdkEventPayloads),
+    [centralizedRawSdkEventPayloads],
+  );
   const composerInteractiveEvents = useMemo(() => {
     return filterDismissedInteractiveEvents(
-      getInteractiveEventsFromRawSdkEventPayloads(centralizedRawSdkEventPayloads),
+      getInteractiveEventsFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads),
       dismissedInteractiveEventKeys,
     );
-  }, [centralizedRawSdkEventPayloads, dismissedInteractiveEventKeys]);
+  }, [normalizedCentralizedRawSdkEventPayloads, dismissedInteractiveEventKeys]);
 
   const filteredCommands = useMemo(() => {
     if (!slashTrigger) {
@@ -2015,7 +2019,8 @@ export function InputWrapper() {
     const candidates = composerInteractiveEvents.filter(isQuickInputInteractiveEvent);
     const seen = new Set<string>();
     return candidates.filter((event) => {
-      const key = `${event.type}::${(event.question || event.title || event.message || "").trim().toLowerCase().replace(/\s+/g, " ")}`;
+      const eventAny = event as any;
+      const key = `${event.type}::${(eventAny.question || eventAny.title || eventAny.message || "").trim().toLowerCase().replace(/\s+/g, " ")}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -2630,7 +2635,7 @@ export function InputWrapper() {
                     )}
                   </div>
                   {showPromptInBody ? (
-                    <div className="text-[12px] leading-relaxed text-[var(--oc-text-soft)]">
+                    <div className="text-[11px] leading-relaxed text-[var(--oc-text-soft)]">
                       <MarkdownRenderer content={eventBodyText} />
                     </div>
                   ) : null}

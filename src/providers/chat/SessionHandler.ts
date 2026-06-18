@@ -157,8 +157,11 @@ export class SessionHandler {
       // This updates the service's internal state and persists it
       await this.sessionService.switchSession(sessionId);
 
-      const rawMessages = await this.sessionService.loadSessionRawMessages(sessionId);
-      const rawSdkEventPayloads = await this.sessionService.loadSessionRawSdkEventPayloads(sessionId);
+      const centralizedSessionData = await this.sessionService.loadCentralizedSessionData(
+        sessionId,
+      );
+      const rawMessages = centralizedSessionData.rawMessages;
+      const rawSdkEventPayloads = centralizedSessionData.rawSdkEventPayloads;
       const fallbackMessages = rawMessages.length > 0
         ? rawMessages
         : await this.sessionService.loadSessionMessages(sessionId);

@@ -155,11 +155,13 @@ export const StreamingCard = memo(function StreamingCard({
   availableAgents,
   todoItems,
 }: StreamingCardProps) {
-  // Show the streaming card for live assistant activity. The response body
-  // inside AssistantResponseCard handles the terminal step gate; this wrapper must
-  // stay mounted so the progress/activity UI remains visible.
+  // The live streaming card exists only for the in-flight assistant turn.
+  // Once the centralized assistant turn is finalized, the finalized
+  // AssistantResponseCard becomes the only source of truth for that turn's UI.
+  // Keeping this mounted after `isActive` flips false duplicates the entire
+  // assistant response block.
   const visible = useMemo(() => {
-    if (!streaming) return false;
+    if (!streaming?.isActive) return false;
 
     if (streaming.content.trim().length > 0) return true;
     if (streaming.reasoning.trim().length > 0) return true;

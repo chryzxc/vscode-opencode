@@ -569,7 +569,54 @@ export class HistoryProcessor {
       : [];
     base.steps = Array.isArray(base.steps) ? [...base.steps] : [];
     base.reasoning = Array.isArray(base.reasoning) ? [...base.reasoning] : [];
-    let latestRawSdkEventPayloads: unknown[] | undefined = Array.isArray(
+    const rawSdkEventPayloadFingerprint = (value: unknown): string => {
+      if (!value || typeof value !== "object") {
+        return `primitive:${String(value)}`;
+      }
+      const rec = value as Record<string, unknown>;
+      const id = this.firstNonEmptyString(rec.id);
+      if (id) {
+        return `id:${id}`;
+      }
+      const properties =
+        rec.properties && typeof rec.properties === "object"
+          ? (rec.properties as Record<string, unknown>)
+          : undefined;
+      const type = this.firstNonEmptyString(rec.type);
+      const messageId = this.firstNonEmptyString(
+        rec.messageID,
+        rec.messageId,
+        properties?.messageID,
+        properties?.messageId,
+      );
+      const partId = this.firstNonEmptyString(
+        rec.partID,
+        rec.partId,
+        properties?.partID,
+        properties?.partId,
+      );
+      const time = this.firstNonEmptyString(rec.time, properties?.time);
+      return `${type}|${messageId}|${partId}|${time}|${String(value)}`;
+    };
+    const mergeRawSdkEventPayloads = (
+      target: unknown[] | undefined,
+      incoming: unknown[] | undefined,
+    ): unknown[] | undefined => {
+      const merged = Array.isArray(target) ? [...target] : [];
+      const seen = new Set<string>(merged.map(rawSdkEventPayloadFingerprint));
+      if (Array.isArray(incoming) && incoming.length > 0) {
+        for (const item of incoming) {
+          const key = rawSdkEventPayloadFingerprint(item);
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          merged.push(item);
+        }
+      }
+      return merged.length > 0 ? merged : undefined;
+    };
+    let mergedRawSdkEventPayloads: unknown[] | undefined = Array.isArray(
       base.rawSdkEventPayloads,
     )
       ? [...base.rawSdkEventPayloads]
@@ -646,14 +693,17 @@ export class HistoryProcessor {
       if (Array.isArray(message?.rawSdkEventPayloads)) {
         const rawSdkEventPayloads = message.rawSdkEventPayloads as unknown[];
         if (rawSdkEventPayloads.length > 0) {
-          latestRawSdkEventPayloads = [...rawSdkEventPayloads];
-        }
+        mergedRawSdkEventPayloads = mergeRawSdkEventPayloads(
+          mergedRawSdkEventPayloads,
+          rawSdkEventPayloads,
+        );
       }
+    }
     }
 
     base.rawResponse = latestRawResponse;
-    if (Array.isArray(latestRawSdkEventPayloads) && latestRawSdkEventPayloads.length > 0) {
-      base.rawSdkEventPayloads = latestRawSdkEventPayloads;
+    if (Array.isArray(mergedRawSdkEventPayloads) && mergedRawSdkEventPayloads.length > 0) {
+      base.rawSdkEventPayloads = mergedRawSdkEventPayloads;
     } else {
       delete base.rawSdkEventPayloads;
     }

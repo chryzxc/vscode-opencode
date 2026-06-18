@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readSource, joinFromRoot } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, readSource, joinFromRoot } from '../helpers/source-utils.mjs';
 
 const messageComponentsSource = readSource(
     [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
@@ -86,5 +86,29 @@ test("MessageComponents uses rotating thinking status text and handles response 
         messageComponentsSource,
         /{[\s\S]*showResponseSection|hasResponseContent[\s\S]*<section/,
         'Expected response panel rendering with visibility control',
+    );
+    assert.match(
+        messageComponentsSource,
+        /showResponseSection\s*=\s*[\s\S]*timelineDisplayEvents\.length > 0/,
+        'Expected the response section to stay visible when timeline activity exists even without response text',
+    );
+});
+
+test('MessageComponents merges reasoning chunks by message and part id', () => {
+    const body = extractFunctionBody(
+        messageComponentsSource,
+        'function thoughtItemsFromRawEventPayloads(',
+    );
+
+    assert.match(
+        body,
+        /const mergeKey = `\$\{messageID \|\| "message"\}:\$\{partID \|\| "part"\}`;/,
+        'Expected reasoning chunks to be grouped by messageID and partID',
+    );
+
+    assert.match(
+        body,
+        /if \(existing\) \{[\s\S]*existing\.text = nextText;[\s\S]*continue;[\s\S]*\}/,
+        'Expected later reasoning chunks to update the same live item instead of creating duplicates',
     );
 });

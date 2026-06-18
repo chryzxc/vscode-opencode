@@ -4,6 +4,7 @@ import type {
   OpenCodeRawResponse,
   OpenCodeRawResponsePart,
 } from "./types";
+import { getCentralizedEventPart, isAiResponseEvent } from "./messageHandler";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -68,39 +69,6 @@ function firstRecordAtPaths(
     }
   }
   return null;
-}
-
-function finalTextBeforeStepFinish(parts?: Array<OpenCodeRawResponsePart | Record<string, unknown> | null | undefined>): string {
-  if (!Array.isArray(parts) || parts.length === 0) {
-    return "";
-  }
-
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    const partRec = asRecord(parts[index]);
-    if (!partRec) {
-      continue;
-    }
-
-    const partType = firstNonEmptyString(
-      typeof partRec.type === "string" ? partRec.type : undefined,
-      typeof partRec.partType === "string" ? partRec.partType : undefined,
-    )?.toLowerCase();
-
-    if (partType === "step-finish") {
-      continue;
-    }
-
-    const text = firstNonEmptyString(
-      typeof partRec.message === "string" ? partRec.message : undefined,
-      typeof partRec.text === "string" ? partRec.text : undefined,
-      typeof partRec.content === "string" ? partRec.content : undefined,
-    );
-    if (text) {
-      return text;
-    }
-  }
-
-  return "";
 }
 
 function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
@@ -308,12 +276,47 @@ function rawSdkEventPartRecords(
   return parts;
 }
 
+function finalStructuredOutputToolInputFromRawSdkEventPayloads(
+  rawSdkEventPayloads?: unknown[],
+): Record<string, unknown> | null {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return null;
+  }
+
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const payload = asRecord(rawSdkEventPayloads[index]);
+    if (!payload) {
+      continue;
+    }
+
+    const properties = asRecord(payload.properties);
+    const part = asRecord(payload.part) ?? asRecord(properties?.part);
+    if (!part) {
+      continue;
+    }
+
+    const toolName = firstNonEmptyString(part.tool, part.name)?.toLowerCase();
+    if (toolName !== "structuredoutput" && toolName !== "structured_output") {
+      continue;
+    }
+
+    const state = asRecord(part.state);
+    const input = asRecord(state?.input) || asRecord(part.input) || asRecord(part.arguments);
+    if (!input) {
+      continue;
+    }
+    return input;
+  }
+
+  return null;
+}
+
 /**
  * Extract the final assistant-facing response from the raw SDK payload.
  *
  * Priority:
  * 1. `rawResponse.info.structured.message` or the equivalent nested sync payload
- * 2. Last text-bearing part before the terminal `step-finish`
+ * 2. Nothing else
  */
 export function getFinalAssistantResponseText(
   rawResponse?: OpenCodeRawResponse | string,
@@ -342,48 +345,77 @@ export function getFinalAssistantResponseText(
     return structuredMessage;
   }
 
-  const partsBody = finalTextBeforeStepFinish(
-    Array.isArray(normalized.parts) ? normalized.parts : [],
-  );
-  if (partsBody) {
-    return partsBody;
-  }
   return "";
 }
 
 export function getFinalAssistantResponseTextFromRawSdkEventPayloads(
   rawSdkEventPayloads?: unknown[],
 ): string {
-  const parts = rawSdkEventPartRecords(rawSdkEventPayloads);
-  if (parts.length === 0) {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
     return "";
   }
 
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    const partRec = asRecord(parts[index]);
-    if (!partRec) {
+  let latestText = "";
+  let sawAssistantTextEvent = false;
+
+  for (const payloadValue of rawSdkEventPayloads) {
+    const payload = asRecord(payloadValue);
+    if (!payload) {
       continue;
     }
 
-    const partType = firstNonEmptyString(
-      typeof partRec.type === "string" ? partRec.type : undefined,
-      typeof partRec.partType === "string" ? partRec.partType : undefined,
+    const eventType = firstNonEmptyString(payload.type, payload.event, payload.kind)?.toLowerCase();
+    const isAssistantTextEvent = isAiResponseEvent(payload);
+    const aiPart = getCentralizedEventPart(payload);
+    if (isAssistantTextEvent) {
+      const text = firstNonEmptyString(aiPart?.text, aiPart?.content, aiPart?.message);
+      if (text) {
+        sawAssistantTextEvent = true;
+        latestText = latestText ? `${latestText}${text}` : text;
+      }
+      continue;
+    }
+
+    if (eventType !== "message.part.updated" && eventType !== "sync") {
+      continue;
+    }
+
+    const part = aiPart;
+    if (!part) {
+      continue;
+    }
+
+    const toolName = firstNonEmptyString(part.tool, part.name)?.toLowerCase();
+    if (toolName !== "structuredoutput" && toolName !== "structured_output") {
+      continue;
+    }
+
+    const state = asRecord(part.state);
+    const input = asRecord(state?.input) || asRecord(part.input) || asRecord(part.arguments);
+    if (!input) {
+      continue;
+    }
+
+    const responseType = firstNonEmptyString(
+      input.responseType,
+      input.type,
+      part.responseType,
     )?.toLowerCase();
-    if (partType === "step-finish") {
+    if (responseType !== "message") {
       continue;
     }
 
-    const text = firstNonEmptyString(
-      typeof partRec.message === "string" ? partRec.message : undefined,
-      typeof partRec.text === "string" ? partRec.text : undefined,
-      typeof partRec.content === "string" ? partRec.content : undefined,
+    const structuredOutputMessage = firstNonEmptyString(
+      input.message,
+      input.content,
+      input.text,
     );
-    if (text) {
-      return text;
+    if (structuredOutputMessage && !sawAssistantTextEvent && !latestText) {
+      latestText = structuredOutputMessage;
     }
   }
 
-  return "";
+  return latestText.trim();
 }
 
 export function getInteractiveEventsFromRawResponse(

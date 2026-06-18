@@ -115,7 +115,7 @@ test('Stepper forwards external ref via setRefs callback to keep callers in sync
 test('AssistantMessage passes autoScrollToBottom={isStreamingActive} to the progress Stepper', () => {
     assert.match(
         messageComponentsSource,
-        /autoScrollToBottom=\{isStreamingActive\}/,
+        /autoScrollToBottom=\{isStreamingActive(?:\s*&&\s*groupIdx\s*===\s*timelineDisplayEventGroups\.length\s*-\s*1)?\}/,
         'The main activity Stepper must receive autoScrollToBottom driven by isStreamingActive',
     );
 });
@@ -123,7 +123,7 @@ test('AssistantMessage passes autoScrollToBottom={isStreamingActive} to the prog
 test('AssistantMessage still keeps progressTimelineRef on the activity Stepper', () => {
     assert.match(
         messageComponentsSource,
-        /ref=\{progressTimelineRef\}/,
+        /ref=\{groupIdx === timelineDisplayEventGroups\.length - 1 \? progressTimelineRef : undefined\}/,
         'progressTimelineRef must still be forwarded to the Stepper for external access',
     );
 });
@@ -203,13 +203,40 @@ test('search activity steps dedupe repeated query/description lines before rende
     );
     assert.match(
         messageComponentsSource,
-        /pattern=\{buildSearchPattern\(\s*event\.activityDetail\?\.query \|\| event\.summary,\s*event\.description,\s*\)\}/,
-        'SearchBlock in the file-path branch should use the deduping helper',
+        /pattern=\{buildSearchPattern\([\s\S]*?event\.description,\s*\)\}/,
+        'SearchBlock in the file-path branch should still use the deduping helper',
     );
     assert.match(
         messageComponentsSource,
-        /pattern=\{buildSearchPattern\(\s*event\.activityDetail\?\.query \|\| event\.summary,\s*event\.description,\s*\)\}/,
-        'SearchBlock in the inline summary branch should use the deduping helper',
+        /isGlobSearch\s*\?\s*\(event\.activityDetail\?\.input\?\.pattern as string\)\s*:\s*\(event\.activityDetail\?\.query \|\| event\.summary\)/,
+        'SearchBlock should branch to the glob pattern input when rendering glob activity steps',
+    );
+    assert.match(
+        messageComponentsSource,
+        /path=\{isGlobSearch \? undefined : event\.filePath\}/,
+        'SearchBlock should omit the header path for glob activity steps',
+    );
+});
+
+test('glob search steps move the path above the card and cap expanded detail markdown', () => {
+    assert.match(
+        messageComponentsSource,
+        /const isGlobSearch = event\.label\.toLowerCase\(\) === "glob";/,
+        'glob search steps should use a dedicated glob flag',
+    );
+    assert.ok(
+        (messageComponentsSource.match(/path=\{isGlobSearch \? undefined : event\.filePath\}/g) || []).length >= 2,
+        'glob search steps should omit the path prop from SearchBlock in both rendering branches',
+    );
+    assert.match(
+        messageComponentsSource,
+        /isGlobSearch && "max-h-64 overflow-y-auto"/,
+        'glob search steps should cap the scrollable body height',
+    );
+    assert.match(
+        messageComponentsSource,
+        /className=\{cn\([\s\S]*isGlobSearch && "max-h-64 overflow-y-auto"[\s\S]*\)\}/,
+        'glob detail markdown should receive the max-height class',
     );
 });
 

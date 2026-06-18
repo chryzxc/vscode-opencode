@@ -946,6 +946,22 @@ test('createMessageHandler sessionsList also dispatches SET_SESSION_ID when curr
     );
 });
 
+test('createMessageHandler userMessageAppended syncs session ID before appending the message', () => {
+    const userMessageAppendedCase = messageHandlerSource.slice(
+        messageHandlerSource.indexOf('case "userMessageAppended"'),
+        messageHandlerSource.indexOf('case "sessionsListUpdate"'),
+    );
+    assert.ok(userMessageAppendedCase.length > 0, 'userMessageAppended case must exist');
+    const sessionIdDispatchIndex = userMessageAppendedCase.indexOf('SET_SESSION_ID');
+    const setMessagesIndex = userMessageAppendedCase.indexOf('SET_MESSAGES');
+    assert.ok(sessionIdDispatchIndex >= 0, 'userMessageAppended should dispatch SET_SESSION_ID');
+    assert.ok(setMessagesIndex >= 0, 'userMessageAppended should still update messages');
+    assert.ok(
+        sessionIdDispatchIndex < setMessagesIndex,
+        'userMessageAppended should sync the active session before it updates messages',
+    );
+});
+
 // ---------------------------------------------------------------------------
 // 22. sanitizeReasoningChunk – opaque ID suppression
 // ---------------------------------------------------------------------------

@@ -15,6 +15,10 @@ const panelComponents = readSource([
   joinFromRoot('webview/shared/src/chat/PanelComponents.tsx'),
 ], 'PanelComponents');
 
+const centralizedDebugPayloadFilter = readSource([
+  joinFromRoot('webview/shared/src/chat/lib/generated/centralizedDebugPayloadFilter.ts'),
+], 'centralizedDebugPayloadFilter');
+
 const schemaSource = readSource([
   joinFromRoot('src/shared/structuredOutputSchema.ts'),
 ], 'structuredOutputSchema');
@@ -83,6 +87,94 @@ test('structured output is normalized before rendering', () => {
   assert.match(messageHandler, /const validation = validateStructuredOutput\(sanitizedRec\);/, 'structured output validation is missing');
 });
 
+test('assistant response card branches on structured responseType without raw fallback', () => {
+  const responseBodyHelper = extractFunctionBody(
+    messageComponents,
+    'function assistantResponseContentFromStructuredOutput({',
+  );
+  assert.match(
+    messageComponents,
+    /function assistantResponseContentFromStructuredOutput\([\s\S]*switch \(normalizedResponseType\)[\s\S]*case "question":[\s\S]*case "progress_update":[\s\S]*case "implementation_plan":[\s\S]*case "message":/s,
+    'response card should branch by centralized structured responseType',
+  );
+  assert.match(
+    messageComponents,
+    /const effectiveResponseContent = structuredResponseContent;/,
+    'response card should prefer centralized structured content directly',
+  );
+  assert.doesNotMatch(
+    responseBodyHelper,
+    /getFinalAssistantResponseTextFromRawSdkEventPayloads\(/,
+    'response card helper should not read raw payload text as a visible response fallback',
+  );
+});
+
+test('question and progress structured cards render from centralized message data', () => {
+  assert.match(
+    messageComponents,
+    /responseType === "question"/,
+    'question response card should be rendered directly from centralized structured output',
+  );
+  assert.match(
+    messageComponents,
+    /responseType === "progress_update"/,
+    'progress update response card should be rendered directly from centralized structured output',
+  );
+  assert.match(
+    messageComponents,
+    /structuredQuestionActionOptions\.map/,
+    'question response card should render centralized choices',
+  );
+  assert.match(
+    messageComponents,
+    /structuredProgressUpdatesList\.map/,
+    'progress response card should render centralized progress steps',
+  );
+});
+
+test('centralized debug data filters excluded payload types through an array gate', () => {
+  assert.match(
+    centralizedDebugPayloadFilter,
+    /const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = \[/,
+    'centralized debug exclusion list should be array-driven',
+  );
+  assert.match(
+    centralizedDebugPayloadFilter,
+    /"server\.heartbeat"/,
+    'centralized debug exclusion list should include server heartbeats',
+  );
+  assert.match(
+    centralizedDebugPayloadFilter,
+    /"source"/,
+    'centralized debug exclusion list should include source-based filtering',
+  );
+  assert.match(
+    centralizedDebugPayloadFilter,
+    /"\/global\/event"/,
+    'centralized debug exclusion list should exclude global events',
+  );
+  assert.match(
+    centralizedDebugPayloadFilter,
+    /"properties\.info\.format\.type"/,
+    'centralized debug exclusion list should include nested format matching',
+  );
+  assert.match(
+    centralizedDebugPayloadFilter,
+    /"syncEvent\.data\.info\.format\.type"/,
+    'centralized debug exclusion list should include sync event format matching',
+  );
+  assert.match(
+    centralizedDebugPayloadFilter,
+    /"json_schema"/,
+    'centralized debug exclusion list should include json_schema values',
+  );
+  assert.match(
+    centralizedDebugPayloadFilter,
+    /shouldIncludeCentralizedDebugPayload\(payload: unknown\): boolean/,
+    'centralized debug payloads should be filtered before being exposed',
+  );
+});
+
 test('raw structured payloads are preserved alongside canonical fields', () => {
   assert.match(
     messageHandler,
@@ -107,8 +199,8 @@ test('implementation plan messages suppress the aggregated diff section on the s
 test('non-plan assistant turns do not render the implementation plan section', () => {
   assert.match(
     messageComponents,
-    /const showResponseSection =[\s\S]*!isAborted[\s\S]*\(hasVisibleResponseBody \|\| shouldShowPlanCard\)[\s\S]*\(!isLiveStream \|\| hasAssistantFinishSignal\)[\s\S]*\(!isLiveStream \|\|\s*\(!hasActiveTimelineWork[\s\S]*!hasPendingReasoningDisplayEvent[\s\S]*\)\)/s,
-    'response section should depend on the plan card gate, assistant finish state, and timeline activity',
+    /const showResponseSection =[\s\S]*timelineDisplayEvents\.length > 0[\s\S]*hasActiveTimelineWork[\s\S]*hasActiveReasoningPart[\s\S]*hasPendingReasoningDisplayEvent/s,
+    'response section should depend on the plan card gate and timeline activity',
   );
 });
 

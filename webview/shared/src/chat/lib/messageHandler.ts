@@ -87,7 +87,6 @@ function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unkn
   const properties = asRecord(payload.properties);
   const partRecord = asRecord(payload.part) ?? asRecord(properties?.part);
   const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
-  const structuredRecord = asRecord(payload.structured);
   const eventType =
     asString(payload.type) || asString(payload.event) || asString(payload.kind) || "unknown";
   const textLike =
@@ -123,9 +122,14 @@ function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unkn
         : typeof payload.finish === "boolean"
           ? payload.finish
           : null,
-    structuredKind: asString(structuredRecord?.kind) || null,
+    structuredKind:
+      normalizePartType(partRecord?.type) === "reasoning" ? "thinking" : null,
     structuredTextPreview: previewForLog(
-      asString(structuredRecord?.message) || asString(structuredRecord?.text),
+      asRichString(partRecord?.reasoning) ||
+        asRichString(partRecord?.thought) ||
+        asRichString(partRecord?.thinking) ||
+        asRichString(partRecord?.text) ||
+        asRichString(partRecord?.message),
     ),
     partType: normalizePartType(partRecord?.type),
     textPreview: previewForLog(textLike),
@@ -282,6 +286,299 @@ export function asRecord(value: unknown): UnknownRecord | null {
 
 export function asString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
+}
+
+export function getCentralizedEventPart(payload: unknown): UnknownRecord | null {
+  const event = asRecord(payload);
+  if (!event) {
+    return null;
+  }
+
+  const propertiesPart = asRecord(asRecord(event.properties)?.part) ?? asRecord(event.part);
+  if (propertiesPart) {
+    return propertiesPart;
+  }
+
+  const payloadRecord = asRecord(event.payload);
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncPart = asRecord(asRecord(payloadSyncEvent?.data)?.part);
+  if (payloadSyncPart) {
+    return payloadSyncPart;
+  }
+
+  const syncEvent = asRecord(event.syncEvent);
+  const syncPart = asRecord(asRecord(syncEvent?.data)?.part);
+  if (syncPart) {
+    return syncPart;
+  }
+
+  return null;
+}
+
+export function normalizeCentralizedEventPayload(payload: unknown): UnknownRecord | null {
+  const event = asRecord(payload);
+  if (!event) {
+    return null;
+  }
+
+  // Centralized debug events arrive in two valid shapes:
+  // - `properties.part` for direct message.part.updated entries
+  // - `payload.syncEvent.data.part` / `syncEvent.data.part` for sync-wrapped entries
+  // Normalize both into a single envelope so renderers only consume one shape.
+  const part = getCentralizedEventPart(event);
+  if (!part) {
+    return event;
+  }
+
+  const properties = asRecord(event.properties) ?? {};
+  const payloadRecord = asRecord(event.payload) ?? {};
+  const payloadSyncEvent = asRecord(payloadRecord.syncEvent) ?? {};
+  const payloadSyncData = asRecord(payloadSyncEvent.data) ?? {};
+  const syncEvent = asRecord(event.syncEvent) ?? {};
+  const syncData = asRecord(syncEvent.data) ?? {};
+
+  return {
+    ...event,
+    part,
+    properties: {
+      ...properties,
+      part,
+    },
+    payload: Object.keys(payloadRecord).length > 0
+      ? {
+          ...payloadRecord,
+          syncEvent: {
+            ...payloadSyncEvent,
+            data: {
+              ...payloadSyncData,
+              part,
+            },
+          },
+        }
+      : payloadRecord,
+    syncEvent: Object.keys(syncEvent).length > 0
+      ? {
+          ...syncEvent,
+          data: {
+            ...syncData,
+            part,
+          },
+        }
+      : syncEvent,
+  };
+}
+
+export function normalizeCentralizedEventPayloads(
+  rawSdkEventPayloads?: unknown[],
+): UnknownRecord[] {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return [];
+  }
+
+  const normalized: UnknownRecord[] = [];
+  for (const payload of rawSdkEventPayloads) {
+    const event = normalizeCentralizedEventPayload(payload);
+    if (event) {
+      normalized.push(event);
+    }
+  }
+  return normalized;
+}
+
+export function getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
+  rawSdkEventPayloads?: unknown[],
+): string[] {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return [];
+  }
+
+  const completionIndex =
+    getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads);
+  const assistantMessageId =
+    latestAssistantMessageIdFromCentralizedTape(rawSdkEventPayloads);
+  if (!assistantMessageId) {
+    return [];
+  }
+  const chunks: string[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+    if (completionIndex >= 0 && index > completionIndex) {
+      break;
+    }
+
+    const payload = rawSdkEventPayloads[index];
+    const part = getCentralizedEventPart(payload);
+    if (!part) {
+      continue;
+    }
+
+    const partType = asString(part.type).toLowerCase();
+    if (partType !== "text" && partType !== "message" && partType !== "output_text") {
+      continue;
+    }
+
+    const partMessageId =
+      firstNonEmptyString(
+        part.messageID,
+        part.messageId,
+      ) || "";
+    if (partMessageId !== assistantMessageId) {
+      continue;
+    }
+
+    const chunk =
+      asString(part.text).trim() ||
+      asString(part.content).trim() ||
+      asString(part.message).trim();
+    if (chunk) {
+      const normalizedChunk = chunk.replace(/\s+/g, " ").trim().toLowerCase();
+      if (seen.has(normalizedChunk)) {
+        continue;
+      }
+      seen.add(normalizedChunk);
+      chunks.push(chunk);
+    }
+  }
+
+  return chunks;
+}
+
+export function getCentralizedAssistantContentFromRawSdkEventPayloads(
+  rawSdkEventPayloads?: unknown[],
+): string {
+  return getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
+    rawSdkEventPayloads,
+  )
+    .join("")
+    .trim();
+}
+
+function latestAssistantMessageIdFromCentralizedTape(
+  rawSdkEventPayloads?: unknown[],
+): string | null {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return null;
+  }
+
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const part = getCentralizedEventPart(event);
+
+    if (
+      asString(event.type).trim() === "message.updated" &&
+      asString(info?.role).trim().toLowerCase() === "assistant"
+    ) {
+      const assistantId = firstNonEmptyString(
+        info?.id,
+        info?.messageID,
+        info?.messageId,
+      );
+      if (assistantId) {
+        return assistantId;
+      }
+    }
+
+    if (asString(part?.type).trim().toLowerCase() === "step-finish") {
+      const assistantId = firstNonEmptyString(
+        part?.messageID,
+        part?.messageId,
+      );
+      if (assistantId) {
+        return assistantId;
+      }
+    }
+  }
+
+  // Some older/simpler centralized fixtures only contain the final assistant
+  // text part and never include an explicit assistant `message.updated` or
+  // `step-finish` marker. In that case, fall back to the last text-bearing
+  // message id so the renderer still has a stable response anchor.
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const part = getCentralizedEventPart(event);
+    if (!part) {
+      continue;
+    }
+
+    const partType = asString(part.type).trim().toLowerCase();
+    if (partType !== "text" && partType !== "message" && partType !== "output_text") {
+      continue;
+    }
+
+    const assistantId = firstNonEmptyString(
+      part?.messageID,
+      part?.messageId,
+    );
+    if (assistantId) {
+      return assistantId;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Returns the last index that belongs to the finalized assistant turn in the
+ * centralized tape.
+ */
+export function getCentralizedAssistantTurnCompletionIndex(
+  rawSdkEventPayloads?: unknown[],
+): number {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return -1;
+  }
+
+  const latestAssistantMessageId =
+    latestAssistantMessageIdFromCentralizedTape(rawSdkEventPayloads);
+  if (!latestAssistantMessageId) {
+    return -1;
+  }
+
+  for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const part = getCentralizedEventPart(event);
+    const eventType = asString(event.type).trim();
+    const candidateMessageId = firstNonEmptyString(
+      info?.id,
+      info?.messageID,
+      info?.messageId,
+      part?.messageID,
+      part?.messageId,
+    );
+
+    if (candidateMessageId !== latestAssistantMessageId) {
+      continue;
+    }
+
+    if (eventType === "message.updated" && asString(info?.finish).trim()) {
+      return index;
+    }
+
+    if (
+      eventType === "message.part.updated" &&
+      asString(part?.type).trim().toLowerCase() === "step-finish"
+    ) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 function asNumber(value: unknown, fallback = 0): number {
@@ -1003,9 +1300,24 @@ function extractFilePathCandidate(
     if (nested) return nested;
   }
 
+  // Check nested object values
   for (const fieldValue of Object.values(rec)) {
     const nested = extractFilePathCandidate(fieldValue, depth + 1, seen);
     if (nested) return nested;
+  }
+  return undefined;
+}
+
+function extractBackgroundTaskId(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const text = asOptionalString(value);
+    if (!text) {
+      continue;
+    }
+    const match = text.match(/\b(bg_[a-z0-9]+)\b/i);
+    if (match?.[1]) {
+      return match[1];
+    }
   }
   return undefined;
 }
@@ -1029,16 +1341,47 @@ function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
     }
   }
 
+  // Extract input properties supporting both rec.input and rec.state.input
+  const inputRec = asRecord(rec.input) || asRecord(asRecord(rec.state)?.input);
+  const stateRec = asRecord(rec.state);
+  const outputText = asOptionalString(rec.output) || asOptionalString(asRecord(rec.state)?.output);
+  const backgroundTaskId = extractBackgroundTaskId(
+    metadataRec?.task_id,
+    metadataRec?.taskId,
+    inputRec?.task_id,
+    inputRec?.taskId,
+    outputText,
+  );
+
+  // Construct the ActivityDetail object
   const activityDetail: ActivityDetail = {
     kind: asOptionalString(rec.kind) as ActivityDetail["kind"] | undefined,
     summary: asOptionalString(rec.summary),
     command: asOptionalString(rec.command),
-    output: asOptionalString(rec.output),
+    // Extract input properties (e.g. pattern, path for glob tool) from raw payload
+    input: inputRec || undefined,
+    output: outputText,
+    backgroundTaskId,
+    backgroundOutput: asOptionalString(asRecord(rec.state)?.output) || asOptionalString(rec.output),
     tool: asOptionalString(rec.tool),
-    query: asOptionalString(rec.query),
-    file: asOptionalString(rec.file),
+    // Map search/glob/grep input pattern or query to query field if query is missing so that the search pattern builder captures it
+    query:
+      asOptionalString(rec.query) ||
+      (inputRec
+        ? asOptionalString(inputRec.pattern) ||
+          asOptionalString(inputRec.Pattern) ||
+          asOptionalString(inputRec.query) ||
+          asOptionalString(inputRec.Query)
+        : undefined),
+    file: asOptionalString(rec.file) || asOptionalString(inputRec?.file) || asOptionalString(inputRec?.path),
     diffExcerpt: normalizeActivityDiffExcerpt(rec.diffExcerpt),
     metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    sessionID:
+      asOptionalString(rec.sessionID) ||
+      asOptionalString(rec.sessionId) ||
+      asOptionalString(stateRec?.sessionID) ||
+      asOptionalString(stateRec?.sessionId) ||
+      undefined,
   };
 
   // Debug logging to see what's actually in the activityDetail
@@ -1053,15 +1396,19 @@ function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
     });
   }
 
+  // Ensure that we don't return an empty activityDetail object
   if (
     !activityDetail.kind &&
     !activityDetail.summary &&
     !activityDetail.command &&
+    !activityDetail.input &&
     !activityDetail.tool &&
     !activityDetail.query &&
     !activityDetail.file &&
     !activityDetail.diffExcerpt &&
-    !activityDetail.metadata
+    !activityDetail.metadata &&
+    !activityDetail.backgroundTaskId &&
+    !activityDetail.backgroundOutput
   ) {
     return undefined;
   }
@@ -1071,12 +1418,7 @@ function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
 
 type ActivitySource = "stream" | "final" | "raw_debug";
 
-type ParsedRawDebug = {
-  parseStatus: "parsed" | "empty" | "unparseable" | "truncated";
-  parts: UnknownRecord[];
-  info: UnknownRecord | null;
-};
-
+// Normalizes the source type of an activity event to ensure it matches the ActivitySource union
 function normalizeActivitySource(
   value: unknown,
   fallback: ActivitySource,
@@ -1088,6 +1430,7 @@ function normalizeActivitySource(
   return fallback;
 }
 
+// Merges two activity source values, preferring the one with higher precedence/rank
 function mergeActivitySource(
   current?: ActivitySource,
   incoming?: ActivitySource,
@@ -1112,50 +1455,6 @@ function isInternalToolName(tool?: string): boolean {
   );
 }
 
-function parseRawResponseDebug(value: unknown): ParsedRawDebug {
-  if (typeof value === "undefined" || value === null) {
-    return { parseStatus: "empty", parts: [], info: null };
-  }
-
-  if (typeof value === "object") {
-    const rec = asRecord(value);
-    const parts = Array.isArray(rec?.parts)
-      ? rec?.parts.map((part) => asRecord(part)).filter((part): part is UnknownRecord => !!part)
-      : [];
-    return { parseStatus: "parsed", parts, info: asRecord(rec?.info) };
-  }
-
-  if (typeof value !== "string") {
-    return { parseStatus: "unparseable", parts: [], info: null };
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return { parseStatus: "empty", parts: [], info: null };
-  }
-
-  const truncatedMarkerMatch = trimmed.match(/\.\.\.<truncated\s+\d+\s+chars>\s*$/i);
-  const isTruncated = !!truncatedMarkerMatch;
-  const candidate = isTruncated
-    ? trimmed.slice(0, truncatedMarkerMatch?.index ?? trimmed.length).trim()
-    : trimmed;
-
-  try {
-    const parsed = JSON.parse(candidate);
-    const rec = asRecord(parsed);
-    const parts = Array.isArray(rec?.parts)
-      ? rec?.parts.map((part) => asRecord(part)).filter((part): part is UnknownRecord => !!part)
-      : [];
-    return {
-      parseStatus: isTruncated ? "truncated" : "parsed",
-      parts,
-      info: asRecord(rec?.info),
-    };
-  } catch {
-    return { parseStatus: isTruncated ? "truncated" : "unparseable", parts: [], info: null };
-  }
-}
-
 function normalizeActivityStepRecord(
   value: unknown,
   fallbackSource: ActivitySource,
@@ -1175,7 +1474,8 @@ function normalizeActivityStepRecord(
     return undefined;
   }
   const stateRec = asRecord(rec.state);
-  const stateInput = asRecord(stateRec?.input);
+  // Extract input record supporting both stateRec.input and rec.input
+  const stateInput = asRecord(stateRec?.input) || asRecord(rec.input);
   const filePath =
     asString(rec.filePath) ||
     asString(rec.content) ||
@@ -1302,7 +1602,8 @@ function extractActivityStepsFromParts(
     const callID = asString(rec.callID) || asString(rec.callId) || undefined;
 
     const stateRec = asRecord(rec.state);
-    const inputRec = asRecord(stateRec?.input);
+    // Extract input properties supporting both stateRec.input and rec.input
+    const inputRec = asRecord(stateRec?.input) || asRecord(rec.input);
     const resultRec = asRecord(stateRec?.result);
     const filePath =
       asString(inputRec?.file) ||
@@ -1384,9 +1685,17 @@ function extractActivityStepsFromParts(
           return normalizeActivityDetail({
             kind: "tool_call",
             tool: tool || undefined,
-            command: metaValues[0],
-            query: metaValues[2] || metaValues[3] || undefined,
+            // Extract command and query directly from inputRec first to avoid shifting index bugs from metaValues
+            command: asOptionalString(inputRec?.CommandLine ?? inputRec?.command) || metaValues[0],
+            query: asOptionalString(
+              inputRec?.Query ??
+              inputRec?.query ??
+              inputRec?.Pattern ??
+              inputRec?.pattern
+            ) || metaValues[2] || metaValues[3] || undefined,
             file: filePath,
+            // Capture and pass the raw tool input properties
+            input: inputRec || undefined,
             output: finalOutput,
             diffExcerpt: (() => {
               const diffExcerptRec = asRecord(stateRec?.diffExcerpt) || asRecord(resultRec?.diffExcerpt);
@@ -1460,15 +1769,6 @@ function normalizeActivitySteps(
     candidates.push(
       ...streaming.progressEvents.map((step) => ({ ...step, source: step.source || "stream" })),
     );
-  }
-
-  const parsedRaw = parseRawResponseDebug(message.rawResponse);
-  if (parsedRaw.parts.length > 0) {
-    const rawSteps = extractActivityStepsFromParts(
-      parsedRaw.parts as unknown as MessagePart[],
-      "raw_debug",
-    );
-    candidates.push(...rawSteps);
   }
 
   const merged: MessageStep[] = [];
@@ -2705,8 +3005,6 @@ function normalizeStructuredOutputWithFallback(value: unknown): StructuredOutput
 
 function collectRawStructuredOutputCandidates(rec: UnknownRecord): unknown[] {
   const infoRec = asRecord(rec.info);
-  const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
-  const rawResponseInfoRec = asRecord(parsedRawDebug.info);
   return [
     rec.structuredOutput,
     rec.structured_output,
@@ -2714,10 +3012,6 @@ function collectRawStructuredOutputCandidates(rec: UnknownRecord): unknown[] {
     infoRec?.structuredOutput,
     infoRec?.structured_output,
     infoRec?.structured,
-    parsedRawDebug.info,
-    rawResponseInfoRec?.structuredOutput,
-    rawResponseInfoRec?.structured_output,
-    rawResponseInfoRec?.structured,
   ].filter((candidate): candidate is unknown => typeof candidate !== "undefined" && candidate !== null);
 }
 
@@ -2760,42 +3054,110 @@ function hasTruncatedContentMarker(value: unknown): boolean {
   return false;
 }
 
-function structuredOutputFromRawDebug(parsedRawDebug: ParsedRawDebug): StructuredOutput | undefined {
-  const candidates: unknown[] = [];
-  for (const part of parsedRawDebug.parts) {
-    const partType = asString(part.type).toLowerCase();
-    const toolName = asString(part.tool);
-    const stateRec = asRecord(part.state);
-    if (
-      (partType === "tool" || toolName.length > 0) &&
-      (isInternalToolName(toolName) ||
-        isInternalToolName(asString(stateRec?.title)) ||
-        isInternalToolName(asString(stateRec?.tool)))
-    ) {
-      candidates.push(stateRec?.input);
-      candidates.push((stateRec as UnknownRecord | null)?.payload);
-      candidates.push(part.input);
-      candidates.push((part as UnknownRecord).payload);
+function structuredOutputFromStructuredOutputToolPart(part: unknown): StructuredOutput | undefined {
+  const partRec = asRecord(part);
+  if (!partRec) {
+    return undefined;
+  }
+
+  const toolName = asString(partRec.tool).toLowerCase();
+  if (toolName !== "structuredoutput" && toolName !== "structured_output") {
+    return undefined;
+  }
+
+  const stateRec = asRecord(partRec.state);
+  const inputRec =
+    asRecord(stateRec?.input) ||
+    asRecord(partRec.input) ||
+    asRecord(partRec.arguments);
+  if (!inputRec) {
+    return undefined;
+  }
+
+  const questionCandidate =
+    asRecord(inputRec.question) ||
+    asRecord(asRecord(inputRec.questions)?.[0]) ||
+    asRecord(inputRec.prompt);
+  const responseType = firstNonEmptyString(
+    inputRec.responseType,
+    inputRec.type,
+    partRec.responseType,
+    stateRec?.responseType,
+  )?.toLowerCase();
+  const messageText = firstNonEmptyString(
+    inputRec.message,
+    inputRec.content,
+    inputRec.text,
+    stateRec?.message,
+    stateRec?.content,
+    stateRec?.text,
+  );
+  const planCandidate =
+    asRecord(inputRec.plan) ||
+    asRecord(stateRec?.plan) ||
+    asRecord(partRec.plan);
+
+  const candidate: Record<string, unknown> = {
+    ...inputRec,
+    ...(questionCandidate ? { question: questionCandidate } : {}),
+    ...(planCandidate ? { plan: planCandidate } : {}),
+  };
+  if (responseType) {
+    candidate.responseType = responseType;
+  }
+  if (messageText) {
+    candidate.message = messageText;
+  }
+
+  const normalized = normalizeStructuredOutputWithFallback(candidate);
+  if (normalized) {
+    return normalized;
+  }
+
+  if (!responseType && !messageText && !planCandidate && !questionCandidate) {
+    return undefined;
+  }
+
+  return candidate as StructuredOutput;
+}
+
+export function structuredOutputFromRawSdkEventPayloads(rawSdkEventPayloads?: unknown[]): StructuredOutput | undefined {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return undefined;
+  }
+
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const payload = asRecord(rawSdkEventPayloads[index]);
+    if (!payload) {
+      continue;
+    }
+    const properties = asRecord(payload.properties);
+    const part =
+      asRecord(payload.part) ||
+      asRecord(properties?.part) ||
+      (properties ? properties : null);
+    const structured = structuredOutputFromStructuredOutputToolPart(part);
+    if (structured) {
+      return structured;
     }
   }
 
-  const infoRec = asRecord(parsedRawDebug.info);
-  candidates.push((infoRec as UnknownRecord | null)?.structured);
-  candidates.push(infoRec?.structuredOutput);
-  candidates.push((infoRec as UnknownRecord | null)?.structured_output);
-
-  for (const candidate of candidates) {
-    const normalized = normalizeStructuredOutputWithFallback(candidate);
-    if (normalized) {
-      return normalized;
-    }
-  }
   return undefined;
+}
+
+/**
+ * Checks if a centralized raw event payload represents an AI response chunk.
+ * Supported shapes:
+ * - `message.part.updated` with `properties.part.type === "text"`
+ * - `sync` with `syncEvent.data.part.type === "text"`
+ */
+export function isAiResponseEvent(payload: unknown): boolean {
+  const part = getCentralizedEventPart(payload);
+  return (asString(part?.type) || asString(part?.partType)) === "text";
 }
 
 function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): StructuredOutput | undefined {
   const infoRec = asRecord(rec.info);
-  const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
   const localCandidates: unknown[] = [
     (rec as UnknownRecord).structured,
     (infoRec as UnknownRecord | null)?.structured,
@@ -2811,28 +3173,13 @@ function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): Structure
       return normalized;
     }
   }
-  const fromRawDebug = structuredOutputFromRawDebug(parsedRawDebug);
-  if (!fromRawDebug) {
-    return undefined;
+  const rawSdkStructuredOutput = structuredOutputFromRawSdkEventPayloads(
+    Array.isArray(rec.rawSdkEventPayloads) ? rec.rawSdkEventPayloads : undefined,
+  );
+  if (rawSdkStructuredOutput) {
+    return rawSdkStructuredOutput;
   }
-
-  // Raw debug payloads are frequently capped for logging and may contain
-  // "...<truncated N chars>" markers inside plan/content fields. Treat those
-  // as unreliable and avoid propagating partial plan bodies into the viewer.
-  if (hasTruncatedContentMarker(fromRawDebug)) {
-    const plan = fromRawDebug.plan;
-    if (plan && typeof plan === "object") {
-      return {
-        ...fromRawDebug,
-        plan: {
-          ...plan,
-          content: undefined,
-        },
-      };
-    }
-  }
-
-  return fromRawDebug;
+  return undefined;
 }
 
 // Normalize incoming todo-like records into a canonical Todo shape used by the
@@ -3706,6 +4053,130 @@ function shouldBootstrapStreamingFromPart(part: UnknownRecord | null): boolean {
   return Boolean(reasoningLike);
 }
 
+type AssistantStreamBootstrapContext = {
+  eventType: string;
+  eventRole: string;
+  messageId: string | null;
+  eventAgent?: string;
+  eventModel?: Record<string, unknown> | null;
+  eventModelID?: string;
+  eventProviderID?: string;
+  isExplicitStart: boolean;
+  isAssistantUpdateStart: boolean;
+  canBootstrapFromPart: boolean;
+  hasSystemPatternEvent: boolean;
+};
+
+function buildStreamingMetadataFromCentralizedPayload(
+  context: AssistantStreamBootstrapContext,
+  state: AppState,
+): Pick<StreamingState, "agent" | "model" | "modelID" | "providerID" | "variant"> {
+  return {
+    agent: context.eventAgent || state.selectedAgent || undefined,
+    model:
+      context.eventModel && typeof context.eventModel === "object"
+        ? {
+            modelID:
+              asString(context.eventModel.modelID) ||
+              state.selectedModel?.modelID ||
+              "",
+            providerID:
+              asString(context.eventModel.providerID) ||
+              state.selectedModel?.providerID ||
+              "",
+            name:
+              asString((context.eventModel as Record<string, unknown>).name) ||
+              undefined,
+          }
+        : undefined,
+    modelID: context.eventModelID || state.selectedModel?.modelID,
+    providerID: context.eventProviderID || state.selectedModel?.providerID,
+    variant: state.thinkingLevel,
+  };
+}
+
+function buildStreamingBootstrapState(
+  context: AssistantStreamBootstrapContext,
+  state: AppState,
+): StreamingState {
+  return {
+    messageId: context.messageId,
+    content: "",
+    hasRenderableContent: false,
+    reasoning: "",
+    reasoningEvents: [],
+    steps: [],
+    progressEvents: [],
+    edits: [],
+    isActive: true,
+    ...buildStreamingMetadataFromCentralizedPayload(context, state),
+  };
+}
+
+function ensureStreamingBootstrapFromCentralizedPayload(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  context: AssistantStreamBootstrapContext,
+): boolean {
+  const state = getState();
+  const current = state.streaming;
+  const shouldStart =
+    !current &&
+    !context.hasSystemPatternEvent &&
+    (context.isExplicitStart ||
+      context.isAssistantUpdateStart ||
+      context.canBootstrapFromPart ||
+      state.isProcessing);
+
+  if (!shouldStart) {
+    return false;
+  }
+
+  dispatch({
+    type: "SET_STREAMING",
+    payload: buildStreamingBootstrapState(context, state),
+  });
+  dispatch({
+    type: "SET_ASSISTANT_TURN_PENDING",
+    payload: { pending: true, messageId: context.messageId },
+  });
+  dispatch({ type: "SET_PROCESSING", payload: true });
+  return true;
+}
+
+function bindStreamingIdentityFromCentralizedPayload(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  context: AssistantStreamBootstrapContext,
+): boolean {
+  const state = getState();
+  const current = state.streaming;
+
+  // Event-stream rendering can begin from a generic SET_PROCESSING placeholder
+  // before the first assistant payload has been parsed. That placeholder has no
+  // messageId, which means the UI cannot scope session-level centralized debug
+  // payloads back to the active assistant turn. Once a centralized SDK payload
+  // gives us the real messageId, we adopt it here so the same centralized data
+  // can drive the live card and the rehydrated card.
+  if (!current || current.messageId || !context.messageId || context.hasSystemPatternEvent) {
+    return false;
+  }
+
+  dispatch({
+    type: "SET_STREAMING",
+    payload: {
+      ...current,
+      messageId: context.messageId,
+      ...buildStreamingMetadataFromCentralizedPayload(context, state),
+    },
+  });
+  dispatch({
+    type: "SET_ASSISTANT_TURN_PENDING",
+    payload: { pending: true, messageId: context.messageId },
+  });
+  return true;
+}
+
 function isReasoningPart(part: UnknownRecord): boolean {
   const type = normalizePartType(part.type);
   return (
@@ -4078,20 +4549,6 @@ function isCanonicalAssistantDisplayMessage(message: Message): boolean {
   return !!getCanonicalStructuredMessageText(message);
 }
 
-function hasRenderableAssistantTextInParts(parts: unknown[]): boolean {
-  return parts.some((part) => {
-    const rec = asRecord(part);
-    if (!rec || !isRenderableAssistantTextPart(rec)) {
-      return false;
-    }
-    const text =
-      asRichString(rec.text) ||
-      asRichString(rec.content) ||
-      asRichString(rec.delta);
-    return text.trim().length > 0;
-  });
-}
-
 function reasoningFromParts(parts: unknown[]): string {
   return parts
     .map((part) => {
@@ -4442,7 +4899,6 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
       ? cloneRawSnapshot(rec.rawSdkEventPayloads)
       : undefined;
   const parts = Array.isArray(rec.parts) ? rec.parts : [];
-  const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
   const mergedParts = [...parts];
   const currentReasoning = reasoningFromParts(mergedParts);
   const directReasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
@@ -4560,6 +5016,11 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     normalizeStructuredOutputWithFallback(streaming?.structuredOutput);
 
   const role = asString(rec.role) || asString(asRecord(rec.info)?.role);
+  const sourceMessageId =
+    asString(asRecord(rec.info)?.id) ||
+    asString(rec.id) ||
+    asString(streaming?.messageId) ||
+    "(unknown)";
   const nonReasoningPartsContent = contentFromParts(normalizedParts).trim();
   const contentFromTopLevel = pickBestContentCandidate([
     splitReasoningFromCandidate(asRichString(rec.content)),
@@ -4601,8 +5062,6 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
       ? structuredMessage
       : nonReasoningPartsContent || (provisionalResponseType === "message" ? structuredMessage : "")
     : structuredMessage || contentFromTopLevel;
-  const sourceMessageId =
-    asString(asRecord(rec.info)?.id) || asString((rec as UnknownRecord).id) || null;
   const contentSelectedSource = hasParts
     ? shouldPreferStructuredMessage
       ? "structured.message"
@@ -4658,19 +5117,6 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     content || "",
     streamingContent,
   );
-  const rawHasRenderableText = hasRenderableAssistantTextInParts(parsedRawDebug.parts);
-  const rawHasReasoning = parsedRawDebug.parts.some((part) => {
-    const rec = asRecord(part);
-    return !!rec && isReasoningPart(rec);
-  });
-  const shouldSuppressStreamingFallbackForReasoningOnly =
-    parsedRawDebug.parts.length > 0 &&
-    !hasRenderableStreamingContent &&
-    provisionalResponseType === "message" &&
-    !structuredMessage &&
-    !nonReasoningPartsContent &&
-    rawHasReasoning &&
-    !rawHasRenderableText;
   const streamingContentMatchesReasoning = (() => {
     const streamNorm = normalizeComparableText(streamingContent);
     if (!streamNorm || streamNorm.length < 40) return false;
@@ -4695,7 +5141,6 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     role === "assistant" && typeof content === "string" && content.trim().length > 0;
   const shouldUseStreamingContent =
     hasRenderableStreamingContent &&
-    !shouldSuppressStreamingFallbackForReasoningOnly &&
     !nonReasoningPartsContent &&
     preferStreamingContent &&
     !streamingContentMatchesReasoning &&
@@ -4718,12 +5163,8 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
       hasCanonicalAssistantContent,
       shouldUseStreamingContent,
       streamingContentMatchesReasoning,
-      shouldSuppressStreamingFallbackForReasoningOnly,
       normalizedStructuredOutputResponseType:
         normalizedStructuredOutput?.responseType ?? null,
-      parsedRawDebugPartCount: parsedRawDebug.parts.length,
-      rawHasReasoning,
-      rawHasRenderableText,
     });
   }
   if (streaming && role === "assistant") {
@@ -4740,20 +5181,12 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
       hasCanonicalAssistantContent,
       shouldUseStreamingContent,
       streamingContentMatchesReasoning,
-      shouldSuppressStreamingFallbackForReasoningOnly,
       normalizedStructuredOutputResponseType:
         normalizedStructuredOutput?.responseType ?? null,
       normalizedStructuredOutputMessagePreview: previewForLog(
         normalizedStructuredOutput?.message,
       ),
       streamingSummary: summarizeStreamingForLog(streaming),
-    });
-  }
-  if (shouldSuppressStreamingFallbackForReasoningOnly) {
-    logger.info("Suppressing streaming fallback: raw debug indicates reasoning-only final payload", {
-      messageId: sourceMessageId,
-      responseType: provisionalResponseType ?? null,
-      rawPartsCount: parsedRawDebug.parts.length,
     });
   }
   const normalized: Message = {
@@ -6959,6 +7392,50 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   const seenProgress = new Set<string>();
   const seenSteps = new Set<string>();
   const seenEdits = new Set<string>();
+  const rawSdkEventPayloadFingerprint = (value: unknown): string => {
+    const rec = asRecord(value);
+    if (!rec) {
+      return `primitive:${String(value)}`;
+    }
+    const id = asString(rec.id);
+    if (id) {
+      return `id:${id}`;
+    }
+    const properties = asRecord(rec.properties);
+    const type = asString(rec.type);
+    const messageId = asString(
+      rec.messageID,
+      rec.messageId,
+      properties?.messageID,
+      properties?.messageId,
+    );
+    const partId = asString(
+      rec.partID,
+      rec.partId,
+      properties?.partID,
+      properties?.partId,
+    );
+    const time = asString(rec.time, properties?.time);
+    return `${type}|${messageId}|${partId}|${time}|${String(value)}`;
+  };
+  const mergeRawSdkEventPayloads = (
+    target: unknown[] | undefined,
+    incoming: unknown[] | undefined,
+  ): unknown[] | undefined => {
+    const merged = Array.isArray(target) ? [...target] : [];
+    const seen = new Set<string>(merged.map(rawSdkEventPayloadFingerprint));
+    if (Array.isArray(incoming) && incoming.length > 0) {
+      for (const item of incoming) {
+        const key = rawSdkEventPayloadFingerprint(item);
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        merged.push(item);
+      }
+    }
+    return merged.length > 0 ? merged : undefined;
+  };
 
   let latestText = "";
   let latestTextScore = 0;
@@ -6968,12 +7445,9 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   const subagentsByMessageId = new Map<string, Message["subagents"]>();
   let latestSubagentsWithoutMessageId: Message["subagents"] | undefined;
   let latestError = asString((base as unknown as UnknownRecord).error);
-  let latestRawResponse: unknown = (base as unknown as UnknownRecord).rawResponse;
-  let latestRawSdkEventPayloads: unknown[] | undefined = Array.isArray(
-    (base as unknown as UnknownRecord).rawSdkEventPayloads,
-  )
-    ? [...((base as unknown as UnknownRecord).rawSdkEventPayloads as unknown[])]
-    : undefined;
+  // Rebuild the centralized raw tape in burst order so hydration matches the
+  // exact stream chronology instead of inheriting the newest assistant turn.
+  let mergedRawSdkEventPayloads: unknown[] | undefined;
   let latestStructuredOutput = asRecord(
     (base as unknown as UnknownRecord).structuredOutput,
   );
@@ -7112,17 +7586,13 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
     if (errorText) {
       latestError = errorText;
     }
-    if (typeof message.rawResponse === "string") {
-      if (message.rawResponse.trim().length > 0) {
-        latestRawResponse = message.rawResponse;
-      }
-    } else if (typeof message.rawResponse !== "undefined") {
-      latestRawResponse = message.rawResponse;
-    }
     if (Array.isArray((message as unknown as UnknownRecord).rawSdkEventPayloads)) {
       const rawSdkEventPayloads = (message as unknown as UnknownRecord).rawSdkEventPayloads as unknown[];
       if (rawSdkEventPayloads.length > 0) {
-        latestRawSdkEventPayloads = [...rawSdkEventPayloads];
+        mergedRawSdkEventPayloads = mergeRawSdkEventPayloads(
+          mergedRawSdkEventPayloads,
+          rawSdkEventPayloads,
+        );
       }
     }
     const structured = asRecord(
@@ -7233,11 +7703,8 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   if (latestStructuredOutput) {
     (base as unknown as UnknownRecord).structuredOutput = latestStructuredOutput;
   }
-  if (typeof latestRawResponse !== "undefined") {
-    (base as unknown as UnknownRecord).rawResponse = latestRawResponse;
-  }
-  if (Array.isArray(latestRawSdkEventPayloads) && latestRawSdkEventPayloads.length > 0) {
-    (base as unknown as UnknownRecord).rawSdkEventPayloads = latestRawSdkEventPayloads;
+  if (Array.isArray(mergedRawSdkEventPayloads) && mergedRawSdkEventPayloads.length > 0) {
+    (base as unknown as UnknownRecord).rawSdkEventPayloads = mergedRawSdkEventPayloads;
   }
 
   if (canonicalMessageId) {
@@ -8363,26 +8830,38 @@ function finalizeStreamingSnapshotSteps(
   };
 }
 
-function maybeCompleteOnStepsFinished(
+function completeStreamingTurnFromCentralizedStepFinish(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
+  messageId?: string | null,
+  terminalStatus: "done" | "error" = "done",
 ): boolean {
   const streaming = getState().streaming;
   if (!streaming?.isActive) return false;
   if (streaming.inReasoningPart) return false;
 
-  const steps = streaming.steps;
-  const hasSteps = Array.isArray(steps) && steps.length > 0;
-  if (!hasSteps) return false;
+  const activeMessageId =
+    streaming.messageId || getState().assistantTurnMessageId || null;
+  if (activeMessageId && messageId && activeMessageId !== messageId) {
+    return false;
+  }
 
-  const allStepsTerminal = steps.every(
-    (step) => step.status === "done" || step.status === "error",
-  );
-  if (!allStepsTerminal) return false;
-
-  const hasContent = streaming.hasRenderableContent === true;
-  if (!hasContent) return false;
-
+  const finalized = finalizeStreamingSnapshotSteps(streaming, terminalStatus);
+  if (finalized) {
+    dispatch({
+      type: "SET_STREAMING",
+      payload: {
+        ...finalized,
+        hasTerminalStepSignal: true,
+      },
+    });
+  }
+  dispatch({
+    type: "SET_ASSISTANT_TURN_PENDING",
+    payload: { pending: false, messageId: null },
+  });
+  dispatch({ type: "SET_PROCESSING", payload: false });
+  dispatch({ type: "FINISH_STREAMING" });
   return true;
 }
 
@@ -8494,7 +8973,8 @@ function handleStreamEvent(
     normalizeStructuredOutputWithFallback(infoRecord?.structured) ??
     normalizeStructuredOutputWithFallback(infoRecord?.structuredOutput) ??
     normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured_output) ??
-    normalizeStructuredOutputWithFallback(fallbackStructuredOutputCandidate);
+    structuredOutputFromStructuredOutputToolPart(eventPart) ??
+    fallbackStructuredOutputCandidate;
   const eventSessionId =
     asString(payload.sessionId) ||
     asString(payload.sessionID) ||
@@ -8535,6 +9015,32 @@ function handleStreamEvent(
     asString(infoRecord?.id) ||
     current?.messageId ||
     null;
+
+  // Ignore parts that echo the user's recent input to prevent them from incorrectly
+  // bootstrapping an assistant streaming block and binding the wrong message ID.
+  const isPartEcho = isPartUpdateEvent && Boolean(eventPart);
+  const partText = asRichString(eventPart?.text) || asRichString(eventPart?.content) || "";
+  const reasoningPartID =
+    asString(payload.partID) ||
+    asString(payload.partId) ||
+    asString(properties?.partID) ||
+    asString(properties?.partId) ||
+    asString(eventPart?.id) ||
+    undefined;
+
+  if (isPartUpdateEvent && partText) {
+    const currentMessages = state.messages || [];
+    const lastMessage = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1] : null;
+    if (
+      lastMessage &&
+      lastMessage.role === "user" &&
+      !lastMessage.id &&
+      asString(lastMessage.content).trim() === partText.trim()
+    ) {
+      logger.debug("Ignoring stream event echoing user message");
+      return;
+    }
+  }
 
   const extractSystemPatternText = (): string => {
     const candidates = [
@@ -8617,7 +9123,23 @@ function handleStreamEvent(
     asString(infoRecord?.role) === 'assistant' &&
     !isFinishSignal(infoRecord?.finish);
   const canBootstrapFromPart =
-    isPartUpdateEvent && shouldBootstrapStreamingFromPart(eventPart);
+    isPartUpdateEvent &&
+    eventRole === "assistant" &&
+    shouldBootstrapStreamingFromPart(eventPart);
+  const bootstrapContext: AssistantStreamBootstrapContext = {
+    eventType,
+    eventRole: asString(infoRecord?.role) || asString(payload.role),
+    messageId,
+    eventAgent: asString(infoRecord?.agent) || asString(payload.agent) || undefined,
+    eventModel: asRecord(infoRecord?.model) || asRecord(payload.model),
+    eventModelID: asString(infoRecord?.modelID) || asString(payload.modelID) || undefined,
+    eventProviderID:
+      asString(infoRecord?.providerID) || asString(payload.providerID) || undefined,
+    isExplicitStart,
+    isAssistantUpdateStart,
+    canBootstrapFromPart,
+    hasSystemPatternEvent,
+  };
 
   // Ignore stray global stream events when neither a request is in progress nor the
   // event carries an explicit lifecycle signal. This prevents phantom "Thinking..." /
@@ -8628,63 +9150,11 @@ function handleStreamEvent(
     return;
   }
 
-  if (
-    !current &&
-    !isHeartbeatEvent &&
-    (isExplicitStart ||
-      isAssistantUpdateStart ||
-      canBootstrapFromPart ||
-      state.isProcessing) &&
-    !hasSystemPatternEvent
-  ) {
-    // Extract model/agent metadata from the event payload or fall back to app state
-    const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
-    const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
-    const eventModelID =
-      asString(infoRecord?.modelID) || asString(payload.modelID);
-    const eventProviderID =
-      asString(infoRecord?.providerID) || asString(payload.providerID);
-
-    dispatch({
-      type: "SET_STREAMING",
-      payload: {
-        messageId,
-        content: "",
-        hasRenderableContent: false,
-        reasoning: "",
-        reasoningEvents: [],
-        steps: [],
-        progressEvents: [],
-        edits: [],
-        isActive: true,
-        // Include model/agent metadata for display during streaming
-        agent: eventAgent || state.selectedAgent || undefined,
-        model:
-          eventModel && typeof eventModel === "object"
-            ? {
-              modelID:
-                asString(eventModel.modelID) ||
-                state.selectedModel?.modelID ||
-                "",
-              providerID:
-                asString(eventModel.providerID) ||
-                state.selectedModel?.providerID ||
-                "",
-              name:
-                asString((eventModel as Record<string, unknown>).name) ||
-                undefined,
-            }
-            : undefined,
-        modelID: eventModelID || state.selectedModel?.modelID,
-        providerID: eventProviderID || state.selectedModel?.providerID,
-        variant: state.thinkingLevel,
-      },
-    });
-    dispatch({
-      type: "SET_ASSISTANT_TURN_PENDING",
-      payload: { pending: true, messageId },
-    });
-    dispatch({ type: "SET_PROCESSING", payload: true });
+  if (!isHeartbeatEvent && ensureStreamingBootstrapFromCentralizedPayload(
+    dispatch,
+    getState,
+    bootstrapContext,
+  )) {
     logger.info("[LOADING][HANDLER] stream bootstrap - new streaming + SET_PROCESSING(true)", {
       messageId,
       eventType,
@@ -8696,6 +9166,13 @@ function handleStreamEvent(
       wasProcessing: state.isProcessing,
       hadStreaming: !!current,
     });
+  }
+  if (!isHeartbeatEvent) {
+    bindStreamingIdentityFromCentralizedPayload(
+      dispatch,
+      getState,
+      bootstrapContext,
+    );
   }
 
   const streamResponseType = firstNonEmptyString(
@@ -8745,10 +9222,11 @@ function handleStreamEvent(
   }
 
   // Pattern-based system reminders must not depend on role field correctness.
-  // If a stream payload looks like an internal/system notice, render it as
-  // system immediately even when upstream labels it as "user".
+  // However, when the same content is already visible in the user prompt UI,
+  // we do not want to materialize a second standalone system card below the
+  // build/assistant response. Keep the stream moving, but avoid duplicating
+  // the prompt echo in the conversation list.
   if (hasSystemPatternEvent) {
-    upsertRealtimeSystemMessage(systemPatternText);
     dispatch({ type: "SET_PROCESSING", payload: true });
     return;
   }
@@ -8860,7 +9338,6 @@ function handleStreamEvent(
       // events with role="user" but should be rendered as system messages
       const partText = asRichString(part.text) || asRichString(part.content) || '';
       if (partText && hasSystemMessagePatternInText(partText)) {
-        upsertRealtimeSystemMessage(partText);
         break; // Don't process this as regular content
       }
 
@@ -9191,7 +9668,12 @@ function handleStreamEvent(
           duration: asOptionalNumber(asRecord(part.timing)?.duration),
           diffStats,
         });
-        maybeCompleteOnStepsFinished(dispatch, getState);
+        completeStreamingTurnFromCentralizedStepFinish(
+          dispatch,
+          getState,
+          asString(part.messageID) || asString(part.messageId) || messageId,
+          "done",
+        );
       }
 
       if (partType === 'tool') {
@@ -9226,6 +9708,12 @@ function handleStreamEvent(
           inputObj?.pattern,
         );
         const callID = asString(part.callID) || undefined;
+        const sessionID =
+          asString(part.sessionID) ||
+          asString(part.sessionId) ||
+          asString((stateObj as UnknownRecord)?.sessionID) ||
+          asString((stateObj as UnknownRecord)?.sessionId) ||
+          undefined;
         const title = asString(part.title) || (tool ? `Running ${tool}...` : inferredStepTitle(part));
 
         // Extract output from multiple possible sources
@@ -9272,10 +9760,13 @@ function handleStreamEvent(
           command: commandValue,
           query: queryValue,
           file: filePath,
+          // Capture and pass the raw tool input properties for streaming tool calls
+          input: inputObj || partInputObj || undefined,
           summary: asOptionalString(part.meta),
           output: finalOutput,
           diffExcerpt: diffExcerpt,
           metadata: metadataTruncated ? { truncated: true } : undefined,
+          sessionID,
         });
 
         const existing = getState().streaming?.steps.find(
@@ -9293,7 +9784,9 @@ function handleStreamEvent(
             internal: isInternalToolName(tool),
             meta: asString(part.meta) || metaValues[0] || undefined,
             filePath,
+            sessionID,
             activityDetail: baseActivityDetail,
+            startedAt: Date.now(),
             startTime: Date.now(),
           });
         } else {
@@ -9328,6 +9821,7 @@ function handleStreamEvent(
             internal: Boolean(existing.internal || isInternalToolName(tool)),
             meta: asString(part.meta) || metaValues[0] || existing.meta,
             filePath: filePath || existing.filePath,
+            sessionID: sessionID || existing.sessionID,
             activityDetail: baseActivityDetail || existing.activityDetail,
           });
         }
@@ -9479,7 +9973,6 @@ function handleStreamEvent(
         asRichString(properties?.text) ||
         asRichString(properties?.content);
       if (updatedText && hasSystemMessagePatternInText(updatedText)) {
-        upsertRealtimeSystemMessage(updatedText);
         dispatch({ type: "SET_PROCESSING", payload: true });
         break;
       }
@@ -9491,6 +9984,71 @@ function handleStreamEvent(
         hasInfo: !!asRecord(payload.info),
       });
       const finish = resolveMessageUpdatedFinishSignal(payload, properties);
+      const currentStreamingSnapshot = getState().streaming;
+      const currentStreamingMessageId = currentStreamingSnapshot?.messageId ?? null;
+      if (!currentStreamingSnapshot) {
+        ensureStreamingBootstrapFromCentralizedPayload(
+          dispatch,
+          getState,
+          bootstrapContext,
+        );
+      }
+      const shouldStartFreshAssistantTurn =
+        eventRole === "assistant" &&
+        !!messageId &&
+        !!currentStreamingSnapshot &&
+        !!currentStreamingMessageId &&
+        currentStreamingMessageId !== messageId;
+
+      if (shouldStartFreshAssistantTurn) {
+        // A brand-new assistant turn has started, but the previous turn's
+        // streaming snapshot is still hanging around in state. Re-key the live
+        // snapshot immediately so the old assistant card does not keep loading
+        // and the new turn gets its own timeline / response card.
+        const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
+        const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
+        const eventModelID = asString(infoRecord?.modelID) || asString(payload.modelID);
+        const eventProviderID = asString(infoRecord?.providerID) || asString(payload.providerID);
+        dispatch({
+          type: "SET_STREAMING",
+          payload: {
+            messageId,
+            content: "",
+            reasoning: "",
+            reasoningEvents: [],
+            steps: [],
+            progressEvents: [],
+            edits: [],
+            interactiveEvents: [],
+            rawSdkEventPayloads: [],
+            isActive: true,
+            agent: eventAgent || getState().selectedAgent || undefined,
+            model:
+              eventModel && typeof eventModel === "object"
+                ? {
+                    modelID:
+                      asString(eventModel.modelID) ||
+                      getState().selectedModel?.modelID ||
+                      "",
+                    providerID:
+                      asString(eventModel.providerID) ||
+                      getState().selectedModel?.providerID ||
+                      "",
+                    name:
+                      asString((eventModel as Record<string, unknown>).name) ||
+                      undefined,
+                  }
+                : undefined,
+            modelID: eventModelID || getState().selectedModel?.modelID,
+            providerID: eventProviderID || getState().selectedModel?.providerID,
+            variant: getState().thinkingLevel,
+          },
+        });
+        dispatch({
+          type: "SET_ASSISTANT_TURN_PENDING",
+          payload: { pending: true, messageId },
+        });
+      }
 
       if (structuredOutput && messageId) {
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId);
@@ -9746,48 +10304,22 @@ function handleStreamEvent(
 
 
       if (finish) {
-        if (structuredText) {
-          const streamingNow = getState().streaming;
-          if (streamingNow) {
-            const streamingOverride: StreamingState = {
-              ...streamingNow,
-              content: structuredText,
-              structuredOutput: structuredOutput as unknown as StreamingState["structuredOutput"],
-              responseType: (structuredOutput?.responseType || "message") as StructuredResponseType,
-            };
-            flushVisibleStreamingSnapshotToMessages(dispatch, getState, streamingOverride);
-          }
-        }
-        const terminalStatus: "done" | "error" =
-          asString(asRecord(payload.info)?.error) ||
-          asString(asRecord(properties)?.error)
-            ? "error"
-            : "done";
         const finalized = finalizeStreamingSnapshotSteps(
           getState().streaming,
-          terminalStatus,
+          asString(asRecord(payload.info)?.error) ||
+            asString(asRecord(properties)?.error)
+            ? "error"
+            : "done",
         );
         if (finalized) {
           dispatch({
             type: "SET_STREAMING",
             payload: {
               ...finalized,
-              // Lifecycle events carry the correct final text in
-              // structured output, not streaming.content. Inject it
-              // so subsequent state reads reflect the real content.
-              ...(effectiveFinish && structuredText
-                ? { content: structuredText }
-                : {}),
               hasAssistantFinishSignal: true,
             },
           });
         }
-        dispatch({
-          type: "SET_ASSISTANT_TURN_PENDING",
-          payload: { pending: false, messageId: null },
-        });
-        dispatch({ type: 'SET_PROCESSING', payload: false });
-        dispatch({ type: 'FINISH_STREAMING' });
       } else {
         dispatch({ type: 'SET_PROCESSING', payload: true });
       }
@@ -9943,7 +10475,12 @@ function handleStreamEvent(
             if (sanitized) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: sanitized, append: true },
+                payload: {
+                  reasoning: sanitized,
+                  append: true,
+                  partID: reasoningPartID,
+                  messageID: messageId || undefined,
+                },
               });
             }
           }
@@ -9960,7 +10497,12 @@ function handleStreamEvent(
           if (mixedReasoning) {
             dispatch({
               type: "UPDATE_STREAMING_REASONING",
-              payload: { reasoning: mixedReasoning, append: true },
+              payload: {
+                reasoning: mixedReasoning,
+                append: true,
+                partID: reasoningPartID,
+                messageID: messageId || undefined,
+              },
             });
           }
           candidateChunk = mixedChunk.content;
@@ -9974,7 +10516,12 @@ function handleStreamEvent(
           if (reasoningLeak) {
             dispatch({
               type: "UPDATE_STREAMING_REASONING",
-              payload: { reasoning: reasoningLeak, append: true },
+              payload: {
+                reasoning: reasoningLeak,
+                append: true,
+                partID: reasoningPartID,
+                messageID: messageId || undefined,
+              },
             });
           }
           break;
@@ -10025,7 +10572,15 @@ function handleStreamEvent(
       });
       const sanitized = sanitizeReasoningChunk(chunk);
       if (sanitized) {
-        dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: sanitized, append: true } });
+        dispatch({
+          type: 'UPDATE_STREAMING_REASONING',
+          payload: {
+            reasoning: sanitized,
+            append: true,
+            partID: reasoningPartID,
+            messageID: messageId || undefined,
+          },
+        });
       }
       break;
     }
@@ -10098,7 +10653,12 @@ function handleStreamEvent(
           }
         }
       });
-      maybeCompleteOnStepsFinished(dispatch, getState);
+      completeStreamingTurnFromCentralizedStepFinish(
+        dispatch,
+        getState,
+        asString(payload.messageID) || asString(payload.messageId),
+        "done",
+      );
       break;
     }
     case 'stepError': {
@@ -10115,7 +10675,12 @@ function handleStreamEvent(
           }
         }
       });
-      maybeCompleteOnStepsFinished(dispatch, getState);
+      completeStreamingTurnFromCentralizedStepFinish(
+        dispatch,
+        getState,
+        asString(payload.messageID) || asString(payload.messageId),
+        "error",
+      );
       break;
     }
     case 'edit':
@@ -10647,20 +11212,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       asRichString(payload.text) ||
       asRichString(payload.content) ||
       asRichString(properties?.text) ||
-      asRichString(properties?.content);
+      asRichString(properties?.content) ||
+      asRichString(eventPart?.text) ||
+      asRichString(eventPart?.content) ||
+      asRichString(eventPart?.message);
     if (updatedText.trim()) {
       return true;
     }
 
-    const structuredRecord = asRecord(payload.structured);
-    const structuredKind = asString(structuredRecord?.kind).toLowerCase();
     const structuredText =
-      asString(structuredRecord?.message) ||
-      asString(structuredRecord?.text);
-    if (
-      structuredText.trim() &&
-      structuredKind !== "lifecycle"
-    ) {
+      asRichString(eventPart?.reasoning) ||
+      asRichString(eventPart?.thought) ||
+      asRichString(eventPart?.thinking);
+    if (normalizePartType(eventPart?.type) === "reasoning" || structuredText.trim()) {
       return true;
     }
 
@@ -10671,7 +11235,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       normalizeStructuredOutputWithFallback((properties as UnknownRecord | null)?.structured_output) ??
       normalizeStructuredOutputWithFallback(infoRecord?.structuredOutput) ??
       normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured_output) ??
-      normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured);
+      normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured) ??
+      structuredOutputFromStructuredOutputToolPart(eventPart);
 
     if (structuredOutput) {
       return true;
@@ -10886,6 +11451,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const showLogger = state.showLogger;
           if (typeof showLogger === "boolean") {
             logger.setShowLogger(showLogger);
+            dispatch({ type: "SET_SHOW_LOGGER", payload: showLogger });
           }
 
           break;
@@ -11505,7 +12071,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           };
           try {
             terminalErrorReached = false;
-            const rawMessages = asArray(data.messages, isMessage);
+            const centralizedMessages = asArray(data.messages, isMessage);
             const rawHistoryMessages = Array.isArray((data as UnknownRecord).rawMessages)
               ? [...((data as UnknownRecord).rawMessages as unknown[])]
               : [];
@@ -11516,13 +12082,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             if (historySessionId) {
               logger.setSession(historySessionId);
             }
-            const sourceMessages =
-              rawHistoryMessages.length > 0 ? rawHistoryMessages : rawMessages;
+            // Hydration must render from the centralized messages payload only.
+            // The raw event tape is still dispatched separately for the debug
+            // panel and timeline parsing, but it must not be merged back into
+            // the render list here or we reintroduce duplicate / incomplete turns.
+            const sourceMessages = centralizedMessages;
             dispatch({
               type: "SET_RAW_MESSAGES",
               payload: {
                 sessionId: historySessionId || asString(data.sessionId) || "",
-                messages: sourceMessages,
+                messages: rawHistoryMessages,
               },
             });
             if (rawSdkEventPayloads.length > 0) {
@@ -12601,13 +13170,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "userMessageAppended": {
           terminalErrorReached = false;
           const message = data.message as Message;
+          const messageSessionId =
+            firstNonEmptyString(
+              asString(data.sessionId),
+              asString(data.sessionID),
+            ) ?? null;
           const resumedSessionId = firstNonEmptyString(
-            asString(data.sessionId),
-            asString(data.sessionID),
+            messageSessionId ?? undefined,
             getState().currentSessionId ?? undefined,
           );
           if (resumedSessionId) {
             stoppedSessionIds.delete(resumedSessionId);
+          }
+          if (messageSessionId) {
+            dispatch({ type: "SET_SESSION_ID", payload: messageSessionId });
           }
           if (message && typeof message === "object") {
             const pendingInteractive = latestPendingInteractiveEvents(

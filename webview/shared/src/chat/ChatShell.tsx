@@ -2,13 +2,16 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Archive, X } from "lucide-react";
 
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
-import { createMessageHandler } from "./lib/messageHandler";
+import {
+  createMessageHandler,
+  normalizeCentralizedEventPayloads,
+} from "./lib/messageHandler";
 import {
   isAssistantRespondingInCurrentSession,
-  hasActiveAssistantTurnContext,
   hasCompletedAssistantReplyForLatestTurn,
   isProcessingInCurrentSession,
 } from "./lib/sessionProcessing";
+import { hasSystemMessagePatternInText } from "./lib/store";
 import vscode from "./lib/vscode";
 import logger, { getGlobalShowBrowserConsole } from "./lib/logger";
 
@@ -30,7 +33,9 @@ import { CentralizedToastOverlay } from "./ToastOverlay";
 import { StreamingCard } from "./StreamingComponents";
 import {
   AssistantResponseCard,
+  CentralizedDebugPanel,
   EmptyState,
+  FileChangesSection,
   PermissionCard,
   SystemMessage,
   ThinkingBubble,
@@ -38,7 +43,341 @@ import {
 } from "./MessageComponents";
 import { SkillInstallerModal } from "./SkillInstallerModal";
 import { SessionModal } from "./components/SessionModal";
-import type { Message } from "./lib/types";
+import type { CentralizedSessionDiffEvent, Message } from "./lib/types";
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function buildCentralizedRenderMessages(
+  messages: Message[],
+  rawSdkEventPayloads: unknown[],
+): Message[] {
+  // Normalize the centralized tape once so this conversation builder only
+  // consumes one canonical event envelope regardless of whether the original
+  // payload was a direct `properties.part` event or a sync-wrapped event.
+  const normalizedRawSdkEventPayloads = normalizeCentralizedEventPayloads(rawSdkEventPayloads);
+  /**
+   * ============================================================================
+   * STRICT CENTRALIZED DATA ENFORCEMENT
+   * ============================================================================
+   * Per strict architectural requirements: All data that will be rendered in the 
+   * conversation list MUST come from the centralized data (rawSdkEventPayloads), 
+   * nothing else. 
+   * 
+   * We do NOT render optimistic messages from the local `messages` state. 
+   * Even user messages are purely derived from the central tape echoing them back.
+   * If a message is not in `rawSdkEventPayloads`, it does not exist in the UI.
+   * ============================================================================
+   */
+  const merged: Message[] = [];
+  const knownIds = new Set<string>();
+  const assistantIds = new Set<string>();
+  const assistantParentIds = new Set<string>();
+  const sourceMessagesById = new Map<string, Message>();
+
+  for (const message of messages) {
+    const messageId = firstNonEmptyString(
+      message.info?.id,
+      message.id,
+      message.messageId,
+    );
+    if (!messageId || sourceMessagesById.has(messageId)) {
+      continue;
+    }
+    sourceMessagesById.set(messageId, message);
+  }
+
+  // 1. First pass: Collect all assistant messages from the central tape
+  for (const payload of normalizedRawSdkEventPayloads) {
+    const event = asRecord(payload);
+    if (!event || firstNonEmptyString(event.type) !== "message.updated") {
+      continue;
+    }
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    if (firstNonEmptyString(info?.role)?.toLowerCase() !== "assistant") {
+      continue;
+    }
+    const assistantId = firstNonEmptyString(info?.id, info?.messageID, info?.messageId);
+    const parentId = firstNonEmptyString(info?.parentID, info?.parentId);
+    if (assistantId) {
+      assistantIds.add(assistantId);
+      if (parentId) {
+        assistantParentIds.add(parentId);
+      }
+
+      if (!knownIds.has(assistantId)) {
+        knownIds.add(assistantId);
+        const sourceMessage = sourceMessagesById.get(assistantId);
+        if (sourceMessage) {
+          merged.push(sourceMessage);
+          continue;
+        }
+
+        merged.push({
+          id: assistantId,
+          role: "assistant",
+          info: {
+            id: assistantId,
+            role: "assistant",
+            created:
+              typeof asRecord(info?.time)?.created === "number"
+                ? (asRecord(info?.time)?.created as number)
+                : undefined,
+          },
+          created:
+            typeof asRecord(info?.time)?.created === "number"
+              ? (asRecord(info?.time)?.created as number)
+              : undefined,
+        } as Message);
+      }
+    }
+  }
+
+  // 2. Second pass: Collect all user messages from the central tape
+  for (const payload of normalizedRawSdkEventPayloads) {
+    const event = asRecord(payload);
+    if (!event || firstNonEmptyString(event.type) !== "message.part.updated") {
+      continue;
+    }
+    const properties = asRecord(event.properties);
+    const part = asRecord(properties?.part) ?? asRecord(event.part);
+    if (firstNonEmptyString(part?.type)?.toLowerCase() !== "text") {
+      continue;
+    }
+    const messageId = firstNonEmptyString(part?.messageID, part?.messageId);
+    const text = firstNonEmptyString(part?.text, part?.content);
+    const isUserOwnedTextPart = !!messageId && !assistantIds.has(messageId);
+      
+    // Strictly ONLY push if it is a user text part from the tape
+    if (!messageId || !text || !isUserOwnedTextPart || knownIds.has(messageId)) {
+      continue;
+    }
+    
+    knownIds.add(messageId);
+
+    const sourceMessage = sourceMessagesById.get(messageId);
+    if (sourceMessage) {
+      merged.push(sourceMessage);
+      continue;
+    }
+    
+    const eventTime =
+      typeof properties?.time === "number"
+        ? properties.time
+        : typeof asRecord(part?.time)?.start === "number"
+          ? (asRecord(part?.time)?.start as number)
+          : undefined;
+          
+    merged.push({
+      id: messageId,
+      role: "user",
+      content: text,
+      text,
+      info: {
+        id: messageId,
+        role: "user",
+      },
+      created: eventTime,
+    } as Message);
+  }
+
+  // 3. Sort strictly by canonical creation time from the central tape
+  return merged.sort((left, right) => {
+    const leftCreated =
+      typeof left.created === "number"
+        ? left.created
+        : typeof left.info?.created === "number"
+          ? left.info.created
+          : 0;
+    const rightCreated =
+      typeof right.created === "number"
+        ? right.created
+        : typeof right.info?.created === "number"
+          ? right.info.created
+          : 0;
+    if (leftCreated !== rightCreated) {
+      return leftCreated - rightCreated;
+    }
+    return 0;
+  });
+}
+
+type ConversationRenderEntry =
+  | {
+      kind: "message";
+      key: string;
+      message: Message;
+      messageIndex: number;
+      order: number;
+    }
+  | {
+      kind: "session.diff";
+      key: string;
+      diff: CentralizedSessionDiffEvent;
+      order: number;
+    };
+
+function parseCentralizedSessionDiffEvent(
+  payload: unknown,
+  rawIndex: number,
+): CentralizedSessionDiffEvent | null {
+  const event = asRecord(payload);
+  if (!event || firstNonEmptyString(event.type) !== "session.diff") {
+    return null;
+  }
+
+  const properties = asRecord(event.properties);
+  const rawDiffs = Array.isArray(properties?.diff)
+    ? properties.diff
+    : Array.isArray(event.diff)
+      ? event.diff
+      : [];
+  const files = rawDiffs
+    .map((item) => asRecord(item))
+    .filter((item): item is Record<string, unknown> => !!item)
+    .map((item) => ({
+      file: firstNonEmptyString(item.file) ?? "",
+      patch: firstNonEmptyString(item.patch),
+      additions:
+        typeof item.additions === "number"
+          ? item.additions
+          : typeof item.additions === "string"
+            ? Number(item.additions)
+            : undefined,
+      deletions:
+        typeof item.deletions === "number"
+          ? item.deletions
+          : typeof item.deletions === "string"
+            ? Number(item.deletions)
+            : undefined,
+      status: firstNonEmptyString(item.status),
+    }))
+    .filter((item) => item.file.length > 0);
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  const eventTime =
+    typeof properties?.time === "number"
+      ? properties.time
+      : typeof event.time === "number"
+        ? event.time
+        : undefined;
+
+  return {
+    id: firstNonEmptyString(event.id),
+    sessionId: firstNonEmptyString(properties?.sessionID, event.sessionId),
+    createdAt: eventTime,
+    files,
+  };
+}
+
+function buildCentralizedConversationEntries(
+  messages: Message[],
+  rawSdkEventPayloads: unknown[],
+): ConversationRenderEntry[] {
+  const normalizedRawSdkEventPayloads = normalizeCentralizedEventPayloads(rawSdkEventPayloads);
+  const renderMessages = buildCentralizedRenderMessages(messages, normalizedRawSdkEventPayloads);
+  const messageById = new Map<string, Message>();
+  const messageIndexById = new Map<string, number>();
+  const emittedMessageIds = new Set<string>();
+  const entries: ConversationRenderEntry[] = [];
+
+  for (let index = 0; index < renderMessages.length; index += 1) {
+    const message = renderMessages[index];
+    const messageId = firstNonEmptyString(
+      message.info?.id,
+      message.id,
+      message.messageId,
+    );
+    if (messageId && !messageById.has(messageId)) {
+      messageById.set(messageId, message);
+      messageIndexById.set(messageId, index);
+    }
+  }
+
+  for (let rawIndex = 0; rawIndex < normalizedRawSdkEventPayloads.length; rawIndex += 1) {
+    const event = asRecord(normalizedRawSdkEventPayloads[rawIndex]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const part = asRecord(properties?.part) ?? asRecord(event.part);
+    const diff = parseCentralizedSessionDiffEvent(event, rawIndex);
+    if (diff) {
+      entries.push({
+        kind: "session.diff",
+        key: `session.diff:${diff.id ?? rawIndex}`,
+        diff,
+        order: rawIndex,
+      });
+      continue;
+    }
+
+    const messageId = firstNonEmptyString(
+      info?.id,
+      info?.messageID,
+      info?.messageId,
+      part?.messageID,
+      part?.messageId,
+    );
+    if (!messageId || emittedMessageIds.has(messageId)) {
+      continue;
+    }
+
+    const message = messageById.get(messageId);
+    if (!message) {
+      continue;
+    }
+
+    emittedMessageIds.add(messageId);
+    entries.push({
+      kind: "message",
+      key: `message:${messageId}`,
+      message,
+      messageIndex: messageIndexById.get(messageId) ?? entries.length,
+      order: rawIndex,
+    });
+  }
+
+  for (let index = 0; index < renderMessages.length; index += 1) {
+    const message = renderMessages[index];
+    const messageId = firstNonEmptyString(
+      message.info?.id,
+      message.id,
+      message.messageId,
+    );
+    if (!messageId || emittedMessageIds.has(messageId)) {
+      continue;
+    }
+    emittedMessageIds.add(messageId);
+    entries.push({
+      kind: "message",
+      key: `message:${messageId}`,
+      message,
+      messageIndex: index,
+      order: Number.MAX_SAFE_INTEGER + index,
+    });
+  }
+
+  return entries;
+}
 
 type StreamViewportState = {
   isFollowing: boolean;
@@ -436,12 +775,13 @@ function ChatContent() {
     state.currentSessionId,
     state.processingSessionIds,
   );
-  const hasCompletedAssistantReply =
-    hasCompletedAssistantReplyForLatestTurn(state.messages);
-  const hasActiveTurnContext = hasActiveAssistantTurnContext(
-    state.messages,
-    Boolean(state.streaming?.isActive),
-    state.assistantTurnPending,
+  const centralizedSessionRawSdkEventPayloads =
+    state.currentSessionId &&
+    Array.isArray(state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId])
+      ? state.rawSdkEventPayloadsBySessionId[state.currentSessionId]
+      : [];
+  const hasCompletedAssistantReply = hasCompletedAssistantReplyForLatestTurn(
+    centralizedSessionRawSdkEventPayloads,
   );
   const isAiStillResponding = isAssistantRespondingInCurrentSession(
     state.isProcessing,
@@ -449,10 +789,7 @@ function ChatContent() {
     state.processingSessionIds,
     Boolean(state.streaming?.isActive),
     state.assistantTurnPending,
-    state.streaming?.hasAssistantFinishSignal,
-    state.streaming?.hasTerminalStepSignal,
     hasCompletedAssistantReply,
-    hasActiveTurnContext,
   );
 
   // Check if we're switching to a different session (loading conversation)
@@ -525,7 +862,6 @@ function ChatContent() {
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
     isAiStillResponding && // Keep loading affordance visible while the turn is active
-    !hasCompletedAssistantReply &&
     !state.isCompacting;
 
   // Enforce minimum display duration for loading state
@@ -544,7 +880,7 @@ function ChatContent() {
   // Extend the loading state display time if content arrived too quickly
   const showExtendedLoading =
     showAiResponseLoading || // Normal loading state
-    (loadingStartTimeRef.current && loadingElapsedTime < LOADING_MIN_DISPLAY_MS && !hasCompletedAssistantReply); // Extended for minimum duration
+    (loadingStartTimeRef.current && loadingElapsedTime < LOADING_MIN_DISPLAY_MS && isAiStillResponding); // Extended for minimum duration
 
   useEffect(() => {
     if (!state.streaming && state.interactiveEvents.length === 0 && !showExtendedLoading) {
@@ -599,7 +935,6 @@ function ChatContent() {
       currentSessionId: state.currentSessionId,
       processingSessionIds: state.processingSessionIds,
       isAiResponding,
-      hasCompletedAssistantReply,
       isCompacting: state.isCompacting,
       hasRenderableStreamingContent,
       hasAssistantText,
@@ -632,10 +967,40 @@ function ChatContent() {
   const isCompressed = hasCompactedSegment && state.compactedMessagesCollapsed;
   const hiddenMessageCount = isCompressed ? compactionDividerIndex : 0;
   const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
-  const visibleMessages = (() => {
-    const sliced = state.messages.slice(visibleStartIndex);
-    return sliced;
+  const renderMessages = buildCentralizedRenderMessages(
+    state.messages,
+    centralizedSessionRawSdkEventPayloads,
+  );
+  const hasCentralizedSessionDiffEntries = centralizedSessionRawSdkEventPayloads.some(
+    (payload) => {
+      const event = asRecord(payload);
+      return event && firstNonEmptyString(event.type) === "session.diff";
+    },
+  );
+  const conversationEntries = buildCentralizedConversationEntries(
+    state.messages,
+    centralizedSessionRawSdkEventPayloads,
+  );
+  const visibleConversationEntries = (() => {
+    let messageCount = 0;
+    const visible: ConversationRenderEntry[] = [];
+
+    for (const entry of conversationEntries) {
+      if (!isCompressed || messageCount >= visibleStartIndex) {
+        visible.push(entry);
+      }
+      if (entry.kind === "message") {
+        messageCount += 1;
+      }
+    }
+
+    return visible;
   })();
+  const visibleMessages = visibleConversationEntries
+    .filter((entry): entry is Extract<ConversationRenderEntry, { kind: "message" }> =>
+      entry.kind === "message",
+    )
+    .map((entry) => entry.message);
   const hasCompatibilityWarnings = state.compatibilityWarnings.length > 0;
   const errorToasts = state.errorMessages;
 
@@ -757,7 +1122,7 @@ function ChatContent() {
         {/* Message list */}
         <div
           ref={messagesScrollRef}
-          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden py-4"
+          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden py-2.5"
           style={{ background: "var(--oc-chat-bg)" }}
         >
           {isSwitchingSession ? (
@@ -768,8 +1133,8 @@ function ChatContent() {
             <>
               {hasCompatibilityWarnings &&
               dismissedCompatibilityWarningSignature !== compatibilityWarningSignature ? (
-                <div className="mb-3 px-4">
-                  <div className="rounded-xl border oc-warning-border oc-warning-bg p-3.5">
+                <div className="mb-2.5 px-4">
+                  <div className="rounded-xl border oc-warning-border oc-warning-bg p-3">
                     <div className="mb-2 flex items-start justify-between gap-3">
                       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-yellow">
                         OpenCode compatibility warning
@@ -862,74 +1227,80 @@ function ChatContent() {
                 />
               ) : null}
 
-          {visibleMessages.map((msg: Message, visibleIdx: number) => {
-            const idx = visibleStartIndex + visibleIdx;
-            const role = msg.role ?? msg.info?.role ?? "user";
-            const key = getStableMessageKey(msg, idx, role);
-            const messageId = msg.info?.id ?? msg.id ?? msg.messageId ?? null;
-            const streamingMessageId = state.streaming?.messageId ?? null;
-            const isLiveStreamingAssistantTurn =
-              role === "assistant" &&
-              !!messageId &&
-              !!state.streaming?.isActive &&
-              !!streamingMessageId &&
-              streamingMessageId === messageId;
+          <CentralizedDebugPanel />
 
-            const prevIdx = idx - 1;
-            const prevMsg =
-              prevIdx >= visibleStartIndex
-                ? state.messages[prevIdx]
-                : undefined;
-            const isContiguous =
-              role === "assistant" &&
-              prevMsg?.role === "assistant" &&
-              (prevMsg.info?.agent === msg.info?.agent ||
-                (!prevMsg.info?.agent && !msg.info?.agent));
+          {(() => {
+            let messageCountSeen = 0;
+            return visibleConversationEntries.map((entry) => {
+              const dividerHere = !isCompressed && compactionDividerIndex === messageCountSeen;
+              if (entry.kind === "message") {
+                const msg = entry.message;
+                const idx = entry.messageIndex;
+                const role = msg.role ?? msg.info?.role ?? "user";
+                const messageId = msg.info?.id ?? msg.id ?? msg.messageId ?? null;
+                const prevIdx = idx - 1;
+                const prevMsg =
+                  prevIdx >= 0 ? renderMessages[prevIdx] : undefined;
+                const isContiguous =
+                  role === "assistant" &&
+                  prevMsg?.role === "assistant" &&
+                  (prevMsg.info?.agent === msg.info?.agent ||
+                    (!prevMsg.info?.agent && !msg.info?.agent));
 
-            let messageNode: JSX.Element | null;
-            if (role === "user") {
-              messageNode = <UserMessage message={msg} />;
-            } else if (role === "system") {
-              const systemAgentId =
-                msg.info?.agent ?? state.streaming?.agent ?? state.selectedAgent;
+                let messageNode: JSX.Element | null;
+                if (role === "user") {
+                  messageNode = <UserMessage message={msg} />;
+                } else if (role === "system") {
+                  const systemAgentId =
+                    msg.info?.agent ?? state.streaming?.agent ?? state.selectedAgent;
 
-              messageNode = (
-                <SystemMessage
-                  content={msg.content ?? msg.text ?? ""}
-                  accentColor={resolveAgentColor(systemAgentId)}
-                />
-              );
-            } else if ((msg as Record<string, unknown>).type === "permission") {
-              messageNode = <PermissionCard perm={msg} />;
-            } else {
-              if (isLiveStreamingAssistantTurn) {
-                messageNode = null;
-              } else {
-                messageNode = (
+                  messageNode = (
+                    <SystemMessage
+                      content={msg.content ?? msg.text ?? ""}
+                      accentColor={resolveAgentColor(systemAgentId)}
+                    />
+                  );
+                } else if ((msg as Record<string, unknown>).type === "permission") {
+                  messageNode = <PermissionCard perm={msg} />;
+                } else {
+                  messageNode = (
                   <AssistantResponseCard
                     message={msg}
                     isContiguous={isContiguous}
                     interactiveEvents={state.interactiveEvents}
                     messages={state.messages}
                     currentSessionId={state.currentSessionId}
+                    hideFileChangesSection={hasCentralizedSessionDiffEntries}
                     subagentsByParentMessageId={state.subagentsByParentMessageId}
                     subagentDetailsById={state.subagentDetailsById}
                     availableAgents={state.availableAgents}
-                    todoItems={state.todoItems}
-                  />
+                      todoItems={state.todoItems}
+                    />
+                  );
+                }
+
+                messageCountSeen += 1;
+
+                return (
+                  <Fragment key={entry.key}>
+                    {dividerHere ? <CompactionDivider at={state.lastCompactedAt} /> : null}
+                    {messageNode}
+                  </Fragment>
                 );
               }
-            }
 
-            return (
-              <Fragment key={key}>
-                {!isCompressed && compactionDividerIndex === idx ? (
-                  <CompactionDivider at={state.lastCompactedAt} />
-                ) : null}
-                {messageNode}
-              </Fragment>
-            );
-          })}
+              return (
+                <Fragment key={entry.key}>
+                  {dividerHere ? <CompactionDivider at={state.lastCompactedAt} /> : null}
+                  <FileChangesSection
+                    structuredFileChanges={[]}
+                    centralizedDiffEvent={entry.diff}
+                    sessionId={state.currentSessionId}
+                  />
+                </Fragment>
+              );
+            });
+          })()}
 
           {!isCompressed && compactionDividerIndex === state.messages.length ? (
             <CompactionDivider at={state.lastCompactedAt} />

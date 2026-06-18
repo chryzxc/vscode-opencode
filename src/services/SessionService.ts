@@ -632,25 +632,124 @@ function getMessageFallbackSignature(message: unknown): string {
   return `fallback:${role}|${created}|${body}`;
 }
 
-function getAssistantContentAliasSignature(message: unknown): string | undefined {
+function getAssistantContentAliasSignatures(message: unknown): string[] {
   if (!message || typeof message !== "object") {
-    return undefined;
+    return [];
   }
 
   const role = getMessageRoleForSignature(message).toLowerCase();
   if (role !== "assistant") {
-    return undefined;
+    return [];
   }
 
   const body = normalizeSignatureText(getMessageTextForSignature(message));
   if (!body) {
-    return undefined;
+    return [];
   }
 
   const created = getMessageCreatedTime(message);
   const createdPart = created > 0 ? String(Math.floor(created / 15_000)) : "unknown";
   const sessionId = getMessageSessionIdForSignature(message) || "unknown";
-  return `assistant-activity:${sessionId}|${createdPart}|${body.slice(0, 500)}`;
+  const truncated = body.slice(0, 500);
+  const aliases: string[] = [];
+
+  aliases.push(`assistant-activity:any|${createdPart}|${truncated}`);
+  if (sessionId !== "unknown") {
+    aliases.push(`assistant-activity:${sessionId}|${createdPart}|${truncated}`);
+  }
+
+  return aliases;
+}
+
+/**
+ * Narrows a raw message object to the centralized SDK UserMessage shape.
+ *
+ * The server wraps SDK messages as `{ info: UserMessage | AssistantMessage, parts: [...] }`.
+ * Locally-appended optimistic messages are plain `{ role: "user", content: string, ... }`
+ * with no `info` envelope.
+ */
+function extractUserMessageRecord(
+  message: unknown,
+): (UserMessage & Record<string, unknown>) | (Record<string, unknown> & { role: "user" }) | undefined {
+  if (!message || typeof message !== "object") {
+    return undefined;
+  }
+
+  const rec = message as Record<string, unknown>;
+
+  if (rec.info && typeof rec.info === "object") {
+    const info = rec.info as SdkMessage & Record<string, unknown>;
+    if (info.role === "user") {
+      return info as UserMessage & Record<string, unknown>;
+    }
+    return undefined;
+  }
+
+  if (rec.role === "user") {
+    return rec as Record<string, unknown> & { role: "user" };
+  }
+
+  return undefined;
+}
+
+/**
+ * Extracts the canonical text body of a user message.
+ */
+function getUserMessageBody(userRec: Record<string, unknown>): string {
+  const candidates: unknown[] = [
+    userRec["content"],
+    userRec["text"],
+    ...(Array.isArray(userRec["parts"])
+      ? (userRec["parts"] as unknown[]).flatMap((part) => {
+          if (!part || typeof part !== "object") return [];
+          const p = part as Record<string, unknown>;
+          if (p["type"] !== "text") return [];
+          return [p["text"] ?? p["content"]];
+        })
+      : []),
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return "";
+}
+
+/**
+ * Returns content-only alias signatures for user-role messages.
+ */
+function getUserMessageContentAliasSignatures(message: unknown): string[] {
+  const userRec = extractUserMessageRecord(message);
+  if (!userRec) {
+    return [];
+  }
+
+  const rawBody = getUserMessageBody(userRec);
+  const body = normalizeSignatureText(rawBody);
+  if (!body) {
+    return [];
+  }
+
+  const truncated = body.slice(0, 500);
+  const aliases: string[] = [];
+
+  aliases.push(`user-content:any|${truncated}`);
+
+  const sessionId: string =
+    (typeof (userRec as Record<string, unknown>)["sessionID"] === "string"
+      ? ((userRec as Record<string, unknown>)["sessionID"] as string)
+      : "") ||
+    (typeof (userRec as Record<string, unknown>)["sessionId"] === "string"
+      ? ((userRec as Record<string, unknown>)["sessionId"] as string)
+      : "");
+      
+  if (sessionId) {
+    aliases.push(`user-content:${sessionId}|${truncated}`);
+  }
+
+  return aliases;
 }
 
 function getMessageSignaturesForMerge(message: unknown): string[] {
@@ -663,9 +762,12 @@ function getMessageSignaturesForMerge(message: unknown): string[] {
     signatures.add(fallback);
   }
 
-  const assistantAlias = getAssistantContentAliasSignature(message);
-  if (assistantAlias) {
-    signatures.add(assistantAlias);
+  for (const alias of getAssistantContentAliasSignatures(message)) {
+    signatures.add(alias);
+  }
+
+  for (const alias of getUserMessageContentAliasSignatures(message)) {
+    signatures.add(alias);
   }
 
   return Array.from(signatures.values());
@@ -1950,6 +2052,29 @@ export class SessionService {
     this.rawSdkEventPayloadCache.set(sessionId, [...raw]);
     return raw;
   }
+
+  /**
+   * Convenience method that loads both raw messages and raw SDK event payloads
+   * for a session in parallel.
+   *
+   * Called from ChatViewProvider and SessionHandler when rehydrating a session
+   * into the webview chat UI (chatHistory message).
+   *
+   * @param sessionId - The ID of the session to load data for
+   * @returns Object containing rawMessages and rawSdkEventPayloads arrays
+   */
+  async loadCentralizedSessionData(sessionId: string): Promise<{
+    rawMessages: unknown[];
+    rawSdkEventPayloads: unknown[];
+  }> {
+    // Load both data sources in parallel for efficiency
+    const [rawMessages, rawSdkEventPayloads] = await Promise.all([
+      this.loadSessionRawMessages(sessionId),
+      this.loadSessionRawSdkEventPayloads(sessionId),
+    ]);
+    return { rawMessages, rawSdkEventPayloads };
+  }
+
 
   /**
    * Appends a new message to the local message history for a session.

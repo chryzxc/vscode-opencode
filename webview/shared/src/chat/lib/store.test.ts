@@ -208,6 +208,38 @@ describe('raw event capture', () => {
       [rawEvent],
     );
   });
+
+  it('deduplicates identical SDK payloads by session id', () => {
+    const rawEvent = {
+      id: 'evt_123',
+      type: 'message.part.updated',
+      sessionId: 'ses_123',
+      payload: {
+        nested: true,
+      },
+    };
+
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'ses_123',
+      rawSdkEventPayloadsBySessionId: {
+        ses_123: [rawEvent],
+      },
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'APPEND_RAW_SDK_EVENT_PAYLOAD',
+      payload: {
+        sessionId: 'ses_123',
+        event: rawEvent,
+      },
+    });
+
+    assert.deepStrictEqual(
+      nextState.rawSdkEventPayloadsBySessionId?.['ses_123'],
+      [rawEvent],
+    );
+  });
 });
 
 describe('hasSystemMessagePatternInText', () => {
@@ -463,6 +495,37 @@ describe("appReducer render-stability guards", () => {
     assert.deepStrictEqual(
       next.streamingBySessionId?.["session-a"]?.rawSdkEventPayloads,
       payloads,
+    );
+  });
+
+  it("preserves rawSdkEventPayloads order when canonicalizing duplicate assistant turns", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        id: "msg-1",
+        rawSdkEventPayloads: [
+          { id: "evt-1", type: "message.part.updated", properties: { time: 1 } },
+        ],
+        parts: [{ type: "text", text: "first" }],
+      } as Message,
+      {
+        role: "assistant",
+        id: "msg-1",
+        rawSdkEventPayloads: [
+          { id: "evt-2", type: "message.part.updated", properties: { time: 2 } },
+        ],
+        parts: [{ type: "text", text: "first again" }],
+      } as Message,
+    ];
+
+    const deduped = dedupeMirrorMessagesForCanonical(messages);
+
+    assert.strictEqual(deduped.length, 1);
+    assert.deepStrictEqual(
+      (deduped[0]?.rawSdkEventPayloads ?? []).map(
+        (event) => (event as Record<string, unknown>).id,
+      ),
+      ["evt-1", "evt-2"],
     );
   });
 

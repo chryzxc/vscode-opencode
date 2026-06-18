@@ -1297,7 +1297,9 @@ export class ChatViewProvider
 
       // Step 1: Load and process messages for the new session
       const rawMessages = await this.sessionService.getMessages(sessionId);
-      const rawSessionPayloads = await this.loadSessionDebugPayloads(sessionId);
+      const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
+        sessionId,
+      );
 
       this.logger.debug('[handleLoadSession] Fetched raw messages', {
         sessionId,
@@ -2215,8 +2217,14 @@ export class ChatViewProvider
     const part = (properties?.part as Record<string, unknown>) || {};
     const partType = String(part?.type || "").toLowerCase();
     const toolName = String(part?.tool || "").toLowerCase();
-    const structured = (enrichedEvent?.structured as Record<string, unknown>) || {};
-    const fileChanges = Array.isArray(structured?.fileChanges) ? structured.fileChanges : [];
+    const structuredOutput =
+      (enrichedEvent?.structuredOutput as Record<string, unknown>) ||
+      (eventRec?.structuredOutput as Record<string, unknown>) ||
+      (properties?.structuredOutput as Record<string, unknown>) ||
+      {};
+    const fileChanges = Array.isArray(structuredOutput?.fileChanges)
+      ? structuredOutput.fileChanges
+      : [];
     const editFileChanges = fileChanges.filter((change: any) =>
       change?.kind === "file_edit" || change?.kind === "file_create" || change?.kind === "file_delete"
     );
@@ -2618,7 +2626,7 @@ export class ChatViewProvider
               const rawMessages = await this.sessionService.getMessages(
                 currentSession.id,
               );
-              const rawSessionPayloads = await this.loadSessionDebugPayloads(
+              const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
                 currentSession.id,
               );
               const rawHistoryMessages = rawSessionPayloads.rawMessages;
@@ -3431,7 +3439,7 @@ export class ChatViewProvider
             const rawMessages = await this.sessionService.getMessages(
               retrySessionId,
             );
-            const rawSessionPayloads = await this.loadSessionDebugPayloads(
+            const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
               retrySessionId,
             );
             const messages = await this.processHistoryMessages(
@@ -3597,8 +3605,9 @@ export class ChatViewProvider
       // Log stream events for debugging
       const eventRec = event as Record<string, unknown>;
       const eventType = eventRec?.type || "unknown";
-      const structuredRec = eventRec?.structured as Record<string, unknown> | undefined;
-      const eventKind = structuredRec?.kind || "unknown";
+      const properties = (eventRec?.properties as Record<string, unknown> | undefined) || {};
+      const part = (properties?.part as Record<string, unknown> | undefined) || {};
+      const eventKind = (part?.type as string | undefined) || "unknown";
       const streamEventSessionId = this.extractEventSessionId(event);
 
       const isTerminalLifecycleEvent =
@@ -3790,22 +3799,26 @@ export class ChatViewProvider
         });
       }
       this.logStreamEventDiagnostics(event, enrichedEvent);
+      const partType = typeof part?.type === "string" ? part.type.toLowerCase() : "";
 
       // Log stream event for debugging response types (with error handling)
       try {
-        const structured = enrichedEvent?.structured || {};
         const responseContext: Record<string, unknown> = {
           eventType: event.type || "unknown",
-          kind: structured?.kind || "unknown",
+          kind: typeof part?.type === "string" ? part.type : "unknown",
         };
 
-        if (structured?.text) {
-          responseContext.textLength = structured.text.length;
-          responseContext.textPreview = structured.text.substring(0, 100);
-        }
+        const responseText =
+          (typeof part?.reasoning === "string" && part.reasoning) ||
+          (typeof part?.thought === "string" && part.thought) ||
+          (typeof part?.thinking === "string" && part.thinking) ||
+          (typeof part?.text === "string" && part.text) ||
+          (typeof part?.content === "string" && part.content) ||
+          undefined;
 
-        if (structured?.responseType) {
-          responseContext.responseType = structured.responseType;
+        if (responseText) {
+          responseContext.textLength = responseText.length;
+          responseContext.textPreview = responseText.substring(0, 100);
         }
 
         if (enrichedEvent?.structuredOutput) {
@@ -3816,7 +3829,7 @@ export class ChatViewProvider
 
         this.logger.aiStreamEvent(
           "stream", // sessionId - using placeholder since stream events don't have a sessionId
-          structured?.kind || "unknown", // eventType
+          partType || "unknown", // eventType
           responseContext, // context
         );
       } catch (error) {
@@ -3837,8 +3850,6 @@ export class ChatViewProvider
         return;
       }
 
-      const properties = (eventRec?.properties as Record<string, unknown> | undefined) || {};
-      const part = (properties?.part as Record<string, unknown> | undefined) || {};
       const info = (properties?.info as Record<string, unknown> | undefined) || {};
       const preRenderPreview =
         (typeof part?.delta === "string" && part.delta) ||
@@ -3910,21 +3921,21 @@ export class ChatViewProvider
       if (this.shouldVerboseStreamDebug()) {
         this.logger.debug("streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
-          kind: (enrichedEvent as any)?.structured?.kind || "unknown",
+          kind: partType || "unknown",
           finalizedForInteractive: hasBlockingInteractive,
         });
       }
 
       // If this is a step-finish or tool completion for an edit, calculate diff stats asynchronously
       // Fire-and-forget follow-up message so we don't block the stream rendering
-      if (enrichedEvent?.structured?.kind === "progress") {
+      if (partType === "tool" || partType === "step-finish") {
         const props = (event.properties || {}) as any;
         const part = props.part || {};
-        const partType = (part.type || "").toLowerCase();
+        const currentPartType = (part.type || "").toLowerCase();
 
         // Check if it's a tool that modified a file or a step-finish for an edit
-        const isToolDone = partType === "tool" && part.state?.status === "done";
-        const isStepFinish = partType === "step-finish";
+        const isToolDone = currentPartType === "tool" && part.state?.status === "done";
+        const isStepFinish = currentPartType === "step-finish";
 
         if (isToolDone || isStepFinish) {
           const toolName = (part.tool || "").toLowerCase();
@@ -3944,7 +3955,6 @@ export class ChatViewProvider
             const callID =
               part.callId ||
               part.callID ||
-              enrichedEvent?.structured?.callID ||
               enrichedEvent.id;
             if (callID) {
               const toolNameRaw =
@@ -4083,29 +4093,6 @@ export class ChatViewProvider
       // Return original messages as fallback
       return messages;
     }
-  }
-
-  /**
-   * Loads the raw session payloads that drive the centralized debug tape.
-   *
-   * NOTE: TO BE REMOVED when the conversation UI no longer needs separate
-   * extension-host hydration of raw event payloads.
-   */
-  private async loadSessionDebugPayloads(sessionId: string): Promise<{
-    rawMessages: unknown[];
-    rawSdkEventPayloads: unknown[];
-  }> {
-    const [rawMessages, rawSdkEventPayloads] = await Promise.all([
-      this.sessionService.loadSessionRawMessages(sessionId),
-      this.sessionService.loadSessionRawSdkEventPayloads(sessionId),
-    ]);
-
-    return {
-      rawMessages: Array.isArray(rawMessages) ? rawMessages : [],
-      rawSdkEventPayloads: Array.isArray(rawSdkEventPayloads)
-        ? rawSdkEventPayloads
-        : [],
-    };
   }
 
   private isAssistantHistoryMessage(message: any): boolean {
@@ -4446,7 +4433,7 @@ export class ChatViewProvider
             baselineAssistantMarker,
           )
         ) {
-          const rawSessionPayloads = await this.loadSessionDebugPayloads(
+          const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
             sessionId,
           );
           const processedMessages = await this.processHistoryMessages(
@@ -5312,75 +5299,7 @@ export class ChatViewProvider
     }
 
     const properties = this.asRecord(event.properties) || {};
-    const isMessagePartEvent =
-      typeof event.type === "string" && event.type.startsWith("message.part.");
-    const part =
-      this.asRecord(properties.part) ||
-      this.asRecord(event.part) ||
-      (isMessagePartEvent ? this.asRecord(properties) : null);
     const enriched: Record<string, unknown> = { ...event };
-    let kind:
-      | "thinking"
-      | "progress"
-      | "message"
-      | "lifecycle"
-      | "error"
-      | "other" = "other";
-    let text: string | undefined;
-
-    if (isMessagePartEvent && part) {
-      const rawPartType =
-        this.firstNonEmptyString(part.type)?.toLowerCase() || "";
-      const partType =
-        rawPartType === "thinking" || rawPartType === "thought"
-          ? "reasoning"
-          : rawPartType;
-      if (
-        partType === "reasoning" ||
-        typeof part.reasoning !== "undefined" ||
-        typeof part.thought !== "undefined" ||
-        typeof part.thinking !== "undefined"
-      ) {
-        kind = "thinking";
-        text = this.firstNonEmptyString(
-          properties.delta,
-          part.reasoning,
-          part.thought,
-          part.thinking,
-          properties.reasoning,
-          properties.thought,
-          properties.thinking,
-          part.delta,
-          part.text,
-        );
-      } else if (
-        partType === "tool" ||
-        partType === "step-start" ||
-        partType === "step-finish" ||
-        partType === "patch"
-      ) {
-        const toolName = (part.tool || "").toString().toLowerCase();
-        if (
-          toolName.includes("structuredoutput") ||
-          toolName.includes("structured_output")
-        ) {
-          kind = "other";
-        } else {
-          kind = "progress";
-        }
-      } else if (partType === "text" || !partType) {
-        kind = "message";
-        text = this.firstNonEmptyString(
-          properties.delta,
-          part.text,
-          part.content,
-        );
-      }
-    } else if (event.type === "message.updated") {
-      kind = "lifecycle";
-    } else if (event.type === "session.error" || event.type === "error") {
-      kind = "error";
-    }
 
     const structuredOutput = this.extractStructuredOutput({
       ...properties,
@@ -5389,17 +5308,7 @@ export class ChatViewProvider
     if (structuredOutput) {
       enriched.structuredOutput = structuredOutput;
       enriched.hasStructuredOutput = true;
-      if (kind === "other") {
-        kind = "message";
-      }
     }
-
-    enriched.structured = {
-      kind,
-      text,
-      eventType: event.type,
-      responseType: structuredOutput?.responseType,
-    };
 
     return enriched;
   }
@@ -6667,6 +6576,7 @@ export class ChatViewProvider
           await this.sessionService.appendMessage(session.id, systemMessage);
           this.view?.webview.postMessage({
             type: "userMessageAppended",
+            sessionId: session.id,
             message: systemMessage,
           });
         }
@@ -6690,6 +6600,7 @@ export class ChatViewProvider
 
         this.view?.webview.postMessage({
           type: "userMessageAppended",
+          sessionId: session.id,
           message: userMessage,
         });
 
