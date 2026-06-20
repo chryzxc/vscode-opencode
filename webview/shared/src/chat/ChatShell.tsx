@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Archive, X } from "lucide-react";
 
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
@@ -8,7 +8,6 @@ import {
 } from "./lib/messageHandler";
 import {
   isAssistantRespondingInCurrentSession,
-  hasCompletedAssistantReplyForLatestTurn,
   isProcessingInCurrentSession,
 } from "./lib/sessionProcessing";
 import { hasSystemMessagePatternInText } from "./lib/store";
@@ -424,7 +423,7 @@ function CompactionDivider({
   const actionLabel = collapsed ? "Show history" : "Hide history";
 
   return (
-    <div className="oc-compaction-divider-wrap -mx-4 py-2">
+    <div className="oc-compaction-divider-wrap -mx-6 py-2 sm:-mx-8">
       <div className="oc-compaction-divider">
         <span className="oc-compaction-divider-line" />
         {isInteractive ? (
@@ -780,16 +779,16 @@ function ChatContent() {
     Array.isArray(state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId])
       ? state.rawSdkEventPayloadsBySessionId[state.currentSessionId]
       : [];
-  const hasCompletedAssistantReply = hasCompletedAssistantReplyForLatestTurn(
-    centralizedSessionRawSdkEventPayloads,
-  );
+  const hasAnyRenderableConversation =
+    state.messages.length > 0 ||
+    Boolean(state.streaming?.isActive);
   const isAiStillResponding = isAssistantRespondingInCurrentSession(
     state.isProcessing,
     state.currentSessionId,
     state.processingSessionIds,
     Boolean(state.streaming?.isActive),
     state.assistantTurnPending,
-    hasCompletedAssistantReply,
+    hasAnyRenderableConversation,
   );
 
   // Check if we're switching to a different session (loading conversation)
@@ -797,13 +796,6 @@ function ChatContent() {
   // Note: We don't check if loadingSessionId === currentSessionId because during
   // the transition, currentSessionId hasn't been updated yet (timing issue)
   const isSwitchingSession = false;
-
-  const hasCachedCurrentSessionMessages = Boolean(
-    state.currentSessionId &&
-      (state.messagesBySessionId?.[state.currentSessionId]?.length ?? 0) > 0,
-  );
-  const hasAnyRenderableConversation =
-    state.messages.length > 0 || hasCachedCurrentSessionMessages;
   const isConnecting = false;
 
   const compatibilityWarningSignature = state.compatibilityWarnings
@@ -902,21 +894,23 @@ function ChatContent() {
       showAiResponseLoading,
       showExtendedLoading,
     });
-    console.info("[TRACE][RENDER][CHAT_SHELL]", {
-      sessionId: state.currentSessionId,
-      streamingActive: !!state.streaming?.isActive,
-      streamingMessageId: state.streaming?.messageId ?? null,
-      streamingContentLength: state.streaming?.content?.length ?? 0,
-      streamingReasoningLength: state.streaming?.reasoning?.length ?? 0,
-      streamingSteps: state.streaming?.steps?.length ?? 0,
-      streamingProgressEvents: state.streaming?.progressEvents?.length ?? 0,
-      streamingInteractiveEvents: state.streaming?.interactiveEvents?.length ?? 0,
-      interactiveEvents: state.interactiveEvents.length,
-      hasRenderableStreamingContent,
-      hasVisibleStreamingPayload,
-      showAiResponseLoading,
-      showExtendedLoading,
-    });
+    if (process.env.NODE_ENV === 'development') {
+      console.info("[TRACE][RENDER][CHAT_SHELL]", {
+        sessionId: state.currentSessionId,
+        streamingActive: !!state.streaming?.isActive,
+        streamingMessageId: state.streaming?.messageId ?? null,
+        streamingContentLength: state.streaming?.content?.length ?? 0,
+        streamingReasoningLength: state.streaming?.reasoning?.length ?? 0,
+        streamingSteps: state.streaming?.steps?.length ?? 0,
+        streamingProgressEvents: state.streaming?.progressEvents?.length ?? 0,
+        streamingInteractiveEvents: state.streaming?.interactiveEvents?.length ?? 0,
+        interactiveEvents: state.interactiveEvents.length,
+        hasRenderableStreamingContent,
+        hasVisibleStreamingPayload,
+        showAiResponseLoading,
+        showExtendedLoading,
+      });
+    }
   }, [
     state.currentSessionId,
     state.streaming,
@@ -928,7 +922,7 @@ function ChatContent() {
   ]);
 
   // DEBUG: Log loading state calculation
-  if (state.isProcessing || state.streaming?.isActive || showExtendedLoading) {
+  if (process.env.NODE_ENV === 'development' && (state.isProcessing || state.streaming?.isActive || showExtendedLoading)) {
     logger.info('[LOADING][RENDER] Loading state calculation', {
       isLoadingSession: state.isLoadingSession,
       isProcessing: state.isProcessing,
@@ -967,21 +961,31 @@ function ChatContent() {
   const isCompressed = hasCompactedSegment && state.compactedMessagesCollapsed;
   const hiddenMessageCount = isCompressed ? compactionDividerIndex : 0;
   const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
-  const renderMessages = buildCentralizedRenderMessages(
-    state.messages,
-    centralizedSessionRawSdkEventPayloads,
+  const renderMessages = useMemo(
+    () =>
+      buildCentralizedRenderMessages(
+        state.messages,
+        centralizedSessionRawSdkEventPayloads,
+      ),
+    [centralizedSessionRawSdkEventPayloads, state.messages],
   );
-  const hasCentralizedSessionDiffEntries = centralizedSessionRawSdkEventPayloads.some(
-    (payload) => {
-      const event = asRecord(payload);
-      return event && firstNonEmptyString(event.type) === "session.diff";
-    },
+  const hasCentralizedSessionDiffEntries = useMemo(
+    () =>
+      centralizedSessionRawSdkEventPayloads.some((payload) => {
+        const event = asRecord(payload);
+        return event && firstNonEmptyString(event.type) === "session.diff";
+      }),
+    [centralizedSessionRawSdkEventPayloads],
   );
-  const conversationEntries = buildCentralizedConversationEntries(
-    state.messages,
-    centralizedSessionRawSdkEventPayloads,
+  const conversationEntries = useMemo(
+    () =>
+      buildCentralizedConversationEntries(
+        state.messages,
+        centralizedSessionRawSdkEventPayloads,
+      ),
+    [centralizedSessionRawSdkEventPayloads, state.messages],
   );
-  const visibleConversationEntries = (() => {
+  const visibleConversationEntries = useMemo(() => {
     let messageCount = 0;
     const visible: ConversationRenderEntry[] = [];
 
@@ -995,12 +999,16 @@ function ChatContent() {
     }
 
     return visible;
-  })();
-  const visibleMessages = visibleConversationEntries
-    .filter((entry): entry is Extract<ConversationRenderEntry, { kind: "message" }> =>
-      entry.kind === "message",
-    )
-    .map((entry) => entry.message);
+  }, [conversationEntries, isCompressed, visibleStartIndex]);
+  const visibleMessages = useMemo(
+    () =>
+      visibleConversationEntries
+        .filter((entry): entry is Extract<ConversationRenderEntry, { kind: "message" }> =>
+          entry.kind === "message",
+        )
+        .map((entry) => entry.message),
+    [visibleConversationEntries],
+  );
   const hasCompatibilityWarnings = state.compatibilityWarnings.length > 0;
   const errorToasts = state.errorMessages;
 
@@ -1122,7 +1130,7 @@ function ChatContent() {
         {/* Message list */}
         <div
           ref={messagesScrollRef}
-          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden py-2.5"
+          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-2.5 sm:px-4"
           style={{ background: "var(--oc-chat-bg)" }}
         >
           {isSwitchingSession ? (
@@ -1133,7 +1141,7 @@ function ChatContent() {
             <>
               {hasCompatibilityWarnings &&
               dismissedCompatibilityWarningSignature !== compatibilityWarningSignature ? (
-                <div className="mb-2.5 px-4">
+                <div className="mb-2.5 px-2.5">
                   <div className="rounded-xl border oc-warning-border oc-warning-bg p-3">
                     <div className="mb-2 flex items-start justify-between gap-3">
                       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-yellow">
@@ -1187,7 +1195,7 @@ function ChatContent() {
                 </div>
               ) : null}
 
-              {state.messages.length === 0 &&
+              {!hasAnyRenderableConversation &&
               !state.streaming &&
               !isAiResponding ? (
                 <EmptyState
@@ -1323,8 +1331,10 @@ function ChatContent() {
             todoItems={state.todoItems}
           />
 
-          {/* Loading status while processing before first stream payload */}
-          {showExtendedLoading ? (
+          {/* Loading status while processing before first stream payload.
+              Once a live stream exists, the assistant card owns the loading UI
+              so we do not duplicate the "thinking" text in two places. */}
+          {showExtendedLoading && !state.streaming ? (
             <ThinkingBubble />
           ) : null}
 
@@ -1338,7 +1348,7 @@ function ChatContent() {
 
           {!streamViewport.isFollowing &&
           streamViewport.unseenUpdateCount > 0 ? (
-            <div className="sticky bottom-3 z-20 flex justify-end pr-4">
+            <div className="sticky bottom-3 z-20 flex justify-end pr-2.5">
               <button
                 type="button"
                 onClick={jumpToLatest}

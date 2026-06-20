@@ -60,6 +60,6 @@ test('structured output schema has been simplified', () => {
     'structuredOutputSchema.ts',
   );
   // Schema was simplified per SDK best practices - focused on core response types
-  assert.match(schemaSource, /"message"|"implementation_plan"|"question"|"progress_update"/, 'schema should include core response types');
-  assert.match(schemaSource, /progressUpdates/, 'schema should support progress updates for execution tracking');
+  assert.match(schemaSource, /"message"|"implementation_plan"|"question"/, 'schema should include the remaining core response types');
+  assert.doesNotMatch(schemaSource, /progress_update|progressUpdates/, 'schema should not include removed progress update support');
 });

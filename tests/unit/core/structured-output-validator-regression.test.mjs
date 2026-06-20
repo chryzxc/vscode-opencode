@@ -98,23 +98,11 @@ test.describe('Structured Output Validator - Message Validation', () => {
     );
   });
 
-  test('validateStructuredOutput validates reasoning type', () => {
-    const validateBody = extractFunctionBody(validatorSource, 'validateStructuredOutput');
-
-    assert.match(
-      validateBody,
-      /reasoning.*must be an array of strings|Array\.isArray/s,
-      'must validate reasoning is string array'
-    );
-  });
-
-  test('validateStructuredOutput validates reasoning items', () => {
-    const validateBody = extractFunctionBody(validatorSource, 'validateStructuredOutput');
-
-    assert.match(
-      validateBody,
-      /reasoning.*must only contain strings|typeof item.*!==\s*["']string["']/s,
-      'must validate reasoning item types'
+  test('validateStructuredOutput does not include removed reasoning validation', () => {
+    assert.doesNotMatch(
+      validatorSource,
+      /reasoning.*must be an array of strings|reasoning.*must only contain strings|Array\.isArray\(record\.reasoning\)/s,
+      'removed reasoning validation should not remain in the validator'
     );
   });
 
@@ -134,38 +122,14 @@ test.describe('Structured Output Validator - Plan Validation', () => {
 
 });
 
-test.describe('Structured Output Validator - Progress Updates', () => {
-
-  test('validateStructuredOutput validates progressUpdates type', () => {
-    const validateBody = extractFunctionBody(validatorSource, 'validateStructuredOutput');
-
-    assert.match(
-      validateBody,
-      /progressUpdates.*must be an array|Array\.isArray/s,
-      'must validate progressUpdates is array'
+test.describe('Structured Output Validator - Removed Progress Updates', () => {
+  test('validateStructuredOutput no longer contains progress update validation', () => {
+    assert.doesNotMatch(
+      validatorSource,
+      /progressUpdates.*must be an array|file_edit.*diffExcerpt\.lines.*diffStats|progress_update/,
+      'must not contain removed progress update validation',
     );
   });
-
-  test('validateStructuredOutput validates progress update items', () => {
-    const validateBody = extractFunctionBody(validatorSource, 'validateStructuredOutput');
-
-    assert.match(
-      validateBody,
-      /progressUpdates.*title.*message|non-empty title\/message/s,
-      'must validate progress update items'
-    );
-  });
-
-  test('validateStructuredOutput validates file edit progress', () => {
-    const validateBody = extractFunctionBody(validatorSource, 'validateStructuredOutput');
-
-    assert.match(
-      validateBody,
-      /file_edit.*diffExcerpt\.lines.*diffStats|done\/error status/s,
-      'must validate file edit progress requirements'
-    );
-  });
-
 });
 
 test.describe('Structured Output Validator - Error Validation', () => {
@@ -464,16 +428,6 @@ test.describe('Structured Output Validator - Response Type Specific', () => {
     );
   });
 
-  test('validateStructuredOutput validates progress_update response', () => {
-    const validateBody = extractFunctionBody(validatorSource, 'validateStructuredOutput');
-
-    assert.match(
-      validateBody,
-      /progress_update.*requires progressUpdates array|responseType.*===\s*["']progress_update["']/s,
-      'must validate progress_update responseType requirements'
-    );
-  });
-
   test('validateStructuredOutput validates todo_update response', () => {
     const validateBody = extractFunctionBody(validatorSource, 'validateStructuredOutput');
 
@@ -557,8 +511,8 @@ test.describe('Structured Output Validator - Sanitization', () => {
 
     assert.match(
       sanitizeBody,
-      /TOP_LEVEL_FIELDS|LEGACY_COMPAT_TOP_LEVEL_FIELDS|forEach|sanitized\[key\]/s,
-      'must filter to known top-level fields'
+      /const sanitized:\s*Record<string, unknown> = \{ \.\.\.value \}/,
+      'must start from the input record and normalize in place'
     );
   });
 

@@ -51,18 +51,13 @@ test('raw session persistence stores server raw messages before normalization', 
   );
   assert.match(
     sessionServiceSource,
-    /function normalizePersistedRawSdkEventPayload\(value: unknown\): unknown/,
-    'session persistence should normalize wrapped debug payloads into the flat centralized event shape',
-  );
-  assert.match(
-    sessionServiceSource,
     /async loadSessionRawSdkEventPayloads\(sessionId: string\): Promise<unknown\[\]>/s,
     'rehydrated session loads should read the raw SDK tape from the same service',
   );
   assert.match(
     sessionServiceSource,
-    /normalizePersistedRawSdkEventPayload\(event\)/,
-    'session persistence should normalize raw SDK payloads when saving and loading them',
+    /return record\.source !== "\/global\/event" &&[\s\S]*shouldIncludeCentralizedDebugPayload\(event\)/s,
+    'session persistence should reuse the shared centralized filter before persisting raw SDK payloads',
   );
 });
 
@@ -76,6 +71,16 @@ test('centralized debug payload filtering is defined once and reused by both tie
     centralizedDebugFilterSource,
     /"server\.heartbeat"/,
     'shared filter helper should include server heartbeat exclusions',
+  );
+  assert.match(
+    centralizedDebugFilterSource,
+    /hasStreamingDelta\(event: Record<string, unknown>\): boolean[\s\S]*hasOwnProperty\.call\(properties \?\? {}, "delta"\)[\s\S]*hasOwnProperty\.call\(part \?\? {}, "delta"\)/s,
+    'shared filter helper should exclude streaming delta payloads by field presence',
+  );
+  assert.match(
+    centralizedDebugFilterSource,
+    /hasOwnProperty\.call\(syncData \?\? {}, "delta"\)[\s\S]*hasOwnProperty\.call\(syncPart \?\? {}, "delta"\)/s,
+    'shared filter helper should exclude streaming delta payloads from wrapped sync payloads too',
   );
   assert.match(
     centralizedDebugFilterSource,
@@ -104,8 +109,8 @@ test('centralized debug payload filtering is defined once and reused by both tie
   );
   assert.match(
     messageComponentsSource,
-    /shouldIncludeCentralizedDebugPayload/,
-    'centralized debug rendering should reuse the generated shared filter',
+    /rawSdkEventPayloadsBySessionId\?\.\[centralizedSessionId\]/,
+    'centralized debug rendering should read from the raw SDK session cache',
   );
   assert.match(
     chatShellSource,
@@ -117,7 +122,7 @@ test('centralized debug payload filtering is defined once and reused by both tie
 test('centralized debug raw rehydration only reads the raw session cache', () => {
   assert.match(
     sessionServiceSource,
-    /return events\.filter\(\(event\) => shouldIncludeCentralizedDebugPayload\(event\)\);/,
+    /const raw = this\.filterPersistedRawSdkEventPayloads\(Array\.isArray\(value\) \? value : \[\]\);/,
     'rehydrated raw SDK payloads should be filtered through the shared helper before being returned',
   );
   assert.match(
@@ -138,17 +143,17 @@ test('rehydrated chat history merges the full processed message list with the as
 test('session hydration sends persisted messages first and keeps raw history separate', () => {
   assert.match(
     sessionHandlerSource,
-    /const persistedMessages = await this\.sessionService\.loadSessionMessages\(sessionId\);/,
-    'session hydration should load the full persisted message list',
+    /const centralizedSessionData = await this\.sessionService\.loadCentralizedSessionData\(/s,
+    'session hydration should load the centralized session bundle first',
   );
   assert.match(
     sessionHandlerSource,
-    /const sourceMessages = persistedMessages\.length > 0\s*\?\s*persistedMessages\s*:\s*rawHistoryMessages;/s,
-    'session hydration should prefer persisted messages over the raw history cache',
+    /const rawMessages = centralizedSessionData\.rawMessages;/,
+    'session hydration should keep the raw message tape separate from processed messages',
   );
   assert.match(
     sessionHandlerSource,
-    /rawMessages: rawHistoryMessages/,
-    'session hydration should keep raw history separate from processed messages',
+    /const rawSdkEventPayloads = centralizedSessionData\.rawSdkEventPayloads;/,
+    'session hydration should keep the raw SDK event tape separate from processed messages',
   );
 });

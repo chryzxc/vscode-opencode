@@ -145,6 +145,7 @@ type StreamingReasoningPayload = {
   inReasoningPart?: boolean;
   partID?: string;
   messageID?: string;
+  delta?: boolean;
 };
 type StreamingStepUpdatePayload = {
   id?: string;
@@ -443,6 +444,41 @@ function cacheStreamingForSession(
     delete next[sessionId];
   }
   return next;
+}
+
+/**
+ * LRU eviction helper for session-keyed dictionaries.
+ *
+ * Keeps the `currentSessionId` plus the N most-recently-added other sessions.
+ * Sessions beyond the cap are dropped to prevent unbounded memory growth when
+ * a user browses through many sessions in a long-running workspace.
+ *
+ * @param dict           The session-keyed record to prune.
+ * @param currentId      The currently active session ID (always kept).
+ * @param maxSessions    Maximum number of sessions to retain (including current).
+ */
+function pruneSessionCache<T>(
+  dict: Record<string, T>,
+  currentId: string | null | undefined,
+  maxSessions = 5,
+): Record<string, T> {
+  const keys = Object.keys(dict);
+  if (keys.length <= maxSessions) {
+    // Nothing to evict — return the same reference to avoid a spurious re-render.
+    return dict;
+  }
+  // Build a pruned copy. Keep the current session unconditionally, then fill
+  // remaining slots from the end of the key list (most recently written).
+  const pruned: Record<string, T> = {};
+  const others = keys.filter((k) => k !== currentId);
+  const keepOthers = others.slice(-(maxSessions - (currentId && dict[currentId] !== undefined ? 1 : 0)));
+  if (currentId && dict[currentId] !== undefined) {
+    pruned[currentId] = dict[currentId];
+  }
+  for (const k of keepOthers) {
+    pruned[k] = dict[k];
+  }
+  return pruned;
 }
 
 function buildStreamingMessageLocal(streaming: StreamingState): Message {
@@ -1502,6 +1538,46 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
   return deduped;
 }
 
+function canonicalMessageTurnFingerprint(message: Message): string {
+  return [
+    getMessageRoleForCanonical(message),
+    normalizeComparableTextLocal(extractMessageTextForCanonical(message)),
+  ].join("|");
+}
+
+function dedupeAdjacentCanonicalTurns(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length < 4) {
+    return messages;
+  }
+
+  const collapsed: Message[] = [];
+  for (const message of messages) {
+    collapsed.push(message);
+    while (collapsed.length >= 4) {
+      const last = collapsed[collapsed.length - 1];
+      const prev = collapsed[collapsed.length - 2];
+      const beforePrev = collapsed[collapsed.length - 3];
+      const beforeBeforePrev = collapsed[collapsed.length - 4];
+
+      const isRepeatedTurn =
+        canonicalMessageTurnFingerprint(last) === canonicalMessageTurnFingerprint(beforePrev) &&
+        canonicalMessageTurnFingerprint(prev) === canonicalMessageTurnFingerprint(beforeBeforePrev);
+
+      if (!isRepeatedTurn) {
+        break;
+      }
+
+      // Remove the duplicated later turn so the canonical transcript keeps the
+      // first visible user+assistant pair and drops the mirrored duplicate that
+      // arrives from the live stream / sync mirror.
+      collapsed.splice(collapsed.length - 2, 2);
+      break;
+    }
+  }
+
+  return collapsed;
+}
+
 function isTextLikePartForCanonical(part: unknown): boolean {
   const rec = asRecordLocal(part);
   if (!rec) {
@@ -1872,12 +1948,13 @@ export function canonicalizeMessagesForRender(
     .map((entry) => entry.message);
 
   const deduped = dedupeMirrorMessagesForCanonical(chronologicallyOrdered);
+  const dedupedTurns = dedupeAdjacentCanonicalTurns(deduped);
 
   const canonical: Message[] = [];
   let index = 0;
 
-  while (index < deduped.length) {
-    const current = deduped[index];
+  while (index < dedupedTurns.length) {
+    const current = dedupedTurns[index];
     const isAssistant = isAssistantMessageForCanonical(current);
 
     if (!isAssistant) {
@@ -1887,8 +1964,8 @@ export function canonicalizeMessagesForRender(
     }
     const burst: Message[] = [current];
     let cursor = index + 1;
-    while (cursor < deduped.length && isAssistantMessageForCanonical(deduped[cursor])) {
-      burst.push(deduped[cursor]);
+    while (cursor < dedupedTurns.length && isAssistantMessageForCanonical(dedupedTurns[cursor])) {
+      burst.push(dedupedTurns[cursor]);
       cursor += 1;
     }
     canonical.push(
@@ -2342,6 +2419,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
           ? cachedStreamingForNew
           : null;
+      const restoredAssistantTurnPending = Boolean(
+        isNewSessionProcessing || restoredStreamingForNew?.isActive,
+      );
+      const restoredAssistantTurnMessageId =
+        restoredStreamingForNew?.messageId ?? null;
       const messagesForNew = newId ? messagesBySessionId?.[newId] ?? [] : [];
 
       return {
@@ -2360,11 +2442,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         // the previous session do not bleed into the newly active one.
         isProcessing: isNewSessionProcessing,
         isSteering: false,
+        assistantTurnPending: restoredAssistantTurnPending,
+        assistantTurnMessageId: restoredAssistantTurnMessageId,
         // Restore only when the backend confirms the target session is still
         // processing; otherwise keep the old session's progress hidden.
         streaming: restoredStreamingForNew,
-        streamingBySessionId,
-        messagesBySessionId,
+        streamingBySessionId: pruneSessionCache(streamingBySessionId, action.payload),
+        messagesBySessionId: pruneSessionCache(messagesBySessionId, action.payload),
         isCompacting: false,
         compactionError: undefined,
         compactionNotice: undefined,
@@ -2488,12 +2572,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_RAW_MESSAGES": {
       return {
         ...state,
-        rawMessagesBySessionId: {
+        rawMessagesBySessionId: pruneSessionCache({
           ...(state.rawMessagesBySessionId ?? {}),
           [action.payload.sessionId]: Array.isArray(action.payload.messages)
             ? [...action.payload.messages]
             : [],
-        },
+        }, action.payload.sessionId),
       };
     }
     case "SET_RAW_SDK_EVENT_PAYLOADS": {
@@ -2503,10 +2587,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       );
       return {
         ...state,
-        rawSdkEventPayloadsBySessionId: {
+        rawSdkEventPayloadsBySessionId: pruneSessionCache({
           ...(state.rawSdkEventPayloadsBySessionId ?? {}),
           [action.payload.sessionId]: events,
-        },
+        }, action.payload.sessionId),
       };
     }
     case "APPEND_RAW_SDK_EVENT_PAYLOAD": {
@@ -2521,21 +2605,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const next = dedupeCentralizedDebugPayloads([...existing, action.payload.event]);
       return {
         ...state,
-        rawSdkEventPayloadsBySessionId: {
+        rawSdkEventPayloadsBySessionId: pruneSessionCache({
           ...(state.rawSdkEventPayloadsBySessionId ?? {}),
           [sessionId]: next,
-        },
+        }, sessionId),
       };
     }
     case "CACHE_SESSION_MESSAGES":
       return {
         ...state,
-        messagesBySessionId: {
+        messagesBySessionId: pruneSessionCache({
           ...(state.messagesBySessionId ?? {}),
           [action.payload.sessionId]: canonicalizeMessagesForRender(
             action.payload.messages,
           ),
-        },
+        }, action.payload.sessionId),
       };
     case "HYDRATE_SESSION_FROM_CACHE": {
       const cachedMessages =
@@ -2583,6 +2667,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ),
         isProcessing: isNewSessionProcessing,
         isSteering: false,
+        assistantTurnPending: Boolean(
+          isNewSessionProcessing || restoredStreamingForNew?.isActive,
+        ),
+        assistantTurnMessageId: restoredStreamingForNew?.messageId ?? null,
         streaming: restoredStreamingForNew,
         streamingBySessionId,
         isLoadingSession: false,
@@ -2690,11 +2778,40 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_STEERING":
       return { ...state, isSteering: action.payload };
     case "SET_ASSISTANT_TURN_PENDING":
+      // A new assistant turn must never inherit the previous turn's message id.
+      // If the streaming pipeline has not discovered the new message id yet, we
+      // clear the old one so the UI cannot temporarily bind the new card to the
+      // prior turn's activity timeline.
+      const nextAssistantTurnMessageId = action.payload.pending
+        ? action.payload.messageId ?? null
+        : null;
+      const isNewAssistantTurn =
+        action.payload.pending &&
+        !!nextAssistantTurnMessageId &&
+        nextAssistantTurnMessageId !== state.assistantTurnMessageId;
+      const shouldClearStaleStreamingSnapshot =
+        isNewAssistantTurn &&
+        !!state.streaming &&
+        state.streaming.isActive === false &&
+        !!state.streaming.messageId &&
+        state.streaming.messageId !== nextAssistantTurnMessageId;
+      if (shouldClearStaleStreamingSnapshot) {
+        return {
+          ...state,
+          assistantTurnPending: action.payload.pending,
+          assistantTurnMessageId: nextAssistantTurnMessageId,
+          streaming: null,
+          streamingBySessionId: cacheStreamingForSession(
+            state.streamingBySessionId,
+            state.currentSessionId,
+            null,
+          ),
+        };
+      }
       return {
         ...state,
         assistantTurnPending: action.payload.pending,
-        assistantTurnMessageId:
-          action.payload.messageId ?? (action.payload.pending ? state.assistantTurnMessageId : null),
+        assistantTurnMessageId: nextAssistantTurnMessageId,
       };
     case "SET_SESSIONS_LIST":
       if (areSessionsListsEqual(state.sessionsList, action.payload)) {
@@ -2949,6 +3066,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
               text: chunk,
               partID: action.payload.partID ?? lastEvent.partID,
               messageID: action.payload.messageID ?? lastEvent.messageID,
+              delta: action.payload.delta ?? lastEvent.delta,
             },
           ];
         } else {
@@ -2959,6 +3077,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
               createdAt: Date.now(),
               partID: action.payload.partID,
               messageID: action.payload.messageID,
+              delta: action.payload.delta,
             },
             MAX_STREAMING_REASONING_EVENTS,
           );

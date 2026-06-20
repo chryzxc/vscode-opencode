@@ -3,10 +3,10 @@ import { createPortal } from "react-dom";
 
 import { Bot, Clock3, Copy, Sparkles, ArrowRight, X } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { cn, formatDuration } from "@/utils";
 
 import { MarkdownRenderer } from "../../../components/MarkdownRenderer";
+import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
 
 import type { ActivityDetail } from "../../lib/types";
 
@@ -223,82 +223,86 @@ export function CallOmoAgentStep({
     <>
       <button
         type="button"
-        className="group block w-full overflow-hidden rounded-md border border-oc-border-soft bg-oc-bg-soft/55 text-left shadow-none transition-colors hover:border-oc-border hover:bg-oc-panel-soft/55"
+        className="group block w-full overflow-hidden text-left transition-colors"
         onClick={() => setIsModalOpen(true)}
       >
-        <div className="relative border-l border-l-oc-accent/20 px-2.5 py-2">
-          <div className="flex items-start justify-between gap-2.5">
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary">
+        <div className="px-3 py-2 sm:px-3.5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary">
                   <Sparkles className="h-3 w-3" />
-                </div>
+                </span>
                 <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-oc-text-secondary">
                   call_omo_agent
                 </span>
-                <Badge
-                  variant={isError ? "error" : isDone ? "success" : "warning"}
-                  className="h-5 gap-1 px-2 py-0 text-[10px] font-medium"
-                >
-                  <Bot className="h-3 w-3" />
-                  {isError ? "failed" : isDone ? "completed" : "running"}
-                </Badge>
-                {runInBackground && (
+                <ActivityStepStatusChip status={isPending ? "pending" : isDone ? "done" : isError ? "error" : "running"} />
+                {runInBackground ? (
                   <span className="rounded-full border border-oc-border-soft bg-oc-bg/30 px-2 py-0.5 text-[10px] oc-text-secondary">
                     background
                   </span>
-                )}
-                {source === "raw_debug" && (
+                ) : null}
+                {source === "raw_debug" ? (
                   <span className="rounded-full border border-oc-border-soft bg-oc-bg/30 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] oc-text-secondary">
                     raw
                   </span>
-                )}
-              </div>
-
-              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px] oc-text-secondary">
-                {durationLabel ? (
-                  <span className="inline-flex items-center gap-1">
-                    <Clock3 className="h-3 w-3" />
-                    {durationLabel}
-                  </span>
-                ) : null}
-                {resolvedBackgroundTaskId ? (
-                  <>
-                    <span className="opacity-35">•</span>
-                    <span className="inline-flex items-center gap-1">
-                      <span className="uppercase tracking-[0.16em]">Task</span>
-                      <span className="font-mono text-oc-text-soft">{resolvedBackgroundTaskId}</span>
-                    </span>
-                  </>
-                ) : null}
-                {runInBackground ? (
-                  <>
-                    <span className="opacity-35">•</span>
-                    <span className="inline-flex items-center gap-1">
-                      <span className="uppercase tracking-[0.16em]">Mode</span>
-                      <span className="font-mono text-oc-text-soft">background</span>
-                    </span>
-                  </>
-                ) : null}
-                {agent ? (
-                  <>
-                    <span className="opacity-35">•</span>
-                    <span className="inline-flex items-center gap-1">
-                      <Bot className="h-3 w-3" />
-                      <span className="font-medium text-oc-text-soft">{agent}</span>
-                    </span>
-                  </>
                 ) : null}
               </div>
 
-              <div className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-oc-text-soft">
-                {summaryLine}
-              </div>
             </div>
 
             <div className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary transition-colors group-hover:bg-oc-panel-soft">
               <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
             </div>
+          </div>
+
+          <div className="oc-activity-step-card mt-2 flex flex-col gap-2 p-3">
+            <div className="flex flex-wrap items-center gap-1.5 text-[9px] oc-text-secondary">
+              {durationLabel ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
+                  <Clock3 className="h-3 w-3" />
+                  {durationLabel}
+                </span>
+              ) : null}
+              {resolvedBackgroundTaskId ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
+                  <span className="uppercase tracking-[0.14em]">Task</span>
+                  <span className="font-mono text-oc-text-soft">{resolvedBackgroundTaskId}</span>
+                </span>
+              ) : null}
+              {sessionValue ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
+                  <span className="uppercase tracking-[0.14em]">Session</span>
+                  <span className="font-mono text-oc-text-soft">{sessionValue}</span>
+                </span>
+              ) : null}
+              {runInBackground ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
+                  <span className="uppercase tracking-[0.14em]">Mode</span>
+                  <span className="font-mono text-oc-text-soft">background</span>
+                </span>
+              ) : null}
+              {agent ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
+                  <Bot className="h-3 w-3" />
+                  <span className="font-medium text-oc-text-soft">{agent}</span>
+                </span>
+              ) : null}
+            </div>
+
+            {summaryLine ? (
+              <div className="text-[10.5px] leading-relaxed text-oc-text-soft">
+                {summaryLine}
+              </div>
+            ) : null}
+
+            {output ? (
+              <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40 px-2.5 py-2 text-[10px] leading-relaxed text-oc-text-soft">
+                <div className="line-clamp-3 whitespace-pre-wrap break-words">
+                  {output}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </button>

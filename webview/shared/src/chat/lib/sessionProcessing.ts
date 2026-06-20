@@ -137,9 +137,13 @@ export function isAssistantRespondingInCurrentSession(
   processingSessionIds: string[],
   isStreamingActive: boolean,
   assistantTurnPending: boolean,
-  hasCompletedAssistantReply?: boolean,
+  hasConversationContext: boolean,
 ): boolean {
-  if (hasCompletedAssistantReply) {
+  // A blank/new session can briefly inherit a processing session flag from
+  // bootstrap or session switching, but that alone should not show the stop
+  // button or loading affordance. Require actual turn context before treating
+  // processing as an active assistant response.
+  if (!hasConversationContext) {
     return false;
   }
   return (

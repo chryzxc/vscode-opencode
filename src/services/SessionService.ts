@@ -55,6 +55,7 @@ import type { Session } from "@opencode-ai/sdk";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
 import { restoreCheckpointIfPresent } from "./CheckpointRestore";
+import { shouldIncludeCentralizedDebugPayload } from "../shared/centralizedDebugPayloadFilter";
 
 const log = createLogger(LoggingCategories.SESSION_SERVICE);
 const MAX_CACHED_MESSAGES_PER_SESSION = 200;
@@ -1201,10 +1202,12 @@ export class SessionService {
       return true;
     }
     const record = event as Record<string, unknown>;
-    // Temporary debug alignment: keep the persisted tape on the same
-    // session-scoped shape the centralized panel shows while we test the
-    // rehydration contract.
-    return record.source !== "/global/event";
+    // Keep the persisted tape aligned with the centralized debug contract.
+    // The shared filter excludes transient delta chunks and other hidden
+    // payloads; we only preserve the session-scoped tape we actually want to
+    // rehydrate and render.
+    return record.source !== "/global/event" &&
+      shouldIncludeCentralizedDebugPayload(event);
   }
 
   private filterPersistedRawSdkEventPayloads(events: unknown[] | undefined): unknown[] {
@@ -1650,6 +1653,10 @@ export class SessionService {
     }
 
     await this.flushRawSdkEventPayloads(sessionId);
+    // Memory fix: evict in-memory caches for the deleted session so data
+    // doesn't accumulate indefinitely for sessions that no longer exist.
+    this.rawSdkEventPayloadCache.delete(sessionId);
+    this.rawMessageCache.delete(sessionId);
     this.sessionHistory = this.sessionHistory.filter((s) => s.id !== sessionId);
     await this.context.workspaceState.update(
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
@@ -2154,7 +2161,19 @@ export class SessionService {
   }
 
   async appendRawSdkEventPayload(sessionId: string, event: unknown): Promise<void> {
+    log.info("[CENTRALIZED-TAPE][SESSION] append_received", {
+      sessionId,
+      eventType: typeof (event as Record<string, unknown>)?.type === "string"
+        ? (event as Record<string, unknown>).type
+        : undefined,
+    });
     if (!this.shouldPersistRawSdkEventPayload(event)) {
+      log.info("[CENTRALIZED-TAPE][SESSION] append_skipped_by_filter", {
+        sessionId,
+        eventType: typeof (event as Record<string, unknown>)?.type === "string"
+          ? (event as Record<string, unknown>).type
+          : undefined,
+      });
       return;
     }
     const events = await this.loadSessionRawSdkEventPayloads(sessionId);
@@ -2172,6 +2191,13 @@ export class SessionService {
     }
     events.push(snapshot);
     this.rawSdkEventPayloadCache.set(sessionId, events);
+    log.info("[CENTRALIZED-TAPE][SESSION] append_queued", {
+      sessionId,
+      newTotal: events.length,
+      eventType: typeof (event as Record<string, unknown>)?.type === "string"
+        ? (event as Record<string, unknown>).type
+        : undefined,
+    });
 
     const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
     if (existingTimer) {
@@ -2197,6 +2223,10 @@ export class SessionService {
       clearTimeout(existingTimer);
       this.rawSdkEventPersistTimers.delete(sessionId);
     }
+    log.info("[CENTRALIZED-TAPE][SESSION] flush_raw_sdk_events", {
+      sessionId,
+      total: events.length,
+    });
     await this.context.workspaceState.update(
       `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
       [...events],
@@ -2211,11 +2241,16 @@ export class SessionService {
   }
 
   async dispose(): Promise<void> {
+    // Flush all pending event payloads to workspaceState before clearing timers
     await this.flushAllRawSdkEventPayloads();
     for (const timer of this.rawSdkEventPersistTimers.values()) {
       clearTimeout(timer);
     }
     this.rawSdkEventPersistTimers.clear();
+    // Memory fix: release in-memory caches — data has been flushed to disk
+    // above and the service is being torn down.
+    this.rawSdkEventPayloadCache.clear();
+    this.rawMessageCache.clear();
   }
 
   private async mergeMessagesForSessionAliases(

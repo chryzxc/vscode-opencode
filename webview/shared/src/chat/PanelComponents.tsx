@@ -65,7 +65,6 @@ import type {
 } from "./lib/types";
 import {
   isAssistantRespondingInCurrentSession,
-  hasCompletedAssistantReplyForLatestTurn,
   isProcessingInCurrentSession,
 } from "./lib/sessionProcessing";
 
@@ -1840,13 +1839,9 @@ export function InputWrapper() {
     currentSessionId,
     executingQueueSessionIds,
   );
-  const centralizedSessionRawSdkEventPayloads =
-    currentSessionId &&
-    Array.isArray(rawSdkEventPayloadsBySessionId?.[currentSessionId])
-      ? rawSdkEventPayloadsBySessionId[currentSessionId]
-      : [];
-  const hasCompletedAssistantReply = hasCompletedAssistantReplyForLatestTurn(
-    centralizedSessionRawSdkEventPayloads,
+  const hasConversationContext = Boolean(
+    messages.length > 0 ||
+      Boolean(streaming?.isActive),
   );
 
   // The composer stop/send toggle must follow the same in-flight session state
@@ -1859,7 +1854,7 @@ export function InputWrapper() {
     processingSessionIds,
     Boolean(streaming?.isActive),
     assistantTurnPending,
-    hasCompletedAssistantReply,
+    hasConversationContext,
   );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);

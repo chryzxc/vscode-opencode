@@ -11,7 +11,13 @@ export const ExpandableStep = React.forwardRef<
   ExpandableStepProps
 >(({ children, className }, ref) => {
   return (
-    <div ref={ref} className={cn("oc-expandable-step", className)}>
+    <div
+      ref={ref}
+      className={cn(
+        "oc-expandable-step oc-timeline-surface",
+        className,
+      )}
+    >
       {children}
     </div>
   )

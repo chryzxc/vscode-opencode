@@ -12,7 +12,13 @@
 const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
   {
     path: "type",
-    values: ["server.heartbeat", "message.part.delta", "message.part.delta.1"],
+    values: [
+      "server.heartbeat",
+      "step-start",
+      "step-finish",
+      "message.part.delta",
+      "message.part.delta.1",
+    ],
   },
   {
     path: "syncEvent.type",
@@ -22,18 +28,30 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
     path: "payload.syncEvent.type",
     values: ["message.part.delta", "message.part.delta.1"],
   },
+  {
+    path: "properties.info.format.type",
+    values: ["json_schema"],
+  },
+  {
+    path: "payload.properties.info.format.type",
+    values: ["json_schema"],
+  },
+  {
+    path: "syncEvent.data.info.format.type",
+    values: ["json_schema"],
+  },
+  {
+    path: "payload.syncEvent.data.info.format.type",
+    values: ["json_schema"],
+  },
 ] as const;
 
 /*
  * Previously excluded rules. Kept here commented during the blacklist
  * reduction pass so we can restore them without re-deriving the paths:
  *
- * - type: step-start, step-finish, sync
+ * - type: sync
  * - source: /global/event
- * - properties.info.format.type: json_schema
- * - payload.properties.info.format.type: json_schema
- * - syncEvent.data.info.format.type: json_schema
- * - payload.syncEvent.data.info.format.type: json_schema
  * - properties.part.state.status: running
  */
 
@@ -183,9 +201,37 @@ function hasStreamingDelta(event: Record<string, unknown>): boolean {
     asString(valueAtDotPath(event, "syncEvent.type")),
     asString(valueAtDotPath(event, "payload.syncEvent.type")),
   ];
-  return candidates.some((candidate) =>
-    candidate.toLowerCase().includes("message.part.delta"),
-  );
+  if (
+    candidates.some((candidate) =>
+      candidate.toLowerCase().includes("message.part.delta"),
+    )
+  ) {
+    return true;
+  }
+
+  for (const candidate of candidatePayloads(event)) {
+    const record = asRecord(candidate);
+    if (!record) {
+      continue;
+    }
+
+    const properties = asRecord(record.properties);
+    const part = asRecord(properties?.part) ?? asRecord(record.part);
+    const syncEvent = asRecord(record.syncEvent);
+    const syncData = asRecord(syncEvent?.data);
+    const syncPart = asRecord(syncData?.part);
+
+    if (
+      Object.prototype.hasOwnProperty.call(properties ?? {}, "delta") ||
+      Object.prototype.hasOwnProperty.call(part ?? {}, "delta") ||
+      Object.prototype.hasOwnProperty.call(syncData ?? {}, "delta") ||
+      Object.prototype.hasOwnProperty.call(syncPart ?? {}, "delta")
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function shouldIncludeCentralizedDebugPayload(payload: unknown): boolean {

@@ -165,6 +165,12 @@ export const StreamingCard = memo(function StreamingCard({
 
     if (streaming.content.trim().length > 0) return true;
     if (streaming.reasoning.trim().length > 0) return true;
+    if (
+      Array.isArray(streaming.reasoningEvents) &&
+      streaming.reasoningEvents.length > 0
+    ) {
+      return true;
+    }
     if (streaming.edits.length > 0) return true;
     if (
       Array.isArray(streaming.interactiveEvents) &&
@@ -194,6 +200,7 @@ export const StreamingCard = memo(function StreamingCard({
       // assistant text is rendered by the finalized message card below.
       message={undefined}
       streaming={streaming}
+      hideLoadingText
       isContiguous={isContiguous}
       interactiveEvents={interactiveEvents}
       messages={messages}

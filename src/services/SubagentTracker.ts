@@ -379,6 +379,17 @@ export class SubagentTracker {
   }
 
   setActiveSession(sessionId: string | null): void {
+    // Memory fix: when switching to a different session, proactively clear all
+    // cross-session Maps so stale subagent data from the previous session doesn't
+    // accumulate. seedFromMessages() will rebuild from the new session's history.
+    if (sessionId !== this.activeSessionId) {
+      this.detailsById.clear();
+      this.idsByParentMessageId.clear();
+      this.pendingSubtasksByParentSessionId.clear();
+      this.latestParentMessageBySessionId.clear();
+      this.childSessionToSubagentId.clear();
+      this.childSessionToParentSessionId.clear();
+    }
     this.activeSessionId = sessionId;
   }
 

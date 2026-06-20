@@ -46,9 +46,9 @@ test('structured output validator enforces responseType specific requirements', 
   assert.match(validatorSource, /question interactive payload requires at least two options/, 'validator should require question payload to include explicit choices');
   assert.match(validatorSource, /question responseType requires choices: provide at least two options/, 'validator should enforce choices for responseType question');
   assert.match(validatorSource, /interactiveEvents must be an array/, 'validator should validate interactiveEvents compatibility shape');
-  assert.match(validatorSource, /progress_update responseType requires progressUpdates array/, 'validator should enforce progressUpdates array for progress_update responseType');
   assert.match(validatorSource, /todo_update responseType requires todoItems array/, 'validator should enforce todoItems array for todo_update responseType');
   assert.match(validatorSource, /data responseType requires data object/, 'validator should enforce data object for data responseType');
+  assert.doesNotMatch(validatorSource, /progress_update responseType requires progressUpdates array/, 'validator should no longer include progress_update requirements');
 });
 
 test('structured output validator recognizes subagentsDelta contract', () => {
@@ -100,7 +100,7 @@ test('structured output schema encodes implementation_plan exclusivity for data/
   assert.match(
     schemaSource,
     /enum:\s*\[[\s\S]*"implementation_plan"[\s\S]*\]/,
-    'source schema should include implementation_plan in responseType enum',
+    'source schema should include implementation_plan in type enum',
   );
   assert.match(
     generatedWebviewSchemaSource,
@@ -112,8 +112,8 @@ test('structured output schema encodes implementation_plan exclusivity for data/
 test('structured output validator enforces message payload requirement', () => {
   assert.match(
     validatorSource,
-    /message responseType requires message string/,
-    'validator should require an explicit user-facing message for message responseType',
+    /message type requires text string/,
+    'validator should require an explicit user-facing text for message type',
   );
   assert.match(
     validatorSource,

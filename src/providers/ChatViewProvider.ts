@@ -224,6 +224,8 @@ export class ChatViewProvider
 
   /** Unsubscribe function for stream service cleanup */
   private unsubscribe?: () => void;
+  /** Disposable for the webview message listener. */
+  private webviewMessageListener?: vscode.Disposable;
   private quotaServiceListener?: vscode.Disposable;
 
   /** Service for monitoring AI platform quota usage */
@@ -325,6 +327,26 @@ export class ChatViewProvider
       hash = ((hash << 5) - hash + basis.charCodeAt(i)) | 0;
     }
     return `sdk-todo:${sessionId}:${index}:${Math.abs(hash)}`;
+  }
+
+  /**
+   * Create a stable optimistic message identifier for the local conversation
+   * cache.
+   *
+   * The centralized chat renderer only keeps locally appended messages when
+   * they have an identifier. Rehydrated sessions can therefore "lose" the
+   * just-sent user bubble unless the optimistic message is tagged with a
+   * message ID immediately. We use a namespaced id so the webview and persisted
+   * history can treat the message as a first-class turn until the server tape
+   * catches up.
+   */
+  private createOptimisticMessageId(
+    sessionId: string,
+    role: "user" | "assistant" | "system" = "user",
+  ): string {
+    return `${role}-${sessionId}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
   }
 
   private normalizeSdkTodoItems(sessionId: string, rawTodos: unknown[]): unknown[] {
@@ -2441,8 +2463,11 @@ export class ChatViewProvider
     };
     webviewView.webview.options = webviewOptions;
 
-    // Handle messages from webview
-    webviewView.webview.onDidReceiveMessage(async (message) => {
+    // Handle messages from webview.
+    // We dispose any previous listener first so a re-resolved webview does not
+    // accumulate duplicate handlers that retain this provider instance.
+    this.webviewMessageListener?.dispose();
+    this.webviewMessageListener = webviewView.webview.onDidReceiveMessage(async (message) => {
       const { type } = message;
 
       // Log all UI interactions for debugging
@@ -2771,10 +2796,12 @@ export class ChatViewProvider
             }
             if (replySessionId && displayText) {
               const answerMessage = {
+                id: this.createOptimisticMessageId(replySessionId, "user"),
                 role: "user" as const,
                 content: displayText,
                 text: displayText,
                 interactiveSubmit: true,
+                sessionID: replySessionId,
                 parts: [
                   {
                     type: "text",
@@ -2870,6 +2897,12 @@ export class ChatViewProvider
           if (!sessionId || typeof message.event === "undefined") {
             break;
           }
+          this.logger.info("[CENTRALIZED-TAPE][HOST] persist_raw_sdk_event_requested", {
+            sessionId,
+            eventType: typeof (message.event as Record<string, unknown>)?.type === "string"
+              ? (message.event as Record<string, unknown>).type
+              : undefined,
+          });
           await this.sessionService.appendRawSdkEventPayload(
             sessionId,
             message.event,
@@ -3824,6 +3857,7 @@ export class ChatViewProvider
         if (enrichedEvent?.structuredOutput) {
           responseContext.hasStructuredOutput = true;
           responseContext.outputType =
+            enrichedEvent.structuredOutput.type ||
             enrichedEvent.structuredOutput.responseType;
         }
 
@@ -3886,6 +3920,13 @@ export class ChatViewProvider
         event: { ...enrichedEvent, sessionId: resolvedSessionId },
       });
       if (resolvedSessionId) {
+        this.logger.info("[CENTRALIZED-TAPE][HOST] raw_event_before_store", {
+          sessionId: resolvedSessionId,
+          eventType: typeof (enrichedEvent as Record<string, unknown>)?.type === "string"
+            ? (enrichedEvent as Record<string, unknown>).type
+            : event.type || "unknown",
+          partType: typeof part?.type === "string" ? part.type : undefined,
+        });
         void this.sessionService.appendRawSdkEventPayload(
           resolvedSessionId,
           rawEvent
@@ -4024,6 +4065,10 @@ export class ChatViewProvider
 
     // Cleanup on dispose
     webviewView.onDidDispose(() => {
+      if (this.webviewMessageListener) {
+        this.webviewMessageListener.dispose();
+        this.webviewMessageListener = undefined;
+      }
       if (this.unsubscribe) {
         this.unsubscribe();
         this.unsubscribe = undefined;
@@ -5705,7 +5750,9 @@ export class ChatViewProvider
         .trim();
     }
 
-    if (!rawText && typeof message.structuredOutput?.message === "string") {
+    if (!rawText && typeof message.structuredOutput?.text === "string") {
+      rawText = message.structuredOutput.text.trim();
+    } else if (!rawText && typeof message.structuredOutput?.message === "string") {
       rawText = message.structuredOutput.message.trim();
     }
 
@@ -5965,10 +6012,13 @@ export class ChatViewProvider
         const next: any = {
           ...message,
           structuredOutput: {
+            type: "message",
+            text: bodyText,
             responseType: "message",
             message: bodyText,
           },
           content: bodyText,
+          text: bodyText,
         };
         if (Array.isArray(next.parts)) {
           next.parts = next.parts.filter((part: any) => {
@@ -6120,8 +6170,8 @@ export class ChatViewProvider
         messageId: message?.id || message?.info?.id,
         oldContent: String(message?.content).slice(0, 200),
         newContent: String(messageContent).slice(0, 200),
-        structMessage: String(structured?.message).slice(0, 200),
-        from: "structured.message",
+        structMessage: String(structured?.text ?? structured?.message).slice(0, 200),
+        from: "structured.text",
       });
       next.content = messageContent;
       const parts = Array.isArray(next.parts) ? [...next.parts] : [];
@@ -6581,10 +6631,12 @@ export class ChatViewProvider
           });
         }
         const userMessage = {
+          id: this.createOptimisticMessageId(session.id, "user"),
           role: "user" as const,
           content: persistedUserText,
           text: persistedUserText,
           interactiveSubmit: sendMeta?.interactiveSubmit === true,
+          sessionID: session.id,
           parts: [
             {
               type: "text",
@@ -7135,7 +7187,7 @@ export class ChatViewProvider
           if (!rawResponse) return undefined;
           try {
             const parsed = JSON.parse(rawResponse);
-            const msg = parsed?.info?.structured?.message;
+            const msg = parsed?.info?.structured?.text ?? parsed?.info?.structured?.message;
             return typeof msg === "string" && msg.trim() ? msg.trim() : undefined;
           } catch { return undefined; }
         })();
@@ -7153,9 +7205,18 @@ export class ChatViewProvider
           enrichedMessage.content = safeCorrectMessageFromRawResponse;
           enrichedMessage.text = safeCorrectMessageFromRawResponse;
           if (!enrichedMessage.structuredOutput) {
-            enrichedMessage.structuredOutput = { responseType: "message", message: safeCorrectMessageFromRawResponse };
-          } else if (enrichedMessage.structuredOutput.message !== safeCorrectMessageFromRawResponse) {
-            enrichedMessage.structuredOutput = { ...enrichedMessage.structuredOutput, message: safeCorrectMessageFromRawResponse };
+            enrichedMessage.structuredOutput = {
+              type: "message",
+              text: safeCorrectMessageFromRawResponse,
+              responseType: "message",
+              message: safeCorrectMessageFromRawResponse,
+            };
+          } else if (enrichedMessage.structuredOutput.text !== safeCorrectMessageFromRawResponse) {
+            enrichedMessage.structuredOutput = {
+              ...enrichedMessage.structuredOutput,
+              text: safeCorrectMessageFromRawResponse,
+              message: safeCorrectMessageFromRawResponse,
+            };
           }
         }
         const structuredFailureText = this.firstNonEmptyString(
@@ -7547,6 +7608,18 @@ export class ChatViewProvider
     requestedSessionId?: string,
   ): Promise<string | undefined> {
     const explicitSessionId = this.firstNonEmptyString(requestedSessionId);
+    if (explicitSessionId && this.isSessionEffectivelyProcessing(explicitSessionId)) {
+      return explicitSessionId;
+    }
+
+    const activeStreamSessionId = this.firstNonEmptyString(this.activeStreamSessionId);
+    if (
+      activeStreamSessionId &&
+      this.isSessionEffectivelyProcessing(activeStreamSessionId)
+    ) {
+      return activeStreamSessionId;
+    }
+
     if (explicitSessionId) {
       return explicitSessionId;
     }
@@ -9415,6 +9488,9 @@ export class ChatViewProvider
    * Sends the current queue state to the webview
    */
   public dispose(): void {
+    // Mark disposed first so any in-flight async chains (e.g. title generation)
+    // bail out early and don't hold closure references to this instance.
+    this.isDisposed = true;
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = undefined;
@@ -9422,6 +9498,10 @@ export class ChatViewProvider
     if (this.quotaServiceListener) {
       this.quotaServiceListener.dispose();
       this.quotaServiceListener = undefined;
+    }
+    if (this.webviewMessageListener) {
+      this.webviewMessageListener.dispose();
+      this.webviewMessageListener = undefined;
     }
     this.streamService.dispose();
     this.quotaService.dispose();
@@ -9431,7 +9511,19 @@ export class ChatViewProvider
     this.hasInitializedWebview = false;
     this.sessionsListRequestVersion = 0;
     this.lastSessionsPayloadFingerprint = undefined;
+    // Memory fix: explicitly clear all session-keyed Maps and Sets so they
+    // don't retain historical data if the provider is re-opened in the same
+    // VS Code session (webview re-mount without full extension deactivation).
     this.queueBySessionId.clear();
+    this.promptDebugBySession.clear();
+    this.structuredValidationFailureCounters.clear();
+    this.recentUiErrorToastTimestamps.clear();
+    this.compactingSessions.clear();
+    this.sessionsWithFileChangeEvidence.clear();
+    this.processingSessionIds.clear();
+    this.executingQueueSessionIds.clear();
+    this.recentlyAbortedSessionIds.clear();
+    this.sessionsNeedingTitle?.clear();
     this.view = undefined;
   }
 

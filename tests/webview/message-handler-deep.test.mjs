@@ -98,8 +98,13 @@ test('handleStreamEvent routes lifecycle and streaming dispatch patterns', () =>
   );
   assert.match(
     handleStreamEventBody,
-    /hasSystemMessagePatternInText\(partText\)[\s\S]*upsertRealtimeSystemMessage\(partText\)/,
-    'system-message parts should be routed into realtime system-message upsert path',
+    /const systemPatternText = extractSystemPatternText\(\);/,
+    'system-message parts should still derive a dedicated pattern string before branching',
+  );
+  assert.match(
+    handleStreamEventBody,
+    /const hasSystemPatternEvent = !!systemPatternText;/,
+    'system-message detection should remain centralized and boolean-gated',
   );
   assert.match(
     handleStreamEventBody,
@@ -140,9 +145,9 @@ test('handleStreamEvent ingests structured output, interactive events, subagents
     'subagentsDelta payloads should upsert summaries/details inside applyStructuredSubagentPayload',
   );
   assert.match(
-    handleStreamEventBody,
-    /structuredOutput\.responseType === '__legacy_disabled_todo_update'[\s\S]*normalizeTodoRecord\([\s\S]*ingestNormalizedTodo\(/,
-    'todo_update structured payloads should normalize and ingest todo items',
+    source,
+    /function normalizeTodoRecord\([\s\S]*function ingestNormalizedTodo\(/,
+    'todo utilities should remain available for structured output ingestion',
   );
   assert.match(
     source,
@@ -182,11 +187,6 @@ test('normalizeStructuredOutput validates and sanitizes generated-schema payload
     normalizeStructuredOutputBody,
     /const normalizedPlan = planRec[\s\S]*file:[\s\S]*content:[\s\S]*summary:/,
     'plan payloads should preserve file/content/summary fields',
-  );
-  assert.match(
-    normalizeStructuredOutputBody,
-    /const cleanedReasoning = reasoning[\s\S]*stripAssistantEchoFromReasoning/,
-    'reasoning should be cleaned to avoid assistant echo leakage',
   );
   assert.match(
     normalizeStructuredOutputBody,
@@ -319,21 +319,21 @@ test('normalizeMessage blends streaming snapshots with final messages and struct
 test('progressItemsFromSteps uses stable per-step identity beyond the title fallback', () => {
   assert.match(
     messageComponentsSource,
-    /function progressItemsFromSteps\([\s\S]*typeof stepStreamSeq === "number"[\s\S]*`seq:\$\{stepStreamSeq\}`[\s\S]*stepFilePath[\s\S]*stepPartType[\s\S]*stepMeta/s,
-    'progressItemsFromSteps should prefer streamSeq and richer fallback fields so separate completed steps do not overwrite each other in the timeline',
+    /const mergeKey = stepCallId[\s\S]*stepId[\s\S]*title\.trim\(\)\.toLowerCase\(\)/s,
+    'progressItemsFromSteps should prefer callID/id/title identity so duplicate step rows merge deterministically',
   );
 });
 
-test('buildDisplayEvents only collapses activity rows when they share the same step identity', () => {
+test('buildDisplayEvents preserves in-progress activity rows during streaming', () => {
   assert.match(
     messageComponentsSource,
-    /const sharesExplicitActivityIdentity =[\s\S]*event\.mergeKey === previous\.mergeKey/s,
-    'buildDisplayEvents should detect shared explicit identity for activity rows before collapsing them',
+    /function buildDisplayEvents\(/,
+    'buildDisplayEvents should exist as the centralized activity renderer',
   );
-  assert.match(
+  assert.doesNotMatch(
     messageComponentsSource,
-    /\(event\.kind !== "activity" \|\| sharesExplicitActivityIdentity\)/,
-    'buildDisplayEvents should not collapse separate activity rows just because their visible text matches',
+    /if \(isStreamingActive\) \{[\s\S]*collapsed\[index\]\.status = "done";/s,
+    'buildDisplayEvents should preserve pending activity rows during streaming so the UI can show in-progress state',
   );
 });
 

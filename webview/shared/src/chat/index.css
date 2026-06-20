@@ -127,6 +127,19 @@ body.vscode-high-contrast-light {
 
   /* AI Response Enhanced Colors */
   --oc-amber-custom: #d97706;
+
+  /*
+   * Shared activity-surface tokens.
+   * Keep these in one place so every activity card, preview, and nested pane
+   * uses the same border weight and fill instead of drifting by component.
+   */
+  /* Match the composer shell outline so activity cards feel like the same system. */
+  --oc-surface-border: color-mix(in srgb, var(--oc-border) 92%, transparent);
+  --oc-surface-border-soft: color-mix(in srgb, var(--oc-border) 72%, transparent);
+  --oc-surface-fill: color-mix(in srgb, var(--oc-panel) 82%, transparent);
+  --oc-surface-fill-soft: color-mix(in srgb, var(--oc-panel-soft) 86%, transparent);
+  --oc-surface-panel: color-mix(in srgb, var(--oc-bg-soft) 18%, transparent);
+  --oc-surface-divider: color-mix(in srgb, var(--oc-border) 72%, transparent);
 }
 
 .text-oc-agent-custom {
@@ -2757,7 +2770,7 @@ body {
 /* Enhanced stepper item - subtle, no hover effects */
 .oc-refined-stepper-item {
   position: relative;
-  padding: 3px 0px;
+  padding: 6px 0 8px;
   margin: 0;
   border-radius: 6px;
   background: transparent;
@@ -2910,7 +2923,8 @@ body {
   transition: all 0.2s ease-out;
 }
 
-/* Enhanced event content - markdown support */
+/* Unified step surface used across reasoning, read, search, and generic
+   timeline payloads. Keep it visually light so the timeline stays compact. */
 .oc-refined-event-content {
   font-family: var(
     --vscode-font-family,
@@ -2921,15 +2935,43 @@ body {
     sans-serif
   );
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.46;
   color: var(--oc-text-soft);
-  padding: 2px 0;
+  padding: 8px 9px;
+  margin-top: 5px;
+  border: 1px solid color-mix(in srgb, var(--oc-border-soft) 72%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 84%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 2%, transparent),
+    0 1px 0 color-mix(in srgb, black 10%, transparent);
+  overflow: hidden;
+}
+
+.oc-activity-step-card,
+.oc-timeline-soft-frame,
+.oc-search-block,
+.oc-bash-command-block,
+.oc-refined-activity-details {
+  border: 1px solid var(--oc-surface-border);
+  border-radius: 15px;
+  background: var(--oc-surface-fill);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 2.5%, transparent),
+    0 1px 0 color-mix(in srgb, black 8%, transparent);
+}
+
+.oc-activity-step-card:hover,
+.oc-timeline-soft-frame:hover {
+  border-color: color-mix(in srgb, var(--oc-accent) 16%, var(--oc-surface-border));
+  background: color-mix(in srgb, var(--oc-panel) 86%, var(--oc-accent) 6%);
 }
 
 /* Markdown styling within event content */
 .oc-refined-event-content .markdown-body {
   font-size: 12px;
-  line-height: 1.42;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .oc-refined-event-content .markdown-body code {
@@ -2951,10 +2993,10 @@ body {
 
 .oc-refined-event-content .markdown-body pre {
   margin: 4px 0;
-  padding: 8px;
-  background: color-mix(in srgb, var(--oc-bg) 60%, transparent);
-  border: 1px solid var(--vscode-widget-border, var(--oc-border));
-  border-radius: 6px;
+  padding: 8px 9px;
+  background: color-mix(in srgb, var(--oc-bg) 56%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-border) 50%, transparent);
+  border-radius: 8px;
   overflow-x: auto;
 }
 
@@ -2970,6 +3012,7 @@ body {
 .oc-read-preview {
   min-width: 0;
   max-width: 100%;
+  margin-top: 6px;
 }
 
 .oc-read-preview .markdown-body {
@@ -2978,25 +3021,35 @@ body {
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .oc-read-preview .markdown-body p,
 .oc-read-preview .markdown-body ul,
 .oc-read-preview .markdown-body ol {
-  margin-top: 0.25em;
-  margin-bottom: 0.25em;
+  margin-top: 0.2em;
+  margin-bottom: 0.2em;
 }
 
 .oc-read-preview .markdown-body pre {
+  display: block;
+  width: 100%;
   max-width: 100%;
   overflow: auto;
   box-sizing: border-box;
+  min-width: 0;
 }
 
 .oc-read-preview .markdown-body pre code {
-  white-space: pre;
-  overflow-wrap: normal;
-  word-break: normal;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Final assistant response bodies are already wrapped by the outer response
@@ -3010,7 +3063,7 @@ body {
   font-weight: 400;
   color: var(--oc-text);
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 0;
   font-size: 12px;
 }
 
@@ -3276,6 +3329,7 @@ body {
   gap: 2px;
 }
 
+
 /* Compact diff preview - technical precision styling */
 .oc-compact-diff-preview {
   margin-top: 8px;
@@ -3413,9 +3467,9 @@ body {
 .oc-refined-activity-details {
   margin-top: 6px;
   padding: 8px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--oc-bg) 30%, transparent);
-  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  border-radius: 10px;
+  background: var(--oc-surface-fill-soft);
+  border-color: var(--oc-surface-border);
 }
 
 /* Enhanced tool/cmd badges in details - minimal */
@@ -3472,18 +3526,15 @@ body {
 /* Bash command block styling */
 .oc-bash-command-block {
   margin: 6px 0 3px;
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
-  background: var(
-    --vscode-editorWidget-background,
-    var(--vscode-sideBar-background, transparent)
-  );
-  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  background: var(--oc-surface-fill);
+  border-color: var(--oc-surface-border);
 }
 
 .oc-bash-command-code {
   margin: 0;
-  padding: 7px 9px;
+  padding: 8px 10px;
   overflow: visible;
   background: var(--vscode-list-hoverBackground, transparent);
   display: flex;
@@ -3533,14 +3584,109 @@ body {
 
 /* Search block styling — terminal-style block for grep/search/glob queries */
 .oc-search-block {
-  margin: 4px 0 1px;
-  border-radius: 8px;
+  margin: 2px 0 1px;
+  border-radius: 10px;
   overflow: hidden;
-  background: var(
-    --vscode-editorWidget-background,
-    var(--vscode-sideBar-background, transparent)
-  );
-  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  background: var(--oc-surface-fill-soft);
+  border-color: var(--oc-surface-border);
+}
+
+/* Shared timeline soft-frame override. This intentionally forces a very faint
+   border style for compact timeline previews so the base component styles
+   cannot reintroduce a bright outline. */
+.oc-timeline-soft-frame {
+  border-color: var(--oc-surface-border) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 2%, transparent),
+    0 1px 0 color-mix(in srgb, black 6%, transparent) !important;
+}
+
+.oc-timeline-soft-frame__header {
+  border-bottom-color: var(--oc-surface-divider) !important;
+  background: transparent;
+}
+
+.oc-timeline-soft-frame__body {
+  border-color: var(--oc-surface-divider) !important;
+  background: var(--oc-surface-panel);
+}
+
+.oc-timeline-soft-frame .oc-todo-row + .oc-todo-row {
+  border-top: 1px solid var(--oc-surface-divider) !important;
+}
+
+/* Timeline-specific override for collapsed search/grep previews.
+   This intentionally wins over the base block styles so the preview never
+   falls back to the heavier frame again.
+   The outer preview card supplies the visible border; the inner SearchBlock
+   should stay borderless so we do not draw two nested cards. */
+.oc-search-block--timeline-compact {
+  margin: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-header {
+  border-bottom-color: var(--oc-surface-divider) !important;
+  background: transparent !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-output {
+  border-top-color: var(--oc-surface-divider) !important;
+  background: transparent !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-code {
+  background: transparent !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-output pre {
+  background: transparent !important;
+}
+
+.oc-diff-preview-step {
+  padding: 8px 10px 10px;
+}
+
+.oc-diff-preview-step__excerpt {
+  margin-top: 8px;
+}
+
+/* Shared compact timeline caret used by collapsed previews.
+   This keeps the affordance subtle and consistent across search/glob/read-like cards. */
+.oc-timeline-caret {
+  border: 1px solid var(--oc-surface-border);
+  background: color-mix(in srgb, var(--oc-panel-soft) 78%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 1.5%, transparent),
+    0 1px 0 color-mix(in srgb, black 7%, transparent);
+}
+
+.oc-timeline-caret:hover {
+  border-color: color-mix(in srgb, var(--oc-accent) 18%, var(--oc-surface-border));
+  background: color-mix(in srgb, var(--oc-panel-soft) 86%, var(--oc-accent) 5%);
+}
+
+/*
+ * Scope all generic border utility classes used inside the activity timeline
+ * to the shared soft divider tokens so the same "strong white line" cannot
+ * reappear in individual cards.
+ */
+.oc-timeline-surface :is(.border-oc-border, .border-oc-border-soft) {
+  border-color: var(--oc-surface-border) !important;
+}
+
+.oc-timeline-surface :is(.border-b.border-oc-border, .border-b.border-oc-border-soft) {
+  border-bottom-color: var(--oc-surface-divider) !important;
+}
+
+.oc-timeline-surface :is(.border-t.border-oc-border, .border-t.border-oc-border-soft) {
+  border-top-color: var(--oc-surface-divider) !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-code {
+  background: transparent !important;
 }
 
 .oc-search-block-header {
@@ -3548,8 +3694,8 @@ body {
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 4px 6px;
-  border-bottom: 1px solid var(--vscode-widget-border, var(--oc-border));
+  padding: 4px 7px;
+  border-bottom: 1px solid var(--oc-surface-divider);
   background: transparent;
 }
 
@@ -3593,9 +3739,9 @@ body {
 
 .oc-search-block-code {
   margin: 0;
-  padding: 5px 7px;
+  padding: 6px 7px;
   overflow-x: hidden;
-  background: var(--vscode-list-hoverBackground, transparent);
+  background: var(--oc-surface-panel);
 }
 
 .oc-search-block-code code {
@@ -3623,10 +3769,8 @@ body {
 /* Search block output container styling displayed below the search pattern query block */
 .oc-search-block-output {
   padding: 6px 7px;
-  /* Add top border separator with widget-border color */
-  border-top: 1px solid var(--vscode-widget-border, var(--oc-border));
-  /* Semi-transparent background for terminal output feeling */
-  background: rgba(0, 0, 0, 0.15);
+  border-top: 1px solid var(--oc-surface-divider);
+  background: var(--oc-surface-panel);
 }
 
 /* Pre-formatted block for search results output */
@@ -3642,7 +3786,7 @@ body {
     monospace
   );
   font-size: 10px;
-  line-height: 1.42;
+  line-height: 1.4;
   /* Muted text color for execution output secondary details */
   color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
 }

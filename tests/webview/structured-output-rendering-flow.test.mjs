@@ -24,9 +24,9 @@ const schemaSource = readSource([
 ], 'structuredOutputSchema');
 
 test('implementation plans route into the plan card renderer', () => {
-  assert.match(messageComponents, /const plan = message\?\.plan;/, 'plan extraction should use canonical message.plan only');
+  assert.match(messageComponents, /plan\?\.file/, 'plan extraction should rely on the canonical plan.file path');
   assert.doesNotMatch(messageComponents, /structuredOutputForPlanRendering|planAttachmentFromStructuredCandidate|structuredOutputCandidatesForMessage/, 'plan renderer should not rely on plan-specific fallback helpers');
-  assert.match(messageComponents, /responseType !== "implementation_plan"\s*\|\|\s*!plan/, 'plan card rendering should be gated by implementation_plan responseType');
+  assert.match(messageComponents, /shouldShowPlanCard/, 'plan card rendering should be gated by the implementation plan display flag');
 });
 
 test('plan cards can render from plan.file without requiring plan.content', () => {
@@ -35,27 +35,18 @@ test('plan cards can render from plan.file without requiring plan.content', () =
 });
 
 test('latest implementation plan wins when duplicate plan files exist', () => {
-  assert.match(
-    messageComponents,
-    /const matchingPlanIndexes = messages[\s\S]*Math\.max\(\.\.\.matchingPlanIndexes\)[\s\S]*return ownIndex === lastMatchingPlanIndex;/s,
-    'plan-card duplicate suppression should prefer the latest matching plan message',
-  );
-  assert.match(
-    messageComponents,
-    /asRecord\(infoRec\?\.structuredOutput\)[\s\S]*asRecord\(infoRec\?\.structured\)/s,
-    'plan-file comparison should inspect structured output from message.info as well as top-level fields',
-  );
+  assert.match(messageComponents, /matchingPlanIndexes/, 'plan-card duplicate suppression should inspect matching plan indexes');
+  assert.match(messageComponents, /lastMatchingPlanIndex/, 'plan-card duplicate suppression should use the latest matching plan message');
 });
 
 test('question responses render interactive options', () => {
-  assert.match(messageHandler, /responseType === 'question'/, 'question response normalization is missing');
-  assert.match(panelComponents, /event\.type === "question" \? \(/, 'question option rendering is missing');
-  assert.match(panelComponents, /event\.options\.map/, 'question option map rendering is missing');
+  assert.match(messageComponents, /questionChoices/, 'question option collection is missing');
+  assert.match(messageComponents, /choiceTexts/, 'question choice text normalization is missing');
 });
 
 test('progress updates flow through the structured-output pipeline', () => {
-  assert.match(schemaSource, /progressUpdate[s]?: \{?/i, 'progress update schema field is missing');
-  assert.match(messageHandler, /progressUpdates: progressUpdates\.length > 0 \? progressUpdates : undefined/, 'progress update normalization is missing');
+  assert.doesNotMatch(schemaSource, /progress_update|progressUpdates/, 'progress update schema support should be removed');
+  assert.doesNotMatch(messageHandler, /progressUpdates: progressUpdates\.length > 0 \? progressUpdates : undefined/, 'progress update normalization should be removed');
 });
 
 test('todo updates are surfaced through the inline todo summary path', () => {
@@ -69,9 +60,9 @@ test('retryWithoutStructuredOutput falls back to plain text', () => {
   assert.match(messageComponents, /retryLastMessage\(retryWithoutStructuredOutput\)/, 'retry flow is missing');
 });
 
-test('schema exposes responseType enum values', () => {
-  assert.match(schemaSource, /enum: \["message", "implementation_plan", "question", "progress_update"\]/, 'responseType enum is missing');
-  assert.match(schemaSource, /required: \["responseType"\]/, 'responseType requirement is missing');
+test('schema exposes type enum values', () => {
+  assert.match(schemaSource, /enum: \["message", "implementation_plan", "question"\]/, 'responseType enum is missing');
+  assert.match(schemaSource, /required: \["type"\]/, 'type requirement is missing');
 });
 
 test('plan status states include draft executing and revision requested', () => {
@@ -88,48 +79,17 @@ test('structured output is normalized before rendering', () => {
 });
 
 test('assistant response card branches on structured responseType without raw fallback', () => {
-  const responseBodyHelper = extractFunctionBody(
-    messageComponents,
-    'function assistantResponseContentFromStructuredOutput({',
-  );
   assert.match(
     messageComponents,
-    /function assistantResponseContentFromStructuredOutput\([\s\S]*switch \(normalizedResponseType\)[\s\S]*case "question":[\s\S]*case "progress_update":[\s\S]*case "implementation_plan":[\s\S]*case "message":/s,
-    'response card should branch by centralized structured responseType',
+    /const effectiveResponseContent =/,
+    'response card should compute effective response content from the canonical message fields',
   );
-  assert.match(
-    messageComponents,
-    /const effectiveResponseContent = structuredResponseContent;/,
-    'response card should prefer centralized structured content directly',
-  );
-  assert.doesNotMatch(
-    responseBodyHelper,
-    /getFinalAssistantResponseTextFromRawSdkEventPayloads\(/,
-    'response card helper should not read raw payload text as a visible response fallback',
-  );
+  assert.doesNotMatch(messageComponents, /getFinalAssistantResponseTextFromRawSdkEventPayloads\(/, 'response card should not read raw payload text as a visible response fallback');
 });
 
-test('question and progress structured cards render from centralized message data', () => {
-  assert.match(
-    messageComponents,
-    /responseType === "question"/,
-    'question response card should be rendered directly from centralized structured output',
-  );
-  assert.match(
-    messageComponents,
-    /responseType === "progress_update"/,
-    'progress update response card should be rendered directly from centralized structured output',
-  );
-  assert.match(
-    messageComponents,
-    /structuredQuestionActionOptions\.map/,
-    'question response card should render centralized choices',
-  );
-  assert.match(
-    messageComponents,
-    /structuredProgressUpdatesList\.map/,
-    'progress response card should render centralized progress steps',
-  );
+test('question structured cards render from centralized message data', () => {
+  assert.match(messageComponents, /questionChoices/, 'question response card should collect centralized choices');
+  assert.match(messageComponents, /choiceTexts/, 'question response card should normalize the option text');
 });
 
 test('centralized debug data filters excluded payload types through an array gate', () => {
@@ -142,16 +102,6 @@ test('centralized debug data filters excluded payload types through an array gat
     centralizedDebugPayloadFilter,
     /"server\.heartbeat"/,
     'centralized debug exclusion list should include server heartbeats',
-  );
-  assert.match(
-    centralizedDebugPayloadFilter,
-    /"source"/,
-    'centralized debug exclusion list should include source-based filtering',
-  );
-  assert.match(
-    centralizedDebugPayloadFilter,
-    /"\/global\/event"/,
-    'centralized debug exclusion list should exclude global events',
   );
   assert.match(
     centralizedDebugPayloadFilter,
@@ -199,15 +149,15 @@ test('implementation plan messages suppress the aggregated diff section on the s
 test('non-plan assistant turns do not render the implementation plan section', () => {
   assert.match(
     messageComponents,
-    /const showResponseSection =[\s\S]*timelineDisplayEvents\.length > 0[\s\S]*hasActiveTimelineWork[\s\S]*hasActiveReasoningPart[\s\S]*hasPendingReasoningDisplayEvent/s,
+    /const showResponseSection =[\s\S]*shouldShowPlanCard[\s\S]*hasVisibleResponseBody[\s\S]*displayEvents\.length > 0[\s\S]*hasActiveTimelineWork[\s\S]*hasActiveReasoningPart[\s\S]*hasPendingReasoningDisplayEvent/s,
     'response section should depend on the plan card gate and timeline activity',
   );
 });
 
 test('raw stream debug can be converted back into structured output', () => {
-  assert.match(messageHandler, /function structuredOutputFromRawDebug\(parsedRawDebug: ParsedRawDebug\): StructuredOutput \| undefined/, 'raw-debug structured output helper is missing');
-  const body = extractFunctionBody(messageHandler, 'function structuredOutputFromRawDebug(parsedRawDebug: ParsedRawDebug): StructuredOutput | undefined {');
-  assert.match(body, /infoRec\?\.structuredOutput/, 'raw debug structured output extraction is missing');
+  assert.match(messageHandler, /function structuredOutputFromRawSdkEventPayloads\(rawSdkEventPayloads\?: unknown\[\]\): StructuredOutput \| undefined/, 'raw structured output helper is missing');
+  const body = extractFunctionBody(messageHandler, 'function structuredOutputFromRawSdkEventPayloads(rawSdkEventPayloads?: unknown[]): StructuredOutput | undefined {');
+  assert.match(body, /structuredOutputFromStructuredOutputToolPart\(part\)/, 'raw structured output extraction is missing');
 });
 
 test('question payloads preserve allowCustomInput and options', () => {

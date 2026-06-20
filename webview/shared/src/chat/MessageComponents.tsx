@@ -21,7 +21,6 @@ import {
   AtSign,
   Terminal,
   RotateCw,
-  Zap,
   AlertCircle,
   AlertTriangle,
   Clock,
@@ -45,6 +44,7 @@ import { cn, formatDuration, toWorkspaceRelativePath } from "@/utils";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { CallOmoAgentStep } from "./components/activity-steps/CallOmoAgentStep";
 import { BackgroundOutputStep } from "./components/activity-steps/BackgroundOutputStep";
+import { DiffPreviewStep } from "./components/activity-steps/DiffPreviewStep";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
@@ -682,8 +682,8 @@ function compactCentralizedRawSdkEventPayloadsForDebug(
         asString(info?.modelID) ?? "",
         asString(info?.providerID) ?? "",
         asString(info?.finish) ?? "",
-        asString(structured?.responseType) ?? "",
-        asString(structured?.message) ?? "",
+        asString(structured?.type ?? structured?.responseType) ?? "",
+        asString(structured?.text ?? structured?.message) ?? "",
         typeof tokens?.total === "number" ? String(tokens.total) : "",
         typeof tokens?.input === "number" ? String(tokens.input) : "",
         typeof tokens?.output === "number" ? String(tokens.output) : "",
@@ -1432,7 +1432,18 @@ function rawMessagePartsFromRawSdkEventPayloads(
     return [];
   }
 
+  // Collapse canonical + sync mirror entries by stable identity so the same
+  // logical part does not render twice during event-stream playback.
   const parts: MessagePart[] = [];
+  const partsByKey = new Map<string, MessagePart>();
+  const statusRank = (value?: unknown): number => {
+    const status = asString(value).toLowerCase();
+    if (status === "done" || status === "completed" || status === "complete") return 3;
+    if (status === "error" || status === "failed") return 2;
+    if (status === "running" || status === "pending") return 1;
+    return 0;
+  };
+
   for (const payload of rawSdkEventPayloads) {
     const eventRec = asRecord(payload);
     if (!eventRec) {
@@ -1441,10 +1452,52 @@ function rawMessagePartsFromRawSdkEventPayloads(
 
     const partRec = getCentralizedEventPart(eventRec);
     if (partRec) {
-      parts.push(partRec as MessagePart);
+      const candidate = partRec as MessagePart;
+      const candidateRec = asRecord(candidate);
+      const partID = firstNonEmptyString(
+        asString(candidateRec?.id),
+        asString(candidateRec?.partID),
+        asString(candidateRec?.partId),
+      );
+      const messageID = firstNonEmptyString(
+        asString(candidateRec?.messageID),
+        asString(candidateRec?.messageId),
+      );
+      const partType = firstNonEmptyString(
+        asString(candidateRec?.type),
+        asString(candidateRec?.kind),
+      )?.toLowerCase();
+      const textKey = normalizeComparableText(
+        firstNonEmptyString(
+          asString(candidateRec?.text),
+          asString(candidateRec?.content),
+          asString(candidateRec?.message),
+          asString(asRecord(candidateRec?.state)?.output),
+          asString(candidateRec?.delta),
+        ),
+      );
+      const mergeKey = partID
+        ? `part:${partID}`
+        : messageID
+          ? `msg:${messageID}`
+          : `${partType || "part"}:${textKey}`;
+
+      const existing = partsByKey.get(mergeKey);
+      if (!existing) {
+        partsByKey.set(mergeKey, candidate);
+        continue;
+      }
+
+      const existingRec = asRecord(existing);
+      const existingStatus = asRecord(existingRec?.state)?.status;
+      const candidateStatus = asRecord(candidateRec?.state)?.status;
+      if (statusRank(candidateStatus) >= statusRank(existingStatus)) {
+        partsByKey.set(mergeKey, candidate);
+      }
     }
   }
 
+  parts.push(...partsByKey.values());
   return parts;
 }
 
@@ -1827,15 +1880,7 @@ function MarkdownPreviewModal({
       >
         <div className="oc-modal-header flex shrink-0 items-start justify-between gap-3 bg-oc-panel-soft/70 p-3">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-semibold">{title}</span>
-              <span className="rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] oc-text-secondary">
-                preview
-              </span>
-            </div>
-            <div className="mt-1 text-xs oc-text-secondary">
-              Full rendered markdown content
-            </div>
+            <span className="text-sm font-semibold">{title}</span>
           </div>
           <button
             type="button"
@@ -1862,12 +1907,14 @@ type CollapsedMarkdownPreviewProps = {
   title: string;
   content: string;
   className?: string;
+  variant?: "card" | "bare";
 };
 
 function CollapsedMarkdownPreview({
   title,
   content,
   className,
+  variant = "card",
 }: CollapsedMarkdownPreviewProps) {
   const [isOpen, setIsOpen] = useState(false);
   const hasContent = content.trim().length > 0;
@@ -1882,18 +1929,39 @@ function CollapsedMarkdownPreview({
         type="button"
         onClick={() => setIsOpen(true)}
         className={cn(
-          "group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60",
+          "group relative w-full min-w-0 max-w-full overflow-hidden text-left transition-colors",
+          variant === "card"
+            ? "rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 hover:border-oc-border hover:bg-oc-panel-soft/60"
+            : "rounded-none border-0 bg-transparent hover:bg-transparent",
           className,
         )}
         aria-label={`Open ${title} preview`}
       >
-        <div className="relative max-h-[140px] overflow-hidden p-2">
-          <div className="max-h-[140px] overflow-hidden pr-1">
+        <div className={cn(
+          "relative max-h-[140px] min-w-0 max-w-full overflow-hidden",
+          variant === "card" ? "p-2" : "p-0",
+        )}>
+          <div className={cn(
+            "max-h-[140px] min-w-0 max-w-full overflow-hidden",
+            variant === "card" ? "pr-1" : "pr-0",
+          )}>
             <MarkdownRenderer content={content} className="markdown-body" />
           </div>
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-oc-bg-soft via-oc-bg-soft/90 to-transparent" />
+          <div
+            className={cn(
+              "pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t",
+              variant === "card"
+                ? "from-oc-bg-soft via-oc-bg-soft/90 to-transparent"
+                : "from-oc-panel-soft/80 via-oc-panel-soft/30 to-transparent",
+            )}
+          />
         </div>
-        <div className="pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-oc-border-soft bg-oc-bg-soft/90 shadow-sm">
+        <div
+          className={cn(
+            "oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full",
+            variant === "bare" && "bottom-1 right-1",
+          )}
+        >
           <ChevronDown className="h-3 w-3 oc-text-secondary" />
         </div>
       </button>
@@ -2018,7 +2086,7 @@ function CollapsedTerminalBlockPreview({
           <TerminalBlock command={command} output={output} className="pointer-events-none" />
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-oc-bg-soft via-oc-bg-soft/90 to-transparent" />
         </div>
-        <div className="pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-oc-border-soft bg-oc-bg-soft/90 shadow-sm">
+        <div className="oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full">
           <ChevronDown className="h-3 w-3 oc-text-secondary" />
         </div>
       </button>
@@ -2164,12 +2232,13 @@ function CollapsedSearchBlockPreview({
       <button
         type="button"
         onClick={() => setIsOpen(true)}
-        className="group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60"
+        className="oc-timeline-surface oc-timeline-soft-frame group relative w-full overflow-hidden rounded-lg text-left transition-colors hover:bg-oc-panel-soft/50"
         aria-label={`Open ${title} details`}
       >
-        <div className="relative max-h-[140px] overflow-hidden p-2">
-          <div className="max-h-[140px] overflow-hidden">
+        <div className="relative max-h-[128px] overflow-hidden p-1.5">
+          <div className="max-h-[128px] overflow-hidden">
             <SearchBlock
+              className="oc-search-block--timeline-compact"
               pattern={pattern}
               patternInHeader={patternInHeader}
               scope={scope}
@@ -2180,9 +2249,9 @@ function CollapsedSearchBlockPreview({
               headLimit={headLimit}
             />
           </div>
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-oc-bg-soft via-oc-bg-soft/90 to-transparent" />
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-oc-bg-soft via-oc-bg-soft/88 to-transparent" />
         </div>
-        <div className="pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-oc-border-soft bg-oc-bg-soft/90 shadow-sm">
+        <div className="oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full">
           <ChevronDown className="h-3 w-3 oc-text-secondary" />
         </div>
       </button>
@@ -2238,6 +2307,9 @@ type CommentaryItem = {
   text: string;
   streamSeq?: number;
   kind?: "commentary" | "ai_response";
+  status?: "pending" | "done" | "error";
+  messageID?: string;
+  partID?: string;
 };
 
 type ThinkingBlock = { kind: "thinking"; items: ThoughtItem[] };
@@ -2433,7 +2505,9 @@ function thoughtItemsFromStreamingReasoningEvents(
   reasoningEvents.forEach((event, index) => {
     const text = asString(event?.text).trim();
     const isLatestChunk = index === reasoningEvents.length - 1;
-    const fallbackText = isLatestChunk && isActive ? "Thinking..." : "";
+    const isLiveChunk =
+      event?.delta === true || (isLatestChunk && isActive);
+    const fallbackText = isLiveChunk ? "Thinking..." : "";
     const resolvedText = text || fallbackText;
     if (!resolvedText) {
       return;
@@ -2453,7 +2527,7 @@ function thoughtItemsFromStreamingReasoningEvents(
       key: existing?.key ?? `stream-${index}-${createdAt}`,
       text: nextText,
       streamSeq: existing?.streamSeq ?? createdAt,
-      status: isLatestChunk && isActive ? "pending" : "done",
+      status: isLiveChunk ? "pending" : "done",
       messageID: existing?.messageID ?? (messageID || undefined),
       partID: existing?.partID ?? (partID || undefined),
     });
@@ -2572,6 +2646,13 @@ function progressItemsFromRawEventPayloads(
       asString(part.partType),
       asString(structured?.kind),
     );
+    // Reasoning belongs in the dedicated thinking lane, not the activity step
+    // lane. If we let it through here, the same assistant text can render once
+    // as a reasoning block and again as a raw activity row, which is the
+    // duplicate the UI has been showing.
+    if (asString(partType).toLowerCase() === "reasoning") {
+      continue;
+    }
     const status = normalizeProgressStatus(
       firstNonEmptyString(
         asString(state?.status),
@@ -2729,16 +2810,21 @@ function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
     Boolean(activityDetail);
   const normalizedTitle = (step.title ?? "").trim().toLowerCase();
 
-  // Filter out empty step-start and step-finish bookkeeping, but keep rows that
-  // carry file/diff/activity detail because they are the only visible evidence
-  // for some background edits.
+  // Step-start / step-finish are lifecycle markers, not user-facing timeline
+  // entries. Keep them out of the UI entirely so they do not duplicate the
+  // meaningful activity rows that surround them.
   if (
-    !hasUserFacingActivity &&
-    (normalizedPartType === "step-start" ||
-      normalizedPartType === "step-finish" ||
-      type === "step-start" ||
-      type === "step-finish")
+    normalizedPartType === "step-start" ||
+    normalizedPartType === "step-finish" ||
+    type === "step-start" ||
+    type === "step-finish"
   ) {
+    return false;
+  }
+  // Reasoning is rendered in the thinking timeline, not as a progress step.
+  // Keeping it out of this path prevents the same assistant text from showing
+  // twice with and without the raw badge.
+  if (normalizedPartType === "reasoning" || type === "reasoning") {
     return false;
   }
   // Filter out tool wrapper events that just show "tool completed successfully"
@@ -3047,11 +3133,6 @@ function progressItemsFromCentralizedData(
   }
 
   const items = Array.from(stepMap.values());
-  for (const item of items) {
-    if (item.status === "pending") {
-      item.status = "done";
-    }
-  }
   return items;
 }
 
@@ -3063,7 +3144,14 @@ function commentaryItemsFromRawEventPayloads(
   }
   const completionIndex =
     getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads);
-  const rawItems: CommentaryItem[] = [];
+  const rawItems = new Map<string, CommentaryItem>();
+  const statusRank = (value?: unknown): number => {
+    const status = asString(value).toLowerCase();
+    if (status === "done" || status === "completed" || status === "complete") return 3;
+    if (status === "error" || status === "failed") return 2;
+    if (status === "running" || status === "pending") return 1;
+    return 0;
+  };
 
   for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
     if (completionIndex >= 0 && index > completionIndex) {
@@ -3087,6 +3175,13 @@ function commentaryItemsFromRawEventPayloads(
     if (!aiResponseLike) continue;
 
     const stateRec = asRecord(sourcePart.state);
+    const status = normalizeProgressStatus(
+      firstNonEmptyString(
+        asString(stateRec?.status),
+        asString(sourcePart.status),
+        asString(event.status),
+      ),
+    );
     const text = asString(sourcePart.text) || asString(sourcePart.content) || asString(sourcePart.message) || asString(stateRec?.output) || asString(sourcePart.output);
     if (!text) continue;
 
@@ -3096,19 +3191,60 @@ function commentaryItemsFromRawEventPayloads(
       asString(sourcePart.partId),
       asString(event.id),
     );
+    const messageID = firstNonEmptyString(
+      asString(sourcePart.messageID),
+      asString(sourcePart.messageId),
+      asString(event.messageID),
+    );
+    const partID = firstNonEmptyString(
+      asString(sourcePart.partID),
+      asString(sourcePart.partId),
+    );
+    const mergeKey = partID
+      ? `part:${partID}`
+      : messageID
+        ? `msg:${messageID}`
+        : id
+          ? `id:${id}`
+          : `text:${normalizeComparableText(text)}`;
 
-    rawItems.push({
+    const nextItem: CommentaryItem = {
       id,
       text,
       streamSeq: index,
       kind: aiResponseLike ? "ai_response" : "commentary",
-    });
+      status,
+      messageID,
+      partID,
+    };
+
+    const existing = rawItems.get(mergeKey);
+    if (!existing) {
+      rawItems.set(mergeKey, nextItem);
+      continue;
+    }
+
+    const existingRank = statusRank(existing.status);
+    const incomingRank = statusRank(status);
+    if (incomingRank > existingRank) {
+      rawItems.set(mergeKey, nextItem);
+      continue;
+    }
+
+    if (incomingRank === existingRank) {
+      if (normalizeComparableText(text).length > normalizeComparableText(existing.text).length) {
+        rawItems.set(mergeKey, nextItem);
+      }
+    }
   }
 
-  // Keep each commentary chunk in sequence. The centralized tape already
-  // represents the authoritative order, so collapsing repeated ids here would
-  // hide later AI-response chunks that belong in the same assistant turn.
-  return rawItems;
+  // Keep each commentary chunk in sequence, but collapse the canonical + sync
+  // mirror entries that share the same stable identity.
+  return Array.from(rawItems.values()).sort((a, b) => {
+    const left = typeof a.streamSeq === "number" ? a.streamSeq : 0;
+    const right = typeof b.streamSeq === "number" ? b.streamSeq : 0;
+    return left - right;
+  });
 }
 
 function formatTodoStatus(status: TodoItem["status"]): string {
@@ -3213,11 +3349,11 @@ function TodoInlineSummary({
   return (
     <section
       data-assistant-section="todo-inline-summary"
-      className="mt-1 mb-1 overflow-hidden rounded-md border border-oc-border bg-oc-panel-soft"
+      className="oc-timeline-surface oc-timeline-soft-frame mt-1 mb-1 overflow-hidden rounded-xl"
     >
       <button
         type="button"
-        className="flex w-full items-center justify-between gap-2 border-b border-oc-border-soft px-2.5 py-1.5 text-left hover:bg-oc-panel"
+        className="oc-timeline-soft-frame__header flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left hover:bg-oc-panel/25"
         onClick={() => setShowTodoChecklist(!showTodoChecklist)}
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -3239,20 +3375,18 @@ function TodoInlineSummary({
         />
       </button>
       {showTodoChecklist && (
-        <div
-          className="max-h-[280px] space-y-1 overflow-y-auto p-2"
-          style={{ scrollPaddingBottom: "0.5rem" }}
-        >
-          <div className="text-[10px] uppercase tracking-wider oc-text-secondary">
+        <div className="max-h-[280px] overflow-y-auto p-2" style={{ scrollPaddingBottom: "0.5rem" }}>
+          <div className="mb-1 text-[10px] uppercase tracking-wider oc-text-secondary">
             {inProgressCount} in progress
             {latest ? ` · Latest: "${truncateTodoLabel(latest.content ?? latest.text ?? "")}"` : ""}
           </div>
-          {sorted.map((todo, index) => {
+          <div className="oc-timeline-soft-frame__body overflow-hidden rounded-lg">
+          {sorted.map((todo) => {
             const isDone = todo.status === "completed";
             return (
               <div
-                key={todo.id ?? `todo-${index}`}
-                className="flex items-start gap-2 rounded-md border border-oc-border bg-oc-bg-soft px-2 py-1 text-xs"
+                key={todo.id ?? todo.content ?? todo.text ?? todo.description ?? "todo"}
+                className="oc-todo-row flex items-start gap-2 px-2 py-1.5 text-xs"
               >
                 <span className="mt-0.5 shrink-0">
                   {todo.status === "completed" ? (
@@ -3302,6 +3436,7 @@ function TodoInlineSummary({
               </div>
             );
           })}
+          </div>
         </div>
       )}
     </section>
@@ -3330,7 +3465,7 @@ function TodoWriteStep({ event }: { event: DisplayEvent }) {
   if (todos.length === 0) {
     if (event.status === "pending") {
       return (
-        <div className="oc-refined-event-content flex items-center gap-2 py-2 px-3 rounded-md border border-oc-border-soft bg-oc-bg-soft text-xs text-oc-text-soft">
+        <div className="oc-refined-event-content flex items-center gap-2 rounded-md px-3 py-2 text-xs text-oc-text-soft">
           <ThinkingStatusTicker className="oc-thinking-status" />
           <span>Generating checklist...</span>
         </div>
@@ -3340,13 +3475,11 @@ function TodoWriteStep({ event }: { event: DisplayEvent }) {
   }
 
   return (
-    <div className="oc-refined-event-content">
-      <TodoInlineSummary
-        todoItems={todos}
-        showTodoChecklist={showTodoChecklist}
-        setShowTodoChecklist={setShowTodoChecklist}
-      />
-    </div>
+    <TodoInlineSummary
+      todoItems={todos}
+      showTodoChecklist={showTodoChecklist}
+      setShowTodoChecklist={setShowTodoChecklist}
+    />
   );
 }
 
@@ -3911,6 +4044,63 @@ type DisplayEvent = {
   isImportant?: boolean;
   updateCount: number;
 };
+
+function displayEventSourcePriority(source?: DisplayEvent["source"]): number {
+  // Prefer the canonical event tape over the raw debug mirror when both
+  // produce the same visible row. That keeps one row in the timeline while
+  // still letting richer non-raw data win when it exists.
+  switch (source) {
+    case "final":
+      return 3;
+    case "stream":
+      return 2;
+    case "raw_debug":
+      return 1;
+    default:
+      return 2;
+  }
+}
+
+function displayEventFingerprint(event: DisplayEvent): string {
+  const label = event.label.trim().toLowerCase();
+  const filePath = (event.filePath ?? "").trim().toLowerCase();
+  const callID = (event.callID ?? "").trim().toLowerCase();
+  const sessionID = (event.sessionID ?? "").trim().toLowerCase();
+  const partType = (event.partType ?? "").trim().toLowerCase();
+  const activityTool = (event.activityDetail?.tool ?? "").trim().toLowerCase();
+
+  if (event.kind === "activity") {
+    // Activity rows may surface multiple times across canonical/sync mirrors and
+    // across lifecycle states (running -> pending -> done). Their visible
+    // summary text can change as the raw payload stabilizes, so key them by
+    // stable identity instead of rendered prose.
+    return [
+      "activity",
+      label,
+      callID || filePath,
+      sessionID,
+      partType,
+      activityTool,
+      String(event.internal ?? false),
+    ].join("|");
+  }
+
+  // Non-activity rows (reasoning/commentary) should continue to include their
+  // rendered text so chunked reasoning remains sequential instead of collapsing
+  // into a single line.
+  return [
+    event.kind,
+    label,
+    event.summary.trim().toLowerCase(),
+    (event.description ?? "").trim().toLowerCase(),
+    (event.detail ?? "").trim().toLowerCase(),
+    filePath,
+    callID,
+    sessionID,
+    partType,
+    String(event.internal ?? false),
+  ].join("|");
+}
 
 function sourceFromThoughtKey(
   key: string,
@@ -4626,6 +4816,8 @@ function buildDisplayEvents(
 
     for (const event of block.items) {
       const rawTitle = event.title || "";
+      const labelText = (event.label ?? "").toString();
+      const labelLower = labelText.trim().toLowerCase();
       const parsed = parseTimelineStepTitle(rawTitle);
       const cleanedRawTitle = stripTrailingEllipsis(rawTitle);
       const activityDetail = event.activityDetail;
@@ -4815,25 +5007,32 @@ function buildDisplayEvents(
     }
   }
 
-  const collapsed: DisplayEvent[] = rawEvents.map((event) => ({ ...event }));
-
-  if (isStreamingActive) {
-    let latestPendingIndex = -1;
-    for (let index = collapsed.length - 1; index >= 0; index -= 1) {
-      if (collapsed[index].status === "pending") {
-        latestPendingIndex = index;
-        break;
+  const deduped: DisplayEvent[] = [];
+  const dedupedIndexByFingerprint = new Map<string, number>();
+  for (const event of rawEvents) {
+    const fingerprint = displayEventFingerprint(event);
+    const existingIndex = dedupedIndexByFingerprint.get(fingerprint);
+    if (typeof existingIndex === "number") {
+      const existing = deduped[existingIndex];
+      const existingPriority = displayEventSourcePriority(existing.source);
+      const incomingPriority = displayEventSourcePriority(event.source);
+      if (incomingPriority > existingPriority) {
+        deduped[existingIndex] = {
+          ...existing,
+          ...event,
+          updateCount: existing.updateCount + 1,
+        };
+      } else {
+        existing.updateCount += 1;
       }
+      continue;
     }
 
-    if (latestPendingIndex > 0) {
-      for (let index = 0; index < latestPendingIndex; index += 1) {
-        if (collapsed[index].status === "pending") {
-          collapsed[index].status = "done";
-        }
-      }
-    }
+    dedupedIndexByFingerprint.set(fingerprint, deduped.length);
+    deduped.push({ ...event });
   }
+
+  const collapsed: DisplayEvent[] = deduped;
 
   return collapsed;
 }
@@ -5299,6 +5498,7 @@ function getAssistantTurnMetadataFromCentralizedEvents(
 function AssistantResponseCardInner({
   message,
   streaming,
+  hideLoadingText = false,
   isContiguous,
   interactiveEvents,
   messages,
@@ -5311,6 +5511,7 @@ function AssistantResponseCardInner({
 }: {
   message?: Message;
   streaming?: StreamingState;
+  hideLoadingText?: boolean;
   isContiguous?: boolean;
   interactiveEvents?: AppState["interactiveEvents"];
   messages?: Message[];
@@ -5324,6 +5525,7 @@ function AssistantResponseCardInner({
   const dispatch = useAppDispatch();
   const {
     assistantTurnPending,
+    assistantTurnMessageId,
     availableModels,
     streamingBySessionId,
     rawSdkEventPayloadsBySessionId,
@@ -5343,6 +5545,12 @@ function AssistantResponseCardInner({
   const activityTimelineMessage = message;
   const activityTimelineStreaming =
     streaming ?? (currentSessionId ? streamingBySessionId?.[currentSessionId] : undefined);
+  const assistantMessageId =
+    message?.info?.id ||
+    message?.id ||
+    assistantTurnMessageId ||
+    activityTimelineStreaming?.messageId ||
+    null;
   const sdkDebugData = useMemo(() => {
     if (!config.debug.showSdkDebug) return null;
     const sdkPayloads =
@@ -5365,14 +5573,19 @@ function AssistantResponseCardInner({
     asString(centralizedMessageRec?.sessionID) ||
     asString(centralizedMessageRec?.sessionId) ||
     null;
-  const centralizedRawSdkEventPayloads = useMemo(() => {
-    const allPayloads = centralizedSessionId &&
-      Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId])
+  const sessionScopedRawSdkEventPayloads = useMemo(() => {
+    if (!centralizedSessionId) {
+      return [];
+    }
+
+    return Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId])
       ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
       : [];
-    
-    const targetMessageId = message?.info?.id || message?.id;
-    if (!targetMessageId) return allPayloads;
+  }, [centralizedSessionId, rawSdkEventPayloadsBySessionId]);
+  const centralizedRawSdkEventPayloads = useMemo(() => {
+    const allPayloads = sessionScopedRawSdkEventPayloads;
+
+    if (!assistantMessageId) return allPayloads;
 
     return allPayloads.filter((payload) => {
       const rec = asRecord(payload);
@@ -5381,16 +5594,39 @@ function AssistantResponseCardInner({
       const info = asRecord(props?.info);
       const part = asRecord(props?.part) || asRecord(rec?.part);
       const msgId = asString(info?.id) || asString(part?.messageID) || asString(part?.messageId);
-      if (msgId) return msgId === targetMessageId;
-      return true;
+      // The assistant response card must only render the events that belong to
+      // the current assistant message. If a payload does not carry a message
+      // identifier, it is session-level noise (for example model switches) and
+      // must be excluded so the next turn cannot inherit stale reasoning.
+      if (!msgId) return false;
+      return msgId === assistantMessageId;
     });
-  }, [centralizedSessionId, rawSdkEventPayloadsBySessionId, message?.info?.id, message?.id]);
+  }, [assistantMessageId, sessionScopedRawSdkEventPayloads]);
+  const scopedActivityTimelineStreaming = useMemo(() => {
+    if (!activityTimelineStreaming) {
+      return undefined;
+    }
+
+    const streamingMessageId = asString(activityTimelineStreaming.messageId).trim();
+    if (!assistantMessageId) {
+      return activityTimelineStreaming;
+    }
+    if (!streamingMessageId) {
+      // Keep legacy or incomplete streaming snapshots only when we cannot
+      // identify the owning message yet. Once a message ID is present, the
+      // stream must match the current assistant turn to avoid leaking the
+      // previous turn’s live steps into the new card.
+      return activityTimelineStreaming;
+    }
+
+    return streamingMessageId === assistantMessageId ? activityTimelineStreaming : undefined;
+  }, [activityTimelineStreaming, assistantMessageId]);
   const turnMetadata = useMemo(
     () =>
       getAssistantTurnMetadataFromCentralizedEvents(
-        centralizedRawSdkEventPayloads,
+        sessionScopedRawSdkEventPayloads,
       ),
-    [centralizedRawSdkEventPayloads],
+    [sessionScopedRawSdkEventPayloads],
   );
   // Normalize the centralized tape once at the boundary so downstream helpers
   // only see a single event shape, regardless of whether the original entry was
@@ -5403,7 +5639,6 @@ function AssistantResponseCardInner({
     return rawMessagePartsFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads);
   }, [normalizedCentralizedRawSdkEventPayloads]);
   const cardMessage = activityTimelineMessage;
-  const cardStreaming = activityTimelineStreaming;
   const rawContentChunks = useMemo(
     () =>
       getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
@@ -5417,25 +5652,25 @@ function AssistantResponseCardInner({
     content: string;
   }>({ messageId: null, content: "" });
   const activeStreamingMessageId =
-    streaming?.messageId || message?.info?.id || message?.id || null;
+    scopedActivityTimelineStreaming?.messageId || assistantMessageId;
   if (stickyStreamingContentRef.current.messageId !== activeStreamingMessageId) {
     stickyStreamingContentRef.current = {
       messageId: activeStreamingMessageId,
       content: "",
     };
   }
-  if (streaming?.isActive && rawContent.trim().length > 0) {
+  if (scopedActivityTimelineStreaming?.isActive && rawContent.trim().length > 0) {
     stickyStreamingContentRef.current.content = rawContent;
   }
   const content =
-    streaming?.isActive && rawContent.trim().length === 0
+    scopedActivityTimelineStreaming?.isActive && rawContent.trim().length === 0
       ? stickyStreamingContentRef.current.content
       : rawContent;
   const hasAssistantFinishSignal =
-    cardStreaming?.hasAssistantFinishSignal === true;
-  const hasActiveReasoningPart = cardStreaming?.inReasoningPart === true;
+    scopedActivityTimelineStreaming?.hasAssistantFinishSignal === true;
+  const hasActiveReasoningPart = scopedActivityTimelineStreaming?.inReasoningPart === true;
   const hasTerminalStepSignal =
-    cardStreaming?.hasTerminalStepSignal === true;
+    scopedActivityTimelineStreaming?.hasTerminalStepSignal === true;
   const resolvedContentChunks =
     rawContentChunks.length > 0
       ? rawContentChunks
@@ -5450,10 +5685,10 @@ function AssistantResponseCardInner({
   const liveThoughtItems = useMemo(
     () =>
       thoughtItemsFromStreamingReasoningEvents(
-        cardStreaming?.reasoningEvents,
-        cardStreaming?.isActive === true,
+        scopedActivityTimelineStreaming?.reasoningEvents,
+        scopedActivityTimelineStreaming?.isActive === true,
       ),
-    [cardStreaming?.reasoningEvents, cardStreaming?.isActive],
+    [scopedActivityTimelineStreaming?.reasoningEvents, scopedActivityTimelineStreaming?.isActive],
   );
   const thoughtItems = useMemo(
     () => mergeThoughtItemsForTimeline(finalizedThoughtItems, liveThoughtItems),
@@ -5482,13 +5717,13 @@ function AssistantResponseCardInner({
       activityTimelineRawEventParts as MessagePart[],
   );
   }, [thoughtItems, progressItems, commentaryItems, resolvedContentChunks, activityTimelineRawEventParts]);
-  const isStreamingActive = !!activityTimelineStreaming?.isActive;
+  const isStreamingActive = !!scopedActivityTimelineStreaming?.isActive;
   
   const structured = useMemo(
     () => structuredOutputFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads),
     [normalizedCentralizedRawSdkEventPayloads]
   );
-  const responseType = structured?.responseType?.toLowerCase();
+  const responseType = (structured?.type ?? structured?.responseType)?.toLowerCase();
   const plan = structured?.plan;
   const fileChanges = structured?.fileChanges;
   
@@ -5555,11 +5790,10 @@ function AssistantResponseCardInner({
   // Match the same ID extraction logic as backend extractMessageId()
   // https://github.com/anthropics/opencode-vscode/blob/main/src/providers/ChatViewProvider.ts#L1988-L2000
   const messageId =
-    info?.id ||
-    activityTimelineMessage?.id ||
+    assistantMessageId ||
     (activityTimelineMessage as any)?.messageId ||
     (info as any)?.messageId ||
-    activityTimelineStreaming?.messageId;
+    null;
 
   const shouldShowFileChanges = useMemo(() => {
     // Implementation plan turns already surface their own plan card, so the
@@ -6230,7 +6464,11 @@ function AssistantResponseCardInner({
     if (!plan) return "";
     const candidate = (
       firstNonEmptyString(
-        typeof structured?.message === "string" ? structured.message : undefined,
+        typeof structured?.text === "string"
+          ? structured.text
+          : typeof structured?.message === "string"
+            ? structured.message
+            : undefined,
         plan.intro,
         plan.summary,
       ) ?? ""
@@ -6239,9 +6477,13 @@ function AssistantResponseCardInner({
       return candidate;
     }
     return "I created an implementation plan. Here are the key steps and the plan file.";
-  }, [structured?.message, plan]);
+  }, [structured?.text, structured?.message, plan]);
   const structuredResponseMessage =
-    typeof structured?.message === "string" ? structured.message.trim() : "";
+    typeof structured?.text === "string"
+      ? structured.text.trim()
+      : typeof structured?.message === "string"
+        ? structured.message.trim()
+        : "";
   const responseBodyRawSdkEventPayloads = useMemo(
     () =>
       normalizedCentralizedRawSdkEventPayloads.filter(
@@ -6645,28 +6887,11 @@ function AssistantResponseCardInner({
         {!isContiguous && (
           <div className="oc-msg-header mb-2 flex flex-wrap items-start justify-between gap-1.5">
             <div className="oc-msg-header-main flex min-w-0 flex-1 items-center gap-1.5">
-              {showStreamingLoading ? (
+              {!hideLoadingText && showStreamingLoading ? (
                 <ThinkingStatusTicker className="oc-thinking-status" />
               ) : (
                 <>
                   <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
-                    <div
-                      className="oc-agent-icon flex items-center justify-center rounded-md p-1"
-                      style={
-                        agentColor
-                          ? { backgroundColor: `${agentColor}26` }
-                          : { backgroundColor: "var(--oc-accent-soft)" }
-                      }
-                    >
-                      <Zap
-                        className="h-4 w-4"
-                        style={
-                          agentColor
-                            ? { color: `color-mix(in srgb, var(--oc-text) 88%, ${agentColor})` }
-                            : { color: "var(--oc-text-secondary)" }
-                        }
-                      />
-                    </div>
                     <div className="oc-msg-header-text flex min-w-0 items-center gap-1.5 flex-wrap">
                       <span
                         className="oc-msg-agent-name font-semibold text-oc-sm truncate min-w-0"
@@ -6794,7 +7019,22 @@ function AssistantResponseCardInner({
                           />
                         );
                         const shouldShowDetail = viewState.showActivityDetails;
-                        const isGlobSearch = event.label.toLowerCase() === "glob";
+                        const labelText = (event.label ?? "").toString();
+                        const labelLower = labelText.trim().toLowerCase();
+                        const isGlobSearch = labelLower === "glob";
+                        const showDiffPreviewLocal =
+                          (labelLower === "edit" ||
+                            labelLower === "modify" ||
+                            labelLower === "patch" ||
+                            labelLower === "write" ||
+                            labelLower === "apply_patch") &&
+                          (
+                            !!event.activityDetail?.diffExcerpt ||
+                            !!(event.activityDetail?.input as Record<string, unknown> | undefined)?.patchText ||
+                            !!(event.activityDetail?.input as Record<string, unknown> | undefined)?.patch ||
+                            !!(event.activityDetail?.input as Record<string, unknown> | undefined)?.diff ||
+                            !!event.diffStats
+                          );
 
                         return (
                           <StepperItem
@@ -6820,7 +7060,7 @@ function AssistantResponseCardInner({
                                             "oc-refined-event-label",
                                             "reasoning",
                                           )}
-                                          data-operation={event.label.toLowerCase()}
+                                          data-operation={labelLower}
                                         >
                                           {event.label}
                                         </span>
@@ -6849,38 +7089,13 @@ function AssistantResponseCardInner({
                                         )}
                                       </div>
                                     </div>
-
-                                    {/* Chevron button at right end */}
-                                    <button
-                                      type="button"
-                                      className="shrink-0 p-1 hover:bg-oc-panel-soft rounded transition-colors"
-                                      onClick={() =>
-                                        setViewState((prev) => {
-                                          const newExpanded = new Set(prev.expandedReasoningSteps);
-                                          if (newExpanded.has(event.key)) {
-                                            newExpanded.delete(event.key);
-                                          } else {
-                                            newExpanded.add(event.key);
-                                          }
-                                          return { ...prev, expandedReasoningSteps: newExpanded };
-                                        })
-                                      }
-                                      title={isExpanded ? "Collapse reasoning" : "Expand reasoning"}
-                                    >
-                                      <ChevronDown
-                                        className={cn(
-                                          "h-4 w-4 transition-transform duration-200 oc-text-secondary",
-                                          isExpanded && "rotate-180",
-                                        )}
-                                      />
-                                    </button>
                                   </div>
                                 );
                               } else {
                                   return (
                                   <div className="flex items-start justify-between gap-2 w-full">
                                     <ExpandableStep className="flex-1">
-                                {event.label.toLowerCase() === "call_omo_agent" ? (
+                                {labelLower === "call_omo_agent" ? (
                                   <CallOmoAgentStep
                                     callID={event.callID}
                                     sessionID={event.sessionID}
@@ -6890,7 +7105,7 @@ function AssistantResponseCardInner({
                                     source={event.source}
                                     activityDetail={event.activityDetail}
                                   />
-                                ) : event.label.toLowerCase() === "background_output" ? (
+                                ) : labelLower === "background_output" ? (
                                   <BackgroundOutputStep
                                     callID={event.callID}
                                     sessionID={event.sessionID}
@@ -6901,305 +7116,279 @@ function AssistantResponseCardInner({
                                     activityDetail={event.activityDetail}
                                   />
                                 ) : (
-                                <div className="flex flex-col items-start gap-2 w-full min-w-0">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                  <span
-                                    className={cn(
-                                      "oc-refined-event-label",
-                                      "activity",
-                                    )}
-                                    data-operation={event.label.toLowerCase()}
-                                  >
-                                    {event.label}
-                                  </span>
-                                  {event.source && event.source !== "stream" && event.source !== "final" && (
-                                    <span className="oc-refined-meta-badge">
-                                      {event.source === "raw_debug"
-                                        ? "raw"
-                                        : event.source}
-                                    </span>
-                                  )}
-                                  {event.internal && (
-                                    <span className="oc-refined-meta-badge">
-                                      internal
-                                    </span>
-                                  )}
-                                </div>
-
-                                <div className="flex-1 flex-col gap-1 oc-refined-event-content w-full">
-                                  {/* For read and todowrite events, skip the generic summary block here — they have their own custom UI below.
-                                      For all other events, render the file link or summary as usual. */}
-                                  {event.label.toLowerCase() !== "read" && event.label.toLowerCase() !== "todowrite" && (
-                                    event.filePath && !isUrl(event.filePath) && !isCallStyleActivityLabel(event.label) ? (
-                                     SEARCH_LABELS.has(event.label) ? (
-                                        <div className={cn(
-                                          "flex flex-col gap-1.5",
-                                          isGlobSearch && "max-h-64 overflow-y-auto",
-                                        )}>
-                                          {isGlobSearch && event.filePath && (
-                                            <div className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
-                                              <FileIcon filePath={event.filePath} />
-                                              <span className="break-words whitespace-pre-wrap">
-                                                {event.filePath}
-                                              </span>
-                                            </div>
-                                          )}
-                                          <SearchBlock
-                                            pattern={buildSearchPattern(
-                                              // For glob: use input.pattern (e.g. "**/package.json") instead of
-                                              // event.summary which is the path and would duplicate the header
-                                              isGlobSearch
-                                                ? (event.activityDetail?.input?.pattern as string)
-                                                : (event.activityDetail?.query || event.summary),
-                                              event.description,
-                                            )}
-                                            patternInHeader={isGlobSearch}
-                                            scope={event.label}
-                                            path={isGlobSearch ? undefined : event.filePath}
-                                            include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
-                                            outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
-                                            headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
-                                            output={event.activityDetail?.output}
-                                          />
-                                        </div>
-                                      ) : (
-                                        <button
-                                          type="button"
-                                          className="oc-refined-file-link oc-refined-file-link-with-tooltip"
-                                          onClick={() =>
-                                            vscode.postMessage({
-                                              type: "openFile",
-                                              file: event.filePath!,
-                                            })
-                                          }
-                                          >
-                                          <FileIcon filePath={event.filePath} />
-                                          <span className="break-words whitespace-pre-wrap">
-                                            {event.summary || event.filePath}
-                                          </span>
-                                          <span className="oc-refined-file-link-tooltip" role="tooltip">
-                                            {event.filePath}
-                                          </span>
-                                        </button>
-                                      )
-                                    ) : (
-                                      <div
+                                  <div className="flex flex-col items-start gap-2 w-full min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span
                                         className={cn(
-                                          "oc-refined-event-summary",
+                                          "oc-refined-event-label",
+                                          "activity",
                                         )}
+                                        data-operation={labelLower}
                                       >
-                                        {event.label === "bash" ? (
-                                          <TerminalBlockWithOutput
-                                            event={event}
-                                            messageContent={content}
-                                          />
-                                        ) : SEARCH_LABELS.has(event.label) ? (
-                                          <div className="flex flex-col gap-1.5">
-                                            {isGlobSearch && event.filePath && (
-                                              <div className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
+                                        {event.label}
+                                      </span>
+                                      {event.source && event.source !== "stream" && event.source !== "final" && (
+                                        <span className="oc-refined-meta-badge">
+                                          {event.source === "raw_debug"
+                                            ? "raw"
+                                            : event.source}
+                                        </span>
+                                      )}
+                                      {event.internal && (
+                                        <span className="oc-refined-meta-badge">
+                                          internal
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <div className="flex flex-col gap-1 w-full">
+                                        {/* For read and todowrite events, skip the generic summary block here — they have their own custom UI below.
+                                            For all other events, render the file link or summary as usual. */}
+                                        {labelLower !== "read" && labelLower !== "todowrite" && (
+                                          event.filePath && !isUrl(event.filePath) && !isCallStyleActivityLabel(event.label) ? (
+                                            SEARCH_LABELS.has(event.label) ? (
+                                              <div className={cn(
+                                                "flex flex-col gap-1.5",
+                                                isGlobSearch && "max-h-64 overflow-y-auto",
+                                              )}>
+                                                {isGlobSearch && event.filePath && (
+                                                  <div className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
+                                                    <FileIcon filePath={event.filePath} />
+                                                    <span className="break-words whitespace-pre-wrap">
+                                                      {event.filePath}
+                                                    </span>
+                                                  </div>
+                                                )}
+                                                  <CollapsedSearchBlockPreview
+                                                    title={event.label}
+                                                    pattern={
+                                                      isGlobSearch
+                                                        ? (event.activityDetail?.input?.pattern as string)
+                                                        : buildSearchPattern(
+                                                            event.activityDetail?.query || event.summary,
+                                                            event.description,
+                                                          )
+                                                    }
+                                                    patternInHeader={false}
+                                                    scope={event.label}
+                                                    path={isGlobSearch ? undefined : event.filePath}
+                                                    include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
+                                                  outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
+                                                  headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
+                                                  output={event.activityDetail?.output}
+                                                />
+                                              </div>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                className="oc-refined-file-link oc-refined-file-link-with-tooltip"
+                                                onClick={() =>
+                                                  vscode.postMessage({
+                                                    type: "openFile",
+                                                    file: event.filePath!,
+                                                  })
+                                                }
+                                              >
                                                 <FileIcon filePath={event.filePath} />
                                                 <span className="break-words whitespace-pre-wrap">
+                                                  {event.summary || event.filePath}
+                                                </span>
+                                                <span className="oc-refined-file-link-tooltip" role="tooltip">
                                                   {event.filePath}
                                                 </span>
-                                              </div>
-                                            )}
-                                            {isGlobSearch ? (
-                                              <CollapsedSearchBlockPreview
-                                                title={event.label}
-                                                pattern={buildSearchPattern(
-                                                  // For glob: use input.pattern (e.g. "**/package.json") instead of
-                                                  // event.summary which is the path and would duplicate the header
-                                                  event.activityDetail?.input?.pattern as string,
-                                                  event.description,
-                                                )}
-                                                patternInHeader={true}
-                                                scope={event.label}
-                                                path={undefined}
-                                                include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
-                                                outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
-                                                headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
-                                                output={event.activityDetail?.output}
-                                              />
-                                            ) : (
-                                              <SearchBlock
-                                                pattern={buildSearchPattern(
-                                                  event.activityDetail?.query || event.summary,
-                                                  event.description,
-                                                )}
-                                                scope={event.label}
-                                                path={event.filePath}
-                                                include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
-                                                outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
-                                                headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
-                                                output={event.activityDetail?.output}
-                                              />
-                                            )}
+                                              </button>
+                                            )
+                                          ) : (
+                                            <div className="oc-refined-event-summary">
+                                              {event.label === "bash" ? (
+                                                <TerminalBlockWithOutput
+                                                  event={event}
+                                                  messageContent={content}
+                                                />
+                                              ) : SEARCH_LABELS.has(event.label) ? (
+                                                <div className="flex flex-col gap-1.5">
+                                                  {isGlobSearch && event.filePath && (
+                                                    <div className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
+                                                      <FileIcon filePath={event.filePath} />
+                                                      <span className="break-words whitespace-pre-wrap">
+                                                        {event.filePath}
+                                                      </span>
+                                                    </div>
+                                                  )}
+                                                  {isGlobSearch ? (
+                                                    <CollapsedSearchBlockPreview
+                                                      title={event.label}
+                                                      pattern={buildSearchPattern(
+                                                        event.activityDetail?.input?.pattern as string,
+                                                        event.description,
+                                                      )}
+                                                      patternInHeader={true}
+                                                      scope={event.label}
+                                                      path={undefined}
+                                                      include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
+                                                      outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
+                                                      headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
+                                                      output={event.activityDetail?.output}
+                                                    />
+                                                  ) : (
+                                                    <CollapsedSearchBlockPreview
+                                                      title={event.label}
+                                                      pattern={buildSearchPattern(
+                                                        event.activityDetail?.query || event.summary,
+                                                        event.description,
+                                                      )}
+                                                      scope={event.label}
+                                                      path={event.filePath}
+                                                      include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
+                                                      outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
+                                                      headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
+                                                      output={event.activityDetail?.output}
+                                                    />
+                                                  )}
+                                                </div>
+                                              ) : event.filePath && isUrl(event.filePath) ? (
+                                                <a
+                                                  href={event.filePath}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  className="oc-refined-url-link flex items-center gap-1.5 hover:underline"
+                                                >
+                                                  <ArrowUpRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                                                  <span className="break-words whitespace-pre-wrap">
+                                                    {event.summary || event.filePath}
+                                                  </span>
+                                                </a>
+                                              ) : (
+                                                <CollapsedMarkdownPreview
+                                                  title={event.label}
+                                                  content={event.summary || event.filePath || ""}
+                                                />
+                                              )}
+                                            </div>
+                                          )
+                                        )}
+
+                                        {!SEARCH_LABELS.has(labelText) && labelLower !== "bash" && labelLower !== "todowrite" && labelLower !== "read" && event.description && (
+                                          <div className="mt-1">
+                                            <CollapsedMarkdownPreview
+                                              title={`${event.label} description`}
+                                              content={event.description}
+                                            />
                                           </div>
-                                        ) : event.filePath && isUrl(event.filePath) ? (
-                                          <a
-                                            href={event.filePath}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="oc-refined-url-link flex items-center gap-1.5 hover:underline"
-                                          >
-                                            <ArrowUpRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                                            <span className="break-words whitespace-pre-wrap">
-                                              {event.summary || event.filePath}
-                                            </span>
-                                          </a>
-                                        ) : (
-                                          <CollapsedMarkdownPreview
-                                            title={event.label}
-                                            content={event.summary || event.filePath || ""}
+                                        )}
+
+                                        {(() => {
+                                          const isRead = labelLower === "read";
+                                          const preview = event.activityDetail?.metadata?.preview as string | undefined;
+                                          return isRead && !!preview;
+                                        })() && (() => {
+                                          const preview = event.activityDetail?.metadata?.preview as string;
+                                          const previewTitle = event.activityDetail?.title || event.summary || event.filePath || "File Preview";
+                                          return (
+                                            <div className="oc-read-preview oc-activity-step-card mt-2 min-w-0 overflow-hidden p-3">
+                                              <div className="mb-2 flex items-center gap-2 text-xs text-oc-text-soft">
+                                                <span className="flex items-center gap-1.5 font-medium">
+                                                  <FileIcon filePath={event.filePath} />
+                                                  <span className="break-words whitespace-pre-wrap">
+                                                    {previewTitle}
+                                                  </span>
+                                                </span>
+                                              </div>
+                                              <CollapsedMarkdownPreview
+                                                title={previewTitle}
+                                                content={preview}
+                                                variant="bare"
+                                              />
+                                            </div>
+                                          );
+                                        })()}
+
+                                        {(() => {
+                                          const isTodoWrite = labelLower === "todowrite";
+                                          if (!isTodoWrite) return null;
+                                          return <TodoWriteStep event={event} />;
+                                        })()}
+
+                                        {showDiffPreviewLocal && (
+                                          <DiffPreviewStep
+                                            title={event.activityDetail?.title || event.summary || "Diff Preview"}
+                                            filePath={event.viewDiffFile || event.filePath || event.activityDetail?.file}
+                                            diffStats={event.diffStats}
+                                            excerpt={event.activityDetail?.diffExcerpt}
+                                            source={event.source}
+                                            status={event.status}
+                                            activityDetail={event.activityDetail}
                                           />
                                         )}
-                                      </div>
-                                    )
-                                  )}
 
-
-                                  {/* For non-bash, non-todowrite, non-read events, render description separately.
-                                      Read events suppress the description since the preview card shows content. */}
-                                  {!SEARCH_LABELS.has(event.label) && event.label !== "bash" && event.label.toLowerCase() !== "todowrite" && event.label.toLowerCase() !== "read" && event.description && (
-                                    <div className="oc-refined-event-content">
-                                      <CollapsedMarkdownPreview
-                                        title={`${event.label} description`}
-                                        content={event.description}
-                                      />
-                                    </div>
-                                  )}
-
-                                  {/* Show preview content for read steps — render metadata.preview as markdown with syntax highlighting */}
-                                  {(() => {
-                                    const isRead = event.label.toLowerCase() === "read";
-                                    // Use the metadata preview string (clean file content preview) if available
-                                    const preview = event.activityDetail?.metadata?.preview as string | undefined;
-                                    return isRead && !!preview;
-                                  })() && (() => {
-                                    const preview = event.activityDetail?.metadata?.preview as string;
-                                    const previewTitle = event.activityDetail?.title || event.summary || event.filePath || "File Preview";
-                                    return (
-                                      <div className="oc-refined-event-content oc-read-preview min-w-0">
-                                        <div className="mb-1 flex items-center gap-2 text-xs text-oc-text-soft">
-                                          <span className="flex items-center gap-1.5 font-medium">
-                                            <FileIcon filePath={event.filePath} />
-                                            <span className="break-words whitespace-pre-wrap">
-                                              {previewTitle}
-                                            </span>
-                                          </span>
-                                        </div>
-                                        <CollapsedMarkdownPreview
-                                          title={previewTitle}
-                                          content={preview}
-                                        />
-                                      </div>
-                                    );
-                                  })()}
-
-
-                                  {/* Show checklist for todowrite steps */}
-                                  {(() => {
-                                    const isTodoWrite = event.label.toLowerCase() === "todowrite";
-                                    if (!isTodoWrite) return null;
-                                    return <TodoWriteStep event={event} />;
-                                  })()}
-
-                                  {/* Show diff preview for edit steps */}
-                                  {(() => {
-                                    const isEdit = event.label.toLowerCase() === "edit";
-                                    const hasDiffExcerpt = !!event.activityDetail?.diffExcerpt;
-                                    return isEdit && hasDiffExcerpt;
-                                  })() && (
-                                    <div className="oc-refined-event-content">
-                                      <div className="flex items-center justify-between mb-1.5">
-                                        <span className="text-[10px] font-medium uppercase tracking-wider text-oc-text-soft">
-                                          Diff Preview
-                                        </span>
-                                        {event.diffStats && (
-                                          <span className="text-[10px] text-oc-text-soft">
-                                            +{event.diffStats.added} -{event.diffStats.deleted}
-                                          </span>
+                                        {shouldShowDetail && event.detail && (
+                                          <div className="mt-1">
+                                            <CollapsedMarkdownPreview
+                                              title={`${event.label} details`}
+                                              content={event.detail}
+                                            />
+                                          </div>
                                         )}
-                                      </div>
-                                      <ActivityDiffExcerpt
-                                        excerpt={{
-                                          header: event.activityDetail?.diffExcerpt?.header,
-                                          lines: event.activityDetail?.diffExcerpt?.lines || []
-                                        }}
-                                      />
-                                    </div>
-                                  )}
 
-                                  {event.updateCount > 1 && (
-                                    <span className="oc-refined-update-count">
-                                      x{event.updateCount} updates
-                                    </span>
-                                  )}
+                                        {shouldShowDetail && event.activityDetail && (
+                                          <div className="oc-refined-activity-details flex flex-col gap-2">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                              {event.activityDetail.tool && (
+                                                <span className="oc-refined-detail-badge">
+                                                  tool {event.activityDetail.tool}
+                                                </span>
+                                              )}
+                                              {event.activityDetail.query && (
+                                                <span className="oc-refined-detail-badge">
+                                                  query {event.activityDetail.query}
+                                                </span>
+                                              )}
+                                            </div>
 
-                                  {shouldShowDetail && event.detail && (
-                                    <div className="oc-refined-event-content">
-                                      <CollapsedMarkdownPreview
-                                        title={`${event.label} details`}
-                                        content={event.detail}
-                                      />
-                                    </div>
-                                  )}
-
-                                  {shouldShowDetail && event.activityDetail && (
-                                    <div className="oc-refined-activity-details flex flex-col gap-2">
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        {event.activityDetail.tool && (
-                                          <span className="oc-refined-detail-badge">
-                                            tool {event.activityDetail.tool}
-                                          </span>
+                                            {labelLower !== "bash" && event.activityDetail.command && (
+                                              <TerminalBlock command={event.activityDetail.command} />
+                                            )}
+                                          </div>
                                         )}
-                                        {event.activityDetail.query && (
-                                          <span className="oc-refined-detail-badge">
-                                            query {event.activityDetail.query}
-                                          </span>
-                                        )}
-                                      </div>
-
-                                      {/* Don't show TerminalBlock here for bash - already shown in summary section above */}
-                                      {event.label !== "bash" && event.activityDetail.command && (
-                                        <TerminalBlock command={event.activityDetail.command} />
-                                      )}
                                     </div>
-                                  )}
-                                </div>
-
-                                {event.diffStats &&
-                                  (event.diffStats.added > 0 ||
-                                    event.diffStats.deleted > 0) && (
-                                    <span className="oc-refined-diff-stats">
-                                      {event.diffStats.added > 0 && (
-                                        <span className="oc-refined-diff-add">
-                                          +{event.diffStats.added}
-                                        </span>
-                                      )}
-                                      {event.diffStats.deleted > 0 && (
-                                        <span className="oc-refined-diff-del">
-                                          -{event.diffStats.deleted}
-                                        </span>
-                                      )}
-                                    </span>
-                                  )}
-
-                                {event.viewDiffFile && (
-                                  <button
-                                    type="button"
-                                    className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium oc-text-secondary hover:text-oc-text-soft"
-                                    onClick={() =>
-                                      vscode.postMessage({
-                                        type: "openDiff",
-                                        file: event.viewDiffFile,
-                                      })
-                                    }
-                                  >
-                                    View diff
-                                  </button>
+                                  </div>
                                 )}
-                                </div>
+
+                                {!showDiffPreviewLocal &&
+                                  event.diffStats &&
+                                  (
+                                    <span className="oc-refined-diff-stats">
+                                      <span className={cn(
+                                        event.diffStats.added > 0
+                                          ? "text-emerald-300"
+                                          : "oc-text-secondary",
+                                      )}>
+                                        +{event.diffStats.added}
+                                      </span>
+                                      <span className={cn(
+                                        event.diffStats.deleted > 0
+                                          ? "text-rose-300"
+                                          : "oc-text-secondary",
+                                      )}>
+                                        -{event.diffStats.deleted}
+                                      </span>
+                                    </span>
+                                  )}
+
+                                {!showDiffPreviewLocal &&
+                                  event.viewDiffFile && (
+                                    <button
+                                      type="button"
+                                      className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium oc-text-secondary hover:text-oc-text-soft"
+                                      onClick={() =>
+                                        vscode.postMessage({
+                                          type: "openDiff",
+                                          file: event.viewDiffFile,
+                                        })
+                                      }
+                                    >
+                                      View diff
+                                    </button>
                                 )}
                               </ExpandableStep>
                             </div>
@@ -7550,6 +7739,7 @@ function AssistantResponseCardInner({
         {isStreamingActive &&
           !showResponseSection &&
           hasStreamingActivity &&
+          !hideLoadingText &&
           !showStreamingLoading && (
             <div className="mt-2 mb-2 px-1">
               <ThinkingStatusTicker className="oc-thinking-status" />
@@ -7944,6 +8134,7 @@ export const FileChangesSection = memo(function FileChangesSection({
 export function AssistantResponseCard({
   message,
   streaming,
+  hideLoadingText,
   isContiguous,
   interactiveEvents,
   messages,
@@ -7956,6 +8147,7 @@ export function AssistantResponseCard({
 }: {
   message?: Message;
   streaming?: StreamingState;
+  hideLoadingText?: boolean;
   isContiguous?: boolean;
   interactiveEvents?: AppState["interactiveEvents"];
   messages?: Message[];
@@ -7970,6 +8162,7 @@ export function AssistantResponseCard({
     <AssistantResponseCardInner
       message={message}
       streaming={streaming}
+      hideLoadingText={hideLoadingText}
       isContiguous={isContiguous}
       interactiveEvents={interactiveEvents}
       messages={messages}

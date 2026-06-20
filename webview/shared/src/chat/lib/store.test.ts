@@ -178,6 +178,76 @@ describe('error message reducer state', () => {
   });
 });
 
+describe('assistant turn pending lifecycle', () => {
+  it('clears a stale inactive streaming snapshot when a new assistant turn starts', () => {
+    const seededState = {
+      ...initialState,
+      assistantTurnPending: false,
+      assistantTurnMessageId: 'msg-old-assistant',
+      streaming: {
+        messageId: 'msg-old-assistant',
+        content: 'previous assistant response',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: false,
+      } as unknown as NonNullable<typeof initialState.streaming>,
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'SET_ASSISTANT_TURN_PENDING',
+      payload: {
+        pending: true,
+        messageId: 'msg-new-assistant',
+      },
+    });
+
+    assert.strictEqual(nextState.assistantTurnPending, true);
+    assert.strictEqual(nextState.assistantTurnMessageId, 'msg-new-assistant');
+    assert.strictEqual(nextState.streaming, null);
+  });
+
+  it('does not carry the previous assistant message id into a fresh pending turn without an id yet', () => {
+    const seededState = {
+      ...initialState,
+      assistantTurnPending: false,
+      assistantTurnMessageId: 'msg-old-assistant',
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'SET_ASSISTANT_TURN_PENDING',
+      payload: {
+        pending: true,
+      },
+    });
+
+    assert.strictEqual(nextState.assistantTurnPending, true);
+    assert.strictEqual(nextState.assistantTurnMessageId, null);
+  });
+
+  it('does not keep assistant turn pending when switching to a fresh idle session', () => {
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'ses-old',
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-old-assistant',
+      isProcessing: true,
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'SET_SESSION_ID',
+      payload: 'ses-new',
+    });
+
+    assert.strictEqual(nextState.currentSessionId, 'ses-new');
+    assert.strictEqual(nextState.assistantTurnPending, false);
+    assert.strictEqual(nextState.assistantTurnMessageId, null);
+    assert.strictEqual(nextState.isProcessing, false);
+  });
+});
+
 describe('raw event capture', () => {
   it('stores the exact incoming SDK payload by session id', () => {
     const rawEvent = {
@@ -835,6 +905,36 @@ describe('canonicalizeMessagesForRender', () => {
     assert.strictEqual(result.length, 2);
     assert.strictEqual(result[1].content, 'reply!');
     assert.strictEqual(result[1].id, 'a2');
+  });
+
+  it('should collapse an immediately repeated user+assistant turn', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'hey there', id: 'u1', created: 10 },
+      { role: 'assistant', content: 'Hello!', id: 'a1', created: 11 },
+      { role: 'user', content: 'hey there', id: 'u2', created: 12 },
+      { role: 'assistant', content: 'Hello!', id: 'a2', created: 13 },
+    ];
+
+    const result = canonicalizeMessagesForRender(messages);
+
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[0].id, 'u1');
+    assert.strictEqual(result[1].id, 'a1');
+  });
+
+  it('should collapse an immediately repeated user+assistant turn even when IDs differ', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'hey there', id: 'u1', created: 10 },
+      { role: 'assistant', content: 'Hello!', id: 'a1', created: 11 },
+      { role: 'user', content: 'hey there', id: 'u2-different', created: 12 },
+      { role: 'assistant', content: 'Hello!', id: 'a2-different', created: 13 },
+    ];
+
+    const result = canonicalizeMessagesForRender(messages);
+
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[0].content, 'hey there');
+    assert.strictEqual(result[1].content, 'Hello!');
   });
 });
 

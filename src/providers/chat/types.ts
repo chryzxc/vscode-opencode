@@ -213,7 +213,11 @@ export type StructuredInteractiveEvent =
  * Structured assistant output containing various response types
  */
 export type StructuredAssistantOutput = {
+  type?: StructuredResponseType | string;
+  text?: string;
+  /** @deprecated legacy alias kept for compatibility while the schema migrates to `type`. */
   responseType?: StructuredResponseType | string;
+  /** @deprecated legacy alias kept for compatibility while the schema migrates to `text`. */
   message?: string;
   raw?: Record<string, unknown>;
   /**
@@ -328,9 +332,9 @@ export const STRUCTURED_RESPONSE_TYPES = new Set(
   (
     (
       (structuredOutputSchema as any).schema?.properties as {
-        responseType?: { enum?: string[] };
+        type?: { enum?: string[] };
       }
-    )?.responseType?.enum ?? []
+    )?.type?.enum ?? []
   ).map((value: string) => value.toLowerCase()),
 );
 

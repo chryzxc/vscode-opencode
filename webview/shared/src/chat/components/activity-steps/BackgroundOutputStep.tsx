@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { ArrowRight, Bot, Clock3, Copy, Sparkles, X, Terminal, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { ArrowRight, Bot, Clock3, Copy, Sparkles, X, Terminal } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { cn, formatDuration } from "@/utils";
 
 import { MarkdownRenderer } from "../../../components/MarkdownRenderer";
+import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
 
 import type { ActivityDetail } from "../../lib/types";
 
@@ -336,9 +336,10 @@ export function BackgroundOutputStep({
 
   const isDone = status === "done";
   const isError = status === "error";
+  const isPending = status === "pending";
   
   // Capitalize first letter of status strings for a more humanized presentation
-  const rawStatus = parsedOutput.statusLabel || (isError ? "failed" : isDone ? "completed" : "running");
+  const rawStatus = parsedOutput.statusLabel || (isError ? "failed" : isDone ? "completed" : isPending ? "pending" : "running");
   
   const compactTaskId = compactId(taskId);
   const compactSessionId = compactId(sessionLabel);
@@ -347,82 +348,73 @@ export function BackgroundOutputStep({
     <>
       <button
         type="button"
-        className="group block w-full overflow-hidden rounded-md border border-oc-border-soft bg-oc-bg-soft/55 text-left shadow-none transition-colors hover:border-oc-border hover:bg-oc-panel-soft/55"
+        className="group block w-full overflow-hidden text-left transition-colors"
         onClick={() => setIsModalOpen(true)}
       >
-        <div className="relative border-l border-l-oc-accent/20 px-2.5 py-2">
-          <div className="flex items-start justify-between gap-2.5">
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary">
+        <div className="px-3 py-2 sm:px-3.5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary">
                   <Terminal className="h-3 w-3" />
-                </div>
+                </span>
                 <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-oc-text-secondary">
                   background_output
                 </span>
-                <Badge
-                  variant={isError ? "error" : isDone ? "success" : "warning"}
-                  className="h-5 gap-1 px-2 py-0 text-[10px] font-medium"
-                >
-                  {isError ? "failed" : isDone ? "completed" : "running"}
-                </Badge>
-                {runInBackground && (
+                <ActivityStepStatusChip status={isPending ? "pending" : isDone ? "done" : isError ? "error" : "running"} />
+                {runInBackground ? (
                   <span className="rounded-full border border-oc-border-soft bg-oc-bg/30 px-2 py-0.5 text-[10px] oc-text-secondary">
                     background
                   </span>
-                )}
-                {source === "raw_debug" && (
+                ) : null}
+                {source === "raw_debug" ? (
                   <span className="rounded-full border border-oc-border-soft bg-oc-bg/30 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] oc-text-secondary">
                     raw
                   </span>
-                )}
-              </div>
-
-              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px] oc-text-secondary">
-                {durationLabel ? (
-                  <span className="inline-flex items-center gap-1">
-                    <Clock3 className="h-3 w-3" />
-                    {durationLabel}
-                  </span>
-                ) : null}
-                {compactTaskId ? (
-                  <>
-                    <span className="opacity-35">•</span>
-                    <span className="inline-flex items-center gap-1">
-                      <span className="uppercase tracking-[0.16em]">Task</span>
-                      <span className="font-mono text-oc-text-soft">{compactTaskId}</span>
-                    </span>
-                  </>
-                ) : null}
-                {compactSessionId ? (
-                  <>
-                    <span className="opacity-35">•</span>
-                    <span className="inline-flex items-center gap-1">
-                      <span className="uppercase tracking-[0.16em]">Session</span>
-                      <span className="font-mono text-oc-text-soft">{compactSessionId}</span>
-                    </span>
-                  </>
                 ) : null}
               </div>
-
-              {description && description.toLowerCase() !== "background_output" && (
-                <div className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-oc-text-soft">
-                  {description}
-                </div>
-              )}
-
-              {previewOutput ? (
-                <div className="mt-1.5 rounded border border-oc-border-soft bg-oc-bg/30 p-2 font-mono text-[10px] leading-relaxed text-oc-text-soft">
-                  <div className="line-clamp-2 whitespace-pre-wrap break-words">
-                    {previewOutput}
-                  </div>
-                </div>
-              ) : null}
             </div>
 
             <div className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary transition-colors group-hover:bg-oc-panel-soft">
               <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
             </div>
+          </div>
+
+          <div className="oc-activity-step-card mt-2 flex flex-col gap-2 p-3">
+            <div className="flex flex-wrap items-center gap-1.5 text-[9px] oc-text-secondary">
+              {durationLabel ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
+                  <Clock3 className="h-3 w-3" />
+                  {durationLabel}
+                </span>
+              ) : null}
+              {compactTaskId ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
+                  <span className="uppercase tracking-[0.14em]">Task</span>
+                  <span className="font-mono text-oc-text-soft">{compactTaskId}</span>
+                </span>
+              ) : null}
+              {compactSessionId ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
+                  <span className="uppercase tracking-[0.14em]">Session</span>
+                  <span className="font-mono text-oc-text-soft">{compactSessionId}</span>
+                </span>
+              ) : null}
+            </div>
+
+            {description && description.toLowerCase() !== "background_output" ? (
+              <div className="text-[10.5px] leading-relaxed text-oc-text-soft">
+                {description}
+              </div>
+            ) : null}
+
+            {previewOutput ? (
+              <div className="rounded-md border border-oc-border-soft/20 bg-oc-bg/18 px-2.5 py-2 font-mono text-[10px] leading-relaxed text-oc-text-soft">
+                <div className="line-clamp-2 whitespace-pre-wrap break-words">
+                  {previewOutput}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </button>

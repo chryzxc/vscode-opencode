@@ -2191,82 +2191,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
       (Array.isArray(normalizedPlan.files) && normalizedPlan.files.length > 0)
     );
 
-  const reasoningRaw =
-    sanitizedRec.reasoning;
-  const reasoning = Array.isArray(reasoningRaw)
-    ? reasoningRaw
-      .filter((item): item is string => typeof item === 'string')
-      .map((item) => item.trim())
-      .filter(Boolean)
-    : typeof reasoningRaw === 'string' && reasoningRaw.trim()
-      ? [reasoningRaw.trim()]
-      : [];
-  const normalizeComparableText = (value: string): string =>
-    value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
-  const stripAssistantEchoFromReasoning = (
-    chunk: string,
-    replyText?: string,
-  ): string => {
-    const trimmedChunk = chunk.trim();
-    if (!trimmedChunk) {
-      return "";
-    }
-    if (!replyText) {
-      return trimmedChunk;
-    }
-    const trimmedReply = replyText.trim();
-    if (!trimmedReply) {
-      return trimmedChunk;
-    }
-    if (
-      normalizeComparableText(trimmedChunk) ===
-      normalizeComparableText(trimmedReply)
-    ) {
-      return "";
-    }
-    if (trimmedChunk.startsWith(trimmedReply)) {
-      return trimmedChunk
-        .slice(trimmedReply.length)
-        .replace(/^[\s:;,\-.!?]+/, "")
-        .trim();
-    }
-    return trimmedChunk;
-  };
-  const cleanedReasoning = reasoning
-    .map((chunk) =>
-      stripAssistantEchoFromReasoning(chunk, messageText),
-    )
-    .filter(Boolean);
-
-  const progressRaw =
-    sanitizedRec.progressUpdates ?? (rec.progress_updates as unknown);
-  const progressUpdates = Array.isArray(progressRaw)
-    ? progressRaw
-      .map((item) => {
-        const step = asRecord(item);
-        if (!step) {
-          return undefined;
-        }
-        const title = asString(step.title) || asString(step.message);
-        if (!title) {
-          return undefined;
-        }
-        const statusValue = asString(step.status);
-        const status = normalizeProgressStatus(statusValue);
-        return {
-          title,
-          status,
-          meta: asString(step.meta) || asString(step.detail) || undefined,
-          filePath:
-            asString(step.filePath) ||
-            asString(step.file) ||
-            asString(step.path) ||
-            undefined
-        } as StructuredProgressUpdate;
-      })
-      .filter((step): step is StructuredProgressUpdate => !!step)
-    : [];
-
   const normalizeChoices = (raw: unknown): InteractiveChoice[] => {
     let candidate = raw;
     if (typeof candidate === "string") {
@@ -2400,75 +2324,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     : singleInteractive
       ? [singleInteractive]
       : [];
-
-  const fileChangesRaw = sanitizedRec.fileChanges ?? rec.fileChanges;
-  const fileChanges = Array.isArray(fileChangesRaw)
-    ? fileChangesRaw
-        .map((item) => {
-          const change = asRecord(item);
-          if (!change) {
-            return null;
-          }
-          const file = asString(change.file).trim();
-          if (!file) {
-            return null;
-          }
-          const kindValue = asString(change.kind).trim();
-          const kind =
-            kindValue === "file_edit" ||
-            kindValue === "file_create" ||
-            kindValue === "file_delete" ||
-            kindValue === "file_move" ||
-            kindValue === "other"
-              ? kindValue
-              : undefined;
-          const diffStatsRec = asRecord(change.diffStats);
-          const diffExcerptRec = asRecord(change.diffExcerpt);
-          return {
-            file,
-            kind,
-            diffStats: diffStatsRec
-              ? {
-                  added:
-                    typeof diffStatsRec.added === "number" &&
-                    Number.isFinite(diffStatsRec.added)
-                      ? diffStatsRec.added
-                      : undefined,
-                  deleted:
-                    typeof diffStatsRec.deleted === "number" &&
-                    Number.isFinite(diffStatsRec.deleted)
-                      ? diffStatsRec.deleted
-                      : undefined,
-                }
-              : undefined,
-            diffExcerpt: diffExcerptRec
-              ? {
-                  header:
-                    typeof diffExcerptRec.header === "string"
-                      ? diffExcerptRec.header
-                      : undefined,
-                  lines: Array.isArray(diffExcerptRec.lines)
-                    ? diffExcerptRec.lines.filter(
-                        (line): line is string =>
-                          typeof line === "string" && line.trim().length > 0,
-                      )
-                    : undefined,
-                  added:
-                    typeof diffExcerptRec.added === "number" &&
-                    Number.isFinite(diffExcerptRec.added)
-                      ? diffExcerptRec.added
-                      : undefined,
-                  deleted:
-                    typeof diffExcerptRec.deleted === "number" &&
-                    Number.isFinite(diffExcerptRec.deleted)
-                      ? diffExcerptRec.deleted
-                      : undefined,
-                }
-              : undefined,
-          } satisfies StructuredFileChange;
-        })
-        .filter((item): item is StructuredFileChange => Boolean(item))
-    : [];
 
   const rootQuestion = isInteractiveResponseType
     ? asString(normalizedQuestion?.question) ||
@@ -2819,9 +2674,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     !messageText &&
     !normalizedQuestion &&
     !hasNormalizedPlan &&
-    cleanedReasoning.length === 0 &&
-    progressUpdates.length === 0 &&
-    fileChanges.length === 0 &&
     interactiveEvents.length === 0 &&
     subagents.length === 0 &&
     !subagentsDelta
@@ -2833,9 +2685,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     responseType,
     message: messageText,
     plan: hasNormalizedPlan ? normalizedPlan : undefined,
-    reasoning: cleanedReasoning.length > 0 ? cleanedReasoning : undefined,
-    progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
-    fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
     interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined,
     question: normalizedQuestion as StructuredOutput['question'] | undefined,
     subagents: subagents.length > 0 ? subagents : undefined,
@@ -2922,67 +2771,10 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
   const effectiveResponseType =
     normalizedResponseType || (hasQuestionPayload ? "question" : undefined);
 
-  const fileChangesRaw = rec.fileChanges;
-  const fileChanges = Array.isArray(fileChangesRaw)
-    ? fileChangesRaw
-        .map((item) => {
-          const change = asRecord(item);
-          if (!change) return null;
-          const file = asString(change.file).trim();
-          if (!file) return null;
-          const diffStatsRec = asRecord(change.diffStats);
-          const diffExcerptRec = asRecord(change.diffExcerpt);
-          const kindValue = asString(change.kind).trim();
-          const kind =
-            kindValue === "file_edit" ||
-            kindValue === "file_create" ||
-            kindValue === "file_delete" ||
-            kindValue === "file_move" ||
-            kindValue === "other"
-              ? kindValue
-              : undefined;
-          return {
-            file,
-            kind,
-            diffStats: diffStatsRec
-              ? {
-                  added:
-                    typeof diffStatsRec.added === "number" ? diffStatsRec.added : undefined,
-                  deleted:
-                    typeof diffStatsRec.deleted === "number" ? diffStatsRec.deleted : undefined,
-                }
-              : undefined,
-            diffExcerpt: diffExcerptRec
-              ? {
-                  header:
-                    typeof diffExcerptRec.header === "string"
-                      ? diffExcerptRec.header
-                      : undefined,
-                  lines: Array.isArray(diffExcerptRec.lines)
-                    ? diffExcerptRec.lines.filter(
-                        (line): line is string => typeof line === "string",
-                      )
-                    : undefined,
-                  added:
-                    typeof diffExcerptRec.added === "number"
-                      ? diffExcerptRec.added
-                      : undefined,
-                  deleted:
-                    typeof diffExcerptRec.deleted === "number"
-                      ? diffExcerptRec.deleted
-                      : undefined,
-                }
-              : undefined,
-          } satisfies StructuredFileChange;
-        })
-        .filter((item): item is StructuredFileChange => Boolean(item))
-    : [];
-
   if (
     !effectiveResponseType &&
     !message &&
     !hasPlan &&
-    fileChanges.length === 0 &&
     !normalizedQuestion &&
     !rawInteractiveEvents
   ) {
@@ -2993,7 +2785,6 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
     responseType: effectiveResponseType,
     message,
     plan: hasPlan ? plan : undefined,
-    fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
     question: normalizedQuestion as StructuredOutput["question"] | undefined,
     interactiveEvents: rawInteractiveEvents as StructuredOutput["interactiveEvents"] | undefined,
   });
@@ -3079,15 +2870,15 @@ function structuredOutputFromStructuredOutputToolPart(part: unknown): Structured
     asRecord(asRecord(inputRec.questions)?.[0]) ||
     asRecord(inputRec.prompt);
   const responseType = firstNonEmptyString(
-    inputRec.responseType,
     inputRec.type,
+    inputRec.responseType,
     partRec.responseType,
     stateRec?.responseType,
   )?.toLowerCase();
   const messageText = firstNonEmptyString(
+    inputRec.text,
     inputRec.message,
     inputRec.content,
-    inputRec.text,
     stateRec?.message,
     stateRec?.content,
     stateRec?.text,
@@ -3103,9 +2894,11 @@ function structuredOutputFromStructuredOutputToolPart(part: unknown): Structured
     ...(planCandidate ? { plan: planCandidate } : {}),
   };
   if (responseType) {
+    candidate.type = responseType;
     candidate.responseType = responseType;
   }
   if (messageText) {
+    candidate.text = messageText;
     candidate.message = messageText;
   }
 
@@ -4534,7 +4327,9 @@ function isCanonicalAssistantDisplayMessage(message: Message): boolean {
 
   const structured = resolveStructuredOutputFromMessageRecord(rec);
   const responseType = firstNonEmptyString(
+    structured?.type,
     structured?.responseType,
+    asString(rec.type),
     asString(rec.responseType),
   )?.toLowerCase();
 
@@ -4591,13 +4386,15 @@ function getCanonicalStructuredMessageText(message: Message | UnknownRecord): st
   }
   const structured = resolveStructuredOutputFromMessageRecord(rec);
   const responseType = firstNonEmptyString(
+    structured?.type,
     structured?.responseType,
+    asString(rec.type),
     asString(rec.responseType),
   )?.toLowerCase();
   if (responseType !== "message") {
     return "";
   }
-  const structuredMessage = asString(structured?.message).trim();
+  const structuredMessage = asString(structured?.text ?? structured?.message).trim();
   if (!structuredMessage) {
     return "";
   }
@@ -5269,6 +5066,18 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
   if (rawStructuredOutputs.length > 0) {
     (normalized as Record<string, unknown>).rawStructuredOutputs = rawStructuredOutputs;
   }
+
+  // Rebuild the legacy "raw debug" view from the centralized event tape so the
+  // normalization path can continue to extract reasoning chunks from raw stream
+  // payloads without depending on a missing helper or on the old rawResponse
+  // shape. This keeps the centralized tape as the single source of truth.
+  const parsedRawDebug = {
+    parts: Array.isArray(rawSdkEventPayloadsSnapshot)
+      ? rawSdkEventPayloadsSnapshot
+          .map((payload) => getCentralizedEventPart(payload))
+          .filter((part): part is UnknownRecord => !!part)
+      : [],
+  };
 
   if (!normalized.plan) {
     const rawPlan = extractRawPlanFromMessageRecord(rec);
@@ -6905,16 +6714,16 @@ function applyStructuredSubagentPayload(
 ): void {
   logger.info('[SUBAGENT-DEBUG] applyStructuredSubagentPayload called', {
     messageId,
-    responseType: structuredOutput.responseType,
+    responseType: structuredOutput.type || structuredOutput.responseType,
     subagentsCount: structuredOutput.subagents?.length ?? 0,
     subagentsDeltaItems: structuredOutput.subagentsDelta?.items?.length ?? 0,
     subagentsDeltaParentMessageId: structuredOutput.subagentsDelta?.parentMessageId,
     caller: new Error().stack?.split('\n')[2]?.trim() || 'unknown',
   });
 
-  if (structuredOutput.responseType === 'subagents') {
+  if ((structuredOutput.type || structuredOutput.responseType) === 'subagents') {
     if (!structuredOutput.subagents || structuredOutput.subagents.length === 0) {
-      logger.warn('Structured subagents responseType received without subagents array');
+      logger.warn('Structured subagents type received without subagents array');
     }
   }
 
@@ -7759,7 +7568,7 @@ function summarizeRenderMessageForDebug(message: Message, index: number): Record
     index,
     id: getMessageId(message),
     role: asString(message.role) || asString(info?.role) || "unknown",
-    responseType: asString(structured?.responseType).toLowerCase() || undefined,
+    responseType: asString(structured?.type ?? structured?.responseType).toLowerCase() || undefined,
     textLength: text.length,
     textPreview: text ? text.slice(0, 160) : undefined,
     hasPlan: !!message.plan,
@@ -8893,16 +8702,6 @@ function handleStreamEvent(
   const isPartUpdateEvent = eventType.startsWith("message.part.");
   const normalizedEventType = isPartUpdateEvent ? "message.part.updated" : eventType;
   const isHeartbeatEvent = isHeartbeatEventType(eventType);
-  if (!isHeartbeatEvent && !terminalErrorReached) {
-    dispatch({
-      type: "APPEND_RAW_SDK_EVENT_PAYLOAD",
-      payload: {
-        sessionId: asString(payload.sessionId) || asString(payload.sessionID) || null,
-        event: payload,
-      },
-    });
-    dispatch({ type: "APPEND_SDK_EVENT_PAYLOAD", payload });
-  }
   const state = getState();
   const current = state.streaming;
   console.info("[TRACE][HANDLER][RAW_EVENT_INGRESS]", {
@@ -8938,17 +8737,23 @@ function handleStreamEvent(
   const structuredRecord = asRecord(payload.structured);
   const structuredKind = asString(structuredRecord?.kind).toLowerCase();
   const structuredText =
-    asString(structuredRecord?.message) ||
-    asString(structuredRecord?.text);
+    asString(structuredRecord?.text) ||
+    asString(structuredRecord?.message);
   const fallbackStructuredOutputCandidate = (() => {
     const responseType =
+      asString(payload.type) ||
       asString(payload.responseType) ||
       asString(properties?.responseType) ||
-      asString(infoRecord?.responseType);
+      asString(properties?.type) ||
+      asString(infoRecord?.responseType) ||
+      asString(infoRecord?.type);
     const message =
+      asString(payload.text) ||
       asString(payload.message) ||
       asString(properties?.message) ||
-      asString(infoRecord?.message);
+      asString(properties?.text) ||
+      asString(infoRecord?.message) ||
+      asString(infoRecord?.text);
     const plan =
       asRecord(payload.plan) ||
       asRecord(properties?.plan) ||
@@ -8958,7 +8763,9 @@ function handleStreamEvent(
       return undefined;
     }
     return {
+      type: responseType,
       responseType,
+      text: message,
       message,
       plan,
     };
@@ -9205,9 +9012,14 @@ function handleStreamEvent(
           structuredOutput: structuredOutput
             ? {
               ...structuredOutput,
+              type:
+                (normalizedStreamResponseType as StructuredResponseType | undefined) ??
+                structuredOutput.type ??
+                structuredOutput.responseType,
               responseType:
                 (normalizedStreamResponseType as StructuredResponseType | undefined) ??
-                structuredOutput.responseType,
+                structuredOutput.responseType ??
+                structuredOutput.type,
             }
             : streamNow.structuredOutput,
         },
@@ -9350,6 +9162,10 @@ function handleStreamEvent(
         asRichString(properties?.delta) ||
         asRichString(payload.delta) ||
         asRichString(part.delta);
+      const isDeltaReasoningChunk =
+        !!deltaChunk ||
+        normalizedEventType.toLowerCase().includes("delta") ||
+        eventType.toLowerCase().includes("delta");
       const reasoningChunk =
         asRichString(part.reasoning) ||
         asRichString(part.thought) ||
@@ -9383,43 +9199,6 @@ function handleStreamEvent(
         partType === "patch" ||
         partType === "subtask" ||
         partType === "agent";
-
-      if (structuredOutput?.reasoning) {
-        const reasoningEvents = getState().streaming?.reasoningEvents;
-        const latestReasoning =
-          reasoningEvents && reasoningEvents.length > 0
-            ? reasoningEvents[reasoningEvents.length - 1].text
-            : undefined;
-        structuredOutput.reasoning.forEach((chunk) => {
-          const sanitized = sanitizeReasoningChunk(chunk);
-          if (sanitized && sanitized !== latestReasoning) {
-            dispatch({
-              type: "UPDATE_STREAMING_REASONING",
-              payload: { reasoning: sanitized, append: true },
-            });
-          }
-        });
-      }
-
-      if (structuredOutput?.progressUpdates) {
-        structuredOutput.progressUpdates.forEach((update) => {
-          upsertStreamingStep(dispatch, getState, {
-            title: update.title,
-            type: "step",
-            status: update.status ?? "pending",
-            source: "stream",
-            partType: "structured-progress",
-            internal: false,
-            meta: update.meta,
-            filePath: update.filePath,
-            activityDetail: (update.command || update.output) ? {
-              kind: "command",
-              command: update.command,
-              output: update.output,
-            } : undefined,
-          });
-        });
-      }
 
       const interactiveEvents = toInteractiveEvents(structuredOutput);
       const hasBlockingInteractive =
@@ -9456,7 +9235,7 @@ function handleStreamEvent(
           messageId,
           subagentsCount: structuredOutput.subagents?.length ?? 0,
           subagentsDeltaItemCount: structuredOutput.subagentsDelta?.items?.length ?? 0,
-          responseType: structuredOutput.responseType,
+          responseType: structuredOutput.type || structuredOutput.responseType,
         });
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId || '');
         bindStreamingToParentMessageIdFromSubagents(
@@ -9475,7 +9254,7 @@ function handleStreamEvent(
         if (sanitized) {
           dispatch({
             type: "UPDATE_STREAMING_REASONING",
-            payload: { reasoning: sanitized, append: true },
+            payload: { reasoning: sanitized, append: true, delta: isDeltaReasoningChunk },
           });
         }
       }
@@ -9492,7 +9271,7 @@ function handleStreamEvent(
         if (sanitized) {
           dispatch({
             type: "UPDATE_STREAMING_REASONING",
-            payload: { reasoning: sanitized, append: true },
+            payload: { reasoning: sanitized, append: true, delta: isDeltaReasoningChunk },
           });
         }
       }
@@ -9513,7 +9292,7 @@ function handleStreamEvent(
         if (sanitized) {
           dispatch({
             type: 'UPDATE_STREAMING_REASONING',
-            payload: { reasoning: sanitized, append: true },
+            payload: { reasoning: sanitized, append: true, delta: isDeltaReasoningChunk },
           });
         }
 
@@ -9543,7 +9322,7 @@ function handleStreamEvent(
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true },
+                payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
               });
             }
             dispatch({ type: "SET_PROCESSING", payload: true });
@@ -9555,7 +9334,7 @@ function handleStreamEvent(
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true },
+                payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
               });
             }
             candidateChunk = mixedChunk.content;
@@ -9566,7 +9345,7 @@ function handleStreamEvent(
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true },
+                payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
               });
             }
             dispatch({ type: "SET_PROCESSING", payload: true });
@@ -10146,38 +9925,6 @@ function handleStreamEvent(
       });
 
       if (finish && structuredOutput) {
-        if (structuredOutput.reasoning) {
-          structuredOutput.reasoning.forEach((chunk) => {
-            const sanitized = sanitizeReasoningChunk(chunk);
-            if (sanitized) {
-              dispatch({
-                type: 'UPDATE_STREAMING_REASONING',
-                payload: { reasoning: sanitized, append: true }
-              });
-            }
-          });
-        }
-
-        if (structuredOutput.progressUpdates) {
-          structuredOutput.progressUpdates.forEach((step) => {
-            upsertStreamingStep(dispatch, getState, {
-              title: step.title,
-              type: 'step',
-              status: step.status ?? 'pending',
-              source: "stream",
-              partType: "structured-progress",
-              internal: false,
-              meta: step.meta,
-              filePath: step.filePath,
-              activityDetail: (step.command || step.output) ? {
-                kind: "command",
-                command: step.command,
-                output: step.output,
-              } : undefined,
-            });
-          });
-        }
-
         const structuredQuestionRecord = asRecord(
           (structuredOutput as UnknownRecord).question,
         );
@@ -10188,6 +9935,7 @@ function handleStreamEvent(
           asString(structuredQuestionRecord?.content);
         const structuredMessage =
           structuredQuestionText ||
+          structuredOutput.text ||
           structuredOutput.message;
         if (structuredMessage) {
           const streamingState = getState().streaming;
@@ -10281,7 +10029,7 @@ function handleStreamEvent(
           const rawTodoItems = Array.isArray(todoSource?.todoItems) ? todoSource!.todoItems : undefined;
           if (
             structuredOutput &&
-            (structuredOutput.responseType === '__legacy_disabled_todo_update' ||
+            ((structuredOutput.type || structuredOutput.responseType) === '__legacy_disabled_todo_update' ||
               asString(payload.responseType) === '__legacy_disabled_todo_update') &&
             Array.isArray(rawTodoItems)
           ) {
@@ -10480,6 +10228,7 @@ function handleStreamEvent(
                   append: true,
                   partID: reasoningPartID,
                   messageID: messageId || undefined,
+                  delta: true,
                 },
               });
             }
@@ -10502,6 +10251,7 @@ function handleStreamEvent(
                 append: true,
                 partID: reasoningPartID,
                 messageID: messageId || undefined,
+                delta: true,
               },
             });
           }
@@ -10521,6 +10271,7 @@ function handleStreamEvent(
                 append: true,
                 partID: reasoningPartID,
                 messageID: messageId || undefined,
+                delta: true,
               },
             });
           }
@@ -10579,6 +10330,7 @@ function handleStreamEvent(
             append: true,
             partID: reasoningPartID,
             messageID: messageId || undefined,
+            delta: true,
           },
         });
       }
@@ -10730,41 +10482,6 @@ function handleStreamEvent(
     }
     default: {
       let consumed = false;
-      if (structuredOutput?.reasoning) {
-        structuredOutput.reasoning.forEach((chunk) => {
-          const sanitized = sanitizeReasoningChunk(chunk);
-          if (!sanitized) {
-            return;
-          }
-          dispatch({
-            type: "UPDATE_STREAMING_REASONING",
-            payload: { reasoning: sanitized, append: true },
-          });
-          consumed = true;
-        });
-      }
-
-      if (structuredOutput?.progressUpdates) {
-        structuredOutput.progressUpdates.forEach((step) => {
-          upsertStreamingStep(dispatch, getState, {
-            title: step.title,
-            type: "step",
-            status: step.status ?? "pending",
-            source: "stream",
-            partType: "structured-progress",
-            internal: false,
-            meta: step.meta,
-            filePath: step.filePath,
-            activityDetail: (step.command || step.output) ? {
-              kind: "command",
-              command: step.command,
-              output: step.output,
-            } : undefined,
-          });
-          consumed = true;
-        });
-      }
-
       const interactiveEvents = toInteractiveEvents(structuredOutput);
       const hasBlockingInteractive =
         hasBlockingInteractiveEvents(interactiveEvents);
@@ -10802,7 +10519,7 @@ function handleStreamEvent(
           eventType: normalizedEventType,
           subagentsCount: structuredOutput.subagents?.length ?? 0,
           subagentsDeltaItemCount: structuredOutput.subagentsDelta?.items?.length ?? 0,
-          responseType: structuredOutput.responseType,
+          responseType: structuredOutput.type || structuredOutput.responseType,
         });
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId || '');
         bindStreamingToParentMessageIdFromSubagents(
@@ -11429,6 +11146,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             payload: normalizeCompatibilityWarnings(state.compatibilityWarnings),
           });
           dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
+          // Startup should become interactive as soon as initState arrives.
+          // chatHistory is still allowed to hydrate afterward, but we do not
+          // keep the shell blocked behind the session-loading overlay while
+          // waiting on the fallback timeout.
+          dispatch({ type: "END_SESSION_LOADING" });
 
           // Store workspace root on window object for use in file path display
           const workspaceRoot = asString(state.workspaceRoot);
@@ -12723,7 +12445,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const stateBeforeStreamEvent = getState();
           const payload = asRecord(data.event) ?? data;
           const streamEventType = asString(payload.type) || "unknown";
-          const eventSessionId =
+      const eventSessionId =
             asString(payload.sessionId) ||
             asString(payload.sessionID) ||
             asString(asRecord(payload.properties)?.sessionId) ||
@@ -12748,6 +12470,34 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const shouldLogStreamEvent = !streamEventType.includes("message.part") ||
                                       streamEventType === "message.completed" ||
                                       streamEventType === "session.completed";
+
+          // Persist the raw centralized tape as soon as the stream event is accepted.
+          // We do this before the visibility gate so the debug tape and hydrated
+          // session state stay in sync even while the live UI waits for a renderable
+          // assistant turn.
+          if (streamEventType !== "server.heartbeat" && !terminalErrorReached) {
+            logger.info("[CENTRALIZED-TAPE][WEBVIEW] append_raw_sdk_event", {
+              sessionId: eventSessionId || activeSessionId || getState().currentSessionId || null,
+              eventType: streamEventType,
+              hasPart: !!asRecord(payload.part) || !!asRecord(asRecord(payload.properties)?.part),
+              hasProperties: !!asRecord(payload.properties),
+            });
+            dispatch({
+              type: "APPEND_RAW_SDK_EVENT_PAYLOAD",
+              payload: {
+                sessionId: eventSessionId || activeSessionId || null,
+                event: payload,
+              },
+            });
+            const persistSessionId = eventSessionId || activeSessionId || getState().currentSessionId || null;
+            if (persistSessionId) {
+              vscode.postMessage({
+                type: "persistRawSdkEventPayload",
+                sessionId: persistSessionId,
+                event: payload,
+              });
+            }
+          }
 
           if (
             !stateBeforeStreamEvent.isProcessing &&
@@ -12832,19 +12582,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
-          }
-
-          const persistSessionId =
-            eventSessionId ||
-            activeSessionId ||
-            getState().currentSessionId ||
-            null;
-          if (persistSessionId) {
-            vscode.postMessage({
-              type: "persistRawSdkEventPayload",
-              sessionId: persistSessionId,
-              event: payload,
-            });
           }
 
 

@@ -218,6 +218,7 @@ export interface ReasoningEvent {
   createdAt: number;
   partID?: string;
   messageID?: string;
+  delta?: boolean;
 }
 
 export interface StreamingState {
@@ -244,6 +245,7 @@ export interface StreamingState {
   providerID?: string;
   variant?: string;
   responseType?: StructuredResponseType;
+  type?: StructuredResponseType;
   plan?: {
     file?: string;
     files?: unknown[];
@@ -254,7 +256,11 @@ export interface StreamingState {
     fileCount?: number;
   };
   structuredOutput?: {
+    type?: StructuredResponseType;
+    text?: string;
+    /** @deprecated legacy alias kept for compatibility while the schema migrates to `type`. */
     responseType?: StructuredResponseType;
+    /** @deprecated legacy alias kept for compatibility while the schema migrates to `text`. */
     message?: string;
     plan?: {
       file?: string;

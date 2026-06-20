@@ -8,11 +8,15 @@ export type StructuredOutputValidationResult = {
 const TOP_LEVEL_FIELDS = Object.keys(
   structuredOutputSchema.schema.properties ?? {},
 );
-const LEGACY_COMPAT_TOP_LEVEL_FIELDS = new Set(["interactiveEvents"]);
+const LEGACY_COMPAT_TOP_LEVEL_FIELDS = new Set([
+  "interactiveEvents",
+  "responseType",
+  "message",
+]);
 
 const RESPONSE_TYPES = new Set(
-  (structuredOutputSchema.schema.properties as { responseType?: { enum?: string[] } })
-    ?.responseType?.enum ?? [],
+  (structuredOutputSchema.schema.properties as { type?: { enum?: string[] } })
+    ?.type?.enum ?? [],
 );
 
 const VALID_INTERACTIVE_TYPES = new Set([
@@ -147,20 +151,28 @@ export function validateStructuredOutput(
     );
   }
   const responseType =
-    typeof record.responseType === "string" && record.responseType.trim().length > 0
-      ? record.responseType
-      : "";
+    typeof record.type === "string" && record.type.trim().length > 0
+      ? record.type
+      : typeof record.responseType === "string" && record.responseType.trim().length > 0
+        ? record.responseType
+        : "";
 
   if (!responseType) {
-    errors.push("responseType is required and must be a string");
+    errors.push("type is required and must be a string");
   }
 
   if (responseType) {
     if (!RESPONSE_TYPES.has(responseType)) {
-      errors.push(`Unsupported responseType: ${responseType}`);
+      errors.push(`Unsupported type: ${responseType}`);
     }
   }
 
+  if (
+    typeof record.text !== "undefined" &&
+    typeof record.text !== "string"
+  ) {
+    errors.push("text must be a string");
+  }
   if (
     typeof record.message !== "undefined" &&
     typeof record.message !== "string"
@@ -168,128 +180,11 @@ export function validateStructuredOutput(
     errors.push("message must be a string");
   }
 
-  if (typeof record.reasoning !== "undefined" && !Array.isArray(record.reasoning)) {
-    errors.push("reasoning must be an array of strings");
-  } else if (Array.isArray(record.reasoning)) {
-    const invalidReasoningItem = record.reasoning.some(
-      (item) => typeof item !== "string",
-    );
-    if (invalidReasoningItem) {
-      errors.push("reasoning must only contain strings");
-    }
-  }
-
   if (
     typeof record.plan !== "undefined" &&
     (!record.plan || typeof record.plan !== "object")
   ) {
     errors.push("plan must be an object");
-  }
-
-  if (typeof record.progressUpdates !== "undefined") {
-    if (!Array.isArray(record.progressUpdates)) {
-      errors.push("progressUpdates must be an array");
-    } else {
-      const invalidProgressUpdate = record.progressUpdates.some((item) => {
-        const update = asRecord(item);
-        if (!update) return true;
-        const title = isNonEmptyString(update.title) || isNonEmptyString(update.message);
-        return !title;
-      });
-      if (invalidProgressUpdate) {
-        errors.push(
-          "progressUpdates must only contain objects with non-empty title/message",
-        );
-      }
-
-      record.progressUpdates.forEach((item, index) => {
-        const update = asRecord(item);
-        if (!update) {
-          return;
-        }
-        const kind = typeof update.kind === "string"
-          ? update.kind.trim().toLowerCase()
-          : "";
-        const status = typeof update.status === "string"
-          ? update.status.trim().toLowerCase()
-          : "";
-        const hasFile = isNonEmptyString(update.file) || isNonEmptyString(update.filePath);
-        const isFileEdit = kind === "file_edit" || hasFile;
-        const isFinalStep = status === "done" || status === "error";
-        if (!isFileEdit || !isFinalStep) {
-          return;
-        }
-
-        const diffExcerpt = asRecord(update.diffExcerpt);
-        const hasExcerptLines =
-          Array.isArray(diffExcerpt?.lines) &&
-          diffExcerpt.lines.some(
-            (line) => typeof line === "string" && line.trim().length > 0,
-          );
-        const diffStats = asRecord(update.diffStats);
-        const addedCount =
-          typeof diffStats?.added === "number" ? Math.max(0, diffStats.added) : 0;
-        const deletedCount =
-          typeof diffStats?.deleted === "number" ? Math.max(0, diffStats.deleted) : 0;
-        const hasDiffStats = addedCount > 0 || deletedCount > 0;
-
-        if (!hasExcerptLines && !hasDiffStats) {
-          errors.push(
-            `progressUpdates[${index}] file_edit step requires diffExcerpt.lines or diffStats for done/error status`,
-          );
-        }
-        if (!hasExcerptLines && hasDiffStats) {
-          errors.push(
-            `progressUpdates[${index}] file_edit step with changes must include diffExcerpt.lines`,
-          );
-        }
-      });
-    }
-  }
-
-  if (typeof record.fileChanges !== "undefined") {
-    if (!Array.isArray(record.fileChanges)) {
-      errors.push("fileChanges must be an array");
-    } else {
-      record.fileChanges.forEach((item, index) => {
-        const change = asRecord(item);
-        if (!change) {
-          errors.push(`fileChanges[${index}] must be an object`);
-          return;
-        }
-        const file = asString(change.file).trim();
-        if (!file) {
-          errors.push(`fileChanges[${index}] file is required`);
-          return;
-        }
-
-        const diffExcerpt = asRecord(change.diffExcerpt);
-        const hasExcerptLines =
-          Array.isArray(diffExcerpt?.lines) &&
-          diffExcerpt.lines.some(
-            (line) => typeof line === "string" && line.trim().length > 0,
-          );
-        const diffStats = asRecord(change.diffStats);
-        const addedCount =
-          typeof diffStats?.added === "number" ? Math.max(0, diffStats.added) : 0;
-        const deletedCount =
-          typeof diffStats?.deleted === "number"
-            ? Math.max(0, diffStats.deleted)
-            : 0;
-        const hasDiffStats = addedCount > 0 || deletedCount > 0;
-
-        if (!hasExcerptLines && !hasDiffStats) {
-          errors.push(
-            `fileChanges[${index}] requires diffExcerpt.lines or diffStats`,
-          );
-        }
-        if (!hasExcerptLines && hasDiffStats) {
-          errors.push(
-            `fileChanges[${index}] with non-zero diffStats must include diffExcerpt.lines`,
-          );
-        }
-      });
-    }
   }
 
   if (typeof record.error !== "undefined") {
@@ -464,7 +359,7 @@ export function validateStructuredOutput(
             ? true
             : false;
         if (!msg) {
-          errors.push("question message payload requires message/content text");
+          errors.push("question message payload requires text/message/content");
         }
       }
     }
@@ -605,14 +500,6 @@ export function validateStructuredOutput(
     }
   }
 
-  if (responseType === "progress_update") {
-    if (!Array.isArray(record.progressUpdates)) {
-      errors.push("progress_update responseType requires progressUpdates array");
-    } else if (record.progressUpdates.length === 0) {
-      errors.push("progress_update responseType requires at least one progress update");
-    }
-  }
-
   if (typeof record.todoItems !== "undefined") {
     if (!Array.isArray(record.todoItems)) {
       errors.push("todoItems must be an array");
@@ -665,12 +552,14 @@ export function validateStructuredOutput(
 
   if (responseType === "message") {
     const messageText =
-      typeof record.message === "string" && record.message.trim().length > 0
-        ? record.message
+      typeof record.text === "string" && record.text.trim().length > 0
+        ? record.text
+        : typeof record.message === "string" && record.message.trim().length > 0
+          ? record.message
         : undefined;
     if (!messageText) {
       errors.push(
-        "message responseType requires message string",
+        "message type requires text string",
       );
     }
   }
@@ -730,14 +619,34 @@ export function sanitizeStructuredOutput(
 ): Record<string, unknown> {
   const sanitized: Record<string, unknown> = { ...value };
 
-  // Handle malformed question structure where responseType is "question"
+  // Canonical structured output now uses `type` and `text`, but we still
+  // accept legacy `responseType`/`message` payloads from older providers and
+  // normalize them into the new schema shape here.
+  const responseTypeSource =
+    isNonEmptyString(sanitized.type)
+      ? String(sanitized.type).toLowerCase()
+      : isNonEmptyString(sanitized.responseType)
+        ? String(sanitized.responseType).toLowerCase()
+        : "";
+  if (responseTypeSource) {
+    sanitized.type = responseTypeSource;
+  }
+  if (typeof sanitized.responseType !== "undefined") {
+    delete sanitized.responseType;
+  }
+  if (typeof sanitized.text === "undefined" && typeof sanitized.message !== "undefined") {
+    sanitized.text = sanitized.message;
+  }
+  if (typeof sanitized.message !== "undefined") {
+    delete sanitized.message;
+  }
+
+  // Handle malformed question structure where type is "question"
   // but question is a string instead of an object
-  let responseType = isNonEmptyString(sanitized.responseType)
-    ? String(sanitized.responseType).toLowerCase()
-    : "";
+  let responseType = responseTypeSource;
   if (responseType !== "implementation_plan" && hasQuestionIntent(value, sanitized)) {
     responseType = "question";
-    sanitized.responseType = "question";
+    sanitized.type = "question";
   }
 
   if (responseType === "question") {

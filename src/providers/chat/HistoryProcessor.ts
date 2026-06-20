@@ -83,10 +83,13 @@ export class HistoryProcessor {
         return {
           ...message,
           structuredOutput: {
+            type: "message",
+            text: bodyText,
             responseType: "message",
             message: bodyText,
           },
           content: bodyText,
+          text: bodyText,
         };
       }
       return message;
@@ -106,10 +109,11 @@ export class HistoryProcessor {
       !this.extractMessageBodyText(structuredApplied)?.trim() &&
       !Array.isArray(structuredApplied?.parts)
     ) {
-      this.logger.info("[HistoryProcessor] Restoring raw assistant body during hydration", {
+        this.logger.info("[HistoryProcessor] Restoring raw assistant body during hydration", {
         messageId: this.extractHistoryMessageId(structuredApplied),
         originalBodyPreview: originalBodyText.slice(0, 240),
         structuredResponseType: this.firstNonEmptyString(
+          structuredApplied?.structuredOutput?.type,
           structuredApplied?.structuredOutput?.responseType,
           structuredApplied?.responseType,
         ),
@@ -121,9 +125,11 @@ export class HistoryProcessor {
         rawSdkEventPayloads: structuredApplied?.rawSdkEventPayloads,
         structuredOutput:
           structuredApplied?.structuredOutput &&
-          this.firstNonEmptyString(structuredApplied.structuredOutput.responseType)
+          this.firstNonEmptyString(structuredApplied.structuredOutput.type, structuredApplied.structuredOutput.responseType)
             ? structuredApplied.structuredOutput
             : {
+              type: "message",
+              text: originalBodyText,
               responseType: "message",
               message: originalBodyText,
             },

@@ -12,8 +12,7 @@
 export type StructuredResponseType =
   | "message"
   | "implementation_plan"
-  | "question"
-  | "progress_update";
+  | "question";
 
 export type StructuredOutputSchema = {
   type: "json_schema";
@@ -33,26 +32,20 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object, 'question' for user interactions with options, or 'progress_update' for execution steps.",
+      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object, or 'question' for user interactions with options.",
     additionalProperties: false,
     required: ["responseType"],
     properties: {
       responseType: {
         type: "string",
-        enum: ["message", "implementation_plan", "question", "progress_update"],
+        enum: ["message", "implementation_plan", "question"],
         description:
-          "Response type: 'message' for normal text, 'implementation_plan' for plans, 'question' for user choices, 'progress_update' for steps",
+          "Response type: 'message' for normal text, 'implementation_plan' for plans, 'question' for user choices",
       },
 
       message: {
         type: "string",
         description: "User-facing text response for normal replies",
-      },
-
-      reasoning: {
-        type: "array",
-        items: { type: "string" },
-        description: "Optional thinking trace for UI timeline",
       },
 
       plan: {
@@ -94,23 +87,6 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
         },
         required: ["question"],
-      },
-
-      progressUpdates: {
-        type: "array",
-        description: "Execution progress steps",
-        items: {
-          type: "object",
-          properties: {
-            title: { type: "string", description: "Step title" },
-            status: {
-              type: "string",
-              enum: ["pending", "done", "error"],
-              description: "Step status",
-            },
-          },
-          required: ["title", "status"],
-        },
       },
     },
   },

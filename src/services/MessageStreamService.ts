@@ -680,6 +680,17 @@ export class MessageStreamService {
             undefined,
         );
 
+        if (!this.isHeartbeatEvent(normalizedEvent.type)) {
+          this.logger.info("[CENTRALIZED-TAPE][STREAM] raw_event_received", {
+            source,
+            type: normalizedEvent.type,
+            sessionId,
+            messageId,
+            partType,
+            preview,
+          });
+        }
+
         if (!this.isHeartbeatEvent(normalizedEvent.type) && verboseDebug) {
           this.logger.debug("[CHAT-STREAMING][KEY1] Stream event received from server", {
             source,
@@ -1037,10 +1048,18 @@ export class MessageStreamService {
     const previousSeen = this.recentEventSignatures.get(signature);
     this.recentEventSignatures.set(signature, { timestamp: now, source });
 
-    if (this.recentEventSignatures.size > 500) {
-      for (const [existingSignature, timestamp] of Array.from(this.recentEventSignatures.entries())) {
-        if (now - timestamp.timestamp > staleEntryWindowMs) {
-          this.recentEventSignatures.delete(existingSignature);
+    // Memory/CPU fix: replace the O(n) full-scan stale sweep with a cheap
+    // FIFO eviction cap. Map preserves insertion order, so iterating keys
+    // and deleting only the overage is O(overage) — not O(size) — and avoids
+    // repeated Array.from allocations on every event during heavy streaming.
+    const MAX_SIGNATURE_ENTRIES = 200;
+    if (this.recentEventSignatures.size > MAX_SIGNATURE_ENTRIES) {
+      const overage = this.recentEventSignatures.size - MAX_SIGNATURE_ENTRIES;
+      let pruned = 0;
+      for (const key of this.recentEventSignatures.keys()) {
+        this.recentEventSignatures.delete(key);
+        if (++pruned >= overage) {
+          break;
         }
       }
     }
