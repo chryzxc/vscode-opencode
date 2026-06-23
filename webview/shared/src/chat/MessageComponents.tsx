@@ -53,7 +53,7 @@ import {
   asString,
   getCentralizedAssistantContentChunksFromRawSdkEventPayloads,
   getCentralizedEventPart,
-  getCentralizedAssistantTurnCompletionIndex,
+  latestAssistantMessageIdFromCentralizedTape,
   normalizeCentralizedEventPayloads,
   structuredOutputFromRawSdkEventPayloads,
   isAiResponseEvent,
@@ -1297,6 +1297,53 @@ function collectMessageIdentityCandidates(message?: Message): Set<string> {
   return candidates;
 }
 
+function collectAssistantTurnMessageIds(
+  messages: Message[] | undefined,
+  rootMessageId: string | null,
+): Set<string> {
+  const scopedIds = new Set<string>();
+  const normalizedRootId = (rootMessageId || "").trim();
+  if (!Array.isArray(messages) || messages.length === 0 || !normalizedRootId) {
+    return scopedIds;
+  }
+
+  const queue: string[] = [normalizedRootId];
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    if (scopedIds.has(currentId)) {
+      continue;
+    }
+    scopedIds.add(currentId);
+
+    for (const candidate of messages) {
+      const candidateInfo = asRecord(candidate.info);
+      const candidateRole = (candidate.role ?? candidateInfo?.role ?? "").toString().toLowerCase();
+      if (candidateRole !== "assistant") {
+        continue;
+      }
+
+      const candidateIds = collectMessageIdentityCandidates(candidate);
+      const parentId = firstNonEmptyString(
+        candidateInfo?.parentID,
+        candidateInfo?.parentId,
+      );
+      if (!parentId || !candidateIds.size) {
+        continue;
+      }
+
+      if (parentId === currentId) {
+        for (const id of candidateIds) {
+          if (!scopedIds.has(id)) {
+            queue.push(id);
+          }
+        }
+      }
+    }
+  }
+
+  return scopedIds;
+}
+
 function normalizeComparableText(value: unknown): string {
   return normalizeErrorLikeValue(value)
     .replace(/\r\n/g, "\n")
@@ -2286,6 +2333,7 @@ type ProgressItem = {
   mergeKey: string;
   id?: string;
   callID?: string;
+  messageID?: string;
   sessionID?: string;
   title: string;
   status: "pending" | "done" | "error";
@@ -2315,7 +2363,7 @@ type CommentaryItem = {
 type ThinkingBlock = { kind: "thinking"; items: ThoughtItem[] };
 type StepsBlock = { kind: "steps"; items: ProgressItem[] };
 type ContentBlock = { kind: "content"; html: string };
-type CommentaryBlock = { kind: "commentary"; text: string; label?: string };
+type CommentaryBlock = { kind: "commentary"; text: string; label?: string; messageID?: string; partID?: string };
 type TimelineBlock = ThinkingBlock | StepsBlock | ContentBlock | CommentaryBlock;
 
 function AssistantResponseBodyCard({
@@ -2391,23 +2439,74 @@ function thoughtItemsFromRawEventPayloads(
     return [];
   }
 
-  const completionIndex =
-    getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads);
   const items: ThoughtItem[] = [];
-  const seen = new Set<string>();
-  const pushUnique = (key: string, text: string) => {
-    const cleaned = text.trim();
-    if (!cleaned) return;
-    const fp = normalizeComparableText(cleaned);
-    if (!fp || seen.has(fp)) return;
-    seen.add(fp);
-    items.push({ key, text: cleaned });
+  const itemsByIdentity = new Map<string, number>();
+  // Canonical and sync-mirrored reasoning events often share the same
+  // `partID` / `messageID`. Use those stable identifiers first so we collapse
+  // the same logical reasoning row instead of deduping purely by rendered text.
+  const getIdentityKey = (item: ThoughtItem): string | null =>
+    firstNonEmptyString(
+      item.partID ? `part:${item.partID}` : undefined,
+      item.messageID ? `msg:${item.messageID}` : undefined,
+      item.key ? `key:${item.key}` : undefined,
+      normalizeComparableText(item.text)
+        ? `text:${normalizeComparableText(item.text)}`
+        : undefined,
+    );
+
+  const addIdentity = (item: ThoughtItem, index: number) => {
+    const identityKey = getIdentityKey(item);
+    if (identityKey) {
+      itemsByIdentity.set(identityKey, index);
+    }
+  };
+
+  const upsertThoughtItem = (item: ThoughtItem) => {
+    const key = getIdentityKey(item);
+    if (!key) {
+      return;
+    }
+
+    const existingIndex = itemsByIdentity.get(key);
+    if (typeof existingIndex === "number") {
+      const existing = items[existingIndex];
+      if (!existing) {
+        items[existingIndex] = item;
+        return;
+      }
+
+      const incomingText = normalizeComparableText(item.text);
+      const existingText = normalizeComparableText(existing.text);
+      if (incomingText.length > existingText.length) {
+        items[existingIndex] = {
+          ...existing,
+          ...item,
+          text: item.text.trim(),
+        };
+        addIdentity(items[existingIndex], existingIndex);
+        return;
+      }
+
+      if (item.status === "done" || item.status === "error") {
+        items[existingIndex] = {
+          ...existing,
+          ...item,
+          text: existing.text.trim() || item.text.trim(),
+        };
+        addIdentity(items[existingIndex], existingIndex);
+      }
+      return;
+    }
+
+    const nextIndex = items.length;
+    items.push({
+      ...item,
+      text: item.text.trim(),
+    });
+    addIdentity(items[nextIndex], nextIndex);
   };
 
   for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
-    if (completionIndex >= 0 && index > completionIndex) {
-      break;
-    }
     const event = asRecord(rawSdkEventPayloads[index]);
     if (!event) {
       continue;
@@ -2442,34 +2541,32 @@ function thoughtItemsFromRawEventPayloads(
     const status = typeof partTime?.end === "number" ? "done" : "pending";
     const key = `evt-${createdAt}-${index}`;
     const cleaned = text.trim();
-    if (cleaned) {
-      const fp = normalizeComparableText(cleaned);
-      if (fp && !seen.has(fp)) {
-        seen.add(fp);
-        items.push({
-          key,
-          text: cleaned,
-          status,
-          messageID:
-            asString(part?.messageID) ||
-            asString(part?.messageId) ||
-            asString(properties?.messageID) ||
-            asString(properties?.messageId) ||
-            asString(event.messageID) ||
-            asString(event.messageId) ||
-            undefined,
-          partID:
-            asString(part?.id) ||
-            asString(part?.partID) ||
-            asString(part?.partId) ||
-            asString(properties?.partID) ||
-            asString(properties?.partId) ||
-            asString(event.partID) ||
-            asString(event.partId) ||
-            undefined,
-        });
-      }
+    if (!cleaned) {
+      continue;
     }
+
+    upsertThoughtItem({
+      key,
+      text: cleaned,
+      status,
+      messageID:
+        asString(part?.messageID) ||
+        asString(part?.messageId) ||
+        asString(properties?.messageID) ||
+        asString(properties?.messageId) ||
+        asString(event.messageID) ||
+        asString(event.messageId) ||
+        undefined,
+      partID:
+        asString(part?.id) ||
+        asString(part?.partID) ||
+        asString(part?.partId) ||
+        asString(properties?.partID) ||
+        asString(properties?.partId) ||
+        asString(event.partID) ||
+        asString(event.partId) ||
+        undefined,
+    });
   }
 
   return items;
@@ -2557,6 +2654,7 @@ function thoughtItemsFromStreamingReasoningEvents(
 function mergeThoughtItemsForTimeline(
   finalizedItems: ThoughtItem[],
   streamingItems: ThoughtItem[],
+  preferStreaming = false,
 ): ThoughtItem[] {
   if (finalizedItems.length === 0) {
     return streamingItems;
@@ -2566,22 +2664,22 @@ function mergeThoughtItemsForTimeline(
   }
 
   const merged: ThoughtItem[] = [...finalizedItems];
-  const seen = new Set<string>();
+  const indexByKey = new Map<string, number>();
 
-  const addKey = (item: ThoughtItem) => {
+  const addKey = (item: ThoughtItem, index: number) => {
     const normalizedText = normalizeComparableText(item.text);
     if (item.partID) {
-      seen.add(`part:${item.partID}`);
+      indexByKey.set(`part:${item.partID}`, index);
     }
     if (item.messageID) {
-      seen.add(`msg:${item.messageID}`);
+      indexByKey.set(`msg:${item.messageID}`, index);
     }
     if (normalizedText) {
-      seen.add(`text:${normalizedText}`);
+      indexByKey.set(`text:${normalizedText}`, index);
     }
   };
 
-  finalizedItems.forEach(addKey);
+  finalizedItems.forEach((item, index) => addKey(item, index));
 
   for (const item of streamingItems) {
     const normalizedText = normalizeComparableText(item.text);
@@ -2591,11 +2689,92 @@ function mergeThoughtItemsForTimeline(
       normalizedText ? `text:${normalizedText}` : "",
     ].filter(Boolean);
 
-    if (keys.some((key) => seen.has(key))) {
+    const matchingKey = keys.find((key) => indexByKey.has(key));
+    if (typeof matchingKey === "string") {
+      if (preferStreaming) {
+        const existingIndex = indexByKey.get(matchingKey);
+        if (typeof existingIndex === "number") {
+          merged[existingIndex] = {
+            ...merged[existingIndex],
+            ...item,
+            source: item.source || merged[existingIndex].source,
+          };
+        }
+      }
       continue;
     }
 
-    keys.forEach((key) => seen.add(key));
+    const nextIndex = merged.length;
+    keys.forEach((key) => indexByKey.set(key, nextIndex));
+    merged.push(item);
+  }
+
+  return merged;
+}
+
+/**
+ * Merge finalized progress rows with live streaming progress rows.
+ *
+ * The assistant can emit running/pending step snapshots before the centralized
+ * tape has fully materialized. Those live rows should be visible immediately,
+ * but once the finalized tape arrives it must win so we do not duplicate the
+ * same tool row twice with different status snapshots.
+ */
+function mergeProgressItemsForTimeline(
+  finalizedItems: ProgressItem[],
+  streamingItems: ProgressItem[],
+  preferStreaming = false,
+): ProgressItem[] {
+  if (finalizedItems.length === 0) {
+    return streamingItems;
+  }
+  if (streamingItems.length === 0) {
+    return finalizedItems;
+  }
+
+  const merged: ProgressItem[] = [...finalizedItems];
+  const indexByKey = new Map<string, number>();
+
+  const addKey = (item: ProgressItem, index: number) => {
+    if (item.callID) {
+      indexByKey.set(`call:${item.callID}`, index);
+    }
+    if (item.id) {
+      indexByKey.set(`id:${item.id}`, index);
+    }
+    if (item.messageID) {
+      indexByKey.set(`msg:${item.messageID}`, index);
+    }
+    indexByKey.set(`title:${normalizeComparableText(item.title)}`, index);
+  };
+
+  finalizedItems.forEach((item, index) => addKey(item, index));
+
+  for (const item of streamingItems) {
+    const keys = [
+      item.callID ? `call:${item.callID}` : "",
+      item.id ? `id:${item.id}` : "",
+      item.messageID ? `msg:${item.messageID}` : "",
+      `title:${normalizeComparableText(item.title)}`,
+    ].filter(Boolean);
+
+    const matchingKey = keys.find((key) => indexByKey.has(key));
+    if (typeof matchingKey === "string") {
+      if (preferStreaming) {
+        const existingIndex = indexByKey.get(matchingKey);
+        if (typeof existingIndex === "number") {
+          merged[existingIndex] = {
+            ...merged[existingIndex],
+            ...item,
+            source: item.source || merged[existingIndex].source,
+          };
+        }
+      }
+      continue;
+    }
+
+    const nextIndex = merged.length;
+    keys.forEach((key) => indexByKey.set(key, nextIndex));
     merged.push(item);
   }
 
@@ -2609,26 +2788,129 @@ function progressItemsFromRawEventPayloads(
     return [];
   }
 
-  const completionIndex =
-    getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads);
   const rawSteps: Array<MessageStep | StreamingStep> = [];
+  const diagnostics = {
+    total: rawSdkEventPayloads.length,
+    noRecord: 0,
+    fileWatcher: 0,
+    structuredThinkingSkipped: 0,
+    noPart: 0,
+    reasoningSkipped: 0,
+    textSkipped: 0,
+    noRenderableProgress: 0,
+    pushed: 0,
+  };
+  const skippedSamples: Array<Record<string, unknown>> = [];
+  const pushedSamples: Array<Record<string, unknown>> = [];
+  const rememberSkipped = (reason: string, event: unknown, index: number) => {
+    if (skippedSamples.length >= 8) {
+      return;
+    }
+    skippedSamples.push({
+      reason,
+      ...summarizeCentralizedEventForTimelineDiagnostics(event, index),
+    });
+  };
+  const rememberPushed = (event: unknown, index: number) => {
+    if (pushedSamples.length >= 8) {
+      return;
+    }
+    pushedSamples.push(summarizeCentralizedEventForTimelineDiagnostics(event, index));
+  };
 
   for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
-    if (completionIndex >= 0 && index > completionIndex) {
-      break;
-    }
     const event = asRecord(rawSdkEventPayloads[index]);
     if (!event) {
+      diagnostics.noRecord += 1;
+      rememberSkipped("no_record", rawSdkEventPayloads[index], index);
+      continue;
+    }
+
+    const eventType = firstNonEmptyString(asString(event.type), asString(event.eventType))?.toLowerCase() || "";
+    const eventProperties = asRecord(event.properties);
+    const messageID = firstNonEmptyString(
+      asString(eventProperties?.messageID),
+      asString(eventProperties?.messageId),
+      asString(event.messageID),
+      asString(event.messageId),
+    );
+
+    // Some centralized events are not part updates at all. We still want to
+    // surface them in the activity timeline when they represent meaningful
+    // work that happened during the assistant turn, instead of dropping them
+    // on the floor simply because they do not have a `part` envelope.
+    if (eventType === "file.watcher.updated") {
+      const file = firstNonEmptyString(
+        asString(eventProperties?.file),
+        asString(event.file),
+      );
+      const watcherEvent = firstNonEmptyString(
+        asString(eventProperties?.event),
+        asString(event.event),
+      );
+      const title = firstNonEmptyString(watcherEvent, "file watcher updated");
+      const summary = firstNonEmptyString(
+        watcherEvent,
+        file,
+        title,
+      );
+      const id = firstNonEmptyString(
+        asString(event.id),
+        asString(event.eventId),
+      );
+      if (!file && !watcherEvent && !id) {
+        continue;
+      }
+
+      rawSteps.push({
+        id: id || `${eventType}-${index}`,
+        sessionID: firstNonEmptyString(
+          asString(event.sessionID),
+          asString(event.sessionId),
+        ),
+        title,
+        type: "tool",
+        status: "done",
+        source: "raw_debug",
+        partType: eventType,
+        internal: false,
+        filePath: file || undefined,
+        messageID: messageID || undefined,
+        streamSeq: index,
+        activityDetail: {
+          kind: "other",
+          summary: summary || title,
+          tool: "file_watcher",
+          input: eventProperties
+            ? {
+                file: eventProperties.file,
+                event: eventProperties.event,
+              }
+            : undefined,
+          output: undefined,
+          sessionID: firstNonEmptyString(
+            asString(event.sessionID),
+            asString(event.sessionId),
+          ),
+        },
+      });
+      diagnostics.fileWatcher += 1;
+      diagnostics.pushed += 1;
+      rememberPushed(event, index);
       continue;
     }
 
     const structured = asRecord(event.structured);
     if (String(structured?.kind ?? "").trim() === "thinking") {
+      diagnostics.structuredThinkingSkipped += 1;
+      rememberSkipped("structured_thinking", event, index);
       continue;
     }
 
     const part = getCentralizedEventPart(event);
     if (!part) {
+      diagnostics.noPart += 1;
+      rememberSkipped("no_part", event, index);
       continue;
     }
 
@@ -2650,7 +2932,9 @@ function progressItemsFromRawEventPayloads(
     // lane. If we let it through here, the same assistant text can render once
     // as a reasoning block and again as a raw activity row, which is the
     // duplicate the UI has been showing.
-    if (asString(partType).toLowerCase() === "reasoning") {
+    if ((partType || "").toLowerCase() === "reasoning") {
+      diagnostics.reasoningSkipped += 1;
+      rememberSkipped("reasoning_lane", event, index);
       continue;
     }
     const status = normalizeProgressStatus(
@@ -2667,6 +2951,14 @@ function progressItemsFromRawEventPayloads(
       asString(event.id),
     );
     const callID = firstNonEmptyString(asString(part.callID), asString(part.callId));
+    const partMessageID = firstNonEmptyString(
+      asString(part.messageID),
+      asString(part.messageId),
+      asString(event.messageID),
+      asString(event.messageId),
+      asString(eventProperties?.messageID),
+      asString(eventProperties?.messageId),
+    );
     const sessionID = firstNonEmptyString(
       asString(event.sessionID),
       asString(event.sessionId),
@@ -2700,6 +2992,8 @@ function progressItemsFromRawEventPayloads(
     );
 
     if (partType === "text") {
+      diagnostics.textSkipped += 1;
+      rememberSkipped("text_response_lane", event, index);
       continue;
     }
 
@@ -2734,12 +3028,15 @@ function progressItemsFromRawEventPayloads(
       !!tool ||
       !!partType;
     if (!hasRenderableProgress) {
+      diagnostics.noRenderableProgress += 1;
+      rememberSkipped("no_renderable_progress", event, index);
       continue;
     }
 
     rawSteps.push({
       id,
       callID,
+      messageID: partMessageID || undefined,
       sessionID,
       title,
       type: tool ? "tool" : "step",
@@ -2753,9 +3050,14 @@ function progressItemsFromRawEventPayloads(
       endedAt: endedAt ? Number(endedAt) : undefined,
       streamSeq: index,
       activityDetail: {
-        kind: tool === "read" ? "read" : tool === "question" ? "other" : "tool_call",
+        kind: tool === "read" ? "read" : tool === "question" ? "other" : tool || "tool_call",
         summary: filePath || preview || output || title,
         tool,
+        command: firstNonEmptyString(
+          asString(input?.command),
+          asString(part.command),
+          asString(state?.command),
+        ) || undefined,
         file: filePath,
         input: input ?? undefined,
         output: output || undefined,
@@ -2765,9 +3067,41 @@ function progressItemsFromRawEventPayloads(
         sessionID,
       },
     });
+    diagnostics.pushed += 1;
+    rememberPushed(event, index);
   }
 
-  return progressItemsFromSteps(rawSteps, "raw-event");
+  const rawStepFilterPreview = rawSteps.slice(0, 12).map((step, index) => {
+    const stepRec = step as StreamingStep;
+    return {
+      index,
+      id: "id" in step ? step.id : undefined,
+      callID: "callID" in step ? step.callID : undefined,
+      messageID: "messageID" in step ? step.messageID : undefined,
+      title: step.title,
+      type: step.type,
+      partType: "partType" in step ? step.partType : undefined,
+      status: step.status,
+      tool: stepRec.activityDetail?.tool,
+      kind: stepRec.activityDetail?.kind,
+      hasActivityDetail: !!stepRec.activityDetail,
+      wouldRender: isActionProgressStep(step),
+    };
+  });
+  const projectedItems = progressItemsFromSteps(rawSteps, "raw-event");
+  logger.info(`${ACTIVITY_TIMELINE_DIAGNOSTIC_LOG} progress_projection`, {
+    diagnostics,
+    rawSteps: rawSteps.length,
+    projectedItems: projectedItems.length,
+    rawStepFilterPreview,
+    skippedSamples,
+    pushedSamples,
+    projectedSamples: projectedItems
+      .slice(0, 8)
+      .map((item, index) => summarizeProgressItemForTimelineDiagnostics(item, index)),
+  });
+
+  return projectedItems;
 }
 
 function normalizeProgressStatus(
@@ -2881,6 +3215,10 @@ function progressItemsFromSteps(
         "callID" in step && typeof step.callID === "string"
           ? step.callID
           : undefined;
+      const stepMessageId =
+        "messageID" in step && typeof (step as { messageID?: string }).messageID === "string"
+          ? (step as { messageID?: string }).messageID
+          : undefined;
       const stepSessionId =
         "sessionID" in step && typeof step.sessionID === "string"
           ? step.sessionID
@@ -2926,6 +3264,7 @@ function progressItemsFromSteps(
         if (stepFilePath) existing.filePath = stepFilePath;
         if (!existing.id && stepId) existing.id = stepId;
         if (!existing.callID && stepCallId) existing.callID = stepCallId;
+        if (!existing.messageID && stepMessageId) existing.messageID = stepMessageId;
         if (!existing.sessionID && stepSessionId) existing.sessionID = stepSessionId;
         if (!existing.startedAt && stepStartedAt) existing.startedAt = stepStartedAt;
         if (!existing.endedAt && stepEndedAt) existing.endedAt = stepEndedAt;
@@ -2946,6 +3285,7 @@ function progressItemsFromSteps(
           mergeKey,
           id: stepId,
           callID: stepCallId,
+          messageID: stepMessageId,
           sessionID: stepSessionId,
           title,
           status,
@@ -3070,6 +3410,7 @@ function progressItemsFromRawResponseParts(
       mergeKey: callID ? `call:${callID}` : id ? `id:${id}` : `index:${index}`,
       id,
       callID,
+      messageID: partMessageID || undefined,
       title: rawTitle,
       status,
       source: "raw_debug",
@@ -3079,7 +3420,7 @@ function progressItemsFromRawResponseParts(
       filePath,
       diffStats: undefined,
       activityDetail: {
-        kind: toolName === "read" ? "read" : "tool_call",
+        kind: toolName === "read" ? "read" : toolName || "tool_call",
         summary: filePath || preview || rawTitle,
         tool: toolName,
         file: filePath,
@@ -3142,8 +3483,6 @@ function commentaryItemsFromRawEventPayloads(
   if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
     return [];
   }
-  const completionIndex =
-    getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads);
   const rawItems = new Map<string, CommentaryItem>();
   const statusRank = (value?: unknown): number => {
     const status = asString(value).toLowerCase();
@@ -3154,9 +3493,6 @@ function commentaryItemsFromRawEventPayloads(
   };
 
   for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
-    if (completionIndex >= 0 && index > completionIndex) {
-      break;
-    }
     const event = asRecord(rawSdkEventPayloads[index]);
     if (!event) continue;
 
@@ -3875,17 +4211,22 @@ function buildTimeline(
     }
 
     for (const item of commentaryItems) {
-      // Commentary chunks now render only in the response body section.
-      // Keeping them out of the activity timeline prevents duplicate final
-      // response cards when the same assistant text is present in both places.
-      continue;
+      const text = (item.text || "").trim();
+      if (!text) continue;
+      entries.push({
+        kind: "commentary",
+        item,
+        seq:
+          item.streamSeq != null
+            ? item.streamSeq + 1
+            : Number.MAX_SAFE_INTEGER,
+      });
     }
 
-    // When we already have AI-response commentary chunks, the raw response
-    // text should be rendered from those chunks in order. Adding the merged
-    // `html` block here would collapse the same response into one final card
-    // and hide later activity that belongs after it.
-    if (html && commentaryItems.length === 0) {
+    // Preserve the merged raw response body when available. It renders in the
+    // assistant response section, while commentary chunks remain available as
+    // timeline blocks for live/step-by-step rendering.
+    if (html) {
       entries.push({ kind: "content", seq: Number.MAX_SAFE_INTEGER });
     }
 
@@ -3906,6 +4247,17 @@ function buildTimeline(
         } else {
           blocks.push({ kind: "steps", items: [entry.item] });
         }
+      } else if (entry.kind === "commentary") {
+        blocks.push({
+          kind: "commentary",
+          text: entry.item.text,
+          messageID: entry.item.messageID,
+          partID: entry.item.partID,
+          label:
+            entry.item.kind === "ai_response"
+              ? "Assistant Response"
+              : "Commentary",
+        });
       } else {
         blocks.push({ kind: "content", html });
       }
@@ -4035,6 +4387,8 @@ type DisplayEvent = {
   internal?: boolean;
   filePath?: string;
   callID?: string;
+  messageID?: string;
+  partID?: string;
   sessionID?: string;
   startedAt?: number;
   endedAt?: number;
@@ -4044,6 +4398,103 @@ type DisplayEvent = {
   isImportant?: boolean;
   updateCount: number;
 };
+
+const ACTIVITY_TIMELINE_DIAGNOSTIC_LOG = "[ACTIVITY-TIMELINE-DIAG]";
+
+function summarizeCentralizedEventForTimelineDiagnostics(
+  value: unknown,
+  index: number,
+): Record<string, unknown> {
+  const event = asRecord(value);
+  const payload = asRecord(event?.payload);
+  const syncEvent = asRecord(event?.syncEvent) ?? asRecord(payload?.syncEvent);
+  const syncData = asRecord(syncEvent?.data);
+  const properties = asRecord(event?.properties) ?? asRecord(payload?.properties);
+  const part = event ? getCentralizedEventPart(event) : null;
+  const state = asRecord(part?.state);
+  const input = asRecord(state?.input);
+
+  return {
+    index,
+    id: firstNonEmptyString(
+      asString(event?.id),
+      asString(payload?.id),
+      asString(syncEvent?.id),
+    ),
+    type: firstNonEmptyString(
+      asString(event?.type),
+      asString(payload?.type),
+      asString(syncEvent?.type),
+    ),
+    wrappedPayloadType: asString(payload?.type) || undefined,
+    source: asString(event?.source) || undefined,
+    partType: asString(part?.type) || undefined,
+    tool: asString(part?.tool) || asString(part?.name) || undefined,
+    status: asString(state?.status) || asString(part?.status) || undefined,
+    partID: firstNonEmptyString(
+      asString(part?.id),
+      asString(part?.partID),
+      asString(part?.partId),
+      asString(properties?.partID),
+      asString(properties?.partId),
+    ),
+    messageID: firstNonEmptyString(
+      asString(part?.messageID),
+      asString(part?.messageId),
+      asString(properties?.messageID),
+      asString(properties?.messageId),
+      asString(syncData?.messageID),
+      asString(syncData?.messageId),
+    ),
+    callID: firstNonEmptyString(
+      asString(part?.callID),
+      asString(part?.callId),
+    ),
+    hasInput: !!input,
+    hasOutput: typeof state?.output === "string" || typeof part?.output === "string",
+  };
+}
+
+function summarizeProgressItemForTimelineDiagnostics(
+  item: ProgressItem,
+  index: number,
+): Record<string, unknown> {
+  return {
+    index,
+    key: item.key,
+    mergeKey: item.mergeKey,
+    id: item.id,
+    callID: item.callID,
+    messageID: item.messageID,
+    title: item.title,
+    status: item.status,
+    source: item.source,
+    partType: item.partType,
+    tool: item.activityDetail?.tool,
+    kind: item.activityDetail?.kind,
+    hasOutput: !!item.activityDetail?.output,
+  };
+}
+
+function summarizeDisplayEventForTimelineDiagnostics(
+  event: DisplayEvent,
+  index: number,
+): Record<string, unknown> {
+  return {
+    index,
+    key: event.key,
+    kind: event.kind,
+    label: event.label,
+    status: event.status,
+    source: event.source,
+    partType: event.partType,
+    messageID: event.messageID,
+    callID: event.callID,
+    tool: event.activityDetail?.tool,
+    activityKind: event.activityDetail?.kind,
+    summary: event.summary ? event.summary.slice(0, 120) : "",
+  };
+}
 
 function displayEventSourcePriority(source?: DisplayEvent["source"]): number {
   // Prefer the canonical event tape over the raw debug mirror when both
@@ -4065,6 +4516,8 @@ function displayEventFingerprint(event: DisplayEvent): string {
   const label = event.label.trim().toLowerCase();
   const filePath = (event.filePath ?? "").trim().toLowerCase();
   const callID = (event.callID ?? "").trim().toLowerCase();
+  const messageID = (event.messageID ?? "").trim().toLowerCase();
+  const partID = (event.partID ?? "").trim().toLowerCase();
   const sessionID = (event.sessionID ?? "").trim().toLowerCase();
   const partType = (event.partType ?? "").trim().toLowerCase();
   const activityTool = (event.activityDetail?.tool ?? "").trim().toLowerCase();
@@ -4078,6 +4531,8 @@ function displayEventFingerprint(event: DisplayEvent): string {
       "activity",
       label,
       callID || filePath,
+      messageID,
+      partID,
       sessionID,
       partType,
       activityTool,
@@ -4091,14 +4546,16 @@ function displayEventFingerprint(event: DisplayEvent): string {
   return [
     event.kind,
     label,
-    event.summary.trim().toLowerCase(),
-    (event.description ?? "").trim().toLowerCase(),
-    (event.detail ?? "").trim().toLowerCase(),
-    filePath,
-    callID,
-    sessionID,
+      event.summary.trim().toLowerCase(),
+      (event.description ?? "").trim().toLowerCase(),
+      (event.detail ?? "").trim().toLowerCase(),
+      filePath,
+      callID,
+      messageID,
+      partID,
+      sessionID,
     partType,
-    String(event.internal ?? false),
+      String(event.internal ?? false),
   ].join("|");
 }
 
@@ -4688,6 +5145,7 @@ function buildDisplayEvents(
   fileChanges: StructuredFileChange[] | undefined,
   isStreamingActive: boolean,
   assistantTurnPending: boolean,
+  currentMessageId?: string | null,
 ): DisplayEvent[] {
   const stripTrailingEllipsis = (value?: string) =>
     (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
@@ -4784,6 +5242,9 @@ function buildDisplayEvents(
       for (const item of block.items) {
         const text = (item.text || "").trim();
         if (!text) continue;
+        if (currentMessageId && item.messageID && item.messageID !== currentMessageId) {
+          continue;
+        }
         const source = sourceFromThoughtKey(item.key);
         rawEvents.push({
           key: `reasoning-${item.key}`,
@@ -4792,6 +5253,8 @@ function buildDisplayEvents(
           summary: text,
           status: item.status || ((isStreamingActive || assistantTurnPending) && source === "stream" ? "pending" : "done"),
           source,
+          messageID: item.messageID,
+          partID: item.partID,
           isImportant: false,
           updateCount: 1,
         });
@@ -4802,12 +5265,22 @@ function buildDisplayEvents(
     if (block.kind === "commentary") {
       const text = (block.text || "").trim();
       if (!text) continue;
+      if (
+        currentMessageId &&
+        "messageID" in block &&
+        block.messageID &&
+        block.messageID !== currentMessageId
+      ) {
+        continue;
+      }
       rawEvents.push({
         key: `commentary-${rawEvents.length}`,
         kind: "commentary",
         label: block.label ?? "Commentary",
         summary: text,
         status: "done",
+        messageID: "messageID" in block ? block.messageID : undefined,
+        partID: "partID" in block ? block.partID : undefined,
         isImportant: false,
         updateCount: 1,
       });
@@ -4815,6 +5288,9 @@ function buildDisplayEvents(
     }
 
     for (const event of block.items) {
+      if (currentMessageId && event.messageID && event.messageID !== currentMessageId) {
+        continue;
+      }
       const rawTitle = event.title || "";
       const labelText = (event.label ?? "").toString();
       const labelLower = labelText.trim().toLowerCase();
@@ -4991,12 +5467,14 @@ function buildDisplayEvents(
         internal,
         filePath,
         callID: event.callID,
+        messageID: event.messageID,
         sessionID: event.sessionID || activityDetail?.sessionID,
         startedAt: event.startedAt,
         endedAt: event.endedAt,
         diffStats,
         activityDetail,
         viewDiffFile,
+        partID: (event as { partID?: string }).partID,
         isImportant: Boolean(
           event.status === 'error' ||
           (event.status === 'done' && (filePath || diffStats || viewDiffFile)) ||
@@ -5009,7 +5487,33 @@ function buildDisplayEvents(
 
   const deduped: DisplayEvent[] = [];
   const dedupedIndexByFingerprint = new Map<string, number>();
+  const dedupedIndexByIdentity = new Map<string, number>();
   for (const event of rawEvents) {
+    const stableIdentity = firstNonEmptyString(
+      event.partID ? `part:${event.partID}` : undefined,
+      event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
+      event.callID ? `call:${event.callID}:${event.kind}` : undefined,
+    );
+    if (stableIdentity) {
+      const existingIdentityIndex = dedupedIndexByIdentity.get(stableIdentity);
+      if (typeof existingIdentityIndex === "number") {
+        const existing = deduped[existingIdentityIndex];
+        const existingPriority = displayEventSourcePriority(existing.source);
+        const incomingPriority = displayEventSourcePriority(event.source);
+        if (incomingPriority > existingPriority) {
+          deduped[existingIdentityIndex] = {
+            ...existing,
+            ...event,
+            updateCount: existing.updateCount + 1,
+          };
+        } else {
+          existing.updateCount += 1;
+        }
+        continue;
+      }
+      dedupedIndexByIdentity.set(stableIdentity, deduped.length);
+    }
+
     const fingerprint = displayEventFingerprint(event);
     const existingIndex = dedupedIndexByFingerprint.get(fingerprint);
     if (typeof existingIndex === "number") {
@@ -5495,6 +5999,100 @@ function getAssistantTurnMetadataFromCentralizedEvents(
   return metadata;
 }
 
+function getCentralizedEventInfo(payload: unknown): Record<string, unknown> | null {
+  const event = asRecord(payload);
+  if (!event) {
+    return null;
+  }
+
+  const payloadSyncInfo = asRecord(
+    asRecord(asRecord(event.payload)?.syncEvent)?.data?.info,
+  );
+  if (payloadSyncInfo) {
+    return payloadSyncInfo;
+  }
+
+  const syncInfo = asRecord(asRecord(event.syncEvent)?.data?.info);
+  if (syncInfo) {
+    return syncInfo;
+  }
+
+  const propertiesInfo = asRecord(asRecord(event.properties)?.info);
+  if (propertiesInfo) {
+    return propertiesInfo;
+  }
+
+  return asRecord(event.info);
+}
+
+function collectCentralizedTurnMessageIds(
+  rawSdkEventPayloads: unknown[] | undefined,
+  rootMessageId: string | null,
+): Set<string> {
+  const scopedIds = new Set<string>();
+  const normalizedRootId = (rootMessageId || "").trim();
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0 || !normalizedRootId) {
+    return scopedIds;
+  }
+
+  const childrenByParent = new Map<string, Set<string>>();
+
+  for (const payload of rawSdkEventPayloads) {
+    const record = asRecord(payload);
+    if (!record) continue;
+
+    const part = getCentralizedEventPart(record);
+    const info = getCentralizedEventInfo(record);
+    const messageId =
+      firstNonEmptyString(
+        asString(info?.id),
+        asString(info?.messageID),
+        asString(info?.messageId),
+        asString(part?.messageID),
+        asString(part?.messageId),
+        asString(record.messageID),
+        asString(record.messageId),
+      ) || "";
+    const parentMessageId =
+      firstNonEmptyString(
+        asString(info?.parentID),
+        asString(info?.parentId),
+        asString(part?.parentMessageId),
+        asString(part?.parentMessageID),
+        asString(record.parentID),
+        asString(record.parentId),
+      ) || "";
+
+    if (messageId && parentMessageId) {
+      const existing = childrenByParent.get(parentMessageId) ?? new Set<string>();
+      existing.add(messageId);
+      childrenByParent.set(parentMessageId, existing);
+    }
+  }
+
+  const queue: string[] = [normalizedRootId];
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    if (scopedIds.has(currentId)) {
+      continue;
+    }
+    scopedIds.add(currentId);
+
+    const children = childrenByParent.get(currentId);
+    if (!children) {
+      continue;
+    }
+
+    for (const childId of children) {
+      if (!scopedIds.has(childId)) {
+        queue.push(childId);
+      }
+    }
+  }
+
+  return scopedIds;
+}
+
 function AssistantResponseCardInner({
   message,
   streaming,
@@ -5582,26 +6180,83 @@ function AssistantResponseCardInner({
       ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
       : [];
   }, [centralizedSessionId, rawSdkEventPayloadsBySessionId]);
+  const isLiveAssistantTurn = !!(
+    activityTimelineStreaming?.isActive ||
+    assistantTurnPending
+  );
+  const assistantTurnRootMessageId = firstNonEmptyString(
+    assistantMessageId,
+    activityTimelineStreaming?.messageId,
+    assistantTurnMessageId,
+    !isLiveAssistantTurn
+      ? latestAssistantMessageIdFromCentralizedTape(sessionScopedRawSdkEventPayloads)
+      : null,
+  ) || null;
+  const assistantScopeMessageIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const candidate of [
+      assistantMessageId,
+      activityTimelineStreaming?.messageId,
+      assistantTurnMessageId,
+      assistantTurnRootMessageId,
+    ]) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
+        ids.add(candidate.trim());
+      }
+    }
+
+    for (const candidate of collectMessageIdentityCandidates(message)) {
+      ids.add(candidate);
+    }
+
+    return ids;
+  }, [
+    assistantMessageId,
+    activityTimelineStreaming?.messageId,
+    assistantTurnMessageId,
+    assistantTurnRootMessageId,
+    message,
+  ]);
+  const assistantTurnMessageIds = useMemo(() => {
+    const ids = collectAssistantTurnMessageIds(messages, assistantTurnRootMessageId);
+    for (const id of collectCentralizedTurnMessageIds(sessionScopedRawSdkEventPayloads, assistantTurnRootMessageId)) {
+      ids.add(id);
+    }
+    return ids;
+  }, [messages, assistantTurnRootMessageId, sessionScopedRawSdkEventPayloads]);
   const centralizedRawSdkEventPayloads = useMemo(() => {
-    const allPayloads = sessionScopedRawSdkEventPayloads;
+    if (assistantTurnMessageIds.size === 0 && assistantScopeMessageIds.size === 0) {
+      return [];
+    }
 
-    if (!assistantMessageId) return allPayloads;
-
-    return allPayloads.filter((payload) => {
+    return sessionScopedRawSdkEventPayloads.filter((payload) => {
       const rec = asRecord(payload);
       if (!rec) return false;
-      const props = asRecord(rec.properties);
-      const info = asRecord(props?.info);
-      const part = asRecord(props?.part) || asRecord(rec?.part);
-      const msgId = asString(info?.id) || asString(part?.messageID) || asString(part?.messageId);
-      // The assistant response card must only render the events that belong to
-      // the current assistant message. If a payload does not carry a message
-      // identifier, it is session-level noise (for example model switches) and
-      // must be excluded so the next turn cannot inherit stale reasoning.
+
+      // Use the shared centralized part extractor so we cover both raw shapes:
+      // - direct `properties.part`
+      // - wrapped `payload.syncEvent.data.part` / `syncEvent.data.part`
+      //
+      // This keeps sync-only tool updates and later turn events from being
+      // dropped before they reach the assistant response timeline.
+      const part = getCentralizedEventPart(rec);
+      const info = getCentralizedEventInfo(rec);
+      const msgId =
+        firstNonEmptyString(
+          asString(info?.id),
+          asString(info?.messageID),
+          asString(info?.messageId),
+          asString(part?.messageID),
+          asString(part?.messageId),
+        ) || "";
+
       if (!msgId) return false;
-      return msgId === assistantMessageId;
+      if (assistantScopeMessageIds.has(msgId)) {
+        return true;
+      }
+      return assistantTurnMessageIds.has(msgId);
     });
-  }, [assistantMessageId, sessionScopedRawSdkEventPayloads]);
+  }, [assistantScopeMessageIds, assistantTurnMessageIds, sessionScopedRawSdkEventPayloads]);
   const scopedActivityTimelineStreaming = useMemo(() => {
     if (!activityTimelineStreaming) {
       return undefined;
@@ -5678,6 +6333,7 @@ function AssistantResponseCardInner({
         ? [content]
         : [];
   const resolvedContent = resolvedContentChunks.join("");
+  const isStreamingActive = !!scopedActivityTimelineStreaming?.isActive;
   const finalizedThoughtItems = useMemo(
     () => thoughtItemsFromRawEventPayloads(normalizedCentralizedRawSdkEventPayloads),
     [normalizedCentralizedRawSdkEventPayloads],
@@ -5691,14 +6347,33 @@ function AssistantResponseCardInner({
     [scopedActivityTimelineStreaming?.reasoningEvents, scopedActivityTimelineStreaming?.isActive],
   );
   const thoughtItems = useMemo(
-    () => mergeThoughtItemsForTimeline(finalizedThoughtItems, liveThoughtItems),
-    [finalizedThoughtItems, liveThoughtItems],
+    () => mergeThoughtItemsForTimeline(finalizedThoughtItems, liveThoughtItems, isStreamingActive),
+    [finalizedThoughtItems, liveThoughtItems, isStreamingActive],
   );
   const progressItems = useMemo(
     () => {
       return progressItemsFromCentralizedData(normalizedCentralizedRawSdkEventPayloads);
     },
     [normalizedCentralizedRawSdkEventPayloads],
+  );
+  const liveProgressItems = useMemo(
+    () =>
+      progressItemsFromSteps(
+        [
+          ...(Array.isArray(scopedActivityTimelineStreaming?.progressEvents)
+            ? scopedActivityTimelineStreaming.progressEvents
+            : []),
+          ...(Array.isArray(scopedActivityTimelineStreaming?.steps)
+            ? scopedActivityTimelineStreaming.steps
+            : []),
+        ],
+        "stream",
+      ),
+    [scopedActivityTimelineStreaming?.progressEvents, scopedActivityTimelineStreaming?.steps],
+  );
+  const mergedProgressItems = useMemo(
+    () => mergeProgressItemsForTimeline(progressItems, liveProgressItems, isStreamingActive),
+    [progressItems, liveProgressItems, isStreamingActive],
   );
   const commentaryItems = useMemo(
     () => {
@@ -5711,13 +6386,12 @@ function AssistantResponseCardInner({
   const timelineBlocks = useMemo<TimelineBlock[]>(() => {
     return buildTimeline(
       thoughtItems,
-      progressItems,
+      mergedProgressItems,
       commentaryItems,
       resolvedContentChunks.join(""),
       activityTimelineRawEventParts as MessagePart[],
   );
-  }, [thoughtItems, progressItems, commentaryItems, resolvedContentChunks, activityTimelineRawEventParts]);
-  const isStreamingActive = !!scopedActivityTimelineStreaming?.isActive;
+  }, [thoughtItems, mergedProgressItems, commentaryItems, resolvedContentChunks, activityTimelineRawEventParts]);
   
   const structured = useMemo(
     () => structuredOutputFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads),
@@ -5726,10 +6400,28 @@ function AssistantResponseCardInner({
   const responseType = (structured?.type ?? structured?.responseType)?.toLowerCase();
   const plan = structured?.plan;
   const fileChanges = structured?.fileChanges;
+
+  // Message-scoped rendering depends on this ID. Keep it above every memo that
+  // filters timeline rows so React never evaluates a useMemo while `messageId`
+  // is still in the temporal-dead-zone.
+  const info = activityTimelineMessage?.info;
+  const messageRec = asRecord(activityTimelineMessage);
+  const infoRec = asRecord(messageRec?.info);
+  const messageId =
+    assistantMessageId ||
+    (activityTimelineMessage as any)?.messageId ||
+    (info as any)?.messageId ||
+    null;
   
   const displayEvents = useMemo(
     () => {
-      const events = buildDisplayEvents(timelineBlocks, fileChanges, isStreamingActive, assistantTurnPending);
+      const events = buildDisplayEvents(
+        timelineBlocks,
+        fileChanges,
+        isStreamingActive,
+        assistantTurnPending,
+        messageId,
+      );
       // Debug: Log all display events with read/edit labels
       const readEditEvents = events.filter(e => e.label.toLowerCase() === 'read' || e.label.toLowerCase() === 'edit');
       if (readEditEvents.length > 0) {
@@ -5748,7 +6440,7 @@ function AssistantResponseCardInner({
       }
       return events;
     },
-    [timelineBlocks, activityTimelineMessage, isStreamingActive, assistantTurnPending],
+    [timelineBlocks, fileChanges, isStreamingActive, assistantTurnPending, messageId],
   );
   // Centralized debug is the long-term source of truth for this assistant turn.
   // Keep it raw and complete so future UI rendering can consume the same data
@@ -5781,20 +6473,76 @@ function AssistantResponseCardInner({
       ),
     [displayEvents],
   );
-  // Extract fields from info records of the activity message
-  const info = activityTimelineMessage?.info;
-  const messageRec = asRecord(activityTimelineMessage);
-  const infoRec = asRecord(messageRec?.info);
-  // Redundant declarations of structured, responseType, plan, and fileChanges have been removed to avoid esbuild compile failures.
+  useEffect(() => {
+    const rawEvents = normalizedCentralizedRawSdkEventPayloads;
+    const rawSamples = rawEvents
+      .slice(Math.max(0, rawEvents.length - 12))
+      .map((event, index) =>
+        summarizeCentralizedEventForTimelineDiagnostics(
+          event,
+          rawEvents.length - Math.min(rawEvents.length, 12) + index,
+        ),
+      );
+    const progressItemsForOtherMessages = messageId
+      ? progressItems.filter(
+          (item) => item.messageID && item.messageID !== messageId,
+        )
+      : [];
+    const displayEventsForOtherMessages = messageId
+      ? displayEvents.filter(
+          (event) => event.messageID && event.messageID !== messageId,
+        )
+      : [];
 
-  // Match the same ID extraction logic as backend extractMessageId()
-  // https://github.com/anthropics/opencode-vscode/blob/main/src/providers/ChatViewProvider.ts#L1988-L2000
-  const messageId =
-    assistantMessageId ||
-    (activityTimelineMessage as any)?.messageId ||
-    (info as any)?.messageId ||
-    null;
-
+    logger.info(`${ACTIVITY_TIMELINE_DIAGNOSTIC_LOG} render_flow`, {
+      currentMessageId: messageId,
+      assistantMessageId,
+      rawEventCount: rawEvents.length,
+      rawSamples,
+      progressItemCount: progressItems.length,
+      progressSamples: progressItems
+        .slice(0, 12)
+        .map((item, index) => summarizeProgressItemForTimelineDiagnostics(item, index)),
+      progressItemsForOtherMessages: progressItemsForOtherMessages
+        .slice(0, 8)
+        .map((item, index) => summarizeProgressItemForTimelineDiagnostics(item, index)),
+      thoughtItemCount: thoughtItems.length,
+      commentaryItemCount: commentaryItems.length,
+      timelineBlocks: timelineBlocks.map((block, index) => {
+        if (block.kind === "steps") {
+          return { index, kind: block.kind, count: block.items.length };
+        }
+        if (block.kind === "thinking") {
+          return { index, kind: block.kind, count: block.items.length };
+        }
+        if (block.kind === "commentary") {
+          return {
+            index,
+            kind: block.kind,
+            messageID: block.messageID,
+            textLength: block.text.length,
+          };
+        }
+        return { index, kind: block.kind, htmlLength: block.html.length };
+      }),
+      displayEventCount: displayEvents.length,
+      displaySamples: displayEvents
+        .slice(0, 12)
+        .map((event, index) => summarizeDisplayEventForTimelineDiagnostics(event, index)),
+      displayEventsForOtherMessages: displayEventsForOtherMessages
+        .slice(0, 8)
+        .map((event, index) => summarizeDisplayEventForTimelineDiagnostics(event, index)),
+    });
+  }, [
+    assistantMessageId,
+    commentaryItems,
+    displayEvents,
+    messageId,
+    normalizedCentralizedRawSdkEventPayloads,
+    progressItems,
+    thoughtItems,
+    timelineBlocks,
+  ]);
   const shouldShowFileChanges = useMemo(() => {
     // Implementation plan turns already surface their own plan card, so the
     // aggregated diff section would just duplicate the same turn.
@@ -5915,23 +6663,27 @@ function AssistantResponseCardInner({
   // pin streaming-only reasoning blocks or other migration artifacts to the
   // end of the timeline, because that can duplicate or reorder the final turn.
   const visibleDisplayEvents = displayEvents;
-  const userFacingDisplayEvents = visibleDisplayEvents.filter((event) => {
-    if (event.internal) return false;
-    return true;
-  });
+  // Keep internal events in the primary timeline too. The centralized tape is
+  // the source of truth, and silently hiding `internal` rows was causing valid
+  // activity steps to disappear during hydration/turn transitions.
+  const userFacingDisplayEvents = visibleDisplayEvents;
   const internalDisplayEvents = visibleDisplayEvents.filter(
     (event) => event.internal,
   );
-  let timelineDisplayEvents =
-    viewState.showInternalActivity && internalDisplayEvents.length > 0
-      ? visibleDisplayEvents
-      : userFacingDisplayEvents;
+  let timelineDisplayEvents = visibleDisplayEvents;
 
   const timelineDisplayEventGroups = useMemo(() => {
     const groups: Array<{ type: "activity", events: DisplayEvent[] } | { type: "commentary", event: DisplayEvent }> = [];
     let currentActivity: DisplayEvent[] = [];
 
     for (const event of timelineDisplayEvents) {
+      // Assistant response text already renders in the dedicated response card
+      // above the timeline. Keep it out of the timeline groups so the same
+      // final answer cannot appear twice when the centralized tape contains
+      // both the response body and its mirrored commentary chunk.
+      if (event.kind === "commentary" && event.label === "Assistant Response") {
+        continue;
+      }
       if (event.kind === "commentary") {
         if (currentActivity.length > 0) {
           groups.push({ type: "activity", events: currentActivity });
@@ -6568,6 +7320,10 @@ function AssistantResponseCardInner({
           hasActiveTimelineWork ||
           hasActiveReasoningPart ||
           hasPendingReasoningDisplayEvent)));
+  // Keep the streaming ticker visible underneath the response card while the
+  // turn is still active so the stop state and loading text stay coupled.
+  const showStreamingLoadingBelowResponse =
+    !hideLoadingText && isStreamingActive && showResponseSection;
 
   useEffect(() => {
     if (
@@ -7599,6 +8355,12 @@ function AssistantResponseCardInner({
             </section>
           )}
 
+        {showStreamingLoadingBelowResponse && (
+          <div className="mt-2 mb-1 px-1">
+            <ThinkingStatusTicker className="oc-thinking-status" />
+          </div>
+        )}
+
         </div>
 
 {!isStreamingActive && showResponseSection && (
@@ -7736,15 +8498,6 @@ function AssistantResponseCardInner({
           </div>
         )}
 
-        {isStreamingActive &&
-          !showResponseSection &&
-          hasStreamingActivity &&
-          !hideLoadingText &&
-          !showStreamingLoading && (
-            <div className="mt-2 mb-2 px-1">
-              <ThinkingStatusTicker className="oc-thinking-status" />
-            </div>
-          )}
         {/* Raw Data â€" moved last so it doesn't interrupt the reading flow */}
         {/* {(message || streaming) && (
           <details className="group mb-3">
@@ -7799,6 +8552,15 @@ function AssistantResponseCardInner({
             </div>
           </details>
         )} */}
+        {isStreamingActive &&
+          !showResponseSection &&
+          hasStreamingActivity &&
+          !hideLoadingText &&
+          !showStreamingLoading && (
+            <div className="mt-2 mb-2 px-1">
+              <ThinkingStatusTicker className="oc-thinking-status" />
+            </div>
+          )}
       </div>
     </div>
   );

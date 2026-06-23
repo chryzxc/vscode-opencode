@@ -89,26 +89,47 @@ test("MessageComponents uses rotating thinking status text and handles response 
     );
     assert.match(
         messageComponentsSource,
-        /showResponseSection\s*=\s*[\s\S]*timelineDisplayEvents\.length > 0/,
-        'Expected the response section to stay visible when timeline activity exists even without response text',
+        /showResponseSection\s*=\s*[\s\S]*hasActiveTimelineWork[\s\S]*hasActiveReasoningPart[\s\S]*hasPendingReasoningDisplayEvent/s,
+        'Expected the response section to stay visible when live streaming activity exists even without response text',
+    );
+
+    assert.match(
+        messageComponentsSource,
+        /const showStreamingLoadingBelowResponse\s*=\s*[\s\S]*isStreamingActive\s*&&\s*showResponseSection/,
+        'Expected the streaming ticker to remain visible below the response body while the turn is active',
+    );
+
+    assert.match(
+        messageComponentsSource,
+        /const isLiveAssistantTurn\s*=\s*!!\([\s\S]*assistantTurnPending[\s\S]*\);[\s\S]*latestAssistantMessageIdFromCentralizedTape\([\s\S]*\)\s*:\s*null,/,
+        'Expected live assistant turns to avoid falling back to the latest assistant tape id',
+    );
+
+    assert.match(
+        messageComponentsSource,
+        /<\/section>[\s\S]*\{showStreamingLoadingBelowResponse && \([\s\S]*<ThinkingStatusTicker className="oc-thinking-status" \/>[\s\S]*\)\}[\s\S]*<\/div>/,
+        'Expected the loading ticker to render below the full AI response block, outside the response section',
     );
 });
 
 test('MessageComponents merges reasoning chunks by message and part id', () => {
-    const body = extractFunctionBody(
-        messageComponentsSource,
-        'function thoughtItemsFromRawEventPayloads(',
+    const body = extractFunctionBody(messageComponentsSource, 'function thoughtItemsFromRawEventPayloads(');
+
+    assert.match(
+        body,
+        /const itemsByIdentity\s*=\s*new Map<string,\s*number>\(\)/,
+        'Expected reasoning chunk dedupe to use stable identity keys',
     );
 
     assert.match(
         body,
-        /const mergeKey = `\$\{messageID \|\| "message"\}:\$\{partID \|\| "part"\}`;/,
-        'Expected reasoning chunks to be grouped by messageID and partID',
+        /const getIdentityKey\s*=\s*\(item: ThoughtItem\): string \| null =>[\s\S]*?item\.partID \? `part:\$\{item\.partID\}`[\s\S]*?item\.messageID \? `msg:\$\{item\.messageID\}`/s,
+        'Expected reasoning chunk dedupe to key identical part IDs and message IDs together',
     );
 
     assert.match(
         body,
-        /if \(existing\) \{[\s\S]*existing\.text = nextText;[\s\S]*continue;[\s\S]*\}/,
-        'Expected later reasoning chunks to update the same live item instead of creating duplicates',
+        /normalizeComparableText\(item\.text\)[\s\S]*?`text:\$\{normalizeComparableText\(item\.text\)\}`/s,
+        'Expected reasoning chunk dedupe to retain text fallback when identity is missing',
     );
 });

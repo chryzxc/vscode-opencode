@@ -377,6 +377,40 @@ function asStringLocal(...values: unknown[]): string {
   return "";
 }
 
+function getLatestAssistantMessageLocal(messages: Message[] | undefined | null): Message | null {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return null;
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const record = asRecordLocal(message);
+    const role = asStringLocal(
+      record?.role,
+      asRecordLocal(record?.info)?.role,
+    );
+    if (role.toLowerCase() === "assistant") {
+      return message;
+    }
+  }
+
+  return null;
+}
+
+function isTerminalAssistantMessageLocal(message: Message | null | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const record = asRecordLocal(message);
+  const info = asRecordLocal(record?.info);
+  return (
+    record?.aborted === true ||
+    info?.aborted === true ||
+    asStringLocal(record?.finish, info?.finish).length > 0
+  );
+}
+
 function interactiveEventContentKeyLocal(event: InteractiveEvent): string {
   const type = asStringLocal(event.type).toLowerCase();
   if (type === "question") {
@@ -2412,19 +2446,28 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const cachedStreamingForNew = newId
         ? streamingBySessionId[newId] ?? null
         : null;
+      const cachedMessagesForNew = newId ? messagesBySessionId?.[newId] ?? [] : [];
+      const cachedLatestAssistantMessageForNew = getLatestAssistantMessageLocal(
+        cachedMessagesForNew,
+      );
+      const hasTerminalAssistantMessageForNew = isTerminalAssistantMessageLocal(
+        cachedLatestAssistantMessageForNew,
+      );
       const restoredStreamingForNew =
         newId &&
         cachedStreamingForNew &&
+        !hasTerminalAssistantMessageForNew &&
         (isNewSessionProcessing ||
           hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
           ? cachedStreamingForNew
           : null;
       const restoredAssistantTurnPending = Boolean(
-        isNewSessionProcessing || restoredStreamingForNew?.isActive,
+        !hasTerminalAssistantMessageForNew &&
+          (isNewSessionProcessing || restoredStreamingForNew?.isActive),
       );
       const restoredAssistantTurnMessageId =
         restoredStreamingForNew?.messageId ?? null;
-      const messagesForNew = newId ? messagesBySessionId?.[newId] ?? [] : [];
+      const messagesForNew = cachedMessagesForNew;
 
       return {
         ...state,
@@ -2637,8 +2680,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       );
       const cachedStreamingForNew =
         streamingBySessionId[action.payload.sessionId] ?? null;
+      const cachedLatestAssistantMessage = getLatestAssistantMessageLocal(
+        cachedMessages,
+      );
+      const hasTerminalAssistantMessage = isTerminalAssistantMessageLocal(
+        cachedLatestAssistantMessage,
+      );
       const restoredStreamingForNew =
         cachedStreamingForNew &&
+        !hasTerminalAssistantMessage &&
         (isNewSessionProcessing ||
           hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
         ? cachedStreamingForNew
@@ -2665,10 +2715,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           pendingInteractiveEventsFromMessagesLocal(cachedMessages),
           state.dismissedInteractiveEventKeys,
         ),
-        isProcessing: isNewSessionProcessing,
+        isProcessing:
+          !hasTerminalAssistantMessage && isNewSessionProcessing,
         isSteering: false,
         assistantTurnPending: Boolean(
-          isNewSessionProcessing || restoredStreamingForNew?.isActive,
+          !hasTerminalAssistantMessage &&
+            (isNewSessionProcessing || restoredStreamingForNew?.isActive),
         ),
         assistantTurnMessageId: restoredStreamingForNew?.messageId ?? null,
         streaming: restoredStreamingForNew,

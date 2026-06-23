@@ -43,6 +43,11 @@ const rawResponseSource = readSource(
   'rawResponse.ts',
 );
 
+const streamingComponentsSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'StreamingComponents.tsx')],
+  'StreamingComponents.tsx',
+);
+
 const chatShellSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
   'ChatShell.tsx',
@@ -221,18 +226,44 @@ test('centralized debug data keeps raw event stream and raw rehydrated data sepa
   );
   assert.match(
     messageComponentsSource,
-    /hasCentralizedRawEventStream[\s\S]*<DebugObjectView value=\{centralizedDebugData\} \/>/,
-    'the centralized debug payload should render as a nested object tree when raw events exist',
+    /CentralizedDebugPanel[\s\S]*JSON\.stringify\(\{ rawEventStream: \{ sessionId: centralizedSessionId, rawSdkEventPayloads \} \}, null, 2\)/,
+    'the centralized debug payload should render the raw event stream object tree directly',
   );
   assert.match(
     messageComponentsSource,
-    /hasCentralizedRawEventStream[\s\S]*<EmptyState[\s\S]*serverStatus=\{serverStatus\}[\s\S]*messagesBySessionId=\{messagesBySessionId\}/,
-    'the centralized debug panel should fall back to the existing empty state screen when no raw events are present',
+    /CentralizedDebugPanel[\s\S]*rawSdkEventPayloadsBySessionId/,
+    'the centralized debug panel should continue to read from session-scoped raw SDK payloads',
   );
   assert.doesNotMatch(
     messageComponentsSource,
     /data-assistant-section="centralized-debug"[\s\S]*stringifyDebugValue\(centralizedDebugData\)/,
     'the centralized debug UI should not stringify the centralized payload',
+  );
+});
+
+test('chat shell keeps the just-sent user bubble visible until the tape catches up', () => {
+  assert.match(
+    chatShellSource,
+    /role !== "user"[\s\S]*merged\.push\(message\)/,
+    'the centralized render pass should keep a transient user-message fallback for tape lag',
+  );
+  assert.match(
+    chatShellSource,
+    /const tapeUserMessageSignatures = new Set<string>\(\);[\s\S]*renderMessageContentSignature\(message\)/,
+    'the fallback should be suppressed once the tape contains the same user text',
+  );
+});
+
+test('streaming card stays mounted for active assistant turns even before visible content arrives', () => {
+  assert.match(
+    streamingComponentsSource,
+    /hasMatchingAssistantTurnInTranscript/,
+    'the streaming card should consult the transcript before rendering the live assistant shell',
+  );
+  assert.match(
+    streamingComponentsSource,
+    /if\s*\(\s*streaming\.isActive\s*\)\s*\{\s*return\s*!hasMatchingAssistantTurnInTranscript;/,
+    'an active assistant turn should render the streaming response shell immediately unless that turn is already present in the transcript',
   );
 });
 
@@ -244,35 +275,30 @@ test('canonical assistant text reconstruction preserves spacing between parts', 
   );
   assert.match(
     storeSource,
-    /parseRawResponseRecordForCanonical\([\s\S]*const rawResponseParts = Array\.isArray\(rawResponseRec\?\.parts\)[\s\S]*return contentFromRenderablePartsForCanonical\(rawResponseParts\);/,
-    'assistant text reconstruction should fall back to rawResponse.parts when normal message content is missing',
+    /function\s+extractRenderableAssistantTextForCanonical\(message: Message\): string \{/,
+    'assistant text reconstruction should have the canonical assistant text extractor',
+  );
+  assert.match(
+    storeSource,
+    /const partsContent = contentFromRenderablePartsForCanonical\(parts\);/,
+    'assistant text reconstruction should check the renderable parts before falling back',
+  );
+  assert.match(
+    storeSource,
+    /const rawSdkText = getCentralizedAssistantContentFromRawSdkEventPayloads\([\s\S]*?rawSdkEventPayloads,\s*\);[\s\S]*?return rawSdkText;/,
+    'assistant text reconstruction should fall back to the canonical raw SDK helper when normal message content is missing',
   );
 });
 
 test('response card prefers raw sdk payload before transformed message fields', () => {
-  const responseCardBlock = messageComponentsSource.match(
-    /function getMessageContent\([\s\S]*?type RawDebugParseStatus =/,
-  )?.[0];
-  assert.ok(responseCardBlock, 'response card content resolver should be present');
-  assert.match(
-    rawResponseSource,
-    /export function getFinalAssistantResponseText\([\s\S]*?const structured = asRecord\(rawInfoRec\?\.structured\);[\s\S]*?const structuredMessage = firstNonEmptyString\([\s\S]*?const partsBody = finalTextBeforeStepFinish\(/,
-    'rawResponse helper should check structured.message first and then the parts fallback',
+  assert.ok(
+    messageComponentsSource.includes('getCentralizedAssistantContentChunksFromRawSdkEventPayloads(') &&
+      messageComponentsSource.includes('normalizedCentralizedRawSdkEventPayloads'),
+    'the response card should resolve assistant text from the normalized centralized tape',
   );
-  assert.match(
-    responseCardBlock,
-    /const baseContent = getFinalAssistantResponseTextFromRawSdkEventPayloads\([\s\S]*?rawSdkEventPayloads[\s\S]*?\);/,
-    'the response card should prefer the raw SDK response helper before any transformed message fields',
-  );
-  assert.doesNotMatch(
-    responseCardBlock,
-    /firstNonEmptyString\([\s\S]*message\.content|firstNonEmptyString\([\s\S]*message\.text|firstNonEmptyString\([\s\S]*summaryText\(message\)/,
-    'the response card resolver should not fall back to transformed message fields',
-  );
-  assert.doesNotMatch(
-    rawResponseSource,
-    /\brawResponse\.text\b|\brawResponse\.content\b/,
-    'the raw response helper should not use extra text/content fallbacks',
+  assert.ok(
+    messageComponentsSource.includes('const rawContentChunks = useMemo('),
+    'the response card should derive raw content from the centralized event chunks',
   );
 });
 
@@ -406,6 +432,10 @@ test('multi-turn conversation: context preservation and message threading', () =
     'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
   );
   const reducerBody = extractFunctionBody(storeSource, 'export function appReducer(state: AppState, action: AppAction): AppState');
+  const timelineBody = extractFunctionBody(
+    messageComponentsSource,
+    'export function AssistantResponseCard({',
+  );
 
   // 1. Session context preservation
   assert.match(handlerBody, /currentSessionId/, 'session ID is preserved across turns');
@@ -417,7 +447,11 @@ test('multi-turn conversation: context preservation and message threading', () =
 
   // 3. Context window management
   assert.match(handlerBody, /messages/, 'message history is managed');
-  assert.match(messageComponentsSource, /messages\.map/, 'messages are rendered');
+  assert.match(
+    messageComponentsSource,
+    /timelineDisplayEventGroups\.map\(/,
+    'the activity timeline should render from grouped timeline entries',
+  );
 
   // 4. Turn-taking detection
   assert.match(messageComponentsSource, /role/, 'message roles are distinguished');

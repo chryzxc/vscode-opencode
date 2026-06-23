@@ -307,6 +307,14 @@ test('buildTimeline groups consecutive same-kind entries into blocks', () => {
     );
 });
 
+test('timeline rendering skips mirrored Assistant Response commentary rows', () => {
+    assert.match(
+        messageComponentsSource,
+        /if\s*\(\s*event\.kind\s*===\s*["']commentary["']\s*&&\s*event\.label\s*===\s*["']Assistant Response["']\s*\)\s*\{\s*continue;\s*\}/,
+        'Assistant response commentary rows should be filtered out before grouping so the response card does not duplicate in the timeline',
+    );
+});
+
 test('buildTimeline falls back to parts-based layout for persisted messages without timing', () => {
     const body = extractFunctionBody(messageComponentsSource, 'function buildTimeline(');
     assert.match(
@@ -377,6 +385,58 @@ test('buildDisplayEvents strips "Final" and "Step" prefix from labels', () => {
         messageComponentsSource,
         /\.replace\(\/\^step\\s\+\/i,\s*['"]{2}\)/,
         'cleanEventLabel should strip leading "Step " prefix',
+    );
+});
+
+test('tool activity rows preserve the real tool name instead of collapsing to tool_call', () => {
+    assert.ok(
+        /toolName[\s\S]{0,80}\|\|\s*["']tool_call["']/.test(messageComponentsSource),
+        'raw activity rows should keep the actual tool name when available',
+    );
+    assert.ok(
+        /tool[\s\S]{0,80}\|\|\s*["']tool_call["']/.test(messageComponentsSource),
+        'streaming activity rows should keep the actual tool name when available',
+    );
+});
+
+test('display events keep message IDs so timeline rows stay scoped to one assistant turn', () => {
+    assert.match(
+        messageComponentsSource,
+        /messageID\?: string;/,
+        'DisplayEvent should keep messageID so activity rows can be filtered to the current turn',
+    );
+    assert.match(
+        messageComponentsSource,
+        /const messageID = \(event\.messageID \?\? ""\)\.trim\(\)\.toLowerCase\(\);/,
+        'displayEventFingerprint should include messageID in the dedupe identity',
+    );
+    assert.match(
+        messageComponentsSource,
+        /buildDisplayEvents\([\s\S]*messageId[\s\S]*\)/,
+        'AssistantResponseCardInner should pass the current messageId into buildDisplayEvents',
+    );
+});
+
+test('raw event projection guards optional event type before lowercasing', () => {
+    assert.match(
+        messageComponentsSource,
+        /firstNonEmptyString\(asString\(event\.type\),\s*asString\(event\.eventType\)\)\?\.toLowerCase\(\)\s*\|\|\s*["']["']/,
+        'raw event type normalization should not assume a type is always present',
+    );
+});
+
+test('progressItemsFromRawEventPayloads preserves file watcher events without a part envelope', () => {
+    const body = extractFunctionBody(messageComponentsSource, 'function progressItemsFromRawEventPayloads(');
+    assert.ok(body, 'progressItemsFromRawEventPayloads should exist');
+    assert.match(
+        body,
+        /file\.watcher\.updated/,
+        'The centralized activity projection should keep file watcher updates so they can render in the timeline',
+    );
+    assert.match(
+        body,
+        /activityDetail:\s*\{\s*[\s\S]*tool:\s*["']file_watcher["']/,
+        'File watcher updates should map into a visible activity row instead of being dropped',
     );
 });
 
@@ -578,6 +638,24 @@ test('AssistantMessage builds timelineBlocks from both streaming and message dat
         messageComponentsSource,
         /streaming\s*\?\s*thoughtItemsFromStreaming\(streaming\)\s*:\s*thoughtItemsFromMessage\(message\)/,
         'thoughtItems should come from streaming when active, message otherwise',
+    );
+});
+
+test('AssistantResponseCardInner merges live streaming progress rows into the activity timeline', () => {
+    assert.match(
+        messageComponentsSource,
+        /progressItemsFromSteps\(\s*\[\s*\.\.\.\(Array\.isArray\(scopedActivityTimelineStreaming\?\.progressEvents\)/s,
+        'AssistantResponseCardInner should project live streaming progressEvents into progress rows',
+    );
+    assert.match(
+        messageComponentsSource,
+        /mergeProgressItemsForTimeline\(progressItems,\s*liveProgressItems\)/,
+        'AssistantResponseCardInner should merge finalized and live progress rows before building the timeline',
+    );
+    assert.match(
+        messageComponentsSource,
+        /buildTimeline\(\s*thoughtItems,\s*mergedProgressItems,/s,
+        'AssistantResponseCardInner should feed merged progress rows into buildTimeline',
     );
 });
 

@@ -21,6 +21,52 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function latestRoleBoundaryIndexes(messages: unknown[] | undefined): {
+  lastUserIndex: number;
+  lastAssistantIndex: number;
+} {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { lastUserIndex: -1, lastAssistantIndex: -1 };
+  }
+
+  let lastUserIndex = -1;
+  let lastAssistantIndex = -1;
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = asRecord(messages[index]);
+    const role = asString(message?.role).trim().toLowerCase();
+    if (role === "user") {
+      lastUserIndex = index;
+    } else if (role === "assistant") {
+      lastAssistantIndex = index;
+    }
+  }
+
+  return { lastUserIndex, lastAssistantIndex };
+}
+
+/**
+ * Returns true only when the current visible transcript still belongs to an
+ * in-flight assistant turn.
+ *
+ * This is intentionally stricter than "any conversation exists" so cached or
+ * rehydrated transcripts with a completed assistant reply do not keep the stop
+ * button / loading affordance alive just because stale processing flags are
+ * still present elsewhere in state.
+ */
+export function hasActiveAssistantTurnContext(
+  messages: unknown[] | undefined,
+  isStreamingActive: boolean,
+  assistantTurnPending: boolean,
+): boolean {
+  if (isStreamingActive || assistantTurnPending) {
+    return true;
+  }
+
+  const { lastUserIndex, lastAssistantIndex } = latestRoleBoundaryIndexes(messages);
+  return lastUserIndex > lastAssistantIndex;
+}
+
 export function latestAssistantMessageIdFromCentralizedTape(
   rawSdkEventPayloads?: unknown[],
 ): string | null {

@@ -202,6 +202,15 @@ test('createMessageHandler sets processing before handling message types', () =>
   );
 });
 
+
+test('assistant burst coalescing preserves aborted state for interrupted turns', () => {
+  assert.match(
+    messageHandlerSource,
+    /const wasAborted = burst\.some\([\s\S]*?base\.aborted = true;[\s\S]*?base\.info = \{ \.\.\.infoRec, aborted: true \};/s,
+    'assistant burst coalescing should carry aborted state forward when merges happen after stop',
+  );
+});
+
 test('createMessageHandler handles stopRequestHandled by finalizing streaming', () => {
   const createMessageHandlerBody = extractFunctionBody(
     messageHandlerSource,
@@ -220,6 +229,12 @@ test('createMessageHandler handles stopRequestHandled by finalizing streaming', 
     createMessageHandlerBody,
     /case\s*["']stopRequestHandled["']\s*:[\s\S]*type:\s*["']SET_PROCESSING["']\s*,\s*payload:\s*false/s,
     'stopRequestHandled should clear processing state'
+  );
+
+  assert.match(
+    createMessageHandlerBody,
+    /case\s*["']stopRequestHandled["']\s*:[\s\S]*type:\s*["']SET_ASSISTANT_TURN_PENDING["'][\s\S]*pending:\s*false/s,
+    'stopRequestHandled should clear assistantTurnPending so the stop button disappears'
   );
 
   assert.match(
@@ -438,7 +453,7 @@ test('AssistantMessage uses type-safe helpers instead of type assertions', () =>
   );
 });
 
-test('StreamingCard visibility stays mounted for live activity', () => {
+test('StreamingCard visibility hides when the same assistant turn is already in the transcript', () => {
   // Verify enhanced visibility conditions in the full source (works with memo wrapper)
   assert.match(
     streamingComponentsSource,
@@ -448,8 +463,26 @@ test('StreamingCard visibility stays mounted for live activity', () => {
 
   assert.match(
     streamingComponentsSource,
-    /\[streaming\]/,
-    'Should use useMemo with streaming-only dependencies'
+    /hasMatchingAssistantTurnInTranscript/,
+    'Should compute whether the transcript already contains the current assistant turn'
+  );
+
+  assert.match(
+    streamingComponentsSource,
+    /getMessageRoleForCanonical\(message\) !== "assistant"/,
+    'Should only consider assistant transcript messages when checking for duplicates'
+  );
+
+  assert.match(
+    streamingComponentsSource,
+    /if\s*\(\s*streaming\.isActive\s*\)\s*\{[\s\S]*return\s*!hasMatchingAssistantTurnInTranscript;/s,
+    'Should hide the live streaming card once the same assistant turn is already rendered in the transcript'
+  );
+
+  assert.match(
+    streamingComponentsSource,
+    /\[hasMatchingAssistantTurnInTranscript,\s*interactiveEvents,\s*streaming,\s*subagentsByParentMessageId\]/,
+    'Should include the duplicate-suppression guard in the memo dependencies'
   );
 
   assert.match(

@@ -1,4 +1,4 @@
-import { reducer, initialState } from '../store';
+import { appReducer as reducer, initialState } from '../store';
 
 describe('Session Loading State Reducer', () => {
   describe('START_SESSION_LOADING', () => {

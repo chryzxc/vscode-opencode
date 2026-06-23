@@ -63,6 +63,29 @@ test('message thread renders user and assistant content including image thumbnai
   assert.match(chatShellSource, /msg\.role\s*===?\s*["']assistant["']|role\s*===?\s*["']assistant["']/, 'chat shell should render assistant messages');
 });
 
+test('centralized conversation rendering uses the canonical event-type adapter for sync-wrapped assistant turns', () => {
+  assert.match(
+    chatShellSource,
+    /getCentralizedEventType\(event\)\s*!==\s*["']message\.updated["']/,
+    'conversation assembly should rely on the canonical event-type adapter',
+  );
+  assert.match(
+    chatShellSource,
+    /getCentralizedEventInfo\(event\)/,
+    'conversation assembly should read assistant info through the centralized info adapter',
+  );
+  assert.match(
+    chatShellSource,
+    /getCentralizedEventPart\(event\)/,
+    'conversation assembly should read parts through the centralized part adapter',
+  );
+  assert.match(
+    chatShellSource,
+    /coalesceAdjacentAssistantHistoryMessages\(sorted\)/,
+    'conversation assembly should coalesce adjacent assistant bursts before rendering',
+  );
+});
+
 test('error events clear processing and streaming state to avoid stuck thinking UI', () => {
   const handlerBody = extractFunctionBody(
     messageHandlerSource,

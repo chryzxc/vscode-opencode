@@ -246,6 +246,54 @@ describe('assistant turn pending lifecycle', () => {
     assert.strictEqual(nextState.assistantTurnMessageId, null);
     assert.strictEqual(nextState.isProcessing, false);
   });
+
+  it('does not restore loading state from a hydrated aborted assistant turn', () => {
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'ses-old',
+      processingSessionIds: ['ses-new'],
+      messagesBySessionId: {
+        'ses-new': [
+          {
+            id: 'msg-assistant-final',
+            role: 'assistant',
+            aborted: true,
+            info: {
+              id: 'msg-assistant-final',
+              role: 'assistant',
+              aborted: true,
+              finish: 'stop',
+            },
+          } as Message,
+        ],
+      },
+      streamingBySessionId: {
+        'ses-new': {
+          isActive: true,
+          messageId: 'msg-assistant-final',
+          content: 'still streaming?',
+          reasoning: '',
+          reasoningEvents: [],
+          steps: [],
+          progressEvents: [],
+          edits: [],
+        } as NonNullable<typeof initialState.streaming>,
+      },
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'HYDRATE_SESSION_FROM_CACHE',
+      payload: {
+        sessionId: 'ses-new',
+      },
+    });
+
+    assert.strictEqual(nextState.currentSessionId, 'ses-new');
+    assert.strictEqual(nextState.assistantTurnPending, false);
+    assert.strictEqual(nextState.assistantTurnMessageId, null);
+    assert.strictEqual(nextState.isProcessing, false);
+    assert.strictEqual(nextState.streaming, null);
+  });
 });
 
 describe('raw event capture', () => {

@@ -13,6 +13,8 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
   {
     path: "type",
     values: [
+      "server.connected",
+      "server.connected.1",
       "server.heartbeat",
       "step-start",
       "step-finish",
@@ -22,11 +24,21 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
   },
   {
     path: "syncEvent.type",
-    values: ["message.part.delta", "message.part.delta.1"],
+    values: [
+      "server.connected",
+      "server.connected.1",
+      "message.part.delta",
+      "message.part.delta.1",
+    ],
   },
   {
     path: "payload.syncEvent.type",
-    values: ["message.part.delta", "message.part.delta.1"],
+    values: [
+      "server.connected",
+      "server.connected.1",
+      "message.part.delta",
+      "message.part.delta.1",
+    ],
   },
   {
     path: "properties.info.format.type",

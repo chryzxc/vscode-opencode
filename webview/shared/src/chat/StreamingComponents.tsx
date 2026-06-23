@@ -10,6 +10,7 @@ import {
 
 import type { AppState, StreamingState, StreamingStep } from './lib/types';
 import vscode from './lib/vscode';
+import { getMessageIdForCanonical, getMessageRoleForCanonical } from './lib/store';
 import { AssistantResponseCard, FileIcon } from './MessageComponents';
 
 export function ProgressStep({ step }: { step: StreamingStep }) {
@@ -155,13 +156,42 @@ export const StreamingCard = memo(function StreamingCard({
   availableAgents,
   todoItems,
 }: StreamingCardProps) {
+  const hasMatchingAssistantTurnInTranscript = useMemo(() => {
+    if (!streaming) return false;
+
+    const candidateIds = new Set(
+      [streaming.messageId, assistantTurnMessageId]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim()),
+    );
+
+    if (candidateIds.size === 0 || !Array.isArray(messages) || messages.length === 0) {
+      return false;
+    }
+
+    return messages.some((message) => {
+      if (getMessageRoleForCanonical(message) !== "assistant") {
+        return false;
+      }
+      const messageId = getMessageIdForCanonical(message);
+      return !!messageId && candidateIds.has(messageId);
+    });
+  }, [assistantTurnMessageId, messages, streaming]);
+
   // The live streaming card exists only for the in-flight assistant turn.
   // Once the centralized assistant turn is finalized, the finalized
   // AssistantResponseCard becomes the only source of truth for that turn's UI.
   // Keeping this mounted after `isActive` flips false duplicates the entire
   // assistant response block.
   const visible = useMemo(() => {
-    if (!streaming?.isActive) return false;
+    // A live assistant turn should show its response shell as soon as the SDK
+    // marks it active, even before the first visible token arrives. Otherwise
+    // the UI falls back to the global loading text and the response block
+    // appears to be missing during the first few stream ticks.
+    if (!streaming) return false;
+    if (streaming.isActive) {
+      return !hasMatchingAssistantTurnInTranscript;
+    }
 
     if (streaming.content.trim().length > 0) return true;
     if (streaming.reasoning.trim().length > 0) return true;
@@ -190,7 +220,7 @@ export const StreamingCard = memo(function StreamingCard({
     }
 
     return false;
-  }, [interactiveEvents, streaming, subagentsByParentMessageId]);
+  }, [hasMatchingAssistantTurnInTranscript, interactiveEvents, streaming, subagentsByParentMessageId]);
 
   if (!visible || !streaming) return null;
 

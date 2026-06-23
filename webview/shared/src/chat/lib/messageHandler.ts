@@ -83,6 +83,27 @@ function isHeartbeatEventType(eventType: string): boolean {
   return eventType === "server.heartbeat";
 }
 
+function extractEventMessageId(payload: UnknownRecord): string | null {
+  const properties = asRecord(payload.properties);
+  const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
+  const partRecord = asRecord(payload.part) ?? asRecord(properties?.part);
+  const messageRecord = asRecord(payload.message) ?? asRecord(properties?.message);
+
+  return firstNonEmptyString(
+    asString(payload.messageId),
+    asString(payload.messageID),
+    asString(payload.id),
+    asString(infoRecord?.id),
+    asString(infoRecord?.messageID),
+    asString(infoRecord?.messageId),
+    asString(partRecord?.messageID),
+    asString(partRecord?.messageId),
+    asString(messageRecord?.id),
+    asString(messageRecord?.messageID),
+    asString(messageRecord?.messageId),
+  );
+}
+
 function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unknown> {
   const properties = asRecord(payload.properties);
   const partRecord = asRecord(payload.part) ?? asRecord(properties?.part);
@@ -294,11 +315,6 @@ export function getCentralizedEventPart(payload: unknown): UnknownRecord | null 
     return null;
   }
 
-  const propertiesPart = asRecord(asRecord(event.properties)?.part) ?? asRecord(event.part);
-  if (propertiesPart) {
-    return propertiesPart;
-  }
-
   const payloadRecord = asRecord(event.payload);
   const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
   const payloadSyncPart = asRecord(asRecord(payloadSyncEvent?.data)?.part);
@@ -312,7 +328,63 @@ export function getCentralizedEventPart(payload: unknown): UnknownRecord | null 
     return syncPart;
   }
 
+  const propertiesPart = asRecord(asRecord(event.properties)?.part) ?? asRecord(event.part);
+  if (propertiesPart) {
+    return propertiesPart;
+  }
+
   return null;
+}
+
+export function getCentralizedEventInfo(payload: unknown): UnknownRecord | null {
+  const event = asRecord(payload);
+  if (!event) {
+    return null;
+  }
+
+  const payloadRecord = asRecord(event.payload);
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncInfo = asRecord(asRecord(payloadSyncEvent?.data)?.info);
+  if (payloadSyncInfo) {
+    return payloadSyncInfo;
+  }
+
+  const syncEvent = asRecord(event.syncEvent);
+  const syncInfo = asRecord(asRecord(syncEvent?.data)?.info);
+  if (syncInfo) {
+    return syncInfo;
+  }
+
+  const propertiesInfo = asRecord(asRecord(event.properties)?.info);
+  if (propertiesInfo) {
+    return propertiesInfo;
+  }
+
+  return asRecord(event.info);
+}
+
+export function getCentralizedEventType(payload: unknown): string {
+  const event = asRecord(payload);
+  if (!event) {
+    return "";
+  }
+
+  const directType = asString(event.type).trim();
+  const payloadRecord = asRecord(event.payload);
+  const payloadType = asString(payloadRecord?.type).trim();
+  const payloadSyncType = asString(asRecord(payloadRecord?.syncEvent)?.type).trim();
+  const syncType = asString(asRecord(event.syncEvent)?.type).trim();
+
+  // Sync-hydrated events commonly arrive as top-level `type: "sync"` with
+  // the real OpenCode event name nested under `syncEvent.type`. Render logic
+  // should make decisions from the OpenCode event name, not from the transport
+  // envelope, otherwise hydrated activity parts have no assistant message shell.
+  const rawType =
+    directType && directType !== "sync"
+      ? directType
+      : payloadSyncType || syncType || directType || payloadType;
+
+  return rawType.replace(/\.\d+$/, "");
 }
 
 export function normalizeCentralizedEventPayload(payload: unknown): UnknownRecord | null {
@@ -392,8 +464,6 @@ export function getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
     return [];
   }
 
-  const completionIndex =
-    getCentralizedAssistantTurnCompletionIndex(rawSdkEventPayloads);
   const assistantMessageId =
     latestAssistantMessageIdFromCentralizedTape(rawSdkEventPayloads);
   if (!assistantMessageId) {
@@ -402,10 +472,6 @@ export function getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
   const chunks: string[] = [];
   const seen = new Set<string>();
   for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
-    if (completionIndex >= 0 && index > completionIndex) {
-      break;
-    }
-
     const payload = rawSdkEventPayloads[index];
     const part = getCentralizedEventPart(payload);
     if (!part) {
@@ -453,7 +519,7 @@ export function getCentralizedAssistantContentFromRawSdkEventPayloads(
     .trim();
 }
 
-function latestAssistantMessageIdFromCentralizedTape(
+export function latestAssistantMessageIdFromCentralizedTape(
   rawSdkEventPayloads?: unknown[],
 ): string | null {
   if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
@@ -7195,6 +7261,12 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   const base = {
     ...(burst[burst.length - 1] || burst[0]),
   } as Message;
+  const wasAborted = burst.some(
+    (message) =>
+      message?.aborted === true ||
+      asRecord(message)?.aborted === true ||
+      asRecord(asRecord(message)?.info)?.aborted === true,
+  );
   const mergedParts: MessagePart[] = [];
   const seenPartFingerprints = new Set<string>();
   const seenReasoning = new Set<string>();
@@ -7522,6 +7594,12 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
     base.info = infoRec
       ? { ...infoRec, id: canonicalMessageId }
       : ({ id: canonicalMessageId } as Record<string, unknown>);
+  }
+
+  if (wasAborted || base.aborted === true) {
+    base.aborted = true;
+    const infoRec = asRecord(base.info) || {};
+    base.info = { ...infoRec, aborted: true };
   }
 
   return base;
@@ -9117,6 +9195,7 @@ function handleStreamEvent(
       // may reopen inactive streams on SET_PROCESSING(true), so terminal activity
       // needs a final guard before the generic keep-processing dispatch below.
       const wasStreamInactiveAtPartStart = currentStreamingState?.isActive === false;
+      let terminalTurnClosed = false;
 
       // Detect start of reasoning part sequence
       const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking';
@@ -9453,6 +9532,11 @@ function handleStreamEvent(
           asString(part.messageID) || asString(part.messageId) || messageId,
           "done",
         );
+        markAssistantTurnClosed(
+          asString(part.messageID) || asString(part.messageId),
+          messageId,
+        );
+        terminalTurnClosed = true;
       }
 
       if (partType === 'tool') {
@@ -9734,6 +9818,10 @@ function handleStreamEvent(
         flushVisibleStreamingSnapshotToMessages(dispatch, getState);
         dispatch({ type: "FINISH_STREAMING" });
         dispatch({ type: "SET_PROCESSING", payload: false });
+        break;
+      }
+
+      if (terminalTurnClosed) {
         break;
       }
 
@@ -10052,6 +10140,13 @@ function handleStreamEvent(
 
 
       if (finish) {
+        markAssistantTurnClosed(
+          asString(asRecord(payload.info)?.id),
+          asString(asRecord(properties)?.messageID),
+          asString(asRecord(properties)?.messageId),
+          asString(payload.messageId),
+          asString(payload.messageID),
+        );
         const finalized = finalizeStreamingSnapshotSteps(
           getState().streaming,
           asString(asRecord(payload.info)?.error) ||
@@ -10068,8 +10163,29 @@ function handleStreamEvent(
             },
           });
         }
+        dispatch({
+          type: "SET_ASSISTANT_TURN_PENDING",
+          payload: { pending: false, messageId: null },
+        });
+        dispatch({ type: "SET_PROCESSING", payload: false });
+        dispatch({ type: "FINISH_STREAMING" });
       } else {
-        dispatch({ type: 'SET_PROCESSING', payload: true });
+        const currentStreaming = getState().streaming;
+        const turnAlreadyClosed = Boolean(
+          currentStreaming?.hasTerminalStepSignal ||
+          currentStreaming?.hasAssistantFinishSignal ||
+          (responseMessageId && closedAssistantTurnMessageIds.has(responseMessageId)),
+        );
+        if (turnAlreadyClosed) {
+          dispatch({
+            type: "SET_ASSISTANT_TURN_PENDING",
+            payload: { pending: false, messageId: null },
+          });
+          dispatch({ type: "SET_PROCESSING", payload: false });
+          dispatch({ type: "FINISH_STREAMING" });
+        } else {
+          dispatch({ type: 'SET_PROCESSING', payload: true });
+        }
       }
       break;
     }
@@ -10451,6 +10567,12 @@ function handleStreamEvent(
         asString(payload.error) || asString(asRecord(payload.info)?.error)
           ? "error"
           : "done";
+      markAssistantTurnClosed(
+        asString(asRecord(payload.info)?.id),
+        asString(payload.messageID) || asString(payload.messageId),
+        asString(asRecord(payload.properties)?.messageID),
+        asString(asRecord(payload.properties)?.messageId),
+      );
       const finalized = finalizeStreamingSnapshotSteps(
         getState().streaming,
         terminalStatus,
@@ -10473,11 +10595,11 @@ function handleStreamEvent(
           }
         }
       });
-      // Keep isProcessing true — the authoritative terminal signal comes from either
-      // messageResponse (when the extension finishes the prompt call) or
-      // SET_PROCESSING_SESSIONS (when the backend confirms the session is no longer
-      // processing). Dispatching SET_PROCESSING(false) here causes the loading
-      // indicator to disappear while the AI is still streaming content.
+      dispatch({
+        type: "SET_ASSISTANT_TURN_PENDING",
+        payload: { pending: false, messageId: null },
+      });
+      dispatch({ type: "SET_PROCESSING", payload: false });
       break;
     }
     default: {
@@ -10901,8 +11023,17 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   let latestStreamingSnapshot: StreamingState | null = null;
   let terminalErrorReached = false;
   let activeSubagentParentMessageIds = new Set<string>();
+  const closedAssistantTurnMessageIds = new Set<string>();
   const stoppedSessionIds = new Set<string>();
   let awaitingInteractiveTurnStart = false;
+
+  const markAssistantTurnClosed = (...messageIds: Array<string | null | undefined>) => {
+    for (const messageId of messageIds) {
+      if (messageId) {
+        closedAssistantTurnMessageIds.add(messageId);
+      }
+    }
+  };
 
   const streamEventCanStartVisibleAssistantTurn = (payload: UnknownRecord): boolean => {
     const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
@@ -11014,6 +11145,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       }
 
       const type = asString(data.type);
+      const eventMessageId = extractEventMessageId(data);
 
       // Log ALL events for comprehensive debugging
       logger.debug(`Received Event: ${type}`, {
@@ -11032,6 +11164,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           type !== "streamEvent" ||
           !streamEventCanStartVisibleAssistantTurn(asRecord(data.event) ?? data)
         )
+      ) || (
+        !!eventMessageId &&
+        closedAssistantTurnMessageIds.has(eventMessageId)
       );
       if (
         asBoolean(data.processing, false) &&
@@ -11045,6 +11180,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       switch (type) {
         case "initState":
         case "init": {
+          closedAssistantTurnMessageIds.clear();
           terminalErrorReached = false;
           activeSubagentParentMessageIds = new Set<string>();
           const initSessionId =
@@ -11407,6 +11543,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               asString(asRecord(normalizedMessage.info)?.id) ||
               asString((normalizedMessage as unknown as UnknownRecord).id) ||
               null;
+            markAssistantTurnClosed(normalizedMessageId, streamingMessageId);
 
             // Persist to messages array (locked data). Replace matching assistant
             // turn instead of blind-append so already rendered content is never
@@ -11447,6 +11584,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           }
 
           dispatch({ type: "SET_STEERING", payload: false });
+          dispatch({
+            type: "SET_ASSISTANT_TURN_PENDING",
+            payload: { pending: false, messageId: null },
+          });
           dispatch({ type: "SET_PROCESSING", payload: false });
           dispatch({ type: "FINISH_STREAMING" });
           dispatch({ type: "SET_STREAMING", payload: null });
@@ -11776,6 +11917,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             latestStreamingSnapshot = null;
             activeSubagentParentMessageIds = new Set<string>();
           }
+          markAssistantTurnClosed(
+            finalMessageId,
+            responseMessageId,
+            streamingMessageId,
+            snapshotMessageId,
+          );
+          dispatch({
+            type: "SET_ASSISTANT_TURN_PENDING",
+            payload: { pending: false, messageId: null },
+          });
           dispatch({ type: "SET_PROCESSING", payload: false });
           if (shouldClearStreamingAfterResponse) {
             dispatch({ type: "SET_STREAMING", payload: null });
@@ -13079,6 +13230,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           );
           if (!isActiveSessionStillProcessing) {
             awaitingInteractiveTurnStart = false;
+            if (stateAfterProcessingUpdate.assistantTurnPending) {
+              dispatch({
+                type: "SET_ASSISTANT_TURN_PENDING",
+                payload: { pending: false, messageId: null },
+              });
+            }
             if (stateAfterProcessingUpdate.isSteering) {
               dispatch({ type: "SET_STEERING", payload: false });
             }

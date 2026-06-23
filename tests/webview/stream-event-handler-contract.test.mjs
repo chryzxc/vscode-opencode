@@ -420,6 +420,28 @@ test("handleStreamEvent message.updated dispatches SET_PROCESSING true when fini
     );
 });
 
+test("handleStreamEvent messageResponse clears assistantTurnPending when the turn completes", () => {
+    const body = extractFunctionBody(messageHandlerSource, 'export function createMessageHandler');
+    assert.ok(body, 'createMessageHandler must exist');
+    assert.match(body, /case\s+["']messageResponse["']:\s*\{/,
+      'messageResponse case must exist');
+    assert.match(
+        body,
+        /case\s+["']messageResponse["']:\s*\{[\s\S]*SET_ASSISTANT_TURN_PENDING[\s\S]*pending:\s*false[\s\S]*SET_PROCESSING[\s\S]*false/s,
+        "messageResponse completion should clear assistantTurnPending before stopping processing",
+    );
+});
+
+test("createMessageHandler SET_PROCESSING_SESSIONS clears assistantTurnPending when the active session stops processing", () => {
+    const body = extractFunctionBody(messageHandlerSource, 'export function createMessageHandler');
+    assert.ok(body, 'createMessageHandler must exist');
+    assert.match(
+        body,
+        /case\s+["']sessionsListUpdate["']:[\s\S]*SET_ASSISTANT_TURN_PENDING[\s\S]*pending:\s*false[\s\S]*SET_STEERING/s,
+        'processing-session sync should clear assistantTurnPending before finishing the session',
+    );
+});
+
 test("handleStreamEvent suppresses lifecycle-only message.updated no-op updates", () => {
     const body = extractFunctionBody(messageHandlerSource, 'function handleStreamEvent');
     assert.ok(body, 'handleStreamEvent must exist');

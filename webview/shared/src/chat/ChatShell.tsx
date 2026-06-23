@@ -4,6 +4,10 @@ import { Archive, X } from "lucide-react";
 import { AppProvider, useAppDispatch, useAppState } from "./lib/store";
 import {
   createMessageHandler,
+  coalesceAdjacentAssistantHistoryMessages,
+  getCentralizedEventInfo,
+  getCentralizedEventPart,
+  getCentralizedEventType,
   normalizeCentralizedEventPayloads,
 } from "./lib/messageHandler";
 import {
@@ -59,6 +63,30 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function normalizeComparableText(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function renderMessageContentSignature(message: Message): string {
+  return [
+    firstNonEmptyString(message.role, message.info?.role) ?? "",
+    normalizeComparableText(
+      firstNonEmptyString(
+        message.content,
+        message.text,
+        message.info?.content,
+        message.info?.text,
+      ),
+    ),
+  ].join("::");
+}
+
 function buildCentralizedRenderMessages(
   messages: Message[],
   rawSdkEventPayloads: unknown[],
@@ -84,6 +112,7 @@ function buildCentralizedRenderMessages(
   const knownIds = new Set<string>();
   const assistantIds = new Set<string>();
   const assistantParentIds = new Set<string>();
+  const tapeUserMessageSignatures = new Set<string>();
   const sourceMessagesById = new Map<string, Message>();
 
   for (const message of messages) {
@@ -101,11 +130,10 @@ function buildCentralizedRenderMessages(
   // 1. First pass: Collect all assistant messages from the central tape
   for (const payload of normalizedRawSdkEventPayloads) {
     const event = asRecord(payload);
-    if (!event || firstNonEmptyString(event.type) !== "message.updated") {
+    if (!event || getCentralizedEventType(event) !== "message.updated") {
       continue;
     }
-    const properties = asRecord(event.properties);
-    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const info = getCentralizedEventInfo(event);
     if (firstNonEmptyString(info?.role)?.toLowerCase() !== "assistant") {
       continue;
     }
@@ -148,11 +176,11 @@ function buildCentralizedRenderMessages(
   // 2. Second pass: Collect all user messages from the central tape
   for (const payload of normalizedRawSdkEventPayloads) {
     const event = asRecord(payload);
-    if (!event || firstNonEmptyString(event.type) !== "message.part.updated") {
+    if (!event || getCentralizedEventType(event) !== "message.part.updated") {
       continue;
     }
     const properties = asRecord(event.properties);
-    const part = asRecord(properties?.part) ?? asRecord(event.part);
+    const part = getCentralizedEventPart(event);
     if (firstNonEmptyString(part?.type)?.toLowerCase() !== "text") {
       continue;
     }
@@ -169,6 +197,7 @@ function buildCentralizedRenderMessages(
 
     const sourceMessage = sourceMessagesById.get(messageId);
     if (sourceMessage) {
+      tapeUserMessageSignatures.add(renderMessageContentSignature(sourceMessage));
       merged.push(sourceMessage);
       continue;
     }
@@ -191,10 +220,48 @@ function buildCentralizedRenderMessages(
       },
       created: eventTime,
     } as Message);
+    tapeUserMessageSignatures.add(renderMessageContentSignature(merged[merged.length - 1]));
   }
 
-  // 3. Sort strictly by canonical creation time from the central tape
-  return merged.sort((left, right) => {
+  // 3. Sort strictly by canonical creation time from the central tape, then
+  // coalesce back-to-back assistant bursts so one assistant turn is rendered
+  // once even if the canonical tape emitted both a live shell and a finalized
+  // assistant record for the same turn.
+  //
+  // Final fallback:
+  // The webview receives the user's outgoing message immediately through
+  // `userMessageAppended`, but the raw centralized tape can still lag behind by
+  // a few frames. When that happens we still want the user's bubble to appear
+  // so the conversation doesn't look frozen while the stream boots. Only user
+  // messages are allowed through this fallback; assistant turns remain fully
+  // tape-driven so we do not reintroduce duplicate AI response cards.
+  for (const message of messages) {
+    const messageId = firstNonEmptyString(
+      message.info?.id,
+      message.id,
+      message.messageId,
+    );
+    if (!messageId || knownIds.has(messageId)) {
+      continue;
+    }
+
+    const role = firstNonEmptyString(message.role, message.info?.role)?.toLowerCase();
+    if (role !== "user") {
+      continue;
+    }
+
+    // Once the centralized tape has caught up and already contains the same
+    // user text, the optimistic echo should disappear so the conversation does
+    // not render the same user bubble twice under different message IDs.
+    if (tapeUserMessageSignatures.has(renderMessageContentSignature(message))) {
+      continue;
+    }
+
+    knownIds.add(messageId);
+    merged.push(message);
+  }
+
+  const sorted = merged.sort((left, right) => {
     const leftCreated =
       typeof left.created === "number"
         ? left.created
@@ -212,6 +279,8 @@ function buildCentralizedRenderMessages(
     }
     return 0;
   });
+
+  return coalesceAdjacentAssistantHistoryMessages(sorted);
 }
 
 type ConversationRenderEntry =
@@ -315,9 +384,8 @@ function buildCentralizedConversationEntries(
       continue;
     }
 
-    const properties = asRecord(event.properties);
-    const info = asRecord(properties?.info) ?? asRecord(event.info);
-    const part = asRecord(properties?.part) ?? asRecord(event.part);
+    const info = getCentralizedEventInfo(event);
+    const part = getCentralizedEventPart(event);
     const diff = parseCentralizedSessionDiffEvent(event, rawIndex);
     if (diff) {
       entries.push({

@@ -76,6 +76,7 @@ describe('coalesceAdjacentAssistantHistoryMessages - rawSdkEventPayloads orderin
       ['evt-1', 'evt-2'],
     );
   });
+
 });
 
 describe('normalizeMessage - structuredOutput handling', () => {
@@ -523,7 +524,7 @@ describe('normalizeMessage - structuredOutput handling', () => {
     );
   });
 
-  it('should stop assistant content extraction at the first completion marker for the same turn', () => {
+  it('should keep assistant content extraction open after the first completion marker for the same turn', () => {
     const rawSdkEventPayloads = [
       {
         id: 'evt-before-finish',
@@ -575,8 +576,11 @@ describe('normalizeMessage - structuredOutput handling', () => {
     );
     assert.deepStrictEqual(
       getCentralizedAssistantContentChunksFromRawSdkEventPayloads(rawSdkEventPayloads),
-      ['I have a complete picture.'],
-      'chunks after the completion marker should be ignored for the final response body',
+      [
+        'I have a complete picture.',
+        'Let me cancel the still-running background agents since I\'ve gathered everything needed, then deliver the summary.',
+      ],
+      'content extraction should keep the full assistant body even after the completion marker so later assistant text still renders',
     );
   });
 
