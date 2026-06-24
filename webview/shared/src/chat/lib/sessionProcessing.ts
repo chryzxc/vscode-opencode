@@ -21,6 +21,89 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function latestSessionStatusTypeFromCentralizedTape(
+  rawSdkEventPayloads?: unknown[],
+): string | null {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return null;
+  }
+
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event || asString(event.type).trim() !== "session.status") {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const status = asRecord(properties?.status) ?? asRecord(event.status);
+    const statusType = firstNonEmptyString(status?.type, status?.status);
+    if (statusType) {
+      return statusType.trim().toLowerCase();
+    }
+  }
+
+  return null;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function latestCentralizedEventTimestamp(
+  rawSdkEventPayloads?: unknown[],
+): number | null {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return null;
+  }
+
+  let latest: number | null = null;
+
+  for (const entry of rawSdkEventPayloads) {
+    const event = asRecord(entry);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const part = asRecord(properties?.part) ?? asRecord(event.part);
+    const partTime = asRecord(part?.time);
+    const infoTime = asRecord(info?.time);
+
+    const candidates = [
+      asNumber(properties?.time),
+      asNumber(event.time),
+      asNumber(partTime?.end),
+      asNumber(partTime?.start),
+      asNumber(infoTime?.completed),
+      asNumber(infoTime?.updated),
+      asNumber(infoTime?.created),
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate !== "number") {
+        continue;
+      }
+      latest = latest === null ? candidate : Math.max(latest, candidate);
+    }
+  }
+
+  return latest;
+}
+
+const CENTRALIZED_ACTIVITY_FRESHNESS_WINDOW_MS = 30_000;
+
+function hasRecentCentralizedActivity(
+  rawSdkEventPayloads?: unknown[],
+  nowMs: number = Date.now(),
+): boolean {
+  const latestTimestamp = latestCentralizedEventTimestamp(rawSdkEventPayloads);
+  if (typeof latestTimestamp !== "number") {
+    return false;
+  }
+  return nowMs - latestTimestamp <= CENTRALIZED_ACTIVITY_FRESHNESS_WINDOW_MS;
+}
+
 function latestRoleBoundaryIndexes(messages: unknown[] | undefined): {
   lastUserIndex: number;
   lastAssistantIndex: number;
@@ -177,6 +260,26 @@ export function hasCompletedAssistantReplyForLatestTurn(
   return hasCompletedAssistantReplyInCentralizedTape(rawSdkEventPayloads);
 }
 
+export function hasActiveAssistantReplyInCentralizedTape(
+  rawSdkEventPayloads?: unknown[],
+): boolean {
+  return !!latestAssistantMessageIdFromCentralizedTape(rawSdkEventPayloads) &&
+    !hasCompletedAssistantReplyInCentralizedTape(rawSdkEventPayloads);
+}
+
+export function hasBusySessionStatusInCentralizedTape(
+  rawSdkEventPayloads?: unknown[],
+): boolean {
+  const latestStatusType = latestSessionStatusTypeFromCentralizedTape(rawSdkEventPayloads);
+  return (
+    latestStatusType === "busy" ||
+    latestStatusType === "running" ||
+    latestStatusType === "processing" ||
+    latestStatusType === "in_progress" ||
+    latestStatusType === "streaming"
+  );
+}
+
 export function isAssistantRespondingInCurrentSession(
   isProcessing: boolean,
   currentSessionId: string | null,
@@ -184,17 +287,37 @@ export function isAssistantRespondingInCurrentSession(
   isStreamingActive: boolean,
   assistantTurnPending: boolean,
   hasConversationContext: boolean,
+  rawSdkEventPayloads?: unknown[],
 ): boolean {
-  // A blank/new session can briefly inherit a processing session flag from
-  // bootstrap or session switching, but that alone should not show the stop
-  // button or loading affordance. Require actual turn context before treating
-  // processing as an active assistant response.
-  if (!hasConversationContext) {
+  const isProcessingInSession = isProcessingInCurrentSession(
+    isProcessing,
+    currentSessionId,
+    processingSessionIds,
+  );
+  const hasActiveCentralizedReply =
+    hasActiveAssistantReplyInCentralizedTape(rawSdkEventPayloads);
+  const hasBusyCentralizedSession =
+    hasBusySessionStatusInCentralizedTape(rawSdkEventPayloads) &&
+    !hasCompletedAssistantReplyInCentralizedTape(rawSdkEventPayloads);
+  const hasLiveTurnSignal =
+    isProcessingInSession || isStreamingActive || assistantTurnPending;
+  const canUseCentralizedFallback =
+    hasLiveTurnSignal || hasRecentCentralizedActivity(rawSdkEventPayloads);
+
+  // A blank/new session can briefly inherit processing-like state from
+  // bootstrap or stale persisted tape. Require either visible turn context or
+  // fresh live-ish centralized activity before showing loading.
+  if (
+    !hasConversationContext &&
+    !(canUseCentralizedFallback && (hasActiveCentralizedReply || hasBusyCentralizedSession))
+  ) {
     return false;
   }
   return (
-    isProcessingInCurrentSession(isProcessing, currentSessionId, processingSessionIds) ||
+    isProcessingInSession ||
     isStreamingActive ||
-    assistantTurnPending
+    assistantTurnPending ||
+    (canUseCentralizedFallback &&
+      (hasActiveCentralizedReply || hasBusyCentralizedSession))
   );
 }

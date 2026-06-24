@@ -3,6 +3,8 @@ import { describe, it } from 'node:test';
 
 import {
   hasActiveAssistantTurnContext,
+  hasActiveAssistantReplyInCentralizedTape,
+  hasBusySessionStatusInCentralizedTape,
   isAssistantRespondingInCurrentSession,
 } from './sessionProcessing';
 
@@ -44,6 +46,228 @@ describe('isAssistantRespondingInCurrentSession', () => {
     );
 
     assert.strictEqual(result, false);
+  });
+
+  it('keeps the session loading while the centralized tape shows an unfinished assistant reply', () => {
+    const freshTimestamp = Date.now();
+    const result = isAssistantRespondingInCurrentSession(
+      false,
+      'ses_1',
+      [],
+      false,
+      false,
+      false,
+      [
+        {
+          id: 'evt_1',
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg_1',
+              role: 'assistant',
+              time: { created: freshTimestamp },
+            },
+          },
+        },
+        {
+          id: 'evt_2',
+          type: 'message.part.updated',
+          properties: {
+            time: freshTimestamp,
+            part: {
+              type: 'text',
+              messageID: 'msg_1',
+              text: 'Hey! What can I help you with?',
+            },
+          },
+        },
+        {
+          id: 'evt_3',
+          type: 'session.status',
+          properties: {
+            status: { type: 'busy' },
+          },
+        },
+      ],
+    );
+
+    assert.strictEqual(result, true);
+  });
+
+  it('does not keep the session loading after the centralized tape shows a completed assistant reply', () => {
+    const result = hasActiveAssistantReplyInCentralizedTape([
+      {
+        id: 'evt_1',
+        type: 'message.updated',
+        properties: {
+          info: {
+            id: 'msg_1',
+            role: 'assistant',
+            finish: 'stop',
+          },
+        },
+      },
+      {
+        id: 'evt_2',
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'step-finish',
+            messageID: 'msg_1',
+          },
+        },
+      },
+    ]);
+
+    assert.strictEqual(result, false);
+  });
+
+  it('keeps the session loading while the centralized tape reports a busy session status', () => {
+    const freshTimestamp = Date.now();
+    const result = isAssistantRespondingInCurrentSession(
+      false,
+      'ses_1',
+      [],
+      false,
+      false,
+      false,
+      [
+        {
+          id: 'evt_1',
+          type: 'session.status',
+          properties: {
+            time: freshTimestamp,
+            status: { type: 'busy' },
+          },
+        },
+      ],
+    );
+
+    assert.strictEqual(result, true);
+  });
+
+  it('does not keep the session loading after the centralized tape returns idle', () => {
+    const result = hasBusySessionStatusInCentralizedTape([
+      {
+        id: 'evt_1',
+        type: 'session.status',
+        properties: {
+          status: { type: 'busy' },
+        },
+      },
+      {
+        id: 'evt_2',
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+        },
+      },
+    ]);
+
+    assert.strictEqual(result, false);
+  });
+
+  it('does not treat a completed assistant reply as busy even if the session status lags', () => {
+    const result = isAssistantRespondingInCurrentSession(
+      false,
+      'ses_1',
+      [],
+      false,
+      false,
+      false,
+      [
+        {
+          id: 'evt_1',
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg_1',
+              role: 'assistant',
+              finish: 'stop',
+            },
+          },
+        },
+        {
+          id: 'evt_2',
+          type: 'session.status',
+          properties: {
+            status: { type: 'busy' },
+          },
+        },
+      ],
+    );
+
+    assert.strictEqual(result, false);
+  });
+
+  it('does not treat stale rehydrated raw events as an active assistant response on startup', () => {
+    const staleTimestamp = Date.now() - 120_000;
+    const result = isAssistantRespondingInCurrentSession(
+      false,
+      'ses_1',
+      [],
+      false,
+      false,
+      true,
+      [
+        {
+          id: 'evt_1',
+          type: 'session.status',
+          properties: {
+            time: staleTimestamp,
+            status: { type: 'busy' },
+          },
+        },
+        {
+          id: 'evt_2',
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg_1',
+              role: 'assistant',
+              time: { created: staleTimestamp },
+            },
+          },
+        },
+      ],
+    );
+
+    assert.strictEqual(result, false);
+  });
+
+  it('still uses fresh centralized events to bridge live loading-state races', () => {
+    const freshTimestamp = Date.now();
+    const result = isAssistantRespondingInCurrentSession(
+      false,
+      'ses_1',
+      [],
+      false,
+      false,
+      true,
+      [
+        {
+          id: 'evt_1',
+          type: 'session.status',
+          properties: {
+            time: freshTimestamp,
+            status: { type: 'busy' },
+          },
+        },
+        {
+          id: 'evt_2',
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg_1',
+              role: 'assistant',
+              time: { created: freshTimestamp },
+            },
+          },
+        },
+      ],
+    );
+
+    assert.strictEqual(result, true);
   });
 });
 

@@ -857,6 +857,7 @@ function ChatContent() {
     Boolean(state.streaming?.isActive),
     state.assistantTurnPending,
     hasAnyRenderableConversation,
+    centralizedSessionRawSdkEventPayloads,
   );
 
   // Check if we're switching to a different session (loading conversation)
@@ -1399,10 +1400,8 @@ function ChatContent() {
             todoItems={state.todoItems}
           />
 
-          {/* Loading status while processing before first stream payload.
-              Once a live stream exists, the assistant card owns the loading UI
-              so we do not duplicate the "thinking" text in two places. */}
-          {showExtendedLoading && !state.streaming ? (
+          {/* Single loading indicator pinned to the bottom of the chat. */}
+          {showExtendedLoading ? (
             <ThinkingBubble />
           ) : null}
 

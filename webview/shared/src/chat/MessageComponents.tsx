@@ -58,6 +58,9 @@ import {
   structuredOutputFromRawSdkEventPayloads,
   isAiResponseEvent,
 } from "./lib/messageHandler";
+import {
+  hasActiveAssistantReplyInCentralizedTape,
+} from "./lib/sessionProcessing";
 import { hasSystemMessagePatternInText } from "./lib/store";
 import logger, { getGlobalShowBrowserConsole } from "./lib/logger";
 import { FILE_MENTION_REGEX } from "./PanelComponents";
@@ -6180,9 +6183,14 @@ function AssistantResponseCardInner({
       ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
       : [];
   }, [centralizedSessionId, rawSdkEventPayloadsBySessionId]);
+  const hasCentralizedPendingAssistantReply = useMemo(
+    () => hasActiveAssistantReplyInCentralizedTape(sessionScopedRawSdkEventPayloads),
+    [sessionScopedRawSdkEventPayloads],
+  );
   const isLiveAssistantTurn = !!(
     activityTimelineStreaming?.isActive ||
-    assistantTurnPending
+    assistantTurnPending ||
+    hasCentralizedPendingAssistantReply
   );
   const assistantTurnRootMessageId = firstNonEmptyString(
     assistantMessageId,
@@ -7074,9 +7082,6 @@ function AssistantResponseCardInner({
       subagents.length > 0)
   );
 
-  const showStreamingLoading =
-    !message && !!streaming?.isActive && !hasStreamingActivity;
-
   // Use type-safe helpers instead of type assertions
   const agentName = turnMetadata.agent || getAgentName(message, streaming);
   const agentColor = useMemo(() => {
@@ -7320,11 +7325,6 @@ function AssistantResponseCardInner({
           hasActiveTimelineWork ||
           hasActiveReasoningPart ||
           hasPendingReasoningDisplayEvent)));
-  // Keep the streaming ticker visible underneath the response card while the
-  // turn is still active so the stop state and loading text stay coupled.
-  const showStreamingLoadingBelowResponse =
-    !hideLoadingText && isStreamingActive && showResponseSection;
-
   useEffect(() => {
     if (
       !streaming?.isActive &&
@@ -7340,7 +7340,6 @@ function AssistantResponseCardInner({
       streamingMessageId: streaming?.messageId ?? null,
       streamingActive: !!streaming?.isActive,
       hasStreamingActivity,
-      showStreamingLoading,
       displayEventsCount: displayEvents.length,
       timelineDisplayEventsCount: timelineDisplayEvents.length,
       hasActiveTimelineWork,
@@ -7363,7 +7362,6 @@ function AssistantResponseCardInner({
       streamingMessageId: streaming?.messageId ?? null,
       streamingActive: !!streaming?.isActive,
       hasStreamingActivity,
-      showStreamingLoading,
       displayEventsCount: displayEvents.length,
       timelineDisplayEventsCount: timelineDisplayEvents.length,
       hasActiveTimelineWork,
@@ -7396,7 +7394,6 @@ function AssistantResponseCardInner({
     hasPrimaryResponseBody,
     hasAssistantFinishSignal,
     hasStreamingActivity,
-    showStreamingLoading,
     config.debug.showCentralizedDebug,
     config.debug.showPreRenderDebug,
   ]);
@@ -7643,12 +7640,8 @@ function AssistantResponseCardInner({
         {!isContiguous && (
           <div className="oc-msg-header mb-2 flex flex-wrap items-start justify-between gap-1.5">
             <div className="oc-msg-header-main flex min-w-0 flex-1 items-center gap-1.5">
-              {!hideLoadingText && showStreamingLoading ? (
-                <ThinkingStatusTicker className="oc-thinking-status" />
-              ) : (
-                <>
-                  <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
-                    <div className="oc-msg-header-text flex min-w-0 items-center gap-1.5 flex-wrap">
+              <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
+                <div className="oc-msg-header-text flex min-w-0 items-center gap-1.5 flex-wrap">
                       <span
                         className="oc-msg-agent-name font-semibold text-oc-sm truncate min-w-0"
                         style={
@@ -7679,13 +7672,11 @@ function AssistantResponseCardInner({
                           </span>
                         </div>
                       )}
-                    </div>
-                  </div>
-                </>
-              )}
+                </div>
+              </div>
             </div>
             <div className="oc-msg-header-actions flex min-w-0 flex-wrap items-center gap-1.5">
-              {hasMetrics && !showStreamingLoading && (
+              {hasMetrics && (
                 <div className="oc-metrics-rail flex flex-wrap items-center gap-1.5" role="list" aria-label="Response metrics">
                   {tokenMetricChips.map((chip) => (
                     <div
@@ -8355,12 +8346,6 @@ function AssistantResponseCardInner({
             </section>
           )}
 
-        {showStreamingLoadingBelowResponse && (
-          <div className="mt-2 mb-1 px-1">
-            <ThinkingStatusTicker className="oc-thinking-status" />
-          </div>
-        )}
-
         </div>
 
 {!isStreamingActive && showResponseSection && (
@@ -8552,15 +8537,6 @@ function AssistantResponseCardInner({
             </div>
           </details>
         )} */}
-        {isStreamingActive &&
-          !showResponseSection &&
-          hasStreamingActivity &&
-          !hideLoadingText &&
-          !showStreamingLoading && (
-            <div className="mt-2 mb-2 px-1">
-              <ThinkingStatusTicker className="oc-thinking-status" />
-            </div>
-          )}
       </div>
     </div>
   );
@@ -9084,7 +9060,14 @@ export function InfoBanner({ message, error }: InfoBannerProps) {
 export const ThinkingBubble = memo(function ThinkingBubble() {
   return (
     <div className="mb-4 px-4">
-      <ThinkingStatusTicker className="pl-1 oc-thinking-status" />
+      <div className="inline-flex items-center gap-2 rounded-full border border-oc-border-soft bg-oc-panel px-3 py-1.5 text-[11px] font-medium text-oc-text-soft shadow-sm">
+        <div className="flex gap-1.5" aria-hidden="true">
+          <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: "0s" }} />
+          <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: "0.2s" }} />
+          <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: "0.4s" }} />
+        </div>
+        <span>AI is responding...</span>
+      </div>
     </div>
   );
 });

@@ -1855,6 +1855,7 @@ export function InputWrapper() {
     Boolean(streaming?.isActive),
     assistantTurnPending,
     hasConversationContext,
+    rawSdkEventPayloadsBySessionId?.[currentSessionId ?? ""],
   );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
